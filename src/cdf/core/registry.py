@@ -67,6 +67,7 @@ __all__ = [
     "get_source",
     "get_source_names",
     "get_sources",
+    "has_source",
 ]
 
 __dir__ = lambda: list(_sources.keys()) + __all__

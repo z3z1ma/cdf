@@ -1,4 +1,7 @@
-"""The loader is responsible for importing cdf sources which triggers registration."""
+"""The loader is responsible for importing cdf sources & running setup.
+
+This process triggers ambient component registration.
+"""
 import importlib
 import importlib.util
 import linecache
@@ -20,7 +23,7 @@ def _augmented_path(path: str):
     sys.path.pop()
 
 
-class SourceProto(t.Protocol):
+class _SourceProto(t.Protocol):
     def setup() -> None:
         """Perform any setup required to register the source."""
 
@@ -57,10 +60,15 @@ class SourceLoader:
                 assert spec and spec.loader, f"Failed to create spec for {path}"
                 src = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(src)
-                t.cast(SourceProto, src).setup()  # Side-effect: registers source
+                t.cast(_SourceProto, src).setup()  # Side-effect: registers source
                 self._modules[src.__name__] = src
         self._executions += 1
 
     def get_module(self, name: str):
         """Get a module from the sources directory."""
+        if self._executions == 0:
+            raise RuntimeError("Loader has not been executed.")
         return self._modules[name]
+
+
+__all__ = ["SourceLoader"]
