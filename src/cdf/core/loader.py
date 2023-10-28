@@ -34,14 +34,14 @@ class SourceLoader(abc.ABC):
     """An abstract base class for source loaders."""
 
     def __init__(self, cache: SourceSpec | None = None, load: bool = True) -> None:
-        self.cache = cache or {}
+        self.cache = cache if cache is not None else {}
         self.executions = 0
         if load:
             self.load()
 
     def load(self) -> None:
         """Load all source modules populating the cache."""
-        self.cache = {}
+        self.cache.clear()
         if self.executions > 0:
             linecache.clearcache()
         for module in self.get_modules():
