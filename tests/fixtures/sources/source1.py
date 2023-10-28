@@ -12,5 +12,4 @@ def source1():
     return gen()
 
 
-def setup() -> None:
-    source1()
+__CDF_SOURCE__ = {"source1": source1}
