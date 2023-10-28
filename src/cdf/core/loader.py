@@ -1,6 +1,7 @@
-"""The loader is responsible for importing cdf sources & running setup.
+"""The loader is responsible for importing cdf sources.
 
-This process triggers ambient component registration.
+CDF sources export a constant named __CDF_SOURCE__ which captures a dict
+of functions or closures that return a ContinuousDataFlowSource.
 """
 import abc
 import importlib
@@ -45,6 +46,7 @@ class SourceLoader(abc.ABC):
             linecache.clearcache()
         for module in self.get_modules():
             self._load_module(module)
+        self.executions += 1
 
     def _load_module(self, module: Loadable) -> None:
         """Load a Loadable object."""

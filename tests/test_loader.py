@@ -21,5 +21,6 @@ def test_load_sources():
     # Test case 4: Load sources from a valid directory, ensure source is registered
     loader = DirectoryLoader("./tests/fixtures/sources")
     assert len(loader.cache) == 1
+    assert loader.executions == 1
     _ = loader.cache["source1"]()
     assert registry.has_source("source1")
