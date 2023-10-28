@@ -1,4 +1,8 @@
-"""The registry contains all user defined sources."""
+"""The registry contains all active user defined sources.
+
+They are registered at runtime by the user either manually or by calling a lazy
+source loaded by a SourceLoader.
+"""
 import typing as t
 
 from cdf.core.exception import RegistryTypeError, SourceNotFoundError
