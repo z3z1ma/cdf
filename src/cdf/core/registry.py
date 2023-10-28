@@ -5,14 +5,12 @@ from cdf.core.exception import RegistryTypeError, SourceNotFoundError
 
 if t.TYPE_CHECKING:
     from cdf.core.source import ContinuousDataFlowSource
-else:
-    ContinuousDataFlowSource = t.Any
 
 
-_sources: t.Dict[str, ContinuousDataFlowSource] = {}
+_sources: t.Dict[str, "ContinuousDataFlowSource"] = {}
 
 
-def register_source(source: ContinuousDataFlowSource) -> None:
+def register_source(source: "ContinuousDataFlowSource") -> None:
     """Register a source class with the registry."""
     from cdf.core.source import ContinuousDataFlowSource
 
@@ -23,7 +21,7 @@ def register_source(source: ContinuousDataFlowSource) -> None:
     _sources[source.name] = source
 
 
-def get_source(name: str) -> ContinuousDataFlowSource:
+def get_source(name: str) -> "ContinuousDataFlowSource":
     """Get a source class from the registry."""
     try:
         return _sources[name]
@@ -36,7 +34,7 @@ def get_source_names() -> t.List[str]:
     return list(_sources.keys())
 
 
-def get_sources() -> t.List[ContinuousDataFlowSource]:
+def get_sources() -> t.List["ContinuousDataFlowSource"]:
     """Get a list of registered source classes."""
     return list(_sources.values())
 
@@ -54,7 +52,7 @@ def has_source(name: str) -> bool:
     return name in _sources
 
 
-def __getattr__(name: str) -> ContinuousDataFlowSource:
+def __getattr__(name: str) -> "ContinuousDataFlowSource":
     """Get a source class from the registry."""
     if name in _sources:
         return _sources[name]
@@ -70,4 +68,6 @@ __all__ = [
     "has_source",
 ]
 
-__dir__ = lambda: list(_sources.keys()) + __all__
+
+def __dir__() -> t.List[str]:
+    return list(_sources.keys()) + __all__
