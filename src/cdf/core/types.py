@@ -1,5 +1,6 @@
 """Contains classes & types common in CDF. This includes Monads."""
 import typing as t
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
@@ -16,33 +17,55 @@ LazySource = t.Callable[[], ContinuousDataFlowSource]
 SourceSpec = t.Dict[str, LazySource]
 
 
-class MaybeFn(t.Generic[P, T]):
-    """A monad which wraps a callable and returns None if an exception is raised."""
+class Option(t.Generic[T]):
+    def __init__(self, value: T | None) -> None:
+        self._inner: t.Optional[T] = value
 
-    # Type Constructor
-    def __init__(self, fn: t.Callable[P, T]) -> None:
-        """Unit of the monad."""
+    def map(self, fn: t.Callable[[T], t.Optional[T]]) -> "Option":
+        if self._inner is None:
+            return self
+        return Option(fn(self._inner))
 
-        def maybe(*args: P.args, **kwargs: P.kwargs) -> t.Optional[T]:
-            try:
-                return fn(*args, **kwargs)
-            except Exception:
-                return None
+    def flat_map(self, fn: t.Callable[[T], "Option"]) -> "Option":
+        if self._inner is None:
+            return self
+        return fn(self._inner)
 
-        self._fn = maybe
+    def unwrap(self) -> T:
+        if self._inner is None:
+            raise ValueError("Cannot unwrap None")
+        return self._inner
 
-    # Bind (Combinator)
-    def __call__(
-        self, fn: t.Callable[[t.Callable[P, t.Optional[T]]], "MaybeFn"]
-    ) -> "MaybeFn":
-        """Bind a callable to the monad."""
-        return fn(self._fn)
+    def __call__(self, fn: t.Callable[[T], "Option"]) -> "Option":
+        return self.flat_map(fn)
 
-    # Type Converter (For convenience)
-    @property
-    def value(self) -> t.Callable[P, t.Optional[T]]:
-        """Return the value of the monad."""
-        return self._fn
+    def __repr__(self) -> str:
+        return f"Option({self._inner})"
+
+    def __str__(self) -> str:
+        return f"Option({self._inner})"
+
+    def __bool__(self) -> bool:
+        return self._inner is not None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Option):
+            return False
+        return self._inner == other._inner
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash(self._inner)
+
+    def __iter__(self) -> t.Iterator[T]:
+        if self._inner is None:
+            return
+        yield self._inner
+
+    def __len__(self) -> int:
+        return 1 if self._inner is not None else 0
 
 
 class PathAugmentedFn(t.Generic[P, T]):
