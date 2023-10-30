@@ -93,11 +93,7 @@ def load_module(mod: ct.Loadable) -> ModuleType:
         result = ct.Result.apply(_load_module_from_path, mod)
     else:
         raise TypeError(f"Invalid module type {type(mod)}")
-    processed_mod, e = result
-    if isinstance(e, Exception):
-        raise e
-    assert isinstance(processed_mod, ModuleType), f"Failed to load module {mod}"
-    return processed_mod
+    return result.expect()
 
 
 def load_sources(
@@ -120,11 +116,6 @@ def load_sources(
             mutable, so it is modified in-place.
         lazy_sources (bool, optional): Whether to lazy load sources. Defaults to True.
         clear_linecache (bool, optional): Whether to clear the linecache. Defaults to True.
-
-    Raises:
-        SourceDirectoryNotFoundError: If the base directory does not exist.
-        SourceDirectoryNotFoundError: If the base directory is not a directory.
-        SourceDirectoryEmpty: If the base directory contains no sources.
 
     Returns:
         None: Nothing.
