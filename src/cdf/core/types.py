@@ -35,14 +35,11 @@ class Option(t.Generic[T]):
             raise ValueError("Cannot unwrap None")
         return self._inner
 
-    def __call__(self, fn: t.Callable[[T], "Option[S]"]) -> "Option[S]":
-        return self.flatmap(fn)
-
     def __repr__(self) -> str:
         return f"Option({self._inner})"
 
-    def __str__(self) -> str:
-        return f"Option({self._inner})"
+    __call__ = map
+    __str__ = __repr__
 
     def __bool__(self) -> bool:
         return self._inner is not None
@@ -90,14 +87,11 @@ class Result(t.Generic[T]):
             raise self._error
         return self._inner
 
-    def __call__(self, fn: t.Callable[[T | None], "Result[S]"]) -> "Result[S]":
-        return self.flatmap(fn)
-
     def __repr__(self) -> str:
         return f"Result({self._inner}, {self._error})"
 
-    def __str__(self) -> str:
-        return f"Result({self._inner}, {self._error})"
+    __call__ = map
+    __str__ = __repr__
 
     def __bool__(self) -> bool:
         return self._inner is not None
