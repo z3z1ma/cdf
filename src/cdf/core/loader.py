@@ -7,33 +7,20 @@ import abc
 import importlib
 import importlib.util
 import linecache
-import sys
 import typing as t
-from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 
 import cdf.core.constants as c
+import cdf.core.types as ct
 from cdf.core.exception import SourceDirectoryEmpty, SourceDirectoryNotFoundError
-from cdf.core.source import ContinuousDataFlowSource
-
-Loadable = t.Union[str, Path, ModuleType]
-LazySource = t.Callable[[], ContinuousDataFlowSource]
-SourceSpec = t.Dict[str, LazySource]
-
-
-@contextmanager
-def _augmented_path(path: str):
-    """Temporarily append a path to sys.path."""
-    sys.path.append(path)
-    yield
-    sys.path.pop()
+from cdf.core.utils import _augmented_path
 
 
 class SourceLoader(abc.ABC):
     """An abstract base class for source loaders."""
 
-    def __init__(self, cache: SourceSpec | None = None, load: bool = True) -> None:
+    def __init__(self, cache: ct.SourceSpec | None = None, load: bool = True) -> None:
         self.cache = cache if cache is not None else {}
         self.executions = 0
         if load:
@@ -48,7 +35,7 @@ class SourceLoader(abc.ABC):
             self._load_module(module)
         self.executions += 1
 
-    def _load_module(self, module: Loadable) -> None:
+    def _load_module(self, module: ct.Loadable) -> None:
         """Load a Loadable object."""
         if isinstance(module, str):
             module_ns = importlib.import_module(module)
@@ -59,11 +46,11 @@ class SourceLoader(abc.ABC):
             spec.loader.exec_module(module_ns)
         elif isinstance(module, ModuleType):
             module_ns = module
-        source_fns: SourceSpec = getattr(module_ns, c.CDF_SOURCE)
+        source_fns: ct.SourceSpec = getattr(module_ns, c.CDF_SOURCE)
         self.cache.update(source_fns)
 
     @abc.abstractmethod
-    def get_modules(self) -> t.Iterable[Loadable]:
+    def get_modules(self) -> t.Iterable[ct.Loadable]:
         """Get all modules.
 
         This method should return an iterable of Loadable objects. Given a str, we will assume it
@@ -84,7 +71,7 @@ class DirectoryLoader(SourceLoader):
         self,
         base_directory: str = "./sources",
         /,
-        cache: SourceSpec | None = None,
+        cache: ct.SourceSpec | None = None,
         load: bool = True,
     ) -> None:
         super().__init__(cache=cache, load=False)
@@ -92,7 +79,7 @@ class DirectoryLoader(SourceLoader):
         if load:
             self.load()
 
-    def get_modules(self) -> t.Iterable[Loadable]:
+    def get_modules(self) -> t.Iterable[ct.Loadable]:
         """Load all modules in the sources directory."""
         if not self._base_directory.exists():
             raise SourceDirectoryNotFoundError(
