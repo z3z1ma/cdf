@@ -29,17 +29,19 @@ class MaybeFn(t.Generic[P, T]):
             except Exception:
                 return None
 
-        self.fn = maybe
+        self._fn = maybe
 
     # Bind (Combinator)
-    def __call__(self, fn: t.Callable[P, T]) -> "MaybeFn":
+    def __call__(
+        self, fn: t.Callable[[t.Callable[P, t.Optional[T]]], "MaybeFn"]
+    ) -> "MaybeFn":
         """Bind a callable to the monad."""
-        return MaybeFn(fn)
+        return fn(self._fn)
 
     # Type Converter (For convenience)
     def value(self, *args: P.args, **kwargs: P.kwargs) -> t.Optional[T]:
         """Return the value of the monad."""
-        return self.fn(*args, **kwargs)
+        return self._fn(*args, **kwargs)
 
 
 T = t.TypeVar("T")
@@ -69,12 +71,11 @@ class PathAugmentedFn(t.Generic[P, T]):
         self._fn = _fn_with_path
 
     # Bind (Combinator)
-    def __call__(self, paths: t.List[str] | str) -> "PathAugmentedFn":
+    def __call__(
+        self, fn: t.Callable[[t.Callable[P, T]], "PathAugmentedFn"]
+    ) -> "PathAugmentedFn":
         """Bind a callable to the monad. Only the last callable is bound."""
-        if not paths:
-            return self
-        paths = paths if isinstance(paths, list) else [paths]
-        return PathAugmentedFn(self._fn, self.paths.extend(paths))
+        return fn(self._fn)
 
     # Type Converter (For convenience)
     @property
