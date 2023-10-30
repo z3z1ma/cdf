@@ -26,7 +26,7 @@ class Option(t.Generic[T]):
             return self
         return Option(fn(self._inner))
 
-    def flat_map(self, fn: t.Callable[[T], "Option"]) -> "Option":
+    def flatmap(self, fn: t.Callable[[T], "Option"]) -> "Option":
         if self._inner is None:
             return self
         return fn(self._inner)
@@ -37,7 +37,7 @@ class Option(t.Generic[T]):
         return self._inner
 
     def __call__(self, fn: t.Callable[[T], "Option"]) -> "Option":
-        return self.flat_map(fn)
+        return self.flatmap(fn)
 
     def __repr__(self) -> str:
         return f"Option({self._inner})"
@@ -68,36 +68,55 @@ class Option(t.Generic[T]):
         return 1 if self._inner is not None else 0
 
 
-class PathAugmentedFn(t.Generic[P, T]):
-    """A monad which wraps a callable and augments sys.path with a given path."""
+class Result(t.Generic[T]):
+    def __init__(self, value: T | None, error: Exception | None) -> None:
+        self._inner: T | None = value
+        self._error: Exception | None = error
 
-    # Type Constructor
-    def __init__(
-        self,
-        fn: t.Callable[P, T],
-        paths: t.List[str] | str | None = None,
-    ) -> None:
-        """Unit of the monad."""
-        paths = paths or []
-        if not isinstance(paths, list):
-            paths = [paths]
+    def map(self, fn: t.Callable[[T | None], T | None]) -> "Result":
+        if self._error is not None:
+            return self
+        try:
+            return Result(fn(self._inner), None)
+        except Exception as e:
+            return Result(None, e)
 
-        def _fn_with_path(*args: P.args, **kwargs: P.kwargs) -> T:
-            """Closure which augments sys.path and calls the callable."""
-            with _augmented_path(*paths):
-                return fn(*args, **kwargs)
+    def flatmap(self, fn: t.Callable[[T | None], "Result"]) -> "Result":
+        if self._error is not None:
+            return self
+        return fn(self._inner)
 
-        self.paths = paths
-        self._fn = _fn_with_path
+    def unwrap(self) -> T | None:
+        if self._error is not None:
+            raise self._error
+        return self._inner
 
-    # Bind (Combinator)
-    def __call__(
-        self, fn: t.Callable[[t.Callable[P, T]], "PathAugmentedFn"]
-    ) -> "PathAugmentedFn":
-        """Bind a callable to the monad. Only the last callable is bound."""
-        return fn(self._fn)
+    def __call__(self, fn: t.Callable[[T | None], "Result"]) -> "Result":
+        return self.flatmap(fn)
 
-    # Type Converter (For convenience)
-    @property
-    def value(self) -> t.Callable[P, T]:
-        return self._fn
+    def __repr__(self) -> str:
+        return f"Result({self._inner}, {self._error})"
+
+    def __str__(self) -> str:
+        return f"Result({self._inner}, {self._error})"
+
+    def __bool__(self) -> bool:
+        return self._inner is not None
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Result):
+            return False
+        return self._inner == other._inner and self._error == other._error
+
+    def __ne__(self, other: object) -> bool:
+        return not self.__eq__(other)
+
+    def __hash__(self) -> int:
+        return hash((self._inner, self._error))
+
+    def __iter__(self) -> t.Iterator[t.Union[T, Exception, None]]:
+        yield self._inner
+        yield self._error
+
+    def __len__(self) -> int:
+        return 1 if self._inner is not None else 0
