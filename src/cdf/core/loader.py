@@ -97,4 +97,4 @@ class DirectoryLoader(SourceLoader):
                 yield path
 
 
-__all__ = ["LazySource", "Loadable", "SourceSpec", "SourceLoader", "DirectoryLoader"]
+__all__ = ["SourceLoader", "DirectoryLoader"]
