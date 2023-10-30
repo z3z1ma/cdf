@@ -3,7 +3,7 @@ import typing as t
 
 import typer
 
-from cdf import DirectoryLoader, registry
+from cdf import get_directory_modules, load_sources, registry
 
 app = typer.Typer()
 
@@ -16,7 +16,7 @@ def index(
 ):
     cache = {}
     for path in paths or []:
-        DirectoryLoader(path, cache=cache, load=True)
+        load_sources(get_directory_modules(path), cache=cache, lazy_sources=False)
     typer.echo(cache)
     for lazy_source in cache.values():
         lazy_source()  # side effect of registering source

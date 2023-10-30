@@ -1,13 +1,12 @@
 """Contains classes & types common in CDF. This includes Monads."""
 import typing as t
-from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
 from cdf.core.source import ContinuousDataFlowSource
-from cdf.core.utils import _augmented_path
 
 T = t.TypeVar("T")
+S = t.TypeVar("S")
 P = t.ParamSpec("P")
 
 
@@ -19,16 +18,16 @@ SourceSpec = t.Dict[str, LazySource]
 
 class Option(t.Generic[T]):
     def __init__(self, value: T | None) -> None:
-        self._inner: t.Optional[T] = value
+        self._inner: T | None = value
 
-    def map(self, fn: t.Callable[[T], t.Optional[T]]) -> "Option":
+    def map(self, fn: t.Callable[[T], S]) -> "Option[S]":
         if self._inner is None:
-            return self
+            return Option(None)
         return Option(fn(self._inner))
 
-    def flatmap(self, fn: t.Callable[[T], "Option"]) -> "Option":
+    def flatmap(self, fn: t.Callable[[T], "Option[S]"]) -> "Option[S]":
         if self._inner is None:
-            return self
+            return Option(None)
         return fn(self._inner)
 
     def unwrap(self) -> T:
@@ -36,7 +35,7 @@ class Option(t.Generic[T]):
             raise ValueError("Cannot unwrap None")
         return self._inner
 
-    def __call__(self, fn: t.Callable[[T], "Option"]) -> "Option":
+    def __call__(self, fn: t.Callable[[T], "Option[S]"]) -> "Option[S]":
         return self.flatmap(fn)
 
     def __repr__(self) -> str:
@@ -73,17 +72,17 @@ class Result(t.Generic[T]):
         self._inner: T | None = value
         self._error: Exception | None = error
 
-    def map(self, fn: t.Callable[[T | None], T | None]) -> "Result":
+    def map(self, fn: t.Callable[[T | None], S | None]) -> "Result[S]":
         if self._error is not None:
-            return self
+            return Result(None, self._error)
         try:
             return Result(fn(self._inner), None)
         except Exception as e:
             return Result(None, e)
 
-    def flatmap(self, fn: t.Callable[[T | None], "Result"]) -> "Result":
+    def flatmap(self, fn: t.Callable[[T | None], "Result[S]"]) -> "Result[S]":
         if self._error is not None:
-            return self
+            return Result(None, self._error)
         return fn(self._inner)
 
     def unwrap(self) -> T | None:
@@ -91,7 +90,7 @@ class Result(t.Generic[T]):
             raise self._error
         return self._inner
 
-    def __call__(self, fn: t.Callable[[T | None], "Result"]) -> "Result":
+    def __call__(self, fn: t.Callable[[T | None], "Result[S]"]) -> "Result[S]":
         return self.flatmap(fn)
 
     def __repr__(self) -> str:
