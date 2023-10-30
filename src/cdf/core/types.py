@@ -39,13 +39,10 @@ class MaybeFn(t.Generic[P, T]):
         return fn(self._fn)
 
     # Type Converter (For convenience)
-    def value(self, *args: P.args, **kwargs: P.kwargs) -> t.Optional[T]:
+    @property
+    def value(self) -> t.Callable[P, t.Optional[T]]:
         """Return the value of the monad."""
-        return self._fn(*args, **kwargs)
-
-
-T = t.TypeVar("T")
-P = t.ParamSpec("P")
+        return self._fn
 
 
 class PathAugmentedFn(t.Generic[P, T]):
