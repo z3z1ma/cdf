@@ -34,19 +34,32 @@ def get_directory_modules(base_directory: Path | str) -> t.Iterable[ct.Loadable]
             yield path
 
 
+def _load_module_from_path(path: Path) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    assert spec and spec.loader, f"Failed to create spec for {path}"
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _load_module_from_name(name: str) -> ModuleType:
+    return importlib.import_module(name)
+
+
 def load_module(mod: ct.Loadable) -> ModuleType:
-    if isinstance(mod, str):
-        mod_ns = importlib.import_module(mod)
+    if isinstance(mod, ModuleType):
+        result = ct.Result(mod)
+    elif isinstance(mod, str):
+        result = ct.Result.apply(_load_module_from_name, mod)
     elif isinstance(mod, Path):
-        spec = importlib.util.spec_from_file_location(mod.stem, mod)
-        assert spec and spec.loader, f"Failed to create spec for {mod}"
-        mod_ns = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod_ns)
-    elif isinstance(mod, ModuleType):
-        mod_ns = mod
+        result = ct.Result.apply(_load_module_from_path, mod)
     else:
         raise TypeError(f"Invalid module type {type(mod)}")
-    return mod_ns
+    processed_mod, e = result
+    if isinstance(e, Exception):
+        raise e
+    assert isinstance(processed_mod, ModuleType), f"Failed to load module {mod}"
+    return processed_mod
 
 
 def load_sources(
