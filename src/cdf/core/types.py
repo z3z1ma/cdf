@@ -131,6 +131,12 @@ class Result(t.Generic[A]):
             raise self._error
         return self._inner
 
+    def expect(self) -> A:
+        if self._error is not None:
+            raise self._error
+        assert self._inner is not None, "Cannot unwrap None"
+        return self._inner
+
     @classmethod
     def apply(
         cls, fn: t.Callable[P, A], *args: P.args, **kwargs: P.kwargs
