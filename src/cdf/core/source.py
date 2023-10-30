@@ -23,10 +23,14 @@ class ContinuousDataFlowSource(DltSource):
         register_source(source=self)
 
 
+def to_cdf_meta(*funcs: t.Callable) -> t.Dict[str, t.Callable]:
+    return {f.__name__: f for f in funcs}
+
+
 source = partial(dlt.source, _impl_cls=ContinuousDataFlowSource)  # type: ignore
 """A wrapper around dlt.source that registers the source class with the registry."""
 
 resource = dlt.resource  # type: ignore
 """A wrapper around dlt.resource."""
 
-__all__ = ["ContinuousDataFlowSource", "source", "resource"]
+__all__ = ["ContinuousDataFlowSource", "source", "resource", "to_cdf_meta"]

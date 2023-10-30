@@ -2,6 +2,11 @@
 
 CDF sources export a constant named __CDF_SOURCE__ which captures a dict
 of functions or closures that return a ContinuousDataFlowSource.
+
+The main entrypoint is `populate_source_cache` which is composable and can be supplied
+with a custom `get_modules_fn` and `load_module_fn`. The default implementation of these
+functions is `get_directory_modules` and `load_module` respectively. These will load all
+modules in the `./sources` subdirectory relative to the current working directory.
 """
 import importlib
 import importlib.util
@@ -14,7 +19,6 @@ from types import ModuleType
 import cdf.core.constants as c
 import cdf.core.types as ct
 from cdf.core.exception import SourceDirectoryEmpty, SourceDirectoryNotFoundError
-from cdf.core.source import ContinuousDataFlowSource
 from cdf.core.utils import _augmented_path
 
 
@@ -96,29 +100,29 @@ def load_module(mod: ct.Loadable) -> ModuleType:
     return result.expect()
 
 
-def load_sources(
+def populate_source_cache(
+    cache: ct.SourceSpec | None = None,
+    /,
     get_modules_fn: t.Callable[[], t.Iterable[ct.Loadable]] = partial(
         get_directory_modules, Path("./sources")
     ),
     load_module_fn: t.Callable[[ct.Loadable], ModuleType] = load_module,
-    cache: ct.SourceSpec | None = None,
-    lazy_sources: bool = True,
     clear_linecache: bool = True,
-) -> None:
+) -> ct.SourceSpec:
     """Load all sources from the sources directory.
 
     Args:
-        get_modules_fn (t.Callable[[], t.Iterable[ct.Loadable]], optional): A function
-            that returns an iterable of modules. Defaults to partial(get_directory_modules, Path("./sources")).
-        load_module_fn (t.Callable[[ct.Loadable], ModuleType], optional): A function that
+        get_modules_fn: A function that returns an iterable of modules.
+            Defaults to partial(get_directory_modules, Path("./sources")).
+        load_module_fn: A function that
             loads a module. Defaults to load_module.
-        cache (ct.SourceSpec | None, optional): A dict to cache sources in. Defaults to None. This is
+        cache: A dict to cache sources in. Defaults to None. This is
             mutable, so it is modified in-place.
-        lazy_sources (bool, optional): Whether to lazy load sources. Defaults to True.
-        clear_linecache (bool, optional): Whether to clear the linecache. Defaults to True.
+        lazy_sources: Whether to lazy load sources. Defaults to True.
+        clear_linecache: Whether to clear the linecache. Defaults to True.
 
     Returns:
-        None: Nothing.
+        A dict of source functions
     """
     cache = cache if cache is not None else {}
     if clear_linecache:
@@ -127,10 +131,7 @@ def load_sources(
         mod = load_module_fn(module)
         source_fns: ct.SourceSpec = getattr(mod, c.CDF_SOURCE)
         cache.update(source_fns)
-    if not lazy_sources:
-        for source in cache.values():
-            if not isinstance(source, ContinuousDataFlowSource):
-                source()
+    return cache
 
 
-__all__ = ["load_sources", "load_module", "get_directory_modules"]
+__all__ = ["populate_source_cache", "load_module", "get_directory_modules"]
