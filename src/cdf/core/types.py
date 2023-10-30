@@ -20,14 +20,16 @@ SourceSpec = t.Dict[str, LazySource]
 
 
 class Monad(t.Generic[A, Monoid]):
-    def __init__(self, value: A, monoid: Monoid) -> None:
+    def __init__(self, value: A, monoid: Monoid = None) -> None:
         self._value: A = value
         self._monoid: Monoid = monoid
 
     def map(self, fn: t.Callable[[A], B]) -> "Monad[B, Monoid]":
+        # LOGIC HERE
         return Monad(fn(self._value), self._monoid)
 
     def flatmap(self, fn: t.Callable[[A], "Monad[B, Monoid]"]) -> "Monad[B, Monoid]":
+        # LOGIC HERE
         return fn(self._value)
 
     def unwrap(self) -> A:
@@ -36,14 +38,17 @@ class Monad(t.Generic[A, Monoid]):
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}({self._value}, {self._monoid})"
 
-    __call__ = map
-    __str__ = __repr__
+    def __call__(self, fn: t.Callable[[A], B]) -> "Monad[B, Monoid]":
+        return self.map(fn)
+
+    def __str__(self) -> str:
+        return self.__repr__()
 
     def __bool__(self) -> bool:
         return bool(self._value)
 
     def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Monad):
+        if not isinstance(other, self.__class__):
             return False
         return self._value == other._value and self._monoid == other._monoid
 
@@ -60,115 +65,82 @@ class Monad(t.Generic[A, Monoid]):
         return 1
 
 
-class Option(t.Generic[A]):
-    def __init__(self, value: A | None = None) -> None:
-        self._inner: A | None = value
+class Option(Monad[A, None]):
+    def __init__(self, value: A = None) -> None:
+        super().__init__(value)
 
-    def map(self, fn: t.Callable[[A], B]) -> "Option[B]":
-        if self._inner is None:
+    def map(self, fn: t.Callable[[A], B | None]) -> "Option[B | None]":
+        if self._value is None:
             return Option(None)
-        return Option(fn(self._inner))
+        return Option(fn(self._value))
 
-    def flatmap(self, fn: t.Callable[[A], "Option[B]"]) -> "Option[B]":
-        if self._inner is None:
+    def flatmap(self, fn: t.Callable[[A], "Option[B | None]"]) -> "Option[B | None]":
+        if self._value is None:
             return Option(None)
-        return fn(self._inner)
+        return fn(self._value)
 
     def unwrap(self) -> A:
-        if self._inner is None:
+        if self._value is None:
             raise ValueError("Cannot unwrap None")
-        return self._inner
-
-    def __repr__(self) -> str:
-        return f"Option({self._inner})"
-
-    __call__ = map
-    __str__ = __repr__
+        return self._value
 
     def __bool__(self) -> bool:
-        return self._inner is not None
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Option):
-            return False
-        return self._inner == other._inner
-
-    def __ne__(self, other: object) -> bool:
-        return not self.__eq__(other)
-
-    def __hash__(self) -> int:
-        return hash(self._inner)
+        return self._value is not None
 
     def __iter__(self) -> t.Iterator[A]:
-        if self._inner is None:
+        if self._value is None:
             return
-        yield self._inner
+        yield self._value
 
     def __len__(self) -> int:
-        return 1 if self._inner is not None else 0
+        return 1 if self._value is not None else 0
 
 
-class Result(t.Generic[A]):
+class Result(Monad[A | None, Exception | None]):
     def __init__(self, value: A | None, error: Exception | None = None) -> None:
-        self._inner: A | None = value
-        self._error: Exception | None = error
+        super().__init__(value, error)
+
+    @property
+    def error(self) -> Exception | None:
+        return self._monoid
+
+    @property
+    def result(self) -> A | None:
+        return self._value
 
     def map(self, fn: t.Callable[[A | None], B | None]) -> "Result[B]":
-        if self._error is not None:
-            return Result(None, self._error)
+        if self.error is not None:
+            return Result(None, self.error)
         try:
-            return Result(fn(self._inner), None)
+            return Result(fn(self.result), None)
         except Exception as e:
             return Result(None, e)
 
     def flatmap(self, fn: t.Callable[[A | None], "Result[B]"]) -> "Result[B]":
-        if self._error is not None:
-            return Result(None, self._error)
-        return fn(self._inner)
+        if self.error is not None:
+            return Result(None, self.error)
+        return fn(self.result)
 
     def unwrap(self) -> A | None:
-        if self._error is not None:
-            raise self._error
-        return self._inner
+        if self.error is not None:
+            raise self.error
+        return self.result
 
     def expect(self) -> A:
-        if self._error is not None:
-            raise self._error
-        assert self._inner is not None, "Cannot unwrap None"
-        return self._inner
+        if self.error is not None:
+            raise self.error
+        assert self.result is not None, "Cannot unwrap None"
+        return self.result
 
     @classmethod
     def apply(
         cls, fn: t.Callable[P, A], *args: P.args, **kwargs: P.kwargs
     ) -> "Result[A]":
-        try:
-            return Result(fn(*args, **kwargs), None)
-        except Exception as e:
-            return Result(None, e)
-
-    def __repr__(self) -> str:
-        return f"Result({self._inner}, {self._error})"
-
-    __call__ = map
-    __str__ = __repr__
-
-    def __bool__(self) -> bool:
-        return self._inner is not None
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Result):
-            return False
-        return self._inner == other._inner and self._error == other._error
-
-    def __ne__(self, other: object) -> bool:
-        return not self.__eq__(other)
-
-    def __hash__(self) -> int:
-        return hash((self._inner, self._error))
+        return cls(None, None).map(lambda _: fn(*args, **kwargs))
 
     def __iter__(self) -> t.Iterator[t.Union[A, Exception, None]]:
-        yield self._inner
-        yield self._error
+        yield self.result
+        yield self.error
 
     def __len__(self) -> int:
-        return 1 if self._inner is not None else 0
+        return 1 if self.result is not None else 0
