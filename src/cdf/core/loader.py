@@ -19,7 +19,7 @@ from types import ModuleType
 import cdf.core.constants as c
 import cdf.core.types as ct
 from cdf.core.exception import SourceDirectoryEmpty, SourceDirectoryNotFoundError
-from cdf.core.utils import _augmented_path
+from cdf.core.utils import _augmented_path, do
 
 
 def get_directory_modules(base_directory: Path | str) -> t.Iterable[ct.Loadable]:
@@ -125,10 +125,12 @@ def populate_source_cache(
     cache = cache if cache is not None else {}
     if clear_linecache:
         linecache.clearcache()
-    for module in get_modules_fn():
-        mod = load_module_fn(module)
-        source_fns: ct.SourceSpec = getattr(mod, c.CDF_SOURCE)
-        cache.update(source_fns)
+    do(
+        cache.update,
+        map(
+            lambda mod: getattr(load_module_fn(mod), c.CDF_SOURCE, {}), get_modules_fn()
+        ),
+    )
     return cache
 
 

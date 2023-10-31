@@ -1,5 +1,6 @@
 """CLI for cdf."""
 import typing as t
+from functools import partial
 
 import typer
 
@@ -16,7 +17,7 @@ def index(
 ):
     cache = {}
     for path in paths or []:
-        populate_source_cache(cache, lambda: get_directory_modules(path))
+        populate_source_cache(cache, partial(get_directory_modules, path))
     typer.echo(cache)
     for lazy_source in cache.values():
         lazy_source()  # side effect of registering source
