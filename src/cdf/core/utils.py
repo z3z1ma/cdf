@@ -1,3 +1,4 @@
+import functools
 import os
 import sys
 import typing as t
@@ -80,8 +81,10 @@ def index_destinations(
     return destinations
 
 
-def fn_to_str(fn: t.Callable) -> str:
+def fn_to_str(fn: t.Callable | functools.partial) -> str:
     """Convert a function to a string representation."""
+    if isinstance(fn, functools.partial):
+        fn = fn.func
     parts = [
         f"mod: [cyan]{fn.__module__}[/cyan]",
         f"fn: [yellow]{fn.__name__}[/yellow]",
