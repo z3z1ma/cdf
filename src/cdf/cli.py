@@ -126,5 +126,20 @@ def head(
         mut_num -= 1
 
 
+@app.command(rich_help_panel="Pipelines")
+def ingest():
+    """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
+
+
+@app.command(rich_help_panel="Pipelines")
+def transform():
+    """:arrows_counterclockwise: [b red]Transform[/b red] data from a data store into a data store where it can be exposed or [b yellow]Published[/b yellow]."""
+
+
+@app.command(rich_help_panel="Pipelines")
+def publish():
+    """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
+
+
 if __name__ == "__main__":
     app()
