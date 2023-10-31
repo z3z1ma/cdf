@@ -17,3 +17,8 @@ def test_index():
 
     result = runner.invoke(app, ["-p", "./tests/fixtures/empty", "index"])
     assert result.exit_code == 1
+
+    # Uses partials
+    result = runner.invoke(app, ["-p", "./tests/fixtures/sources", "index"])
+    assert result.exit_code == 0
+    assert "pokemon" in result.stdout
