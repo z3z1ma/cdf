@@ -33,6 +33,6 @@ def test_load_sources():
         get_modules_fn=lambda: get_directory_modules("./tests/fixtures/sources"),
     )
 
-    assert len(cache) == 1
+    assert len(cache) == 2
     cache["source1"]()
     assert registry.has_source("source1")
