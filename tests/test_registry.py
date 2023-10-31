@@ -1,7 +1,7 @@
 import pytest
 
 import cdf.core.registry as registry
-from cdf.core.source import ContinuousDataFlowSource, resource, source
+from cdf.core.source import source
 
 
 @pytest.fixture
@@ -14,11 +14,11 @@ def test_registry_add(basic_source, mocker):
 
     # Test case 1: Attempt to register None as a source
     with pytest.raises(TypeError):
-        registry.register_source(None)
+        registry.register_source(None)  # type: ignore
 
     # Test case 2: Attempt to register a non-string value as a source
     with pytest.raises(TypeError):
-        registry.register_source(123)
+        registry.register_source(123)  # type: ignore
 
     # Test case 3: Attempt to register a valid source
     registry.register_source(basic_source())

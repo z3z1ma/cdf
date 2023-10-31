@@ -10,7 +10,7 @@ from rich.logging import RichHandler
 
 import cdf.core.types as ct
 from cdf import get_directory_modules, populate_source_cache
-from cdf.core.utils import do, index_destinations
+from cdf.core.utils import do, flatten_stream, fn_to_str, index_destinations
 
 T = t.TypeVar("T")
 
@@ -59,17 +59,6 @@ def main(
     )
 
 
-# TODO: move to utils
-def _fn_to_str(fn: t.Callable) -> str:
-    """Convert a function to a string representation."""
-    parts = [
-        f"mod: [cyan]{fn.__module__}[/cyan]",
-        f"fn: [yellow]{fn.__name__}[/yellow]",
-        f"ln: {fn.__code__.co_firstlineno}",
-    ]
-    return ", ".join(parts)
-
-
 @app.command()
 def index() -> None:
     """:page_with_curl: Print an index of [b blue]Sources[/b blue], [b red]Transforms[/b red], and [b yellow]Publishers[/b yellow] loaded from the source directory paths."""
@@ -77,7 +66,7 @@ def index() -> None:
     rich.print(f" Paths Searched: {SEARCH_PATHS}\n")
     rich.print(" [b]Index[/b]")
     for i, (name, fn) in enumerate(CACHE.items(), start=1):
-        rich.print(f"  {i}) [b blue]{name}[/b blue] ({_fn_to_str(fn)})")
+        rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
     rich.print("")
 
 
@@ -102,16 +91,6 @@ def discover(source: str) -> None:
     rich.print("")
 
 
-# TODO: move to utils
-def _flatten_stream(it: t.Iterable[T]) -> t.Iterator[T]:
-    """Flatten a stream of iterables."""
-    for i in it:
-        if isinstance(i, list):
-            yield from _flatten_stream(i)
-        else:
-            yield i
-
-
 @app.command()
 def head(
     source: str,
@@ -130,7 +109,7 @@ def head(
     r = mod.resources[resource]
     rich.print(f"\nHead of [b red]{resource}[/b red] in [b blue]{source}[/b blue]:")
     mut_num = int(num)
-    for row in _flatten_stream(r):
+    for row in flatten_stream(r):
         rich.print(row)
         if mut_num <= 0:
             break

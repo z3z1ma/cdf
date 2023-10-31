@@ -80,4 +80,23 @@ def index_destinations(
     return destinations
 
 
-__all__ = ["augmented_path", "do", "index_destinations"]
+def fn_to_str(fn: t.Callable) -> str:
+    """Convert a function to a string representation."""
+    parts = [
+        f"mod: [cyan]{fn.__module__}[/cyan]",
+        f"fn: [yellow]{fn.__name__}[/yellow]",
+        f"ln: {fn.__code__.co_firstlineno}",
+    ]
+    return ", ".join(parts)
+
+
+def flatten_stream(it: t.Iterable[A | t.List[A] | t.Tuple[A]]) -> t.Iterator[A]:
+    """Flatten a stream of iterables."""
+    for i in it:
+        if isinstance(i, (list, tuple)):
+            yield from flatten_stream(i)
+        else:
+            yield i
+
+
+__all__ = ["augmented_path", "do", "index_destinations", "fn_to_str"]
