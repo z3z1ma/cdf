@@ -9,6 +9,8 @@ import cdf.core.types as ct
 from cdf import get_directory_modules, populate_source_cache
 from cdf.core.utils import do
 
+T = t.TypeVar("T")
+
 app = typer.Typer(
     rich_markup_mode="rich",
     epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
@@ -46,6 +48,7 @@ def main(
     )
 
 
+# TODO: move to utils
 def _fn_to_str(fn: t.Callable) -> str:
     """Convert a function to a string representation."""
     parts = [
@@ -88,6 +91,16 @@ def discover(source: str) -> None:
     rich.print("")
 
 
+# TODO: move to utils
+def _flatten_stream(it: t.Iterable[T]) -> t.Iterator[T]:
+    """Flatten a stream of iterables."""
+    for i in it:
+        if isinstance(i, list):
+            yield from _flatten_stream(i)
+        else:
+            yield i
+
+
 @app.command()
 def head(
     source: str,
@@ -106,7 +119,7 @@ def head(
     r = mod.resources[resource]
     rich.print(f"\nHead of [b red]{resource}[/b red] in [b blue]{source}[/b blue]:")
     mut_num = int(num)
-    for row in r:
+    for row in _flatten_stream(r):
         rich.print(row)
         if mut_num <= 0:
             break
