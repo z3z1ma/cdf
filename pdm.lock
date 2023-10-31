@@ -5,7 +5,31 @@
 groups = ["default", "test"]
 strategy = ["cross_platform"]
 lock_version = "4.4"
-content_hash = "sha256:7054cb6c65e512cc25064dd3db59be1f28d4495852bcf0fc8003ce6262483c0b"
+content_hash = "sha256:5ac843c3288210c779176b7a12c61e33a910976c793d9dc00e018dd4e73a4f0a"
+
+[[package]]
+name = "about-time"
+version = "4.2.1"
+requires_python = ">=3.7, <4"
+summary = "Easily measure timing and throughput of code blocks, with beautiful human friendly representations."
+files = [
+    {file = "about-time-4.2.1.tar.gz", hash = "sha256:6a538862d33ce67d997429d14998310e1dbfda6cb7d9bbfbf799c4709847fece"},
+    {file = "about_time-4.2.1-py3-none-any.whl", hash = "sha256:8bbf4c75fe13cbd3d72f49a03b02c5c7dca32169b6d49117c257e7eb3eaee341"},
+]
+
+[[package]]
+name = "alive-progress"
+version = "3.1.4"
+requires_python = ">=3.7, <4"
+summary = "A new kind of Progress Bar, with real-time throughput, ETA, and very cool animations!"
+dependencies = [
+    "about-time==4.2.1",
+    "grapheme==0.6.0",
+]
+files = [
+    {file = "alive-progress-3.1.4.tar.gz", hash = "sha256:74a95d8d0d42bc99d3a3725dbd06ebb852245f1b64e301a7c375b92b22663f7b"},
+    {file = "alive_progress-3.1.4-py3-none-any.whl", hash = "sha256:c80ad87ce9c1054b01135a87fae69ecebbfc2107497ae87cbe6aec7e534903db"},
+]
 
 [[package]]
 name = "appnope"
@@ -379,6 +403,14 @@ summary = "A Git URL parsing module (supports parsing and rewriting)"
 files = [
     {file = "giturlparse-0.12.0-py2.py3-none-any.whl", hash = "sha256:412b74f2855f1da2fefa89fd8dde62df48476077a72fc19b62039554d27360eb"},
     {file = "giturlparse-0.12.0.tar.gz", hash = "sha256:c0fff7c21acc435491b1779566e038757a205c1ffdcb47e4f81ea52ad8c3859a"},
+]
+
+[[package]]
+name = "grapheme"
+version = "0.6.0"
+summary = "Unicode grapheme helpers"
+files = [
+    {file = "grapheme-0.6.0.tar.gz", hash = "sha256:44c2b9f21bbe77cfb05835fec230bd435954275267fea1858013b102f8603cca"},
 ]
 
 [[package]]

@@ -19,6 +19,14 @@ LazySource = t.Callable[[], ContinuousDataFlowSource]
 SourceSpec = t.Dict[str, LazySource]
 
 
+class EngineCredentials(t.NamedTuple):
+    engine: str
+    credentials: t.Dict[str, str] | str
+
+
+DestinationSpec = t.Dict[str, EngineCredentials]
+
+
 class Monad(t.Generic[A, Monoid]):
     def __init__(self, value: A, monoid: Monoid = None) -> None:
         self._value: A = value

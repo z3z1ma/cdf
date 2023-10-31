@@ -1,15 +1,25 @@
 """CLI for cdf."""
+import logging
 import typing as t
 from functools import partial
 
+import dlt
 import rich
 import typer
+from rich.logging import RichHandler
 
 import cdf.core.types as ct
 from cdf import get_directory_modules, populate_source_cache
-from cdf.core.utils import do
+from cdf.core.utils import do, index_destinations
 
 T = t.TypeVar("T")
+
+logging.basicConfig(
+    level="INFO",
+    format="%(message)s",
+    datefmt="[%X]",
+    handlers=[RichHandler(level="INFO")],
+)
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -18,6 +28,7 @@ app = typer.Typer(
 )
 
 CACHE: ct.SourceSpec = {}
+DESTINATIONS: ct.DestinationSpec = index_destinations()
 SEARCH_PATHS = ["./sources"]
 
 # TODO: Cache population should be a hook on (almost) every command
@@ -127,18 +138,54 @@ def head(
 
 
 @app.command(rich_help_panel="Pipelines")
-def ingest():
+def ingest(
+    source: str,
+    destination: str = "default",
+    resources: t.List[str] = typer.Option(None),
+) -> None:
     """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
+    if source not in CACHE:
+        raise typer.BadParameter(f"Source {source} not found.")
+    configured_source = CACHE[source]()
+    resources = resources or []
+    for resource in resources:
+        if resource not in configured_source.resources:
+            raise typer.BadParameter(
+                f"Resource {resource} not found in source {source}."
+            )
+    if destination not in DESTINATIONS:
+        raise typer.BadParameter(
+            f"Destination {destination} not found in parsed env vars. Available: {', '.join(DESTINATIONS.keys())}"
+        )
+    dest = DESTINATIONS[destination]
+    rich.print(
+        f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest.engine}[/b red]..."
+    )
+    for resource in configured_source.selected_resources:
+        rich.print(f"  - [b green]{resource}[/b green]")
+    pipeline = dlt.pipeline(
+        f"{source}-to-{destination}",
+        destination=dest.engine,
+        credentials=dest.credentials,
+        # TODO: set staging?
+        # Also capture more metadata like "version" for sources to keep our concatenated naming schema
+        dataset_name=source,
+        progress="alive_progress",
+    )
+    info = pipeline.run(configured_source)
+    logging.info(info)
 
 
 @app.command(rich_help_panel="Pipelines")
-def transform():
+def transform() -> None:
     """:arrows_counterclockwise: [b red]Transform[/b red] data from a data store into a data store where it can be exposed or [b yellow]Published[/b yellow]."""
+    rich.print("Transforming with SQLMesh...")
 
 
 @app.command(rich_help_panel="Pipelines")
-def publish():
+def publish() -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
+    rich.print("Publishing...")
 
 
 if __name__ == "__main__":

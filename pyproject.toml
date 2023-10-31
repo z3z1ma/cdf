@@ -9,6 +9,7 @@ dependencies = [
     "dlt[duckdb]~=0.3.22",
     "sqlmesh[duckdb]~=0.46.1",
     "typer[all]>=0.8.0",
+    "alive-progress>=3.1.4",
 ]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"

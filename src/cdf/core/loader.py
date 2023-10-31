@@ -19,7 +19,7 @@ from types import ModuleType
 import cdf.core.constants as c
 import cdf.core.types as ct
 from cdf.core.exception import SourceDirectoryEmpty, SourceDirectoryNotFoundError
-from cdf.core.utils import _augmented_path, do
+from cdf.core.utils import augmented_path, do
 
 
 def get_directory_modules(base_directory: Path | str) -> t.Iterable[ct.Loadable]:
@@ -44,7 +44,7 @@ def get_directory_modules(base_directory: Path | str) -> t.Iterable[ct.Loadable]
     paths = [p for p in base_directory.glob("*.py") if p.stem != "__init__"]
     if not paths:
         raise SourceDirectoryEmpty(f"{base_directory} contains no sources.")
-    with _augmented_path(str(base_directory)):
+    with augmented_path(str(base_directory)):
         for path in paths:
             yield path
 
