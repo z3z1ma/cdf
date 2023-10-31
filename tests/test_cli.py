@@ -11,7 +11,7 @@ def test_help():
 
 
 def test_index():
-    result = runner.invoke(app, ["-p", "./tests/fixtures/sources", "index"])
+    result = runner.invoke(app, ["-p", "./tests/fixtures/basic_sources", "index"])
     assert result.exit_code == 0
     assert "source1" in result.stdout
 
