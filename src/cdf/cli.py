@@ -75,7 +75,7 @@ def debug() -> None:
 
 @app.command()
 def discover(source: str) -> None:
-    """:mag: Invokes a lazy source and enumerates the discovered resources."""
+    """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
     if source not in CACHE:
         raise typer.BadParameter(f"Source {source} not found.")
     mod = CACHE[source]()
@@ -86,6 +86,31 @@ def discover(source: str) -> None:
         # TODO: Add feature flag information
         rich.print(f"  {i}) [b blue]{resource.name}[/b blue] (enabled: True)")
     rich.print("")
+
+
+@app.command()
+def head(
+    source: str,
+    resource: str,
+    num: t.Annotated[int, typer.Option("-n", "--num-rows")] = 5,
+) -> None:
+    """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]Source[/b blue]. Defaults to [cyan]5[/cyan].
+
+    This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
+    """
+    if source not in CACHE:
+        raise typer.BadParameter(f"Source {source} not found.")
+    mod = CACHE[source]()
+    if resource not in mod.resources:
+        raise typer.BadParameter(f"Resource {resource} not found in source {source}.")
+    r = mod.resources[resource]
+    rich.print(f"\nHead of [b red]{resource}[/b red] in [b blue]{source}[/b blue]:")
+    mut_num = int(num)
+    for row in r:
+        rich.print(row)
+        if mut_num <= 0:
+            break
+        mut_num -= 1
 
 
 if __name__ == "__main__":
