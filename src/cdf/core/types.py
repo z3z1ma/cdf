@@ -69,6 +69,10 @@ class Option(Monad[A, None]):
     def __init__(self, value: A = None) -> None:
         super().__init__(value)
 
+    @property
+    def option(self) -> A | None:
+        return self._value
+
     def map(self, fn: t.Callable[[A], B | None]) -> "Option[B | None]":
         if self._value is None:
             return Option(None)

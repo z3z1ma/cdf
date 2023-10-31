@@ -117,7 +117,6 @@ def populate_source_cache(
         get_modules_fn: A function that returns an iterable of modules.
             Defaults to partial(get_directory_modules, Path("./sources")).
         load_module_fn: A function that loads a module. Defaults to load_module.
-        lazy_sources: Whether to lazy load sources. Defaults to True.
         clear_linecache: Whether to clear the linecache. Defaults to True.
 
     Returns:
