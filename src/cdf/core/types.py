@@ -133,7 +133,8 @@ class Result(Monad[A | None, Exception | None]):
     def expect(self) -> A:
         if self.error is not None:
             raise self.error
-        assert self.result is not None, "Cannot unwrap None"
+        if self.result is None:
+            raise ValueError("Expected a result, got None")
         return self.result
 
     @classmethod
