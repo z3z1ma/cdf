@@ -8,8 +8,9 @@ import rich
 import typer
 from rich.logging import RichHandler
 
+import cdf.core.constants as c
 import cdf.core.types as ct
-from cdf import get_directory_modules, populate_source_cache
+from cdf import CDFSource, get_directory_modules, populate_source_cache
 from cdf.core.utils import do, flatten_stream, fn_to_str, index_destinations
 
 T = t.TypeVar("T")
@@ -29,18 +30,12 @@ app = typer.Typer(
 
 CACHE: ct.SourceSpec = {}
 DESTINATIONS: ct.DestinationSpec = index_destinations()
-SEARCH_PATHS = ["./sources"]
-
-# TODO: Cache population should be a hook on (almost) every command
-# The CLI then dictates what sources are evaluated since they are LazySources
-# CLI is dynamic based on cache
-# Deep FF logic, etc is then hooked into CDFSource
 
 
 @app.callback()
 def main(
     paths: t.List[str] = typer.Option(
-        SEARCH_PATHS, "-p", "--path", help="Source directory paths."
+        c.COMPONENT_PATHS, "-p", "--path", help="Source directory paths."
     ),
 ):
     """:sparkles: A [b]framework[b] for managing and running [u]ContinousDataflow[/u] projects. :sparkles:
@@ -51,30 +46,11 @@ def main(
     - ( :mailbox: ) [b yellow]Publishers[/b yellow] are responsible for publishing data to an external system.
     """
     if paths:
-        global SEARCH_PATHS
-        SEARCH_PATHS = paths
+        c.COMPONENT_PATHS.extend(paths)
     do(
         lambda path: populate_source_cache(CACHE, partial(get_directory_modules, path)),
-        paths or SEARCH_PATHS,
+        paths or c.COMPONENT_PATHS,
     )
-
-
-def _print_sources() -> None:
-    """Print the source index in the global cache."""
-    rich.print(f"\n Sources Discovered: {len(CACHE)}")
-    rich.print(f" Paths Searched: {SEARCH_PATHS}\n")
-    rich.print(" [b]Index[/b]")
-    for i, (name, fn) in enumerate(CACHE.items(), start=1):
-        rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
-
-
-def _print_destinations() -> None:
-    """Print the destination index in the global cache."""
-    rich.print(f"\n Destinations Discovered: {len(DESTINATIONS)}")
-    rich.print(f" Env Vars Parsed: {...}\n")
-    rich.print(" [b]Index[/b]")
-    for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
-        rich.print(f"  {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")
 
 
 @app.command()
@@ -94,15 +70,15 @@ def debug() -> None:
 @app.command()
 def discover(source: str) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
-    if source not in CACHE:
-        raise typer.BadParameter(f"Source {source} not found.")
-    mod = CACHE[source]()
+    mod = _get_source(source)
     rich.print(
         f"\nDiscovered {len(mod.resources)} resources in [b red]{source}[/b red]:"
     )
     for i, resource in enumerate(mod.resources.values(), start=1):
-        # TODO: Add feature flag information
-        rich.print(f"  {i}) [b blue]{resource.name}[/b blue] (enabled: True)")
+        if mod.resource_flag_enabled(resource.name):
+            rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
+        else:
+            rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
     rich.print("")
 
 
@@ -116,12 +92,8 @@ def head(
 
     This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
     """
-    if source not in CACHE:
-        raise typer.BadParameter(f"Source {source} not found.")
-    mod = CACHE[source]()
-    if resource not in mod.resources:
-        raise typer.BadParameter(f"Resource {resource} not found in source {source}.")
-    r = mod.resources[resource]
+    mod = _get_source(source)
+    r = _get_resource(mod, resource)
     rich.print(f"\nHead of [b red]{resource}[/b red] in [b blue]{source}[/b blue]:")
     mut_num = int(num)
     for row in flatten_stream(r):
@@ -138,20 +110,10 @@ def ingest(
     resources: t.List[str] = typer.Option(None),
 ) -> None:
     """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
-    if source not in CACHE:
-        raise typer.BadParameter(f"Source {source} not found.")
-    configured_source = CACHE[source]()
-    resources = resources or []
-    for resource in resources:
-        if resource not in configured_source.resources:
-            raise typer.BadParameter(
-                f"Resource {resource} not found in source {source}."
-            )
-    if destination not in DESTINATIONS:
-        raise typer.BadParameter(
-            f"Destination {destination} not found in parsed env vars. Available: {', '.join(DESTINATIONS.keys())}"
-        )
-    dest = DESTINATIONS[destination]
+    configured_source = _get_source(source)
+    if resources:
+        configured_source = configured_source.with_resources(*resources)
+    dest = _get_destination(destination)
     rich.print(
         f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest.engine}[/b red]..."
     )
@@ -180,6 +142,78 @@ def transform() -> None:
 def publish() -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
     rich.print("Publishing...")
+
+
+def _get_source(source: str) -> CDFSource:
+    """Get a source from the global cache.
+
+    Args:
+        source: The name of the source to get.
+
+    Raises:
+        typer.BadParameter: If the source is not found.
+
+    Returns:
+        The source.
+    """
+    if source not in CACHE:
+        raise typer.BadParameter(f"Source {source} not found.")
+    mod = CACHE[source]()
+    mod.setup(alias=source)
+    return mod
+
+
+def _get_resource(source: CDFSource, resource: str) -> dlt.sources.DltResource:  # type: ignore
+    """Get a resource from a source.
+
+    Args:
+        source: The source to get the resource from.
+        resource: The name of the resource to get.
+
+    Raises:
+        typer.BadParameter: If the resource is not found.
+
+    Returns:
+        The resource.
+    """
+    if resource not in source.resources:
+        raise typer.BadParameter(f"Resource {resource} not found in source {source}.")
+    return source.resources[resource]
+
+
+def _get_destination(destination: str) -> ct.EngineCredentials:
+    """Get a destination from the global cache.
+
+    Args:
+        destination: The name of the destination to get.
+
+    Raises:
+        typer.BadParameter: If the destination is not found.
+
+    Returns:
+        The destination.
+    """
+    if destination not in DESTINATIONS:
+        raise typer.BadParameter(f"Destination {destination} not found.")
+    return DESTINATIONS[destination]
+
+
+def _print_sources() -> None:
+    """Print the source index in the global cache."""
+    rich.print(f"\n Sources Discovered: {len(CACHE)}")
+    rich.print(f" Paths Searched: {c.COMPONENT_PATHS}\n")
+    rich.print(" [b]Index[/b]")
+    for i, (name, fn) in enumerate(CACHE.items(), start=1):
+        rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
+
+
+def _print_destinations() -> None:
+    """Print the destination index in the global cache."""
+    rich.print(f"\n Destinations Discovered: {len(DESTINATIONS)}")
+    rich.print(f" Env Vars Parsed: {...}\n")
+    rich.print(" [b]Index[/b]")
+    for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
+        rich.print(f"  {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")
 
 
 if __name__ == "__main__":

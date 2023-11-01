@@ -8,24 +8,22 @@ import typing as t
 from cdf.core.exception import RegistryTypeError, SourceNotFoundError
 
 if t.TYPE_CHECKING:
-    from cdf.core.source import ContinuousDataFlowSource
+    from cdf.core.source import CDFSource
 
 
-_sources: t.Dict[str, "ContinuousDataFlowSource"] = {}
+_sources: t.Dict[str, "CDFSource"] = {}
 
 
-def register_source(source: "ContinuousDataFlowSource") -> None:
+def register_source(source: "CDFSource") -> None:
     """Register a source class with the registry."""
-    from cdf.core.source import ContinuousDataFlowSource
+    from cdf.core.source import CDFSource
 
-    if not isinstance(source, ContinuousDataFlowSource):
-        raise RegistryTypeError(
-            f"Expected a ContinuousDataFlowSource, got {type(source)}"
-        )
+    if not isinstance(source, CDFSource):
+        raise RegistryTypeError(f"Expected a CDFSource, got {type(source)}")
     _sources[source.name] = source
 
 
-def get_source(name: str) -> "ContinuousDataFlowSource":
+def get_source(name: str) -> "CDFSource":
     """Get a source class from the registry."""
     try:
         return _sources[name]
@@ -38,7 +36,7 @@ def get_source_names() -> t.List[str]:
     return list(_sources.keys())
 
 
-def get_sources() -> t.List["ContinuousDataFlowSource"]:
+def get_sources() -> t.List["CDFSource"]:
     """Get a list of registered source classes."""
     return list(_sources.values())
 
@@ -56,7 +54,7 @@ def has_source(name: str) -> bool:
     return name in _sources
 
 
-def __getattr__(name: str) -> "ContinuousDataFlowSource":
+def __getattr__(name: str) -> "CDFSource":
     """Get a source class from the registry."""
     if name in _sources:
         return _sources[name]

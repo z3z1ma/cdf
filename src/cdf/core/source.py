@@ -6,10 +6,11 @@ import dlt
 from dlt.common.schema import Schema  # type: ignore
 from dlt.extract.source import DltResource, DltSource
 
+import cdf.core.constants as c
 from cdf.core.registry import register_source
 
 
-class ContinuousDataFlowSource(DltSource):
+class CDFSource(DltSource):
     """A source class for continuous data flow sources."""
 
     def __init__(
@@ -20,23 +21,42 @@ class ContinuousDataFlowSource(DltSource):
         resources: t.Sequence[DltResource] | None = None,
     ) -> None:
         super().__init__(name, section, schema, resources or [])
-        # FF Stuff here
-        # TODO: feature flags needs an abstract provider, the basic implementation should use 2
-        # local files. One in the user home directory and one local to the repository
-        # This is an opinionated design, and we will enforce specific naming and locations
-        # 2nd implementation should use a FF service such as harness.io or launchdarkly --
-        # we will use harness.io because, well, y'know
-        register_source(source=self)
+        register_source(source=self)  # TODO: no value in this, remove
+        self.flags = {}
+
+    def setup(self, alias: str | None = None) -> None:
+        import cdf.core.feature_flags as ff
+
+        if alias:
+            self.name = alias
+
+        cache_fn = partial(
+            ff.populate_flag_cache_from_local,
+            component_paths=c.COMPONENT_PATHS,
+        )
+        for r_name, _ in self.resources.items():
+            component_id = f"{self.base_component_id}:{r_name}"
+            self.flags.update(ff.get_flags_for_component(component_id, cache_fn))
+
+    @property
+    def base_component_id(self) -> str:
+        return f"source:{self.name}"
+
+    def component_id(self, resource_name: str) -> str:
+        return f"{self.base_component_id}:{resource_name}"
+
+    def resource_flag_enabled(self, resource_name: str) -> bool:
+        return self.flags.get(f"{self.component_id(resource_name)}:enabled", False)
 
 
 def to_cdf_meta(*funcs: t.Callable) -> t.Dict[str, t.Callable]:
     return {f.__name__: f for f in funcs}
 
 
-source = partial(dlt.source, _impl_cls=ContinuousDataFlowSource)  # type: ignore
+source = partial(dlt.source, _impl_cls=CDFSource)  # type: ignore
 """A wrapper around dlt.source that registers the source class with the registry."""
 
 resource = dlt.resource  # type: ignore
 """A wrapper around dlt.resource."""
 
-__all__ = ["ContinuousDataFlowSource", "source", "resource", "to_cdf_meta"]
+__all__ = ["CDFSource", "source", "resource", "to_cdf_meta"]

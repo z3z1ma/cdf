@@ -1,4 +1,4 @@
 {
-  "pokemon:berries:enabled": true,
-  "pokemon:pokemon:enabled": true
+  "source:pokemon:berries:enabled": false,
+  "source:pokemon:pokemon:enabled": true
 }

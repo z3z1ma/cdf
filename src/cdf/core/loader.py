@@ -1,7 +1,7 @@
 """The loader is responsible for importing cdf sources.
 
 CDF sources export a constant named __CDF_SOURCE__ which captures a dict
-of functions or closures that return a ContinuousDataFlowSource.
+of functions or closures that return a CDFSource.
 
 The main entrypoint is `populate_source_cache` which is composable and can be supplied
 with a custom `get_modules_fn` and `load_module_fn`. The default implementation of these

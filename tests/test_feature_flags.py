@@ -18,8 +18,8 @@ def test_local_flags(mocker):
     assert cache == {
         "source:source1:test_flag": True,
         "source:test_component:test_flag": True,
-        "pokemon:berries:enabled": True,
-        "pokemon:pokemon:enabled": True,
+        "source:pokemon:berries:enabled": True,
+        "source:pokemon:pokemon:enabled": True,
     }
 
     # Test case 2: Can get flags for a component with a parameterized

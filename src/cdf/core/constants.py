@@ -13,3 +13,5 @@ CDF_FLAG_FILES = [
     ".cdf_flags.json",
     "cdf_flags.json",
 ]
+
+COMPONENT_PATHS = ["./sources", "./transforms", "./publishers"]

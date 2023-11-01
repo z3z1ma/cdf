@@ -1,3 +1,4 @@
+"""Utility functions for the cdf package."""
 import functools
 import json
 import os

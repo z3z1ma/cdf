@@ -3,7 +3,7 @@ import typing as t
 from pathlib import Path
 from types import ModuleType
 
-from cdf.core.source import ContinuousDataFlowSource
+from cdf.core.source import CDFSource
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
@@ -15,7 +15,7 @@ Monoid = t.TypeVar("Monoid")
 
 Loadable = t.Union[str, Path, ModuleType]
 
-LazySource = t.Callable[[], ContinuousDataFlowSource]
+LazySource = t.Callable[[], CDFSource]
 SourceSpec = t.Dict[str, LazySource]
 
 
