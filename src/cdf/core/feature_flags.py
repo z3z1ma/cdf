@@ -79,7 +79,7 @@ def populate_flag_cache_from_local(
     """
     _ = component_id  # This is cheap, we don't need the id
     cache = cache if cache is not None else {}
-    component_paths = component_paths or []
+    component_paths = component_paths or c.COMPONENT_PATHS
     for raw_path in component_paths:
         path = Path(raw_path).expanduser().resolve()
         search_parent_dirs = path != Path.home()
