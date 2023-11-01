@@ -17,9 +17,7 @@ from pathlib import Path
 import cdf.core.constants as c
 from cdf.core.utils import do, search_merge_json
 
-T = t.TypeVar("T")
-
-TFlag = t.Union[str, t.Dict[str, t.Any], bool]
+TFlag = t.Union[str, bool, float, t.Dict[str, str]]
 TFlags = t.Dict[str, TFlag]
 
 FLAGS: TFlags = {}
@@ -29,12 +27,35 @@ FLAGS: TFlags = {}
 # consideration for piggybacking on dlt's config resolver which is what we
 # did in the original cdf, just annoying to worry on where the .dlt folder is
 # relative to the user working directory...
+# Ultimately this flag cache pop returner
+
+
+def populate_flag_cache_from_env(
+    cache: dict[str, TFlag] | None = None,
+    /,
+    component_id: str | None = None,
+) -> TFlags:
+    # Dispatch to the appropriate implementation based on env vars
+    return {}
 
 
 def populate_flag_cache_from_harness(
-    account_id: str, project_id: str, org_id: str
+    account_id: str,
+    project_id: str,
+    org_id: str,
+    component_id: str,
 ) -> TFlags:
-    ...
+    # Get flags from harness.io
+    return {}
+
+
+def populate_flag_cache_from_launchdarkly(
+    account_id: str,
+    api_key: str,
+    component_id: str,
+) -> TFlags:
+    # Get flags from launchdarkly
+    return {}
 
 
 def populate_flag_cache_from_local(
