@@ -1,5 +1,6 @@
 """CLI for cdf."""
 import logging
+import os
 import typing as t
 from functools import partial
 
@@ -210,7 +211,7 @@ def _print_sources() -> None:
 def _print_destinations() -> None:
     """Print the destination index in the global cache."""
     rich.print(f"\n Destinations Discovered: {len(DESTINATIONS)}")
-    rich.print(f" Env Vars Parsed: {...}\n")
+    rich.print(f" Env Vars Parsed: {[e for e in os.environ if e.startswith('CDF_')]}\n")
     rich.print(" [b]Index[/b]")
     for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
         rich.print(f"  {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")

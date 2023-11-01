@@ -1,4 +1,8 @@
 {
+  "source:chess_player_data:players_profiles:enabled": true,
+  "source:chess_player_data:players_archives:enabled": false,
+  "source:chess_player_data:players_games:enabled": true,
+  "source:chess_player_data:players_online_status:enabled": true,
   "source:pokemon:berries:enabled": false,
   "source:pokemon:pokemon:enabled": true
 }

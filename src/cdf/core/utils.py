@@ -63,6 +63,7 @@ def index_destinations(
     Returns:
         A dict of destination names to tuples of engine names and credentials.
     """
+    # TODO: maybe we can use `dlt.config` here...
     environment = environment or os.environ.copy()
     destinations: ct.DestinationSpec = {
         "default": ct.EngineCredentials("duckdb", "duckdb:///cdf.db"),
