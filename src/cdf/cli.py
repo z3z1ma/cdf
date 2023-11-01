@@ -59,14 +59,29 @@ def main(
     )
 
 
-@app.command()
-def index() -> None:
-    """:page_with_curl: Print an index of [b blue]Sources[/b blue], [b red]Transforms[/b red], and [b yellow]Publishers[/b yellow] loaded from the source directory paths."""
+def _print_sources() -> None:
+    """Print the source index in the global cache."""
     rich.print(f"\n Sources Discovered: {len(CACHE)}")
     rich.print(f" Paths Searched: {SEARCH_PATHS}\n")
     rich.print(" [b]Index[/b]")
     for i, (name, fn) in enumerate(CACHE.items(), start=1):
         rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
+
+
+def _print_destinations() -> None:
+    """Print the destination index in the global cache."""
+    rich.print(f"\n Destinations Discovered: {len(DESTINATIONS)}")
+    rich.print(f" Env Vars Parsed: {...}\n")
+    rich.print(" [b]Index[/b]")
+    for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
+        rich.print(f"  {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")
+
+
+@app.command()
+def index() -> None:
+    """:page_with_curl: Print an index of [b blue]Sources[/b blue], [b red]Transforms[/b red], and [b yellow]Publishers[/b yellow] loaded from the source directory paths."""
+    _print_sources()
+    _print_destinations()
     rich.print("")
 
 

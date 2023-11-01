@@ -1,0 +1,4 @@
+{
+  "source:source1:test_flag": true,
+  "source:test_component:test_flag": true
+}

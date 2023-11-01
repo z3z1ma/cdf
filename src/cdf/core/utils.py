@@ -1,8 +1,10 @@
 import functools
+import json
 import os
 import sys
 import typing as t
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from pathlib import Path
 
 from cdf.core import constants as c
 from cdf.core import types as ct
@@ -102,4 +104,40 @@ def flatten_stream(it: t.Iterable[A | t.List[A] | t.Tuple[A]]) -> t.Iterator[A]:
             yield i
 
 
-__all__ = ["augmented_path", "do", "index_destinations", "fn_to_str"]
+def search_merge_json(path: Path, fname: str, max_depth: int = 3) -> t.Dict[str, t.Any]:
+    """Search for and merge json files.
+
+    Args:
+        path: Path to start searching from.
+        fname: Name of the json file to search for.
+        max_depth: Maximum depth to search.
+
+    Returns:
+        dict: A dict of the merged json files.
+    """
+    obj = {}
+    if not path.exists():
+        return obj
+    traverse_path = path
+    local_depth = 0
+    while traverse_path != Path("/"):
+        f = traverse_path / fname
+        traverse_path = traverse_path.parent
+        if not f.exists():
+            continue
+        with suppress(json.JSONDecodeError):
+            obj.update(json.loads(f.read_text()))
+        local_depth += 1
+        if local_depth >= max_depth:
+            break
+    return obj
+
+
+__all__ = [
+    "augmented_path",
+    "do",
+    "index_destinations",
+    "fn_to_str",
+    "flatten_stream",
+    "search_merge_json",
+]

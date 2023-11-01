@@ -20,6 +20,12 @@ class ContinuousDataFlowSource(DltSource):
         resources: t.Sequence[DltResource] | None = None,
     ) -> None:
         super().__init__(name, section, schema, resources or [])
+        # FF Stuff here
+        # TODO: feature flags needs an abstract provider, the basic implementation should use 2
+        # local files. One in the user home directory and one local to the repository
+        # This is an opinionated design, and we will enforce specific naming and locations
+        # 2nd implementation should use a FF service such as harness.io or launchdarkly --
+        # we will use harness.io because, well, y'know
         register_source(source=self)
 
 
