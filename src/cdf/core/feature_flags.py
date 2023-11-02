@@ -4,7 +4,7 @@ NOTE: our primary usage pattern of FF is to get a bunch of flags
 for a single component, so we should optimize for that
 This means we may not need to pull every possible flag into
 the cache. Thus our main entrypoint should be something like
-get_flags_for_component(component_id: str, populate_cache_fn=populate_flag_cache)
+get_component_ff(component_id: str, populate_cache_fn=get_or_create_flag_dispatch)
 
 component_id = <source|transform|publisher>:<name>
 flag_name = <component_id>:<flag_name>
@@ -14,6 +14,7 @@ import logging
 import typing as t
 from functools import lru_cache
 from pathlib import Path
+from threading import Lock
 
 import dlt
 from dlt.sources.helpers import requests
@@ -28,12 +29,11 @@ import cdf.core.constants as c
 from cdf.core.types import Result
 from cdf.core.utils import do, search_merge_json
 
-TFlag = t.Union[str, bool, float, t.Dict[str, str]]
-TFlags = t.Dict[str, TFlag]
-
-FLAGS: TFlags = {}
-
+TFlags = t.Dict[str, bool]
 Providers = t.Literal["local", "harness", "launchdarkly"]
+
+CACHE: TFlags = {}
+_LOCAL_CACHE_MUTEX = Lock()
 
 
 class _Cache(dict, Cache):
@@ -151,10 +151,7 @@ def _create_harness_flag(
 
 
 @lru_cache(maxsize=1)
-def _get_harness_flag(
-    flag_id: str,
-    api_key: str | None = None,
-) -> Result[dict]:
+def _get_harness_flag(flag_id: str, api_key: str | None = None) -> Result[dict]:
     """Get a flag from the Harness Platform API
 
     Args:
@@ -223,10 +220,11 @@ def _component_id_to_harness_id(component_id: str) -> str:
     return "__".join(component_id.split(":")[1:])
 
 
-def populate_flag_cache_from_harness(
-    cache: dict[str, TFlag] | None = None,
+def get_or_create_flag_harness(
+    cache: TFlags,
+    component_id: str,
     /,
-    component_id: str | None = None,
+    *,
     account: str | None = None,
     project: str | None = None,
     organization: str | None = None,
@@ -276,20 +274,22 @@ def populate_flag_cache_from_harness(
     return cache
 
 
-def populate_flag_cache_from_launchdarkly(
-    cache: dict[str, TFlag] | None = None,
+def get_or_create_flag_launchdarkly(
+    cache: TFlags,
+    component_id: str,
     /,
-    component_id: str | None = None,
+    *,
     account: str | None = None,
     api_key: str | None = None,
 ) -> TFlags:
     raise NotImplementedError
 
 
-def populate_flag_cache_from_local(
-    cache: dict[str, TFlag] | None = None,
+def get_or_create_flag_local(
+    cache: TFlags,
+    component_id: str,
     /,
-    component_id: str | None = None,
+    *,
     component_paths: t.Iterable[str | Path] | None = None,
     max_depth: int = 3,
 ) -> TFlags:
@@ -324,13 +324,31 @@ def populate_flag_cache_from_local(
                     filter(lambda f: (path / f).exists(), c.CDF_FLAG_FILES),
                 ),
             )
+    # maybe make this a function
+    if component_id not in cache:
+        cdf_cwd = Path.cwd() / c.CDF_FLAG_FILES[0]
+        with _LOCAL_CACHE_MUTEX:
+            if cdf_cwd.exists():
+                current_dir_flags = json.loads(cdf_cwd.read_text())
+                current_dir_flags[component_id] = False
+            else:
+                current_dir_flags = {component_id: False}
+            cdf_cwd.write_text(json.dumps(current_dir_flags))
     return cache
 
 
-def populate_flag_cache_from_config(
-    cache: dict[str, TFlag] | None = None,
+def toggle_flag_dispatch() -> Result:
+    ...
+
+
+def delete_flag_dispatch() -> Result:
+    ...
+
+
+def get_or_create_flag_dispatch(
+    cache: TFlags,
+    component_id: str,
     /,
-    component_id: str | None = None,
     *,
     with_provider: Providers | None = None,
     **kwargs: t.Any,
@@ -342,33 +360,27 @@ def populate_flag_cache_from_config(
     """
     provider: Providers = with_provider or dlt.config["ff.provider"]
     if provider == "local":
-        return populate_flag_cache_from_local(
-            cache, component_id=component_id, **kwargs
-        )
+        return get_or_create_flag_local(cache, component_id, **kwargs)
     elif provider == "harness":
-        return populate_flag_cache_from_harness(
-            cache, component_id=component_id, **kwargs
-        )
+        return get_or_create_flag_harness(cache, component_id, **kwargs)
     elif provider == "launchdarkly":
-        return populate_flag_cache_from_launchdarkly(
-            cache, component_id=component_id, **kwargs
-        )
+        return get_or_create_flag_launchdarkly(cache, component_id, **kwargs)
     else:
         raise ValueError(
             f"Invalid provider: {provider}, must be one of {t.get_args(Providers)}"
         )
 
 
-def get_flags_for_component(
+def get_component_ff(
     component_id: str,
-    populate_cache_fn: t.Callable[
-        [TFlags, str], TFlags
-    ] = populate_flag_cache_from_config,
+    populate_cache_fn: t.Callable[[dict, str], TFlags] = get_or_create_flag_dispatch,
+    cache: TFlags | None = None,
 ) -> TFlags:
     """Get flags for a specific component id populating the cache if needed.
 
     Args:
         component_id: The component to find. In the form of <source|transform|publisher>:<name>
+            For a source, the <name> is <source_name>:<resource_name>
         populate_cache_fn: A function which takes a cache dict and component id and populates
             the cache. The implementer can make decisions on how to interface with the network
             given the supplied component id which is a prefix for the requested flags. The
@@ -378,7 +390,8 @@ def get_flags_for_component(
     Returns:
         dict: The subset of flags related to the component, empty dict if no flags found
     """
-    if not FLAGS or not any(k.startswith(component_id) for k in FLAGS):
-        populate_cache_fn(FLAGS, component_id)
-    subset = {k: v for k, v in FLAGS.items() if k.startswith(component_id)}
+    cache = cache if cache is not None else CACHE
+    if not cache or not any(k.startswith(component_id) for k in cache):
+        populate_cache_fn(cache, component_id)
+    subset = {k: v for k, v in cache.items() if k.startswith(component_id)}
     return subset

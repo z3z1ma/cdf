@@ -31,7 +31,7 @@ class CDFSource(DltSource):
 
         for r_name, _ in self.resources.items():
             component_id = f"{self.base_component_id}:{r_name}"
-            self.flags.update(ff.get_flags_for_component(component_id))
+            self.flags.update(ff.get_component_ff(component_id))
 
     @property
     def base_component_id(self) -> str:

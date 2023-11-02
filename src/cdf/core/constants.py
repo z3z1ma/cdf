@@ -7,11 +7,11 @@ DEST_CRED_PAT = re.compile(r"^CDF_(?P<dest_name>.+)__(?P<engine_name>.+)__(?P<ke
 NATIVE_DEST_CRED_PAT = re.compile(r"^CDF_(?P<dest_name>.+)__(?P<engine_name>.+)$")
 
 CDF_FLAG_FILES = [
-    ".cdf.json",
     "cdf.json",
-    "flags.json",
-    ".cdf_flags.json",
+    ".cdf.json",
     "cdf_flags.json",
+    ".cdf_flags.json",
+    "flags.json",
 ]
 
 CDF_CONFIG_FILE = "cdf_config.toml"
