@@ -12,6 +12,7 @@ from rich.logging import RichHandler
 import cdf.core.constants as c
 import cdf.core.types as ct
 from cdf import CDFSource, get_directory_modules, populate_source_cache
+from cdf.core.config import extend_global_providers, get_config_providers
 from cdf.core.utils import do, flatten_stream, fn_to_str, index_destinations
 
 T = t.TypeVar("T")
@@ -36,7 +37,7 @@ DESTINATIONS: ct.DestinationSpec = index_destinations()
 @app.callback()
 def main(
     paths: t.List[str] = typer.Option(
-        c.COMPONENT_PATHS, "-p", "--path", help="Source directory paths."
+        ..., "-p", "--path", default_factory=list, help="Source directory paths."
     ),
 ):
     """:sparkles: A [b]framework[b] for managing and running [u]ContinousDataflow[/u] projects. :sparkles:
@@ -46,12 +47,12 @@ def main(
     - ( :shuffle_tracks_button: ) [b red]Transforms[/b red] are responsible for transforming data in a data warehouse.
     - ( :mailbox: ) [b yellow]Publishers[/b yellow] are responsible for publishing data to an external system.
     """
-    if paths:
-        c.COMPONENT_PATHS.extend(paths)
+    c.COMPONENT_PATHS.extend(paths)
     do(
         lambda path: populate_source_cache(CACHE, partial(get_directory_modules, path)),
         paths or c.COMPONENT_PATHS,
     )
+    extend_global_providers(get_config_providers(c.COMPONENT_PATHS))
 
 
 @app.command()
@@ -108,7 +109,7 @@ def head(
 def ingest(
     source: str,
     destination: str = "default",
-    resources: t.List[str] = typer.Option(None),
+    resources: t.List[str] = typer.Option(..., default_factory=list),
 ) -> None:
     """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
     configured_source = _get_source(source)

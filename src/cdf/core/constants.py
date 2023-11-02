@@ -14,4 +14,7 @@ CDF_FLAG_FILES = [
     "cdf_flags.json",
 ]
 
+CDF_CONFIG_FILE = "cdf_config.toml"
+CDF_SECRETS_FILE = "cdf_secrets.toml"
+
 COMPONENT_PATHS = ["./sources", "./transforms", "./publishers"]
