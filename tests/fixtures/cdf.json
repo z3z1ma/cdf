@@ -1,4 +1,4 @@
 {
-  "source:source1:test_flag": true,
-  "source:test_component:test_flag": true
+  "source:source1:gen": true,
+  "source:mocksource:someresource": true
 }

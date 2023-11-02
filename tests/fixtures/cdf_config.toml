@@ -1,5 +1,5 @@
-[feature_flags]
-provider = "harness"
+[ff]
+provider = "local"
 # harness.account = ""
 harness.organization = "default"
 harness.project = "DataOps_Platform"

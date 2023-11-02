@@ -21,7 +21,7 @@ import cdf.core.constants as c
 from cdf.core.utils import do
 
 
-class CDFConfigTomlProvider(providers.TomlFileProvider):  # type: ignore[import]
+class CDFConfigTomlProvider(providers.TomlFileProvider):
     """An opinionated config provider for CDF."""
 
     def __init__(self, project_dir: str | Path = ".") -> None:
@@ -34,7 +34,7 @@ class CDFConfigTomlProvider(providers.TomlFileProvider):  # type: ignore[import]
     is_writable = True  # type: ignore[assignment]
 
 
-class CDFSecretsTomlProvider(providers.TomlFileProvider):  # type: ignore[import]
+class CDFSecretsTomlProvider(providers.TomlFileProvider):
     """An opinionated secrets provider for CDF."""
 
     def __init__(self, project_dir: str | Path = ".") -> None:
@@ -51,7 +51,7 @@ def get_config_providers(
     search_paths: t.Sequence[str | Path] | str | Path = c.COMPONENT_PATHS,
     search_cwd: bool = True,
     max_depth: int = 3,
-) -> t.List[providers.ConfigProvider]:  # type: ignore[import]
+) -> t.List[providers.ConfigProvider]:
     """Get the first config provider found in the search paths.
 
     We search in the order of the search paths, and the first provider found is returned. We
@@ -91,14 +91,15 @@ def get_config_providers(
     return providers
 
 
-def extend_global_providers(providers: t.List[providers.ConfigProvider]) -> int:  # type: ignore[import]
+def extend_global_providers(providers: t.List[providers.ConfigProvider]) -> int:
     """Extend the global config providers with the given providers.
 
     Args:
         providers: The providers to extend the global config providers with.
 
     Returns:
-        The number of providers added.
+        The number of providers added. -1 if the global config providers were already extended.
     """
     with contextlib.suppress(dlt_e.DuplicateConfigProviderException):
         return len(do(Container()[ConfigProvidersContext].add_provider, providers))
+    return -1
