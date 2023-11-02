@@ -6,9 +6,11 @@ sqlmesh, which settled on a top-level `config.{yml,py}` file, we have settled on
 `cdf_config.toml` file. This file is searched for in the current working directory and all
 parent directories up to a maximum depth of 3. The first config provider found is used.
 """
+import contextlib
 import typing as t
 from pathlib import Path
 
+import dlt.common.configuration.exceptions as dlt_e
 import dlt.common.configuration.providers as providers
 from dlt.common.configuration.container import Container
 from dlt.common.configuration.specs.config_providers_context import (
@@ -98,4 +100,5 @@ def extend_global_providers(providers: t.List[providers.ConfigProvider]) -> int:
     Returns:
         The number of providers added.
     """
-    return len(do(Container()[ConfigProvidersContext].add_provider, providers))
+    with contextlib.suppress(dlt_e.DuplicateConfigProviderException):
+        return len(do(Container()[ConfigProvidersContext].add_provider, providers))

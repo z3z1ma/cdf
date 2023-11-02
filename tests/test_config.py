@@ -1,10 +1,26 @@
+import typing as t
+
 import dlt
 import pytest
+from dlt.common.configuration.container import Container
+from dlt.common.configuration.specs.config_providers_context import (
+    ConfigProvidersContext,
+)
 
 from cdf.core.config import extend_global_providers, get_config_providers
 
 
-def test_get_config():
+@pytest.fixture
+def empty_provider() -> t.Iterator[ConfigProvidersContext]:
+    ctx = ConfigProvidersContext()
+    ctx.providers.clear()
+    with Container().injectable_context(ctx):
+        yield ctx
+
+
+def test_get_config(empty_provider):
+    _ = empty_provider
+
     # Test case 1: Can get config from local files
     providers = get_config_providers(
         search_paths=["tests/fixtures/basic_sources"],

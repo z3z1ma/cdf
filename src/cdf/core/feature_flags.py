@@ -14,6 +14,8 @@ import typing as t
 from functools import partial
 from pathlib import Path
 
+import dlt
+
 import cdf.core.constants as c
 from cdf.core.utils import do, search_merge_json
 
@@ -22,40 +24,84 @@ TFlags = t.Dict[str, TFlag]
 
 FLAGS: TFlags = {}
 
-
-# TODO: need an env var parser for flag implementations which are not local
-# consideration for piggybacking on dlt's config resolver which is what we
-# did in the original cdf, just annoying to worry on where the .dlt folder is
-# relative to the user working directory...
-# Ultimately this flag cache pop returner
+Providers = t.Literal["local", "harness", "launchdarkly"]
 
 
-def populate_flag_cache_from_env(
+def populate_flag_cache_from_config(
     cache: dict[str, TFlag] | None = None,
     /,
     component_id: str | None = None,
+    *,
+    with_provider: Providers | None = None,
+    **kwargs: t.Any,
 ) -> TFlags:
-    # Dispatch to the appropriate implementation based on env vars
-    return {}
+    """Populate a cache with flags.
+
+    This function dispatches to the appropriate implementation based on the
+    provider specified in the config.
+    """
+    provider: Providers = with_provider or dlt.config["feature_flags.provider"]
+    if provider == "local":
+        merged_kwargs = {**dict(component_id=component_id), **kwargs}
+        return populate_flag_cache_from_local(cache, **merged_kwargs)
+    elif provider == "harness":
+        merged_kwargs = {
+            **dict(
+                component_id=component_id,
+                account_id=dlt.config["feature_flags.harness.account_id"],
+                project_id=dlt.config["feature_flags.harness.project_id"],
+                org_id=dlt.config["feature_flags.harness.org_id"],
+                api_key=dlt.secrets["feature_flags.harness.api_key"],
+            ),
+            **kwargs,
+        }
+        return populate_flag_cache_from_harness(cache, **merged_kwargs)
+    elif provider == "launchdarkly":
+        merged_kwargs = {
+            **dict(
+                component_id=component_id,
+                account_id=dlt.config["feature_flags.launchdarkly.account_id"],
+                api_key=dlt.secrets["feature_flags.launchdarkly.api_key"],
+            ),
+            **kwargs,
+        }
+        return populate_flag_cache_from_launchdarkly(cache, **merged_kwargs)
+    else:
+        raise ValueError(
+            f"Invalid provider: {provider}, must be one of {t.get_args(Providers)}"
+        )
 
 
 def populate_flag_cache_from_harness(
-    account_id: str,
-    project_id: str,
-    org_id: str,
-    component_id: str,
+    cache: dict[str, TFlag] | None = None,
+    /,
+    component_id: str | None = None,
+    account_id: str | None = None,
+    project_id: str | None = None,
+    org_id: str | None = None,
+    api_key: str | None = None,
 ) -> TFlags:
-    # Get flags from harness.io
-    return {}
+    cache = cache if cache is not None else {}
+    if not (account_id and project_id and org_id and api_key):
+        raise ValueError(
+            "Must supply account_id, project_id, org_id, and api_key to use harness provider"
+        )
+    return cache
 
 
 def populate_flag_cache_from_launchdarkly(
-    account_id: str,
-    api_key: str,
-    component_id: str,
+    cache: dict[str, TFlag] | None = None,
+    /,
+    component_id: str | None = None,
+    account_id: str | None = None,
+    api_key: str | None = None,
 ) -> TFlags:
-    # Get flags from launchdarkly
-    return {}
+    cache = cache if cache is not None else {}
+    if not (account_id and api_key):
+        raise ValueError(
+            "Must supply account_id and api_key to use launchdarkly provider"
+        )
+    return cache
 
 
 def populate_flag_cache_from_local(
