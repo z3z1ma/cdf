@@ -6,7 +6,6 @@ import dlt
 from dlt.common.schema import Schema  # type: ignore
 from dlt.extract.source import DltResource, DltSource
 
-import cdf.core.constants as c
 from cdf.core.registry import register_source
 
 
