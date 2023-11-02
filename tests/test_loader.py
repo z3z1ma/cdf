@@ -6,27 +6,13 @@ from cdf.core.loader import get_directory_modules, populate_source_cache
 
 
 def test_load_sources():
-    # Test case 1: Attempt to load sources from a non-existent directory
-    with pytest.raises(SourceDirectoryNotFoundError):
-        populate_source_cache(
-            get_modules_fn=lambda: get_directory_modules(
-                "./tests/fixtures/non-existent"
-            )
-        )
+    # Test case 1: Attempt to load sources from an empty directory
+    # TODO: Capture warning, verify message
+    populate_source_cache(
+        get_modules_fn=lambda: get_directory_modules("./tests/fixtures/empty")
+    )
 
-    # Test case 2: Attempt to load sources from a non-directory
-    with pytest.raises(SourceDirectoryNotFoundError):
-        populate_source_cache(
-            get_modules_fn=lambda: get_directory_modules("./tests/fixtures/source1.py")
-        )
-
-    # Test case 3: Attempt to load sources from an empty directory
-    with pytest.raises(SourceDirectoryEmpty):
-        populate_source_cache(
-            get_modules_fn=lambda: get_directory_modules("./tests/fixtures/empty")
-        )
-
-    # Test case 4: Load sources from a valid directory, ensure source is registered
+    # Test case 2: Load sources from a valid directory, ensure source is registered
     cache = {}
     populate_source_cache(
         cache,

@@ -37,13 +37,11 @@ def get_directory_modules(base_directory: Path | str) -> t.Iterable[ct.Loadable]
     """
     if isinstance(base_directory, str):
         base_directory = Path(base_directory)
-    if not base_directory.exists():
-        raise SourceDirectoryNotFoundError(f"{base_directory} does not exist.")
-    if not base_directory.is_dir():
-        raise SourceDirectoryNotFoundError(f"{base_directory} is not a directory.")
+    if base_directory.exists() and base_directory.is_file():
+        base_directory = base_directory.parent
     paths = [p for p in base_directory.glob("*.py") if p.stem != "__init__"]
     if not paths:
-        raise SourceDirectoryEmpty(f"{base_directory} contains no sources.")
+        return None
     with augmented_path(str(base_directory)):
         for path in paths:
             yield path

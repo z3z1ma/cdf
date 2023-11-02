@@ -37,7 +37,7 @@ def test_index(empty_provider, mocker):
     assert "source1" in result.stdout
 
     result = runner.invoke(app, ["-p", "./tests/fixtures/empty", "index"])
-    assert result.exit_code == 1
+    assert result.exit_code == 0
 
     # Uses partials
     result = runner.invoke(app, ["-p", "./tests/fixtures/sources", "index"])

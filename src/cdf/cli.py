@@ -50,7 +50,7 @@ def main(
     c.COMPONENT_PATHS.extend(paths)
     do(
         lambda path: populate_source_cache(CACHE, partial(get_directory_modules, path)),
-        paths or c.COMPONENT_PATHS,
+        c.COMPONENT_PATHS,
     )
     extend_global_providers(get_config_providers(c.COMPONENT_PATHS))
 
