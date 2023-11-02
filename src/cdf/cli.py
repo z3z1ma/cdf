@@ -108,8 +108,10 @@ def head(
 @app.command(rich_help_panel="Pipelines")
 def ingest(
     source: str,
-    destination: str = "default",
-    resources: t.List[str] = typer.Option(..., default_factory=list),
+    destination: t.Annotated[str, typer.Option(..., "-d", "--dest")] = "default",
+    resources: t.List[str] = typer.Option(
+        ..., "-r", "--resource", default_factory=list
+    ),
 ) -> None:
     """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
     configured_source = _get_source(source)
