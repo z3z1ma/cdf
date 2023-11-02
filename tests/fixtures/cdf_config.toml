@@ -1,8 +1,12 @@
 [feature_flags]
-provider = "local"
-config = {}
+provider = "harness"
+# harness.account = ""
+harness.organization = "default"
+harness.project = "DataOps_Platform"
+# harness.api_key = ""
+# harness.sdk_key = ""
 
 [destination.local]
 engine = "duckdb"
-config = {credentials = "cdf.db"}
+config = { credentials = "cdf.db" }
 
