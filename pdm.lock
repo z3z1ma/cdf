@@ -5,7 +5,7 @@
 groups = ["default", "test"]
 strategy = ["cross_platform"]
 lock_version = "4.4"
-content_hash = "sha256:5ac843c3288210c779176b7a12c61e33a910976c793d9dc00e018dd4e73a4f0a"
+content_hash = "sha256:b282438612a5cd7136ec3271bfbbafc36cc17aceca3b011ac2520e844ed408af"
 
 [[package]]
 name = "about-time"
@@ -29,6 +29,21 @@ dependencies = [
 files = [
     {file = "alive-progress-3.1.4.tar.gz", hash = "sha256:74a95d8d0d42bc99d3a3725dbd06ebb852245f1b64e301a7c375b92b22663f7b"},
     {file = "alive_progress-3.1.4-py3-none-any.whl", hash = "sha256:c80ad87ce9c1054b01135a87fae69ecebbfc2107497ae87cbe6aec7e534903db"},
+]
+
+[[package]]
+name = "anyio"
+version = "4.0.0"
+requires_python = ">=3.8"
+summary = "High level compatibility layer for multiple asynchronous event loop implementations"
+dependencies = [
+    "exceptiongroup>=1.0.2; python_version < \"3.11\"",
+    "idna>=2.8",
+    "sniffio>=1.1",
+]
+files = [
+    {file = "anyio-4.0.0-py3-none-any.whl", hash = "sha256:cfdb2b588b9fc25ede96d8db56ed50848b0b649dca3dd1df0b11f683bb9e0b5f"},
+    {file = "anyio-4.0.0.tar.gz", hash = "sha256:f7ed51751b2c2add651e5747c891b47e26d2a21be5d32d9311dfe9692f3e5d7a"},
 ]
 
 [[package]]
@@ -73,6 +88,16 @@ dependencies = [
 files = [
     {file = "astunparse-1.6.3-py2.py3-none-any.whl", hash = "sha256:c2652417f2c8b5bb325c885ae329bdf3f86424075c4fd1a128674bc6fba4b8e8"},
     {file = "astunparse-1.6.3.tar.gz", hash = "sha256:5ad93a8456f0d084c3456d059fd9a92cce667963232cbf763eac3bc5b7940872"},
+]
+
+[[package]]
+name = "attrs"
+version = "23.1.0"
+requires_python = ">=3.7"
+summary = "Classes Without Boilerplate"
+files = [
+    {file = "attrs-23.1.0-py3-none-any.whl", hash = "sha256:1f28b4522cdc2fb4256ac1a020c78acf9cba2c6b461ccd2c126f3aa8e8335d04"},
+    {file = "attrs-23.1.0.tar.gz", hash = "sha256:6279836d581513a26f1bf235f9acd333bc9115683f14f7e8fae46c98fc50e015"},
 ]
 
 [[package]]
@@ -450,6 +475,34 @@ files = [
 ]
 
 [[package]]
+name = "h11"
+version = "0.14.0"
+requires_python = ">=3.7"
+summary = "A pure-Python, bring-your-own-I/O implementation of HTTP/1.1"
+files = [
+    {file = "h11-0.14.0-py3-none-any.whl", hash = "sha256:e3fe4ac4b851c468cc8363d500db52c2ead036020723024a109d37346efaa761"},
+    {file = "h11-0.14.0.tar.gz", hash = "sha256:8f19fbbe99e72420ff35c00b27a34cb9937e902a8b810e2c88300c6f0a3b699d"},
+]
+
+[[package]]
+name = "harness-featureflags"
+version = "1.2.3"
+requires_python = ">=3.5"
+summary = "Feature flag server SDK for python"
+dependencies = [
+    "attrs>=21.2.0",
+    "httpx>=0.24.1",
+    "mmh3>=3.0.0",
+    "pyjwt>=2.4.0",
+    "requests>=2.25.1",
+    "tenacity==8.2.2",
+]
+files = [
+    {file = "harness-featureflags-1.2.3.tar.gz", hash = "sha256:17fd09cc8737692fa303ce7aff4199d1bbf6903055f5b45f83af8b01177f250d"},
+    {file = "harness_featureflags-1.2.3-py2.py3-none-any.whl", hash = "sha256:493843024fa84dac657c97bcb5cf18fcfe3822f591a2c60fe930b42fbe96fc19"},
+]
+
+[[package]]
 name = "hexbytes"
 version = "0.3.1"
 requires_python = ">=3.7, <4"
@@ -457,6 +510,38 @@ summary = "hexbytes: Python `bytes` subclass that decodes hex, with a readable c
 files = [
     {file = "hexbytes-0.3.1-py3-none-any.whl", hash = "sha256:383595ad75026cf00abd570f44b368c6cdac0c6becfae5c39ff88829877f8a59"},
     {file = "hexbytes-0.3.1.tar.gz", hash = "sha256:a3fe35c6831ee8fafd048c4c086b986075fc14fd46258fa24ecb8d65745f9a9d"},
+]
+
+[[package]]
+name = "httpcore"
+version = "0.18.0"
+requires_python = ">=3.8"
+summary = "A minimal low-level HTTP client."
+dependencies = [
+    "anyio<5.0,>=3.0",
+    "certifi",
+    "h11<0.15,>=0.13",
+    "sniffio==1.*",
+]
+files = [
+    {file = "httpcore-0.18.0-py3-none-any.whl", hash = "sha256:adc5398ee0a476567bf87467063ee63584a8bce86078bf748e48754f60202ced"},
+    {file = "httpcore-0.18.0.tar.gz", hash = "sha256:13b5e5cd1dca1a6636a6aaea212b19f4f85cd88c366a2b82304181b769aab3c9"},
+]
+
+[[package]]
+name = "httpx"
+version = "0.25.0"
+requires_python = ">=3.8"
+summary = "The next generation HTTP client."
+dependencies = [
+    "certifi",
+    "httpcore<0.19.0,>=0.18.0",
+    "idna",
+    "sniffio",
+]
+files = [
+    {file = "httpx-0.25.0-py3-none-any.whl", hash = "sha256:181ea7f8ba3a82578be86ef4171554dd45fec26a02556a744db029a0a27b7100"},
+    {file = "httpx-0.25.0.tar.gz", hash = "sha256:47ecda285389cb32bb2691cc6e069e3ab0205956f681c5b2ad2325719751d875"},
 ]
 
 [[package]]
@@ -671,6 +756,46 @@ summary = "Markdown URL utilities"
 files = [
     {file = "mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8"},
     {file = "mdurl-0.1.2.tar.gz", hash = "sha256:bb413d29f5eea38f31dd4754dd7377d4465116fb207585f97bf925588687c1ba"},
+]
+
+[[package]]
+name = "mmh3"
+version = "4.0.1"
+summary = "Python extension for MurmurHash (MurmurHash3), a set of fast and robust hash functions."
+files = [
+    {file = "mmh3-4.0.1-cp310-cp310-macosx_10_9_universal2.whl", hash = "sha256:b719ba87232749095011d567a36a25e40ed029fc61c47e74a12416d8bb60b311"},
+    {file = "mmh3-4.0.1-cp310-cp310-macosx_10_9_x86_64.whl", hash = "sha256:f0ad423711c5096cf4a346011f3b3ec763208e4f4cc4b10ed41cad2a03dbfaed"},
+    {file = "mmh3-4.0.1-cp310-cp310-macosx_11_0_arm64.whl", hash = "sha256:80918e3f8ab6b717af0a388c14ffac5a89c15d827ff008c1ef545b8b32724116"},
+    {file = "mmh3-4.0.1-cp310-cp310-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:8222cd5f147defa1355b4042d590c34cef9b2bb173a159fcb72cda204061a4ac"},
+    {file = "mmh3-4.0.1-cp310-cp310-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:3821bcd1961ef19247c78c5d01b5a759de82ab0c023e2ff1d5ceed74322fa018"},
+    {file = "mmh3-4.0.1-cp310-cp310-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:59f7ed28c24249a54665f1ed3f6c7c1c56618473381080f79bcc0bd1d1db2e4a"},
+    {file = "mmh3-4.0.1-cp310-cp310-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:dacd8d07d4b9be8f0cb6e8fd9a08fc237c18578cf8d42370ee8af2f5a2bf1967"},
+    {file = "mmh3-4.0.1-cp310-cp310-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5cd00883ef6bcf7831026ce42e773a4b2a4f3a7bf9003a4e781fecb1144b06c1"},
+    {file = "mmh3-4.0.1-cp310-cp310-musllinux_1_1_aarch64.whl", hash = "sha256:df73d1c7f0c50c0f8061cd349968fd9dcc6a9e7592d1c834fa898f9c98f8dd7e"},
+    {file = "mmh3-4.0.1-cp310-cp310-musllinux_1_1_i686.whl", hash = "sha256:f41eeae98f15af0a4ba2a92bce11d8505b612012af664a7634bbfdba7096f5fc"},
+    {file = "mmh3-4.0.1-cp310-cp310-musllinux_1_1_ppc64le.whl", hash = "sha256:ce9bb622e9f1162cafd033071b32ac495c5e8d5863fca2a5144c092a0f129a5b"},
+    {file = "mmh3-4.0.1-cp310-cp310-musllinux_1_1_s390x.whl", hash = "sha256:dd92e0ff9edee6af960d9862a3e519d651e6344321fd280fb082654fc96ecc4d"},
+    {file = "mmh3-4.0.1-cp310-cp310-musllinux_1_1_x86_64.whl", hash = "sha256:1aefa8ac8c8fc8ad93365477baef2125dbfd7235880a9c47dca2c46a0af49ef7"},
+    {file = "mmh3-4.0.1-cp310-cp310-win32.whl", hash = "sha256:a076ea30ec279a63f44f4c203e4547b5710d00581165fed12583d2017139468d"},
+    {file = "mmh3-4.0.1-cp310-cp310-win_amd64.whl", hash = "sha256:5aa1e87e448ee1ffa3737b72f2fe3f5960159ab75bbac2f49dca6fb9797132f6"},
+    {file = "mmh3-4.0.1-cp310-cp310-win_arm64.whl", hash = "sha256:45155ff2f291c3a1503d1c93e539ab025a13fd8b3f2868650140702b8bd7bfc2"},
+    {file = "mmh3-4.0.1-cp311-cp311-macosx_10_9_universal2.whl", hash = "sha256:91f81d6dd4d0c3b4235b4a58a545493c946669c751a2e0f15084171dc2d81fee"},
+    {file = "mmh3-4.0.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:bbfddaf55207798f5b29341e5b3a24dbff91711c51b1665eabc9d910255a78f0"},
+    {file = "mmh3-4.0.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:0deb8e19121c0896fdc709209aceda30a367cda47f4a884fcbe56223dbf9e867"},
+    {file = "mmh3-4.0.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:df468ac7b61ec7251d7499e27102899ca39d87686f659baf47f84323f8f4541f"},
+    {file = "mmh3-4.0.1-cp311-cp311-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:84936c113814c6ef3bc4bd3d54f538d7ba312d1d0c2441ac35fdd7d5221c60f6"},
+    {file = "mmh3-4.0.1-cp311-cp311-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:8b1df3cf5ce5786aa093f45462118d87ff485f0d69699cdc34f6289b1e833632"},
+    {file = "mmh3-4.0.1-cp311-cp311-manylinux_2_5_i686.manylinux1_i686.manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:da281aa740aa9e7f9bebb879c1de0ea9366687ece5930f9f5027e7c87d018153"},
+    {file = "mmh3-4.0.1-cp311-cp311-manylinux_2_5_x86_64.manylinux1_x86_64.manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:0ec380933a56eb9fea16d7fcd49f1b5a5c92d7d2b86f25e9a845b72758ee8c42"},
+    {file = "mmh3-4.0.1-cp311-cp311-musllinux_1_1_aarch64.whl", hash = "sha256:2fa905fcec8a30e1c0ef522afae1d6170c4f08e6a88010a582f67c59209fb7c7"},
+    {file = "mmh3-4.0.1-cp311-cp311-musllinux_1_1_i686.whl", hash = "sha256:9b23a06315a65ef0b78da0be32409cfce0d6d83e51d70dcebd3302a61e4d34ce"},
+    {file = "mmh3-4.0.1-cp311-cp311-musllinux_1_1_ppc64le.whl", hash = "sha256:36c27089b12026db14be594d750f7ea6d5d785713b40a971b063f033f5354a74"},
+    {file = "mmh3-4.0.1-cp311-cp311-musllinux_1_1_s390x.whl", hash = "sha256:6338341ae6fa5eaa46f69ed9ac3e34e8eecad187b211a6e552e0d8128c568eb1"},
+    {file = "mmh3-4.0.1-cp311-cp311-musllinux_1_1_x86_64.whl", hash = "sha256:1aece29e27d0c8fb489d00bb712fba18b4dd10e39c9aec2e216c779ae6400b8f"},
+    {file = "mmh3-4.0.1-cp311-cp311-win32.whl", hash = "sha256:2733e2160c142eed359e25e5529915964a693f0d043165b53933f904a731c1b3"},
+    {file = "mmh3-4.0.1-cp311-cp311-win_amd64.whl", hash = "sha256:09f9f643e0b7f8d98473efdfcdb155105824a38a1ada374625b84c1208197a9b"},
+    {file = "mmh3-4.0.1-cp311-cp311-win_arm64.whl", hash = "sha256:d93422f38bc9c4d808c5438a011b769935a87df92ce277e9e22b6ec0ae8ed2e2"},
+    {file = "mmh3-4.0.1.tar.gz", hash = "sha256:ad8be695dc4e44a79631748ba5562d803f0ac42d36a6b97a53aca84a70809385"},
 ]
 
 [[package]]
@@ -950,6 +1075,16 @@ summary = "Pygments is a syntax highlighting package written in Python."
 files = [
     {file = "Pygments-2.16.1-py3-none-any.whl", hash = "sha256:13fc09fa63bc8d8671a6d247e1eb303c4b343eaee81d861f3404db2935653692"},
     {file = "Pygments-2.16.1.tar.gz", hash = "sha256:1daff0494820c69bc8941e407aa20f577374ee88364ee10a98fdbe0aece96e29"},
+]
+
+[[package]]
+name = "pyjwt"
+version = "2.8.0"
+requires_python = ">=3.7"
+summary = "JSON Web Token implementation in Python"
+files = [
+    {file = "PyJWT-2.8.0-py3-none-any.whl", hash = "sha256:59127c392cc44c2da5bb3192169a91f429924e17aff6534d70fdc02ab3e04320"},
+    {file = "PyJWT-2.8.0.tar.gz", hash = "sha256:57e28d156e3d5c10088e0c68abb90bfac3df82b40a71bd0daa20c65ccd5c23de"},
 ]
 
 [[package]]
@@ -1301,6 +1436,16 @@ files = [
 ]
 
 [[package]]
+name = "sniffio"
+version = "1.3.0"
+requires_python = ">=3.7"
+summary = "Sniff out which async library your code is running under"
+files = [
+    {file = "sniffio-1.3.0-py3-none-any.whl", hash = "sha256:eecefdce1e5bbfb7ad2eeaabf7c1eeb404d7757c379bd1f7e5cce9d8bf425384"},
+    {file = "sniffio-1.3.0.tar.gz", hash = "sha256:e60305c5e5d314f5389259b7f22aaa33d8f7dee49763119234af3755c55b9101"},
+]
+
+[[package]]
 name = "sqlalchemy"
 version = "2.0.22"
 requires_python = ">=3.7"
@@ -1403,12 +1548,12 @@ files = [
 
 [[package]]
 name = "tenacity"
-version = "8.2.3"
-requires_python = ">=3.7"
+version = "8.2.2"
+requires_python = ">=3.6"
 summary = "Retry code until it succeeds"
 files = [
-    {file = "tenacity-8.2.3-py3-none-any.whl", hash = "sha256:ce510e327a630c9e1beaf17d42e6ffacc88185044ad85cf74c0a8887c6a0f88c"},
-    {file = "tenacity-8.2.3.tar.gz", hash = "sha256:5398ef0d78e63f40007c1fb4c0bff96e1911394d2fa8d194f77619c05ff6cc8a"},
+    {file = "tenacity-8.2.2-py3-none-any.whl", hash = "sha256:2f277afb21b851637e8f52e6a613ff08734c347dc19ade928e519d7d2d8569b0"},
+    {file = "tenacity-8.2.2.tar.gz", hash = "sha256:43af037822bd0029025877f3b2d97cc4d7bb0c2991000a3d59d71517c5c969e0"},
 ]
 
 [[package]]

@@ -30,13 +30,9 @@ class CDFSource(DltSource):
         if alias:
             self.name = alias
 
-        cache_fn = partial(
-            ff.populate_flag_cache_from_local,
-            component_paths=c.COMPONENT_PATHS,
-        )
         for r_name, _ in self.resources.items():
             component_id = f"{self.base_component_id}:{r_name}"
-            self.flags.update(ff.get_flags_for_component(component_id, cache_fn))
+            self.flags.update(ff.get_flags_for_component(component_id))
 
     @property
     def base_component_id(self) -> str:
@@ -46,7 +42,7 @@ class CDFSource(DltSource):
         return f"{self.base_component_id}:{resource_name}"
 
     def resource_flag_enabled(self, resource_name: str) -> bool:
-        return self.flags.get(f"{self.component_id(resource_name)}:enabled", False)
+        return self.flags.get(self.component_id(resource_name), False)
 
 
 def to_cdf_meta(*funcs: t.Callable) -> t.Dict[str, t.Callable]:
