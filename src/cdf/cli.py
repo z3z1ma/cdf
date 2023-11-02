@@ -97,12 +97,12 @@ def head(
     mod = _get_source(source)
     r = _get_resource(mod, resource)
     rich.print(f"\nHead of [b red]{resource}[/b red] in [b blue]{source}[/b blue]:")
-    mut_num = int(num)
-    for row in flatten_stream(r):
-        rich.print(row)
-        if mut_num <= 0:
-            break
-        mut_num -= 1
+    it = flatten_stream(r)
+    v = next(it, None)
+    while num > 0 and v:
+        rich.print(v)
+        v = next(it, None)
+        num -= 1
 
 
 @app.command(rich_help_panel="Pipelines")
