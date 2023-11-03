@@ -7,6 +7,9 @@ import typing as t
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
+import dlt
+from dlt.common.configuration.exceptions import ConfigFieldMissingException
+
 from cdf.core import constants as c
 from cdf.core import types as ct
 
@@ -46,42 +49,48 @@ def do(fn: t.Callable[[A], B], it: t.Iterable[A]) -> t.List[B]:
     return list(map(fn, it))
 
 
-def index_destinations(
-    environment: t.Dict[str, str] | None = None
-) -> ct.DestinationSpec:
+def index_destinations() -> ct.DestinationSpec:
     """Index destinations from the environment based on a standard convention.
 
     Notes:
         Convention is as follows:
 
-        CDF_<DESTINATION_NAME>__<ENGINE_NAME>=<NATIVE VALUE>
-        CDF_<DESTINATION_NAME>__<ENGINE_NAME>__<KEY>=<VALUE>
-
-    Args:
-        environment: The environment to index. Defaults to os.environ.copy().
+        CDF__<DESTINATION_NAME>__ENGINE=<ENGINE_NAME>
+        CDF__<DESTINATION_NAME>__CREDENTIALS=<NATIVE_VALUE>
+        CDF__<DESTINATION_NAME>__CREDENTIALS__<KEY>=<VALUE>
 
     Returns:
         A dict of destination names to tuples of engine names and credentials.
     """
-    # TODO: maybe we can use `dlt.config` here...
-    environment = environment or os.environ.copy()
     destinations: ct.DestinationSpec = {
         "default": ct.EngineCredentials("duckdb", "duckdb:///cdf.db"),
     }
-    for k, v in environment.items():
-        dest_key = c.DEST_CRED_PAT.match(k)
-        native_dest = c.NATIVE_DEST_CRED_PAT.match(k)
-        if not (dest_key or native_dest):
+    env = os.environ.copy()
+    env_creds = {}
+    for k, v in env.items():
+        match = c.DEST_ENGINE_PAT.match(k)
+        if match:
+            dest_name = match.group("dest_name")
+            env_creds.setdefault(dest_name.lower(), {})["engine"] = v
             continue
-        parts = k[4:].split("__")
-        if len(parts) == 2:
-            dest, engine = parts
-            destinations[dest.lower()] = ct.EngineCredentials(engine.lower(), v)
-        elif len(parts) == 3:
-            dest, engine, key = parts
-            if dest.lower() not in destinations:
-                destinations[dest.lower()] = ct.EngineCredentials(engine.lower(), {})
-            t.cast(dict, destinations[dest.lower()].credentials)[key.lower()] = v
+        match = c.DEST_NATIVECRED_PAT.match(k)
+        if match:
+            dest_name = match.group("dest_name")
+            env_creds.setdefault(dest_name.lower(), {})["credentials"] = v
+            continue
+        match = c.DEST_CRED_PAT.match(k)
+        if match:
+            dest_name = match.group("dest_name")
+            frag = env_creds.setdefault(dest_name.lower(), {})
+            if isinstance(frag.get("credentials"), str):
+                continue  # Prioritize native creds
+            frag.setdefault("credentials", {})[match.group("key")] = v
+    for dest, creds in env_creds.items():
+        if "engine" not in creds or "credentials" not in creds:
+            continue
+        destinations[dest.lower()] = ct.EngineCredentials(
+            creds["engine"], creds["credentials"]
+        )
     return destinations
 
 

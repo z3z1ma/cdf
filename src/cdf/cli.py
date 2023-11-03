@@ -3,8 +3,10 @@ import logging
 import os
 import typing as t
 from functools import partial
+from pathlib import Path
 
 import dlt
+import dotenv
 import rich
 import typer
 from rich.logging import RichHandler
@@ -30,8 +32,10 @@ app = typer.Typer(
     add_completion=False,
 )
 
+dotenv.load_dotenv()
+
 CACHE: ct.SourceSpec = {}
-DESTINATIONS: ct.DestinationSpec = index_destinations()
+DESTINATIONS: ct.DestinationSpec = {}
 
 
 @app.callback()
@@ -53,6 +57,9 @@ def main(
         c.COMPONENT_PATHS,
     )
     extend_global_providers(get_config_providers(c.COMPONENT_PATHS))
+    for path in c.COMPONENT_PATHS:
+        dotenv.load_dotenv(dotenv_path=Path(path).expanduser().resolve() / ".env")
+    DESTINATIONS.update(index_destinations())
 
 
 @app.command()

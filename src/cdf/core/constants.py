@@ -3,8 +3,9 @@ import re
 
 CDF_SOURCE = "__CDF_SOURCE__"
 
-DEST_CRED_PAT = re.compile(r"^CDF_(?P<dest_name>.+)__(?P<engine_name>.+)__(?P<key>.+)$")
-NATIVE_DEST_CRED_PAT = re.compile(r"^CDF_(?P<dest_name>.+)__(?P<engine_name>.+)$")
+DEST_ENGINE_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__ENGINE$")
+DEST_CRED_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__CREDENTIALS__(?P<key>.+)$")
+DEST_NATIVECRED_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__CREDENTIALS$")
 
 CDF_FLAG_FILES = [
     "cdf.json",
