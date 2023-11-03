@@ -74,7 +74,7 @@ def discover(source: str) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
     mod, meta = _get_source(source)
     rich.print(
-        f"\nDiscovered {len(mod.resources)} resources in [b red]{source} (v{meta.version})[/b red]:"
+        f"\nDiscovered {len(mod.resources)} resources in [b red]{source}.v{meta.version}[/b red]:"
     )
     for i, resource in enumerate(mod.resources.values(), start=1):
         if resource.selected:
@@ -97,7 +97,7 @@ def head(
     src, meta = _get_source(source)
     res = _get_resource(src, resource)
     rich.print(
-        f"\nHead of [b red]{resource}[/b red] in [b blue]{source} (v{meta.version})[/b blue]:"
+        f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{meta.version}[/b blue]:"
     )
     it = flatten_stream(res)
     v = next(it, None)

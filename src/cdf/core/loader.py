@@ -18,7 +18,6 @@ from types import ModuleType
 
 import cdf.core.constants as c
 import cdf.core.types as ct
-from cdf.core.exception import SourceDirectoryEmpty, SourceDirectoryNotFoundError
 from cdf.core.utils import augmented_path, do
 
 
