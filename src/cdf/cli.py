@@ -11,7 +11,7 @@ from rich.logging import RichHandler
 
 import cdf.core.constants as c
 import cdf.core.types as ct
-from cdf import CDFSource, get_directory_modules, populate_source_cache
+from cdf import CDFSource, CDFSourceMeta, get_directory_modules, populate_source_cache
 from cdf.core.config import extend_global_providers, get_config_providers
 from cdf.core.utils import do, flatten_stream, fn_to_str, index_destinations
 
@@ -72,16 +72,16 @@ def debug() -> None:
 @app.command()
 def discover(source: str) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
-    mod = _get_source(source)
+    mod, meta = _get_source(source)
     rich.print(
-        f"\nDiscovered {len(mod.resources)} resources in [b red]{source}[/b red]:"
+        f"\nDiscovered {len(mod.resources)} resources in [b red]{source} (v{meta.version})[/b red]:"
     )
     for i, resource in enumerate(mod.resources.values(), start=1):
-        if mod.resource_flag_enabled(resource.name):
+        if resource.selected:
             rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
         else:
             rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
-    rich.print("")
+    rich.print(f"\nOwners: [yellow]{meta.owners}[/yellow]\n")
 
 
 @app.command()
@@ -94,9 +94,11 @@ def head(
 
     This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
     """
-    src = _get_source(source)
+    src, meta = _get_source(source)
     res = _get_resource(src, resource)
-    rich.print(f"\nHead of [b red]{resource}[/b red] in [b blue]{source}[/b blue]:")
+    rich.print(
+        f"\nHead of [b red]{resource}[/b red] in [b blue]{source} (v{meta.version})[/b blue]:"
+    )
     it = flatten_stream(res)
     v = next(it, None)
     while num > 0 and v:
@@ -114,13 +116,14 @@ def ingest(
     ),
 ) -> None:
     """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
-    configured_source = _get_source(source)
+    configured_source, meta = _get_source(source)
     if resources:
         configured_source = configured_source.with_resources(*resources)
     if not configured_source.selected_resources:
         raise typer.BadParameter(
             f"No resources selected for source {source}. Use the discover command to see available resources."
             "\nSelect them explicitly with --resource or enable them with feature flags."
+            f"\nReach out to the source owners for more information: {meta.owners}"
         )
     dest = _get_destination(destination)
     rich.print(
@@ -133,8 +136,7 @@ def ingest(
         destination=dest.engine,
         credentials=dest.credentials,
         # TODO: set staging?
-        # Also capture more metadata like "version" for sources to keep our concatenated naming schema
-        dataset_name=source,
+        dataset_name=f"{source}_v{meta.version}",
         progress="alive_progress",
     )
     info = pipeline.run(configured_source)
@@ -153,7 +155,7 @@ def publish() -> None:
     rich.print("Publishing...")
 
 
-def _get_source(source: str) -> CDFSource:
+def _get_source(source: str) -> t.Tuple[CDFSource, CDFSourceMeta]:
     """Get a source from the global cache.
 
     Args:
@@ -167,9 +169,10 @@ def _get_source(source: str) -> CDFSource:
     """
     if source not in CACHE:
         raise typer.BadParameter(f"Source {source} not found.")
-    mod = CACHE[source]()
+    meta = CACHE[source]
+    mod = meta.deferred_fn()
     mod.setup(alias=source)
-    return mod
+    return mod, meta
 
 
 def _get_resource(source: CDFSource, resource: str) -> dlt.sources.DltResource:  # type: ignore
@@ -212,7 +215,8 @@ def _print_sources() -> None:
     rich.print(f"\n Sources Discovered: {len(CACHE)}")
     rich.print(f" Paths Searched: {c.COMPONENT_PATHS}\n")
     rich.print(" [b]Index[/b]")
-    for i, (name, fn) in enumerate(CACHE.items(), start=1):
+    for i, (name, meta) in enumerate(CACHE.items(), start=1):
+        fn = meta.deferred_fn
         rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
 
 

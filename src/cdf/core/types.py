@@ -3,7 +3,7 @@ import typing as t
 from pathlib import Path
 from types import ModuleType
 
-from cdf.core.source import CDFSource
+from cdf.core.source import CDFSourceMeta
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
@@ -15,8 +15,7 @@ Monoid = t.TypeVar("Monoid")
 
 Loadable = t.Union[str, Path, ModuleType]
 
-LazySource = t.Callable[[], CDFSource]
-SourceSpec = t.Dict[str, LazySource]
+SourceSpec = t.Dict[str, CDFSourceMeta]
 
 
 class EngineCredentials(t.NamedTuple):

@@ -1,6 +1,4 @@
-from cdf.core.source import resource as cdf_resource
-from cdf.core.source import source as cdf_source
-from cdf.core.source import to_cdf_meta
+from cdf import CDFSourceMeta, cdf_resource, cdf_source
 
 
 @cdf_resource
@@ -13,4 +11,12 @@ def source1():
     return gen()
 
 
-__CDF_SOURCE__ = to_cdf_meta(source1)
+__CDF_SOURCE__ = dict(
+    source1=CDFSourceMeta(
+        deferred_fn=source1,
+        version=1,
+        owners=("qa-team"),
+        description="A source that enumerates integers.",
+        tags=("deterministic", "test"),
+    )
+)

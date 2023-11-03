@@ -1,9 +1,10 @@
 """The source class for continuous data flow sources."""
 import typing as t
+from dataclasses import dataclass
 from functools import partial
 
 import dlt
-from dlt.common.schema import Schema  # type: ignore
+from dlt.common.schema import Schema
 from dlt.extract.source import DltResource, DltSource
 
 from cdf.core.registry import register_source
@@ -45,18 +46,31 @@ class CDFSource(DltSource):
     def component_id(self, resource_name: str) -> str:
         return f"{self.base_component_id}:{resource_name}"
 
-    def resource_flag_enabled(self, resource_name: str) -> bool:
-        return self.flags.get(self.component_id(resource_name), False)
+
+LazySource = t.Callable[[], CDFSource]
 
 
-def to_cdf_meta(*funcs: t.Callable) -> t.Dict[str, t.Callable]:
-    return {f.__name__: f for f in funcs}
+@dataclass
+class CDFSourceMeta:
+    """A class to hold metadata about a source."""
+
+    deferred_fn: LazySource
+    version: int = 1
+    owners: t.Sequence[str] = ()
+    description: str = ""
+    tags: t.Sequence[str] = ()
 
 
-source = partial(dlt.source, _impl_cls=CDFSource)  # type: ignore
+source = partial(dlt.source, _impl_cls=CDFSource)
 """A wrapper around dlt.source that registers the source class with the registry."""
 
 resource = dlt.resource  # type: ignore
-"""A wrapper around dlt.resource."""
+"""A wrapper around dlt.resource. Reserving this for future use."""
 
-__all__ = ["CDFSource", "source", "resource", "to_cdf_meta"]
+__all__ = [
+    "CDFSource",
+    "CDFSourceMeta",
+    "LazySource",
+    "source",
+    "resource",
+]
