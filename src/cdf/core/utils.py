@@ -49,7 +49,9 @@ def do(fn: t.Callable[[A], B], it: t.Iterable[A]) -> t.List[B]:
     return list(map(fn, it))
 
 
-def index_destinations() -> ct.DestinationSpec:
+def index_destinations(
+    environment: t.Dict[str, str] | None = None
+) -> ct.DestinationSpec:
     """Index destinations from the environment based on a standard convention.
 
     Notes:
@@ -65,7 +67,7 @@ def index_destinations() -> ct.DestinationSpec:
     destinations: ct.DestinationSpec = {
         "default": ct.EngineCredentials("duckdb", "duckdb:///cdf.db"),
     }
-    env = os.environ.copy()
+    env = environment or os.environ.copy()
     env_creds = {}
     for k, v in env.items():
         match = c.DEST_ENGINE_PAT.match(k)
@@ -84,7 +86,7 @@ def index_destinations() -> ct.DestinationSpec:
             frag = env_creds.setdefault(dest_name.lower(), {})
             if isinstance(frag.get("credentials"), str):
                 continue  # Prioritize native creds
-            frag.setdefault("credentials", {})[match.group("key")] = v
+            frag.setdefault("credentials", {})[match.group("key").lower()] = v
     for dest, creds in env_creds.items():
         if "engine" not in creds or "credentials" not in creds:
             continue

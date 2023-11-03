@@ -30,11 +30,12 @@ def test_index_destinations():
             "SOME_VAR": "some_value",  # This should be ignored
             "ANOHER_VAR": "another_value",  # This should be ignored
             "CDF_WRONGSYNTAX_NO_DUNDER": "wrong_syntax_value",  # This should be ignored
-            "CDF_TEST_DUCKDB__DUCKDB": "duckdb:///native/connection/neat",  # Native cred is a string (no key)
-            "CDF_PROD_DB__BIGQUERY__PROJECT_ID": "prod",  # Complex cred is a dict (has keys)
-            "CDF_PROD_DB__BIGQUERY__DATASET_ID": "public",
-            "CDF_PROD_DB__BIGQUERY__CREDENTIALS_FILE": "/path/to/credentials.json",
-            "CDF_PROD_DB__BIGQUERY__KEY__OTHER": "too_many_parts",  # This should be ignored (flat dicts only)
+            "CDF__TEST_DUCKDB__ENGINE": "duckdb",  # Native cred is a string (no key)
+            "CDF__TEST_DUCKDB__CREDENTIALS": "duckdb:///native/connection/neat",  # Native cred is a string (no key)
+            "CDF__PROD_DB__ENGINE": "bigquery",  # Complex cred is a dict (has keys)
+            "CDF__PROD_DB__CREDENTIALS__PROJECT_ID": "prod",  # Complex cred is a dict (has keys)
+            "CDF__PROD_DB__CREDENTIALS__DATASET_ID": "public",
+            "CDF__PROD_DB__CREDENTIALS__CREDENTIALS_FILE": "/path/to/credentials.json",
         }
     )
     assert "default" in destinations
