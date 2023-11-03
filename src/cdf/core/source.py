@@ -23,15 +23,20 @@ class CDFSource(DltSource):
         register_source(source=self)  # TODO: no value in this, remove
         self.flags = {}
 
-    def setup(self, alias: str | None = None) -> None:
+    def setup(
+        self, alias: str | None = None, raise_on_no_resources: bool = False
+    ) -> None:
         import cdf.core.feature_flags as ff
 
         if alias:
             self.name = alias
-
-        for r_name, _ in self.resources.items():
-            component_id = f"{self.base_component_id}:{r_name}"
-            self.flags.update(ff.get_component_ff(component_id))
+        for name, resource in self.resources.items():
+            component_id = f"{self.base_component_id}:{name}"
+            flag = ff.get_component_ff(component_id)
+            resource.selected = flag[component_id]
+            self.flags.update(flag)
+        if raise_on_no_resources and not self.resources.selected:
+            raise ValueError(f"No resources selected for source {self.name}")
 
     @property
     def base_component_id(self) -> str:

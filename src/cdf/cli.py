@@ -47,7 +47,7 @@ def main(
     - ( :shuffle_tracks_button: ) [b red]Transforms[/b red] are responsible for transforming data in a data warehouse.
     - ( :mailbox: ) [b yellow]Publishers[/b yellow] are responsible for publishing data to an external system.
     """
-    c.COMPONENT_PATHS.extend(paths)
+    c.COMPONENT_PATHS.extend(filter(lambda p: p not in c.COMPONENT_PATHS, paths))
     do(
         lambda path: populate_source_cache(CACHE, partial(get_directory_modules, path)),
         c.COMPONENT_PATHS,
@@ -94,10 +94,10 @@ def head(
 
     This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
     """
-    mod = _get_source(source)
-    r = _get_resource(mod, resource)
+    src = _get_source(source)
+    res = _get_resource(src, resource)
     rich.print(f"\nHead of [b red]{resource}[/b red] in [b blue]{source}[/b blue]:")
-    it = flatten_stream(r)
+    it = flatten_stream(res)
     v = next(it, None)
     while num > 0 and v:
         rich.print(v)
@@ -117,6 +117,11 @@ def ingest(
     configured_source = _get_source(source)
     if resources:
         configured_source = configured_source.with_resources(*resources)
+    if not configured_source.selected_resources:
+        raise typer.BadParameter(
+            f"No resources selected for source {source}. Use the discover command to see available resources."
+            "\nSelect them explicitly with --resource or enable them with feature flags."
+        )
     dest = _get_destination(destination)
     rich.print(
         f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest.engine}[/b red]..."

@@ -1,7 +1,4 @@
-import pytest
-
 import cdf.core.registry as registry
-from cdf.core.exception import SourceDirectoryEmpty, SourceDirectoryNotFoundError
 from cdf.core.loader import get_directory_modules, populate_source_cache
 
 
