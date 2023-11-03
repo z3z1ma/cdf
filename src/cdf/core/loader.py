@@ -27,10 +27,6 @@ def get_directory_modules(base_directory: Path | str) -> t.Iterable[ct.Loadable]
     Args:
         base_directory: The base directory to load modules from.
 
-    Raises:
-        SourceDirectoryNotFoundError: If the base directory does not exist.
-        SourceDirectoryNotFoundError: If the base directory is not a directory.
-
     Returns:
         An iterable of modules.
     """
