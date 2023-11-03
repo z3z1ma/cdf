@@ -6,7 +6,3 @@ harness.project = "DataOps_Platform"
 # harness.api_key = ""
 # harness.sdk_key = ""
 
-[destination.local]
-engine = "duckdb"
-config = { credentials = "cdf.db" }
-
