@@ -1,10 +1,11 @@
 """The source class for continuous data flow sources."""
 import typing as t
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 import dlt
 from dlt.common.schema import Schema
+from dlt.common.typing import TDataItem
 from dlt.extract.source import DltResource, DltSource
 
 from cdf.core.registry import register_source
@@ -34,7 +35,7 @@ class CDFSource(DltSource):
         for name, resource in self.resources.items():
             component_id = f"{self.base_component_id}:{name}"
             flag = ff.get_component_ff(component_id)
-            resource.selected = flag[component_id]
+            resource.selected = flag.get(component_id, False)
             self.flags.update(flag)
         if raise_on_no_resources and not self.resources.selected:
             raise ValueError(f"No resources selected for source {self.name}")
@@ -59,6 +60,9 @@ class CDFSourceMeta:
     owners: t.Sequence[str] = ()
     description: str = ""
     tags: t.Sequence[str] = ()
+    metrics: t.Dict[str, t.Callable[[TDataItem, float | int], float | int]] = field(
+        default_factory=dict
+    )
 
 
 source = partial(dlt.source, _impl_cls=CDFSource)

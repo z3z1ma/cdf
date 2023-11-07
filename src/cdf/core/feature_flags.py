@@ -224,6 +224,7 @@ def get_or_create_flag_harness(
     cache: TFlags,
     component_id: str,
     /,
+    workspace_path: Path | None = None,
     *,
     account: str | None = None,
     project: str | None = None,
@@ -243,6 +244,7 @@ def get_or_create_flag_harness(
     Returns:
         dict: The populated cache.
     """
+    _ = workspace_path  # We don't need the path
     _ff_logger.setLevel(logging.ERROR)
     cache = cache if cache is not None else {}
     ff_client = _get_harness_client(sdk_key or dlt.secrets["ff.harness.sdk_key"])
@@ -278,6 +280,7 @@ def get_or_create_flag_launchdarkly(
     cache: TFlags,
     component_id: str,
     /,
+    workspace_path: Path | None = None,
     *,
     account: str | None = None,
     api_key: str | None = None,
@@ -289,6 +292,7 @@ def get_or_create_flag_local(
     cache: TFlags,
     component_id: str,
     /,
+    workspace_path: Path | None = None,
     *,
     component_paths: t.Iterable[str | Path] | None = None,
     max_depth: int = 3,
@@ -305,9 +309,13 @@ def get_or_create_flag_local(
     Returns:
         dict: The populated cache.
     """
+    if workspace_path is None:
+        workspace_path = Path.cwd()
     _ = component_id  # This is cheap, we don't need the id
     cache = cache if cache is not None else {}
-    component_paths = component_paths or [Path.home() / ".cdf"] + c.COMPONENT_PATHS
+    component_paths = component_paths or [Path.home() / ".cdf"] + [
+        workspace_path / cp for cp in c.COMPONENT_PATHS
+    ]
     for raw_path in component_paths:
         path = Path(raw_path).expanduser().resolve()
         search_parent_dirs = path != Path.home()
@@ -349,6 +357,7 @@ def get_or_create_flag_dispatch(
     cache: TFlags,
     component_id: str,
     /,
+    workspace_path: Path | None = None,
     *,
     with_provider: Providers | None = None,
     **kwargs: t.Any,
@@ -358,6 +367,8 @@ def get_or_create_flag_dispatch(
     This function dispatches to the appropriate implementation based on the
     provider specified in the config.
     """
+    if workspace_path is None:
+        workspace_path = Path.cwd()
     provider: Providers = with_provider or dlt.config["ff.provider"]
     if provider == "local":
         return get_or_create_flag_local(cache, component_id, **kwargs)
@@ -373,8 +384,11 @@ def get_or_create_flag_dispatch(
 
 def get_component_ff(
     component_id: str,
-    populate_cache_fn: t.Callable[[dict, str], TFlags] = get_or_create_flag_dispatch,
+    populate_cache_fn: t.Callable[
+        [dict, str, Path], TFlags
+    ] = get_or_create_flag_dispatch,
     cache: TFlags | None = None,
+    workspace_path: str | Path | None = None,
 ) -> TFlags:
     """Get flags for a specific component id populating the cache if needed.
 
@@ -390,8 +404,12 @@ def get_component_ff(
     Returns:
         dict: The subset of flags related to the component, empty dict if no flags found
     """
+    if workspace_path is None:
+        workspace_path = Path.cwd()
+    else:
+        workspace_path = Path(workspace_path).expanduser().resolve()
     cache = cache if cache is not None else CACHE
     if not cache or not any(k.startswith(component_id) for k in cache):
-        populate_cache_fn(cache, component_id)
+        populate_cache_fn(cache, component_id, workspace_path)
     subset = {k: v for k, v in cache.items() if k.startswith(component_id)}
     return subset

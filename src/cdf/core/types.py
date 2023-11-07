@@ -11,7 +11,6 @@ P = t.ParamSpec("P")
 A = t.TypeVar("A")
 B = t.TypeVar("B")
 
-Monoid = t.TypeVar("Monoid")
 
 Loadable = t.Union[str, Path, ModuleType]
 
@@ -26,16 +25,20 @@ class EngineCredentials(t.NamedTuple):
 DestinationSpec = t.Dict[str, EngineCredentials]
 
 
-class Monad(t.Generic[A, Monoid]):
-    def __init__(self, value: A, monoid: Monoid = None) -> None:
+class Workspace(t.TypedDict):
+    members: t.List[str]
+
+
+class Monad(t.Generic[A, T]):
+    def __init__(self, value: A, meta: T = None) -> None:
         self._value: A = value
-        self._monoid: Monoid = monoid
+        self._meta: T = meta
 
-    def map(self, fn: t.Callable[[A], B]) -> "Monad[B, Monoid]":
+    def map(self, fn: t.Callable[[A], B]) -> "Monad[B, T]":
         # LOGIC HERE
-        return Monad(fn(self._value), self._monoid)
+        return Monad(fn(self._value), self._meta)
 
-    def flatmap(self, fn: t.Callable[[A], "Monad[B, Monoid]"]) -> "Monad[B, Monoid]":
+    def flatmap(self, fn: t.Callable[[A], "Monad[B, T]"]) -> "Monad[B, T]":
         # LOGIC HERE
         return fn(self._value)
 
@@ -43,9 +46,9 @@ class Monad(t.Generic[A, Monoid]):
         return self._value
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}({self._value}, {self._monoid})"
+        return f"{self.__class__.__name__}({self._value}, {self._meta})"
 
-    def __call__(self, fn: t.Callable[[A], B]) -> "Monad[B, Monoid]":
+    def __call__(self, fn: t.Callable[[A], B]) -> "Monad[B, T]":
         return self.map(fn)
 
     def __str__(self) -> str:
@@ -57,13 +60,13 @@ class Monad(t.Generic[A, Monoid]):
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, self.__class__):
             return False
-        return self._value == other._value and self._monoid == other._monoid
+        return self._value == other._value and self._meta == other._meta
 
     def __ne__(self, other: object) -> bool:
         return not self.__eq__(other)
 
     def __hash__(self) -> int:
-        return hash((self._value, self._monoid))
+        return hash((self._value, self._meta))
 
     def __iter__(self) -> t.Iterator[A]:
         yield self._value
@@ -113,7 +116,7 @@ class Result(Monad[A | None, Exception | None]):
 
     @property
     def error(self) -> Exception | None:
-        return self._monoid
+        return self._meta
 
     @property
     def result(self) -> A | None:

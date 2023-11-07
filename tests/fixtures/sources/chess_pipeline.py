@@ -25,5 +25,9 @@ __CDF_SOURCE__ = dict(
         owners=("qa-team"),
         description="A source that extracts chess player data.",
         tags=("api", "live", "test"),
+        metrics={
+            "count": lambda item, metric=0: metric + 1,
+            "max_acv": lambda item, metric=0: max(item["acv"], metric),
+        },
     ),
 )

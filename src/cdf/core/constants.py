@@ -2,6 +2,7 @@
 import re
 
 CDF_SOURCE = "__CDF_SOURCE__"
+CDF_WORKSPACE_FILE = "cdf_workspace.toml"
 
 DEST_ENGINE_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__ENGINE$")
 DEST_CRED_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__CREDENTIALS__(?P<key>.+)$")
@@ -19,3 +20,9 @@ CDF_CONFIG_FILE = "cdf_config.toml"
 CDF_SECRETS_FILE = "cdf_secrets.toml"
 
 COMPONENT_PATHS = ["./sources", "./transforms", "./publishers"]
+
+DEFAULT_WORKSPACE = "default"
+
+SOURCES_PATH = "./sources"
+MODELS_PATH = "./models"
+PUBLISHERS_PATH = "./publishers"

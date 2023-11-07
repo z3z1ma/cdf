@@ -18,7 +18,7 @@ from types import ModuleType
 
 import cdf.core.constants as c
 import cdf.core.types as ct
-from cdf.core.utils import augmented_path, do
+from cdf.core.utils import augmented_path
 
 
 def get_directory_modules(base_directory: Path | str) -> t.Iterable[ct.Loadable]:
@@ -70,7 +70,7 @@ def _load_module_from_name(name: str) -> ModuleType:
     return importlib.import_module(name)
 
 
-def load_module(mod: ct.Loadable) -> ModuleType:
+def load_module(mod: ct.Loadable) -> ct.Result[ModuleType]:
     """Load a module.
 
     Args:
@@ -90,7 +90,7 @@ def load_module(mod: ct.Loadable) -> ModuleType:
         result = ct.Result.apply(_load_module_from_path, mod)
     else:
         raise TypeError(f"Invalid module type {type(mod)}")
-    return result.expect()
+    return result
 
 
 def populate_source_cache(
@@ -99,8 +99,9 @@ def populate_source_cache(
     get_modules_fn: t.Callable[[], t.Iterable[ct.Loadable]] = partial(
         get_directory_modules, Path("./sources")
     ),
-    load_module_fn: t.Callable[[ct.Loadable], ModuleType] = load_module,
+    load_module_fn: t.Callable[[ct.Loadable], ct.Result] = load_module,
     clear_linecache: bool = True,
+    namespace: str | None = None,
 ) -> ct.SourceSpec:
     """Load all sources from the sources directory.
 
@@ -118,12 +119,16 @@ def populate_source_cache(
     cache = cache if cache is not None else {}
     if clear_linecache:
         linecache.clearcache()
-    do(
-        cache.update,
-        map(
-            lambda mod: getattr(load_module_fn(mod), c.CDF_SOURCE, {}), get_modules_fn()
-        ),
-    )
+    for mod in get_modules_fn():
+        res, err = load_module_fn(mod)
+        if err:
+            # Warn here
+            continue
+        assert isinstance(res, ModuleType)
+        for cdf_source_name, cdf_meta in getattr(res, c.CDF_SOURCE, {}).items():
+            if namespace not in (None, c.DEFAULT_WORKSPACE):
+                cdf_source_name = f"{namespace}.{cdf_source_name}"
+            cache[cdf_source_name] = cdf_meta
     return cache
 
 
