@@ -76,10 +76,12 @@ def set_log_level(level: int) -> None:
 class LogMethod(t.Protocol):
     """Protocol for logger methods."""
 
-    def __call__(self, message: str) -> None:
+    def __call__(self, message: str, *args: t.Any, **kwargs: t.Any) -> None:
         ...
 
 
 def __getattr__(name: str) -> LogMethod:
     """Get a logger method from the package logger."""
+    if not LOGGER.configured:
+        configure_logging()
     return getattr(LOGGER, name)
