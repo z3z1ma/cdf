@@ -1,0 +1,4 @@
+{
+  "source:integration_test.integration_test.pokemon:berries": false,
+  "source:integration_test.integration_test.pokemon:pokemon": false
+}
