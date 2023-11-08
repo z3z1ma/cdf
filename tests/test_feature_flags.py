@@ -8,7 +8,7 @@ from dlt.common.configuration.specs.config_providers_context import (
     ConfigProvidersContext,
 )
 
-from cdf.core.config import get_config_providers
+from cdf.core.config import find_cdf_config_providers
 from cdf.core.feature_flags import get_component_ff, get_or_create_flag_dispatch
 
 
@@ -16,19 +16,19 @@ from cdf.core.feature_flags import get_component_ff, get_or_create_flag_dispatch
 def cdf_provider() -> t.Iterator[ConfigProvidersContext]:
     ctx = ConfigProvidersContext()
     ctx.providers.clear()
-    ctx.add_provider(get_config_providers([Path("tests/fixtures/sources")])[0])
+    ctx.add_provider(next(find_cdf_config_providers([Path("tests/fixtures")])))
     with Container().injectable_context(ctx):
         yield ctx
 
 
-def test_local_flags(cdf_provider, mocker):
+def test_local_flags(cdf_provider):
     _ = cdf_provider
     # Test case 1: Can populate cache from local files
     # Cache is merged from multiple files based on traversing the directory tree
     # Furthermore the passed cache is mutated in place
     cache = {}
     get_or_create_flag_dispatch(
-        cache, "source:source1:gen", component_paths=[Path("tests/fixtures/sources")]
+        cache, "source:source1:gen", component_paths=[Path("tests/fixtures")]
     )
     assert cache == {
         "source:source1:gen": True,

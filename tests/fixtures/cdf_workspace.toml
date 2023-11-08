@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+  "unit_test:ut_project",
+  "integration_test:it_project",
+  "e2e_test:e2e_project",
+]

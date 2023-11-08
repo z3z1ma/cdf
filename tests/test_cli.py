@@ -9,37 +9,29 @@ from typer.testing import CliRunner
 
 from cdf.cli import app
 
-
-@pytest.fixture
-def empty_provider() -> t.Iterator[ConfigProvidersContext]:
-    ctx = ConfigProvidersContext()
-    ctx.providers.clear()
-    with Container().injectable_context(ctx):
-        yield ctx
-
-
 runner = CliRunner()
 
 
 def test_help():
+    # Basic sanity check
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
 
 
-def test_index(empty_provider, mocker):
+def test_index(mocker):
     # Protect mut state
-    _ = empty_provider
     mocker.patch("cdf.cli.CACHE", {})
-    mocker.patch("cdf.core.constants.COMPONENT_PATHS", [])
 
-    result = runner.invoke(app, ["-p", "./tests/fixtures/basic_sources", "index"])
+    # Ensure invoking at root of workspace works
+    result = runner.invoke(app, ["-p", "./tests/fixtures", "index"])
     assert result.exit_code == 0
     assert "source1" in result.stdout
 
+    # Ensure we traverse upwards and find the workspace in empty dir
     result = runner.invoke(app, ["-p", "./tests/fixtures/empty", "index"])
     assert result.exit_code == 0
 
-    # Uses partials
-    result = runner.invoke(app, ["-p", "./tests/fixtures/sources", "index"])
+    # Ensure we traverse upwards and find the workspace in existing single project dir
+    result = runner.invoke(app, ["-p", "./tests/fixtures/ut_project", "index"])
     assert result.exit_code == 0
     assert "pokemon" in result.stdout
