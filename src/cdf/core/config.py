@@ -104,48 +104,32 @@ def config_provider_factory(
     return prov
 
 
-def get_config_providers(
+def find_cdf_config_providers(
     search_paths: t.Sequence[str | Path] | str | Path,
     search_cwd: bool = True,
     max_depth: int = 3,
-) -> t.List[providers.ConfigProvider]:
-    """Get the first config provider found in the search paths.
-
-    We search in the order of the search paths, and the first provider found is returned. We
-    expect both cdf_config.toml and cdf_secrets.toml to be in the same directory wherever the
-    first one is found. An empty list is returned if no config provider is found. The net effect
-    of this approach is that the config provider found is the one closest to the current working
-    directory but we are not constrained to be in the same directory as the config provider.
+) -> t.Iterator[providers.ConfigProvider]:
+    """Find CDF configuration files in the search paths.
 
     Args:
         search_paths: The paths to search for config files.
         search_cwd: Whether to search the current working directory.
         max_depth: The maximum depth to search.
 
-    Returns:
-        The first config provider found.
     """
     if isinstance(search_paths, (str, Path)):
         search_paths = [search_paths]
     if search_cwd:
         t.cast(t.List[str], search_paths).insert(0, ".")
-    providers = []
     for raw_path in search_paths:
-        path, local_depth = Path(raw_path).expanduser().resolve(), 0
-        while local_depth < max_depth and path != path.parent:
+        path, depth = Path(raw_path).expanduser().resolve(), 0
+        while depth < max_depth and path.parents:
             if path.joinpath(c.CDF_CONFIG_FILE).exists():
-                providers.append(CDFConfigTomlProvider(project_dir=path))
+                yield CDFConfigTomlProvider(project_dir=path)
             if path.joinpath(c.CDF_SECRETS_FILE).exists():
-                providers.append(CDFSecretsTomlProvider(project_dir=path))
-            # Get the first instance or continue traversing?
-            # Current decision is to get the first instance
-            if providers:
-                break
+                yield CDFSecretsTomlProvider(project_dir=path)
             path = path.parent
-            local_depth += 1
-        if providers:
-            break
-    return providers
+            depth += 1
 
 
 def extend_config_providers(
