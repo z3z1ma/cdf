@@ -14,6 +14,7 @@ from cdf.core.feature_flags import get_or_create_flag_dispatch, get_source_flags
 
 @pytest.fixture
 def cdf_provider() -> t.Iterator[ConfigProvidersContext]:
+    """Config provider which gives a test function an isolated context with cdf_config.toml loaded"""
     ctx = ConfigProvidersContext()
     ctx.providers.clear()
     ctx.add_provider(next(find_cdf_config_providers([Path("tests/fixtures")])))
@@ -23,6 +24,7 @@ def cdf_provider() -> t.Iterator[ConfigProvidersContext]:
 
 @pytest.fixture
 def mocksource():
+    """A mock source that shadows the source in the fixtures directory"""
     f = dlt.resource(
         iter(
             [
