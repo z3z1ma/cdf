@@ -1,3 +1,4 @@
+import cdf.core.logger as cdf_logger
 import cdf.core.registry as registry
 from cdf.core.loader import get_directory_modules, populate_source_cache
 from cdf.core.source import CDFSource, CDFSourceMeta
@@ -12,4 +13,5 @@ __all__ = [
     "registry",
     "populate_source_cache",
     "get_directory_modules",
+    "cdf_logger",
 ]

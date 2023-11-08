@@ -13,7 +13,13 @@ from rich.logging import RichHandler
 
 import cdf.core.constants as c
 import cdf.core.types as ct
-from cdf import CDFSource, CDFSourceMeta, get_directory_modules, populate_source_cache
+from cdf import (
+    CDFSource,
+    CDFSourceMeta,
+    cdf_logger,
+    get_directory_modules,
+    populate_source_cache,
+)
 from cdf.core.config import add_providers_from_workspace
 from cdf.core.utils import (
     flatten_stream,
@@ -54,31 +60,51 @@ def main(
         default_factory=Path.cwd,
         help="Path to the project root. Defaults to cwd. Parent dirs are searched for a workspace file.",
     ),
+    log_level: str = typer.Option(
+        "INFO",
+        "-l",
+        "--log-level",
+        help="Set the log level. Defaults to INFO.",
+        envvar="CDF_LOG_LEVEL",
+    ),
 ):
-    """:sparkles: A [b]framework[b] for managing and running [u]ContinousDataflow[/u] projects. :sparkles:
+    """:sparkles: a [b]framework[b] for managing and running [u]continousdataflow[/u] projects. :sparkles:
 
     [br /]
-    - ( :electric_plug: ) [b blue]Sources[/b blue]    are responsible for fetching data from a data source.
-    - ( :shuffle_tracks_button: ) [b red]Transforms[/b red] are responsible for transforming data in a data warehouse.
-    - ( :mailbox: ) [b yellow]Publishers[/b yellow] are responsible for publishing data to an external system.
+    - ( :electric_plug: ) [b blue]sources[/b blue]    are responsible for fetching data from a data source.
+    - ( :shuffle_tracks_button: ) [b red]transforms[/b red] are responsible for transforming data in a data warehouse.
+    - ( :mailbox: ) [b yellow]publishers[/b yellow] are responsible for publishing data to an external system.
     """
+    # Set log level
+    cdf_logger.set_level(log_level)
+
     # Load workspaces
-    workspaces: t.Dict[str, Path] = {}  # TODO: make this a better data structure?
+    workspaces: t.Dict[str, Path] = {}
     workspace, fpath = read_workspace_file(root)
     if workspace and fpath:
+        cdf_logger.debug("Found workspace file %s, using multi-project layout", fpath)
         for member in workspace["members"]:
-            workspaces.update(dict((parse_workspace_member(member),)))
+            wname, wpath = parse_workspace_member(member)
+            workspaces.update({wname: fpath / wpath})
     else:
+        cdf_logger.debug(
+            "No workspace file found in %s, using single-project layout", root
+        )
         fpath = root.expanduser().resolve()
         workspaces[c.DEFAULT_WORKSPACE] = fpath
 
     # Load root .env
-    dotenv.load_dotenv(dotenv_path=fpath / ".env")
+    if dotenv.load_dotenv(dotenv_path=fpath / ".env"):
+        cdf_logger.debug("Loaded .env file from %s", fpath)
 
     # Load workspace sources
     for workspace_name, workspace_path in workspaces.items():
+        cdf_logger.debug("Loading workspace %s from %s", workspace_name, workspace_path)
+
         # Do workspace .env
-        dotenv.load_dotenv(dotenv_path=workspace_path / ".env")
+        if dotenv.load_dotenv(dotenv_path=workspace_path / ".env"):
+            cdf_logger.debug("Loaded .env file from %s", workspace_path)
+
         # Do sources
         populate_source_cache(
             CACHE,
@@ -87,12 +113,14 @@ def main(
             ),
             namespace=workspace_name,
         )
+
         # Do SQLMesh
         ...
+
         # Do publishers
         ...
 
-    # Do destinations, TODO: probably better ways to do this jit
+    # Do destinations, TODO: better ways to do this, was just for POC
     DESTINATIONS.update(index_destinations())
 
     # Capture workspaces in the CLI context
