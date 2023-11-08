@@ -1,7 +1,7 @@
 import typing as t
-from functools import partial
 from pathlib import Path
 
+import dlt
 import pytest
 from dlt.common.configuration.container import Container
 from dlt.common.configuration.specs.config_providers_context import (
@@ -9,7 +9,7 @@ from dlt.common.configuration.specs.config_providers_context import (
 )
 
 from cdf.core.config import find_cdf_config_providers
-from cdf.core.feature_flags import get_or_create_flag_dispatch, get_source_ff
+from cdf.core.feature_flags import get_or_create_flag_dispatch, get_source_flags
 
 
 @pytest.fixture
@@ -21,43 +21,112 @@ def cdf_provider() -> t.Iterator[ConfigProvidersContext]:
         yield ctx
 
 
-@pytest.mark.skip(reason="TODO: Fix this test")
-def test_local_flags(cdf_provider, mocker):
+@pytest.fixture
+def mocksource():
+    f = dlt.resource(
+        iter(
+            [
+                {"a": 1, "b": True, "c": "foo"},
+                {"a": 2, "b": False, "c": "bar"},
+                {"a": 3, "b": True, "c": "baz"},
+            ]
+        ),
+        name="someresource",
+    )
+    return dlt.source(lambda: f, name="mocksource")
+
+
+def test_local_flags(cdf_provider, mocksource, mocker):
     _ = cdf_provider
-    # Test case 1: Can populate cache from local files
-    # Cache is merged from multiple files based on traversing the directory tree
-    # Furthermore the passed cache is mutated in place
+    # patch write_text in Path
+    mocker.patch("pathlib.Path.write_text", return_value=10)
+
+    # Test case 1: Can populate a flag cache from local files
+    # Note: Local cache provider grabs all flags regardless of passed source
+    # It is up to the provider to filter flags using the source if they want.
     cache = {}
     get_or_create_flag_dispatch(
         cache,
-        "source:source1:gen",
+        mocksource(),
         workspace_name="ci",
         workspace_path=Path.cwd(),
         component_paths=[Path("tests/fixtures")],
     )
     assert cache == {
-        "source:source1:gen": True,
-        "source:mocksource:someresource": True,
-        "source:pokemon:berries": False,
-        "source:pokemon:pokemon": True,
-        "source:chess_player_data:players_archives": False,
-        "source:chess_player_data:players_games": True,
-        "source:chess_player_data:players_online_status": True,
-        "source:chess_player_data:players_profiles": True,
+        "source:ci.source1:gen": True,
+        "source:ci.mocksource:someresource": True,
     }
 
-    # Test case 2: Can get flags for a component with a parameterized
-    # populate_cache_fn, in this case we use the local implementation
-    # but we could use a harness.io implementation
-    inline_cache = {"source:source1:cachedresource": False}
-    cache_fn = partial(
-        get_or_create_flag_dispatch,
-        component_paths=[Path("tests/fixtures/basic_sources")],
+    # Test case 2: Cache is merged from multiple files based on traversing the
+    # directory tree. (No workspace)
+    cache = {}
+    get_or_create_flag_dispatch(
+        cache,
+        mocksource(),
+        workspace_name="awesome",
+        workspace_path=Path.cwd(),
+        component_paths=[Path("tests/fixtures/it_project/sources")],
     )
-    flags = get_component_ff("source:mocksource:someresource", cache_fn, inline_cache)
-    assert flags == {"source:mocksource:someresource": True}
-    assert inline_cache == {
-        "source:mocksource:someresource": True,
-        "source:source1:gen": True,
-        "source:source1:cachedresource": False,
+    assert cache == {
+        "source:awesome.source1:gen": True,
+        "source:awesome.mocksource:someresource": True,
+        "source:awesome.pokemon:berries": False,
+        "source:awesome.pokemon:pokemon": True,
+        "source:awesome.chess_player_data:players_archives": False,
+        "source:awesome.chess_player_data:players_games": True,
+        "source:awesome.chess_player_data:players_online_status": True,
+        "source:awesome.chess_player_data:players_profiles": True,
+    }
+
+    # Test case 3: Cached flags are merged with new flags
+    cache = {"source:otherworkspace.users": True}
+    get_or_create_flag_dispatch(
+        cache,
+        mocksource(),
+        workspace_name="ci",
+        workspace_path=Path.cwd(),  # No workspace
+        component_paths=[Path("tests/fixtures")],
+    )
+    assert cache == {
+        "source:ci.source1:gen": True,
+        "source:ci.mocksource:someresource": True,
+        "source:otherworkspace.users": True,
+    }
+
+    # Test case 4: Flags are gathered from all workspaces in multi-workspace project
+    # default component paths (most typical usage pattern)
+    # This will also not traverse higher than the workspace path
+    cache = {}
+    get_or_create_flag_dispatch(
+        cache,
+        mocksource(),
+        workspace_name="awesome",
+        workspace_path=Path("tests/fixtures/it_project"),
+    )
+    assert cache == {
+        "source:awesome.pokemon:berries": False,
+        "source:awesome.pokemon:pokemon": True,
+        "source:awesome.chess_player_data:players_archives": False,
+        "source:awesome.chess_player_data:players_games": True,
+        "source:awesome.chess_player_data:players_online_status": True,
+        "source:awesome.chess_player_data:players_profiles": True,
+    }
+
+    # Test case 5: Our primary entrypoint, get flags relevant to a specific source
+    # The populate_cache_fn makes the function composable as the only requirement is
+    # to take a set of inputs and mutate and return a cache dict, for this test we use
+    # the default implementation which dispatches based on config / env vars.
+    # The dict keys are source:<workspace>.<source_name>:<resource_name> as seen above
+    src = mocksource()
+    cache = {}
+    get_source_flags(
+        src,
+        cache=cache,
+        workspace_name="ci",
+        workspace_path=Path("tests/fixtures"),
+    )
+    assert src in cache
+    assert cache[src] == {
+        "source:ci.source1:gen": True,
+        "source:ci.mocksource:someresource": True,
     }

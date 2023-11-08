@@ -132,11 +132,11 @@ def search_merge_json(path: Path, fname: str, max_depth: int = 3) -> t.Dict[str,
     if not path.exists():
         return obj
     depth = 0
-    while path.parents and depth < max_depth:
+    while path.parents and depth <= max_depth:
         f = path / fname
         path = path.parent
+        depth += 1
         if not f.exists():
-            depth += 1
             continue
         with suppress(json.JSONDecodeError):
             obj.update(json.loads(f.read_text()))

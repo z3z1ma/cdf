@@ -34,7 +34,7 @@ LOG_LEVEL = logging.INFO
 """The active log level for CDF."""
 
 
-def configure(level: int = logging.INFO) -> None:
+def configure(level: int | str = logging.INFO) -> None:
     """Configure logging.
 
     Args:
@@ -42,7 +42,7 @@ def configure(level: int = logging.INFO) -> None:
     """
     if LOGGER.extra.get("configured"):
         return
-    set_level(level)
+    LOGGER.setLevel(LOG_LEVEL := level)
     console_handler = RichHandler(
         LOG_LEVEL,
         markup=True,
@@ -89,7 +89,10 @@ def set_level(level: int | str) -> None:
     """
     global LOG_LEVEL
 
-    LOGGER.setLevel(LOG_LEVEL := level)
+    if not LOGGER.extra.get("configured"):
+        configure(LOG_LEVEL := level)
+    else:
+        LOGGER.setLevel(LOG_LEVEL := level)
 
 
 def __getattr__(name: str) -> "LogMethod":

@@ -29,12 +29,7 @@ from featureflags.util import log as _ff_logger
 import cdf.core.constants as c
 import cdf.core.logger as cdf_logger
 from cdf.core.types import Result
-from cdf.core.utils import (
-    do,
-    get_source_component_id,
-    qualify_source_component_id,
-    search_merge_json,
-)
+from cdf.core.utils import get_source_component_id, qualify_source_component_id
 
 TFlags = t.Dict[str, bool]
 TFlagsSource = t.Dict[DltSource, TFlags]
@@ -310,71 +305,81 @@ def get_or_create_flag_local(
     workspace_path: Path,
     *,
     component_paths: t.Iterable[str | Path] | None = None,
-    max_depth: int = 3,
 ) -> TFlags:
     """Populate a cache with flags.
 
     Args:
         cache: A cache to populate.
-        component_id: The id of the component to search for flags. Used to filter the cache.
-            This is not used for the local implementation but is a required parameter for
-            the interface.
-        component_paths: A list of paths to search for flags. Supplied via closure.
+        source: The DltSource to get flags for.
+        workspace_name: The name of the workspace.
+        workspace_path: The path to the workspace.
+        component_paths: The paths to search for flags. These are relative to the
+            workspace path. If None, the default cdf layout paths are used.
+        max_depth: The maximum depth to search for flags.
 
     Returns:
         dict: The populated cache.
     """
-    if workspace_path is None:
-        workspace_path = Path.cwd()
     cache = cache if cache is not None else {}
-
-    component_paths = component_paths or [
-        workspace_path / cp for cp in c.COMPONENT_PATHS
+    component_paths_: t.List[Path] = [
+        workspace_path / cmp for cmp in component_paths or c.COMPONENT_PATHS
     ] + [Path.home() / ".cdf"]
-    for raw_path in component_paths:
-        cdf_logger.debug("Searching for flags in %s", raw_path)
-        new_flags = {}
 
-        # Search path
-        path = Path(raw_path).expanduser().resolve()
-        if path != Path.home():
-            do(
-                new_flags.update,
-                map(lambda f: search_merge_json(path, f, max_depth), c.CDF_FLAG_FILES),
-            )
+    for path in component_paths_:
+        cdf_logger.debug("Searching for flags in %s", path)
+        flags = {}
+
+        # Set search depth
+        if workspace_path not in path.parents:
+            # User dir flags can only apply to the default workspace
+            workspace_name = c.DEFAULT_WORKSPACE
+            max_depth = path.parents.index(Path.home()) + 1
+        elif workspace_path in path.parents:
+            # Search up to project root
+            max_depth = path.parents.index(workspace_path) + 1
         else:
-            do(
-                new_flags.update,
-                map(
-                    lambda f: json.loads((path / f).read_text()),
-                    filter(lambda f: (path / f).exists(), c.CDF_FLAG_FILES),
-                ),
-            )
+            # We assume project root or explicit path
+            max_depth = 0
+
+        # Search
+        depth, seen = 0, {}
+        while path.parents and depth <= max_depth:
+            for f in c.CDF_FLAG_FILES:
+                fp = path / f
+                if not fp.exists() or fp in seen:
+                    continue
+                seen[fp] = True
+                fo = json.loads(fp.read_text())
+                flags.update(fo)
+            path = path.parent
+            depth += 1
 
         # We want to ensure a single-project layout does not require default prefixed flags
         # And that in a multi-project layout, we can override flags with a working directory
-        # based on the "project local" name.
-        for key in list(new_flags.keys()):
-            qkey = qualify_source_component_id(key, workspace_name)
-            if qkey != key:
-                new_flags[qkey] = new_flags.pop(key)
-        cdf_logger.debug("Found flags: %s", new_flags)
-        cache.update(new_flags)
+        # based on the "project local" name. So we need to qualify the flags with the workspace.
+        for key in list(flags.keys()):
+            fqn = qualify_source_component_id(key, workspace_name)
+            if fqn != key:
+                cdf_logger.debug("Found flag %s, qualified as %s", key, fqn)
+                flags[fqn] = flags.pop(key)
+
+        cdf_logger.debug("Found flags: %s", flags)
+        cache.update(flags)
 
     # TODO: make this a function
     with _LOCAL_CACHE_MUTEX:
-        cwd_new_flags = {}
+        new_flags = {}
         for resource in source.resources.keys():
             component = get_source_component_id(source, resource, workspace_name)
             if component not in cache:
-                cwd_new_flags[component] = False
-        if cwd_new_flags:
+                new_flags[component] = False
+        if new_flags:
             cdf_cwd = Path.cwd() / c.CDF_FLAG_FILES[0]
             cdf_logger.debug("Updating flags in %s", cdf_cwd)
             if cdf_cwd.exists():
                 base_cwd_flags = json.loads(cdf_cwd.read_text())
-                cwd_new_flags.update(base_cwd_flags)
-            cdf_cwd.write_text(json.dumps(cwd_new_flags, indent=2))
+                new_flags.update(base_cwd_flags)
+            cdf_cwd.write_text(json.dumps(new_flags, indent=2))
 
     return cache
 
@@ -401,6 +406,17 @@ def get_or_create_flag_dispatch(
 
     This function dispatches to the appropriate implementation based on the
     provider specified in the config.
+
+    Args:
+        cache: A cache to populate.
+        source: The DltSource to get flags for.
+        workspace_name: The name of the workspace.
+        workspace_path: The path to the workspace.
+        with_provider: The provider to use. If None, the provider from the config is used.
+        **kwargs: Additional keyword arguments to pass to the implementation.
+
+    Returns:
+        dict: The populated cache.
     """
     kwargs["workspace_name"] = workspace_name
     kwargs["workspace_path"] = workspace_path
@@ -417,7 +433,7 @@ def get_or_create_flag_dispatch(
         )
 
 
-def get_source_ff(
+def get_source_flags(
     source: DltSource,
     populate_cache_fn: FnPopulateCache = get_or_create_flag_dispatch,
     cache: TFlagsSource | None = None,
