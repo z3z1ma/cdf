@@ -8,7 +8,7 @@ from contextlib import contextmanager, suppress
 from pathlib import Path
 
 import tomlkit as toml
-from tomlkit.exceptions import TOMLKitError
+from dlt.extract.source import DltResource, DltSource
 
 from cdf.core import constants as c
 from cdf.core import types as ct
@@ -193,6 +193,39 @@ def parse_workspace_member(member: str) -> t.Tuple[str, Path]:
     return name, Path(path.strip("/"))
 
 
+def get_source_component_id(
+    source: DltSource,
+    resource: str | DltResource | None = None,
+    workspace: str | None = None,
+) -> str:
+    """Convert a source object and resource object or str into a canonicalized representation"""
+    src_str = source.name if not workspace else f"{workspace}.{source.name}"
+    parts = ["source", src_str]
+    if resource:
+        _resource = (
+            source.resources[resource] if isinstance(resource, str) else resource
+        )
+        parts.append(_resource.name)
+    return ":".join(parts)
+
+
+def qualify_source_component_id(
+    component_id: str,
+    workspace: str | None = None,
+) -> str:
+    """Ensure a component id is qualified with a workspace and starts with source:"""
+    src = component_id
+    if not component_id.startswith("source:"):
+        src = f"source:{component_id}"
+    try:
+        typ, src, res = component_id.split(":", 2)
+        if "." not in src and workspace:
+            src = f"{workspace}.{src}"
+    except ValueError:
+        return src
+    return f"{typ}:{src}:{res}"
+
+
 __all__ = [
     "augmented_path",
     "do",
@@ -201,4 +234,6 @@ __all__ = [
     "flatten_stream",
     "search_merge_json",
     "read_workspace_file",
+    "get_source_component_id",
+    "qualify_source_component_id",
 ]

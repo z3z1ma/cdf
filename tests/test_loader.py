@@ -13,7 +13,9 @@ def test_load_sources():
     cache = {}
     populate_source_cache(
         cache,
-        get_modules_fn=lambda: get_directory_modules("./tests/fixtures/basic_sources"),
+        get_modules_fn=lambda: get_directory_modules(
+            "./tests/fixtures/ut_project/sources"
+        ),
     )
 
     assert len(cache) == 2
@@ -22,6 +24,8 @@ def test_load_sources():
 
     populate_source_cache(
         cache,
-        get_modules_fn=lambda: get_directory_modules("./tests/fixtures/sources"),
+        get_modules_fn=lambda: get_directory_modules(
+            "./tests/fixtures/it_project/sources"
+        ),
     )
     assert len(cache) == 5

@@ -23,29 +23,6 @@ class CDFSource(DltSource):
     ) -> None:
         super().__init__(name, section, schema, resources or [])
         register_source(source=self)  # TODO: no value in this, remove
-        self.flags = {}
-
-    def setup(
-        self, alias: str | None = None, raise_on_no_resources: bool = False
-    ) -> None:
-        import cdf.core.feature_flags as ff
-
-        if alias:
-            self.name = alias
-        for name, resource in self.resources.items():
-            component_id = f"{self.base_component_id}:{name}"
-            flag = ff.get_component_ff(component_id)
-            resource.selected = flag.get(component_id, False)
-            self.flags.update(flag)
-        if raise_on_no_resources and not self.resources.selected:
-            raise ValueError(f"No resources selected for source {self.name}")
-
-    @property
-    def base_component_id(self) -> str:
-        return f"source:{self.name}"
-
-    def component_id(self, resource_name: str) -> str:
-        return f"{self.base_component_id}:{resource_name}"
 
 
 LazySource = t.Callable[[], CDFSource]

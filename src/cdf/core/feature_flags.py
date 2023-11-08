@@ -17,6 +17,7 @@ from pathlib import Path
 from threading import Lock
 
 import dlt
+from dlt.extract.source import DltSource
 from dlt.sources.helpers import requests
 from featureflags.client import CfClient, Config, Target
 from featureflags.evaluations.enum import FeatureState  # noqa: F401
@@ -26,13 +27,22 @@ from featureflags.interface import Cache
 from featureflags.util import log as _ff_logger
 
 import cdf.core.constants as c
+import cdf.core.logger as cdf_logger
 from cdf.core.types import Result
-from cdf.core.utils import do, search_merge_json
+from cdf.core.utils import (
+    do,
+    get_source_component_id,
+    qualify_source_component_id,
+    search_merge_json,
+)
 
 TFlags = t.Dict[str, bool]
+TFlagsSource = t.Dict[DltSource, TFlags]
+FnPopulateCache = t.Callable[[TFlags, DltSource, str, Path], TFlags]
 Providers = t.Literal["local", "harness", "launchdarkly"]
 
-CACHE: TFlags = {}
+
+CACHE: TFlagsSource = {}
 _LOCAL_CACHE_MUTEX = Lock()
 
 
@@ -217,14 +227,15 @@ def _component_id_to_harness_id(component_id: str) -> str:
     Returns:
         str: The Harness Platform API flag id
     """
-    return "__".join(component_id.split(":")[1:])
+    return "__".join(component_id.split(":")[1:]).replace(".", "_")
 
 
 def get_or_create_flag_harness(
     cache: TFlags,
-    component_id: str,
+    source: DltSource,
     /,
-    workspace_path: Path | None = None,
+    workspace_name: str,
+    workspace_path: Path,
     *,
     account: str | None = None,
     project: str | None = None,
@@ -253,34 +264,37 @@ def get_or_create_flag_harness(
         project or dlt.config["ff.harness.project"],
         organization or dlt.config["ff.harness.organization"],
     )
-    if component_id:
-        harness_safeident = _component_id_to_harness_id(component_id)
+    cache.update(
+        {
+            _harness_id_to_component_id(k): ff_client._repository.cache.get(k)
+            for k in ff_client._repository.cache.keys()
+        }
+    )
+    for resource in source.resources.keys():
+        component = get_source_component_id(source, resource, workspace_name)
+        if component in cache:
+            continue
+        harness_safeident = _component_id_to_harness_id(component)
         exists = _harness_flag_exists(harness_safeident, ff_client)
         if not exists:
             _create_harness_flag(
                 harness_safeident,
-                f"Extract {' '.join(component_id.split(':')[1:]).title()}",
+                f"Extract {' '.join(component.split(':')[1:]).title()}",
                 api_key=api_key or dlt.secrets["ff.harness.api_key"],
             )
-            cache[component_id] = False
+            cache[component] = False
         else:
             rv = ff_client.bool_variation(harness_safeident, Target("cdf"), False)
-            cache[component_id] = rv
-    else:
-        cache.update(
-            {
-                _harness_id_to_component_id(k): ff_client._repository.cache.get(k)
-                for k in ff_client._repository.cache.keys()
-            }
-        )
+            cache[component] = rv
     return cache
 
 
 def get_or_create_flag_launchdarkly(
     cache: TFlags,
-    component_id: str,
+    source: DltSource,
     /,
-    workspace_path: Path | None = None,
+    workspace_name: str,
+    workspace_path: Path,
     *,
     account: str | None = None,
     api_key: str | None = None,
@@ -290,9 +304,10 @@ def get_or_create_flag_launchdarkly(
 
 def get_or_create_flag_local(
     cache: TFlags,
-    component_id: str,
+    source: DltSource,
     /,
-    workspace_path: Path | None = None,
+    workspace_name: str,
+    workspace_path: Path,
     *,
     component_paths: t.Iterable[str | Path] | None = None,
     max_depth: int = 3,
@@ -311,37 +326,56 @@ def get_or_create_flag_local(
     """
     if workspace_path is None:
         workspace_path = Path.cwd()
-    _ = component_id  # This is cheap, we don't need the id
     cache = cache if cache is not None else {}
-    component_paths = component_paths or [Path.home() / ".cdf"] + [
+
+    component_paths = component_paths or [
         workspace_path / cp for cp in c.COMPONENT_PATHS
-    ]
+    ] + [Path.home() / ".cdf"]
     for raw_path in component_paths:
+        cdf_logger.debug("Searching for flags in %s", raw_path)
+        new_flags = {}
+
+        # Search path
         path = Path(raw_path).expanduser().resolve()
-        search_parent_dirs = path != Path.home()
-        if search_parent_dirs:
+        if path != Path.home():
             do(
-                cache.update,
+                new_flags.update,
                 map(lambda f: search_merge_json(path, f, max_depth), c.CDF_FLAG_FILES),
             )
         else:
             do(
-                cache.update,
+                new_flags.update,
                 map(
                     lambda f: json.loads((path / f).read_text()),
                     filter(lambda f: (path / f).exists(), c.CDF_FLAG_FILES),
                 ),
             )
-    # maybe make this a function
-    if component_id not in cache:
-        cdf_cwd = Path.cwd() / c.CDF_FLAG_FILES[0]
-        with _LOCAL_CACHE_MUTEX:
+
+        # We want to ensure a single-project layout does not require default prefixed flags
+        # And that in a multi-project layout, we can override flags with a working directory
+        # based on the "project local" name.
+        for key in list(new_flags.keys()):
+            qkey = qualify_source_component_id(key, workspace_name)
+            if qkey != key:
+                new_flags[qkey] = new_flags.pop(key)
+        cdf_logger.debug("Found flags: %s", new_flags)
+        cache.update(new_flags)
+
+    # TODO: make this a function
+    with _LOCAL_CACHE_MUTEX:
+        cwd_new_flags = {}
+        for resource in source.resources.keys():
+            component = get_source_component_id(source, resource, workspace_name)
+            if component not in cache:
+                cwd_new_flags[component] = False
+        if cwd_new_flags:
+            cdf_cwd = Path.cwd() / c.CDF_FLAG_FILES[0]
+            cdf_logger.debug("Updating flags in %s", cdf_cwd)
             if cdf_cwd.exists():
-                current_dir_flags = json.loads(cdf_cwd.read_text())
-                current_dir_flags[component_id] = False
-            else:
-                current_dir_flags = {component_id: False}
-            cdf_cwd.write_text(json.dumps(current_dir_flags))
+                base_cwd_flags = json.loads(cdf_cwd.read_text())
+                cwd_new_flags.update(base_cwd_flags)
+            cdf_cwd.write_text(json.dumps(cwd_new_flags, indent=2))
+
     return cache
 
 
@@ -355,9 +389,10 @@ def delete_flag_dispatch() -> Result:
 
 def get_or_create_flag_dispatch(
     cache: TFlags,
-    component_id: str,
+    source: DltSource,
     /,
-    workspace_path: Path | None = None,
+    workspace_name: str,
+    workspace_path: Path,
     *,
     with_provider: Providers | None = None,
     **kwargs: t.Any,
@@ -367,27 +402,26 @@ def get_or_create_flag_dispatch(
     This function dispatches to the appropriate implementation based on the
     provider specified in the config.
     """
-    if workspace_path is None:
-        workspace_path = Path.cwd()
+    kwargs["workspace_name"] = workspace_name
+    kwargs["workspace_path"] = workspace_path
     provider: Providers = with_provider or dlt.config["ff.provider"]
     if provider == "local":
-        return get_or_create_flag_local(cache, component_id, **kwargs)
+        return get_or_create_flag_local(cache, source, **kwargs)
     elif provider == "harness":
-        return get_or_create_flag_harness(cache, component_id, **kwargs)
+        return get_or_create_flag_harness(cache, source, **kwargs)
     elif provider == "launchdarkly":
-        return get_or_create_flag_launchdarkly(cache, component_id, **kwargs)
+        return get_or_create_flag_launchdarkly(cache, source, **kwargs)
     else:
         raise ValueError(
             f"Invalid provider: {provider}, must be one of {t.get_args(Providers)}"
         )
 
 
-def get_component_ff(
-    component_id: str,
-    populate_cache_fn: t.Callable[
-        [dict, str, Path], TFlags
-    ] = get_or_create_flag_dispatch,
-    cache: TFlags | None = None,
+def get_source_ff(
+    source: DltSource,
+    populate_cache_fn: FnPopulateCache = get_or_create_flag_dispatch,
+    cache: TFlagsSource | None = None,
+    workspace_name: str | None = None,
     workspace_path: str | Path | None = None,
 ) -> TFlags:
     """Get flags for a specific component id populating the cache if needed.
@@ -402,14 +436,39 @@ def get_component_ff(
             cache. Typically this means creating a flag in the feature flag provider.
 
     Returns:
-        dict: The subset of flags related to the component, empty dict if no flags found
+        dict: The flags for the source
     """
-    if workspace_path is None:
-        workspace_path = Path.cwd()
-    else:
-        workspace_path = Path(workspace_path).expanduser().resolve()
+    if workspace_name is None:
+        workspace_name = c.DEFAULT_WORKSPACE
+    workspace_path = Path(workspace_path or ".").expanduser().resolve()
+    cdf_logger.debug("Getting flags for %s in path %s", source.name, workspace_path)
     cache = cache if cache is not None else CACHE
-    if not cache or not any(k.startswith(component_id) for k in cache):
-        populate_cache_fn(cache, component_id, workspace_path)
-    subset = {k: v for k, v in cache.items() if k.startswith(component_id)}
-    return subset
+    if source not in cache:
+        cache[source] = populate_cache_fn({}, source, workspace_name, workspace_path)
+    return cache[source]
+
+
+def apply_feature_flags(
+    source: DltSource,
+    flags: t.Dict[str, bool],
+    workspace: str | None = None,
+    raise_on_no_resources: bool = False,
+) -> DltSource:
+    """Apply feature flags to a source."""
+
+    for resource in source.resources.values():
+        key = get_source_component_id(source, resource, workspace)
+        fv = flags.get(key)
+        if fv is None:
+            cdf_logger.debug("No flag for %s", key)
+            fv = False
+        elif fv is False:
+            cdf_logger.debug("Flag for %s is False", key)
+        elif fv is True:
+            cdf_logger.debug("Flag for %s is True", key)
+        resource.selected = fv
+
+    if raise_on_no_resources and not source.resources.selected:
+        raise ValueError(f"No resources selected for source {source.name}")
+
+    return source

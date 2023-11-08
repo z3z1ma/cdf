@@ -1,5 +1,7 @@
 [ff]
 provider = "local"
+noqualify = true
+
 # harness.account = ""
 harness.organization = "default"
 harness.project = "DataOps_Platform"

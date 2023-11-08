@@ -12,6 +12,7 @@ import typer
 from rich.logging import RichHandler
 
 import cdf.core.constants as c
+import cdf.core.feature_flags as ff
 import cdf.core.types as ct
 from cdf import (
     CDFSource,
@@ -83,6 +84,7 @@ def main(
     workspace, fpath = read_workspace_file(root)
     if workspace and fpath:
         cdf_logger.debug("Found workspace file %s, using multi-project layout", fpath)
+        add_providers_from_workspace("__cdf_root__", fpath)
         for member in workspace["members"]:
             wname, wpath = parse_workspace_member(member)
             workspaces.update({wname: fpath / wpath})
@@ -142,7 +144,7 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
             c.DEFAULT_WORKSPACE, workspaces[c.DEFAULT_WORKSPACE]
         )
     if "." in source:
-        workspace, source = source.split(".", 1)
+        workspace, _ = source.split(".", 1)
         if workspace not in workspaces:
             raise typer.BadParameter(f"Workspace {workspace} not found.")
         add_providers_from_workspace(workspace, workspaces[workspace])
@@ -165,10 +167,12 @@ def debug() -> None:
 
 @app.command()
 def discover(
-    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)]
+    ctx: typer.Context,
+    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
 ) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
-    mod, meta = _get_source(source)
+    cdf_logger.debug("Discovering source %s", source)
+    mod, meta = _get_source(source, ctx.obj)
     rich.print(
         f"\nDiscovered {len(mod.resources)} resources in [b red]{source}.v{meta.version}[/b red]:"
     )
@@ -182,6 +186,7 @@ def discover(
 
 @app.command()
 def head(
+    ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
     resource: str,
     num: t.Annotated[int, typer.Option("-n", "--num-rows")] = 5,
@@ -190,7 +195,7 @@ def head(
 
     This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
     """
-    src, meta = _get_source(source)
+    src, meta = _get_source(source, ctx.obj)
     res = _get_resource(src, resource)
     rich.print(
         f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{meta.version}[/b blue]:"
@@ -205,6 +210,7 @@ def head(
 
 @app.command(rich_help_panel="Pipelines")
 def ingest(
+    ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
     destination: t.Annotated[str, typer.Option(..., "-d", "--dest")] = "default",
     resources: t.List[str] = typer.Option(
@@ -212,7 +218,7 @@ def ingest(
     ),
 ) -> None:
     """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
-    configured_source, meta = _get_source(source)
+    configured_source, meta = _get_source(source, ctx.obj)
     if resources:
         configured_source = configured_source.with_resources(*resources)
     if not configured_source.selected_resources:
@@ -227,6 +233,8 @@ def ingest(
     )
     for resource in configured_source.selected_resources:
         rich.print(f"  - [b green]{resource}[/b green]")
+    if "." in source:
+        _, source = source.split(".", 1)
     pipeline = dlt.pipeline(
         f"{source}-to-{destination}",
         destination=dest.engine,
@@ -251,8 +259,10 @@ def publish() -> None:
     rich.print("Publishing...")
 
 
-def _get_source(source: str) -> t.Tuple[CDFSource, CDFSourceMeta]:
-    """Get a source from the global cache.
+def _get_source(
+    source: str, workspaces: t.Dict[str, Path]
+) -> t.Tuple[CDFSource, CDFSourceMeta]:
+    """Get a source from the global cache. This will also apply feature flags.
 
     Args:
         source: The name of the source to get.
@@ -266,8 +276,18 @@ def _get_source(source: str) -> t.Tuple[CDFSource, CDFSourceMeta]:
     if source not in CACHE:
         raise typer.BadParameter(f"Source {source} not found.")
     meta = CACHE[source]
+    cdf_logger.debug("Loading source %s", source)
     mod = meta.deferred_fn()
-    mod.setup(alias=source)
+    mod.name = source
+    if "." in source:
+        workspace, _ = source.split(".", 1)
+    else:
+        workspace = c.DEFAULT_WORKSPACE
+    cdf_logger.debug("Applying feature flags for source %s", source)
+    cmp_ffs = ff.get_source_ff(
+        mod, workspace_name=workspace, workspace_path=workspaces[workspace]
+    )
+    ff.apply_feature_flags(mod, cmp_ffs)
     return mod, meta
 
 

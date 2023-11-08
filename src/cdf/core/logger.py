@@ -34,7 +34,7 @@ LOG_LEVEL = logging.INFO
 """The active log level for CDF."""
 
 
-def configure(level: int = logging.DEBUG) -> None:
+def configure(level: int = logging.INFO) -> None:
     """Configure logging.
 
     Args:
