@@ -9,14 +9,18 @@ from dlt.common.configuration.specs.config_providers_context import (
 )
 
 from cdf.core.config import find_cdf_config_providers
-from cdf.core.feature_flags import get_or_create_flag_dispatch, get_source_flags
+from cdf.core.feature_flags import (
+    _component_id_to_harness_id,
+    _harness_id_to_component_id,
+    get_or_create_flag_dispatch,
+    get_source_flags,
+)
 
 
 @pytest.fixture
 def cdf_provider() -> t.Iterator[ConfigProvidersContext]:
     """Config provider which gives a test function an isolated context with cdf_config.toml loaded"""
     ctx = ConfigProvidersContext()
-    ctx.providers.clear()
     ctx.add_provider(next(find_cdf_config_providers([Path("tests/fixtures")])))
     with Container().injectable_context(ctx):
         yield ctx
@@ -36,6 +40,17 @@ def mocksource():
         name="someresource",
     )
     return dlt.source(lambda: f, name="mocksource")
+
+
+def test_harness_id_to_component_id():
+    assert (
+        _component_id_to_harness_id("source:awesome.pokemon:pokemon")
+        == "awesome_X_pokemon__pokemon"
+    )
+    assert (
+        _harness_id_to_component_id("awesome_X_pokemon__pokemon")
+        == "source:awesome.pokemon:pokemon"
+    )
 
 
 def test_local_flags(cdf_provider, mocksource, mocker):
@@ -129,6 +144,23 @@ def test_local_flags(cdf_provider, mocksource, mocker):
     )
     assert src in cache
     assert cache[src] == {
-        "source:ci.source1:gen": True,
-        "source:ci.mocksource:someresource": True,
+        "source:integration_test.source1:gen": True,
+        "source:integration_test.mocksource:someresource": True,
     }
+
+
+@pytest.mark.credentials
+def test_harness_flags(cdf_provider, mocksource):
+    _ = cdf_provider
+
+    # Test case 1: Can populate a flag cache from harness.io
+    # Also ensure correct translation from harness id -> component id
+    cache = {}
+    get_or_create_flag_dispatch(
+        cache,
+        mocksource(),
+        workspace_name="ci",
+        workspace_path=Path.cwd(),
+        with_provider="harness",
+    )
+    assert "source:ci.mocksource:someresource" in cache

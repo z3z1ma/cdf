@@ -283,7 +283,6 @@ def _get_source(
     else:
         workspace = c.DEFAULT_WORKSPACE
     mod.name = source
-    cdf_logger.debug("Applying feature flags for source %s", source)
     cmp_ffs = ff.get_source_flags(
         mod, workspace_name=workspace, workspace_path=workspaces[workspace]
     )

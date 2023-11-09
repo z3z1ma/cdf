@@ -208,9 +208,10 @@ def _harness_id_to_component_id(harness_id: str) -> str:
     Returns:
         str: The component id
     """
+    # workspace_X_source__resource -> source:workspace.source:resource
     if harness_id.upper().startswith("FLAGS/"):
         harness_id = harness_id.split("/", 1)[1]
-    return harness_id.replace("__", ":", 1)
+    return "source:" + harness_id.replace("_X_", ".", 1).replace("__", ":", 1)
 
 
 def _component_id_to_harness_id(component_id: str) -> str:
@@ -222,7 +223,8 @@ def _component_id_to_harness_id(component_id: str) -> str:
     Returns:
         str: The Harness Platform API flag id
     """
-    return "__".join(component_id.split(":")[1:]).replace(".", "_")
+    # source:workspace.source:resource -> workspace_X_source__resource
+    return "__".join(component_id.split(":")[1:]).replace(".", "_X_")
 
 
 def get_or_create_flag_harness(
@@ -261,7 +263,9 @@ def get_or_create_flag_harness(
     )
     cache.update(
         {
-            _harness_id_to_component_id(k): ff_client._repository.cache.get(k)
+            _harness_id_to_component_id(k): ff_client.bool_variation(
+                k[6:], Target("cdf"), False
+            )
             for k in ff_client._repository.cache.keys()
         }
     )
@@ -322,7 +326,8 @@ def get_or_create_flag_local(
     """
     cache = cache if cache is not None else {}
     component_paths_: t.List[Path] = [
-        workspace_path / cmp for cmp in component_paths or c.COMPONENT_PATHS
+        workspace_path / cmp
+        for cmp in component_paths or [c.COMPONENT_PATHS.sources_path]
     ] + [Path.home() / ".cdf"]
 
     for path in component_paths_:
@@ -472,6 +477,7 @@ def apply_feature_flags(
 ) -> DltSource:
     """Apply feature flags to a source."""
 
+    cdf_logger.debug("Applying feature flags for source %s", source.name)
     for resource in source.resources.values():
         key = get_source_component_id(source, resource, workspace)
         fv = flags.get(key)

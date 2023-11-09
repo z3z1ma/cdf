@@ -4,7 +4,7 @@ noqualify = true
 
 # harness.account = ""
 harness.organization = "default"
-harness.project = "DataOps_Platform"
+harness.project = "DataOps_Sandbox"
 # harness.api_key = ""
 # harness.sdk_key = ""
 

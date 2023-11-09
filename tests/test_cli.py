@@ -1,10 +1,3 @@
-import typing as t
-
-import pytest
-from dlt.common.configuration.container import Container
-from dlt.common.configuration.specs.config_providers_context import (
-    ConfigProvidersContext,
-)
 from typer.testing import CliRunner
 
 from cdf.cli import app

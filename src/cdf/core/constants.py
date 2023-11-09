@@ -1,5 +1,6 @@
 """Constants for the CDF module."""
 import re
+from collections import namedtuple
 
 CDF_SOURCE = "__CDF_SOURCE__"
 CDF_WORKSPACE_FILE = "cdf_workspace.toml"
@@ -19,7 +20,9 @@ CDF_FLAG_FILES = [
 CDF_CONFIG_FILE = "cdf_config.toml"
 CDF_SECRETS_FILE = "cdf_secrets.toml"
 
-COMPONENT_PATHS = ["./sources", "./transforms", "./publishers"]
+COMPONENT_PATHS = namedtuple(
+    "COMPONENT_PATHS", ["sources_path", "transforms_path", "publishers_path"]
+)("sources", "transforms", "publishers")
 
 DEFAULT_WORKSPACE = "default"
 

@@ -37,6 +37,7 @@ class CDFSourceMeta:
     owners: t.Sequence[str] = ()
     description: str = ""
     tags: t.Sequence[str] = ()
+    cron: str | None = None
     metrics: t.Dict[str, t.Callable[[TDataItem, float | int], float | int]] = field(
         default_factory=dict
     )
