@@ -9,7 +9,6 @@ import dlt
 import dotenv
 import rich
 import typer
-from rich.logging import RichHandler
 
 import cdf.core.constants as c
 import cdf.core.feature_flags as ff
@@ -31,13 +30,6 @@ from cdf.core.utils import (
 )
 
 T = t.TypeVar("T")
-
-logging.basicConfig(
-    level="INFO",
-    format="%(message)s",
-    datefmt="[%X]",
-    handlers=[RichHandler(level="INFO")],
-)
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -68,6 +60,7 @@ def main(
         help="Set the log level. Defaults to INFO.",
         envvar="CDF_LOG_LEVEL",
     ),
+    debug: t.Annotated[bool, typer.Option(..., "-d", "--debug")] = False,
 ):
     """:sparkles: a [b]framework[b] for managing and running [u]continousdataflow[/u] projects. :sparkles:
 
@@ -77,7 +70,7 @@ def main(
     - ( :mailbox: ) [b yellow]publishers[/b yellow] are responsible for publishing data to an external system.
     """
     # Set log level
-    cdf_logger.set_level(log_level)
+    cdf_logger.set_level(log_level.upper() if not debug else "DEBUG")
 
     # Load workspaces
     workspaces: t.Dict[str, Path] = {}
@@ -173,6 +166,7 @@ def discover(
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
     cdf_logger.debug("Discovering source %s", source)
     mod, meta = _get_source(source, ctx.obj)
+    # TODO: Make a venv
     rich.print(
         f"\nDiscovered {len(mod.resources)} resources in [b red]{source}.v{meta.version}[/b red]:"
     )
@@ -181,7 +175,7 @@ def discover(
             rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
         else:
             rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
-    rich.print(f"\nOwners: [yellow]{meta.owners}[/yellow]\n")
+    _print_meta(meta)
 
 
 @app.command()
@@ -342,6 +336,13 @@ def _print_destinations() -> None:
     rich.print(" [b]Index[/b]")
     for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
         rich.print(f"  {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")
+
+
+def _print_meta(meta: CDFSourceMeta) -> None:
+    rich.print(f"\nOwners: [yellow]{meta.owners}[/yellow]")
+    rich.print(f"Description: {meta.description}")
+    rich.print(f"Tags: {meta.tags}")
+    rich.print(f"Cron: {meta.cron}\n")
 
 
 if __name__ == "__main__":
