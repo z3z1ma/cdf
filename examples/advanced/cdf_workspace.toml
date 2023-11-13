@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+  "eng:workspaces/engineering",
+  "data:workspaces/data",
+  "finance:workspaces/finance",
+]

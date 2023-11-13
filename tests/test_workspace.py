@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cdf.core.workspace import Workspace
+from cdf.core.workspace import Project, Workspace
 
 
 def test_load_sources():
@@ -26,3 +26,11 @@ def test_load_sources():
     # the below module imports simple_salesforce, which is not installed
     # in the test environment, but is installed in the requirements.txt
     assert "default.pokemon" in sources
+
+
+def test_load_project():
+    proj = Project.find_nearest(path=Path("examples/advanced"))
+    assert proj is not None
+
+    sources = proj.data.load_sources(ns="data")
+    assert len(sources) == 1

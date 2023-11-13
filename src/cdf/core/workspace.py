@@ -1,16 +1,19 @@
-import copy
+import os
 import subprocess
 import sys
 import typing as t
-import venv
-from importlib.util import module_from_spec, spec_from_file_location
+from contextlib import contextmanager
 from pathlib import Path
+from threading import Lock
 
 import dotenv
 import tomlkit as toml
+import virtualenv
 
 import cdf.core.constants as c
 from cdf.core.utils import augmented_path
+
+_IMPORT_LOCK = Lock()
 
 
 class Project:
@@ -302,27 +305,34 @@ class Workspace:
         if self.has_dependencies and not self.python_path.exists():
             return self.setup_venv()
 
-    def setup_venv(
-        self, *, klass: t.Type[venv.EnvBuilder] = venv.EnvBuilder, **kwargs: t.Any
-    ) -> None:
+    def setup_venv(self) -> None:
         """Create a virtual environment. Clear and reinstantiate env if it exists.
 
         The canonical route to this method is via ensure_venv, but developers can call this
         directly for more control or override the implementation in a Workspace subclass.
 
-        Args:
-            klass (t.Type[WorkspaceVenvCreator]): Class to use to create virtual environment.
-            kwargs: Keyword arguments to pass to the venv builder create method.
-
         Raises:
             SubprocessError if pip fails to install the requirements.txt
         """
-        klass(
-            with_pip=True,
-            symlinks=True,
-            clear=True,
-        ).create(self.root / ".venv", **kwargs)
+        virtualenv.cli_run([str(self.root / ".venv")])
         subprocess.check_call([self.pip_path, "install", "-r", self.requirements_path])
+
+    @contextmanager
+    def activate_venv(self) -> t.Iterator[None]:
+        """Activate the workspace virtual environment.
+
+        This method is a context manager that activates the workspace virtual environment. It
+        does so in the context of the current interpreter.
+        """
+        activate = self.root / ".venv" / "bin" / "activate_this.py"
+        environ_backup = os.environ.copy()
+        syspath_backup = sys.path.copy()
+        sysprefix_backup = getattr(sys, "prefix", None)
+        exec(activate.read_bytes(), {"__file__": str(activate)})
+        yield
+        os.environ = environ_backup
+        sys.path = syspath_backup
+        sys.prefix = sysprefix_backup
 
     def inject_workspace_config_providers(self, as_: str | None = None, /) -> None:
         """Inject workspace config into context
@@ -368,7 +378,7 @@ class Workspace:
             )
         return cls(path)
 
-    def load_sources(self, namespace: str = c.DEFAULT_WORKSPACE) -> dict:
+    def load_sources(self, ns: str = c.DEFAULT_WORKSPACE) -> dict:
         """Load sources from workspace.
 
         This method loads all sources from the workspace and returns a dict of source metadata. It
@@ -380,26 +390,17 @@ class Workspace:
         """
         if not self.has_sources:
             return {}
-        orig_sys_path = copy.deepcopy(sys.path)
         if self.has_dependencies:
             self.ensure_venv()
-            lib = (
-                next(self.root.joinpath(".venv", "lib").glob("python*"))
-                / "site-packages"
-            )
-            sys.path.insert(0, str(lib))
-        sys.path.insert(0, str(self.root / c.SOURCES_PATH))
-        try:
-            cache = {}
+        with _IMPORT_LOCK, augmented_path(str(self.root / c.SOURCES_PATH)):
+            sources = {}
             for path in self.source_paths:
-                mod_spec = spec_from_file_location(path.stem, path)
-                if mod_spec is None:
-                    continue
-                mod = module_from_spec(mod_spec)
-                if mod_spec.loader:
-                    mod_spec.loader.exec_module(mod)
-                for src, meta in getattr(mod, c.CDF_SOURCE, {}).items():
-                    cache[f"{namespace}.{src}"] = meta
-            return cache
-        finally:
-            sys.path = orig_sys_path
+                with self.activate_venv():
+                    environment = {**globals(), "__file__": str(path)}
+                    exec(
+                        compile(path.read_text(), path, "exec"),
+                        environment,
+                    )
+                for src, meta in environment.get(c.CDF_SOURCE, {}).items():
+                    sources[f"{ns}.{src}"] = meta
+            return sources

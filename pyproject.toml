@@ -7,11 +7,12 @@ authors = [
 ]
 dependencies = [
     "dlt[duckdb]~=0.3.22",
-    "sqlmesh[duckdb]~=0.46.1",
+    "sqlmesh[duckdb]~=0.50.1",
     "typer[all]>=0.8.0",
     "alive-progress>=3.1.4",
     "harness-featureflags>=1.2.3",
     "python-dotenv>=1.0.0",
+    "virtualenv>=20.24.6",
 ]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
