@@ -7,7 +7,7 @@ from dlt.common.configuration.specs.config_providers_context import (
     ConfigProvidersContext,
 )
 
-from cdf.core.config import extend_config_providers, find_cdf_config_providers
+from cdf.core.config import find_cdf_config_providers, inject_config_providers
 
 
 @pytest.fixture
@@ -36,7 +36,7 @@ def test_get_config(empty_provider):
         dlt.config["ff.provider"]  # type: ignore[import]
 
     # Test case 3: Can update global config providers
-    extend_config_providers(providers)
+    inject_config_providers(providers)
 
     # Test case 4: Can get config from global config providers
     assert dlt.config["ff.provider"] == "local"  # type: ignore[import]

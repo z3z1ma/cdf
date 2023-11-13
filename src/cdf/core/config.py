@@ -132,7 +132,7 @@ def find_cdf_config_providers(
             depth += 1
 
 
-def extend_config_providers(
+def inject_config_providers(
     providers: t.List[providers.ConfigProvider],
     method: t.Literal["append", "prepend"] = "prepend",
 ) -> None:
@@ -178,4 +178,4 @@ def add_providers_from_workspace(
     workspace_secrets = config_provider_factory(
         f"{workspace_name}.secrets", project_dir=workspace_path, secrets=True
     )
-    extend_config_providers([workspace_cfg, workspace_secrets])
+    inject_config_providers([workspace_cfg, workspace_secrets])

@@ -4,7 +4,7 @@ from typing import Any, Callable, Dict, Iterator, List, Sequence
 
 import dlt
 from dlt.common import pendulum
-from dlt.common.typing import StrAny, TDataItem
+from dlt.common.typing import TDataItem
 from dlt.extract.source import DltResource
 from dlt.sources.helpers import requests
 
@@ -14,9 +14,9 @@ from .helpers import get_path_with_retry, get_url_with_retry, validate_month_str
 from .settings import UNOFFICIAL_CHESS_API_URL
 
 
-@cdf_source(name="chess")
+@dlt.source(name="chess")
 def source(
-    players: List[str], start_month: str = None, end_month: str = None
+    players: List[str], start_month: str | None = None, end_month: str | None = None
 ) -> Sequence[DltResource]:
     """
     A dlt source for the chess.com api. It groups several resources (in this case chess.com API endpoints) containing
@@ -37,7 +37,7 @@ def source(
     )
 
 
-@cdf_resource(write_disposition="replace")
+@dlt.resource(write_disposition="replace")
 def players_profiles(players: List[str]) -> Iterator[TDataItem]:
     """
     Yields player profiles for a list of player usernames.

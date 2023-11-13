@@ -28,6 +28,7 @@ from cdf.core.utils import (
     parse_workspace_member,
     read_workspace_file,
 )
+from cdf.core.workspace import Project
 
 T = t.TypeVar("T")
 
@@ -72,41 +73,16 @@ def main(
     # Set log level
     cdf_logger.set_level(log_level.upper() if not debug else "DEBUG")
 
-    # Load workspaces
-    workspaces: t.Dict[str, Path] = {}
-    workspace, fpath = read_workspace_file(root)
-    if workspace and fpath:
-        cdf_logger.debug("Found workspace file %s, using multi-project layout", fpath)
-        add_providers_from_workspace("__cdf_root__", fpath)
-        for member in workspace["members"]:
-            wname, wpath = parse_workspace_member(member)
-            workspaces.update({wname: fpath / wpath})
-    else:
-        cdf_logger.debug(
-            "No workspace file found in %s, using single-project layout", root
-        )
-        fpath = root.expanduser().resolve()
-        workspaces[c.DEFAULT_WORKSPACE] = fpath
-
-    # Load root .env
-    if dotenv.load_dotenv(dotenv_path=fpath / ".env"):
-        cdf_logger.debug("Loaded .env file from %s", fpath)
-
     # Load workspace sources
-    for workspace_name, workspace_path in workspaces.items():
-        cdf_logger.debug("Loading workspace %s from %s", workspace_name, workspace_path)
-
-        # Do workspace .env
-        if dotenv.load_dotenv(dotenv_path=workspace_path / ".env"):
-            cdf_logger.debug("Loaded .env file from %s", workspace_path)
+    project = Project.find_nearest(root)
+    for namespace, workspace in project:
+        cdf_logger.debug("Loading workspace %s", workspace)
 
         # Do sources
         populate_source_cache(
             CACHE,
-            get_modules_fn=partial(
-                get_directory_modules, workspace_path / c.SOURCES_PATH
-            ),
-            namespace=workspace_name,
+            get_modules_fn=lambda: get_directory_modules(workspace.source_paths),
+            namespace=namespace,
         )
 
         # Do SQLMesh
@@ -119,7 +95,7 @@ def main(
     DESTINATIONS.update(index_destinations())
 
     # Capture workspaces in the CLI context
-    ctx.obj = workspaces
+    ctx.obj = project.workspaces
 
 
 def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
@@ -195,8 +171,7 @@ def head(
         f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{meta.version}[/b blue]:"
     )
     it = flatten_stream(res)
-    v = next(it, None)
-    while num > 0 and v:
+    while num > 0 and (v := next(it, None)):
         rich.print(v)
         v = next(it, None)
         num -= 1

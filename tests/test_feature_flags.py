@@ -1,3 +1,4 @@
+import os
 import typing as t
 from pathlib import Path
 
@@ -144,12 +145,12 @@ def test_local_flags(cdf_provider, mocksource, mocker):
     )
     assert src in cache
     assert cache[src] == {
-        "source:integration_test.source1:gen": True,
-        "source:integration_test.mocksource:someresource": True,
+        "source:ci.source1:gen": True,
+        "source:ci.mocksource:someresource": True,
     }
 
 
-@pytest.mark.credentials
+@pytest.mark.skipif("FF__HARNESS__SDK_KEY" not in os.environ)
 def test_harness_flags(cdf_provider, mocksource):
     _ = cdf_provider
 

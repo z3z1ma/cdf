@@ -4,6 +4,10 @@ Available resources:
     fruits
     vegetables
 """
+# this is injected by cdf through the workspace requirements.txt
+import simple_salesforce as _  # noqa: F401 # type: ignore
+
+# regular source
 from pokemon import source
 
 from cdf import CDFSourceMeta
