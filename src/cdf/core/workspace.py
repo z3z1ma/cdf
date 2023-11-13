@@ -319,15 +319,18 @@ class Workspace:
 
     @contextmanager
     def activate_venv(self) -> t.Iterator[None]:
-        """Activate the workspace virtual environment.
+        """Activate the workspace virtual environment. A noop if there are no deps.
 
         This method is a context manager that activates the workspace virtual environment. It
         does so in the context of the current interpreter.
         """
+        if not self.has_dependencies:
+            yield
+            return
         activate = self.root / ".venv" / "bin" / "activate_this.py"
         environ_backup = os.environ.copy()
         syspath_backup = sys.path.copy()
-        sysprefix_backup = getattr(sys, "prefix", None)
+        sysprefix_backup = sys.prefix
         exec(activate.read_bytes(), {"__file__": str(activate)})
         yield
         os.environ = environ_backup

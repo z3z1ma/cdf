@@ -77,13 +77,7 @@ def main(
     project = Project.find_nearest(root)
     for namespace, workspace in project:
         cdf_logger.debug("Loading workspace %s", workspace)
-
-        # Do sources
-        populate_source_cache(
-            CACHE,
-            get_modules_fn=lambda: get_directory_modules(workspace.source_paths),
-            namespace=namespace,
-        )
+        CACHE.update(workspace.load_sources(ns=namespace))
 
         # Do SQLMesh
         ...
