@@ -12,6 +12,7 @@ flag_name = <component_id>:<flag_name>
 import json
 import logging
 import typing as t
+from contextlib import suppress
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -326,9 +327,9 @@ def get_or_create_flag_local(
     """
     cache = cache if cache is not None else {}
     component_paths_: t.List[Path] = [
-        workspace_path / cmp
-        for cmp in component_paths or [c.COMPONENT_PATHS.sources_path]
-    ] + [Path.home() / ".cdf"]
+        workspace_path / c.SOURCES_PATH,
+        Path.home() / ".cdf",
+    ]
 
     for path in component_paths_:
         cdf_logger.debug("Searching for flags in %s", path)
@@ -425,7 +426,9 @@ def get_or_create_flag_dispatch(
     """
     kwargs["workspace_name"] = workspace_name
     kwargs["workspace_path"] = workspace_path
-    provider: Providers = with_provider or dlt.config["ff.provider"]
+    provider = "local"
+    with suppress(KeyError):
+        provider: Providers = with_provider or dlt.config["ff.provider"]
     if provider == "local":
         return get_or_create_flag_local(cache, source, **kwargs)
     elif provider == "harness":
@@ -442,8 +445,8 @@ def get_source_flags(
     source: DltSource,
     populate_cache_fn: FnPopulateCache = get_or_create_flag_dispatch,
     cache: TFlagsSource | None = None,
-    workspace_name: str | None = None,
-    workspace_path: str | Path | None = None,
+    ns: str | None = None,
+    path: str | Path | None = None,
 ) -> TFlags:
     """Get flags for a specific component id populating the cache if needed.
 
@@ -459,13 +462,13 @@ def get_source_flags(
     Returns:
         dict: The flags for the source
     """
-    if workspace_name is None:
-        workspace_name = c.DEFAULT_WORKSPACE
-    workspace_path = Path(workspace_path or ".").expanduser().resolve()
-    cdf_logger.debug("Getting flags for %s in path %s", source.name, workspace_path)
+    if ns is None:
+        ns = c.DEFAULT_WORKSPACE
+    path = Path(path or ".").expanduser().resolve()
+    cdf_logger.debug("Getting flags for %s in path %s", source.name, path)
     cache = cache if cache is not None else CACHE
     if source not in cache:
-        cache[source] = populate_cache_fn({}, source, workspace_name, workspace_path)
+        cache[source] = populate_cache_fn({}, source, ns, path)
     return cache[source]
 
 

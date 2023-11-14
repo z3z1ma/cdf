@@ -5,12 +5,16 @@ import typing as t
 from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
+from types import MappingProxyType
 
 import dotenv
 import tomlkit as toml
 import virtualenv
+from dlt.common.pipeline import LoadInfo
+from dlt.pipeline import Pipeline
 
 import cdf.core.constants as c
+from cdf.core.source import CDFSource, CDFSourceMeta
 from cdf.core.utils import augmented_path
 
 _IMPORT_LOCK = Lock()
@@ -19,13 +23,39 @@ _IMPORT_LOCK = Lock()
 class Project:
     """A project encapsulates a collection of workspaces."""
 
-    def __init__(self, workspaces: t.Dict[str, "Workspace"]) -> None:
-        self._workspaces = workspaces
+    def __init__(self, workspaces: t.List["Workspace"]) -> None:
+        self._workspaces = {ws.namespace: ws for ws in workspaces}
         self.meta = {}
 
     @property
-    def workspaces(self) -> t.Dict[str, "Workspace"]:
-        return self._workspaces
+    def workspaces(self) -> MappingProxyType[str, "Workspace"]:
+        return MappingProxyType(self._workspaces)
+
+    def add_workspace(self, workspace: "Workspace", replace: bool = True) -> None:
+        """Add a workspace to the project.
+
+        Raises:
+            ValueError if workspace already exists and replace is False.
+
+        Args:
+            workspace (Workspace): The workspace to add.
+        """
+        if workspace.namespace in self._workspaces and not replace:
+            raise ValueError(
+                "Workspace with namespace %s already exists", workspace.namespace
+            )
+        self._workspaces[workspace.namespace] = workspace
+
+    def remove_workspace(self, namespace: str) -> "Workspace":
+        """Remove a workspace from the project.
+
+        Raises:
+            KeyError if workspace does not exist.
+
+        Args:
+            namespace (str): The namespace of the workspace to remove.
+        """
+        return self._workspaces.pop(namespace)
 
     def __getattr__(self, name: str) -> "Workspace":
         return self._workspaces[name]
@@ -52,14 +82,12 @@ class Project:
         Args:
             members (t.Dict[str, Path | str]): Dictionary of members.
         """
-        return cls({name: Workspace(path) for name, path in workspaces.items()})
+        return cls([Workspace(path, ns) for ns, path in workspaces.items()])
 
     @classmethod
     def default(cls, path: Path | str | None = None) -> "Project":
         """Create a project from the current working directory."""
-        return cls(
-            {c.DEFAULT_WORKSPACE: Workspace.find_nearest(path, raise_no_marker=True)}
-        )
+        return cls([Workspace.find_nearest(path, raise_no_marker=True)])
 
     @classmethod
     def from_workspace_toml(
@@ -136,6 +164,13 @@ class WorkspaceCapabilities(t.TypedDict):
     deps: bool
 
 
+class WorkspaceSourceContext(t.TypedDict):
+    spec: CDFSourceMeta
+    globals: dict
+    locals: dict
+    execution_ctx: t.Tuple[dict, dict]
+
+
 class Workspace:
     """A workspace encapsulates a directory containing sources, publishers, metadata, and transforms.
 
@@ -158,13 +193,19 @@ class Workspace:
         c.PUBLISHERS_PATH,
     ]
 
-    def __init__(self, root: str | Path, load_dotenv: bool = True) -> None:
+    def __init__(
+        self,
+        root: str | Path,
+        namespace: str = c.DEFAULT_WORKSPACE,
+        load_dotenv: bool = True,
+    ) -> None:
         """Initialize a workspace.
 
         Args:
             root (str | Path): Path to wrap as a workspace.
             load_dotenv (bool): Whether to load dotenv file in workspace root.
         """
+        self.namespace = namespace
         self._root = Path(root).expanduser().resolve()
         if not self._root.exists():
             raise ValueError(
@@ -174,6 +215,7 @@ class Workspace:
         self._publisher_paths = None
         self._requirements = None
         self._did_inject_config_providers = False
+        self._cached_sources = {}
         if load_dotenv:
             dotenv.load_dotenv(self.root / ".env")
 
@@ -381,7 +423,7 @@ class Workspace:
             )
         return cls(path)
 
-    def load_sources(self, ns: str = c.DEFAULT_WORKSPACE) -> dict:
+    def load_sources(self) -> t.Dict[str, WorkspaceSourceContext]:
         """Load sources from workspace.
 
         This method loads all sources from the workspace and returns a dict of source metadata. It
@@ -395,15 +437,79 @@ class Workspace:
             return {}
         if self.has_dependencies:
             self.ensure_venv()
-        with _IMPORT_LOCK, augmented_path(str(self.root / c.SOURCES_PATH)):
-            sources = {}
-            for path in self.source_paths:
-                with self.activate_venv():
-                    environment = {**globals(), "__file__": str(path)}
+        if not self._cached_sources:
+            with _IMPORT_LOCK, augmented_path(
+                str(self.root / c.SOURCES_PATH)
+            ), self.activate_venv():
+                sources = {}
+                for path in self.source_paths:
+                    # GOALS:
+                    # Load module with virtualenv activated within the context of an existing process
+                    # Execute the code and capture the __CDF_SOURCE__ attribute
+                    # Capture the globals and locals such that we can execute the deferred_fn later in the same context
+                    mod_globals = {"__name__": "__main__", "__file__": str(path)}
+                    mod_locals = {}
                     exec(
                         compile(path.read_text(), path, "exec"),
-                        environment,
+                        mod_globals,
+                        mod_locals,
                     )
-                for src, meta in environment.get(c.CDF_SOURCE, {}).items():
-                    sources[f"{ns}.{src}"] = meta
-            return sources
+                    mod_globals.update(mod_locals)
+                    for src, spec in mod_locals.get(c.CDF_SOURCE, {}).items():
+                        sources[src] = {
+                            "spec": spec,
+                            "globals": mod_globals,
+                            "locals": mod_locals,
+                        }
+            self._cached_sources.update(sources)
+        return self._cached_sources
+
+    def __getitem__(self, name: str) -> WorkspaceSourceContext:
+        """Get a source by name."""
+        return self.load_sources()[name]
+
+    def sandbox(
+        self, src: str
+    ) -> t.Generator[CDFSource, Pipeline, t.Callable[..., LoadInfo]]:
+        ctx = self[src]
+        source = eval(
+            f"{c.CDF_SOURCE}['{src}'].deferred_fn()", ctx["globals"], ctx["locals"]
+        )
+
+        # We grab source from sandbox and ask for a pipeline in order to run it
+        # in the same sandbox. Yielding the source to the caller allows
+        # them to manipulate the source before sending a pipeline back.
+        pipeline = yield source
+
+        # Now we prepare the sandbox for execution and let the caller run it.
+        # this function will execute the source in the sandbox
+        ctx["locals"].update({"__source__": source, "__pipe__": pipeline})
+
+        def run(*runargs, **runkwargs) -> LoadInfo:
+            """Closure that runs the source in the sandbox."""
+            return eval(
+                "__pipe__.run(__source__, *__runargs, **__runkwargs)",
+                ctx["globals"],
+                {
+                    **ctx["locals"],
+                    "__runargs": runargs,
+                    "__runkwargs": runkwargs,
+                },
+            )
+
+        return run
+
+    def get_extractor(self, src: str, pipeline: Pipeline) -> t.Callable[..., LoadInfo]:
+        """Get an extract function for a source.
+
+        This method takes a configured pipeline and returns a function that can be called to
+        extract data from a source. It will automatically run in a sandboxed environment with
+        dependencies available.
+        """
+        source = next(sandbox := self.sandbox(src))
+        try:
+            sandbox.send(pipeline)
+        except StopIteration as rv:
+            return rv.value
+        else:
+            raise RuntimeError("Source %s failed to initialize", source)

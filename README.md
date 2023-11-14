@@ -8,6 +8,22 @@ in conjunction with a simple interface and opinionated design.
 
 ## Design
 
+```python
+from pathlib import Path
+
+import dlt
+
+from cdf.core.workspace import Project
+
+project = Project.find_nearest(path=Path("examples/advanced"))
+run = project.datateam.get_extractor(
+    "hackernews", dlt.pipeline("hackernews", destination="duckdb")
+)
+
+print(run())
+
+```
+
 ### Sources
 
 Sources are the entrypoint to the data pipeline. They are responsible for pulling data from external systems and

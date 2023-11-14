@@ -2,6 +2,6 @@
 
 members = [
   "eng:workspaces/engineering",
-  "data:workspaces/data",
+  "datateam:workspaces/data",
   "finance:workspaces/finance",
 ]

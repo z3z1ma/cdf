@@ -164,11 +164,12 @@ def head(
     rich.print(
         f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{meta.version}[/b blue]:"
     )
-    it = flatten_stream(res)
-    while num > 0 and (v := next(it, None)):
-        rich.print(v)
-        v = next(it, None)
-        num -= 1
+    with meta._runtime_context:
+        it = flatten_stream(res)
+        while num > 0 and (v := next(it, None)):
+            rich.print(v)
+            v = next(it, None)
+            num -= 1
 
 
 @app.command(rich_help_panel="Pipelines")
@@ -198,14 +199,15 @@ def ingest(
         rich.print(f"  - [b green]{resource}[/b green]")
     if "." in source:
         _, source = source.split(".", 1)
-    pipeline = dlt.pipeline(
-        f"{source}-to-{destination}",
-        destination=dest.engine,
-        credentials=dest.credentials,
-        # TODO: set staging?
-        dataset_name=f"{source}_v{meta.version}",
-        progress="alive_progress",
-    )
+    with meta._runtime_context:
+        pipeline = dlt.pipeline(
+            f"{source}-to-{destination}",
+            destination=dest.engine,
+            credentials=dest.credentials,
+            # TODO: set staging?
+            dataset_name=f"{source}_v{meta.version}",
+            progress="alive_progress",
+        )
     info = pipeline.run(configured_source)
     logging.info(info)
 
@@ -240,15 +242,14 @@ def _get_source(
         raise typer.BadParameter(f"Source {source} not found.")
     meta = CACHE[source]
     cdf_logger.debug("Loading source %s", source)
-    mod = meta.deferred_fn()
+    with meta._runtime_context:
+        mod = meta.deferred_fn()
     if "." in source:
         workspace, source = source.split(".", 1)
     else:
         workspace = c.DEFAULT_WORKSPACE
     mod.name = source
-    cmp_ffs = ff.get_source_flags(
-        mod, workspace_name=workspace, workspace_path=workspaces[workspace]
-    )
+    cmp_ffs = ff.get_source_flags(mod, ns=workspace, path=workspaces[workspace].root)
     ff.apply_feature_flags(mod, cmp_ffs, workspace)
     return mod, meta
 

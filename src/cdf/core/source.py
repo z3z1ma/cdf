@@ -1,5 +1,6 @@
 """The source class for continuous data flow sources."""
 import typing as t
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import partial
 
