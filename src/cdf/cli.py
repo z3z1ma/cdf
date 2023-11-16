@@ -10,10 +10,9 @@ import rich
 import typer
 
 import cdf.core.constants as c
-from cdf import CDFSource, CDFSourceWrapper, logger
+from cdf import CDFSourceWrapper, Project, logger
 from cdf.core.destinations import DestinationSpec, EngineCredentials, index_destinations
 from cdf.core.utils import flatten_stream, fn_to_str
-from cdf.core.workspace import Project
 
 T = t.TypeVar("T")
 

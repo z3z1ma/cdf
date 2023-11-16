@@ -6,13 +6,7 @@ import typing as t
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
-import tomlkit as toml
 from dlt.extract.source import DltResource, DltSource
-
-from cdf.core import constants as c
-
-if t.TYPE_CHECKING:
-    import cdf.core.types_ as ct
 
 A = t.TypeVar("A")
 B = t.TypeVar("B")
@@ -97,56 +91,6 @@ def search_merge_json(path: Path, fname: str, max_depth: int = 3) -> t.Dict[str,
     return obj
 
 
-def read_workspace_file(
-    path: Path | None = None,
-) -> t.Tuple["ct.WorkspaceTOML | None", Path | None]:
-    """Find nearest workspace file and read it.
-
-    [workspace]
-    members = [
-        "engineering:workspaces/engineering",
-        "data:workspaces/data",
-        "marketing:workspaces/marketing"
-    ]
-
-    Args:
-        path: The path to search from.
-
-    Returns:
-        The workspace file as a dict. If the file is not found, None is returned.
-    """
-    if path is None:
-        path = Path.cwd()
-    while path.parents:
-        f = path / c.WORKSPACE_FILE
-        if not f.exists():
-            path = path.parent
-            continue
-        workspace = toml.loads(f.read_text()).get("workspace")
-        if workspace is None:
-            raise ValueError(f"Workspace file {f} does not contain a workspace.")
-        return workspace, f.parent.expanduser().resolve()
-    return None, None
-
-
-def parse_workspace_member(member: str) -> t.Tuple[str, Path]:
-    """Parse a workspace member.
-
-    Args:
-        member: The member to parse.
-
-    Returns:
-        A tuple of the member name and the path to the member.
-    """
-    try:
-        name, path = member.split(":", 1)
-    except ValueError:
-        raise ValueError(
-            f"Invalid workspace member: {member}, must be in format name:path"
-        )
-    return name, Path(path.strip("/"))
-
-
 def get_source_component_id(
     source: DltSource,
     resource: str | DltResource | None = None,
@@ -186,7 +130,6 @@ __all__ = [
     "fn_to_str",
     "flatten_stream",
     "search_merge_json",
-    "read_workspace_file",
     "get_source_component_id",
     "qualify_source_component_id",
 ]

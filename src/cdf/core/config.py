@@ -99,17 +99,18 @@ def config_provider_factory(
     Returns:
         The config provider.
     """
-    prov = (
+    provider = (
         CDFSecretsTomlProvider(project_dir=project_dir)
         if secrets
         else CDFConfigTomlProvider(project_dir=project_dir)
     )
     if custom_name:
-        prov.name = custom_name
-    return prov
+        # Providers require unique names when added to the container
+        provider.name = custom_name
+    return provider
 
 
-def find_cdf_config_providers(
+def find_config_providers(
     search_paths: t.Sequence[str | Path] | str | Path,
     search_cwd: bool = True,
     max_depth: int = 3,
@@ -121,6 +122,8 @@ def find_cdf_config_providers(
         search_cwd: Whether to search the current working directory.
         max_depth: The maximum depth to search.
 
+    Returns:
+        An iterator of config providers.
     """
     if isinstance(search_paths, (str, Path)):
         search_paths = [search_paths]
@@ -168,12 +171,11 @@ def remove_config_providers(*names: str) -> None:
             Container()[ConfigProvidersContext].pop(name)
 
 
-def add_providers_from_workspace(workspace: "Workspace") -> None:
+def inject_config_providers_from_workspace(workspace: "Workspace") -> None:
     """Add config providers from a workspace.
 
     Args:
-        workspace_name: The name of the workspace.
-        workspace_path: The path to the workspace.
+        workspace: The workspace to add config providers from.
     """
     workspace_cfg = config_provider_factory(
         f"{workspace.namespace}.config", project_dir=workspace.root, secrets=False
@@ -182,6 +184,17 @@ def add_providers_from_workspace(workspace: "Workspace") -> None:
         f"{workspace.namespace}.secrets", project_dir=workspace.root, secrets=True
     )
     inject_config_providers([workspace_cfg, workspace_secrets])
+
+
+def remove_config_providers_from_workspace(workspace: "Workspace") -> None:
+    """Remove config providers from a workspace.
+
+    Args:
+        workspace: The workspace to remove config providers from.
+    """
+    remove_config_providers(
+        f"{workspace.namespace}.config", f"{workspace.namespace}.secrets"
+    )
 
 
 def populate_fn_kwargs_from_config(

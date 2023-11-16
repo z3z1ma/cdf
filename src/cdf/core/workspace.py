@@ -432,21 +432,12 @@ class Workspace:
 
     def inject_workspace_config_providers(self) -> None:
         """Inject workspace config into context"""
-        from cdf.core.config import config_provider_factory, inject_config_providers
+        from cdf.core.config import inject_config_providers_from_workspace
 
         if self._did_inject_config_providers:
             return
 
-        inject_config_providers(
-            [
-                config_provider_factory(
-                    f"{self.namespace}.config", project_dir=self.root, secrets=False
-                ),
-                config_provider_factory(
-                    f"{self.namespace}.secrets", project_dir=self.root, secrets=True
-                ),
-            ]
-        )
+        inject_config_providers_from_workspace(workspace=self)
         self._did_inject_config_providers = True
 
     @classmethod

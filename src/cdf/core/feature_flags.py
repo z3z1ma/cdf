@@ -14,7 +14,6 @@ import logging
 import typing as t
 from functools import lru_cache
 from hashlib import sha256
-from pathlib import Path
 from threading import Lock
 
 import dlt
@@ -28,7 +27,7 @@ from featureflags.util import log as _ff_logger
 import cdf.core.constants as c
 import cdf.core.logger as logger
 from cdf.core.config import populate_fn_kwargs_from_config
-from cdf.core.types_ import Result
+from cdf.core.monads import Result
 from cdf.core.utils import get_source_component_id, qualify_source_component_id
 
 if t.TYPE_CHECKING:

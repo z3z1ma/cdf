@@ -1,25 +1,11 @@
 """Contains classes & types common in CDF. This includes Monads."""
 import typing as t
-from pathlib import Path
-from types import ModuleType
-
-if t.TYPE_CHECKING:
-    from cdf.core.source import CDFSourceWrapper
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
 
 A = t.TypeVar("A")
 B = t.TypeVar("B")
-
-
-Loadable = t.Union[str, Path, ModuleType]
-
-SourceSpec = t.Dict[str, "CDFSourceWrapper"]
-
-
-class WorkspaceTOML(t.TypedDict):
-    members: t.List[str]
 
 
 class Monad(t.Generic[A, T]):
