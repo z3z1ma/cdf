@@ -2,7 +2,6 @@
 import logging
 import os
 import typing as t
-from functools import partial
 from pathlib import Path
 
 import dlt
@@ -11,23 +10,9 @@ import rich
 import typer
 
 import cdf.core.constants as c
-import cdf.core.feature_flags as ff
-import cdf.core.types as ct
-from cdf import (
-    CDFSource,
-    CDFSourceMeta,
-    cdf_logger,
-    get_directory_modules,
-    populate_source_cache,
-)
-from cdf.core.config import add_providers_from_workspace
-from cdf.core.utils import (
-    flatten_stream,
-    fn_to_str,
-    index_destinations,
-    parse_workspace_member,
-    read_workspace_file,
-)
+from cdf import CDFSource, CDFSourceWrapper, logger
+from cdf.core.destinations import DestinationSpec, EngineCredentials, index_destinations
+from cdf.core.utils import flatten_stream, fn_to_str
 from cdf.core.workspace import Project
 
 T = t.TypeVar("T")
@@ -40,8 +25,7 @@ app = typer.Typer(
 
 dotenv.load_dotenv()
 
-CACHE: ct.SourceSpec = {}
-DESTINATIONS: ct.DestinationSpec = {}
+DESTINATIONS: DestinationSpec = {}
 
 
 @app.callback()
@@ -71,54 +55,57 @@ def main(
     - ( :mailbox: ) [b yellow]publishers[/b yellow] are responsible for publishing data to an external system.
     """
     # Set log level
-    cdf_logger.set_level(log_level.upper() if not debug else "DEBUG")
+    logger.set_level(log_level.upper() if not debug else "DEBUG")
 
-    # Load workspace sources
-    project = Project.find_nearest(root)
-    for namespace, workspace in project:
-        cdf_logger.debug("Loading workspace %s", workspace)
-        CACHE.update(workspace.load_sources(ns=namespace))
-
-        # Do SQLMesh
-        ...
-
-        # Do publishers
-        ...
-
-    # Do destinations, TODO: better ways to do this, was just for POC
+    # Index destinations from env
+    # FIXME: to be refactored
     DESTINATIONS.update(index_destinations())
 
-    # Capture workspaces in the CLI context
-    ctx.obj = project.workspaces
+    # Capture project in CLI context
+    ctx.obj = Project.find_nearest(root)
 
 
 def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
     """Inject config into the CLI context.
 
-    The order of precedence is workspace config, the root config
-
     Args:
-        source: The source to inject config for.
+        source: The source name to inject config for.
         ctx: The CLI context.
     """
-    workspaces = ctx.obj
-    if c.DEFAULT_WORKSPACE in workspaces:
-        add_providers_from_workspace(
-            c.DEFAULT_WORKSPACE, workspaces[c.DEFAULT_WORKSPACE]
-        )
-    if "." in source:
-        workspace, _ = source.split(".", 1)
-        if workspace not in workspaces:
-            raise typer.BadParameter(f"Workspace {workspace} not found.")
-        add_providers_from_workspace(workspace, workspaces[workspace])
+    project = ctx.obj
+
+    workspace, _ = _parse_ws_source(source)
+    if workspace not in project:
+        raise typer.BadParameter(f"Workspace {workspace} not found.")
+
+    project[workspace].inject_workspace_config_providers()
     return source
 
 
 @app.command()
-def index() -> None:
+def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b blue]Sources[/b blue], [b red]Transforms[/b red], and [b yellow]Publishers[/b yellow] loaded from the source directory paths."""
-    _print_sources()
-    _print_destinations()
+
+    project: Project = ctx.obj
+    rich.print(project)
+
+    rich.print(" [b]Index[/b]")
+
+    for _, workspace in project:
+        rich.print(f"\n  Workspace: {workspace}")
+        rich.print(f"\n   Sources Discovered: {len(workspace.sources)}")
+        for i, (name, meta) in enumerate(workspace.sources.items(), start=1):
+            fn = meta.factory
+            rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
+
+    # FIXME: to be refactored
+    rich.print(f"\n  Destinations Discovered: {len(DESTINATIONS)}")
+    rich.print(
+        f"  Env Vars Parsed: {[e for e in os.environ if e.startswith('CDF_')]}\n"
+    )
+    for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
+        rich.print(f"   {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")
+
     rich.print("")
 
 
@@ -134,18 +121,20 @@ def discover(
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
 ) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
-    cdf_logger.debug("Discovering source %s", source)
-    mod, meta = _get_source(source, ctx.obj)
-    # TODO: Make a venv
-    rich.print(
-        f"\nDiscovered {len(mod.resources)} resources in [b red]{source}.v{meta.version}[/b red]:"
-    )
-    for i, resource in enumerate(mod.resources.values(), start=1):
-        if resource.selected:
-            rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
-        else:
-            rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
-    _print_meta(meta)
+    logger.debug("Discovering source %s", source)
+    project: Project = ctx.obj
+    ws, src = _parse_ws_source(source)
+    with project[ws].get_runtime_source(src) as rt_source:
+        rich.print(
+            f"\nDiscovered {len(rt_source.resources)} resources in"
+            f" [b red]{source}.v{project[ws][src].version}[/b red]:"
+        )
+        for i, resource in enumerate(rt_source.resources.values(), start=1):
+            if resource.selected:
+                rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
+            else:
+                rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
+        _print_meta(project[ws][src])
 
 
 @app.command()
@@ -159,12 +148,17 @@ def head(
 
     This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
     """
-    src, meta = _get_source(source, ctx.obj)
-    res = _get_resource(src, resource)
-    rich.print(
-        f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{meta.version}[/b blue]:"
-    )
-    with meta._runtime_context:
+    project: Project = ctx.obj
+    ws, src = _parse_ws_source(source)
+    with project[ws].get_runtime_source(src) as rt_source:
+        if resource not in rt_source.resources:
+            raise typer.BadParameter(
+                f"Resource {resource} not found in source {source}."
+            )
+        res = rt_source.resources[resource]
+        rich.print(
+            f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{project[ws][src].version}[/b blue]:"
+        )
         it = flatten_stream(res)
         while num > 0 and (v := next(it, None)):
             rich.print(v)
@@ -176,39 +170,39 @@ def head(
 def ingest(
     ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
-    destination: t.Annotated[str, typer.Option(..., "-d", "--dest")] = "default",
+    dest: t.Annotated[str, typer.Option(..., "-d", "--dest")] = "default",
     resources: t.List[str] = typer.Option(
         ..., "-r", "--resource", default_factory=list
     ),
 ) -> None:
     """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
-    configured_source, meta = _get_source(source, ctx.obj)
-    if resources:
-        configured_source = configured_source.with_resources(*resources)
-    if not configured_source.selected_resources:
-        raise typer.BadParameter(
-            f"No resources selected for source {source}. Use the discover command to see available resources."
-            "\nSelect them explicitly with --resource or enable them with feature flags."
-            f"\nReach out to the source owners for more information: {meta.owners}"
+    project: Project = ctx.obj
+    ws, src = _parse_ws_source(source)
+    with project[ws].get_runtime_source(src) as rt_source:
+        if resources:
+            rt_source = rt_source.with_resources(*resources)
+        if not rt_source.selected_resources:
+            raise typer.BadParameter(
+                f"No resources selected for source {source}. Use the discover command to see available resources.\n"
+                "Select them explicitly with --resource or enable them with feature flags.\n\n"
+                f"Reach out to the source owners for more information: {project[ws][src].owners}"
+            )
+        dest_spec = _get_destination(dest)
+        rich.print(
+            f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest_spec.engine}[/b red]..."
         )
-    dest = _get_destination(destination)
-    rich.print(
-        f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest.engine}[/b red]..."
-    )
-    for resource in configured_source.selected_resources:
-        rich.print(f"  - [b green]{resource}[/b green]")
-    if "." in source:
-        _, source = source.split(".", 1)
-    with meta._runtime_context:
+        for resource in rt_source.selected_resources:
+            rich.print(f"  - [b green]{resource}[/b green]")
+
         pipeline = dlt.pipeline(
-            f"{source}-to-{destination}",
-            destination=dest.engine,
-            credentials=dest.credentials,
-            # TODO: set staging?
-            dataset_name=f"{source}_v{meta.version}",
+            f"{src}-to-{dest}",
+            destination=dest_spec.engine,
+            credentials=dest_spec.credentials,
+            # TODO: set staging, awaiting destination refactor
+            dataset_name=f"{src}_v{project[ws][src].version}",
             progress="alive_progress",
         )
-    info = pipeline.run(configured_source)
+        info = pipeline.run(rt_source)
     logging.info(info)
 
 
@@ -224,55 +218,22 @@ def publish() -> None:
     rich.print("Publishing...")
 
 
-def _get_source(
-    source: str, workspaces: t.Dict[str, Path]
-) -> t.Tuple[CDFSource, CDFSourceMeta]:
-    """Get a source from the global cache. This will also apply feature flags.
+def _parse_ws_source(source: str) -> t.Tuple[str, str]:
+    """Parse a workspace.source string into a tuple.
 
     Args:
-        source: The name of the source to get.
-
-    Raises:
-        typer.BadParameter: If the source is not found.
+        source: The source string to parse.
 
     Returns:
-        The source.
+        A tuple of (workspace, source).
     """
-    if source not in CACHE:
-        raise typer.BadParameter(f"Source {source} not found.")
-    meta = CACHE[source]
-    cdf_logger.debug("Loading source %s", source)
-    with meta._runtime_context:
-        mod = meta.deferred_fn()
     if "." in source:
-        workspace, source = source.split(".", 1)
-    else:
-        workspace = c.DEFAULT_WORKSPACE
-    mod.name = source
-    cmp_ffs = ff.get_source_flags(mod, ns=workspace, path=workspaces[workspace].root)
-    ff.apply_feature_flags(mod, cmp_ffs, workspace)
-    return mod, meta
+        ws, src = source.split(".", 1)
+        return ws, src
+    return c.DEFAULT_WORKSPACE, source
 
 
-def _get_resource(source: CDFSource, resource: str) -> dlt.sources.DltResource:  # type: ignore
-    """Get a resource from a source.
-
-    Args:
-        source: The source to get the resource from.
-        resource: The name of the resource to get.
-
-    Raises:
-        typer.BadParameter: If the resource is not found.
-
-    Returns:
-        The resource.
-    """
-    if resource not in source.resources:
-        raise typer.BadParameter(f"Resource {resource} not found in source {source}.")
-    return source.resources[resource]
-
-
-def _get_destination(destination: str) -> ct.EngineCredentials:
+def _get_destination(destination: str) -> EngineCredentials:
     """Get a destination from the global cache.
 
     Args:
@@ -289,26 +250,7 @@ def _get_destination(destination: str) -> ct.EngineCredentials:
     return DESTINATIONS[destination]
 
 
-def _print_sources() -> None:
-    """Print the source index in the global cache."""
-    rich.print(f"\n Sources Discovered: {len(CACHE)}")
-    rich.print(f" Paths Searched: {c.COMPONENT_PATHS}\n")
-    rich.print(" [b]Index[/b]")
-    for i, (name, meta) in enumerate(CACHE.items(), start=1):
-        fn = meta.deferred_fn
-        rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
-
-
-def _print_destinations() -> None:
-    """Print the destination index in the global cache."""
-    rich.print(f"\n Destinations Discovered: {len(DESTINATIONS)}")
-    rich.print(f" Env Vars Parsed: {[e for e in os.environ if e.startswith('CDF_')]}\n")
-    rich.print(" [b]Index[/b]")
-    for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
-        rich.print(f"  {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")
-
-
-def _print_meta(meta: CDFSourceMeta) -> None:
+def _print_meta(meta: CDFSourceWrapper) -> None:
     rich.print(f"\nOwners: [yellow]{meta.owners}[/yellow]")
     rich.print(f"Description: {meta.description}")
     rich.print(f"Tags: {meta.tags}")

@@ -2,11 +2,11 @@ from functools import partial
 
 from chess import source
 
-from cdf import CDFSourceMeta
+from cdf import CDFSourceWrapper
 
 __CDF_SOURCE__ = dict(
-    chess_player_data_discrete=CDFSourceMeta(
-        deferred_fn=partial(
+    chess_player_data_discrete=CDFSourceWrapper(
+        factory=partial(
             source,
             ["magnuscarlsen", "vincentkeymer", "dommarajugukesh", "rpragchess"],
             start_month="2022/11",
@@ -17,8 +17,8 @@ __CDF_SOURCE__ = dict(
         description="A source that extracts chess player data from a discrete period.",
         tags=("api", "live", "test"),
     ),
-    chess_player_data=CDFSourceMeta(
-        deferred_fn=partial(
+    chess_player_data=CDFSourceWrapper(
+        factory=partial(
             source, ["magnuscarlsen", "vincentkeymer", "dommarajugukesh", "rpragchess"]
         ),
         version=1,

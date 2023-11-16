@@ -28,13 +28,13 @@ print(run())
 
 Sources are the entrypoint to the data pipeline. They are responsible for pulling data from external systems and
 loading it into a staging area. Sources are defined in the `sources` directory of a `cdf` project. Each source
-must export a `__CDF_SOURCE__` variable which contains a dictionary of source names to `CDFSourceMeta` objects.
+must export a `__CDF_SOURCE__` variable which contains a dictionary of source names to `CDFSourceWrapper` objects.
 
-**CDFSourceMeta**
+**CDFSourceWrapper**
 
-The `CDFSourceMeta` object contains the following fields:
+The `CDFSourceWrapper` object contains the following fields:
 
-- `deferred_fn`: a function which returns a `CDFSource` object. A `CDFSource` object is a subclass of `dlt.sources.DltSource`. We export a `partial` of the `dlt.source` decorator with the `_impl_cls` argument preset to the `CDFSource` class so you can use it directly in your source file. In that sense, using `cdf` sources is identical to `dlt` except you can leverage our `@cdf_source` decorator to make things a bit more concise. The `deferred_fn` is used to allow for lazy loading of the source. This is important because we don't want to import the source unless it's actually used. This speeds up the CLI and allows sources to perform heavier discovery operations at runtime if they are dynamic.
+- `factory`: a function which returns a `CDFSource` object. A `CDFSource` object is a subclass of `dlt.sources.DltSource`. We export a `partial` of the `dlt.source` decorator with the `_impl_cls` argument preset to the `CDFSource` class so you can use it directly in your source file. In that sense, using `cdf` sources is identical to `dlt` except you can leverage our `@cdf_source` decorator to make things a bit more concise. The `factory` is used to allow for lazy loading of the source. This is important because we don't want to import the source unless it's actually used. This speeds up the CLI and allows sources to perform heavier discovery operations at runtime if they are dynamic.
 
 - `version`: an integer which represents the version of the source. This is appended to the target dataset name in order to allow for multiple versions of the same source to coexist in the same database. It also allows us to update a source and make significant changes without breaking downstream models or adopting a non standard versioning scheme.
 

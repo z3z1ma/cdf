@@ -1,7 +1,7 @@
 import os
 import sys
 
-from cdf import CDFSourceMeta, cdf_resource, cdf_source
+from cdf import CDFSourceWrapper, cdf_resource, cdf_source
 
 
 @cdf_resource
@@ -22,8 +22,8 @@ def node_info():
 
 
 __CDF_SOURCE__ = dict(
-    node_info=CDFSourceMeta(
-        deferred_fn=node_info,
+    node_info=CDFSourceWrapper(
+        factory=node_info,
         version=1,
         owners=("qa-team"),
         description="A source that emits random data.",

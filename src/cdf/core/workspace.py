@@ -3,18 +3,18 @@ import subprocess
 import sys
 import typing as t
 from contextlib import contextmanager
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from threading import Lock
-from types import MappingProxyType
+from types import MappingProxyType, ModuleType
 
 import dotenv
 import tomlkit as toml
 import virtualenv
-from dlt.common.pipeline import LoadInfo
-from dlt.pipeline import Pipeline
 
 import cdf.core.constants as c
-from cdf.core.source import CDFSource, CDFSourceMeta
+from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
+from cdf.core.source import CDFSource, CDFSourceWrapper
 from cdf.core.utils import augmented_path
 
 _IMPORT_LOCK = Lock()
@@ -58,7 +58,10 @@ class Project:
         return self._workspaces.pop(namespace)
 
     def __getattr__(self, name: str) -> "Workspace":
-        return self._workspaces[name]
+        try:
+            return self._workspaces[name]
+        except KeyError:
+            raise AttributeError(f"Project has no workspace {name}")
 
     def __getitem__(self, name: str) -> "Workspace":
         return self._workspaces[name]
@@ -144,7 +147,7 @@ class Project:
             path = Path(path).expanduser().resolve()
         orig_path = path
         while path.parents:
-            workspace_spec = path / c.CDF_WORKSPACE_FILE
+            workspace_spec = path / c.WORKSPACE_FILE
             if workspace_spec.exists():
                 return cls.from_workspace_toml(workspace_spec)
             path = path.parent
@@ -165,7 +168,7 @@ class WorkspaceCapabilities(t.TypedDict):
 
 
 class WorkspaceSourceContext(t.TypedDict):
-    spec: CDFSourceMeta
+    spec: CDFSourceWrapper
     globals: dict
     locals: dict
     execution_ctx: t.Tuple[dict, dict]
@@ -186,8 +189,8 @@ class Workspace:
 
     ROOT_MARKERS = [
         ".git",
-        c.CDF_CONFIG_FILE,
-        c.CDF_SECRETS_FILE,
+        c.CONFIG_FILE,
+        c.SECRETS_FILE,
         c.SOURCES_PATH,
         c.TRANSFORMS_PATH,
         c.PUBLISHERS_PATH,
@@ -218,6 +221,9 @@ class Workspace:
         self._cached_sources = {}
         if load_dotenv:
             dotenv.load_dotenv(self.root / ".env")
+        self.meta = {}
+        if not self.lockfile_path.exists():
+            self.lockfile_path.touch()
 
     @property
     def root(self) -> Path:
@@ -276,12 +282,17 @@ class Workspace:
     @property
     def config_path(self) -> Path:
         """Path to Workspace config file."""
-        return self.root / c.CDF_CONFIG_FILE
+        return self.root / c.CONFIG_FILE
 
     @property
     def secrets_path(self) -> Path:
         """Path to Workspace secrets file."""
-        return self.root / c.CDF_SECRETS_FILE
+        return self.root / c.SECRETS_FILE
+
+    @property
+    def lockfile_path(self) -> Path:
+        """Path to Workspace lockfile."""
+        return self.root / c.LOCKFILE_PATH
 
     @property
     def requirements_path(self) -> Path:
@@ -336,8 +347,38 @@ class Workspace:
             ).glob("*.py")
         ]
 
-    def __repr__(self) -> str:
-        return f"Workspace(root={self._root})"
+    def read_lockfile(self) -> dict:
+        """Read lockfile.
+
+        Returns:
+            Dictionary of lockfile contents.
+        """
+        return toml.loads(self.lockfile_path.read_text())
+
+    def write_lockfile(self, lockfile: dict) -> int:
+        """Write lockfile.
+
+        Args:
+            lockfile (dict): Dictionary of lockfile contents.
+
+        Returns:
+            Number of bytes written.
+        """
+        return self.lockfile_path.write_text(toml.dumps(lockfile))
+
+    def put_lockfile(self, key: str, value: t.Any) -> int:
+        """Put a value in the lockfile. Overwrites existing values.
+
+        Args:
+            key (str): Key to put.
+            value (t.Any): Value to put.
+
+        Returns:
+            Number of bytes written.
+        """
+        lockfile = self.read_lockfile()
+        lockfile[key] = value
+        return self.write_lockfile(lockfile)
 
     def ensure_venv(self) -> None:
         """Create a virtual environment for the workspace if it does not exist
@@ -347,7 +388,7 @@ class Workspace:
         if self.has_dependencies and not self.python_path.exists():
             return self.setup_venv()
 
-    def setup_venv(self) -> None:
+    def setup_venv(self, install_deps: bool = True) -> None:
         """Create a virtual environment. Clear and reinstantiate env if it exists.
 
         The canonical route to this method is via ensure_venv, but developers can call this
@@ -357,48 +398,52 @@ class Workspace:
             SubprocessError if pip fails to install the requirements.txt
         """
         virtualenv.cli_run([str(self.root / ".venv")])
-        subprocess.check_call([self.pip_path, "install", "-r", self.requirements_path])
+        if install_deps:
+            subprocess.check_call(
+                [self.pip_path, "install", "-r", self.requirements_path]
+            )
+
+    _mod_cache: t.Dict[str, ModuleType] = {}
+    """Class var to cache modules between runs of the context manager"""
 
     @contextmanager
-    def activate_venv(self) -> t.Iterator[None]:
-        """Activate the workspace virtual environment. A noop if there are no deps.
-
-        This method is a context manager that activates the workspace virtual environment. It
-        does so in the context of the current interpreter.
-        """
-        if not self.has_dependencies:
-            yield
-            return
+    def environment(self) -> t.Iterator[None]:
+        self.ensure_venv()
         activate = self.root / ".venv" / "bin" / "activate_this.py"
-        environ_backup = os.environ.copy()
-        syspath_backup = sys.path.copy()
-        sysprefix_backup = sys.prefix
-        exec(activate.read_bytes(), {"__file__": str(activate)})
+        environ, syspath, sysprefix, sysmodules = (
+            os.environ.copy(),
+            sys.path.copy(),
+            sys.prefix,
+            sys.modules.copy(),
+        )
+        if self.has_dependencies:
+            exec(activate.read_bytes(), {"__file__": str(activate)})
+        sys.path.insert(0, str(self.root / c.SOURCES_PATH))
+        if self._mod_cache:
+            sys.modules.update(self._mod_cache)
         yield
-        os.environ = environ_backup
-        sys.path = syspath_backup
-        sys.prefix = sysprefix_backup
+        self._mod_cache = sys.modules.copy()
+        os.environ, sys.path, sys.prefix, sys.modules = (
+            environ,
+            syspath,
+            sysprefix,
+            sysmodules,
+        )
 
-    def inject_workspace_config_providers(self, as_: str | None = None, /) -> None:
-        """Inject workspace config into context
-
-        Args:
-            as_ (str): The name to inject the workspace as.
-        """
+    def inject_workspace_config_providers(self) -> None:
+        """Inject workspace config into context"""
         from cdf.core.config import config_provider_factory, inject_config_providers
 
         if self._did_inject_config_providers:
             return
 
-        if as_ is None:
-            as_ = self.root.name
         inject_config_providers(
             [
                 config_provider_factory(
-                    f"{as_}.config", project_dir=self.root, secrets=False
+                    f"{self.namespace}.config", project_dir=self.root, secrets=False
                 ),
                 config_provider_factory(
-                    f"{as_}.secrets", project_dir=self.root, secrets=True
+                    f"{self.namespace}.secrets", project_dir=self.root, secrets=True
                 ),
             ]
         )
@@ -423,7 +468,8 @@ class Workspace:
             )
         return cls(path)
 
-    def load_sources(self) -> t.Dict[str, WorkspaceSourceContext]:
+    @property
+    def sources(self) -> t.Dict[str, CDFSourceWrapper]:
         """Load sources from workspace.
 
         This method loads all sources from the workspace and returns a dict of source metadata. It
@@ -435,81 +481,58 @@ class Workspace:
         """
         if not self.has_sources:
             return {}
-        if self.has_dependencies:
-            self.ensure_venv()
         if not self._cached_sources:
-            with _IMPORT_LOCK, augmented_path(
-                str(self.root / c.SOURCES_PATH)
-            ), self.activate_venv():
+            with (
+                _IMPORT_LOCK,
+                augmented_path(str(self.root / c.SOURCES_PATH)),
+                self.environment(),
+            ):
                 sources = {}
                 for path in self.source_paths:
-                    # GOALS:
-                    # Load module with virtualenv activated within the context of an existing process
-                    # Execute the code and capture the __CDF_SOURCE__ attribute
-                    # Capture the globals and locals such that we can execute the deferred_fn later in the same context
-                    mod_globals = {"__name__": "__main__", "__file__": str(path)}
-                    mod_locals = {}
-                    exec(
-                        compile(path.read_text(), path, "exec"),
-                        mod_globals,
-                        mod_locals,
-                    )
-                    mod_globals.update(mod_locals)
-                    for src, spec in mod_locals.get(c.CDF_SOURCE, {}).items():
-                        sources[src] = {
-                            "spec": spec,
-                            "globals": mod_globals,
-                            "locals": mod_locals,
-                        }
+                    spec = spec_from_file_location(path.stem, path)
+                    if spec is None or spec.loader is None:
+                        raise ValueError(f"Could not load source {path}")
+                    module = module_from_spec(spec)
+                    sys.modules[spec.name] = module
+                    spec.loader.exec_module(module)
+                    sys.modules.pop(spec.name)
+                    for source_name, source in t.cast(
+                        t.Dict[str, CDFSourceWrapper], getattr(module, c.CDF_SOURCE, {})
+                    ).items():
+                        sources[source_name] = source
             self._cached_sources.update(sources)
         return self._cached_sources
 
-    def __getitem__(self, name: str) -> WorkspaceSourceContext:
-        """Get a source by name."""
-        return self.load_sources()[name]
-
-    def sandbox(
-        self, src: str
-    ) -> t.Generator[CDFSource, Pipeline, t.Callable[..., LoadInfo]]:
-        ctx = self[src]
-        source = eval(
-            f"{c.CDF_SOURCE}['{src}'].deferred_fn()", ctx["globals"], ctx["locals"]
-        )
-
-        # We grab source from sandbox and ask for a pipeline in order to run it
-        # in the same sandbox. Yielding the source to the caller allows
-        # them to manipulate the source before sending a pipeline back.
-        pipeline = yield source
-
-        # Now we prepare the sandbox for execution and let the caller run it.
-        # this function will execute the source in the sandbox
-        ctx["locals"].update({"__source__": source, "__pipe__": pipeline})
-
-        def run(*runargs, **runkwargs) -> LoadInfo:
-            """Closure that runs the source in the sandbox."""
-            return eval(
-                "__pipe__.run(__source__, *__runargs, **__runkwargs)",
-                ctx["globals"],
-                {
-                    **ctx["locals"],
-                    "__runargs": runargs,
-                    "__runkwargs": runkwargs,
-                },
+    @contextmanager
+    def get_runtime_source(
+        self, source_name: str, *args, **kwargs
+    ) -> t.Iterator[CDFSource]:
+        with self.environment():
+            source = self.sources[source_name](*args, **kwargs)
+            feature_flags, meta = get_or_create_flag_dispatch(
+                None, source, workspace=self
             )
+            if "cache_key" in meta:
+                lockfile = self.read_lockfile()
+                lockfile_cache_key = lockfile.get("ff", {}).get("cache_key")
+                if not lockfile_cache_key:
+                    self.put_lockfile("ff", {"cache_key": meta["cache_key"]})
+                elif lockfile_cache_key != meta["cache_key"]:
+                    raise ValueError(
+                        "FF cache key mismatch. Expected %s, got %s -- you should use the correct FF configuration to ensure you are using the correct values, alternatively delete the lockfile to regenerate the hash",
+                        meta["cache_key"],
+                        lockfile_cache_key,
+                    )
+            yield apply_feature_flags(source, feature_flags)  # type: ignore
 
-        return run
+    def __getitem__(self, name: str) -> CDFSourceWrapper:
+        return self.sources[name]
 
-    def get_extractor(self, src: str, pipeline: Pipeline) -> t.Callable[..., LoadInfo]:
-        """Get an extract function for a source.
-
-        This method takes a configured pipeline and returns a function that can be called to
-        extract data from a source. It will automatically run in a sandboxed environment with
-        dependencies available.
-        """
-        source = next(sandbox := self.sandbox(src))
+    def __getattr__(self, name: str) -> CDFSourceWrapper:
         try:
-            sandbox.send(pipeline)
-        except StopIteration as rv:
-            return rv.value
-        else:
-            raise RuntimeError("Source %s failed to initialize", source)
+            return self.sources[name]
+        except KeyError:
+            raise AttributeError(f"Workspace has no source {name}")
+
+    def __repr__(self) -> str:
+        return f"Workspace(root='{self._root.relative_to(Path.cwd())}', capabilities={self.capabilities})"

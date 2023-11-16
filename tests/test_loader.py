@@ -19,7 +19,7 @@ def test_load_sources():
     )
 
     assert len(cache) == 2
-    cache["source1"].deferred_fn()
+    cache["source1"].factory()
     assert registry.has_source("source1")
 
     populate_source_cache(

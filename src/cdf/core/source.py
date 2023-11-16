@@ -1,6 +1,5 @@
 """The source class for continuous data flow sources."""
 import typing as t
-from contextlib import nullcontext
 from dataclasses import dataclass, field
 from functools import partial
 
@@ -28,20 +27,59 @@ class CDFSource(DltSource):
 
 LazySource = t.Callable[[], CDFSource]
 
+Metric = t.Union[float, int]
+MetricAccumulator = t.Callable[[TDataItem, Metric], Metric]
+MetricDefs = t.Dict[str, MetricAccumulator]
+
 
 @dataclass
-class CDFSourceMeta:
-    """A class to hold metadata about a source."""
-
-    deferred_fn: LazySource
+class CDFSourceWrapper:
+    factory: LazySource
     version: int = 1
     owners: t.Sequence[str] = ()
     description: str = ""
     tags: t.Sequence[str] = ()
     cron: str | None = None
-    metrics: t.Dict[str, t.Callable[[TDataItem, float | int], float | int]] = field(
-        default_factory=dict
-    )
+    metrics: t.Dict[str, MetricDefs] = field(default_factory=dict)
+    enabled = True
+
+    def __post_init__(self) -> None:
+        source = None
+        metrics = {}
+        base_factory = self.factory
+
+        def _factory(*args, **kwargs) -> CDFSource:
+            nonlocal metrics, source
+
+            if source is None:
+                # Create source
+                source = base_factory(*args, **kwargs)
+
+                # Add flags
+                ...
+
+                # Add metrics
+                for resource, metric_defs in self.metrics.items():
+                    metrics.setdefault(resource, {})
+                    for metric_name, fn in metric_defs.items():
+                        metrics[resource].setdefault(metric_name, 0)
+
+                        def agg(item) -> Metric:
+                            metrics[resource][metric_name] = fn(
+                                item, metrics[resource][metric_name]
+                            )
+                            return item
+
+                        source.resources[resource].add_map(agg)
+
+            # Return prepared source
+            return source
+
+        self.factory = _factory
+        self.runtime_metrics = metrics
+
+    def __call__(self, *args, **kwargs) -> CDFSource:
+        return self.factory(*args, **kwargs)
 
 
 source = partial(dlt.source, _impl_cls=CDFSource)
@@ -52,7 +90,7 @@ resource = dlt.resource  # type: ignore
 
 __all__ = [
     "CDFSource",
-    "CDFSourceMeta",
+    "CDFSourceWrapper",
     "LazySource",
     "source",
     "resource",

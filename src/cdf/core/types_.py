@@ -3,7 +3,8 @@ import typing as t
 from pathlib import Path
 from types import ModuleType
 
-from cdf.core.source import CDFSourceMeta
+if t.TYPE_CHECKING:
+    from cdf.core.source import CDFSourceWrapper
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
@@ -14,18 +15,10 @@ B = t.TypeVar("B")
 
 Loadable = t.Union[str, Path, ModuleType]
 
-SourceSpec = t.Dict[str, CDFSourceMeta]
+SourceSpec = t.Dict[str, "CDFSourceWrapper"]
 
 
-class EngineCredentials(t.NamedTuple):
-    engine: str
-    credentials: t.Dict[str, str] | str
-
-
-DestinationSpec = t.Dict[str, EngineCredentials]
-
-
-class Workspace(t.TypedDict):
+class WorkspaceTOML(t.TypedDict):
     members: t.List[str]
 
 

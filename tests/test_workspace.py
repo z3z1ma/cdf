@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import dlt
 import pytest
 
 from cdf.core.workspace import Project, Workspace
@@ -25,12 +26,18 @@ def test_load_sources():
     # Test that requirements.txt is injected in the path
     # the below module imports simple_salesforce, which is not installed
     # in the test environment, but is installed in the requirements.txt
-    assert "default.pokemon" in sources
+    assert "pokemon" in sources
 
 
 def test_load_project():
     proj = Project.find_nearest(path=Path("examples/advanced"))
     assert proj is not None
 
-    sources = proj.data.load_sources(ns="data")
+    sources = proj.datateam.load_sources()
     assert len(sources) == 1
+
+    meta = sources["hackernews"]
+    # info = proj.data.get_extractor("hackernews")
+
+    print(meta)
+    # print(info)

@@ -4,15 +4,15 @@ from datetime import datetime
 import dlt
 from dlt.sources.helpers import requests
 
-from cdf.core.source import CDFSourceMeta
+from cdf.core.source import CDFSourceWrapper
 
 URL = "https://hn.algolia.com/api/v1/search_by_date"
 
 
 @dlt.source(name="hackernews")
 def algolia_hn_search(
-    keywords,
-    start_date,
+    keywords=("rust",),
+    start_date="2023-11-10",
     end_date=datetime.today(),
     text="any",
     daily_load=False,
@@ -63,7 +63,7 @@ def algolia_hn_search(
     return keyword_hits(keywords, start_timestamp, end_timestamp, tags, daily_load)
 
 
-@dlt.resource(write_disposition="append")
+@dlt.resource(name="keyword_hits", write_disposition="append")
 def keyword_hits(
     keywords,
     start_timestamp,
@@ -130,13 +130,16 @@ def keyword_hits(
 
 
 __CDF_SOURCE__ = dict(
-    hackernews=CDFSourceMeta(
-        deferred_fn=lambda: algolia_hn_search(
-            keywords=["rust"], start_date="2023-11-10"
-        ),
+    hackernews=CDFSourceWrapper(
+        factory=algolia_hn_search,
         version=1,
         owners=("qa-team"),
         description="Extracts hackernews data from an API.",
         tags=("live", "simple", "test"),
+        metrics={
+            "keyword_hits": {
+                "count": lambda _, metric=0: metric + 1,
+            }
+        },
     )
 )

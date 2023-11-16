@@ -1,4 +1,4 @@
-from cdf import CDFSourceMeta, cdf_resource, cdf_source
+from cdf import CDFSourceWrapper, cdf_resource, cdf_source
 
 
 @cdf_resource
@@ -12,8 +12,8 @@ def source1():
 
 
 __CDF_SOURCE__ = dict(
-    source1=CDFSourceMeta(
-        deferred_fn=source1,
+    source1=CDFSourceWrapper(
+        factory=source1,
         version=1,
         owners=("qa-team"),
         description="A source that enumerates integers.",

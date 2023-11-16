@@ -1,7 +1,6 @@
 """Utility functions for the cdf package."""
 import functools
 import json
-import os
 import sys
 import typing as t
 from contextlib import contextmanager, suppress
@@ -11,7 +10,9 @@ import tomlkit as toml
 from dlt.extract.source import DltResource, DltSource
 
 from cdf.core import constants as c
-from cdf.core import types as ct
+
+if t.TYPE_CHECKING:
+    import cdf.core.types_ as ct
 
 A = t.TypeVar("A")
 B = t.TypeVar("B")
@@ -47,53 +48,6 @@ def do(fn: t.Callable[[A], B], it: t.Iterable[A]) -> t.List[B]:
         A list of the results of applying the function to the iterable.
     """
     return list(map(fn, it))
-
-
-def index_destinations(
-    environment: t.Dict[str, str] | None = None
-) -> ct.DestinationSpec:
-    """Index destinations from the environment based on a standard convention.
-
-    Notes:
-        Convention is as follows:
-
-        CDF__<DESTINATION_NAME>__ENGINE=<ENGINE_NAME>
-        CDF__<DESTINATION_NAME>__CREDENTIALS=<NATIVE_VALUE>
-        CDF__<DESTINATION_NAME>__CREDENTIALS__<KEY>=<VALUE>
-
-    Returns:
-        A dict of destination names to tuples of engine names and credentials.
-    """
-    destinations: ct.DestinationSpec = {
-        "default": ct.EngineCredentials("duckdb", "duckdb:///cdf.db"),
-    }
-    env = environment or os.environ.copy()
-    env_creds = {}
-    for k, v in env.items():
-        match = c.DEST_ENGINE_PAT.match(k)
-        if match:
-            dest_name = match.group("dest_name")
-            env_creds.setdefault(dest_name.lower(), {})["engine"] = v
-            continue
-        match = c.DEST_NATIVECRED_PAT.match(k)
-        if match:
-            dest_name = match.group("dest_name")
-            env_creds.setdefault(dest_name.lower(), {})["credentials"] = v
-            continue
-        match = c.DEST_CRED_PAT.match(k)
-        if match:
-            dest_name = match.group("dest_name")
-            frag = env_creds.setdefault(dest_name.lower(), {})
-            if isinstance(frag.get("credentials"), str):
-                continue  # Prioritize native creds
-            frag.setdefault("credentials", {})[match.group("key").lower()] = v
-    for dest, creds in env_creds.items():
-        if "engine" not in creds or "credentials" not in creds:
-            continue
-        destinations[dest.lower()] = ct.EngineCredentials(
-            creds["engine"], creds["credentials"]
-        )
-    return destinations
 
 
 def fn_to_str(fn: t.Callable | functools.partial) -> str:
@@ -145,7 +99,7 @@ def search_merge_json(path: Path, fname: str, max_depth: int = 3) -> t.Dict[str,
 
 def read_workspace_file(
     path: Path | None = None,
-) -> t.Tuple[ct.Workspace | None, Path | None]:
+) -> t.Tuple["ct.WorkspaceTOML | None", Path | None]:
     """Find nearest workspace file and read it.
 
     [workspace]
@@ -164,7 +118,7 @@ def read_workspace_file(
     if path is None:
         path = Path.cwd()
     while path.parents:
-        f = path / c.CDF_WORKSPACE_FILE
+        f = path / c.WORKSPACE_FILE
         if not f.exists():
             path = path.parent
             continue
@@ -229,7 +183,6 @@ def qualify_source_component_id(
 __all__ = [
     "augmented_path",
     "do",
-    "index_destinations",
     "fn_to_str",
     "flatten_stream",
     "search_merge_json",

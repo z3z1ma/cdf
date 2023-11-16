@@ -140,8 +140,8 @@ def test_local_flags(cdf_provider, mocksource, mocker):
     get_source_flags(
         src,
         cache=cache,
-        workspace_name="ci",
-        workspace_path=Path("tests/fixtures"),
+        ns="ci",
+        path=Path("tests/fixtures"),
     )
     assert src in cache
     assert cache[src] == {
@@ -162,6 +162,6 @@ def test_harness_flags(cdf_provider, mocksource):
         mocksource(),
         workspace_name="ci",
         workspace_path=Path.cwd(),
-        with_provider="harness",
+        provider="harness",
     )
     assert "source:ci.mocksource:someresource" in cache

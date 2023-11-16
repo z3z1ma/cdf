@@ -1,6 +1,6 @@
 import pytest
 
-import cdf.core.types as ct
+import cdf.core.types_ as ct
 
 
 def test_option():

@@ -17,7 +17,7 @@ from pathlib import Path
 from types import ModuleType
 
 import cdf.core.constants as c
-import cdf.core.types as ct
+import cdf.core.types_ as ct
 from cdf.core.utils import augmented_path
 
 StrPath = t.TypeVar("StrPath", str, Path)
