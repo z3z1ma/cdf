@@ -6,8 +6,8 @@ authors = [
     {name = "z3z1ma", email = "butler.alex2010@gmail.com"},
 ]
 dependencies = [
-    "dlt[duckdb]~=0.3.22",
-    "sqlmesh[duckdb]~=0.50.1",
+    "dlt[duckdb]~=0.3.24",
+    "sqlmesh[duckdb]~=0.54.0",
     "typer[all]>=0.8.0",
     "alive-progress>=3.1.4",
     "harness-featureflags>=1.2.3",

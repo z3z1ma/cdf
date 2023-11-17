@@ -498,6 +498,15 @@ class Workspace:
     def get_runtime_source(
         self, source_name: str, *args, **kwargs
     ) -> t.Iterator[CDFSource]:
+        """Get a runtime source from the workspace.
+
+        A runtime source is a source that has been instantiated with its config and dependencies.
+
+        Args:
+            source_name (str): Name of source to get.
+            *args: Positional args to pass to source constructor.
+            **kwargs: Keyword args to pass to source constructor.
+        """
         with self.environment():
             source = self.sources[source_name](*args, **kwargs)
             feature_flags, meta = get_or_create_flag_dispatch(
@@ -510,16 +519,20 @@ class Workspace:
                     self.put_lockfile("ff", {"cache_key": meta["cache_key"]})
                 elif lockfile_cache_key != meta["cache_key"]:
                     raise ValueError(
-                        "FF cache key mismatch. Expected %s, got %s -- you should use the correct FF configuration to ensure you are using the correct values, alternatively delete the lockfile to regenerate the hash",
+                        "FF cache key mismatch. Expected %s, got %s -- you should use the correct FF configuration"
+                        " to ensure you are using the correct values, alternatively delete the lockfile to"
+                        " regenerate the hash",
                         meta["cache_key"],
                         lockfile_cache_key,
                     )
             yield apply_feature_flags(source, feature_flags)  # type: ignore
 
     def __getitem__(self, name: str) -> CDFSourceWrapper:
+        """Get a source from the workspace."""
         return self.sources[name]
 
     def __getattr__(self, name: str) -> CDFSourceWrapper:
+        """Get a source from the workspace."""
         try:
             return self.sources[name]
         except KeyError:

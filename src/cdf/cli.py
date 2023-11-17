@@ -11,7 +11,6 @@ import typer
 
 import cdf.core.constants as c
 from cdf import CDFSourceWrapper, Project, logger
-from cdf.core.destinations import DestinationSpec, EngineCredentials, index_destinations
 from cdf.core.utils import flatten_stream, fn_to_str
 
 T = t.TypeVar("T")
@@ -23,8 +22,6 @@ app = typer.Typer(
 )
 
 dotenv.load_dotenv()
-
-DESTINATIONS: DestinationSpec = {}
 
 
 @app.callback()
@@ -44,23 +41,21 @@ def main(
         help="Set the log level. Defaults to INFO.",
         envvar="CDF_LOG_LEVEL",
     ),
-    debug: t.Annotated[bool, typer.Option(..., "-d", "--debug")] = False,
+    debug: t.Annotated[
+        bool,
+        typer.Option(
+            ..., "-d", "--debug", help="Run in debug mode, force log level to debug"
+        ),
+    ] = False,
 ):
     """:sparkles: a [b]framework[b] for managing and running [u]continousdataflow[/u] projects. :sparkles:
 
-    [br /]
+    [b/]
     - ( :electric_plug: ) [b blue]sources[/b blue]    are responsible for fetching data from a data source.
     - ( :shuffle_tracks_button: ) [b red]transforms[/b red] are responsible for transforming data in a data warehouse.
     - ( :mailbox: ) [b yellow]publishers[/b yellow] are responsible for publishing data to an external system.
     """
-    # Set log level
     logger.set_level(log_level.upper() if not debug else "DEBUG")
-
-    # Index destinations from env
-    # FIXME: to be refactored
-    DESTINATIONS.update(index_destinations())
-
-    # Capture project in CLI context
     ctx.obj = Project.find_nearest(root)
 
 
@@ -72,39 +67,25 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
         ctx: The CLI context.
     """
     project = ctx.obj
-
     workspace, _ = _parse_ws_source(source)
     if workspace not in project:
         raise typer.BadParameter(f"Workspace {workspace} not found.")
-
     project[workspace].inject_workspace_config_providers()
     return source
 
 
 @app.command()
 def index(ctx: typer.Context) -> None:
-    """:page_with_curl: Print an index of [b blue]Sources[/b blue], [b red]Transforms[/b red], and [b yellow]Publishers[/b yellow] loaded from the source directory paths."""
-
+    """:page_with_curl: Print an index of [b][blue]Sources[/blue], [red]Transforms[/red], and [yellow]Publishers[/yellow][/b] loaded from the source directory paths."""
     project: Project = ctx.obj
     rich.print(project)
-
     rich.print(" [b]Index[/b]")
-
     for _, workspace in project:
         rich.print(f"\n  Workspace: {workspace}")
         rich.print(f"\n   Sources Discovered: {len(workspace.sources)}")
         for i, (name, meta) in enumerate(workspace.sources.items(), start=1):
             fn = meta.factory
             rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
-
-    # FIXME: to be refactored
-    rich.print(f"\n  Destinations Discovered: {len(DESTINATIONS)}")
-    rich.print(
-        f"  Env Vars Parsed: {[e for e in os.environ if e.startswith('CDF_')]}\n"
-    )
-    for i, (name, creds) in enumerate(DESTINATIONS.items(), start=1):
-        rich.print(f"   {i}) [b blue]{name}[/b blue] (engine: {creds.engine})")
-
     rich.print("")
 
 
@@ -186,20 +167,25 @@ def ingest(
                 "Select them explicitly with --resource or enable them with feature flags.\n\n"
                 f"Reach out to the source owners for more information: {project[ws][src].owners}"
             )
-        dest_spec = _get_destination(dest)
+        dataset_name = f"{src}_v{project[ws][src].version}"
         rich.print(
-            f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest_spec.engine}[/b red]..."
+            f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest}[/b red]..."
         )
         for resource in rt_source.selected_resources:
             rich.print(f"  - [b green]{resource}[/b green]")
-
+        engine, dest = dest.split(".", 1)
+        pkwargs = {}
+        if "BUCKET_URL" in os.environ:
+            # Staging native creds use expected cloud provider env vars
+            # such as GOOGLE_APPLICATION_CREDENTIALS, AWS_ACCESS_KEY_ID, etc.
+            pkwargs["staging"] = "filesystem"
         pipeline = dlt.pipeline(
-            f"{src}-to-{dest}",
-            destination=dest_spec.engine,
-            credentials=dest_spec.credentials,
-            # TODO: set staging, awaiting destination refactor
-            dataset_name=f"{src}_v{project[ws][src].version}",
+            f"cdf-{src}",
+            destination=engine,
+            credentials=dlt.secrets[f"{engine}.{dest}.credentials"],
+            dataset_name=dataset_name,
             progress="alive_progress",
+            **pkwargs,
         )
         info = pipeline.run(rt_source)
     logging.info(info)
@@ -230,23 +216,6 @@ def _parse_ws_source(source: str) -> t.Tuple[str, str]:
         ws, src = source.split(".", 1)
         return ws, src
     return c.DEFAULT_WORKSPACE, source
-
-
-def _get_destination(destination: str) -> EngineCredentials:
-    """Get a destination from the global cache.
-
-    Args:
-        destination: The name of the destination to get.
-
-    Raises:
-        typer.BadParameter: If the destination is not found.
-
-    Returns:
-        The destination.
-    """
-    if destination not in DESTINATIONS:
-        raise typer.BadParameter(f"Destination {destination} not found.")
-    return DESTINATIONS[destination]
 
 
 def _print_meta(meta: CDFSourceWrapper) -> None:

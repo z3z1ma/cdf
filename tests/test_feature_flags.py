@@ -9,7 +9,7 @@ from dlt.common.configuration.specs.config_providers_context import (
     ConfigProvidersContext,
 )
 
-from cdf.core.config import find_cdf_config_providers
+from cdf.core.config import find_config_providers
 from cdf.core.feature_flags import (
     _component_id_to_harness_id,
     _harness_id_to_component_id,
@@ -22,7 +22,7 @@ from cdf.core.feature_flags import (
 def cdf_provider() -> t.Iterator[ConfigProvidersContext]:
     """Config provider which gives a test function an isolated context with cdf_config.toml loaded"""
     ctx = ConfigProvidersContext()
-    ctx.add_provider(next(find_cdf_config_providers([Path("tests/fixtures")])))
+    ctx.add_provider(next(find_config_providers([Path("tests/fixtures")])))
     with Container().injectable_context(ctx):
         yield ctx
 

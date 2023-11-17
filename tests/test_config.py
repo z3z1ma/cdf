@@ -7,7 +7,7 @@ from dlt.common.configuration.specs.config_providers_context import (
     ConfigProvidersContext,
 )
 
-from cdf.core.config import find_cdf_config_providers, inject_config_providers
+from cdf.core.config import find_config_providers, inject_config_providers
 
 
 @pytest.fixture
@@ -23,7 +23,7 @@ def test_get_config(empty_provider):
 
     # Test case 1: Can get config from local files, in this case the top-level config
     providers = list(
-        find_cdf_config_providers(
+        find_config_providers(
             search_paths=["tests/fixtures"],
             search_cwd=False,
         )
@@ -43,7 +43,7 @@ def test_get_config(empty_provider):
 
     # Test case 5: Can get multiple config providers
     providers = list(
-        find_cdf_config_providers(
+        find_config_providers(
             search_paths=["tests/fixtures/ut_project"],
             search_cwd=False,
         )
