@@ -85,7 +85,7 @@ def index(ctx: typer.Context) -> None:
         rich.print(f"\n ~ {workspace}")
         rich.print(f"\n   Sources Discovered: {len(workspace.sources)}")
         for i, (name, meta) in enumerate(workspace.sources.items(), start=1):
-            fn = meta.factory
+            fn = meta.factory.__wrapped__
             rich.print(f"   {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
     rich.print("")
 

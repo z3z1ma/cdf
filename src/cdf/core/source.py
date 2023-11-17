@@ -75,6 +75,7 @@ class CDFSourceWrapper:
             # Return prepared source
             return source
 
+        _factory.__wrapped__ = base_factory
         self.factory = _factory
         self.runtime_metrics = metrics
 
