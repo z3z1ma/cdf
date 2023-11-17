@@ -83,10 +83,25 @@ def index(ctx: typer.Context) -> None:
     rich.print(f" {project}")
     for _, workspace in project:
         rich.print(f"\n ~ {workspace}")
-        rich.print(f"\n   Sources Discovered: {len(workspace.sources)}")
-        for i, (name, meta) in enumerate(workspace.sources.items(), start=1):
-            fn = meta.factory.__wrapped__
-            rich.print(f"   {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
+        if not any(workspace.capabilities.values()):
+            rich.print(
+                f"   No capabilities discovered. Add {c.SOURCES_PATH}, {c.TRANSFORMS_PATH}, or {c.PUBLISHERS_PATH}"
+            )
+            continue
+        if workspace.has_sources:
+            rich.print(f"\n   Sources Discovered: {len(workspace.sources)}")
+            for i, (name, meta) in enumerate(workspace.sources.items(), start=1):
+                fn = meta.factory.__wrapped__
+                rich.print(f"   {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
+        if workspace.has_transforms:
+            rich.print("\n   Transforms Discovered: 0")
+        if workspace.has_publishers:
+            rich.print("\n   Publishers Discovered: 0")
+        if workspace.has_dependencies:
+            deps = workspace.requirements_path.read_text().splitlines()
+            rich.print(f"\n   Dependencies: {len(deps)}")
+            for i, dep in enumerate(deps):
+                rich.print(f"   {i}) [b green]{dep}[/b green]")
     rich.print("")
 
 
