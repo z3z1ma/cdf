@@ -76,7 +76,8 @@ class Project:
         return name in self._workspaces
 
     def __repr__(self) -> str:
-        return f"Project({', '.join(self._workspaces.keys())})"
+        ws = ", ".join(f"'{ns}'" for ns in self._workspaces.keys())
+        return f"Project(workspaces=[{ws}])"
 
     @classmethod
     def from_dict(cls, workspaces: t.Dict[str, Path | str]) -> "Project":

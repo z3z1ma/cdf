@@ -34,6 +34,7 @@ def main(
         "--path",
         default_factory=Path.cwd,
         help="Path to the project root. Defaults to cwd. Parent dirs are searched for a workspace file.",
+        envvar="CDF_ROOT",
     ),
     log_level: str = typer.Option(
         "INFO",
@@ -79,14 +80,13 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
 def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Sources[/blue], [red]Transforms[/red], and [yellow]Publishers[/yellow][/b] loaded from the source directory paths."""
     project: Project = ctx.obj
-    rich.print(project)
-    rich.print(" [b]Index[/b]")
+    rich.print(f" {project}")
     for _, workspace in project:
-        rich.print(f"\n  Workspace: {workspace}")
+        rich.print(f"\n ~ {workspace}")
         rich.print(f"\n   Sources Discovered: {len(workspace.sources)}")
         for i, (name, meta) in enumerate(workspace.sources.items(), start=1):
             fn = meta.factory
-            rich.print(f"  {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
+            rich.print(f"   {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
     rich.print("")
 
 
