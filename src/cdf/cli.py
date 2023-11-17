@@ -2,6 +2,7 @@
 import logging
 import os
 import typing as t
+from contextlib import suppress
 from pathlib import Path
 
 import dlt
@@ -179,10 +180,12 @@ def ingest(
             # Staging native creds use expected cloud provider env vars
             # such as GOOGLE_APPLICATION_CREDENTIALS, AWS_ACCESS_KEY_ID, etc.
             pkwargs["staging"] = "filesystem"
+        with suppress(KeyError):
+            # Permit credentials to be omitted which will fall back to native parser
+            pkwargs["credentials"] = dlt.secrets[f"{engine}.{dest}.credentials"]
         pipeline = dlt.pipeline(
             f"cdf-{src}",
             destination=engine,
-            credentials=dlt.secrets[f"{engine}.{dest}.credentials"],
             dataset_name=dataset_name,
             progress="alive_progress",
             **pkwargs,
