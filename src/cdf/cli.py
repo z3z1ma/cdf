@@ -59,6 +59,7 @@ def main(
     """
     logger.set_level(log_level.upper() if not debug else "DEBUG")
     ctx.obj = Project.find_nearest(root)
+    ctx.obj.meta["root"] = root
 
 
 def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
@@ -76,7 +77,7 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
     return source
 
 
-@app.command()
+@app.command(rich_help_panel="Project")
 def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Sources[/blue], [red]Transforms[/red], and [yellow]Publishers[/yellow][/b] loaded from the source directory paths."""
     project: Project = ctx.obj
@@ -105,13 +106,40 @@ def index(ctx: typer.Context) -> None:
     rich.print("")
 
 
-@app.command()
-def debug() -> None:
-    """:bug: A basic [magenta]debug[/magenta] command."""
-    rich.print("Debugging...")
+@app.command(rich_help_panel="Project")
+def docs(ctx: typer.Context) -> None:
+    """:book: Render documentation for the project."""
+    project: Project = ctx.obj
+    docs_path = project.meta["root"].joinpath("docs")
+    if not docs_path.exists():
+        docs_path.mkdir()
+    md_doc = "# CDF Project\n\n"
+    for _, workspace in project:
+        md_doc += f"## {workspace.namespace.title()} Space\n\n"
+        if workspace.has_dependencies:
+            md_doc += "### Dependencies\n\n"
+            deps = workspace.requirements_path.read_text().splitlines()
+            for dep in deps:
+                md_doc += f"- {dep}\n"
+            md_doc += "\n"
+        if workspace.has_sources:
+            md_doc += "### Sources\n\n"
+            for name, meta in workspace.sources.items():
+                md_doc += f"### {name}\n\n"
+                md_doc += f"**Description**: {meta.description}\n\n"
+                md_doc += f"**Owners**: {meta.owners}\n\n"
+                md_doc += f"**Tags**: {meta.tags}\n\n"
+                md_doc += f"**Cron**: {meta.cron}\n\n"
+                md_doc += f"**Metrics**: {meta.metrics}\n\n"
+            md_doc += "\n"
+        if workspace.has_transforms:
+            md_doc += "### Transforms\n\n"
+        if workspace.has_publishers:
+            md_doc += "### Publishers\n\n"
+    rich.print(md_doc)
 
 
-@app.command()
+@app.command(rich_help_panel="Development")
 def discover(
     ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
@@ -133,7 +161,7 @@ def discover(
         _print_meta(project[ws][src])
 
 
-@app.command()
+@app.command(rich_help_panel="Development")
 def head(
     ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
