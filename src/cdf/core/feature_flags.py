@@ -204,7 +204,7 @@ def _harness_flag_exists(identifier: str, ff_client: CfClient) -> bool:
         raise
 
 
-def _harness_id_to_component_id(harness_id: str) -> str:
+def _harness_id_to_component_id(harness_id: str, typ: str = "source") -> str:
     """Convert a Harness Platform API flag id to a component id
 
     Example:
@@ -220,7 +220,7 @@ def _harness_id_to_component_id(harness_id: str) -> str:
         harness_id = harness_id.split("/", 1)[1]
     ws, harness_id = harness_id.split("__", 1)
     src, res = harness_id.split("__", 1)
-    return f"source:{ws}.{src}:{res}"
+    return f"{typ}:{ws}.{src}:{res}"
 
 
 def _component_id_to_harness_id(component_id: str) -> str:
