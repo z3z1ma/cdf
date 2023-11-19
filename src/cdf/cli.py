@@ -1,6 +1,7 @@
 """CLI for cdf."""
 import logging
 import os
+import subprocess
 import typing as t
 from contextlib import suppress
 from pathlib import Path
@@ -70,7 +71,7 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
         ctx: The CLI context.
     """
     project = ctx.obj
-    workspace, _ = _parse_ws_source(source)
+    workspace, _ = _parse_ws_component(source)
     if workspace not in project:
         raise typer.BadParameter(f"Workspace {workspace} not found.")
     project[workspace].inject_workspace_config_providers()
@@ -118,9 +119,9 @@ def docs(ctx: typer.Context) -> None:
         md_doc += f"## {workspace.namespace.title()} Space\n\n"
         if workspace.has_dependencies:
             md_doc += "### Dependencies\n\n"
-            deps = workspace.requirements_path.read_text().splitlines()
-            for dep in deps:
-                md_doc += f"- {dep}\n"
+            deps = subprocess.check_output([workspace.pip_path, "freeze"], text=True)
+            for dep in deps.splitlines():
+                md_doc += f"- `{dep}`\n"
             md_doc += "\n"
         if workspace.has_sources:
             md_doc += "### Sources\n\n"
@@ -128,8 +129,8 @@ def docs(ctx: typer.Context) -> None:
                 md_doc += f"### {name}\n\n"
                 md_doc += f"**Description**: {meta.description}\n\n"
                 md_doc += f"**Owners**: {meta.owners}\n\n"
-                md_doc += f"**Tags**: {meta.tags}\n\n"
-                md_doc += f"**Cron**: {meta.cron}\n\n"
+                md_doc += f"**Tags**: {', '.join(meta.tags)}\n\n"
+                md_doc += f"**Cron**: {meta.cron or 'Not Scheduled'}\n\n"
                 md_doc += f"**Metrics**: {meta.metrics}\n\n"
             md_doc += "\n"
         if workspace.has_transforms:
@@ -147,7 +148,7 @@ def discover(
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
     logger.debug("Discovering source %s", source)
     project: Project = ctx.obj
-    ws, src = _parse_ws_source(source)
+    ws, src = _parse_ws_component(source)
     with project[ws].get_runtime_source(src) as rt_source:
         rich.print(
             f"\nDiscovered {len(rt_source.resources)} resources in"
@@ -173,7 +174,7 @@ def head(
     This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
     """
     project: Project = ctx.obj
-    ws, src = _parse_ws_source(source)
+    ws, src = _parse_ws_component(source)
     with project[ws].get_runtime_source(src) as rt_source:
         if resource not in rt_source.resources:
             raise typer.BadParameter(
@@ -199,9 +200,20 @@ def ingest(
         ..., "-r", "--resource", default_factory=list
     ),
 ) -> None:
-    """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red]."""
+    """:inbox_tray: Ingest data from a [b blue]Source[/b blue] into a data store where it can be [b red]Transformed[/b red].
+
+    \f
+    Args:
+        ctx: The CLI context.
+        source: The source to ingest from.
+        dest: The destination to ingest to.
+        resources: The resources to ingest.
+
+    Raises:
+        typer.BadParameter: If no resources are selected.
+    """
     project: Project = ctx.obj
-    ws, src = _parse_ws_source(source)
+    ws, src = _parse_ws_component(source)
     with project[ws].get_runtime_source(src) as rt_source:
         if resources:
             rt_source = rt_source.with_resources(*resources)
@@ -249,19 +261,50 @@ def publish() -> None:
     rich.print("Publishing...")
 
 
-def _parse_ws_source(source: str) -> t.Tuple[str, str]:
-    """Parse a workspace.source string into a tuple.
+@app.command(rich_help_panel="Pipelines")
+def run(
+    ctx: typer.Context,
+    args: t.List[str] = typer.Argument(allow_dash=True),
+) -> None:
+    """:rocket: Run an executable located in a workspace environment.
+
+    This is useful for running packages installed in a workspace environment without having to activate it first.
+    It is purely a convenience method and is not required to operate within a CDF project. All arguments should
+    be passed after a -- separator.
+
+    \f
+    Example:
+        cdf run my_workspace.pip -- --help
+        cdf run my_workspace.gcloud -- --help
 
     Args:
-        source: The source string to parse.
+        ctx: The CLI context.
+        args: The executable followed by arguments to forward to it.
+
+    Raises:
+        subprocess.CalledProcessError: If the executable returns a non-zero exit code.
+    """
+    project: Project = ctx.obj
+    executable = args.pop(0)
+    ws, component = _parse_ws_component(executable)
+    rich.print(">>> Running", ws, component)
+    with project[ws].environment():
+        subprocess.check_call([project[ws].get_bin(component), *args])
+
+
+def _parse_ws_component(component: str) -> t.Tuple[str, str]:
+    """Parse a workspace.component string into a tuple.
+
+    Args:
+        component: The component string to parse.
 
     Returns:
-        A tuple of (workspace, source).
+        A tuple of (workspace, component).
     """
-    if "." in source:
-        ws, src = source.split(".", 1)
+    if "." in component:
+        ws, src = component.split(".", 1)
         return ws, src
-    return c.DEFAULT_WORKSPACE, source
+    return c.DEFAULT_WORKSPACE, component
 
 
 def _print_meta(meta: CDFSourceWrapper) -> None:

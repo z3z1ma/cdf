@@ -3,6 +3,7 @@ import subprocess
 import sys
 import typing as t
 from contextlib import contextmanager
+from functools import lru_cache
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from threading import Lock
@@ -13,6 +14,7 @@ import tomlkit as toml
 import virtualenv
 
 import cdf.core.constants as c
+import cdf.core.logger as logger
 from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
 from cdf.core.source import CDFSource, CDFSourceWrapper
 from cdf.core.utils import augmented_path
@@ -348,6 +350,28 @@ class Workspace:
             ).glob("*.py")
         ]
 
+    def get_bin(self, name: str, must_exist: bool = False) -> Path:
+        """Get path to binary in workspace.
+
+        Args:
+            name (str): Name of binary.
+            must_exist (bool): If True, raises ValueError if binary does not exist.
+
+        Raises:
+            ValueError if binary does not exist and must_exist is True or if workspace has no
+                dependencies.
+
+        Returns:
+            Path to binary.
+        """
+        if not self.has_dependencies:
+            raise ValueError("Workspace has no dependencies")
+        bin_path = self.root / ".venv" / "bin" / name
+        if must_exist and not bin_path.exists():
+            raise ValueError("Could not find binary %s in %s", name, self.root)
+        return bin_path
+
+    @lru_cache(maxsize=1)
     def read_lockfile(self) -> dict:
         """Read lockfile.
 
@@ -365,9 +389,10 @@ class Workspace:
         Returns:
             Number of bytes written.
         """
+        self.read_lockfile.cache_clear()
         return self.lockfile_path.write_text(toml.dumps(lockfile))
 
-    def put_lockfile(self, key: str, value: t.Any) -> int:
+    def put_value_lockfile(self, key: str, value: t.Any) -> int:
         """Put a value in the lockfile. Overwrites existing values.
 
         Args:
@@ -381,28 +406,55 @@ class Workspace:
         lockfile[key] = value
         return self.write_lockfile(lockfile)
 
-    def ensure_venv(self) -> None:
-        """Create a virtual environment for the workspace if it does not exist
+    def get_value_lockfile(self, key: str) -> t.Any:
+        """Get a value from the lockfile.
 
-        Uses the default venv.EnvBuilder class. Use setup_venv for more control over the behavior.
+        Args:
+            key (str): Key to get.
+
+        Returns:
+            Value from lockfile.
         """
-        if self.has_dependencies and not self.python_path.exists():
-            return self.setup_venv()
+        return self.read_lockfile()[key]
 
-    def setup_venv(self, install_deps: bool = True) -> None:
-        """Create a virtual environment. Clear and reinstantiate env if it exists.
+    def _setup_deps(self, force: bool = False):
+        """Install dependencies if requirements.txt is newer than virtual environment."""
+        req_mtime = self.requirements_path.stat().st_mtime
+        venv_mtime = (self.root / ".venv").stat().st_mtime
+        if (req_mtime > venv_mtime) or force:
+            logger.info("Change detected. Updating dependencies for %s", self.root)
+            subprocess.check_call(
+                [
+                    self.pip_path,
+                    "install",
+                    "--quiet",
+                    "--upgrade",
+                    "-r",
+                    self.requirements_path,
+                ]
+            )
+            (self.root / ".venv").touch()
+
+    def _setup_venv(self) -> None:
+        """Create a virtual environment.
 
         The canonical route to this method is via ensure_venv, but developers can call this
         directly for more control or override the implementation in a Workspace subclass.
-
-        Raises:
-            SubprocessError if pip fails to install the requirements.txt
         """
         virtualenv.cli_run([str(self.root / ".venv")])
-        if install_deps:
-            subprocess.check_call(
-                [self.pip_path, "install", "-r", self.requirements_path]
-            )
+        self.requirements_path.touch()
+
+    def ensure_venv(self) -> None:
+        """Create a virtual environment for the workspace if it does not exist
+
+        This method creates a virtual environment for the workspace if it does not exist. It also
+        installs the requirements.txt into the virtual environment. If the requirements.txt is
+        newer than the virtual environment, it reinstalls the requirements.txt.
+        """
+        if self.has_dependencies:
+            if not self.python_path.exists():
+                self._setup_venv()
+            self._setup_deps(force=False)
 
     _mod_cache: t.Dict[str, ModuleType] = {}
     """Class var to cache modules between runs of the context manager"""
@@ -513,11 +565,12 @@ class Workspace:
             feature_flags, meta = get_or_create_flag_dispatch(
                 None, source, workspace=self
             )
+            # Make sure we are using a consistent FF configuration
             if "cache_key" in meta:
                 lockfile = self.read_lockfile()
                 lockfile_cache_key = lockfile.get("ff", {}).get("cache_key")
                 if not lockfile_cache_key:
-                    self.put_lockfile("ff", {"cache_key": meta["cache_key"]})
+                    self.put_value_lockfile("ff", {"cache_key": meta["cache_key"]})
                 elif lockfile_cache_key != meta["cache_key"]:
                     raise ValueError(
                         "FF cache key mismatch. Expected %s, got %s -- you should use the correct FF configuration"
