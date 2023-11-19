@@ -78,7 +78,7 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
     return source
 
 
-@app.command(rich_help_panel="Project")
+@app.command(rich_help_panel="Project Info")
 def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Sources[/blue], [red]Transforms[/red], and [yellow]Publishers[/yellow][/b] loaded from the source directory paths."""
     project: Project = ctx.obj
@@ -107,7 +107,7 @@ def index(ctx: typer.Context) -> None:
     rich.print("")
 
 
-@app.command(rich_help_panel="Project")
+@app.command(rich_help_panel="Project Info")
 def docs(ctx: typer.Context) -> None:
     """:book: Render documentation for the project."""
     project: Project = ctx.obj
@@ -140,7 +140,7 @@ def docs(ctx: typer.Context) -> None:
     rich.print(md_doc)
 
 
-@app.command(rich_help_panel="Development")
+@app.command(rich_help_panel="Inspect")
 def discover(
     ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
@@ -162,7 +162,7 @@ def discover(
         _print_meta(project[ws][src])
 
 
-@app.command(rich_help_panel="Development")
+@app.command(rich_help_panel="Inspect")
 def head(
     ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
@@ -191,7 +191,7 @@ def head(
             num -= 1
 
 
-@app.command(rich_help_panel="Pipelines")
+@app.command(rich_help_panel="Integrate")
 def ingest(
     ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
@@ -249,19 +249,19 @@ def ingest(
     logging.info(info)
 
 
-@app.command(rich_help_panel="Pipelines")
+@app.command(rich_help_panel="Integrate")
 def transform() -> None:
     """:arrows_counterclockwise: [b red]Transform[/b red] data from a data store into a data store where it can be exposed or [b yellow]Published[/b yellow]."""
     rich.print("Transforming with SQLMesh...")
 
 
-@app.command(rich_help_panel="Pipelines")
+@app.command(rich_help_panel="Integrate")
 def publish() -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
     rich.print("Publishing...")
 
 
-@app.command(rich_help_panel="Pipelines")
+@app.command(rich_help_panel="Utility")
 def run(
     ctx: typer.Context,
     args: t.List[str] = typer.Argument(allow_dash=True),
