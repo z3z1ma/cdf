@@ -208,7 +208,7 @@ def _harness_id_to_component_id(harness_id: str) -> str:
     """Convert a Harness Platform API flag id to a component id
 
     Example:
-        workspace_X_source__resource -> source:workspace.source:resource
+        source__datateam__sfdc__account -> source:datateam.sfdc:account
 
     Args:
         harness_id (str): The Harness Platform API flag id
@@ -218,14 +218,16 @@ def _harness_id_to_component_id(harness_id: str) -> str:
     """
     if harness_id.upper().startswith("FLAGS/"):
         harness_id = harness_id.split("/", 1)[1]
-    return "source:" + harness_id.replace("_X_", ".", 1).replace("__", ":", 1)
+    ws, harness_id = harness_id.split("__", 1)
+    src, res = harness_id.split("__", 1)
+    return f"source:{ws}.{src}:{res}"
 
 
 def _component_id_to_harness_id(component_id: str) -> str:
     """Convert a component id to a Harness Platform API flag id
 
     Example:
-        source:workspace.source:resource -> workspace_X_source__resource
+        source:datateam.sfdc:account -> source__datateam__sfdc__account
 
     Args:
         component_id (str): The component id
@@ -233,7 +235,9 @@ def _component_id_to_harness_id(component_id: str) -> str:
     Returns:
         str: The Harness Platform API flag id
     """
-    return "__".join(component_id.split(":")[1:]).replace(".", "_X_")
+    typ, ws_comp, meta = component_id.split(":", 2)
+    ws, comp = ws_comp.split(".", 1)
+    return f"{typ}__{ws}__{comp}__{meta}"
 
 
 def get_or_create_flag_harness(
@@ -294,9 +298,7 @@ def get_or_create_flag_harness(
         else:
             rv = ff_client.bool_variation(harness_safeident, Target("cdf"), False)
             cache[component] = rv
-    # TODO: the cache key should prevent us from using the wrong config but expired tokens
-    # will require git commits since the lockfile is versioned
-    return cache, {"cache_key": sha256(sdk_key.encode()).hexdigest()}
+    return cache, {"config_hash": sha256(sdk_key.encode()).hexdigest()}
 
 
 def get_or_create_flag_launchdarkly(
@@ -473,14 +475,14 @@ def get_or_create_flag_dispatch(
 def apply_feature_flags(
     source: DltSource,
     flags: t.Dict[str, bool],
-    workspace: str | None = None,
+    workspace: "Workspace",
     raise_on_no_resources: bool = False,
 ) -> DltSource:
     """Apply feature flags to a source."""
 
     logger.debug("Applying feature flags for source %s", source.name)
     for resource in source.resources.values():
-        key = get_source_component_id(source, resource, workspace)
+        key = get_source_component_id(source, resource, workspace.namespace)
         fv = flags.get(key)
         if fv is None:
             logger.debug("No flag for %s", key)

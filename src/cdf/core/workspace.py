@@ -12,11 +12,12 @@ from types import MappingProxyType, ModuleType
 import dotenv
 import tomlkit as toml
 import virtualenv
+from dlt.extract.source import DltSource
 
 import cdf.core.constants as c
 import cdf.core.logger as logger
 from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
-from cdf.core.source import CDFSource, CDFSourceWrapper
+from cdf.core.source import CDFSourceWrapper
 from cdf.core.utils import augmented_path
 
 _IMPORT_LOCK = Lock()
@@ -125,7 +126,11 @@ class Project:
 
         parsed = {}
         for spec in conf["members"]:
-            namespace, subpath = spec.split(":", 1)
+            if ":" in spec:
+                namespace, subpath = spec.split(":", 1)
+            else:
+                subpath = spec
+                namespace = Path(subpath).name
             parsed[namespace] = path.parent / subpath
 
         if load_dotenv:
@@ -406,7 +411,7 @@ class Workspace:
         lockfile[key] = value
         return self.write_lockfile(lockfile)
 
-    def get_value_lockfile(self, key: str) -> t.Any:
+    def get_value_lockfile(self, key: str) -> t.Dict[str, t.Any]:
         """Get a value from the lockfile.
 
         Args:
@@ -547,10 +552,33 @@ class Workspace:
             self._cached_sources.update(sources)
         return self._cached_sources
 
+    def raise_on_ff_lock_mismatch(self, config_hash: str) -> None:
+        """Raise an error if the FF cache key does not match the lockfile.
+
+        This is used to ensure that FF configuration for a workspace is consistent across
+        runs. It does this by storing a hash of the FF configuration in the lockfile and
+        comparing it to the current FF configuration. If the hash does not match, it raises
+        an error.
+
+        Args:
+            config_hash (str): The cache key to validate.
+        """
+        lockfile_cache_key = self.get_value_lockfile("ff").get("config_hash")
+        if not lockfile_cache_key:
+            self.put_value_lockfile("ff", {"config_hash": config_hash})
+        elif lockfile_cache_key != config_hash:
+            raise ValueError(
+                "FF cache key mismatch. Expected %s, got %s -- you should use the correct FF configuration"
+                " to ensure you are using the correct values, alternatively delete the lockfile to"
+                " regenerate the hash",
+                config_hash,
+                lockfile_cache_key,
+            )
+
     @contextmanager
     def get_runtime_source(
         self, source_name: str, *args, **kwargs
-    ) -> t.Iterator[CDFSource]:
+    ) -> t.Iterator[DltSource]:
         """Get a runtime source from the workspace.
 
         A runtime source is a source that has been instantiated with its config and dependencies.
@@ -565,21 +593,9 @@ class Workspace:
             feature_flags, meta = get_or_create_flag_dispatch(
                 None, source, workspace=self
             )
-            # Make sure we are using a consistent FF configuration
-            if "cache_key" in meta:
-                lockfile = self.read_lockfile()
-                lockfile_cache_key = lockfile.get("ff", {}).get("cache_key")
-                if not lockfile_cache_key:
-                    self.put_value_lockfile("ff", {"cache_key": meta["cache_key"]})
-                elif lockfile_cache_key != meta["cache_key"]:
-                    raise ValueError(
-                        "FF cache key mismatch. Expected %s, got %s -- you should use the correct FF configuration"
-                        " to ensure you are using the correct values, alternatively delete the lockfile to"
-                        " regenerate the hash",
-                        meta["cache_key"],
-                        lockfile_cache_key,
-                    )
-            yield apply_feature_flags(source, feature_flags)  # type: ignore
+            if config_hash := meta.get("config_hash"):
+                self.raise_on_ff_lock_mismatch(config_hash)
+            yield apply_feature_flags(source, feature_flags, workspace=self)
 
     def __getitem__(self, name: str) -> CDFSourceWrapper:
         """Get a source from the workspace."""
