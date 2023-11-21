@@ -23,11 +23,6 @@ DEFAULT_WORKSPACE = "default"
 
 # Paths relative to a root which constitute the layout of a CDF workspace
 SOURCES_PATH = "./sources"
-TRANSFORMS_PATH = "./transforms"
+TRANSFORMS_PATH = "./models"
 PUBLISHERS_PATH = "./publishers"
 LOCKFILE_PATH = "./cdf.lock"
-
-# Destination resolution constants, likely to be factored out
-DEST_ENGINE_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__ENGINE$")
-DEST_CRED_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__CREDENTIALS__(?P<key>.+)$")
-DEST_NATIVECRED_PAT = re.compile(r"^CDF__(?P<dest_name>.+)__CREDENTIALS$")

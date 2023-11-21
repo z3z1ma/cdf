@@ -6,10 +6,16 @@ from rich.logging import RichHandler
 
 if t.TYPE_CHECKING:
 
+    class Representable(t.Protocol):
+        def __str__(self) -> str:
+            ...
+
     class LogMethod(t.Protocol):
         """Protocol for logger methods."""
 
-        def __call__(self, message: str, *args: t.Any, **kwargs: t.Any) -> None:
+        def __call__(
+            self, message: Representable, *args: t.Any, **kwargs: t.Any
+        ) -> None:
             ...
 
 

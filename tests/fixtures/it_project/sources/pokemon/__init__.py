@@ -6,7 +6,7 @@ Available resources: [berries, pokemon]
 from typing import Iterable, Sequence
 
 from dlt.common.typing import TDataItem
-from dlt.extract.source import DltResource
+from dlt.sources import DltResource
 from dlt.sources.helpers import requests
 
 from cdf import cdf_resource, cdf_source

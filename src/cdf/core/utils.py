@@ -6,7 +6,7 @@ import typing as t
 from contextlib import contextmanager, suppress
 from pathlib import Path
 
-from dlt.extract.source import DltResource, DltSource
+from dlt.sources import DltResource, DltSource
 
 A = t.TypeVar("A")
 B = t.TypeVar("B")

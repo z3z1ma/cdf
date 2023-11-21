@@ -17,7 +17,7 @@ from hashlib import sha256
 from threading import Lock
 
 import dlt
-from dlt.extract.source import DltSource
+from dlt.sources import DltSource
 from dlt.sources.helpers import requests
 from featureflags.client import CfClient, Config, Target
 from featureflags.evaluations.feature import FeatureConfigKind

@@ -10,9 +10,10 @@ from threading import Lock
 from types import MappingProxyType, ModuleType
 
 import dotenv
+import sqlmesh
 import tomlkit as toml
 import virtualenv
-from dlt.extract.source import DltSource
+from dlt.sources import DltSource
 
 import cdf.core.constants as c
 import cdf.core.logger as logger
@@ -81,6 +82,9 @@ class Project:
     def __repr__(self) -> str:
         ws = ", ".join(f"'{ns}'" for ns in self._workspaces.keys())
         return f"Project(workspaces=[{ws}])"
+
+    def keys(self) -> t.List[str]:
+        return list(self._workspaces.keys())
 
     @classmethod
     def from_dict(cls, workspaces: t.Dict[str, Path | str]) -> "Project":

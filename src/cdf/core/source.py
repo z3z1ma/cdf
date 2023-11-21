@@ -6,7 +6,7 @@ from functools import partial
 import dlt
 from dlt.common.schema import Schema
 from dlt.common.typing import TDataItem
-from dlt.extract.source import DltResource, DltSource
+from dlt.sources import DltResource, DltSource
 
 from cdf.core.registry import register_source
 

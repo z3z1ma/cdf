@@ -2,8 +2,10 @@
 import logging
 import os
 import subprocess
+import sys
 import typing as t
 from contextlib import suppress
+from datetime import datetime, timezone
 from pathlib import Path
 
 import dlt
@@ -12,8 +14,10 @@ import rich
 import typer
 
 import cdf.core.constants as c
-from cdf import CDFSourceWrapper, Project, logger
-from cdf.core.utils import flatten_stream, fn_to_str
+import cdf.core.logger as logger
+
+if t.TYPE_CHECKING:
+    from cdf import CDFSourceWrapper, Project
 
 T = t.TypeVar("T")
 
@@ -21,6 +25,13 @@ app = typer.Typer(
     rich_markup_mode="rich",
     epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
     add_completion=False,
+)
+transform = typer.Typer()
+app.add_typer(
+    transform,
+    name="transform",
+    rich_help_panel="Integrate",
+    help=":arrows_counterclockwise: [b red]Transform[/b red] data from a data store into a data store where it can be exposed or [b yellow]Published[/b yellow].",
 )
 
 dotenv.load_dotenv()
@@ -58,6 +69,8 @@ def main(
     - ( :shuffle_tracks_button: ) [b red]transforms[/b red] are responsible for transforming data in a data warehouse.
     - ( :mailbox: ) [b yellow]publishers[/b yellow] are responsible for publishing data to an external system.
     """
+    from cdf import Project
+
     logger.set_level(log_level.upper() if not debug else "DEBUG")
     ctx.obj = Project.find_nearest(root)
     ctx.obj.meta["root"] = root
@@ -81,6 +94,8 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
 @app.command(rich_help_panel="Project Info")
 def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Sources[/blue], [red]Transforms[/red], and [yellow]Publishers[/yellow][/b] loaded from the source directory paths."""
+    from cdf.core.utils import fn_to_str
+
     project: Project = ctx.obj
     rich.print(f" {project}")
     for _, workspace in project:
@@ -140,12 +155,34 @@ def docs(ctx: typer.Context) -> None:
     rich.print(md_doc)
 
 
+@app.command(rich_help_panel="Project Info")
+def path(
+    ctx: typer.Context,
+    workspace: str = typer.Argument(default=None),
+) -> None:
+    """:file_folder: Print the project root path. Pass a workspace to print the workspace root path.
+
+    This is useful for scripting automation tasks.
+    """
+    project: Project = ctx.obj
+    if workspace:
+        print(project[workspace].root.absolute(), file=sys.stdout, flush=True)
+    else:
+        print(project.meta["root"].absolute(), file=sys.stdout, flush=True)
+
+
 @app.command(rich_help_panel="Inspect")
 def discover(
     ctx: typer.Context,
     source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
 ) -> None:
-    """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources."""
+    """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        source: The source to discover.
+    """
     logger.debug("Discovering source %s", source)
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
@@ -172,7 +209,19 @@ def head(
     """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]Source[/b blue]. Defaults to [cyan]5[/cyan].
 
     This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        source: The source to inspect.
+        resource: The resource to inspect.
+        num: The number of rows to print.
+
+    Raises:
+        typer.BadParameter: If the resource is not found in the source.
     """
+    from cdf.core.utils import flatten_stream
+
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
     with project[ws].get_runtime_source(src) as rt_source:
@@ -249,10 +298,65 @@ def ingest(
     logging.info(info)
 
 
-@app.command(rich_help_panel="Integrate")
-def transform() -> None:
-    """:arrows_counterclockwise: [b red]Transform[/b red] data from a data store into a data store where it can be exposed or [b yellow]Published[/b yellow]."""
-    rich.print("Transforming with SQLMesh...")
+@transform.command()
+def plan(
+    ctx: typer.Context,
+    env: str = typer.Argument(default="dev"),
+    start: t.Annotated[str, typer.Option(..., "-s", "--start")] = "1970-01-01",
+    end: t.Annotated[str, typer.Option(..., "-e", "--end")] = datetime.now(
+        timezone.utc
+    ).strftime("%Y-%m-%d"),
+    create_from: str | None = None,
+    skip_tests: bool = False,
+    restate_models: t.List[str] | None = None,
+    gaps: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
+    skip_backfill: bool = False,
+    forward_only: bool = False,
+    prompts: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
+    auto_apply: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
+    auto_categorization: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
+    effective_from: str | None = None,
+    include_unmodified: bool | None = None,
+    select_models: t.List[str] | None = None,
+    backfill_models: t.List[str] | None = None,
+    diff: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
+) -> None:
+    project: Project = ctx.obj
+    workspaces, env = _parse_ws_component(env)
+    if workspaces == "*":
+        workspaces = ",".join(project.workspaces.keys())
+    for ws in workspaces.split(","):
+        if ws not in project:
+            raise typer.BadParameter(f"Workspace {ws} not found.")
+        if not project[ws].has_transforms:
+            raise typer.BadParameter(
+                f"No transforms discovered in workspace {ws}. Add transforms to {c.TRANSFORMS_PATH} to enable them."
+            )
+
+    import sqlmesh
+
+    context = sqlmesh.Context(
+        paths=[str(project[ws].root) for ws in workspaces.split(",")]
+    )
+    _ = context.plan(
+        env,
+        start=start,
+        end=end,
+        create_from=create_from,
+        skip_tests=skip_tests,
+        restate_models=restate_models,
+        no_gaps=gaps,
+        skip_backfill=skip_backfill,
+        forward_only=forward_only,
+        no_prompts=prompts,
+        auto_apply=auto_apply,
+        no_auto_categorization=auto_categorization,
+        effective_from=effective_from,
+        include_unmodified=include_unmodified,
+        select_models=select_models,
+        backfill_models=backfill_models,
+        no_diff=diff,
+    )
 
 
 @app.command(rich_help_panel="Integrate")
@@ -307,7 +411,7 @@ def _parse_ws_component(component: str) -> t.Tuple[str, str]:
     return c.DEFAULT_WORKSPACE, component
 
 
-def _print_meta(meta: CDFSourceWrapper) -> None:
+def _print_meta(meta: "CDFSourceWrapper") -> None:
     rich.print(f"\nOwners: [yellow]{meta.owners}[/yellow]")
     rich.print(f"Description: {meta.description}")
     rich.print(f"Tags: {meta.tags}")

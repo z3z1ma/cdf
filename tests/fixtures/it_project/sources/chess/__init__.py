@@ -5,7 +5,7 @@ from typing import Any, Callable, Dict, Iterator, List, Sequence
 import dlt
 from dlt.common import pendulum
 from dlt.common.typing import TDataItem
-from dlt.extract.source import DltResource
+from dlt.sources import DltResource
 from dlt.sources.helpers import requests
 
 from cdf import cdf_resource, cdf_source
