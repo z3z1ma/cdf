@@ -186,6 +186,62 @@ class WorkspaceSourceContext(t.TypedDict):
     execution_ctx: t.Tuple[dict, dict]
 
 
+def _requires_sources(func: t.Callable) -> t.Callable:
+    """Decorator to ensure that a workspace has sources.
+    Raises:
+        ValueError if workspace has no sources.
+    """
+
+    def wrapper(self: "Workspace", *args, **kwargs):
+        if not self.has_sources:
+            raise ValueError(f"Workspace {self.root} has no sources")
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _requires_publishers(func: t.Callable) -> t.Callable:
+    """Decorator to ensure that a workspace has publishers.
+    Raises:
+        ValueError if workspace has no publishers.
+    """
+
+    def wrapper(self: "Workspace", *args, **kwargs):
+        if not self.has_publishers:
+            raise ValueError(f"Workspace {self.root} has no publishers")
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _requires_transforms(func: t.Callable) -> t.Callable:
+    """Decorator to ensure that a workspace has transforms.
+    Raises:
+        ValueError if workspace has no transforms.
+    """
+
+    def wrapper(self: "Workspace", *args, **kwargs):
+        if not self.has_transforms:
+            raise ValueError(f"Workspace {self.root} has no transforms")
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
+def _requires_dependencies(func: t.Callable) -> t.Callable:
+    """Decorator to ensure that a workspace has dependencies.
+    Raises:
+        ValueError if workspace has no dependencies.
+    """
+
+    def wrapper(self: "Workspace", *args, **kwargs):
+        if not self.has_dependencies:
+            raise ValueError(f"Workspace {self.root} has no dependencies")
+        return func(self, *args, **kwargs)
+
+    return wrapper
+
+
 class Workspace:
     """A workspace encapsulates a directory containing sources, publishers, metadata, and transforms.
 
@@ -359,6 +415,7 @@ class Workspace:
             ).glob("*.py")
         ]
 
+    @_requires_dependencies
     def get_bin(self, name: str, must_exist: bool = False) -> Path:
         """Get path to binary in workspace.
 
@@ -373,8 +430,6 @@ class Workspace:
         Returns:
             Path to binary.
         """
-        if not self.has_dependencies:
-            raise ValueError("Workspace has no dependencies")
         bin_path = self.root / ".venv" / "bin" / name
         if must_exist and not bin_path.exists():
             raise ValueError("Could not find binary %s in %s", name, self.root)
@@ -426,6 +481,7 @@ class Workspace:
         """
         return self.read_lockfile()[key]
 
+    @_requires_dependencies
     def _setup_deps(self, force: bool = False):
         """Install dependencies if requirements.txt is newer than virtual environment."""
         req_mtime = self.requirements_path.stat().st_mtime
@@ -444,6 +500,7 @@ class Workspace:
             )
             (self.root / ".venv").touch()
 
+    @_requires_dependencies
     def _setup_venv(self) -> None:
         """Create a virtual environment.
 
@@ -522,6 +579,7 @@ class Workspace:
         return cls(path)
 
     @property
+    @_requires_sources
     def sources(self) -> t.Dict[str, CDFSourceWrapper]:
         """Load sources from workspace.
 
@@ -556,6 +614,27 @@ class Workspace:
             self._cached_sources.update(sources)
         return self._cached_sources
 
+    @_requires_transforms
+    def _sqlmesh_config(self):
+        conf = toml.loads((self.root / c.CONFIG_FILE).read_text())
+        if "transforms" not in conf:
+            raise ValueError(
+                "Workspace has no transforms configuration in the config file"
+            )
+        return sqlmesh.Config.parse_obj(conf["transforms"])
+
+    @_requires_transforms
+    def get_sqlmesh_context(self) -> sqlmesh.Context:
+        """Get a sqlmesh context for the workspace.
+
+        This method loads the sqlmesh config from the workspace config file and returns a
+        sqlmesh context. If the workspace has no transforms, it returns None.
+
+        Returns:
+            sqlmesh.Context: A sqlmesh context.
+        """
+        return sqlmesh.Context(config=self._sqlmesh_config(), paths=[str(self.root)])
+
     def raise_on_ff_lock_mismatch(self, config_hash: str) -> None:
         """Raise an error if the FF cache key does not match the lockfile.
 
@@ -580,6 +659,7 @@ class Workspace:
             )
 
     @contextmanager
+    @_requires_sources
     def get_runtime_source(
         self, source_name: str, *args, **kwargs
     ) -> t.Iterator[DltSource]:
