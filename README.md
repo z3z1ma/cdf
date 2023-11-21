@@ -8,19 +8,20 @@ in conjunction with a simple interface and opinionated design.
 
 ## Design
 
-```python
-from pathlib import Path
 
+⚠️ the following is a work in progress and is subject to change ⚠️
+
+```python
 import dlt
 
 from cdf.core.workspace import Project
 
-project = Project.find_nearest(path=Path("examples/advanced"))
-run = project.datateam.get_extractor(
-    "hackernews", dlt.pipeline("hackernews", destination="duckdb")
-)
+project = Project.find_nearest(path="examples/advanced")
+with project.datateam.get_runtime_source("hackernews") as source:
+    p = dlt.pipeline("hackernews", destination="duckdb")
+    info = p.run(source)
 
-print(run())
+print(info)
 
 ```
 
