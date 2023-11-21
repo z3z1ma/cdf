@@ -8,20 +8,34 @@ parent directories up to a maximum depth of 3. The first config provider found i
 """
 import contextlib
 import inspect
+import os
 import typing as t
 from pathlib import Path
 
 import dlt
 import dlt.common.configuration.providers as providers
+import tomlkit
 from dlt.common.configuration.container import Container
 from dlt.common.configuration.specs.config_providers_context import (
     ConfigProvidersContext,
 )
 
 import cdf.core.constants as c
+from cdf.core.jinja import ENVIRONMENT, JINJA_METHODS
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
+
+
+def read_toml(toml_path: str) -> tomlkit.TOMLDocument:
+    if os.path.isfile(toml_path):
+        with open(toml_path, "r", encoding="utf-8") as f:
+            context = f.read()
+            template = ENVIRONMENT.from_string(context)
+            f = template.render(**JINJA_METHODS)
+            return tomlkit.loads(f)
+    else:
+        return tomlkit.document()
 
 
 class CDFConfigTomlProvider(providers.TomlFileProvider):
@@ -41,8 +55,15 @@ class CDFConfigTomlProvider(providers.TomlFileProvider):
     def name(self, value: str) -> None:
         self._name = value
 
-    supports_secrets = False  # type: ignore[assignment]
-    is_writable = True  # type: ignore[assignment]
+    _read_toml = read_toml
+
+    @property
+    def supports_secrets(self) -> bool:
+        return False
+
+    @property
+    def is_writable(self) -> bool:
+        return False
 
 
 class CDFSecretsTomlProvider(providers.TomlFileProvider):
@@ -62,8 +83,15 @@ class CDFSecretsTomlProvider(providers.TomlFileProvider):
     def name(self, value: str) -> None:
         self._name = value
 
-    supports_secrets = True  # type: ignore[assignment]
-    is_writable = True  # type: ignore[assignment]
+    _read_toml = read_toml
+
+    @property
+    def supports_secrets(self) -> bool:
+        return False
+
+    @property
+    def is_writable(self) -> bool:
+        return False
 
 
 @t.overload
