@@ -197,19 +197,13 @@ class WorkspaceCapabilities(t.TypedDict):
     deps: bool
 
 
-class WorkspaceSourceContext(t.TypedDict):
-    spec: CDFSourceWrapper
-    globals: dict
-    locals: dict
-    execution_ctx: t.Tuple[dict, dict]
-
-
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
 
 
 def requires_sources(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has sources.
+
     Raises:
         ValueError if workspace has no sources.
     """
@@ -225,6 +219,7 @@ def requires_sources(func: t.Callable[P, T]) -> t.Callable[P, T]:
 
 def requires_publishers(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has publishers.
+
     Raises:
         ValueError if workspace has no publishers.
     """
@@ -240,6 +235,7 @@ def requires_publishers(func: t.Callable[P, T]) -> t.Callable[P, T]:
 
 def requires_transforms(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has transforms.
+
     Raises:
         ValueError if workspace has no transforms.
     """
@@ -255,6 +251,7 @@ def requires_transforms(func: t.Callable[P, T]) -> t.Callable[P, T]:
 
 def requires_dependencies(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has dependencies.
+
     Raises:
         ValueError if workspace has no dependencies.
     """
