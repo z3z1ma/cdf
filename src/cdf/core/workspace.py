@@ -83,8 +83,26 @@ class Project:
         ws = ", ".join(f"'{ns}'" for ns in self._workspaces.keys())
         return f"Project(workspaces=[{ws}])"
 
-    def keys(self) -> t.List[str]:
-        return list(self._workspaces.keys())
+    def keys(self) -> t.Set[str]:
+        return set(self._workspaces.keys())
+
+    def get_sqlmesh_context(self, workspaces: t.Tuple[str, ...]) -> sqlmesh.Context:
+        """Get a sqlmesh context for a list of workspaces.
+
+        Args:
+            workspaces (t.Tuple[str, ...]): List of workspace namespaces.
+
+        Returns:
+            sqlmesh.Context: A sqlmesh context.
+        """
+        main_ws = workspaces[0]
+        context = self[main_ws].get_sqlmesh_context()
+        if len(workspaces) == 1:
+            return context
+        for other_ws in workspaces[1:]:
+            ws = self[other_ws]
+            context.configs[ws.root] = ws._sqlmesh_config()
+        return context
 
     @classmethod
     def from_dict(cls, workspaces: t.Dict[str, Path | str]) -> "Project":
@@ -112,8 +130,8 @@ class Project:
 
         [workspace]
         members = [
-            "data:projects/data",
-            "marketing:projects/marketing"
+            "projects/data",
+            "projects/marketing"
         ]
 
         Args:
@@ -186,58 +204,66 @@ class WorkspaceSourceContext(t.TypedDict):
     execution_ctx: t.Tuple[dict, dict]
 
 
-def _requires_sources(func: t.Callable) -> t.Callable:
+T = t.TypeVar("T")
+P = t.ParamSpec("P")
+
+
+def requires_sources(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has sources.
     Raises:
         ValueError if workspace has no sources.
     """
 
-    def wrapper(self: "Workspace", *args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        self = t.cast("Workspace", args[0])
         if not self.has_sources:
             raise ValueError(f"Workspace {self.root} has no sources")
-        return func(self, *args, **kwargs)
+        return func(*args, **kwargs)
 
     return wrapper
 
 
-def _requires_publishers(func: t.Callable) -> t.Callable:
+def requires_publishers(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has publishers.
     Raises:
         ValueError if workspace has no publishers.
     """
 
-    def wrapper(self: "Workspace", *args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        self = t.cast("Workspace", args[0])
         if not self.has_publishers:
             raise ValueError(f"Workspace {self.root} has no publishers")
-        return func(self, *args, **kwargs)
+        return func(*args, **kwargs)
 
     return wrapper
 
 
-def _requires_transforms(func: t.Callable) -> t.Callable:
+def requires_transforms(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has transforms.
     Raises:
         ValueError if workspace has no transforms.
     """
 
-    def wrapper(self: "Workspace", *args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        self = t.cast("Workspace", args[0])
         if not self.has_transforms:
             raise ValueError(f"Workspace {self.root} has no transforms")
-        return func(self, *args, **kwargs)
+        return func(*args, **kwargs)
 
     return wrapper
 
 
-def _requires_dependencies(func: t.Callable) -> t.Callable:
+def requires_dependencies(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """Decorator to ensure that a workspace has dependencies.
     Raises:
         ValueError if workspace has no dependencies.
     """
 
-    def wrapper(self: "Workspace", *args, **kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+        self = t.cast("Workspace", args[0])
         if not self.has_dependencies:
             raise ValueError(f"Workspace {self.root} has no dependencies")
-        return func(self, *args, **kwargs)
+        return func(*args, **kwargs)
 
     return wrapper
 
@@ -415,7 +441,7 @@ class Workspace:
             ).glob("*.py")
         ]
 
-    @_requires_dependencies
+    @requires_dependencies
     def get_bin(self, name: str, must_exist: bool = False) -> Path:
         """Get path to binary in workspace.
 
@@ -481,8 +507,8 @@ class Workspace:
         """
         return self.read_lockfile()[key]
 
-    @_requires_dependencies
-    def _setup_deps(self, force: bool = False):
+    @requires_dependencies
+    def _setup_deps(self, force: bool = False) -> None:
         """Install dependencies if requirements.txt is newer than virtual environment."""
         req_mtime = self.requirements_path.stat().st_mtime
         venv_mtime = (self.root / ".venv").stat().st_mtime
@@ -500,7 +526,7 @@ class Workspace:
             )
             (self.root / ".venv").touch()
 
-    @_requires_dependencies
+    @requires_dependencies
     def _setup_venv(self) -> None:
         """Create a virtual environment.
 
@@ -579,7 +605,7 @@ class Workspace:
         return cls(path)
 
     @property
-    @_requires_sources
+    @requires_sources
     def sources(self) -> t.Dict[str, CDFSourceWrapper]:
         """Load sources from workspace.
 
@@ -614,8 +640,8 @@ class Workspace:
             self._cached_sources.update(sources)
         return self._cached_sources
 
-    @_requires_transforms
-    def _sqlmesh_config(self):
+    @requires_transforms
+    def _sqlmesh_config(self) -> sqlmesh.Config:
         conf = toml.loads((self.root / c.CONFIG_FILE).read_text())
         if "transforms" not in conf:
             raise ValueError(
@@ -623,7 +649,7 @@ class Workspace:
             )
         return sqlmesh.Config.parse_obj(conf["transforms"])
 
-    @_requires_transforms
+    @requires_transforms
     def get_sqlmesh_context(self) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.
 
@@ -659,7 +685,7 @@ class Workspace:
             )
 
     @contextmanager
-    @_requires_sources
+    @requires_sources
     def get_runtime_source(
         self, source_name: str, *args, **kwargs
     ) -> t.Iterator[DltSource]:

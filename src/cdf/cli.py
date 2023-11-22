@@ -298,6 +298,13 @@ def ingest(
     logging.info(info)
 
 
+# TODO: Its one thing to be a thin wrapper, it allows us to augment behavior with opinionated
+# defaults. But we should look to make sqlmesh stuff native to Workspace / Project classes
+# in which case we can expose a highly purpose-built entrypoint, and a passthrough more generalized
+# one too? or should the generalized approach just be sqlmesh -p $(cdf path datateam) info?
+# by merging config into the cdf_config.toml, we get one file -- but its no longer able to be ran by
+# sqlmesh alone... hence the cute passthrough bash expansion thing won't work anyway without monkey
+# patching sqlmesh or exposing some sort of cdf activate <workspace> which does some env var exporting?
 @transform.command()
 def plan(
     ctx: typer.Context,
@@ -322,22 +329,28 @@ def plan(
     diff: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
 ) -> None:
     project: Project = ctx.obj
-    workspaces, env = _parse_ws_component(env)
-    if workspaces == "*":
-        workspaces = ",".join(project.workspaces.keys())
-    for ws in workspaces.split(","):
+    workspace, env = _parse_ws_component(env)
+    workspaces = workspace.split(",")
+    main_workspace = workspaces[0]
+    # Ensure we have a primary workspace
+    if main_workspace == "*":
+        raise typer.BadParameter(
+            "Cannot run transforms without a primary workspace. Specify a workspace in the first position."
+        )
+    # A special case for running a plan with all workspaces accessible to the context
+    if any(ws == "*" for ws in workspaces):
+        others = project.keys().difference(main_workspace)
+        workspaces = [main_workspace, *others]
+    # Ensure all workspaces exist and are valid
+    for ws in workspaces:
         if ws not in project:
             raise typer.BadParameter(f"Workspace {ws} not found.")
         if not project[ws].has_transforms:
             raise typer.BadParameter(
                 f"No transforms discovered in workspace {ws}. Add transforms to {c.TRANSFORMS_PATH} to enable them."
             )
-
-    import sqlmesh
-
-    context = sqlmesh.Context(
-        paths=[str(project[ws].root) for ws in workspaces.split(",")]
-    )
+    # Generate context
+    context = project.get_sqlmesh_context(tuple(workspaces))
     _ = context.plan(
         env,
         start=start,
