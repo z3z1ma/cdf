@@ -8,8 +8,6 @@ from dlt.common.typing import TDataItem
 from dlt.sources import DltResource
 from dlt.sources.helpers import requests
 
-from cdf import cdf_resource, cdf_source
-
 from .helpers import get_path_with_retry, get_url_with_retry, validate_month_string
 from .settings import UNOFFICIAL_CHESS_API_URL
 
@@ -29,10 +27,10 @@ def source(
         Sequence[DltResource]: A sequence of resources that can be selected from including players_profiles,
         players_archives, players_games, players_online_status
     """
-    return (
+    return (  # type: ignore
         players_profiles(players),
         players_archives(players),
-        players_games(players, start_month=start_month, end_month=end_month),
+        players_games(players, start_month=start_month, end_month=end_month),  # type: ignore
         players_online_status(players),
     )
 
@@ -56,7 +54,7 @@ def players_profiles(players: List[str]) -> Iterator[TDataItem]:
         yield _get_profile(username)
 
 
-@cdf_resource(write_disposition="replace", selected=False)
+@dlt.resource(write_disposition="replace", selected=False)
 def players_archives(players: List[str]) -> Iterator[List[TDataItem]]:
     """
     Yields url to game archives for specified players.
@@ -70,9 +68,11 @@ def players_archives(players: List[str]) -> Iterator[List[TDataItem]]:
         yield data.get("archives", [])
 
 
-@cdf_resource(write_disposition="append")
+@dlt.resource(write_disposition="append")
 def players_games(
-    players: List[str], start_month: str = None, end_month: str = None
+    players: List[str],
+    start_month: str = None,  # type: ignore
+    end_month: str = None,  # type: ignore
 ) -> Iterator[Callable[[], List[TDataItem]]]:
     """
     Yields `players` games that happened between `start_month` and `end_month`.
@@ -101,12 +101,11 @@ def players_games(
             return games  # type: ignore
         except requests.HTTPError as http_err:
             # sometimes archives are not available and the error seems to be permanent
-            if http_err.response.status_code == 404:
+            if http_err.response.status_code == 404:  # type: ignore
                 return []
             raise
 
     # enumerate the archives
-    url: str = None
     for url in archives:
         # the `url` format is https://api.chess.com/pub/player/{username}/games/{YYYY}/{MM}
         if start_month and url[-7:] < start_month:
@@ -122,7 +121,7 @@ def players_games(
         yield _get_archive(url)
 
 
-@cdf_resource(write_disposition="append")
+@dlt.resource(write_disposition="append")
 def players_online_status(players: List[str]) -> Iterator[TDataItem]:
     """
     Returns current online status for a list of players.
@@ -145,11 +144,11 @@ def players_online_status(players: List[str]) -> Iterator[TDataItem]:
         }
 
 
-@cdf_source
+@dlt.source
 def chess_dlt_config_example(
-    secret_str: str = dlt.secrets.value,
-    secret_dict: Dict[str, Any] = dlt.secrets.value,
-    config_int: int = dlt.config.value,
+    secret_str: str = dlt.secrets.value,  # type: ignore
+    secret_dict: Dict[str, Any] = dlt.secrets.value,  # type: ignore
+    config_int: int = dlt.config.value,  # type: ignore
 ) -> DltResource:
     """
     An example of a source that uses dlt to provide secrets and config values.

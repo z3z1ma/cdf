@@ -4,11 +4,13 @@ from dataclasses import dataclass
 from dlt.common.configuration import with_config
 from dlt.common.configuration.specs.base_configuration import BaseConfiguration
 
+import cdf.core.constants as c
+
 T = t.TypeVar("T", bound=BaseConfiguration)
 
 
 @dataclass
-class CDFPublisherWrapper(t.Generic[T]):
+class publisher_spec(t.Generic[T]):
     runner: t.Callable[[T], None]
     from_model: str
     mapping: t.Dict[str, str]
@@ -29,3 +31,15 @@ class CDFPublisherWrapper(t.Generic[T]):
 
         _runner.__wrapped__ = runner
         self.runner = _runner
+
+
+def export_publishers(
+    *, scope: dict | None = None, **publishers: publisher_spec
+) -> None:
+    """Export publishers to the global scope.
+
+    Args:
+        scope (dict | None, optional): The scope to export to. Defaults to globals().
+        **publishers (publisher_spec): The publishers to export.
+    """
+    (scope or globals()).setdefault(c.CDF_PUBLISHER, {}).update(publishers)

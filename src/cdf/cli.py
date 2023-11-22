@@ -16,7 +16,7 @@ import cdf.core.constants as c
 import cdf.core.logger as logger
 
 if t.TYPE_CHECKING:
-    from cdf import CDFSourceWrapper, Project
+    from cdf import Project, source_spec
 
 T = t.TypeVar("T")
 
@@ -234,7 +234,7 @@ def head(
             f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{project[ws][src].version}[/b blue]:"
         )
         it = flatten_stream(res)
-        while num > 0 and (v := next(it, None)):
+        while num > 0 and (v := next(it, None)):  # type: ignore
             rich.print(v)
             v = next(it, None)
             num -= 1
@@ -452,7 +452,7 @@ def _parse_ws_component(component: str) -> t.Tuple[str, str]:
     return c.DEFAULT_WORKSPACE, component
 
 
-def _print_meta(meta: "CDFSourceWrapper") -> None:
+def _print_meta(meta: "source_spec") -> None:
     rich.print(f"\nOwners: [yellow]{meta.owners}[/yellow]")
     rich.print(f"Description: {meta.description}")
     rich.print(f"Tags: {meta.tags}")

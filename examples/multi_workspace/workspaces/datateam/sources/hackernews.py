@@ -4,8 +4,6 @@ from datetime import datetime
 import dlt
 from dlt.sources.helpers import requests
 
-from cdf.core.source import CDFSourceWrapper
-
 URL = "https://hn.algolia.com/api/v1/search_by_date"
 
 
@@ -33,7 +31,7 @@ def hn_search(
             time.mktime(datetime.strptime(start_date, "%Y-%m-%d").timetuple())
         )
     else:
-        start_timestamp = int(time.mktime(start_date.timetuple()))
+        start_timestamp = int(time.mktime(start_date.timetuple()))  # type: ignore
 
     # Read end date as string or datetime and convert it to UNIX timestamp
     if isinstance(end_date, str):
@@ -129,8 +127,28 @@ def keyword_hits(
             batch_end_date += time_delta
 
 
-__CDF_SOURCE__ = dict(
-    hackernews=CDFSourceWrapper(
+# This is the only addition required to an existing dlt source file to get the benefits of cdf
+__CDF_SOURCE__ = {
+    "hackernews": {
+        # factory must be resolvable via cdf config, kwargs should be set to dlt.config.value or populated with defaults / via closure
+        "factory": hn_search,
+        "version": 1,
+        "owners": ("qa-team"),
+        "description": "Extracts hackernews data from an API.",
+        "tags": ("live", "simple", "test"),
+        "metrics": {
+            "keyword_hits": {
+                "count": lambda _, metric=0: metric + 1,
+            }
+        },
+    }
+}
+
+# Also worth metioning, above is exactly the same as:
+from cdf import export_sources, source_spec
+
+export_sources(
+    hacker_news=source_spec(
         factory=hn_search,
         version=1,
         owners=("qa-team"),
@@ -143,3 +161,6 @@ __CDF_SOURCE__ = dict(
         },
     )
 )
+
+# the difference being that the latter gives type hints and is more readable
+# while the former requires no imports of cdf and is thus valid independent of the cdf package

@@ -12,12 +12,12 @@ import dotenv
 import sqlmesh
 import tomlkit as toml
 import virtualenv
-from dlt.sources import DltSource
 
 import cdf.core.constants as c
 import cdf.core.logger as logger
 from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
-from cdf.core.source import CDFSourceWrapper
+from cdf.core.publisher import publisher_spec
+from cdf.core.source import CDFSource, source_spec
 from cdf.core.utils import load_module_from_path
 
 _IMPORT_LOCK = Lock()
@@ -624,16 +624,8 @@ class Workspace:
 
     @property
     @requires_sources
-    def sources(self) -> t.Dict[str, CDFSourceWrapper]:
-        """Load sources from workspace.
-
-        This method loads all sources from the workspace and returns a dict of source metadata. It
-        does this by adding the workspace to the sys.path and importing all modules in the sources
-        directory. It then looks for the __CDF_SOURCE__ attribute on each module and adds the
-        metadata to the cache. If the workspace has dependencies, it creates a virtual environment
-        and adds the workspace venv to the sys.path. This ensures that all dependencies are
-        available to the source modules.
-        """
+    def sources(self) -> t.Dict[str, source_spec]:
+        """Load sources from workspace."""
         if not self._sources:
             with (
                 _IMPORT_LOCK,
@@ -641,12 +633,22 @@ class Workspace:
             ):
                 for path in self.source_paths:
                     mod, _ = load_module_from_path(path)
-                    self._sources.update(getattr(mod, c.CDF_SOURCE, {}))
+                    self._sources.update(
+                        {
+                            component_name: source_spec(**meta)
+                            if isinstance(meta, dict)
+                            else meta
+                            for component_name, meta in getattr(
+                                mod, c.CDF_SOURCE, {}
+                            ).items()
+                        }
+                    )
         return self._sources
 
     @property
     @requires_publishers
     def publishers(self) -> t.Dict[str, t.Any]:
+        """Load publishers from workspace."""
         if not self._publishers:
             with (
                 _IMPORT_LOCK,
@@ -654,7 +656,16 @@ class Workspace:
             ):
                 for path in self.publisher_paths:
                     mod, _ = load_module_from_path(path)
-                    self._publishers.update(getattr(mod, c.CDF_PUBLISHER, {}))
+                    self._publishers.update(
+                        {
+                            component_name: publisher_spec(**meta)
+                            if isinstance(meta, dict)
+                            else meta
+                            for component_name, meta in getattr(
+                                mod, c.CDF_PUBLISHER, {}
+                            ).items()
+                        }
+                    )
         return self._publishers
 
     @requires_transforms
@@ -706,7 +717,7 @@ class Workspace:
     @requires_sources
     def get_runtime_source(
         self, source_name: str, *args, **kwargs
-    ) -> t.Iterator[DltSource]:
+    ) -> t.Iterator[CDFSource]:
         """Get a runtime source from the workspace.
 
         A runtime source is a source that has been instantiated with its config and dependencies.
@@ -725,11 +736,11 @@ class Workspace:
                 self.raise_on_ff_lock_mismatch(config_hash)
             yield apply_feature_flags(source, feature_flags, workspace=self)
 
-    def __getitem__(self, name: str) -> CDFSourceWrapper:
+    def __getitem__(self, name: str) -> source_spec:
         """Get a source from the workspace."""
         return self.sources[name]
 
-    def __getattr__(self, name: str) -> CDFSourceWrapper:
+    def __getattr__(self, name: str) -> source_spec:
         """Get a source from the workspace."""
         try:
             return self.sources[name]

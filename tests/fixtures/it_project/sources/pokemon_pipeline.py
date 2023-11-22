@@ -10,14 +10,14 @@ import simple_salesforce as _  # noqa: F401 # type: ignore
 # regular source
 from pokemon import source
 
-from cdf import CDFSourceWrapper
+from cdf import source_spec
 
-__CDF_SOURCE__ = dict(
-    pokemon=CDFSourceWrapper(
+__CDF_SOURCE__ = {
+    "pokemon": source_spec(
         factory=source,
         version=1,
         owners=("qa-team"),
         description="Extracts pokemon data from an API.",
         tags=("live", "simple", "test"),
     )
-)
+}

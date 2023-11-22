@@ -1,15 +1,16 @@
 import cdf.core.logger as logger
-from cdf.core.source import CDFSource, CDFSourceWrapper
-from cdf.core.source import resource as cdf_resource
-from cdf.core.source import source as cdf_source
+from cdf.core.publisher import export_publishers, publisher_spec
+from cdf.core.source import CDFResource, CDFSource, export_sources, source_spec
 from cdf.core.workspace import Project, Workspace
 
 __all__ = [
     "CDFSource",
-    "CDFSourceWrapper",
+    "CDFResource",
     "Project",
     "Workspace",
-    "cdf_source",
-    "cdf_resource",
+    "source_spec",
+    "export_sources",
+    "publisher_spec",
+    "export_publishers",
     "logger",
 ]

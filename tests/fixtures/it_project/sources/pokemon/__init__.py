@@ -5,16 +5,15 @@ Available resources: [berries, pokemon]
 
 from typing import Iterable, Sequence
 
+import dlt
 from dlt.common.typing import TDataItem
 from dlt.sources import DltResource
 from dlt.sources.helpers import requests
 
-from cdf import cdf_resource, cdf_source
-
 from .settings import BERRY_URL, POKEMON_URL
 
 
-@cdf_resource(write_disposition="replace")
+@dlt.resource(write_disposition="replace")
 def berries() -> Iterable[TDataItem]:
     """
     Returns a list of berries.
@@ -24,7 +23,7 @@ def berries() -> Iterable[TDataItem]:
     yield requests.get(BERRY_URL).json()["results"]
 
 
-@cdf_resource(write_disposition="replace")
+@dlt.resource(write_disposition="replace")
 def pokemon() -> Iterable[TDataItem]:
     """
     Returns a list of pokemon.
@@ -34,7 +33,7 @@ def pokemon() -> Iterable[TDataItem]:
     yield requests.get(POKEMON_URL).json()["results"]
 
 
-@cdf_source
+@dlt.source
 def source() -> Sequence[DltResource]:
     """
     The source function that returns all availble resources.

@@ -6,10 +6,79 @@ are data platform engineers who are looking to put together a unified data platf
 best-in-class open source tools. We take the best in both data ingestion and data transformation and marry them together
 in conjunction with a simple interface and opinionated design.
 
+
+## Features
+
+- [x] Central CLI for managing one or more `Workspace`s consistently across teams
+- [x] Centralized configuration for all components (dlt and sqlmesh included)
+- [x] Templating for configuration
+- [x] Strongly opinionated directory structure for organizing sources, models, and publishers
+- [x] Automated venv creation and dependency management for workspaces
+- [x] Feature flag support for sources allowing external management of extraction logic similar to Fivetran / Airbyte
+- [x] Discovery command for dlt sources
+- [x] Head command for dlt resources to preview data in your terminal while developing
+- [x] Support for multiple versions of the same source
+- [x] Ownership tracking for all components
+- [x] Tagging for all components
+- [ ] Automated README generation for all components (in progress)
+
+
+
 ## Design
 
 
 ⚠️ the following is a work in progress and is subject to change ⚠️
+
+
+
+### Integrating a source
+
+In order to integrate a source into cdf, you must export a `__CDF_SOURCE__` variable which contains a dictionary of
+component names to metadata. A component name is a string by which the component can be referenced in the CLI.
+There are two ways to do this outlined below.
+```python
+# This is the only addition required to an existing dlt source file to get the benefits of cdf
+__CDF_SOURCE__ = {
+    "hackernews": {
+        # factory must be resolvable via cdf config, kwargs should be set to dlt.config.value or populated with defaults / via closure
+        "factory": hn_search,
+        "version": 1,
+        "owners": ("qa-team"),
+        "description": "Extracts hackernews data from an API.",
+        "tags": ("live", "simple", "test"),
+        "metrics": {
+            "keyword_hits": {
+                "count": lambda _, metric=0: metric + 1,
+            }
+        },
+    }
+}
+
+# Also worth metioning, above is exactly the same as:
+from cdf import export_sources, source_spec
+
+export_sources(
+    hacker_news=source_spec(
+        factory=hn_search,
+        version=1,
+        owners=("qa-team"),
+        description="Extracts hackernews data from an API.",
+        tags=("live", "simple", "test"),
+        metrics={
+            "keyword_hits": {
+                "count": lambda _, metric=0: metric + 1,
+            }
+        },
+    )
+)
+
+# the difference being that the latter gives type hints and is more readable
+# while the former requires no imports of cdf and is thus valid independent of the cdf package
+```
+
+
+
+### Configuring a Source
 
 Given the following configuration file:
 
@@ -22,7 +91,7 @@ end_date = "{{ today() }}"
 daily_load = true
 ```
 
-It maps directly to the following code:
+It maps directly to the following code where the above config is injected into the source function as keyword arguments:
 
 `sources/hackernews.py`
 ```python
@@ -37,27 +106,18 @@ def hn_search(
     ...
 ```
 
-This demonstrates managing pipeline configuration.
+This demonstrates managing pipeline configuration. This is a dlt feature, however cdf provides some opinionated 
+design and features on top of this. Namely all config is in a top level `cdf_config.toml` file relative to the
+workspace. Furthermore the config is jinja templated and can be overridden by environment variables explicitly.
+This deviates from dlt's default behavior of expecting env vars to follow a specific naming convention. By
+centralizing config, its easier to reason about. We can see all the kwargs and their exact destinations in one
+place. And we can use more intuitive variable naming. Furthermore, you can use loops and conditionals in your
+config similar to how kubernetes uses go templates. This is useful for managing multiple sources with similar
+config.
 
----
 
-The following code demonstrates running a pipeline:
-```python
-import dlt
-
-from cdf.core.workspace import Project
-
-project = Project.find_nearest(path="examples/advanced")
-with project.datateam.get_runtime_source("hackernews") as source:
-    p = dlt.pipeline("hackernews", destination="duckdb")
-    info = p.run(source)
-
-print(info)
-
-```
----
-
-Continuing to look at cdf configuration, we can see it centralizes config for both SQLMesh and dlt into a single file with some opinionated handling. We enable jinja templating and advise users to declare ALL configuration in this file. Secrets included, but deferred via `{{ env_var("SOME_VAR") }}` vs relying on dlt's Environ provider. This makes behvior more immediately obvious and flexible. You can also use the multitude of interesting jinja filters to DRY up your config.
+Continuing to look at cdf configuration, we can see it centralizes config for both SQLMesh and dlt into a single file.
+This is another key difference vs using these two packages independently.
 
 ```toml
 [sources.hackernews]
@@ -75,6 +135,34 @@ type = "duckdb"
 database = "cdf.duckdb"
 
 ```
+
+
+
+
+### Running a pipeline via programmatic API
+
+We provide 2 core classes that give us most of our functionality. `Project` and `Workspace`. Using cdf is as simple as
+instantiating a `Project` object and then using it to access one or more `Workspace` objects. A `Workspace` object
+represents a collection of sources, models, and publishers which is an amalgamation of dlt, sqlmesh, and cdf
+specific componentry. A workspace is an opinionated layout with specific naming conventions which gives end users less
+to think about and makes any project leveraging cdf more consistent and easier to reason about.
+
+
+The following code demonstrates running a pipeline:
+```python
+import dlt
+
+from cdf.core.workspace import Project
+
+project = Project.find_nearest(path="examples/advanced")
+with project.datateam.get_runtime_source("hackernews") as source:
+    p = dlt.pipeline("hackernews", destination="duckdb")
+    info = p.run(source)
+
+print(info)
+
+```
+---
 
 ### Sources
 

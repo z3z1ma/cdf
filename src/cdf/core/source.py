@@ -1,12 +1,12 @@
 """The source class for continuous data flow sources."""
 import typing as t
 from dataclasses import dataclass, field
-from functools import partial
 
-import dlt
 from dlt.common.typing import TDataItem
 from dlt.sources import DltResource as CDFResource
 from dlt.sources import DltSource as CDFSource
+
+import cdf.core.constants as c
 
 LazySource = t.Callable[..., CDFSource]
 
@@ -16,7 +16,7 @@ MetricDefs = t.Dict[str, MetricAccumulator]
 
 
 @dataclass
-class CDFSourceWrapper:
+class source_spec:
     factory: LazySource
     version: int = 1
     owners: t.Sequence[str] = ()
@@ -66,15 +66,14 @@ class CDFSourceWrapper:
         return self.factory(*args, **kwargs)
 
 
-# Reserving the ability to augment the source wrapper in the future
-source = partial(dlt.source, _impl_cls=CDFSource)
-resource = dlt.resource
+def export_sources(*, scope: dict | None = None, **sources: source_spec) -> None:
+    """Export sources to the global scope.
 
-__all__ = [
-    "CDFSource",
-    "CDFResource",
-    "CDFSourceWrapper",
-    "LazySource",
-    "source",
-    "resource",
-]
+    Args:
+        scope (dict | None, optional): The scope to export to. Defaults to globals().
+        **sources (source_spec): The sources to export.
+    """
+    (scope or globals()).setdefault(c.CDF_SOURCE, {}).update(sources)
+
+
+__all__ = ["CDFSource", "CDFResource", "source_spec", "export_sources"]
