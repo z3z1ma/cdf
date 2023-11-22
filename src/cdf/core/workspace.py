@@ -4,7 +4,6 @@ import sys
 import typing as t
 from contextlib import contextmanager
 from functools import lru_cache
-from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType, ModuleType
