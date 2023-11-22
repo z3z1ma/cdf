@@ -86,7 +86,7 @@ class Project:
     def keys(self) -> t.Set[str]:
         return set(self._workspaces.keys())
 
-    def get_sqlmesh_context(self, workspaces: t.Tuple[str, ...]) -> sqlmesh.Context:
+    def get_transform_context(self, workspaces: t.Tuple[str, ...]) -> sqlmesh.Context:
         """Get a sqlmesh context for a list of workspaces.
 
         Args:
@@ -96,12 +96,12 @@ class Project:
             sqlmesh.Context: A sqlmesh context.
         """
         main_ws = workspaces[0]
-        context = self[main_ws].get_sqlmesh_context()
+        context = self[main_ws].get_transform_context()
         if len(workspaces) == 1:
             return context
         for other_ws in workspaces[1:]:
             ws = self[other_ws]
-            context.configs[ws.root] = ws._sqlmesh_config()
+            context.configs[ws.root] = ws._transform_config()
         return context
 
     @classmethod
@@ -638,7 +638,7 @@ class Workspace:
         return self._cached_sources
 
     @requires_transforms
-    def _sqlmesh_config(self) -> sqlmesh.Config:
+    def _transform_config(self) -> sqlmesh.Config:
         conf = toml.loads((self.root / c.CONFIG_FILE).read_text())
         if "transforms" not in conf:
             raise ValueError(
@@ -647,7 +647,7 @@ class Workspace:
         return sqlmesh.Config.parse_obj(conf["transforms"])
 
     @requires_transforms
-    def get_sqlmesh_context(self) -> sqlmesh.Context:
+    def get_transform_context(self) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.
 
         This method loads the sqlmesh config from the workspace config file and returns a
@@ -656,7 +656,8 @@ class Workspace:
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
-        return sqlmesh.Context(config=self._sqlmesh_config(), paths=[str(self.root)])
+        # TODO: add CDFTransformLoader here, will be sick
+        return sqlmesh.Context(config=self._transform_config(), paths=[str(self.root)])
 
     def raise_on_ff_lock_mismatch(self, config_hash: str) -> None:
         """Raise an error if the FF cache key does not match the lockfile.

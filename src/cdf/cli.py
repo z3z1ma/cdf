@@ -350,7 +350,7 @@ def plan(
                 f"No transforms discovered in workspace {ws}. Add transforms to {c.TRANSFORMS_PATH} to enable them."
             )
     # Generate context
-    context = project.get_sqlmesh_context(tuple(workspaces))
+    context = project.get_transform_context(tuple(workspaces))
     _ = context.plan(
         env,
         start=start,
