@@ -1,5 +1,8 @@
 [sources.hackernews]
-limit = 20
+keywords = ["openai", "altman", "microsoft"]
+start_date = "{{ yesterday() }}"
+end_date = "{{ today() }}"
+daily_load = true
 
 [transforms]
 default_gateway = "local"

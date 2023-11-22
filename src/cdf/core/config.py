@@ -42,10 +42,10 @@ class CDFConfigTomlProvider(providers.TomlFileProvider):
     """An opinionated config provider for CDF."""
 
     def __init__(self, project_dir: str | Path = ".") -> None:
+        self._name = c.CONFIG_FILE
         super().__init__(
             c.CONFIG_FILE, project_dir=str(project_dir), add_global_config=True
         )
-        self._name = c.CONFIG_FILE
 
     @property
     def name(self) -> str:
@@ -55,7 +55,7 @@ class CDFConfigTomlProvider(providers.TomlFileProvider):
     def name(self, value: str) -> None:
         self._name = value
 
-    _read_toml = read_toml
+    _read_toml = staticmethod(read_toml)
 
     @property
     def supports_secrets(self) -> bool:
@@ -70,10 +70,10 @@ class CDFSecretsTomlProvider(providers.TomlFileProvider):
     """An opinionated secrets provider for CDF."""
 
     def __init__(self, project_dir: str | Path = ".") -> None:
+        self._name = c.SECRETS_FILE
         super().__init__(
             c.SECRETS_FILE, project_dir=str(project_dir), add_global_config=True
         )
-        self._name = c.SECRETS_FILE
 
     @property
     def name(self) -> str:
@@ -83,7 +83,7 @@ class CDFSecretsTomlProvider(providers.TomlFileProvider):
     def name(self, value: str) -> None:
         self._name = value
 
-    _read_toml = read_toml
+    _read_toml = staticmethod(read_toml)
 
     @property
     def supports_secrets(self) -> bool:
@@ -192,8 +192,10 @@ def remove_config_providers(*names: str) -> None:
     """Remove global config providers by key.
 
     Args:
-        keys: The keys of the config providers to remove.
+        keys: The keys of the config providers to remove. If no keys are provided, all providers are removed.
     """
+    if not names:
+        names = tuple(Container()[ConfigProvidersContext].keys())
     for name in names:
         with contextlib.suppress(KeyError):
             Container()[ConfigProvidersContext].pop(name)

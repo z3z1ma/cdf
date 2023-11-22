@@ -25,7 +25,7 @@ class CDFSource(DltSource):
         register_source(source=self)  # TODO: no value in this, remove
 
 
-LazySource = t.Callable[[], CDFSource]
+LazySource = t.Callable[..., CDFSource]
 
 Metric = t.Union[float, int]
 MetricAccumulator = t.Callable[[TDataItem, Metric], Metric]

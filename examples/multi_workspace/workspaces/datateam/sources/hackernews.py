@@ -10,9 +10,9 @@ URL = "https://hn.algolia.com/api/v1/search_by_date"
 
 
 @dlt.source(name="hackernews")
-def algolia_hn_search(
-    keywords=("rust",),
-    start_date="2023-11-10",
+def hn_search(
+    keywords=dlt.config.value,
+    start_date=dlt.config.value,
     end_date=datetime.today(),
     text="any",
     daily_load=False,
@@ -24,7 +24,7 @@ def algolia_hn_search(
         start_date: start date in datetime or "yyyy-mm-dd" format
         end_date: end date in datetime or "yyyy-mm-dd" format
         text: possible values: "story","comment". For any other value, everything is loaded.
-        daily_load: loads data on a daily schedule when set to True
+        daily_load: loads data in daily intervals when set to True (default: weekly)
     """
 
     # Read start date as string or datetime and convert it to UNIX timestamp
@@ -83,7 +83,7 @@ def keyword_hits(
         start_timestamp: UNIX timestamp for the start date
         end_timestamp: UNIX timestamp for the end date
         tags: parameter for the API call to specify "story", "comment" or "(story,comment)"
-        daily_load: loads data on a daily schedule when set to True
+        daily_load: loads data in daily intervals when set to True (default: weekly)
     """
 
     def _generate_hits(keyword, batch_start_date, batch_end_date, tags):
@@ -131,7 +131,7 @@ def keyword_hits(
 
 __CDF_SOURCE__ = dict(
     hackernews=CDFSourceWrapper(
-        factory=algolia_hn_search,
+        factory=hn_search,
         version=1,
         owners=("qa-team"),
         description="Extracts hackernews data from an API.",

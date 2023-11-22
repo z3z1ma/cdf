@@ -11,6 +11,37 @@ in conjunction with a simple interface and opinionated design.
 
 ⚠️ the following is a work in progress and is subject to change ⚠️
 
+Given the following configuration file:
+
+`cdf_config.toml`
+```toml
+[sources.hackernews]
+keywords = ["openai", "altman", "microsoft"]
+start_date = "{{ yesterday() }}"
+end_date = "{{ today() }}"
+daily_load = true
+```
+
+It maps directly to the following code:
+
+`sources/hackernews.py`
+```python
+@dlt.source(name="hackernews")
+def hn_search(
+    keywords=dlt.config.value,    # this MUST exist in the config
+    start_date=dlt.config.value,  # this MUST exist in the config
+    end_date=datetime.today(),    # this can be overridden by the config
+    text="any",                   # this can be overridden by the config
+    daily_load=False,             # this can be overridden by the config
+):
+    ...
+```
+
+This demonstrates managing pipeline configuration.
+
+---
+
+The following code demonstrates running a pipeline:
 ```python
 import dlt
 
@@ -22,6 +53,26 @@ with project.datateam.get_runtime_source("hackernews") as source:
     info = p.run(source)
 
 print(info)
+
+```
+---
+
+Continuing to look at cdf configuration, we can see it centralizes config for both SQLMesh and dlt into a single file with some opinionated handling. We enable jinja templating and advise users to declare ALL configuration in this file. Secrets included, but deferred via `{{ env_var("SOME_VAR") }}` vs relying on dlt's Environ provider. This makes behvior more immediately obvious and flexible. You can also use the multitude of interesting jinja filters to DRY up your config.
+
+```toml
+[sources.hackernews]
+keywords = ["openai", "altman", "microsoft"]
+start_date = "{{ yesterday() }}"
+end_date = "{{ today() }}"
+daily_load = true
+
+[transforms]
+default_gateway = "local"
+model_defaults.dialect = "duckdb"
+
+[transforms.gateways.local.connection]
+type = "duckdb"
+database = "cdf.duckdb"
 
 ```
 
