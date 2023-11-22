@@ -5,7 +5,6 @@ import subprocess
 import sys
 import typing as t
 from contextlib import suppress
-from datetime import datetime, timezone
 from pathlib import Path
 
 import dlt
@@ -27,12 +26,7 @@ app = typer.Typer(
     add_completion=False,
 )
 transform = typer.Typer()
-app.add_typer(
-    transform,
-    name="transform",
-    rich_help_panel="Integrate",
-    help=":arrows_counterclockwise: [b red]Transform[/b red] data from a data store into a data store where it can be exposed or [b yellow]Published[/b yellow].",
-)
+app.add_typer(transform, name="transform", rich_help_panel="Integrate")
 
 dotenv.load_dotenv()
 
@@ -298,38 +292,23 @@ def ingest(
     logging.info(info)
 
 
-# TODO: Its one thing to be a thin wrapper, it allows us to augment behavior with opinionated
-# defaults. But we should look to make sqlmesh stuff native to Workspace / Project classes
-# in which case we can expose a highly purpose-built entrypoint, and a passthrough more generalized
-# one too? or should the generalized approach just be sqlmesh -p $(cdf path datateam) info?
-# by merging config into the cdf_config.toml, we get one file -- but its no longer able to be ran by
-# sqlmesh alone... hence the cute passthrough bash expansion thing won't work anyway without monkey
-# patching sqlmesh or exposing some sort of cdf activate <workspace> which does some env var exporting?
-@transform.command()
-def plan(
+@transform.callback()
+def transform_entrypoint(
     ctx: typer.Context,
-    env: str = typer.Argument(default="dev"),
-    start: t.Annotated[str, typer.Option(..., "-s", "--start")] = "1970-01-01",
-    end: t.Annotated[str, typer.Option(..., "-e", "--end")] = datetime.now(
-        timezone.utc
-    ).strftime("%Y-%m-%d"),
-    create_from: str | None = None,
-    skip_tests: bool = False,
-    restate_models: t.List[str] | None = None,
-    gaps: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
-    skip_backfill: bool = False,
-    forward_only: bool = False,
-    prompts: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
-    auto_apply: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
-    auto_categorization: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
-    effective_from: str | None = None,
-    include_unmodified: bool | None = None,
-    select_models: t.List[str] | None = None,
-    backfill_models: t.List[str] | None = None,
-    diff: t.Annotated[bool, typer.Option(..., is_flag=True)] = False,
+    workspace: t.Annotated[
+        str,
+        typer.Argument(
+            help="The [yellow]workspace[/yellow] arg is a comma separated list of workspaces to include in the context. The first workspace is the primary workspace."
+        ),
+    ],
 ) -> None:
+    """:arrows_counterclockwise: [b red]Transform[/b red] data in a database. Entrypoint for [b]SQLMesh[/b] with cdf semantics.
+
+    \f
+    This swaps the CLI context to a transform context which makes it compatible with the sqlmesh CLI
+    while still allowing us to augment behavior with opinionated defaults.
+    """
     project: Project = ctx.obj
-    workspace, env = _parse_ws_component(env)
     workspaces = workspace.split(",")
     main_workspace = workspaces[0]
     # Ensure we have a primary workspace
@@ -349,27 +328,66 @@ def plan(
             raise typer.BadParameter(
                 f"No transforms discovered in workspace {ws}. Add transforms to {c.TRANSFORMS_PATH} to enable them."
             )
-    # Generate context
-    context = project.get_transform_context(tuple(workspaces))
-    _ = context.plan(
-        env,
-        start=start,
-        end=end,
-        create_from=create_from,
-        skip_tests=skip_tests,
-        restate_models=restate_models,
-        no_gaps=gaps,
-        skip_backfill=skip_backfill,
-        forward_only=forward_only,
-        no_prompts=prompts,
-        auto_apply=auto_apply,
-        no_auto_categorization=auto_categorization,
-        effective_from=effective_from,
-        include_unmodified=include_unmodified,
-        select_models=select_models,
-        backfill_models=backfill_models,
-        no_diff=diff,
-    )
+    # Swap context to SQLMesh context
+    ctx.obj = project.get_transform_context(workspaces)
+
+
+SQLMESH_COMMANDS = (
+    "render",
+    "evaluate",
+    "format",
+    "diff",
+    "plan",
+    "run",
+    "invalidate",
+    "dag",
+    "test",
+    "audit",
+    "fetchdf",
+    "info",
+    "ui",
+    "migrate",
+    "rollback",
+    "create_external_models",
+    "table_diff",
+    "rewrite",
+)
+
+
+def _get_transform_command_wrapper(name: str):
+    """Passthrough for sqlmesh commands.
+
+    Args:
+        name: The name of the command.
+
+    Returns:
+        A function that invokes the sqlmesh command.
+    """
+    if name not in SQLMESH_COMMANDS:
+        raise typer.BadParameter(
+            f"Command {name} not found. Must be one of {SQLMESH_COMMANDS}."
+        )
+
+    import click
+    import sqlmesh.cli.main as sqlmesh
+
+    cmd: click.Command = getattr(sqlmesh, name)
+
+    def _passthrough(ctx: typer.Context) -> None:
+        nonlocal cmd
+        parser = cmd.make_parser(ctx)
+        opts, args, _ = parser.parse_args(ctx.args)
+        return ctx.invoke(cmd, *args, **opts)
+
+    _passthrough.__doc__ = cmd.help or cmd.callback.__doc__
+    return _passthrough
+
+
+for passthrough in SQLMESH_COMMANDS:
+    transform.command(
+        passthrough,
+        context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+    )(_get_transform_command_wrapper(passthrough))
 
 
 @app.command(rich_help_panel="Integrate")
@@ -378,11 +396,11 @@ def publish() -> None:
     rich.print("Publishing...")
 
 
-@app.command(rich_help_panel="Utility")
-def run(
-    ctx: typer.Context,
-    args: t.List[str] = typer.Argument(allow_dash=True),
-) -> None:
+@app.command(
+    rich_help_panel="Utility",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def run(ctx: typer.Context, executable: str) -> None:
     """:rocket: Run an executable located in a workspace environment.
 
     This is useful for running packages installed in a workspace environment without having to activate it first.
@@ -391,8 +409,8 @@ def run(
 
     \f
     Example:
-        cdf run my_workspace.pip -- --help
-        cdf run my_workspace.gcloud -- --help
+        cdf run my_workspace.pip --help
+        cdf run my_workspace.gcloud --help
 
     Args:
         ctx: The CLI context.
@@ -402,11 +420,10 @@ def run(
         subprocess.CalledProcessError: If the executable returns a non-zero exit code.
     """
     project: Project = ctx.obj
-    executable = args.pop(0)
     ws, component = _parse_ws_component(executable)
     rich.print(">>> Running", ws, component)
     with project[ws].environment():
-        subprocess.check_call([project[ws].get_bin(component), *args])
+        subprocess.check_call([project[ws].get_bin(component), *ctx.args])
 
 
 def _parse_ws_component(component: str) -> t.Tuple[str, str]:

@@ -86,7 +86,7 @@ class Project:
     def keys(self) -> t.Set[str]:
         return set(self._workspaces.keys())
 
-    def get_transform_context(self, workspaces: t.Tuple[str, ...]) -> sqlmesh.Context:
+    def get_transform_context(self, workspaces: t.Sequence[str]) -> sqlmesh.Context:
         """Get a sqlmesh context for a list of workspaces.
 
         Args:
