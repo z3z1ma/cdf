@@ -529,7 +529,18 @@ class Workspace:
         The canonical route to this method is via ensure_venv, but developers can call this
         directly for more control or override the implementation in a Workspace subclass.
         """
-        virtualenv.cli_run([str(self.root / ".venv")])
+        virtualenv.cli_run(
+            [
+                str(self.root / ".venv"),
+                "--symlink-app-data",
+                "--download",
+                "--pip=bundle",
+                "--setuptools=bundle",
+                "--wheel=bundle",
+                "--prompt",
+                f"cdf.{self.namespace}",
+            ]
+        )
         self.requirements_path.touch()
 
     def ensure_venv(self) -> None:
