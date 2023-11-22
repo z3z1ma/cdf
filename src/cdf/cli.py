@@ -66,6 +66,12 @@ def main(
     from cdf import Project
 
     logger.set_level(log_level.upper() if not debug else "DEBUG")
+    if debug:
+        import sqlmesh
+
+        dlt.config["runtime.log_level"] = "DEBUG"
+        sqlmesh.configure_logging(force_debug=True)
+
     ctx.obj = Project.find_nearest(root)
     ctx.obj.meta["root"] = root
 
@@ -285,7 +291,7 @@ def ingest(
             f"cdf-{src}",
             destination=engine,
             dataset_name=dataset_name,
-            progress="alive_progress",
+            progress=os.getenv("CDF_PROGRESS", "alive_progress"),  # type: ignore
             **pkwargs,
         )
         info = pipeline.run(rt_source)
@@ -298,7 +304,7 @@ def transform_entrypoint(
     workspace: t.Annotated[
         str,
         typer.Argument(
-            help="The [yellow]workspace[/yellow] arg is a comma separated list of workspaces to include in the context. The first workspace is the primary workspace."
+            help="A comma separated list of 1 or more workspaces to include in the context. The first workspace is the primary workspace."
         ),
     ],
 ) -> None:
@@ -323,10 +329,10 @@ def transform_entrypoint(
     # Ensure all workspaces exist and are valid
     for ws in workspaces:
         if ws not in project:
-            raise typer.BadParameter(f"Workspace {ws} not found.")
+            raise typer.BadParameter(f"Workspace `{ws}` not found.")
         if not project[ws].has_transforms:
             raise typer.BadParameter(
-                f"No transforms discovered in workspace {ws}. Add transforms to {c.TRANSFORMS_PATH} to enable them."
+                f"No transforms discovered in workspace `{ws}`. Add transforms to {c.TRANSFORMS_PATH} to enable them."
             )
     # Swap context to SQLMesh context
     ctx.obj = project.get_transform_context(workspaces)
