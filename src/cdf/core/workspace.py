@@ -19,7 +19,7 @@ import cdf.core.constants as c
 import cdf.core.logger as logger
 from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
 from cdf.core.source import CDFSourceWrapper
-from cdf.core.utils import augmented_path
+from cdf.core.utils import load_module_from_path
 
 _IMPORT_LOCK = Lock()
 
@@ -309,7 +309,8 @@ class Workspace:
         self._publisher_paths = None
         self._requirements = None
         self._did_inject_config_providers = False
-        self._cached_sources = {}
+        self._sources = {}
+        self._publishers = {}
         if load_dotenv:
             dotenv.load_dotenv(self.root / ".env")
         self.meta = {}
@@ -562,6 +563,15 @@ class Workspace:
 
     @contextmanager
     def environment(self) -> t.Iterator[None]:
+        """Context manager to inject workspace into sys.path and activate virtual environment if required.
+
+        This context manager ensures that side effects from importing modules in the workspace
+        or from activating the virtual environment are contained to the context. It does this by
+        storing the original sys.path, sys.prefix, sys.modules, and os.environ and restoring them
+        after the context exits. It caches the modules that were imported during the context and
+        restores them on re-entry to ensure consistent interpreter state. This is not as idiomatic
+        as a subprocess, but is significantly faster and allows us to use the same interpreter.
+        """
         self.ensure_venv()
         activate = self.root / ".venv" / "bin" / "activate_this.py"
         environ, syspath, sysprefix, sysmodules = (
@@ -625,27 +635,28 @@ class Workspace:
         and adds the workspace venv to the sys.path. This ensures that all dependencies are
         available to the source modules.
         """
-        if not self._cached_sources:
+        if not self._sources:
             with (
                 _IMPORT_LOCK,
-                augmented_path(str(self.root / c.SOURCES_PATH)),
                 self.environment(),
             ):
-                sources = {}
                 for path in self.source_paths:
-                    spec = spec_from_file_location(path.stem, path)
-                    if spec is None or spec.loader is None:
-                        raise ValueError(f"Could not load source {path}")
-                    module = module_from_spec(spec)
-                    sys.modules[spec.name] = module
-                    spec.loader.exec_module(module)
-                    sys.modules.pop(spec.name)
-                    for source_name, source in t.cast(
-                        t.Dict[str, CDFSourceWrapper], getattr(module, c.CDF_SOURCE, {})
-                    ).items():
-                        sources[source_name] = source
-            self._cached_sources.update(sources)
-        return self._cached_sources
+                    mod, _ = load_module_from_path(path)
+                    self._sources.update(getattr(mod, c.CDF_SOURCE, {}))
+        return self._sources
+
+    @property
+    @requires_publishers
+    def publishers(self) -> t.Dict[str, t.Any]:
+        if not self._publishers:
+            with (
+                _IMPORT_LOCK,
+                self.environment(),
+            ):
+                for path in self.publisher_paths:
+                    mod, _ = load_module_from_path(path)
+                    self._publishers.update(getattr(mod, c.CDF_PUBLISHER, {}))
+        return self._publishers
 
     @requires_transforms
     def _transform_config(self) -> sqlmesh.Config:

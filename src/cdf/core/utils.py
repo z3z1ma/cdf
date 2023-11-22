@@ -2,8 +2,11 @@
 import functools
 import json
 import sys
+import types
 import typing as t
 from contextlib import contextmanager, suppress
+from importlib.machinery import ModuleSpec
+from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
 
 from dlt.sources import DltResource, DltSource
@@ -27,6 +30,28 @@ def augmented_path(*path: str):
     sys.path.extend(path)
     yield
     sys.path = orig_path
+
+
+def load_module_from_path(
+    path: Path, execute: bool = True
+) -> t.Tuple[types.ModuleType, ModuleSpec]:
+    """Load a module from a path.
+
+    Args:
+        path: The path to the module.
+        execute: Whether to execute the module.
+
+    Returns:
+        A tuple of the module and the module spec.
+    """
+    spec = spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f"Could not load source {path}")
+    module = module_from_spec(spec)
+    sys.modules[spec.name] = module
+    if execute:
+        spec.loader.exec_module(module)
+    return module, spec
 
 
 def do(fn: t.Callable[[A], B], it: t.Iterable[A]) -> t.List[B]:

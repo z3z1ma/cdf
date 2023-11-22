@@ -1,8 +1,8 @@
 """Constants for the CDF module."""
-import re
 
-# The main export symbol for CDF source modules
+# The main export symbols for CDF modules
 CDF_SOURCE = "__CDF_SOURCE__"
+CDF_PUBLISHER = "__CDF_PUBLISHER__"
 
 # Core files
 WORKSPACE_FILE = "cdf_workspace.toml"
