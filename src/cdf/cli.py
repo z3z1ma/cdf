@@ -385,7 +385,9 @@ def _get_transform_command_wrapper(name: str):
         opts, args, _ = parser.parse_args(ctx.args)
         return ctx.invoke(cmd, *args, **opts)
 
-    _passthrough.__doc__ = cmd.help or cmd.callback.__doc__
+    _passthrough.__name__ = name
+    _passthrough.__doc__ = cmd.help or cmd.callback.__doc__ or ""
+    _passthrough.__doc__ += "\nSee the CLI reference for options: https://sqlmesh.readthedocs.io/en/stable/reference/cli/"
     return _passthrough
 
 
