@@ -378,6 +378,7 @@ def _get_transform_command_wrapper(name: str):
     import sqlmesh.cli.main as sqlmesh
 
     cmd: click.Command = getattr(sqlmesh, name)
+    doc = cmd.help or cmd.callback.__doc__ or f"Run the {name} command"
 
     def _passthrough(ctx: typer.Context) -> None:
         nonlocal cmd
@@ -386,8 +387,7 @@ def _get_transform_command_wrapper(name: str):
         return ctx.invoke(cmd, *args, **opts)
 
     _passthrough.__name__ = name
-    _passthrough.__doc__ = cmd.help or cmd.callback.__doc__ or ""
-    _passthrough.__doc__ += "\nSee the CLI reference for options: https://sqlmesh.readthedocs.io/en/stable/reference/cli/"
+    _passthrough.__doc__ = f"{doc} See the CLI reference for options: https://sqlmesh.readthedocs.io/en/stable/reference/cli/#{name}"
     return _passthrough
 
 
@@ -417,8 +417,8 @@ def run(ctx: typer.Context, executable: str) -> None:
 
     \f
     Example:
-        cdf run my_workspace.pip --help
-        cdf run my_workspace.gcloud --help
+        cdf run my_workspace.pip -- --help
+        cdf run my_workspace.gcloud -- --help
 
     Args:
         ctx: The CLI context.
@@ -429,9 +429,12 @@ def run(ctx: typer.Context, executable: str) -> None:
     """
     project: Project = ctx.obj
     ws, component = _parse_ws_component(executable)
-    rich.print(">>> Running", ws, component)
+    rich.print(">>> Running", ws, component, file=sys.stderr)
     with project[ws].environment():
-        subprocess.check_call([project[ws].get_bin(component), *ctx.args])
+        proc = subprocess.run(
+            [project[ws].get_bin(component, must_exist=True), *ctx.args]
+        )
+    raise typer.Exit(proc.returncode)
 
 
 def _parse_ws_component(component: str) -> t.Tuple[str, str]:

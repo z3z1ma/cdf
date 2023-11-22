@@ -515,7 +515,6 @@ class Workspace:
                 [
                     self.pip_path,
                     "install",
-                    "--quiet",
                     "--upgrade",
                     "-r",
                     self.requirements_path,
@@ -613,8 +612,6 @@ class Workspace:
         and adds the workspace venv to the sys.path. This ensures that all dependencies are
         available to the source modules.
         """
-        if not self.has_sources:
-            return {}
         if not self._cached_sources:
             with (
                 _IMPORT_LOCK,
