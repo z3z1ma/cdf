@@ -537,6 +537,7 @@ class Workspace:
                 "--pip=bundle",
                 "--setuptools=bundle",
                 "--wheel=bundle",
+                "--system-site-packages",
                 "--prompt",
                 f"cdf.{self.namespace}",
             ]
@@ -544,11 +545,12 @@ class Workspace:
         self.requirements_path.touch()
 
     def ensure_venv(self) -> None:
-        """Create a virtual environment for the workspace if it does not exist
+        """Create a virtual environment for the workspace if it does not exist.
 
         This method creates a virtual environment for the workspace if it does not exist. It also
         installs the requirements.txt into the virtual environment. If the requirements.txt is
-        newer than the virtual environment, it reinstalls the requirements.txt.
+        newer than the virtual environment, it reinstalls the requirements.txt. If the workspace has no
+        dependencies, this method is a no-op.
         """
         if self.has_dependencies:
             if not self.python_path.exists():
@@ -570,7 +572,7 @@ class Workspace:
         )
         if self.has_dependencies:
             exec(activate.read_bytes(), {"__file__": str(activate)})
-        sys.path.insert(0, str(self.root / c.SOURCES_PATH))
+        sys.path.insert(0, str(self.root))
         if self._mod_cache:
             sys.modules.update(self._mod_cache)
         yield
