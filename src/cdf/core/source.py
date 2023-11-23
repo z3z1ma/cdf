@@ -18,13 +18,26 @@ MetricDefs = t.Dict[str, MetricAccumulator]
 @dataclass
 class source_spec:
     factory: LazySource
+    """A function that returns a dlt source."""
     version: int = 1
+    """The source version. This is appended to the target dataset name."""
     owners: t.Sequence[str] = ()
+    """The owners of this source."""
     description: str = ""
+    """A description of this source."""
     tags: t.Sequence[str] = ()
+    """Tags for this source used for component queries."""
     cron: str | None = None
+    """A cron expression for scheduling this source."""
     metrics: t.Dict[str, MetricDefs] = field(default_factory=dict)
+    """A dict of resource names to metric definitions.
+
+    Metrics are captured on a per resource basis during source execution and are
+    accumulated into this dict. The metric definitions are callables that take
+    the current item and the current metric value and return the new metric value.
+    """
     enabled = True
+    """Whether this source is enabled."""
 
     def __post_init__(self) -> None:
         source = None
