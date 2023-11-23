@@ -1,28 +1,30 @@
 import os
 import sys
 
-from cdf import CDFSourceWrapper, cdf_resource, cdf_source
+import dlt
+
+from cdf import export_sources, source_spec
 
 
-@cdf_resource
+@dlt.resource
 def osrandom(n: int = 100):
     for i in range(n):
         yield {"i": i, "payload": os.urandom(20).hex(sep=":"), "nested": {"a": 1 * i}}
 
 
-@cdf_resource
+@dlt.resource
 def sys_vers(n: int = 50):
     for i in range(n):
         yield {"i": i, "payload": sys.version}
 
 
-@cdf_source
+@dlt.source
 def node_info():
     return osrandom(), sys_vers()
 
 
-__CDF_SOURCE__ = dict(
-    node_info=CDFSourceWrapper(
+export_sources(
+    node_info=source_spec(
         factory=node_info,
         version=1,
         owners=("qa-team"),

@@ -1,22 +1,22 @@
-from cdf import CDFSourceWrapper, cdf_resource, cdf_source
+import dlt
 
 
-@cdf_resource
+@dlt.resource
 def gen():
     yield from range(10)
 
 
-@cdf_source
+@dlt.source
 def source1():
     return gen()
 
 
-__CDF_SOURCE__ = dict(
-    source1=CDFSourceWrapper(
-        factory=source1,
-        version=1,
-        owners=("qa-team"),
-        description="A source that enumerates integers.",
-        tags=("deterministic", "test"),
-    )
-)
+__CDF_SOURCE__ = {
+    "source1": {
+        "factory": source1,
+        "version": 1,
+        "owners": ("qa-team"),
+        "description": "A source that enumerates integers.",
+        "tags": ("deterministic", "test"),
+    }
+}
