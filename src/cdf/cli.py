@@ -1,4 +1,5 @@
 """CLI for cdf."""
+import json
 import logging
 import os
 import subprocess
@@ -76,7 +77,7 @@ def main(
     ctx.obj.meta["root"] = root
 
 
-def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
+def _inject_config_for_component(comp: str, ctx: typer.Context) -> str:
     """Inject config into the CLI context.
 
     Args:
@@ -84,11 +85,11 @@ def _inject_config_for_source(source: str, ctx: typer.Context) -> str:
         ctx: The CLI context.
     """
     project = ctx.obj
-    workspace, _ = _parse_ws_component(source)
+    workspace, _ = _parse_ws_component(comp)
     if workspace not in project:
         raise typer.BadParameter(f"Workspace {workspace} not found.")
     project[workspace].inject_workspace_config_providers()
-    return source
+    return comp
 
 
 @app.command(rich_help_panel="Project Info")
@@ -113,7 +114,10 @@ def index(ctx: typer.Context) -> None:
         if workspace.has_transforms:
             rich.print("\n   Transforms Discovered: 0")
         if workspace.has_publishers:
-            rich.print("\n   Publishers Discovered: 0")
+            rich.print(f"\n   Publishers Discovered: {len(workspace.publishers)}")
+            for i, (name, meta) in enumerate(workspace.publishers.items(), start=1):
+                fn = meta.runner.__wrapped__
+                rich.print(f"   {i}) [b yellow]{name}[/b yellow] ({fn_to_str(fn)})")
         if workspace.has_dependencies:
             deps = workspace.requirements_path.read_text().splitlines()
             rich.print(f"\n   Dependencies: {len(deps)}")
@@ -174,7 +178,10 @@ def path(
 @app.command(rich_help_panel="Inspect")
 def discover(
     ctx: typer.Context,
-    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
+    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_component)],
+    opts: str = typer.Argument(
+        "{}", help="JSON formatted options to forward to the source."
+    ),
 ) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]Source[/b blue] and enumerates the discovered resources.
 
@@ -186,7 +193,7 @@ def discover(
     logger.debug("Discovering source %s", source)
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
-    with project[ws].get_runtime_source(src) as rt_source:
+    with project[ws].get_runtime_source(src, **json.loads(opts)) as rt_source:
         rich.print(
             f"\nDiscovered {len(rt_source.resources)} resources in"
             f" [b red]{source}.v{project[ws][src].version}[/b red]:"
@@ -202,8 +209,11 @@ def discover(
 @app.command(rich_help_panel="Inspect")
 def head(
     ctx: typer.Context,
-    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
+    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_component)],
     resource: str,
+    opts: str = typer.Argument(
+        "{}", help="JSON formatted options to forward to the source."
+    ),
     num: t.Annotated[int, typer.Option("-n", "--num-rows")] = 5,
 ) -> None:
     """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]Source[/b blue]. Defaults to [cyan]5[/cyan].
@@ -224,7 +234,7 @@ def head(
 
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
-    with project[ws].get_runtime_source(src) as rt_source:
+    with project[ws].get_runtime_source(src, **json.loads(opts)) as rt_source:
         if resource not in rt_source.resources:
             raise typer.BadParameter(
                 f"Resource {resource} not found in source {source}."
@@ -243,7 +253,10 @@ def head(
 @app.command(rich_help_panel="Integrate")
 def ingest(
     ctx: typer.Context,
-    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_source)],
+    source: t.Annotated[str, typer.Argument(callback=_inject_config_for_component)],
+    opts: str = typer.Argument(
+        "{}", help="JSON formatted options to forward to the source."
+    ),
     dest: t.Annotated[str, typer.Option(..., "-d", "--dest")] = "default",
     resources: t.List[str] = typer.Option(
         ..., "-r", "--resource", default_factory=list
@@ -263,7 +276,7 @@ def ingest(
     """
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
-    with project[ws].get_runtime_source(src) as rt_source:
+    with project[ws].get_runtime_source(src, **json.loads(opts)) as rt_source:
         if resources:
             rt_source = rt_source.with_resources(*resources)
         if not rt_source.selected_resources:
@@ -399,9 +412,19 @@ for passthrough in SQLMESH_COMMANDS:
 
 
 @app.command(rich_help_panel="Integrate")
-def publish() -> None:
+def publish(
+    ctx: typer.Context,
+    publisher: t.Annotated[str, typer.Argument(callback=_inject_config_for_component)],
+    opts: str = typer.Argument(
+        "{}", help="JSON formatted options to forward to the publisher."
+    ),
+) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
-    rich.print("Publishing...")
+    project: Project = ctx.obj
+    ws, pub = _parse_ws_component(publisher)
+    with project[ws].environment():
+        runner = project[ws].publishers[pub]
+        return runner(**json.loads(opts))
 
 
 @app.command(

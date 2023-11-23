@@ -1,4 +1,5 @@
 import time
+import typing as t
 from datetime import datetime
 
 import dlt
@@ -9,11 +10,11 @@ URL = "https://hn.algolia.com/api/v1/search_by_date"
 
 @dlt.source(name="hackernews")
 def hn_search(
-    keywords=dlt.config.value,
-    start_date=dlt.config.value,
-    end_date=datetime.today(),
-    text="any",
-    daily_load=False,
+    keywords: t.List[str] = dlt.config.value,
+    start_date: datetime = dlt.config.value,
+    end_date: datetime = datetime.today(),
+    text: str = "any",
+    daily_load: bool = False,
 ):
     """Source method for the Algolia Hacker News Search API: https://hn.algolia.com/api
 
@@ -148,9 +149,9 @@ __CDF_SOURCE__ = {
 from cdf import export_sources, source_spec
 
 export_sources(
-    hacker_news=source_spec(
+    hackernews_2=source_spec(
         factory=hn_search,
-        version=1,
+        version=2,
         owners=("qa-team"),
         description="Extracts hackernews data from an API.",
         tags=("live", "simple", "test"),

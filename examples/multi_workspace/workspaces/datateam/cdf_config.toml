@@ -4,6 +4,9 @@ start_date = "{{ yesterday() }}"
 end_date = "{{ today() }}"
 daily_load = true
 
+[publishers.httpbin.post]
+value = "This is a test {{ today() }}"
+
 [transforms]
 default_gateway = "local"
 model_defaults.dialect = "duckdb"

@@ -647,7 +647,7 @@ class Workspace:
 
     @property
     @requires_publishers
-    def publishers(self) -> t.Dict[str, t.Any]:
+    def publishers(self) -> t.Dict[str, publisher_spec]:
         """Load publishers from workspace."""
         if not self._publishers:
             with (
