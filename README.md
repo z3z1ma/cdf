@@ -21,8 +21,11 @@ in conjunction with a simple interface and opinionated design.
 - [x] Ownership tracking for all components
 - [x] Tagging for all components
 - [ ] Automated README generation for all components (in progress)
-
-
+- [x] A `run` command to quickly run any binary within any workspace with dependencies
+- [ ] Stdin ingestion to duckdb for quickly loading data into a local database and inspecting inferred schema
+- [ ] Support for data contracts (upstream in dlt)
+- [ ] Support for end to end lineage
+- [ ] Automated data platform / framework metadata tracking
 
 ## Design
 

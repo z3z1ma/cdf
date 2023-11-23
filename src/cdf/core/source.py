@@ -67,12 +67,21 @@ class source_spec:
 
 
 def export_sources(*, scope: dict | None = None, **sources: source_spec) -> None:
-    """Export sources to the global scope.
+    """Export sources to the callers global scope.
 
     Args:
         scope (dict | None, optional): The scope to export to. Defaults to globals().
         **sources (source_spec): The sources to export.
     """
+    if scope is None:
+        import inspect
+
+        frame = inspect.currentframe()
+        if frame is not None:
+            frame = frame.f_back
+        if frame is not None:
+            scope = frame.f_globals
+
     (scope or globals()).setdefault(c.CDF_SOURCE, {}).update(sources)
 
 

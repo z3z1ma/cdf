@@ -42,4 +42,13 @@ def export_publishers(
         scope (dict | None, optional): The scope to export to. Defaults to globals().
         **publishers (publisher_spec): The publishers to export.
     """
+    if scope is None:
+        import inspect
+
+        frame = inspect.currentframe()
+        if frame is not None:
+            frame = frame.f_back
+        if frame is not None:
+            scope = frame.f_globals
+
     (scope or globals()).setdefault(c.CDF_PUBLISHER, {}).update(publishers)
