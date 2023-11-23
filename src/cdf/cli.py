@@ -189,6 +189,7 @@ def discover(
     Args:
         ctx: The CLI context.
         source: The source to discover.
+        opts: JSON formatted options to forward to the source.
     """
     logger.debug("Discovering source %s", source)
     project: Project = ctx.obj
@@ -225,6 +226,7 @@ def head(
         ctx: The CLI context.
         source: The source to inspect.
         resource: The resource to inspect.
+        opts: JSON formatted options to forward to the source.
         num: The number of rows to print.
 
     Raises:
@@ -268,6 +270,7 @@ def ingest(
     Args:
         ctx: The CLI context.
         source: The source to ingest from.
+        opts: JSON formatted options to forward to the source.
         dest: The destination to ingest to.
         resources: The resources to ingest.
 
@@ -445,7 +448,7 @@ def run(ctx: typer.Context, executable: str) -> None:
 
     Args:
         ctx: The CLI context.
-        args: The executable followed by arguments to forward to it.
+        executable: The executable to run. <workspace>.<executable>
 
     Raises:
         subprocess.CalledProcessError: If the executable returns a non-zero exit code.
