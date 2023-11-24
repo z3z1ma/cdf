@@ -433,7 +433,50 @@ def publish(
     ws, pub = _parse_ws_component(publisher)
     with project[ws].environment():
         runner = project[ws].publishers[pub]
-        return runner(**json.loads(opts))
+        context = project[ws].get_transform_context()
+        if runner.from_model not in context.models:
+            raise typer.BadParameter(
+                f"Model {runner.from_model} not found in transform context."
+            )
+        return runner(context.fetchdf(runner.query), **json.loads(opts))
+
+
+# TODO: add metadata command?
+# consideration for metadata:
+# we want to export dlt schema data to <workspace>/metadata/<destination>/<catalog>/<table>.yaml ?
+# dlt schema data does not neecessarily correlate to sourrces and resources and they can
+# generate multiple tables or child tables -- metadata is purely related to "tables"
+# Our big blocker here I think is that we need to know up front all of our detinations
+# which in the current world / implementation is a pain in the ass. We should derive some
+# first class support for a "destinations.py" at the top level of a workspace?
+
+
+# Steps may look like this:
+# - ** Add `destinations.py` support **
+# - For a CLI requested detination, export schema data from the `pipeline` object to /metadata/_staging
+# - Mutate into expected location
+# - Run `sqlmesh create_external_models` (from the context) and move the file to /metadata/_staging
+# - Mutate into expected location (unified)
+# - ** At this point, we can manage unified external models/metadata **
+# - SQLMesh metadata consumption
+#   - Override CDFTransformLoader `_load_external_models` to consume from /metadata
+#     - this needs to know the "destination" name? Suppose we can store it since we subclass anyway
+#     - we are brushing up against a larger convergence here, maybe destinations.py can solve for this but its... hard
+# - DLT metadata consumption
+#   - dlt should probably consume interesting user overrides from these yaml files?
+#     but I cannot find the fucking answer on if that disables schema evolution...
+# - ** At this point, components can leverage unified metadata **
+# - Now we should support our custom DSL for "staging" models created via `cdf generate-staging-layer`, sick...
+# - So publishers should be able to be based on a model, and we can use sqlmesh evaluate to get the model as a dataframe
+#   or think through a lazier way to get the data, but just one-shotting a pandas dataframe is reasonable here to me
+#   in a first-pass since most `publish` operations are not massive ops, and who knows maybe pandas will buffer to disk
+#   if we do some legwork to research it? Though SQLMesh likely makes it eager? Surely they have some lazy interface.
+
+# I wonder if a workspace should have a "primary" destination?
+# Consideration for `cdf metadata`, otherwise user must specify destination everytime they run this dump command
+# We can manage the idea of a default destination inside the destinations.py
+# A py file coincidentally might align with dlt 0.4.0 approach, our file will return config -- post 0.4.0 it will return
+# actual destination objects
 
 
 @app.command(
