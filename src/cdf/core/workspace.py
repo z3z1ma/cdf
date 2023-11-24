@@ -586,11 +586,13 @@ class Workspace:
             sys.modules.update(self._mod_cache)
         yield
         self._mod_cache = sys.modules.copy()
-        os.environ, sys.path, sys.prefix, sys.modules = (
+        new_modules = set(sys.modules) - set(sysmodules)
+        for mod in new_modules:
+            del sys.modules[mod]
+        os.environ, sys.path, sys.prefix = (
             environ,
             syspath,
             sysprefix,
-            sysmodules,
         )
 
     def inject_workspace_config_providers(self) -> None:
@@ -668,6 +670,12 @@ class Workspace:
                     )
         return self._publishers
 
+    @property
+    @requires_transforms
+    def transforms(self) -> t.Mapping[str, sqlmesh.Model]:
+        """Load transforms from workspace."""
+        return self.get_transform_context().models
+
     @requires_transforms
     def _transform_config(self) -> sqlmesh.Config:
         conf = toml.loads((self.root / c.CONFIG_FILE).read_text())
@@ -677,6 +685,7 @@ class Workspace:
             )
         return sqlmesh.Config.parse_obj(conf["transforms"])
 
+    @lru_cache(maxsize=1)
     @requires_transforms
     def get_transform_context(self) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.

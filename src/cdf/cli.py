@@ -112,7 +112,9 @@ def index(ctx: typer.Context) -> None:
                 fn = meta.factory.__wrapped__
                 rich.print(f"   {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
         if workspace.has_transforms:
-            rich.print("\n   Transforms Discovered: 0")
+            rich.print(f"\n   Transforms Discovered: {len(workspace.transforms)}")
+            for i, (name, _) in enumerate(workspace.transforms.items(), start=1):
+                rich.print(f"   {i}) [b red]{name}[/b red]")
         if workspace.has_publishers:
             rich.print(f"\n   Publishers Discovered: {len(workspace.publishers)}")
             for i, (name, meta) in enumerate(workspace.publishers.items(), start=1):

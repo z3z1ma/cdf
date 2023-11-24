@@ -1,6 +1,6 @@
 """Feature flags for CDF.
 
-NOTE: our primary usage pattern of FF is to get a bunch of flags
+Our primary usage pattern of FF is to get a bunch of flags
 for a single component, so we should optimize for that
 This means we may not need to pull every possible flag into
 the cache. Thus our main entrypoint should be something like
@@ -82,6 +82,10 @@ def _get_harness_client(sdk_key: str) -> CfClient:
     )
     client.wait_for_initialization()
     return client
+
+
+# TODO: we should add dlt's @with_source over almost ALL these functions,
+# we are essentially leveraging the config now; but more haphazardly or manually
 
 
 def _create_harness_flag(
