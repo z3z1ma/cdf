@@ -74,8 +74,8 @@ def fn_to_str(fn: t.Callable | functools.partial) -> str:
     if isinstance(fn, functools.partial):
         fn = fn.func
     parts = [
-        f"mod: [cyan]{fn.__module__}[/cyan]",
-        f"fn: [yellow]{fn.__name__}[/yellow]",
+        f"mod: {fn.__module__}",
+        f"fn: {fn.__name__}",
         f"ln: {fn.__code__.co_firstlineno}",
     ]
     return ", ".join(parts)

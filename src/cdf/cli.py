@@ -107,24 +107,28 @@ def index(ctx: typer.Context) -> None:
             )
             continue
         if workspace.has_sources:
-            rich.print(f"\n   Sources Discovered: {len(workspace.sources)}")
+            rich.print(f"\n   [blue]Sources[/blue]: {len(workspace.sources)}")
             for i, (name, meta) in enumerate(workspace.sources.items(), start=1):
                 fn = meta.factory.__wrapped__
-                rich.print(f"   {i}) [b blue]{name}[/b blue] ({fn_to_str(fn)})")
+                rich.print(f"   {i}) {name} ({fn_to_str(fn)})")
         if workspace.has_transforms:
-            rich.print(f"\n   Transforms Discovered: {len(workspace.transforms)}")
+            rich.print(f"\n   [red]Transforms[/red]: {len(workspace.transforms)}")
             for i, (name, _) in enumerate(workspace.transforms.items(), start=1):
-                rich.print(f"   {i}) [b red]{name}[/b red]")
+                rich.print(f"   {i}) {name}")
         if workspace.has_publishers:
-            rich.print(f"\n   Publishers Discovered: {len(workspace.publishers)}")
+            rich.print(f"\n   [yellow]Publishers[/yellow]: {len(workspace.publishers)}")
             for i, (name, meta) in enumerate(workspace.publishers.items(), start=1):
                 fn = meta.runner.__wrapped__
-                rich.print(f"   {i}) [b yellow]{name}[/b yellow] ({fn_to_str(fn)})")
+                rich.print(f"   {i}) {name} ({fn_to_str(fn)})")
         if workspace.has_dependencies:
-            deps = workspace.requirements_path.read_text().splitlines()
-            rich.print(f"\n   Dependencies: {len(deps)}")
-            for i, dep in enumerate(deps):
-                rich.print(f"   {i}) [b green]{dep}[/b green]")
+            deps = [
+                dep.split("#", 1)[0].strip()  # Basic requirements.txt parsing
+                for dep in workspace.requirements_path.read_text().splitlines()
+                if dep and not dep.startswith("#")
+            ]
+            rich.print(f"\n   [green]Dependencies[/green]: {len(deps)}")
+            for i, dep in enumerate(deps, start=1):
+                rich.print(f"   {i}) {dep}")
     rich.print("")
 
 
