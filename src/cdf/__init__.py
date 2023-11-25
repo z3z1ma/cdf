@@ -1,3 +1,5 @@
+from dlt.common.configuration import with_config as with_config
+
 import cdf.core.logger as logger
 from cdf.core.publisher import export_publishers, publisher_spec
 from cdf.core.source import CDFResource, CDFSource, export_sources, source_spec
@@ -13,4 +15,5 @@ __all__ = [
     "publisher_spec",
     "export_publishers",
     "logger",
+    "with_config",
 ]

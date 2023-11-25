@@ -200,17 +200,18 @@ def discover(
     logger.debug("Discovering source %s", source)
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
-    with project[ws].get_runtime_source(src, **json.loads(opts)) as rt_source:
+    workspace = project[ws]
+    with workspace.get_runtime_source(src, **json.loads(opts)) as rt_source:
         rich.print(
             f"\nDiscovered {len(rt_source.resources)} resources in"
-            f" [b red]{source}.v{project[ws][src].version}[/b red]:"
+            f" [b red]{source}.v{workspace[src].version}[/b red]:"
         )
         for i, resource in enumerate(rt_source.resources.values(), start=1):
             if resource.selected:
                 rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
             else:
                 rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
-        _print_meta(project[ws][src])
+        _print_meta(workspace[src])
 
 
 @app.command(rich_help_panel="Inspect")
@@ -242,14 +243,15 @@ def head(
 
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
-    with project[ws].get_runtime_source(src, **json.loads(opts)) as rt_source:
+    workspace = project[ws]
+    with workspace.get_runtime_source(src, **json.loads(opts)) as rt_source:
         if resource not in rt_source.resources:
             raise typer.BadParameter(
                 f"Resource {resource} not found in source {source}."
             )
         res = rt_source.resources[resource]
         rich.print(
-            f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{project[ws][src].version}[/b blue]:"
+            f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{workspace.version}[/b blue]:"
         )
         it = flatten_stream(res)
         while num > 0 and (v := next(it, None)):  # type: ignore
@@ -285,16 +287,17 @@ def ingest(
     """
     project: Project = ctx.obj
     ws, src = _parse_ws_component(source)
-    with project[ws].get_runtime_source(src, **json.loads(opts)) as rt_source:
+    workspace = project[ws]
+    with workspace.get_runtime_source(src, **json.loads(opts)) as rt_source:
         if resources:
             rt_source = rt_source.with_resources(*resources)
         if not rt_source.selected_resources:
             raise typer.BadParameter(
                 f"No resources selected for source {source}. Use the discover command to see available resources.\n"
                 "Select them explicitly with --resource or enable them with feature flags.\n\n"
-                f"Reach out to the source owners for more information: {project[ws][src].owners}"
+                f"Reach out to the source owners for more information: {workspace[src].owners}"
             )
-        dataset_name = f"{src}_v{project[ws][src].version}"
+        dataset_name = f"{src}_v{workspace[src].version}"
         rich.print(
             f"Ingesting data from [b blue]{source}[/b blue] to [b red]{dest}[/b red]..."
         )
@@ -431,9 +434,10 @@ def publish(
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
     project: Project = ctx.obj
     ws, pub = _parse_ws_component(publisher)
-    with project[ws].environment():
-        runner = project[ws].publishers[pub]
-        context = project[ws].get_transform_context()
+    workspace = project[ws]
+    with workspace.environment():
+        runner = workspace.publishers[pub]
+        context = workspace.get_transform_context()
         if runner.from_model not in context.models:
             raise typer.BadParameter(
                 f"Model {runner.from_model} not found in transform context."
@@ -479,21 +483,50 @@ def publish(
 # actual destination objects
 
 
+@app.command(rich_help_panel="Utility")
+def run(
+    ctx: typer.Context,
+    script: t.Annotated[str, typer.Argument(callback=_inject_config_for_component)],
+    opts: str = typer.Argument(
+        "{}", help="JSON formatted options to forward to the publisher."
+    ),
+) -> None:
+    """Run a script in the project.
+
+    A script is an arbitrary python file located in the ./scripts directory of a workspace. It defines an `entrypoint`
+    function which takes a reference to the workspace as the first argument.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        script: The script to run.
+    """
+    from cdf.core.utils import load_module_from_path
+
+    project: Project = ctx.obj
+    ws, script = _parse_ws_component(script)
+    workspace = project[ws]
+    with workspace.environment():
+        mod, _ = load_module_from_path(workspace.get_script(script, must_exist=True))
+        mod.entrypoint(workspace, **json.loads(opts))
+
+
 @app.command(
+    "bin",
     rich_help_panel="Utility",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def run(ctx: typer.Context, executable: str) -> None:
+def bin_(ctx: typer.Context, executable: str) -> None:
     """:rocket: Run an executable located in a workspace environment.
 
-    This is useful for running packages installed in a workspace environment without having to activate it first.
-    It is purely a convenience method and is not required to operate within a CDF project. All arguments should
-    be passed after a -- separator.
+    This is convenient for running package scripts installed in a workspace environment without having to specify the
+    full path to the executable. It is purely a convenience method and is not required to operate within a CDF
+    project. All arguments should be passed after a -- separator.
 
     \f
     Example:
-        cdf run my_workspace.pip -- --help
-        cdf run my_workspace.gcloud -- --help
+        cdf bin my_workspace.pip -- --help
+        cdf bin my_workspace.gcloud -- --help
 
     Args:
         ctx: The CLI context.
@@ -503,12 +536,11 @@ def run(ctx: typer.Context, executable: str) -> None:
         subprocess.CalledProcessError: If the executable returns a non-zero exit code.
     """
     project: Project = ctx.obj
-    ws, component = _parse_ws_component(executable)
-    rich.print(">>> Running", ws, component, file=sys.stderr)
-    with project[ws].environment():
-        proc = subprocess.run(
-            [project[ws].get_bin(component, must_exist=True), *ctx.args]
-        )
+    ws, comp = _parse_ws_component(executable)
+    rich.print(">>> Running", ws, comp, file=sys.stderr)
+    workspace = project[ws]
+    with workspace.environment():
+        proc = subprocess.run([workspace.get_bin(comp, must_exist=True), *ctx.args])
     raise typer.Exit(proc.returncode)
 
 

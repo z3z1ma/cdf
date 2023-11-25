@@ -458,6 +458,25 @@ class Workspace:
             raise ValueError("Could not find binary %s in %s", name, self.root)
         return bin_path
 
+    def get_script(self, name: str, must_exist: bool = False) -> Path:
+        """Get script in workspace as bytecode.
+
+        Args:
+            name (str): Name of script.
+            must_exist (bool): If True, raises ValueError if script does not exist.
+
+        Raises:
+            ValueError if script does not exist and must_exist is True.
+            CompileError if script cannot be compiled.
+
+        Returns:
+            Path to script.
+        """
+        script_path = self.root / "scripts" / f"{name}.py"
+        if must_exist and not script_path.exists():
+            raise ValueError("Could not find script %s in %s", name, self.root)
+        return script_path
+
     @lru_cache(maxsize=1)
     def read_lockfile(self) -> dict:
         """Read lockfile.
