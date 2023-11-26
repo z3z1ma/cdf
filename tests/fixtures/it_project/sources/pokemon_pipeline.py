@@ -5,10 +5,14 @@ Available resources:
     vegetables
 """
 # this is injected by cdf through the workspace requirements.txt
-import simple_salesforce as _  # noqa: F401 # type: ignore
+import simple_salesforce
+
+# this is only available in the top level dev environment, workspace environment
+# should be overlayed on top of it
+import sklearn
 
 # regular source
-from pokemon import source
+from sources.pokemon import source
 
 from cdf import source_spec
 

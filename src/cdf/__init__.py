@@ -1,3 +1,4 @@
+from dlt import pipeline as pipeline
 from dlt.common.configuration import with_config as with_config
 
 import cdf.core.logger as logger
@@ -16,4 +17,5 @@ __all__ = [
     "export_publishers",
     "logger",
     "with_config",
+    "pipeline",
 ]

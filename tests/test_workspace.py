@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import dlt
 import pytest
 
 from cdf.core.workspace import Project, Workspace
@@ -18,7 +17,7 @@ def test_load_sources():
     assert ws.has_sources
     assert ws.has_dependencies
 
-    sources = ws.load_sources()
+    sources = ws.sources
 
     # Ensure we can load all sources
     assert len(sources) == 3
@@ -30,14 +29,10 @@ def test_load_sources():
 
 
 def test_load_project():
-    proj = Project.find_nearest(path=Path("examples/advanced"))
+    proj = Project.find_nearest(path=Path("examples/multi_workspace"))
     assert proj is not None
 
-    sources = proj.datateam.load_sources()
-    assert len(sources) == 1
+    sources = proj.datateam.sources
+    assert len(sources) > 0
 
-    meta = sources["hackernews"]
-    # info = proj.data.get_extractor("hackernews")
-
-    print(meta)
-    # print(info)
+    _ = sources["hackernews"]

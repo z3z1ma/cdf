@@ -152,18 +152,16 @@ about and makes any project leveraging cdf more consistent and easier to reason 
 
 The following code demonstrates running a pipeline:
 ```python
-import dlt
-
-from cdf.core.workspace import Project
+from cdf import Project, pipeline
 
 project = Project.find_nearest(path="examples/advanced")
-with project.datateam.get_runtime_source("hackernews") as source:
-    p = dlt.pipeline("hackernews", destination="duckdb")
-    info = p.run(source)
-
-print(info)
-
+source = project.datateam.sources["hackernews"]
+with project.datateam.overlay():
+    load_info = pipeline("test").run(source(), destination="duckdb")
+print(load_info)
+print(source.runtime_metrics)
 ```
+
 ---
 
 ### Sources

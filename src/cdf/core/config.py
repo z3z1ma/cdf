@@ -227,6 +227,22 @@ def remove_config_providers_from_workspace(workspace: "Workspace") -> None:
     )
 
 
+@contextlib.contextmanager
+def with_config_providers_from_workspace(workspace: "Workspace") -> t.Iterator[None]:
+    context = Container()[ConfigProvidersContext]
+    """Add config providers from a workspace for the duration of the context.
+
+    Args:
+        workspace: The workspace to add config providers from.
+    """
+    existing_providers = context.providers.copy()
+    context.clear()
+    inject_config_providers_from_workspace(workspace)
+    yield
+    context.clear()
+    context.providers = existing_providers
+
+
 def populate_fn_kwargs_from_config(
     fn: t.Callable[..., t.Any],
     kwargs: t.Dict[str, t.Any],

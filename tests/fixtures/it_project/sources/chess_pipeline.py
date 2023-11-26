@@ -1,6 +1,6 @@
 from functools import partial
 
-from chess import source
+from sources.chess import source
 
 from cdf import source_spec
 

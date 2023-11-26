@@ -580,15 +580,16 @@ class Workspace:
     """Class var to cache modules between runs of the context manager"""
 
     @contextmanager
-    def environment(self) -> t.Iterator[None]:
-        """Context manager to inject workspace into sys.path and activate virtual environment if required.
+    def overlay(self) -> t.Iterator[None]:
+        """Context manager to fully configure a workspace for runtime use.
 
         This context manager ensures that side effects from importing modules in the workspace
         or from activating the virtual environment are contained to the context. It does this by
         storing the original sys.path, sys.prefix, sys.modules, and os.environ and restoring them
         after the context exits. It caches the modules that were imported during the context and
         restores them on re-entry to ensure consistent interpreter state. This is not as idiomatic
-        as a subprocess, but is significantly faster and allows us to use the same interpreter.
+        as a subprocess, but is significantly faster and allows us to use the same interpreter. It
+        also injects workspace config into the context.
         """
         self.ensure_venv()
         activate = self.root / ".venv" / "bin" / "activate_this.py"
@@ -603,7 +604,8 @@ class Workspace:
         sys.path.insert(0, str(self.root))
         if self._mod_cache:
             sys.modules.update(self._mod_cache)
-        yield
+        with self.configured():
+            yield
         self._mod_cache = sys.modules.copy()
         new_modules = set(sys.modules) - set(sysmodules)
         for mod in new_modules:
@@ -650,7 +652,7 @@ class Workspace:
         if not self._sources:
             with (
                 _IMPORT_LOCK,
-                self.environment(),
+                self.overlay(),
             ):
                 for path in self.source_paths:
                     mod, _ = load_module_from_path(path)
@@ -673,7 +675,7 @@ class Workspace:
         if not self._publishers:
             with (
                 _IMPORT_LOCK,
-                self.environment(),
+                self.overlay(),
             ):
                 for path in self.publisher_paths:
                     mod, _ = load_module_from_path(path)
@@ -706,7 +708,7 @@ class Workspace:
 
     @lru_cache(maxsize=1)
     @requires_transforms
-    def get_transform_context(self) -> sqlmesh.Context:
+    def get_transform_context(self, gateway: str | None = None) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.
 
         This method loads the sqlmesh config from the workspace config file and returns a
@@ -716,7 +718,9 @@ class Workspace:
             sqlmesh.Context: A sqlmesh context.
         """
         # TODO: add CDFTransformLoader here, will be sick
-        return sqlmesh.Context(config=self._transform_config(), paths=[str(self.root)])
+        return sqlmesh.Context(
+            config=self._transform_config(), paths=[str(self.root)], gateway=gateway
+        )
 
     def raise_on_ff_lock_mismatch(self, config_hash: str) -> None:
         """Raise an error if the FF cache key does not match the lockfile.
@@ -743,19 +747,20 @@ class Workspace:
 
     @contextmanager
     @requires_sources
-    def get_runtime_source(
+    def runtime_source(
         self, source_name: str, *args, **kwargs
     ) -> t.Iterator[CDFSource]:
         """Get a runtime source from the workspace.
 
-        A runtime source is a source that has been instantiated with its config and dependencies.
+        A runtime source is a source that has been instantiated with its config, dependencies, and
+        feature flags applied.
 
         Args:
             source_name (str): Name of source to get.
             *args: Positional args to pass to source constructor.
             **kwargs: Keyword args to pass to source constructor.
         """
-        with self.environment():
+        with self.overlay():
             source = self.sources[source_name](*args, **kwargs)
             feature_flags, meta = get_or_create_flag_dispatch(
                 None, source, workspace=self
@@ -763,6 +768,14 @@ class Workspace:
             if config_hash := meta.get("config_hash"):
                 self.raise_on_ff_lock_mismatch(config_hash)
             yield apply_feature_flags(source, feature_flags, workspace=self)
+
+    @contextmanager
+    def configured(self) -> t.Iterator[None]:
+        """Context manager to inject workspace config into context."""
+        from cdf.core.config import with_config_providers_from_workspace
+
+        with with_config_providers_from_workspace(workspace=self):
+            yield
 
     def __getitem__(self, name: str) -> source_spec:
         """Get a source from the workspace."""
