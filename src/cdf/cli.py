@@ -5,7 +5,6 @@ import os
 import subprocess
 import sys
 import typing as t
-from contextlib import suppress
 from pathlib import Path
 
 import dlt
@@ -241,7 +240,7 @@ def head(
             )
         res = rt_source.resources[resource]
         rich.print(
-            f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{workspace.version}[/b blue]:"
+            f"\nHead of [b red]{resource}[/b red] in [b blue]{source}.v{workspace[src].version}[/b blue]:"
         )
         it = flatten_stream(res)
         while num > 0 and (v := next(it, None)):  # type: ignore
@@ -295,21 +294,16 @@ def ingest(
         )
         for resource in rt_source.selected_resources:
             rich.print(f"  - [b green]{resource}[/b green]")
-        engine, dest = dest.split(".", 1)
-        pkwargs = {}
+        dest_opts = workspace.destinations[dest].ingest
         if "BUCKET_URL" in os.environ:
             # Staging native creds use expected cloud provider env vars
             # such as GOOGLE_APPLICATION_CREDENTIALS, AWS_ACCESS_KEY_ID, etc.
-            pkwargs["staging"] = "filesystem"
-        with suppress(KeyError):
-            # Permit credentials to be omitted which will fall back to native parser
-            pkwargs["credentials"] = dlt.secrets[f"{engine}.{dest}.credentials"]
+            dest_opts["staging"] = "filesystem"
         pipeline = dlt.pipeline(
             f"cdf-{src}",
-            destination=engine,
             dataset_name=dataset_name,
             progress=os.getenv("CDF_PROGRESS", "alive_progress"),  # type: ignore
-            **pkwargs,
+            **dest_opts,  # type: ignore
         )
         info = pipeline.run(rt_source)
     logging.info(info)
@@ -332,6 +326,10 @@ def transform_entrypoint(
     while still allowing us to augment behavior with opinionated defaults.
     """
     project: Project = ctx.obj
+    if "." in workspace:
+        workspace, destination = _parse_ws_component(workspace)
+    else:
+        destination = None
     workspaces = workspace.split(",")
     main_workspace = workspaces[0]
     # Ensure we have a primary workspace
@@ -352,7 +350,7 @@ def transform_entrypoint(
                 f"No transforms discovered in workspace `{ws}`. Add transforms to {c.TRANSFORMS_PATH} to enable them."
             )
     # Swap context to SQLMesh context
-    ctx.obj = project.get_transform_context(workspaces)
+    ctx.obj = project.get_transform_context(workspaces, destination=destination)
 
 
 SQLMESH_COMMANDS = (

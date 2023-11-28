@@ -3,11 +3,13 @@ import subprocess
 import sys
 import typing as t
 from contextlib import contextmanager
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
 from types import MappingProxyType, ModuleType
 
+import dlt
 import dotenv
 import sqlmesh
 import tomlkit as toml
@@ -18,7 +20,7 @@ import cdf.core.logger as logger
 from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
 from cdf.core.publisher import publisher_spec
 from cdf.core.source import CDFSource, source_spec
-from cdf.core.utils import load_module_from_path
+from cdf.core.utils import deep_merge, load_module_from_path
 
 _IMPORT_LOCK = Lock()
 
@@ -26,8 +28,17 @@ _IMPORT_LOCK = Lock()
 class Project:
     """A project encapsulates a collection of workspaces."""
 
-    def __init__(self, workspaces: t.List["Workspace"]) -> None:
+    def __init__(
+        self, workspaces: t.List["Workspace"], root_name: str | None = None
+    ) -> None:
+        """Initialize a project.
+
+        Args:
+            workspaces (t.List[Workspace]): List of workspaces.
+            root_name (str, optional): Name of root path in project. Defaults to the current working directory.
+        """
         self._workspaces = {ws.namespace: ws for ws in workspaces}
+        self.root_name = root_name or Path.cwd().name
         self.meta = {}
 
     @property
@@ -45,7 +56,7 @@ class Project:
         """
         if workspace.namespace in self._workspaces and not replace:
             raise ValueError(
-                "Workspace with namespace %s already exists", workspace.namespace
+                f"Workspace with namespace {workspace.namespace} already exists"
             )
         self._workspaces[workspace.namespace] = workspace
 
@@ -64,7 +75,7 @@ class Project:
         try:
             return self._workspaces[name]
         except KeyError:
-            raise AttributeError(f"Project has no workspace {name}")
+            raise AttributeError(f"Project {self.root_name} has no workspace {name}")
 
     def __getitem__(self, name: str) -> "Workspace":
         return self._workspaces[name]
@@ -80,27 +91,31 @@ class Project:
 
     def __repr__(self) -> str:
         ws = ", ".join(f"'{ns}'" for ns in self._workspaces.keys())
-        return f"Project(workspaces=[{ws}])"
+        return f"Project({self.root_name}, workspaces=[{ws}])"
 
     def keys(self) -> t.Set[str]:
         return set(self._workspaces.keys())
 
-    def get_transform_context(self, workspaces: t.Sequence[str]) -> sqlmesh.Context:
+    def get_transform_context(
+        self, workspaces: t.Sequence[str], destination: str | None = None
+    ) -> sqlmesh.Context:
         """Get a sqlmesh context for a list of workspaces.
 
         Args:
             workspaces (t.Tuple[str, ...]): List of workspace namespaces.
+            destination (str, optional): Name of transform gateway. Defaults to None.
 
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
+        # TODO: require a "global" destination here?
         main_ws = workspaces[0]
-        context = self[main_ws].get_transform_context()
+        context = self[main_ws].get_transform_context(destination=destination)
         if len(workspaces) == 1:
             return context
         for other_ws in workspaces[1:]:
             ws = self[other_ws]
-            context.configs[ws.root] = ws._transform_config()
+            context.configs[ws.root] = ws._transform_config(destination=destination)
         return context
 
     @classmethod
@@ -455,7 +470,7 @@ class Workspace:
         """
         bin_path = self.root / ".venv" / "bin" / name
         if must_exist and not bin_path.exists():
-            raise ValueError("Could not find binary %s in %s", name, self.root)
+            raise ValueError(f"Could not find binary {name} in {self.root}")
         return bin_path
 
     def get_script(self, name: str, must_exist: bool = False) -> Path:
@@ -474,7 +489,7 @@ class Workspace:
         """
         script_path = self.root / "scripts" / f"{name}.py"
         if must_exist and not script_path.exists():
-            raise ValueError("Could not find script %s in %s", name, self.root)
+            raise ValueError(f"Could not find script {name} in {self.root}")
         return script_path
 
     @lru_cache(maxsize=1)
@@ -698,29 +713,84 @@ class Workspace:
         return self.get_transform_context().models
 
     @requires_transforms
-    def _transform_config(self) -> sqlmesh.Config:
-        conf = toml.loads((self.root / c.CONFIG_FILE).read_text())
-        if "transforms" not in conf:
+    def _transform_config(self, destination: str | None = None) -> sqlmesh.Config:
+        """Get a sqlmesh config for the workspace.
+
+        Args:
+            destination (str, optional): Name of transform gateway. Defaults to None.
+
+        Returns:
+            sqlmesh.Config: A sqlmesh config.
+        """
+
+        try:
+            if destination is not None:
+                gateway_conf = self.destinations[destination].transform
+            else:
+                gateway_conf = next(
+                    dest.transform for dest in self.destinations.values() if dest.prod
+                )
+        except KeyError:
             raise ValueError(
-                "Workspace has no transforms configuration in the config file"
+                f"Could not find transform gateway {destination} for {self.namespace}."
             )
-        return sqlmesh.Config.parse_obj(conf["transforms"])
+        except StopIteration:
+            raise ValueError(
+                f"Could not find prod transform gateway for {self.namespace}."
+            )
+
+        try:
+            with self.configured():
+                transform_conf = dlt.config["transforms"]
+        except KeyError:
+            transform_conf = {}
+
+        return sqlmesh.Config.parse_obj(
+            {
+                "gateways": {"cdf_managed": {"connection": gateway_conf}},
+                **transform_conf,
+                "default_gateway": "cdf_managed",
+            }
+        )
 
     @lru_cache(maxsize=1)
     @requires_transforms
-    def get_transform_context(self, gateway: str | None = None) -> sqlmesh.Context:
+    def get_transform_context(self, destination: str | None = None) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.
 
         This method loads the sqlmesh config from the workspace config file and returns a
         sqlmesh context. If the workspace has no transforms, it returns None.
+
+        Args:
+            destination (str, optional): Name of transform gateway. Defaults to None.
 
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
         # TODO: add CDFTransformLoader here, will be sick
         return sqlmesh.Context(
-            config=self._transform_config(), paths=[str(self.root)], gateway=gateway
+            config=self._transform_config(destination=destination),
+            paths=[str(self.root)],
         )
+
+    @dataclass
+    class DestinationInfo:
+        prod: bool
+        ingest: dict
+        transform: dict
+
+    @property
+    def destinations(self) -> t.Dict[str, DestinationInfo]:
+        with self.configured():
+            destinations = dlt.config["destinations"]
+            return {
+                k: Workspace.DestinationInfo(
+                    v["prod"],
+                    deep_merge(v.get("common", {}), v.get("ingest", {})),
+                    deep_merge(v.get("common", {}), v.get("transform", {})),
+                )
+                for k, v in destinations.items()
+            }
 
     def raise_on_ff_lock_mismatch(self, config_hash: str) -> None:
         """Raise an error if the FF cache key does not match the lockfile.

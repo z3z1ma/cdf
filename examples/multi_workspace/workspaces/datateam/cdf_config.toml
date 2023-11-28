@@ -1,5 +1,5 @@
 [sources.hackernews]
-keywords = ["openai", "altman", "microsoft"]
+keywords = ["python"]
 start_date = "{{ yesterday() }}"
 end_date = "{{ today() }}"
 daily_load = true
@@ -11,7 +11,10 @@ value = "This is a test {{ today() }}"
 default_gateway = "local"
 model_defaults.dialect = "duckdb"
 
-[transforms.gateways.local.connection]
-type = "duckdb"
-database = "cdf.duckdb"
+[destinations.local]
+prod = true
+ingest.destination = "duckdb"
+ingest.credentials = "duckdb:///cdf.duckdb"
+transform.type = "duckdb"
+transform.database = "cdf.duckdb"
 

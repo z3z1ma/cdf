@@ -32,6 +32,36 @@ def augmented_path(*path: str):
     sys.path = orig_path
 
 
+def deep_merge(lhs: dict, rhs: dict) -> dict:
+    """
+    Deep merges two dictionaries. If a key is present in both dictionaries:
+      - If the values are both dicts, they are merged recursively.
+      - If both are lists, they are concatenated.
+      - Otherwise, the value from dict2 will overwrite the one in dict1.
+
+    Args:
+        lhs: The first dictionary.
+        rhs: The second dictionary.
+
+    Returns:
+        The merged dictionary.
+    """
+    merged = dict(lhs)
+
+    for key, value in rhs.items():
+        if key in merged:
+            if isinstance(merged[key], dict) and isinstance(value, dict):
+                merged[key] = deep_merge(merged[key], value)
+            elif isinstance(merged[key], list) and isinstance(value, list):
+                merged[key] = merged[key] + value
+            else:
+                merged[key] = value
+        else:
+            merged[key] = value
+
+    return merged
+
+
 def load_module_from_path(
     path: Path, execute: bool = True
 ) -> t.Tuple[types.ModuleType, ModuleSpec]:
