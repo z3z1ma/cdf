@@ -27,7 +27,12 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
-transform = typer.Typer(no_args_is_help=True)
+transform = typer.Typer(
+    rich_markup_mode="rich",
+    epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
+    add_completion=False,
+    no_args_is_help=True,
+)
 app.add_typer(transform, name="transform", rich_help_panel="Integrate")
 
 dotenv.load_dotenv()
@@ -291,7 +296,7 @@ def run_pipeline(
     logging.info(info)
 
 
-@transform.callback()
+@transform.callback(invoke_without_command=True)
 def transform_entrypoint(
     ctx: typer.Context,
     workspace: t.Annotated[
@@ -308,6 +313,19 @@ def transform_entrypoint(
     while still allowing us to augment behavior with opinionated defaults.
     """
     project: Project = ctx.obj
+    if ctx.invoked_subcommand is None:
+        if workspace in SQLMESH_COMMANDS:
+            raise typer.BadParameter(
+                f"When running a {workspace} command, you must specify a workspace."
+                f" For example: cdf transform {next(iter(project.keys()))} {workspace}"
+            )
+        elif workspace in project:
+            # invoke help
+            ctx.invoke(transform, ["--help"])
+        else:
+            raise typer.BadParameter(
+                f"Workspace `{workspace}` not found. Available workspaces: {', '.join(project.keys())}"
+            )
     if "." in workspace:
         workspace, destination = _parse_ws_component(workspace)
     else:
@@ -419,7 +437,7 @@ def publish(
             )
         from cdf.core.publisher import Payload
 
-        return runner(Payload(context.fetchdf(runner.query)), **json.loads(opts))
+        return runner(data=Payload(context.fetchdf(runner.query)), **json.loads(opts))
 
 
 @app.command("execute-script", rich_help_panel="Utility")
