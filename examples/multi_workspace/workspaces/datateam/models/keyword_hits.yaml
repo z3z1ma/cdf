@@ -1,4 +1,0 @@
-input: hackernews_v1.keyword_hits
-output: cdf_staging.stg_hackernews_v1__keyword_hits
-prefix: kw_
-predicate: "1 = 1"

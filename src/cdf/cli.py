@@ -420,34 +420,6 @@ def publish(
         return runner(context.fetchdf(runner.query), **json.loads(opts))
 
 
-# TODO: add metadata command?
-# consideration for metadata:
-# we want to export dlt schema data to <workspace>/metadata/<destination>/<catalog>/<table>.yaml ?
-# dlt schema data does not neecessarily correlate to sourrces and resources and they can
-# generate multiple tables or child tables -- metadata is purely related to "tables"
-# Our big blocker here I think is that we need to know up front all of our detinations
-# which in the current world / implementation is a pain in the ass. We should derive some
-# first class support for a "destinations.py" at the top level of a workspace?
-
-
-# Steps may look like this:
-# - ** Add `destinations.py` support **
-# - For a CLI requested detination, export schema data from the `pipeline` object to /metadata/_staging
-# - Mutate into expected location
-# - Run `sqlmesh create_external_models` (from the context) and move the file to /metadata/_staging
-# - Mutate into expected location (unified)
-# - ** At this point, we can manage unified external models/metadata **
-# - SQLMesh metadata consumption
-#   - Override CDFTransformLoader `_load_external_models` to consume from /metadata
-#     - this needs to know the "destination" name? Suppose we can store it since we subclass anyway
-#     - we are brushing up against a larger convergence here, maybe destinations.py can solve for this but its... hard
-# - DLT metadata consumption
-#   - dlt should probably consume interesting user overrides from these yaml files?
-#     but I cannot find the fucking answer on if that disables schema evolution...
-# - ** At this point, components can leverage unified metadata **
-# - Now we should support our custom DSL for "staging" models created via `cdf generate-staging-layer`, sick...
-
-
 @app.command(rich_help_panel="Utility")
 def run(
     ctx: typer.Context,
@@ -511,11 +483,14 @@ def bin_(ctx: typer.Context, executable: str) -> None:
     raise typer.Exit(proc.returncode)
 
 
-@app.command(rich_help_panel="Utility")
+@app.command("fetch-metadata", rich_help_panel="Utility")
 def metadata(ctx: typer.Context, workspace: str) -> None:
     """:floppy_disk: Regenerate workspace metadata.
 
     Data is stored in <workspace>/metadata/<destination>/<catalog>.yaml
+    This is typically followed by cdf transform generate-staging-layer to
+    automatically generate staging layers for each catalog. You can
+    then run cdf transform plan to materialize the staging layers.
 
     \f
     Args:
@@ -569,6 +544,56 @@ def metadata(ctx: typer.Context, workspace: str) -> None:
     for catalog, tables in output.items():
         with meta_path.joinpath(f"{catalog}.yaml").open("w") as f:
             yaml.dump(tables, f)
+
+
+@app.command("generate-staging-layer", rich_help_panel="Utility")
+def generate_staging_layer(
+    ctx: typer.Context,
+    workspace: str,
+) -> None:
+    """:floppy_disk: Generate a staging layer for a catalog.
+
+    After fetching metadata, this will generate a staging layer for each catalog. This is typically
+    followed by cdf transform plan to materialize the staging layers.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        workspace: The workspace to generate staging layers for.
+    """
+    from ruamel import yaml as _yaml
+    from sqlglot import exp, parse_one
+
+    project: Project = ctx.obj
+    ws = project[workspace]
+    context = ws.get_transform_context()
+    for fp in (ws.root / "metadata").iterdir():
+        with fp.open() as fd:
+            meta = _yaml.YAML(typ="safe").load(fd)
+        for table_, meta in meta.items():
+            table = f"cdf_staging.stg_{fp.stem}__{table_}"
+            if table in context.models:
+                logger.debug("Skipping %s, already exists", table)
+                continue
+            logger.info("Generating %s", table)
+            table = parse_one(table, into=exp.Table)
+            p = ws.transform_path / "staging" / table.db / f"{table.name}.yaml"
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with p.open("w") as f:
+                _yaml.YAML().dump(
+                    {
+                        "input": f"{table.db}.{table.name}",
+                        "prefix": "",
+                        "suffix": "",
+                        "excludes": [],
+                        "exclude_patterns": [],
+                        "includes": [],
+                        "include_patterns": [],
+                        "predicate": "",
+                        "computed_columns": [],
+                    },
+                    f,
+                )
 
 
 def _parse_ws_component(component: str) -> t.Tuple[str, str]:

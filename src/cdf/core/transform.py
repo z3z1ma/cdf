@@ -18,7 +18,6 @@ YAML = yaml.YAML(typ="safe")
 @dataclass
 class CDFStagingSpec:
     input: str
-    output: str | None = None
     prefix: str = ""
     suffix: str = ""
     excludes: t.List[str] = field(default_factory=list)
@@ -81,8 +80,7 @@ class CDFTransformLoader(SqlMeshLoader):
 
                 select.add_comments([f"Source: {path.relative_to(self._context.path)}"])
                 model = create_sql_model(
-                    spec.output
-                    or f"cdf_staging.stg_{input_table.db}__{input_table.name}",
+                    f"cdf_staging.stg_{input_table.db}__{input_table.name}",
                     select,
                     path=path.absolute(),
                     module_path=context_path,
