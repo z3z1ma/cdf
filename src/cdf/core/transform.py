@@ -1,14 +1,32 @@
-import itertools
 import os
+import re
+import typing as t
+from dataclasses import dataclass, field
 
 import sqlmesh.core.constants as sqlmesh_constants
-from sqlglot import parse_one
+from ruamel import yaml
+from sqlglot import exp, parse_one
 from sqlmesh.core.loader import SqlMeshLoader
 from sqlmesh.core.macros import MacroRegistry
 from sqlmesh.core.model import Model, create_sql_model
 from sqlmesh.utils import UniqueKeyDict
 from sqlmesh.utils.jinja import JinjaMacroRegistry
-from sqlmesh.utils.yaml import YAML
+
+YAML = yaml.YAML(typ="safe")
+
+
+@dataclass
+class CDFStagingSpec:
+    input: str
+    output: str | None = None
+    prefix: str = ""
+    suffix: str = ""
+    excludes: t.List[str] = field(default_factory=list)
+    exclude_patterns: t.List[str] = field(default_factory=list)
+    includes: t.List[str] = field(default_factory=list)
+    include_patterns: t.List[str] = field(default_factory=list)
+    predicate: str = ""
+    computed_columns: t.List[str] = field(default_factory=list)
 
 
 class CDFTransformLoader(SqlMeshLoader):
@@ -16,56 +34,59 @@ class CDFTransformLoader(SqlMeshLoader):
         self, macros: MacroRegistry, jinja_macros: JinjaMacroRegistry
     ) -> UniqueKeyDict[str, Model]:
         models = super()._load_models(macros, jinja_macros)
-        # inject YAML based models
+
         for context_path, config in self._context.configs.items():
-            for path in itertools.chain(
-                *[
-                    self._glob_paths(
-                        context_path / sqlmesh_constants.MODELS,
-                        config=config,
-                        extension=ext,
-                    )
-                    for ext in (".yml", ".yaml")
-                ]
+            for path in self._glob_paths(
+                context_path / sqlmesh_constants.MODELS,
+                config=config,
+                extension=".yaml",
             ):
                 if not os.path.getsize(path):
                     continue
                 self._track_file(path)
-                with open(path, "r", encoding="utf-8") as file:
-                    spec = YAML().load(file.read())
+                with path.open() as f:
+                    spec = CDFStagingSpec(**YAML.load(f))
 
-                # DSL
-                # extends the idea of a centralized DRY metadata layer and is founded upon
-                # the notion that a staging model is 99% of the time a copy of a source model
-                # with some rules applied to it such as filtering, renaming, etc.
-                # Most of these rules are repetitive and can be expressed in a declarative way
-                # using a simple DSL to drastically reduce repreated code and improve
-                # maintainability whilst still having the benefits of a staging layer of views.
-                #
-                # Case-in-point may be a Salesforce Opp table with 300+ fields, but all we
-                # need to do is apply a few rules like prefixing, filtering deleted, adding
-                # a few convenience columns, and excluding a few fields.
-                # We can convert probably 350 lines of code into 10 lines of DSL.
-                #
-                # link: 'metadata/salesforce/opportunity.yml'
-                # prefix: opportunity_
-                # exclude: [acv_temp_c, arr_cd_legacy_c]
-                # predicate: is_deleted = false
-                # add_columns:
-                #  - case when is_closed = true then 'closed' else 'open' end as status
-                #  - current_date() as load_date
+                input_table = parse_one(spec.input, into=exp.Table)
+                meta_path = context_path / "metadata" / f"{input_table.db}.yaml"
 
-                # NOTE: these dsl files can be autoscaffolded by cdf generate-staging but we should
-                # ensure we check if a model already exists for a given source table with our
-                # opinionated (configurable?) naming convention (stg_<source_name>__<table_name>) and
-                # if so, we should not overwrite because it indicates that the user has opted for more customization
+                if not meta_path.exists():
+                    raise Exception(
+                        f"Metadata file not found: {meta_path}, run cdf metadata"
+                    )
 
+                with meta_path.open() as f:
+                    meta = YAML.load(f)
+
+                base_projection = [
+                    exp.column(c).as_(f"{spec.prefix}{c}{spec.suffix}")
+                    for c in meta[input_table.name]["columns"]
+                    if c not in spec.excludes
+                    and not any(re.match(p, c) for p in spec.exclude_patterns)
+                    and (not spec.includes or c in spec.includes)
+                    and (
+                        not spec.include_patterns
+                        or any(re.match(p, c) for p in spec.include_patterns)
+                    )
+                ]
+                projection = [
+                    *base_projection,
+                    *[parse_one(c) for c in spec.computed_columns],
+                ]
+                select = exp.select(*projection).from_(input_table)
+                if spec.predicate:
+                    select = select.where(spec.predicate)
+
+                # TODO: get audits + grain ascertained from dlt
+
+                select.add_comments([f"Source: {path.relative_to(self._context.path)}"])
                 model = create_sql_model(
-                    spec["name"],
-                    parse_one("SELECT 1"),
+                    spec.output
+                    or f"cdf_staging.stg_{input_table.db}__{input_table.name}",
+                    select,
                     path=path.absolute(),
                     module_path=context_path,
-                    dialect="default",
+                    dialect=config.dialect,
                     macros=macros,
                     jinja_macros=jinja_macros,
                     physical_schema_override=config.physical_schema_override,

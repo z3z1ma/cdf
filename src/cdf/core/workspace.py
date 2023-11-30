@@ -20,6 +20,7 @@ import cdf.core.logger as logger
 from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
 from cdf.core.publisher import publisher_spec
 from cdf.core.source import CDFSource, pipeline_spec
+from cdf.core.transform import CDFTransformLoader
 from cdf.core.utils import deep_merge, load_module_from_path
 
 _IMPORT_LOCK = Lock()
@@ -761,10 +762,10 @@ class Workspace:
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
-        # TODO: add CDFTransformLoader here, will be sick
         return sqlmesh.Context(
             config=self._transform_config(sink=sink),
             paths=[str(self.root)],
+            loader=CDFTransformLoader,
         )
 
     @dataclass

@@ -541,7 +541,7 @@ def metadata(ctx: typer.Context, workspace: str) -> None:
         output = {}
         for entry in meta:
             table = parse_one(entry["name"], into=exp.Table)
-            catalog = output.setdefault(table.catalog, {})
+            catalog = output.setdefault(table.db, {})
             columns = [{"data_type": c} for c in entry["columns"]]
             entry["columns"] = columns
             catalog[table.name] = entry
