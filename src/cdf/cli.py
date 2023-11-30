@@ -132,27 +132,38 @@ def docs(ctx: typer.Context) -> None:
         docs_path.mkdir()
     md_doc = "# CDF Project\n\n"
     for _, workspace in project:
-        md_doc += f"## {workspace.namespace.title()} Space\n\n"
+        md_doc += f"## ✨ {workspace.namespace.title()} Space\n\n"
         if workspace.has_dependencies:
-            md_doc += "### Dependencies\n\n"
+            md_doc += "### 🧱 Dependencies\n\n"
             deps = subprocess.check_output([workspace.pip_path, "freeze"], text=True)
             for dep in deps.splitlines():
                 md_doc += f"- `{dep}`\n"
             md_doc += "\n"
         if workspace.has_pipelines:
-            md_doc += "### Pipelines\n\n"
+            md_doc += "### 🚚 Pipelines\n\n"
             for name, meta in workspace.pipelines.items():
-                md_doc += f"### {name}\n\n"
+                md_doc += f"#### {name}\n\n"
                 md_doc += f"**Description**: {meta.description}\n\n"
                 md_doc += f"**Owners**: {meta.owners}\n\n"
                 md_doc += f"**Tags**: {', '.join(meta.tags)}\n\n"
                 md_doc += f"**Cron**: {meta.cron or 'Not Scheduled'}\n\n"
-                md_doc += f"**Metrics**: {meta.metrics}\n\n"
             md_doc += "\n"
         if workspace.has_transforms:
-            md_doc += "### Transforms\n\n"
+            md_doc += "### 🔄 Transforms\n\n"
+            for name, meta in workspace.transforms.items():
+                md_doc += f"#### {name}\n\n"
+                md_doc += f"**Description**: {meta.description}\n\n"
+                md_doc += f"**Owner**: {meta.owner}\n\n"
+                md_doc += f"**Tags**: {', '.join(meta.tags)}\n\n"
+                md_doc += f"**Cron**: {meta.cron or 'Not Scheduled'}\n\n"
         if workspace.has_publishers:
-            md_doc += "### Publishers\n\n"
+            md_doc += "### 🖋️ Publishers\n\n"
+            for name, meta in workspace.publishers.items():
+                md_doc += f"#### {name}\n\n"
+                md_doc += f"**Description**: {meta.description}\n\n"
+                md_doc += f"**Owners**: {meta.owners}\n\n"
+                md_doc += f"**Tags**: {', '.join(meta.tags)}\n\n"
+                md_doc += f"**Cron**: {meta.cron or 'Not Scheduled'}\n\n"
     rich.print(md_doc)
 
 
@@ -369,7 +380,6 @@ SQLMESH_COMMANDS = (
     "ui",
     "migrate",
     "rollback",
-    "create_external_models",
     "create_test",
     "table_diff",
     "rewrite",
