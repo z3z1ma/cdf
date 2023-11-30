@@ -128,11 +128,21 @@ def keyword_hits(
             batch_end_date += time_delta
 
 
+if t.TYPE_CHECKING:
+    from cdf import PipeGen
+
+
+def get_rust_stuff() -> "PipeGen":
+    source = hn_search(keywords=["rust"])
+    pipeline = yield source
+    return pipeline.run(source)
+
+
 # This is the only addition required to an existing dlt source file to get the benefits of cdf
-__CDF_SOURCE__ = {
-    "hackernews": {
-        # factory must be resolvable via cdf config, kwargs should be set to dlt.config.value or populated with defaults / via closure
-        "factory": hn_search,
+__CDF_PIPELINES__ = [
+    {
+        "pipeline_name": "hackernews",
+        "pipeline_gen": get_rust_stuff,
         "version": 1,
         "owners": ("qa-team"),
         "description": "Extracts hackernews data from an API.",
@@ -143,14 +153,15 @@ __CDF_SOURCE__ = {
             }
         },
     }
-}
+]
 
 # Also worth metioning, above is exactly the same as:
-from cdf import export_sources, source_spec
+from cdf import export_pipelines, pipeline_spec  # noqa
 
-export_sources(
-    hackernews_2=source_spec(
-        factory=hn_search,
+export_pipelines(
+    pipeline_spec(
+        "hackernews_2",
+        pipeline_gen=get_rust_stuff,
         version=2,
         owners=("qa-team"),
         description="Extracts hackernews data from an API.",

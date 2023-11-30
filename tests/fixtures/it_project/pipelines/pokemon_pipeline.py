@@ -4,6 +4,8 @@ Available resources:
     fruits
     vegetables
 """
+import typing as t
+
 # this is injected by cdf through the workspace requirements.txt
 import simple_salesforce
 
@@ -12,16 +14,27 @@ import simple_salesforce
 import sklearn
 
 # regular source
-from sources.pokemon import source
+from pipelines.pokemon import source
 
-from cdf import source_spec
+from cdf import pipeline_spec
 
-__CDF_SOURCE__ = {
-    "pokemon": source_spec(
-        factory=source,
+if t.TYPE_CHECKING:
+    from cdf import PipeGen
+
+
+def get_some_pokemon() -> "PipeGen":
+    poke = source()
+    pipeline = yield poke
+    return pipeline.run(poke)
+
+
+__CDF_PIPELINES__ = [
+    pipeline_spec(
+        pipeline_name="pokemon",
+        pipeline_gen=get_some_pokemon,
         version=1,
         owners=("qa-team"),
         description="Extracts pokemon data from an API.",
         tags=("live", "simple", "test"),
     )
-}
+]

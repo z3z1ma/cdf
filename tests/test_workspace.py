@@ -17,7 +17,7 @@ def test_load_sources():
     assert ws.has_sources
     assert ws.has_dependencies
 
-    sources = ws.sources
+    sources = ws.pipelines
 
     # Ensure we can load all sources
     assert len(sources) == 3
@@ -32,7 +32,7 @@ def test_load_project():
     proj = Project.find_nearest(path=Path("examples/multi_workspace"))
     assert proj is not None
 
-    sources = proj.datateam.sources
+    sources = proj.datateam.pipelines
     assert len(sources) > 0
 
     _ = sources["hackernews"]

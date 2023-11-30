@@ -19,6 +19,7 @@ class _Runner(t.Protocol):
 
 @dataclass
 class publisher_spec:
+    publisher_name: str
     runner: _Runner
     from_model: str
     mapping: t.Dict[str, str]
@@ -64,4 +65,4 @@ def export_publishers(
         if frame is not None:
             scope = frame.f_globals
 
-    (scope or globals()).setdefault(c.CDF_PUBLISHER, {}).update(publishers)
+    (scope or globals()).setdefault(c.CDF_PUBLISHERS, {}).update(publishers)

@@ -11,7 +11,7 @@ value = "This is a test {{ today() }}"
 default_gateway = "local"
 model_defaults.dialect = "duckdb"
 
-[destinations.local]
+[sinks.local]
 prod = true
 ingest.destination = "duckdb"
 ingest.credentials = "duckdb:///cdf.duckdb"

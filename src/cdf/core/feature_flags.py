@@ -377,7 +377,7 @@ def get_or_create_flag_local(
 
     for path in (
         workspace.root,
-        workspace.root / c.SOURCES_PATH,
+        workspace.root / c.PIPELINES_PATH,
     ):
         logger.debug("Searching for flags in %s", path)
         flags = {}

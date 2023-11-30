@@ -36,12 +36,12 @@ in conjunction with a simple interface and opinionated design.
 
 ### Integrating a source
 
-In order to integrate a source into cdf, you must export a `__CDF_SOURCE__` variable which contains a dictionary of
+In order to integrate a source into cdf, you must export a `__CDF_PIPELINES__` variable which contains a dictionary of
 component names to metadata. A component name is a string by which the component can be referenced in the CLI. There are
 two ways to do this outlined below.
 ```python
 # This is the only addition required to an existing dlt source file to get the benefits of cdf
-__CDF_SOURCE__ = {
+__CDF_PIPELINES__ = {
     "hackernews": {
         # factory must be resolvable via cdf config, kwargs should be set to dlt.config.value or populated with defaults / via closure
         "factory": hn_search,
@@ -168,7 +168,7 @@ print(source.runtime_metrics)
 
 Sources are the entrypoint to the data pipeline. They are responsible for pulling data from external systems and loading
 it into a staging area. Sources are defined in the `sources` directory of a `cdf` project. Each source must export a
-`__CDF_SOURCE__` variable which contains a dictionary of source names to `CDFSourceWrapper` objects.
+`__CDF_PIPELINES__` variable which contains a dictionary of source names to `CDFSourceWrapper` objects.
 
 **CDFSourceWrapper**
 

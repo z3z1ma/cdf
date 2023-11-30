@@ -1,12 +1,13 @@
 from functools import partial
 
-from sources.chess import source
+from pipelines.chess import source
 
-from cdf import source_spec
+from cdf import pipeline_spec
 
-__CDF_SOURCE__ = {
-    "chess_player_data_discrete": source_spec(
-        factory=partial(
+__CDF_PIPELINES__ = [
+    pipeline_spec(
+        "chess_player_data_discrete",
+        pipeline_gen=partial(
             source,
             ["magnuscarlsen", "vincentkeymer", "dommarajugukesh", "rpragchess"],
             start_month="2022/11",
@@ -17,8 +18,9 @@ __CDF_SOURCE__ = {
         description="A source that extracts chess player data from a discrete period.",
         tags=("api", "live", "test"),
     ),
-    "chess_player_data": source_spec(
-        factory=partial(
+    pipeline_spec(
+        "chess_player_data",
+        pipeline_gen=partial(
             source,
             ["magnuscarlsen", "vincentkeymer", "dommarajugukesh", "rpragchess"],
         ),
@@ -27,4 +29,4 @@ __CDF_SOURCE__ = {
         description="A source that extracts chess player data.",
         tags=("api", "live", "test"),
     ),
-}
+]

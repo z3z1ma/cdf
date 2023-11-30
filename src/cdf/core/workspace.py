@@ -19,7 +19,7 @@ import cdf.core.constants as c
 import cdf.core.logger as logger
 from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
 from cdf.core.publisher import publisher_spec
-from cdf.core.source import CDFSource, source_spec
+from cdf.core.source import CDFSource, pipeline_spec
 from cdf.core.utils import deep_merge, load_module_from_path
 
 _IMPORT_LOCK = Lock()
@@ -97,25 +97,25 @@ class Project:
         return set(self._workspaces.keys())
 
     def get_transform_context(
-        self, workspaces: t.Sequence[str], destination: str | None = None
+        self, workspaces: t.Sequence[str], sink: str | None = None
     ) -> sqlmesh.Context:
         """Get a sqlmesh context for a list of workspaces.
 
         Args:
             workspaces (t.Tuple[str, ...]): List of workspace namespaces.
-            destination (str, optional): Name of transform gateway. Defaults to None.
+            sink (str, optional): Name of transform gateway. Defaults to None.
 
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
-        # TODO: require a "global" destination here?
+        # TODO: require a "global" sink here?
         main_ws = workspaces[0]
-        context = self[main_ws].get_transform_context(destination=destination)
+        context = self[main_ws].get_transform_context(sink=sink)
         if len(workspaces) == 1:
             return context
         for other_ws in workspaces[1:]:
             ws = self[other_ws]
-            context.configs[ws.root] = ws._transform_config(destination=destination)
+            context.configs[ws.root] = ws._transform_config(sink=sink)
         return context
 
     @classmethod
@@ -205,27 +205,27 @@ class Project:
 class WorkspaceCapabilities(t.TypedDict):
     """A dict which describes the capabilties available within a workspace"""
 
-    ingest: bool
+    pipeline: bool
     publish: bool
     transform: bool
-    deps: bool
+    dependency: bool
 
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
 
 
-def requires_sources(func: t.Callable[P, T]) -> t.Callable[P, T]:
-    """Decorator to ensure that a workspace has sources.
+def requires_pipelines(func: t.Callable[P, T]) -> t.Callable[P, T]:
+    """Decorator to ensure that a workspace has pipelines.
 
     Raises:
-        ValueError if workspace has no sources.
+        ValueError if workspace has no pipelines.
     """
 
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         self = t.cast("Workspace", args[0])
-        if not self.has_sources:
-            raise ValueError(f"Workspace {self.root} has no sources")
+        if not self.has_pipelines:
+            raise ValueError(f"Workspace {self.root} has no pipelines")
         return func(*args, **kwargs)
 
     return wrapper
@@ -280,11 +280,11 @@ def requires_dependencies(func: t.Callable[P, T]) -> t.Callable[P, T]:
 
 
 class Workspace:
-    """A workspace encapsulates a directory containing sources, publishers, metadata, and transforms.
+    """A workspace encapsulates a directory containing pipelines, publishers, metadata, and transforms.
 
     We can think of a Workspace as a pathlib.Path with some additional functionality. A Workspace
     has capabilities based on the presence of certain directories. For example, if a workspace has
-    a `sources` directory, we can say that the workspace has the capability to ingest data. If a
+    a `pipelines` directory, we can say that the workspace has the capability to ingest data. If a
     workspace has a `publishers` directory, we can say that the workspace has the capability to
     publish data. If a workspace has a `transforms` directory, we can say that the workspace has
     the capability to transform data. A workspace may have any combination of these capabilities.
@@ -296,7 +296,7 @@ class Workspace:
         ".git",
         c.CONFIG_FILE,
         c.SECRETS_FILE,
-        c.SOURCES_PATH,
+        c.PIPELINES_PATH,
         c.TRANSFORMS_PATH,
         c.PUBLISHERS_PATH,
     ]
@@ -319,11 +319,11 @@ class Workspace:
             raise ValueError(
                 f"Tried to init Workspace with nonexistent path {self.root}"
             )
-        self._source_paths = None
+        self._pipeline_paths = None
         self._publisher_paths = None
         self._requirements = None
         self._did_inject_config_providers = False
-        self._sources = {}
+        self._pipelines = {}
         self._publishers = {}
         if load_dotenv:
             dotenv.load_dotenv(self.root / ".env")
@@ -337,9 +337,9 @@ class Workspace:
         return self._root
 
     @property
-    def has_sources(self) -> bool:
-        """True if workspace has sources."""
-        return len(self.source_paths) > 0
+    def has_pipelines(self) -> bool:
+        """True if workspace has pipelines."""
+        return len(self.pipeline_paths) > 0
 
     @property
     def has_publishers(self) -> bool:
@@ -360,18 +360,18 @@ class Workspace:
     def capabilities(self) -> WorkspaceCapabilities:
         """Get the capabilities for the workspace"""
         return {
-            "ingest": self.has_sources,
+            "pipeline": self.has_pipelines,
             "transform": self.has_transforms,
             "publish": self.has_publishers,
-            "deps": self.has_dependencies,
+            "dependency": self.has_dependencies,
         }
 
     @property
-    def source_paths(self) -> t.List[Path]:
-        """List of paths to source modules."""
-        if self._source_paths is None:
-            self._source_paths = self._get_source_paths()
-        return self._source_paths
+    def pipeline_paths(self) -> t.List[Path]:
+        """List of paths to pipeline modules."""
+        if self._pipeline_paths is None:
+            self._pipeline_paths = self._get_pipeline_paths()
+        return self._pipeline_paths
 
     @property
     def publisher_paths(self) -> t.List[Path]:
@@ -427,16 +427,16 @@ class Workspace:
             return Path(sys.executable).parent / "pip"
         return self.root / ".venv" / "bin" / "pip"
 
-    def _get_source_paths(self) -> t.List[Path]:
-        """List of paths to source modules.
+    def _get_pipeline_paths(self) -> t.List[Path]:
+        """List of paths to pipeline modules.
 
         Returns:
-            List of paths to source modules.
+            List of paths to pipeline modules.
         """
         return [
             path
             for path in self.root.joinpath(
-                c.SOURCES_PATH,
+                c.PIPELINES_PATH,
             ).glob("*.py")
         ]
 
@@ -661,27 +661,24 @@ class Workspace:
         return cls(path)
 
     @property
-    @requires_sources
-    def sources(self) -> t.Dict[str, source_spec]:
-        """Load sources from workspace."""
-        if not self._sources:
+    @requires_pipelines
+    def pipelines(self) -> t.Dict[str, pipeline_spec]:
+        """Load pipelines from workspace."""
+        if not self._pipelines:
             with (
                 _IMPORT_LOCK,
                 self.overlay(),
             ):
-                for path in self.source_paths:
+                for path in self.pipeline_paths:
                     mod, _ = load_module_from_path(path)
-                    self._sources.update(
-                        {
-                            component_name: source_spec(**meta)
-                            if isinstance(meta, dict)
-                            else meta
-                            for component_name, meta in getattr(
-                                mod, c.CDF_SOURCE, {}
-                            ).items()
-                        }
-                    )
-        return self._sources
+                    for spec in getattr(mod, c.CDF_PIPELINES, []):
+                        if isinstance(spec, dict):
+                            spec = pipeline_spec(**spec)
+                        assert isinstance(
+                            spec, pipeline_spec
+                        ), f"{spec} is not a pipeline"
+                        self._pipelines[spec.pipeline_name] = spec
+        return self._pipelines
 
     @property
     @requires_publishers
@@ -694,16 +691,13 @@ class Workspace:
             ):
                 for path in self.publisher_paths:
                     mod, _ = load_module_from_path(path)
-                    self._publishers.update(
-                        {
-                            component_name: publisher_spec(**meta)
-                            if isinstance(meta, dict)
-                            else meta
-                            for component_name, meta in getattr(
-                                mod, c.CDF_PUBLISHER, {}
-                            ).items()
-                        }
-                    )
+                    for spec in getattr(mod, c.CDF_PUBLISHERS, []):
+                        if isinstance(spec, dict):
+                            spec = publisher_spec(**spec)
+                        assert isinstance(
+                            spec, publisher_spec
+                        ), f"{spec} is not a publisher"
+                        self._publishers[spec.publisher_name] = spec
         return self._publishers
 
     @property
@@ -713,26 +707,26 @@ class Workspace:
         return self.get_transform_context().models
 
     @requires_transforms
-    def _transform_config(self, destination: str | None = None) -> sqlmesh.Config:
+    def _transform_config(self, sink: str | None = None) -> sqlmesh.Config:
         """Get a sqlmesh config for the workspace.
 
         Args:
-            destination (str, optional): Name of transform gateway. Defaults to None.
+            sink (str, optional): Name of transform gateway. Defaults to None.
 
         Returns:
             sqlmesh.Config: A sqlmesh config.
         """
 
         try:
-            if destination is not None:
-                gateway_conf = self.destinations[destination].transform
+            if sink is not None:
+                gateway_conf = self.sinks[sink].transform
             else:
                 gateway_conf = next(
-                    dest.transform for dest in self.destinations.values() if dest.prod
+                    _sink.transform for _sink in self.sinks.values() if _sink.prod
                 )
         except KeyError:
             raise ValueError(
-                f"Could not find transform gateway {destination} for {self.namespace}."
+                f"Could not find transform gateway {sink} for {self.namespace}."
             )
         except StopIteration:
             raise ValueError(
@@ -755,42 +749,75 @@ class Workspace:
 
     @lru_cache(maxsize=1)
     @requires_transforms
-    def get_transform_context(self, destination: str | None = None) -> sqlmesh.Context:
+    def get_transform_context(self, sink: str | None = None) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.
 
         This method loads the sqlmesh config from the workspace config file and returns a
         sqlmesh context. If the workspace has no transforms, it returns None.
 
         Args:
-            destination (str, optional): Name of transform gateway. Defaults to None.
+            sink (str, optional): Name of transform gateway. Defaults to None.
 
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
         # TODO: add CDFTransformLoader here, will be sick
         return sqlmesh.Context(
-            config=self._transform_config(destination=destination),
+            config=self._transform_config(sink=sink),
             paths=[str(self.root)],
         )
 
     @dataclass
-    class DestinationInfo:
+    class SinkInfo:
         prod: bool
+        """There should be only 1 prod sink per workspace.
+
+        The prod sink is used for the `cdf metadata` command.
+        """
         ingest: dict
+        """These are kwargs passed directly to dlt.pipeline in order to configure the sink."""
         transform: dict
+        """There are kwargs passed directly to sqlmesh gateway in order to configure the sink."""
+
+    DEFAULT_SINK = SinkInfo(
+        False,
+        {"destination": "duckdb", "credentials": "duckdb:///cdf.duckdb"},
+        {"type": "duckdb", "database": "cdf.duckdb"},
+    )
 
     @property
-    def destinations(self) -> t.Dict[str, DestinationInfo]:
+    def sinks(self) -> t.Dict[str, SinkInfo]:
         with self.configured():
-            destinations = dlt.config["destinations"]
-            return {
-                k: Workspace.DestinationInfo(
+            try:
+                user_sinks = dlt.config["sinks"]
+            except KeyError:
+                user_sinks = {}
+            sinks = {
+                k: Workspace.SinkInfo(
                     v["prod"],
                     deep_merge(v.get("common", {}), v.get("ingest", {})),
                     deep_merge(v.get("common", {}), v.get("transform", {})),
                 )
-                for k, v in destinations.items()
+                for k, v in user_sinks.items()
             }
+            sinks["default"] = Workspace.DEFAULT_SINK
+            sinks[None] = Workspace.DEFAULT_SINK
+            return sinks
+
+    @property
+    def prod_sink(self) -> t.Tuple[str, SinkInfo]:
+        """Get the prod sink for the workspace.
+
+        Raises:
+            ValueError if workspace has no prod sink.
+
+        Returns:
+            Tuple[str, SinkInfo]: A tuple of the prod sink name and the SinkInfo.
+        """
+        for name, info in self.sinks.items():
+            if info.prod:
+                return name, info
+        raise ValueError(f"Workspace {self.root} has no prod sink")
 
     def raise_on_ff_lock_mismatch(self, config_hash: str) -> None:
         """Raise an error if the FF cache key does not match the lockfile.
@@ -816,24 +843,24 @@ class Workspace:
             )
 
     @contextmanager
-    @requires_sources
-    def runtime_source(
-        self, source_name: str, *args, **kwargs
-    ) -> t.Iterator[CDFSource]:
+    @requires_pipelines
+    def runtime_source(self, pipeline_name: str, **kwargs) -> t.Iterator[CDFSource]:
         """Get a runtime source from the workspace.
 
-        A runtime source is a source that has been instantiated with its config, dependencies, and
-        feature flags applied.
+        A runtime source is a the quivalent to the source cdf would generate itself in a typical
+        pipeline execution. The source is pulled out from the pipeline generator.
 
         Args:
-            source_name (str): Name of source to get.
-            *args: Positional args to pass to source constructor.
-            **kwargs: Keyword args to pass to source constructor.
+            pipeline_name (str): Name of source to get.
+            **kwargs: Keyword args to pass to pipeline function if it is a callable.
         """
         with self.overlay():
-            source = self.sources[source_name](*args, **kwargs)
+            ctx = self.pipelines[pipeline_name].unwrap(**kwargs)
+            source = next(ctx)
             feature_flags, meta = get_or_create_flag_dispatch(
-                None, source, workspace=self
+                None,
+                source=source,
+                workspace=self,
             )
             if config_hash := meta.get("config_hash"):
                 self.raise_on_ff_lock_mismatch(config_hash)
@@ -847,16 +874,17 @@ class Workspace:
         with with_config_providers_from_workspace(workspace=self):
             yield
 
-    def __getitem__(self, name: str) -> source_spec:
-        """Get a source from the workspace."""
-        return self.sources[name]
+    # TODO: the two methods below should return a union component type of a pipeline/publisher/transform
+    def __getitem__(self, name: str) -> pipeline_spec:
+        """Get a pipeline from the workspace."""
+        return self.pipelines[name]
 
-    def __getattr__(self, name: str) -> source_spec:
-        """Get a source from the workspace."""
+    def __getattr__(self, name: str) -> pipeline_spec:
+        """Get a pipeline from the workspace."""
         try:
-            return self.sources[name]
+            return self.pipelines[name]
         except KeyError:
-            raise AttributeError(f"Workspace has no source {name}")
+            raise AttributeError(f"Workspace has no pipeline {name}")
 
     def __repr__(self) -> str:
         return f"Workspace(root='{self._root.relative_to(Path.cwd())}', capabilities={self.capabilities})"

@@ -1,8 +1,8 @@
 """Constants for the CDF module."""
 
 # The main export symbols for CDF modules
-CDF_SOURCE = "__CDF_SOURCE__"
-CDF_PUBLISHER = "__CDF_PUBLISHER__"
+CDF_PIPELINES = "__CDF_PIPELINES__"
+CDF_PUBLISHERS = "__CDF_PUBLISHERS__"
 
 # Core files
 WORKSPACE_FILE = "cdf_workspace.toml"
@@ -22,7 +22,7 @@ FLAG_FILES = [
 DEFAULT_WORKSPACE = "default"
 
 # Paths relative to a root which constitute the layout of a CDF workspace
-SOURCES_PATH = "./sources"
+PIPELINES_PATH = "./pipelines"
 TRANSFORMS_PATH = "./models"
 PUBLISHERS_PATH = "./publishers"
 LOCKFILE_PATH = "./cdf.lock"

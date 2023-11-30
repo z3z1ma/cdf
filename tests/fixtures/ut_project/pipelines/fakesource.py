@@ -3,7 +3,7 @@ import sys
 
 import dlt
 
-from cdf import export_sources, source_spec
+from cdf import export_pipelines, pipeline_spec
 
 
 @dlt.resource
@@ -23,9 +23,10 @@ def node_info():
     return osrandom(), sys_vers()
 
 
-export_sources(
-    node_info=source_spec(
-        factory=node_info,
+export_pipelines(
+    pipeline_spec(
+        pipeline_name="node_info",
+        pipeline_gen=node_info,
         version=1,
         owners=("qa-team"),
         description="A source that emits random data.",

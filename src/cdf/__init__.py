@@ -3,7 +3,13 @@ from dlt.common.configuration import with_config as with_config
 
 import cdf.core.logger as logger
 from cdf.core.publisher import export_publishers, publisher_spec
-from cdf.core.source import CDFResource, CDFSource, export_sources, source_spec
+from cdf.core.source import (
+    CDFResource,
+    CDFSource,
+    PipeGen,
+    export_pipelines,
+    pipeline_spec,
+)
 from cdf.core.workspace import Project, Workspace
 
 __all__ = [
@@ -11,8 +17,9 @@ __all__ = [
     "CDFResource",
     "Project",
     "Workspace",
-    "source_spec",
-    "export_sources",
+    "pipeline_spec",
+    "export_pipelines",
+    "PipeGen",
     "publisher_spec",
     "export_publishers",
     "logger",

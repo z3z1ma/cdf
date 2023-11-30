@@ -8,8 +8,9 @@ def post(value: str = dlt.config.value) -> None:
     print(r.json())
 
 
-__CDF_PUBLISHER__ = {
-    "httpbin": {
+__CDF_PUBLISHERS__ = [
+    {
+        "publisher_name": "httpbin",
         "runner": post,
         "from_model": "hackernews_v1.keyword_hits",
         "mapping": {"author": "Author"},
@@ -20,4 +21,4 @@ __CDF_PUBLISHER__ = {
         "cron": None,
         "enabled": True,
     }
-}
+]
