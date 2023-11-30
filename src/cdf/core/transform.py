@@ -96,7 +96,9 @@ class CDFTransformLoader(SqlMeshLoader):
                 parent_model = create_external_model(
                     name=spec.input,
                     columns={
-                        c["name"]: exp.DataType.build(c["data_type"])
+                        c["name"]: exp.DataType.build(
+                            c["data_type"] if c["data_type"] != "complex" else "json"
+                        )
                         for c in meta[input_table.name]["columns"].values()
                     },
                     dialect=config.model_defaults.dialect,

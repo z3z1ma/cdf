@@ -6,4 +6,6 @@ exclude_patterns: []
 includes: []
 include_patterns: []
 predicate: ''
-computed_columns: []
+computed_columns:
+  - |
+    'Rust: ' || title AS norm_title
