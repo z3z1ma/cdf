@@ -10,10 +10,14 @@ if t.TYPE_CHECKING:
     import pandas as pd
 
 
+class Payload(t.NamedTuple):
+    payload: "pd.DataFrame"
+
+
 class _Runner(t.Protocol):
     __wrapped__: t.Callable[..., None]
 
-    def __call__(self, data: "pd.DataFrame", **kwargs) -> None:
+    def __call__(self, data: Payload, **kwargs) -> None:
         ...
 
 
@@ -43,7 +47,7 @@ class publisher_spec:
         )
         self.runner.__wrapped__ = runner
 
-    def __call__(self, data: "pd.DataFrame", **kwargs) -> None:
+    def __call__(self, data: Payload, **kwargs) -> None:
         self.runner(data, **kwargs)
 
 

@@ -2,7 +2,8 @@ import dlt
 import requests
 
 
-def post(value: str = dlt.config.value) -> None:
+def post(data, value: str = dlt.config.value) -> None:
+    print(data.payload)
     r = requests.post("https://httpbin.org/post", data={"key": value})
     r.raise_for_status()
     print(r.json())

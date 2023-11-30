@@ -250,16 +250,16 @@ def head(
             num -= 1
 
 
-@app.command(rich_help_panel="Integrate")
-def ingest(
+@app.command("pipeline", rich_help_panel="Integrate")
+def run_pipeline(
     ctx: typer.Context,
     pipeline: t.Annotated[
         str, typer.Argument(help="The <workspace>.<pipeline> to ingest.")
     ],
+    sink: t.Annotated[str, typer.Option(..., "-s", "--sink")] = "default",
     opts: str = typer.Argument(
         "{}", help="JSON formatted options to forward to the pipeline."
     ),
-    sink: t.Annotated[str, typer.Option(..., "-s", "--sink")] = "default",
     resources: t.List[str] = typer.Option(
         ..., "-r", "--resource", default_factory=list
     ),
@@ -417,11 +417,13 @@ def publish(
             raise typer.BadParameter(
                 f"Model {runner.from_model} not found in transform context."
             )
-        return runner(context.fetchdf(runner.query), **json.loads(opts))
+        from cdf.core.publisher import Payload
+
+        return runner(Payload(context.fetchdf(runner.query)), **json.loads(opts))
 
 
-@app.command(rich_help_panel="Utility")
-def run(
+@app.command("execute-script", rich_help_panel="Utility")
+def run_script(
     ctx: typer.Context,
     script: t.Annotated[str, typer.Argument(help="The <workspace>.<script> to run")],
     opts: str = typer.Argument(
@@ -451,12 +453,12 @@ def run(
 
 
 @app.command(
-    "bin",
+    "execute-bin",
     rich_help_panel="Utility",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def bin_(ctx: typer.Context, executable: str) -> None:
-    """:rocket: Run an executable located in a workspace environment.
+def run_bin(ctx: typer.Context, executable: str) -> None:
+    """:rocket: Run an executable located in a workspace venv bin directory.
 
     This is convenient for running package scripts installed in a workspace environment without having to specify the
     full path to the executable. It is purely a convenience method and is not required to operate within a CDF

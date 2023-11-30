@@ -8,7 +8,7 @@ from ruamel import yaml
 from sqlglot import exp, parse_one
 from sqlmesh.core.loader import SqlMeshLoader
 from sqlmesh.core.macros import MacroRegistry
-from sqlmesh.core.model import Model, create_sql_model
+from sqlmesh.core.model import Model, create_external_model, create_sql_model
 from sqlmesh.utils import UniqueKeyDict
 from sqlmesh.utils.jinja import JinjaMacroRegistry
 
@@ -92,5 +92,17 @@ class CDFTransformLoader(SqlMeshLoader):
                     project=config.project,
                 )
                 models[model.name] = model
+
+                parent_model = create_external_model(
+                    name=spec.input,
+                    columns={
+                        c["name"]: exp.DataType.build(c["data_type"])
+                        for c in meta[input_table.name]["columns"].values()
+                    },
+                    dialect=config.model_defaults.dialect,
+                    path=path,
+                    project=config.project,
+                )
+                models[parent_model.name] = parent_model
 
         return models
