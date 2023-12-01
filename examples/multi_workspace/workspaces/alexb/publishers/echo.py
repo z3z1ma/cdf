@@ -1,8 +1,15 @@
 """Echo the model data to stdout"""
+import pandas as pd
 
 
-def echo(data):
-    print(data.payload)
+def echo(data) -> None:
+    """The echo publisher
+
+    Args:
+        data (cdf.Payload): The data to publish. First pos arg is supplied by cdf based on the from_model
+    """
+    df: pd.DataFrame = data.payload
+    print(df)
 
 
 __CDF_PUBLISHERS__ = [
