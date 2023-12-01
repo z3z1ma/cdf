@@ -685,6 +685,8 @@ def init_workspace(
                 ".cache",
                 "logs",
                 "cdf_secrets.toml",
+                "*.duckdb",
+                "*.duckdb.wal",
             ]
         )
     )
@@ -736,7 +738,7 @@ def init_project(
     )
     gitignore = root.joinpath(".gitignore")
     with gitignore.open("a") as f:
-        f.write("\ncdf.duckdb")
+        f.write("\n".join(["", "*.duckdb", "*.duckdb.wal"]))
     for directory in directories:
         ctx.invoke(init_workspace, directory=root / directory)
 
