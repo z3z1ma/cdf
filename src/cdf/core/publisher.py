@@ -54,14 +54,12 @@ class publisher_spec:
         self.runner(data, **kwargs)
 
 
-def export_publishers(
-    *, scope: dict | None = None, **publishers: publisher_spec
-) -> None:
-    """Export publishers to the global scope.
+def export_publishers(*publishers: publisher_spec, scope: dict | None = None) -> None:
+    """Export publishers to the callers global scope.
 
     Args:
+        *publishers (publisher_spec): The publishers to export.
         scope (dict | None, optional): The scope to export to. Defaults to globals().
-        **publishers (publisher_spec): The publishers to export.
     """
     if scope is None:
         import inspect
@@ -72,4 +70,7 @@ def export_publishers(
         if frame is not None:
             scope = frame.f_globals
 
-    (scope or globals()).setdefault(c.CDF_PUBLISHERS, {}).update(publishers)
+    (scope or globals()).setdefault(c.CDF_PUBLISHERS, []).extend(publishers)
+
+
+__all__ = ["Payload", "publisher_spec", "export_publishers"]
