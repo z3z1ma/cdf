@@ -27,15 +27,25 @@ class _Runner(t.Protocol):
 @dataclass
 class publisher_spec:
     name: str
+    """The name of the publisher."""
     runner: _Runner
+    """The publisher function. The first pos arg will be the data to publish."""
     from_model: str
+    """The model to publish from."""
     mapping: t.Dict[str, str]
+    """Column name remapping used to translate column names to the API names declaratively."""
     version: int = 1
+    """The version of the publisher. Used to track execution history."""
     owners: t.Sequence[str] = ()
+    """The owners of the publisher."""
     description: str = ""
+    """The description of the publisher."""
     tags: t.Sequence[str] = ()
+    """Tags for this publisher used for component queries."""
     cron: str | None = None
+    """A cron expression for scheduling this publisher."""
     enabled: bool = True
+    """Whether this publisher is enabled."""
 
     def __post_init__(self) -> None:
         projection = (
@@ -51,6 +61,12 @@ class publisher_spec:
         self.runner.__wrapped__ = runner
 
     def __call__(self, data: Payload, **kwargs) -> None:
+        """Run the publisher.
+
+        Args:
+            data (Payload): The data to publish to an external system.
+            **kwargs: The kwargs to forward to the publisher.
+        """
         self.runner(data, **kwargs)
 
 
