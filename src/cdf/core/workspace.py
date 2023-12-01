@@ -704,7 +704,7 @@ class Workspace:
                         assert isinstance(
                             spec, publisher_spec
                         ), f"{spec} is not a publisher"
-                        self._publishers[spec.publisher_name] = spec
+                        self._publishers[spec.name] = spec
         return self._publishers
 
     @property
@@ -713,7 +713,6 @@ class Workspace:
         """Load transforms from workspace."""
         return self.get_transform_context().models
 
-    @requires_transforms
     def _transform_config(self, sink: str | None = None) -> sqlmesh.Config:
         """Get a sqlmesh config for the workspace.
 
@@ -758,12 +757,11 @@ class Workspace:
         )
 
     @lru_cache(maxsize=1)
-    @requires_transforms
     def get_transform_context(self, sink: str | None = None) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.
 
         This method loads the sqlmesh config from the workspace config file and returns a
-        sqlmesh context. If the workspace has no transforms, it returns None.
+        sqlmesh context.
 
         Args:
             sink (str, optional): Name of transform gateway. Defaults to None.

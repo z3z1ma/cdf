@@ -23,7 +23,7 @@ class _Runner(t.Protocol):
 
 @dataclass
 class publisher_spec:
-    publisher_name: str
+    name: str
     runner: _Runner
     from_model: str
     mapping: t.Dict[str, str]

@@ -145,27 +145,27 @@ def docs(ctx: typer.Context) -> None:
             md_doc += "### 🚚 Pipelines\n\n"
             for name, meta in workspace.pipelines.items():
                 md_doc += f"#### {name}\n\n"
-                md_doc += f"**Description**: {meta.description}\n\n"
-                md_doc += f"**Owners**: {meta.owners}\n\n"
-                md_doc += f"**Tags**: {', '.join(meta.tags)}\n\n"
-                md_doc += f"**Cron**: {meta.cron or 'Not Scheduled'}\n\n"
-            md_doc += "\n"
+                md_doc += f"- **Description**: {meta.description}\n"
+                md_doc += f"- **Owners**: {meta.owners}\n"
+                md_doc += f"- **Tags**: {', '.join(meta.tags)}\n"
+                md_doc += f"- **Cron**: {meta.cron or 'Not Scheduled'}\n\n"
         if workspace.has_transforms:
             md_doc += "### 🔄 Transforms\n\n"
             for name, meta in workspace.transforms.items():
                 md_doc += f"#### {name}\n\n"
-                md_doc += f"**Description**: {meta.description}\n\n"
-                md_doc += f"**Owner**: {meta.owner}\n\n"
-                md_doc += f"**Tags**: {', '.join(meta.tags)}\n\n"
-                md_doc += f"**Cron**: {meta.cron or 'Not Scheduled'}\n\n"
+                md_doc += f"- **Description**: {meta.description}\n"
+                md_doc += f"- **Owner**: {meta.owner}\n"
+                md_doc += f"- **Tags**: {', '.join(meta.tags)}\n"
+                md_doc += f"- **Cron**: {meta.cron or 'Not Scheduled'}\n\n"
         if workspace.has_publishers:
             md_doc += "### 🖋️ Publishers\n\n"
             for name, meta in workspace.publishers.items():
                 md_doc += f"#### {name}\n\n"
-                md_doc += f"**Description**: {meta.description}\n\n"
-                md_doc += f"**Owners**: {meta.owners}\n\n"
-                md_doc += f"**Tags**: {', '.join(meta.tags)}\n\n"
-                md_doc += f"**Cron**: {meta.cron or 'Not Scheduled'}\n\n"
+                md_doc += f"- **Description**: {meta.description}\n"
+                md_doc += f"- **Owners**: {meta.owners}\n"
+                md_doc += f"- **Tags**: {', '.join(meta.tags)}\n"
+                md_doc += f"- **Cron**: {meta.cron or 'Not Scheduled'}\n"
+        md_doc += "\n"
     rich.print(md_doc)
 
 
@@ -656,6 +656,7 @@ def init_workspace(
     Args:
         directory: The directory to initialize the workspace in. Must be empty.
     """
+    directory.mkdir(parents=True, exist_ok=True)
     if any(os.listdir(directory)):
         raise typer.BadParameter("Directory must be empty.")
     logger.info("Initializing workspace in %s", directory)
@@ -687,6 +688,7 @@ def init_project(
     ] = Path.cwd(),
 ) -> None:
     """:art: Initialize a new project in the current directory.
+
     \f
     Args:
         root: The directory to initialize the project in.
@@ -695,12 +697,19 @@ def init_project(
     import tomlkit
 
     root.mkdir(parents=True, exist_ok=True)
-    if any(os.listdir(d) for d in directories):
+    if any(os.listdir(d) for d in directories if d.exists()):
         raise typer.BadParameter("Directories must be empty.")
-    if any(d.is_absolute() for d in directories):
+    if any(d.is_absolute() for d in directories if d.exists()):
         raise typer.BadParameter("Directories must be relative paths.")
+    logger.info("Initializing project in %s", root)
     root.joinpath(c.WORKSPACE_FILE).write_text(
-        tomlkit.dumps({"workspace": [str(d.relative_to(root)) for d in directories]})
+        tomlkit.dumps(
+            {
+                "workspace": {
+                    "members": [str((root / d).relative_to(root)) for d in directories]
+                }
+            }
+        )
     )
     for directory in directories:
         ctx.invoke(init_workspace, directory=root / directory)
