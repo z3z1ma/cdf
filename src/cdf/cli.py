@@ -526,11 +526,11 @@ def metadata(ctx: typer.Context, workspace: str) -> None:
         ctx: The CLI context.
         workspace: The workspace to regenerate metadata for.
     """
-    from ruamel import yaml as _yaml
+    from ruamel.yaml import YAML
     from sqlglot import exp, parse_one
 
     project: Project = ctx.obj
-    yaml = _yaml.YAML(typ="safe")
+    yaml = YAML(typ="safe")
 
     ws = project[workspace]
     with ws.overlay():
@@ -590,35 +590,32 @@ def generate_staging_layer(
         ctx: The CLI context.
         workspace: The workspace to generate staging layers for.
     """
-    from ruamel import yaml as _yaml
+    from ruamel.yaml import YAML
     from sqlglot import exp, parse_one
 
     project: Project = ctx.obj
+    yaml = YAML(typ="safe")
+
     ws = project[workspace]
     context = ws.get_transform_context()
     for fp in (ws.root / "metadata").iterdir():
         with fp.open() as fd:
-            meta = _yaml.YAML(typ="safe").load(fd)
-        for table_, meta in meta.items():
-            # Check if the table exists
-            output_table = f"cdf_staging.stg_{fp.stem}__{table_}"
-            if output_table in context.models:
-                logger.debug("Skipping %s, already exists", output_table)
+            meta = yaml.load(fd)
+        for table, meta in meta.items():
+            # Check if the output table already exists in the context
+            output = f"cdf_staging.stg_{fp.stem}__{table}"
+            if output in context.models:
+                logger.debug("Skipping %s, already exists", output)
                 continue
-            # Generate the table
-            logger.info("Generating %s", output_table)
-            input_table = parse_one(f"{fp.stem}.{table_}", into=exp.Table)
-            p = (
-                ws.transform_path
-                / "staging"
-                / input_table.db
-                / f"{input_table.name}.yaml"
-            )
+            # Generate the DSL for the new table and write it to the staging layer
+            logger.info("Generating %s", output)
+            new_table = parse_one(f"{fp.stem}.{table}", into=exp.Table)
+            p = ws.transform_path / "staging" / new_table.db / f"{new_table.name}.yaml"
             p.parent.mkdir(parents=True, exist_ok=True)
             with p.open("w") as f:
-                _yaml.YAML().dump(
+                yaml.dump(
                     {
-                        "input": f"{input_table.db}.{input_table.name}",
+                        "input": f"{new_table.db}.{new_table.name}",
                         "prefix": "",
                         "suffix": "",
                         "excludes": [],
