@@ -1,7 +1,6 @@
 [workspace]
 
 members = [
-  "workspaces/engineering",
-  "workspaces/datateam",
-  "workspaces/finance",
+  "workspaces/alexb",
+  "workspaces/connorl",
 ]

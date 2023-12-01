@@ -610,6 +610,7 @@ def generate_staging_layer(
     for fp in (ws.root / "metadata").iterdir():
         with fp.open() as fd:
             meta = yaml.load(fd)
+        stg_specs = []
         for table, meta in meta.items():
             # Check if the output table already exists in the context
             output = f"cdf_staging.stg_{fp.stem}__{table}"
@@ -619,23 +620,23 @@ def generate_staging_layer(
             # Generate the DSL for the new table and write it to the staging layer
             logger.info("Generating %s", output)
             new_table = parse_one(f"{fp.stem}.{table}", into=exp.Table)
-            p = ws.transform_path / "staging" / new_table.db / f"{new_table.name}.yaml"
-            p.parent.mkdir(parents=True, exist_ok=True)
-            with p.open("w") as f:
-                yaml.dump(
-                    {
-                        "input": f"{new_table.db}.{new_table.name}",
-                        "prefix": "",
-                        "suffix": "",
-                        "excludes": [],
-                        "exclude_patterns": [],
-                        "includes": [],
-                        "include_patterns": [],
-                        "predicate": "",
-                        "computed_columns": [],
-                    },
-                    f,
-                )
+            stg_specs.append(
+                {
+                    "input": f"{new_table.db}.{new_table.name}",
+                    "prefix": "",
+                    "suffix": "",
+                    "excludes": [],
+                    "exclude_patterns": [],
+                    "includes": [],
+                    "include_patterns": [],
+                    "predicate": "",
+                    "computed_columns": [],
+                }
+            )
+        p = ws.transform_path / "staging" / fp.stem / "schema.yaml"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("w") as f:
+            yaml.dump(stg_specs, f)
 
 
 @app.command("init-workspace", rich_help_panel="Utility")
@@ -719,10 +720,10 @@ def init_project(
     import tomlkit
 
     root.mkdir(parents=True, exist_ok=True)
-    if any(os.listdir(d) for d in directories if d.exists()):
-        raise typer.BadParameter("Directories must be empty.")
     if any(d.is_absolute() for d in directories if d.exists()):
         raise typer.BadParameter("Directories must be relative paths.")
+    if any(os.listdir(root / d) for d in directories if d.exists()):
+        raise typer.BadParameter("Directories must be empty.")
     logger.info("Initializing project in %s", root)
     root.joinpath(c.WORKSPACE_FILE).write_text(
         tomlkit.dumps(
@@ -733,6 +734,9 @@ def init_project(
             }
         )
     )
+    gitignore = root.joinpath(".gitignore")
+    with gitignore.open("a") as f:
+        f.write("\ncdf.duckdb")
     for directory in directories:
         ctx.invoke(init_workspace, directory=root / directory)
 

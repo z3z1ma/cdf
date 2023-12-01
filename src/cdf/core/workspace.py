@@ -350,10 +350,13 @@ class Workspace:
     @property
     def has_transforms(self) -> bool:
         """True if workspace has transforms."""
-        return (
-            self.transform_path.exists()
-            and len(list(self.transform_path.iterdir())) > 0
+        rv = self.transform_path.exists() and list(
+            path
+            for ext in ["sql", "yml", "yaml"]
+            for path in self.transform_path.rglob(f"*.{ext}")
+            if path.is_file()
         )
+        return bool(rv)
 
     @property
     def has_dependencies(self) -> bool:
@@ -445,6 +448,7 @@ class Workspace:
             for path in self.root.joinpath(
                 c.PIPELINES_PATH,
             ).glob("*.py")
+            if path.name != "__init__.py"
         ]
 
     def _get_publisher_paths(self) -> t.List[Path]:
@@ -458,6 +462,7 @@ class Workspace:
             for path in self.root.joinpath(
                 c.PUBLISHERS_PATH,
             ).glob("*.py")
+            if path.name != "__init__.py"
         ]
 
     @requires_dependencies

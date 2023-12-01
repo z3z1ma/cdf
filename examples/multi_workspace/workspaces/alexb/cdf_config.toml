@@ -1,0 +1,26 @@
+[sources.hackernews]
+keywords = ["python"]
+start_date = "{{ yesterday() }}"
+end_date = "{{ today() }}"
+daily_load = true
+
+[publishers.httpbin.post]
+test_str = "This is a test {{ today() }}"
+
+[transforms]
+default_gateway = "local"
+model_defaults.dialect = "duckdb"
+
+[sinks.test]
+prod = false
+ingest.destination = "duckdb"
+ingest.credentials = "duckdb:///cdf-test.duckdb"
+transform.type = "duckdb"
+transform.database = "cdf-test.duckdb"
+
+[sinks.main]
+prod=true
+ingest.destination="duckdb"
+ingest.credentials="duckdb:///cdf.duckdb"
+transform.type="duckdb"
+transform.database="cdf.duckdb"

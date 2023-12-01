@@ -1,0 +1,2090 @@
+pro_players:
+  columns:
+    account_id:
+      name: account_id
+      nullable: false
+      primary_key: true
+      data_type: bigint
+    steamid:
+      name: steamid
+      data_type: text
+      nullable: true
+    avatar:
+      name: avatar
+      data_type: text
+      nullable: true
+    avatarmedium:
+      name: avatarmedium
+      data_type: text
+      nullable: true
+    avatarfull:
+      name: avatarfull
+      data_type: text
+      nullable: true
+    profileurl:
+      name: profileurl
+      data_type: text
+      nullable: true
+    personaname:
+      name: personaname
+      data_type: text
+      nullable: true
+    full_history_time:
+      name: full_history_time
+      data_type: timestamp
+      nullable: true
+    cheese:
+      name: cheese
+      data_type: bigint
+      nullable: true
+    fh_unavailable:
+      name: fh_unavailable
+      data_type: bool
+      nullable: true
+    loccountrycode:
+      name: loccountrycode
+      data_type: text
+      nullable: true
+    last_match_time:
+      name: last_match_time
+      data_type: timestamp
+      nullable: true
+    plus:
+      name: plus
+      data_type: bool
+      nullable: true
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    country_code:
+      name: country_code
+      data_type: text
+      nullable: true
+    fantasy_role:
+      name: fantasy_role
+      data_type: bigint
+      nullable: true
+    team_id:
+      name: team_id
+      data_type: bigint
+      nullable: true
+    team_name:
+      name: team_name
+      data_type: text
+      nullable: true
+    team_tag:
+      name: team_tag
+      data_type: text
+      nullable: true
+    is_locked:
+      name: is_locked
+      data_type: bool
+      nullable: true
+    is_pro:
+      name: is_pro
+      data_type: bool
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    last_login:
+      name: last_login
+      data_type: timestamp
+      nullable: true
+  write_disposition: merge
+  name: pro_players
+  resource: pro_players
+pro_matches:
+  columns:
+    match_id:
+      name: match_id
+      nullable: false
+      primary_key: true
+      data_type: bigint
+    duration:
+      name: duration
+      data_type: bigint
+      nullable: true
+    start_time:
+      name: start_time
+      data_type: bigint
+      nullable: true
+    radiant_team_id:
+      name: radiant_team_id
+      data_type: bigint
+      nullable: true
+    radiant_name:
+      name: radiant_name
+      data_type: text
+      nullable: true
+    dire_team_id:
+      name: dire_team_id
+      data_type: bigint
+      nullable: true
+    dire_name:
+      name: dire_name
+      data_type: text
+      nullable: true
+    leagueid:
+      name: leagueid
+      data_type: bigint
+      nullable: true
+    league_name:
+      name: league_name
+      data_type: text
+      nullable: true
+    series_id:
+      name: series_id
+      data_type: bigint
+      nullable: true
+    series_type:
+      name: series_type
+      data_type: bigint
+      nullable: true
+    radiant_score:
+      name: radiant_score
+      data_type: bigint
+      nullable: true
+    dire_score:
+      name: dire_score
+      data_type: bigint
+      nullable: true
+    radiant_win:
+      name: radiant_win
+      data_type: bool
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: merge
+  name: pro_matches
+  resource: pro_matches
+distribution:
+  columns:
+    ranks__command:
+      name: ranks__command
+      data_type: text
+      nullable: true
+    ranks__row_count:
+      name: ranks__row_count
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__bool:
+      name: ranks___types___types__builtins__bool
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__bytea:
+      name: ranks___types___types__builtins__bytea
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__char:
+      name: ranks___types___types__builtins__char
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__int8:
+      name: ranks___types___types__builtins__int8
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__int2:
+      name: ranks___types___types__builtins__int2
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__int4:
+      name: ranks___types___types__builtins__int4
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regproc:
+      name: ranks___types___types__builtins__regproc
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__text:
+      name: ranks___types___types__builtins__text
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__oid:
+      name: ranks___types___types__builtins__oid
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__tid:
+      name: ranks___types___types__builtins__tid
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__xid:
+      name: ranks___types___types__builtins__xid
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__cid:
+      name: ranks___types___types__builtins__cid
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__json:
+      name: ranks___types___types__builtins__json
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__xml:
+      name: ranks___types___types__builtins__xml
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__pg_node_tree:
+      name: ranks___types___types__builtins__pg_node_tree
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__smgr:
+      name: ranks___types___types__builtins__smgr
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__path:
+      name: ranks___types___types__builtins__path
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__polygon:
+      name: ranks___types___types__builtins__polygon
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__cidr:
+      name: ranks___types___types__builtins__cidr
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__float4:
+      name: ranks___types___types__builtins__float4
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__float8:
+      name: ranks___types___types__builtins__float8
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__abstime:
+      name: ranks___types___types__builtins__abstime
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__reltime:
+      name: ranks___types___types__builtins__reltime
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__tinterval:
+      name: ranks___types___types__builtins__tinterval
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__circle:
+      name: ranks___types___types__builtins__circle
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__macaddr8:
+      name: ranks___types___types__builtins__macaddr8
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__money:
+      name: ranks___types___types__builtins__money
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__macaddr:
+      name: ranks___types___types__builtins__macaddr
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__inet:
+      name: ranks___types___types__builtins__inet
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__aclitem:
+      name: ranks___types___types__builtins__aclitem
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__bpchar:
+      name: ranks___types___types__builtins__bpchar
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__varchar:
+      name: ranks___types___types__builtins__varchar
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__date:
+      name: ranks___types___types__builtins__date
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__time:
+      name: ranks___types___types__builtins__time
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__timestamp:
+      name: ranks___types___types__builtins__timestamp
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__timestamptz:
+      name: ranks___types___types__builtins__timestamptz
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__interval:
+      name: ranks___types___types__builtins__interval
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__timetz:
+      name: ranks___types___types__builtins__timetz
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__bit:
+      name: ranks___types___types__builtins__bit
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__varbit:
+      name: ranks___types___types__builtins__varbit
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__numeric:
+      name: ranks___types___types__builtins__numeric
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__refcursor:
+      name: ranks___types___types__builtins__refcursor
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regprocedure:
+      name: ranks___types___types__builtins__regprocedure
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regoper:
+      name: ranks___types___types__builtins__regoper
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regoperator:
+      name: ranks___types___types__builtins__regoperator
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regclass:
+      name: ranks___types___types__builtins__regclass
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regtype:
+      name: ranks___types___types__builtins__regtype
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__uuid:
+      name: ranks___types___types__builtins__uuid
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__txid_snapshot:
+      name: ranks___types___types__builtins__txid_snapshot
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__pg_lsn:
+      name: ranks___types___types__builtins__pg_lsn
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__pg_ndistinct:
+      name: ranks___types___types__builtins__pg_ndistinct
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__pg_dependencies:
+      name: ranks___types___types__builtins__pg_dependencies
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__tsvector:
+      name: ranks___types___types__builtins__tsvector
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__tsquery:
+      name: ranks___types___types__builtins__tsquery
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__gtsvector:
+      name: ranks___types___types__builtins__gtsvector
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regconfig:
+      name: ranks___types___types__builtins__regconfig
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regdictionary:
+      name: ranks___types___types__builtins__regdictionary
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__jsonb:
+      name: ranks___types___types__builtins__jsonb
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regnamespace:
+      name: ranks___types___types__builtins__regnamespace
+      data_type: bigint
+      nullable: true
+    ranks___types___types__builtins__regrole:
+      name: ranks___types___types__builtins__regrole
+      data_type: bigint
+      nullable: true
+    ranks__row_as_array:
+      name: ranks__row_as_array
+      data_type: bool
+      nullable: true
+    ranks__sum__count:
+      name: ranks__sum__count
+      data_type: bigint
+      nullable: true
+    mmr__command:
+      name: mmr__command
+      data_type: text
+      nullable: true
+    mmr__row_count:
+      name: mmr__row_count
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__bool:
+      name: mmr___types___types__builtins__bool
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__bytea:
+      name: mmr___types___types__builtins__bytea
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__char:
+      name: mmr___types___types__builtins__char
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__int8:
+      name: mmr___types___types__builtins__int8
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__int2:
+      name: mmr___types___types__builtins__int2
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__int4:
+      name: mmr___types___types__builtins__int4
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regproc:
+      name: mmr___types___types__builtins__regproc
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__text:
+      name: mmr___types___types__builtins__text
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__oid:
+      name: mmr___types___types__builtins__oid
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__tid:
+      name: mmr___types___types__builtins__tid
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__xid:
+      name: mmr___types___types__builtins__xid
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__cid:
+      name: mmr___types___types__builtins__cid
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__json:
+      name: mmr___types___types__builtins__json
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__xml:
+      name: mmr___types___types__builtins__xml
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__pg_node_tree:
+      name: mmr___types___types__builtins__pg_node_tree
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__smgr:
+      name: mmr___types___types__builtins__smgr
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__path:
+      name: mmr___types___types__builtins__path
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__polygon:
+      name: mmr___types___types__builtins__polygon
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__cidr:
+      name: mmr___types___types__builtins__cidr
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__float4:
+      name: mmr___types___types__builtins__float4
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__float8:
+      name: mmr___types___types__builtins__float8
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__abstime:
+      name: mmr___types___types__builtins__abstime
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__reltime:
+      name: mmr___types___types__builtins__reltime
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__tinterval:
+      name: mmr___types___types__builtins__tinterval
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__circle:
+      name: mmr___types___types__builtins__circle
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__macaddr8:
+      name: mmr___types___types__builtins__macaddr8
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__money:
+      name: mmr___types___types__builtins__money
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__macaddr:
+      name: mmr___types___types__builtins__macaddr
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__inet:
+      name: mmr___types___types__builtins__inet
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__aclitem:
+      name: mmr___types___types__builtins__aclitem
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__bpchar:
+      name: mmr___types___types__builtins__bpchar
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__varchar:
+      name: mmr___types___types__builtins__varchar
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__date:
+      name: mmr___types___types__builtins__date
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__time:
+      name: mmr___types___types__builtins__time
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__timestamp:
+      name: mmr___types___types__builtins__timestamp
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__timestamptz:
+      name: mmr___types___types__builtins__timestamptz
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__interval:
+      name: mmr___types___types__builtins__interval
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__timetz:
+      name: mmr___types___types__builtins__timetz
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__bit:
+      name: mmr___types___types__builtins__bit
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__varbit:
+      name: mmr___types___types__builtins__varbit
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__numeric:
+      name: mmr___types___types__builtins__numeric
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__refcursor:
+      name: mmr___types___types__builtins__refcursor
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regprocedure:
+      name: mmr___types___types__builtins__regprocedure
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regoper:
+      name: mmr___types___types__builtins__regoper
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regoperator:
+      name: mmr___types___types__builtins__regoperator
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regclass:
+      name: mmr___types___types__builtins__regclass
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regtype:
+      name: mmr___types___types__builtins__regtype
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__uuid:
+      name: mmr___types___types__builtins__uuid
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__txid_snapshot:
+      name: mmr___types___types__builtins__txid_snapshot
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__pg_lsn:
+      name: mmr___types___types__builtins__pg_lsn
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__pg_ndistinct:
+      name: mmr___types___types__builtins__pg_ndistinct
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__pg_dependencies:
+      name: mmr___types___types__builtins__pg_dependencies
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__tsvector:
+      name: mmr___types___types__builtins__tsvector
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__tsquery:
+      name: mmr___types___types__builtins__tsquery
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__gtsvector:
+      name: mmr___types___types__builtins__gtsvector
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regconfig:
+      name: mmr___types___types__builtins__regconfig
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regdictionary:
+      name: mmr___types___types__builtins__regdictionary
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__jsonb:
+      name: mmr___types___types__builtins__jsonb
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regnamespace:
+      name: mmr___types___types__builtins__regnamespace
+      data_type: bigint
+      nullable: true
+    mmr___types___types__builtins__regrole:
+      name: mmr___types___types__builtins__regrole
+      data_type: bigint
+      nullable: true
+    mmr__row_as_array:
+      name: mmr__row_as_array
+      data_type: bool
+      nullable: true
+    mmr__sum__count:
+      name: mmr__sum__count
+      data_type: bigint
+      nullable: true
+    country_mmr__command:
+      name: country_mmr__command
+      data_type: text
+      nullable: true
+    country_mmr__row_count:
+      name: country_mmr__row_count
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__bool:
+      name: country_mmr___types___types__builtins__bool
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__bytea:
+      name: country_mmr___types___types__builtins__bytea
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__char:
+      name: country_mmr___types___types__builtins__char
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__int8:
+      name: country_mmr___types___types__builtins__int8
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__int2:
+      name: country_mmr___types___types__builtins__int2
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__int4:
+      name: country_mmr___types___types__builtins__int4
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regproc:
+      name: country_mmr___types___types__builtins__regproc
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__text:
+      name: country_mmr___types___types__builtins__text
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__oid:
+      name: country_mmr___types___types__builtins__oid
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__tid:
+      name: country_mmr___types___types__builtins__tid
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__xid:
+      name: country_mmr___types___types__builtins__xid
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__cid:
+      name: country_mmr___types___types__builtins__cid
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__json:
+      name: country_mmr___types___types__builtins__json
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__xml:
+      name: country_mmr___types___types__builtins__xml
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__pg_node_tree:
+      name: country_mmr___types___types__builtins__pg_node_tree
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__smgr:
+      name: country_mmr___types___types__builtins__smgr
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__path:
+      name: country_mmr___types___types__builtins__path
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__polygon:
+      name: country_mmr___types___types__builtins__polygon
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__cidr:
+      name: country_mmr___types___types__builtins__cidr
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__float4:
+      name: country_mmr___types___types__builtins__float4
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__float8:
+      name: country_mmr___types___types__builtins__float8
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__abstime:
+      name: country_mmr___types___types__builtins__abstime
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__reltime:
+      name: country_mmr___types___types__builtins__reltime
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__tinterval:
+      name: country_mmr___types___types__builtins__tinterval
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__circle:
+      name: country_mmr___types___types__builtins__circle
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__macaddr8:
+      name: country_mmr___types___types__builtins__macaddr8
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__money:
+      name: country_mmr___types___types__builtins__money
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__macaddr:
+      name: country_mmr___types___types__builtins__macaddr
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__inet:
+      name: country_mmr___types___types__builtins__inet
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__aclitem:
+      name: country_mmr___types___types__builtins__aclitem
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__bpchar:
+      name: country_mmr___types___types__builtins__bpchar
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__varchar:
+      name: country_mmr___types___types__builtins__varchar
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__date:
+      name: country_mmr___types___types__builtins__date
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__time:
+      name: country_mmr___types___types__builtins__time
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__timestamp:
+      name: country_mmr___types___types__builtins__timestamp
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__timestamptz:
+      name: country_mmr___types___types__builtins__timestamptz
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__interval:
+      name: country_mmr___types___types__builtins__interval
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__timetz:
+      name: country_mmr___types___types__builtins__timetz
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__bit:
+      name: country_mmr___types___types__builtins__bit
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__varbit:
+      name: country_mmr___types___types__builtins__varbit
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__numeric:
+      name: country_mmr___types___types__builtins__numeric
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__refcursor:
+      name: country_mmr___types___types__builtins__refcursor
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regprocedure:
+      name: country_mmr___types___types__builtins__regprocedure
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regoper:
+      name: country_mmr___types___types__builtins__regoper
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regoperator:
+      name: country_mmr___types___types__builtins__regoperator
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regclass:
+      name: country_mmr___types___types__builtins__regclass
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regtype:
+      name: country_mmr___types___types__builtins__regtype
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__uuid:
+      name: country_mmr___types___types__builtins__uuid
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__txid_snapshot:
+      name: country_mmr___types___types__builtins__txid_snapshot
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__pg_lsn:
+      name: country_mmr___types___types__builtins__pg_lsn
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__pg_ndistinct:
+      name: country_mmr___types___types__builtins__pg_ndistinct
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__pg_dependencies:
+      name: country_mmr___types___types__builtins__pg_dependencies
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__tsvector:
+      name: country_mmr___types___types__builtins__tsvector
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__tsquery:
+      name: country_mmr___types___types__builtins__tsquery
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__gtsvector:
+      name: country_mmr___types___types__builtins__gtsvector
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regconfig:
+      name: country_mmr___types___types__builtins__regconfig
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regdictionary:
+      name: country_mmr___types___types__builtins__regdictionary
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__jsonb:
+      name: country_mmr___types___types__builtins__jsonb
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regnamespace:
+      name: country_mmr___types___types__builtins__regnamespace
+      data_type: bigint
+      nullable: true
+    country_mmr___types___types__builtins__regrole:
+      name: country_mmr___types___types__builtins__regrole
+      data_type: bigint
+      nullable: true
+    country_mmr__row_as_array:
+      name: country_mmr__row_as_array
+      data_type: bool
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: distribution
+  resource: distribution
+rankings:
+  columns:
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: rankings
+  resource: rankings
+benchmarks:
+  columns:
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: benchmarks
+  resource: benchmarks
+heroes:
+  columns:
+    id:
+      name: id
+      data_type: bigint
+      nullable: true
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    localized_name:
+      name: localized_name
+      data_type: text
+      nullable: true
+    primary_attr:
+      name: primary_attr
+      data_type: text
+      nullable: true
+    attack_type:
+      name: attack_type
+      data_type: text
+      nullable: true
+    legs:
+      name: legs
+      data_type: bigint
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: heroes
+  resource: heroes
+hero_stats:
+  columns:
+    id:
+      name: id
+      data_type: bigint
+      nullable: true
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    localized_name:
+      name: localized_name
+      data_type: text
+      nullable: true
+    primary_attr:
+      name: primary_attr
+      data_type: text
+      nullable: true
+    attack_type:
+      name: attack_type
+      data_type: text
+      nullable: true
+    img:
+      name: img
+      data_type: text
+      nullable: true
+    icon:
+      name: icon
+      data_type: text
+      nullable: true
+    base_health:
+      name: base_health
+      data_type: bigint
+      nullable: true
+    base_health_regen:
+      name: base_health_regen
+      data_type: double
+      nullable: true
+    base_mana:
+      name: base_mana
+      data_type: bigint
+      nullable: true
+    base_mana_regen:
+      name: base_mana_regen
+      data_type: bigint
+      nullable: true
+    base_armor:
+      name: base_armor
+      data_type: bigint
+      nullable: true
+    base_mr:
+      name: base_mr
+      data_type: bigint
+      nullable: true
+    base_attack_min:
+      name: base_attack_min
+      data_type: bigint
+      nullable: true
+    base_attack_max:
+      name: base_attack_max
+      data_type: bigint
+      nullable: true
+    base_str:
+      name: base_str
+      data_type: bigint
+      nullable: true
+    base_agi:
+      name: base_agi
+      data_type: bigint
+      nullable: true
+    base_int:
+      name: base_int
+      data_type: bigint
+      nullable: true
+    str_gain:
+      name: str_gain
+      data_type: double
+      nullable: true
+    agi_gain:
+      name: agi_gain
+      data_type: double
+      nullable: true
+    int_gain:
+      name: int_gain
+      data_type: double
+      nullable: true
+    attack_range:
+      name: attack_range
+      data_type: bigint
+      nullable: true
+    projectile_speed:
+      name: projectile_speed
+      data_type: bigint
+      nullable: true
+    attack_rate:
+      name: attack_rate
+      data_type: double
+      nullable: true
+    base_attack_time:
+      name: base_attack_time
+      data_type: bigint
+      nullable: true
+    attack_point:
+      name: attack_point
+      data_type: double
+      nullable: true
+    move_speed:
+      name: move_speed
+      data_type: bigint
+      nullable: true
+    cm_enabled:
+      name: cm_enabled
+      data_type: bool
+      nullable: true
+    legs:
+      name: legs
+      data_type: bigint
+      nullable: true
+    day_vision:
+      name: day_vision
+      data_type: bigint
+      nullable: true
+    night_vision:
+      name: night_vision
+      data_type: bigint
+      nullable: true
+    hero_id:
+      name: hero_id
+      data_type: bigint
+      nullable: true
+    turbo_picks:
+      name: turbo_picks
+      data_type: bigint
+      nullable: true
+    turbo_wins:
+      name: turbo_wins
+      data_type: bigint
+      nullable: true
+    pro_ban:
+      name: pro_ban
+      data_type: bigint
+      nullable: true
+    pro_win:
+      name: pro_win
+      data_type: bigint
+      nullable: true
+    pro_pick:
+      name: pro_pick
+      data_type: bigint
+      nullable: true
+    _1_pick:
+      name: _1_pick
+      data_type: bigint
+      nullable: true
+    _1_win:
+      name: _1_win
+      data_type: bigint
+      nullable: true
+    _2_pick:
+      name: _2_pick
+      data_type: bigint
+      nullable: true
+    _2_win:
+      name: _2_win
+      data_type: bigint
+      nullable: true
+    _3_pick:
+      name: _3_pick
+      data_type: bigint
+      nullable: true
+    _3_win:
+      name: _3_win
+      data_type: bigint
+      nullable: true
+    _4_pick:
+      name: _4_pick
+      data_type: bigint
+      nullable: true
+    _4_win:
+      name: _4_win
+      data_type: bigint
+      nullable: true
+    _5_pick:
+      name: _5_pick
+      data_type: bigint
+      nullable: true
+    _5_win:
+      name: _5_win
+      data_type: bigint
+      nullable: true
+    _6_pick:
+      name: _6_pick
+      data_type: bigint
+      nullable: true
+    _6_win:
+      name: _6_win
+      data_type: bigint
+      nullable: true
+    _7_pick:
+      name: _7_pick
+      data_type: bigint
+      nullable: true
+    _7_win:
+      name: _7_win
+      data_type: bigint
+      nullable: true
+    _8_pick:
+      name: _8_pick
+      data_type: bigint
+      nullable: true
+    _8_win:
+      name: _8_win
+      data_type: bigint
+      nullable: true
+    null_pick:
+      name: null_pick
+      data_type: bigint
+      nullable: true
+    null_win:
+      name: null_win
+      data_type: bigint
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    base_mana_regen__v_double:
+      name: base_mana_regen__v_double
+      data_type: double
+      nullable: true
+      variant: true
+    turn_rate:
+      name: turn_rate
+      data_type: double
+      nullable: true
+    base_armor__v_double:
+      name: base_armor__v_double
+      data_type: double
+      nullable: true
+      variant: true
+  write_disposition: replace
+  name: hero_stats
+  resource: hero_stats
+leagues:
+  columns:
+    leagueid:
+      name: leagueid
+      data_type: bigint
+      nullable: true
+    tier:
+      name: tier
+      data_type: text
+      nullable: true
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    ticket:
+      name: ticket
+      data_type: text
+      nullable: true
+    banner:
+      name: banner
+      data_type: text
+      nullable: true
+  write_disposition: replace
+  name: leagues
+  resource: leagues
+teams:
+  columns:
+    team_id:
+      name: team_id
+      data_type: bigint
+      nullable: true
+    rating:
+      name: rating
+      data_type: double
+      nullable: true
+    wins:
+      name: wins
+      data_type: bigint
+      nullable: true
+    losses:
+      name: losses
+      data_type: bigint
+      nullable: true
+    last_match_time:
+      name: last_match_time
+      data_type: bigint
+      nullable: true
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    tag:
+      name: tag
+      data_type: text
+      nullable: true
+    logo_url:
+      name: logo_url
+      data_type: text
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: teams
+  resource: teams
+game_mode:
+  columns:
+    id:
+      name: id
+      data_type: bigint
+      nullable: true
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    balanced:
+      name: balanced
+      data_type: bool
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: game_mode
+  resource: constants
+item_colors:
+  columns:
+    id:
+      name: id
+      data_type: text
+      nullable: true
+    value:
+      name: value
+      data_type: text
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: item_colors
+  resource: constants
+lobby_type:
+  columns:
+    id:
+      name: id
+      data_type: bigint
+      nullable: true
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    balanced:
+      name: balanced
+      data_type: bool
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: lobby_type
+  resource: constants
+order_types:
+  columns:
+    id:
+      name: id
+      data_type: text
+      nullable: true
+    value:
+      name: value
+      data_type: text
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: order_types
+  resource: constants
+patch:
+  columns:
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    date:
+      name: date
+      data_type: timestamp
+      nullable: true
+    id:
+      name: id
+      data_type: bigint
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: patch
+  resource: constants
+permanent_buffs:
+  columns:
+    id:
+      name: id
+      data_type: text
+      nullable: true
+    value:
+      name: value
+      data_type: text
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: permanent_buffs
+  resource: constants
+player_colors:
+  columns:
+    id:
+      name: id
+      data_type: text
+      nullable: true
+    value:
+      name: value
+      data_type: text
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: player_colors
+  resource: constants
+skillshots:
+  columns:
+    id:
+      name: id
+      data_type: text
+      nullable: true
+    value:
+      name: value
+      data_type: bool
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: skillshots
+  resource: constants
+xp_level:
+  columns:
+    level:
+      name: level
+      data_type: bigint
+      nullable: true
+    xp:
+      name: xp
+      data_type: bigint
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  write_disposition: replace
+  name: xp_level
+  resource: constants
+benchmarks__result__gold_per_min:
+  name: benchmarks__result__gold_per_min
+  columns:
+    percentile:
+      name: percentile
+      data_type: double
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: benchmarks
+benchmarks__result__xp_per_min:
+  name: benchmarks__result__xp_per_min
+  columns:
+    percentile:
+      name: percentile
+      data_type: double
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: benchmarks
+benchmarks__result__kills_per_min:
+  name: benchmarks__result__kills_per_min
+  columns:
+    percentile:
+      name: percentile
+      data_type: double
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: benchmarks
+benchmarks__result__last_hits_per_min:
+  name: benchmarks__result__last_hits_per_min
+  columns:
+    percentile:
+      name: percentile
+      data_type: double
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: benchmarks
+benchmarks__result__hero_damage_per_min:
+  name: benchmarks__result__hero_damage_per_min
+  columns:
+    percentile:
+      name: percentile
+      data_type: double
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: benchmarks
+benchmarks__result__hero_healing_per_min:
+  name: benchmarks__result__hero_healing_per_min
+  columns:
+    percentile:
+      name: percentile
+      data_type: double
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: benchmarks
+benchmarks__result__tower_damage:
+  name: benchmarks__result__tower_damage
+  columns:
+    percentile:
+      name: percentile
+      data_type: double
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: benchmarks
+distribution__ranks__rows:
+  name: distribution__ranks__rows
+  columns:
+    bin:
+      name: bin
+      data_type: bigint
+      nullable: true
+    bin_name:
+      name: bin_name
+      data_type: bigint
+      nullable: true
+    count:
+      name: count
+      data_type: bigint
+      nullable: true
+    cumulative_sum:
+      name: cumulative_sum
+      data_type: bigint
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: distribution
+distribution__ranks__fields:
+  name: distribution__ranks__fields
+  columns:
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    table_id:
+      name: table_id
+      data_type: bigint
+      nullable: true
+    column_id:
+      name: column_id
+      data_type: bigint
+      nullable: true
+    data_type_id:
+      name: data_type_id
+      data_type: bigint
+      nullable: true
+    data_type_size:
+      name: data_type_size
+      data_type: bigint
+      nullable: true
+    data_type_modifier:
+      name: data_type_modifier
+      data_type: bigint
+      nullable: true
+    format:
+      name: format
+      data_type: text
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: distribution
+distribution__ranks___parsers:
+  name: distribution__ranks___parsers
+  columns:
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+  parent: distribution
+distribution__mmr__rows:
+  name: distribution__mmr__rows
+  columns:
+    bin:
+      name: bin
+      data_type: bigint
+      nullable: true
+    bin_name:
+      name: bin_name
+      data_type: bigint
+      nullable: true
+    count:
+      name: count
+      data_type: bigint
+      nullable: true
+    cumulative_sum:
+      name: cumulative_sum
+      data_type: bigint
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: distribution
+distribution__mmr__fields:
+  name: distribution__mmr__fields
+  columns:
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    table_id:
+      name: table_id
+      data_type: bigint
+      nullable: true
+    column_id:
+      name: column_id
+      data_type: bigint
+      nullable: true
+    data_type_id:
+      name: data_type_id
+      data_type: bigint
+      nullable: true
+    data_type_size:
+      name: data_type_size
+      data_type: bigint
+      nullable: true
+    data_type_modifier:
+      name: data_type_modifier
+      data_type: bigint
+      nullable: true
+    format:
+      name: format
+      data_type: text
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: distribution
+distribution__mmr___parsers:
+  name: distribution__mmr___parsers
+  columns:
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+  parent: distribution
+distribution__country_mmr__rows:
+  name: distribution__country_mmr__rows
+  columns:
+    loccountrycode:
+      name: loccountrycode
+      data_type: text
+      nullable: true
+    count:
+      name: count
+      data_type: bigint
+      nullable: true
+    avg:
+      name: avg
+      data_type: text
+      nullable: true
+    common:
+      name: common
+      data_type: text
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: distribution
+distribution__country_mmr__fields:
+  name: distribution__country_mmr__fields
+  columns:
+    name:
+      name: name
+      data_type: text
+      nullable: true
+    table_id:
+      name: table_id
+      data_type: bigint
+      nullable: true
+    column_id:
+      name: column_id
+      data_type: bigint
+      nullable: true
+    data_type_id:
+      name: data_type_id
+      data_type: bigint
+      nullable: true
+    data_type_size:
+      name: data_type_size
+      data_type: bigint
+      nullable: true
+    data_type_modifier:
+      name: data_type_modifier
+      data_type: bigint
+      nullable: true
+    format:
+      name: format
+      data_type: text
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: distribution
+distribution__country_mmr___parsers:
+  name: distribution__country_mmr___parsers
+  columns:
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+  parent: distribution
+hero_stats__roles:
+  name: hero_stats__roles
+  columns:
+    value:
+      name: value
+      data_type: text
+      nullable: true
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+  parent: hero_stats
+heroes__roles:
+  name: heroes__roles
+  columns:
+    value:
+      name: value
+      data_type: text
+      nullable: true
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+  parent: heroes
+rankings__rankings:
+  name: rankings__rankings
+  columns:
+    account_id:
+      name: account_id
+      data_type: bigint
+      nullable: true
+    score:
+      name: score
+      data_type: double
+      nullable: true
+    personaname:
+      name: personaname
+      data_type: text
+      nullable: true
+    avatar:
+      name: avatar
+      data_type: text
+      nullable: true
+    last_login:
+      name: last_login
+      data_type: timestamp
+      nullable: true
+    rank_tier:
+      name: rank_tier
+      data_type: bigint
+      nullable: true
+    _dlt_parent_id:
+      name: _dlt_parent_id
+      data_type: text
+      nullable: false
+      foreign_key: true
+    _dlt_list_idx:
+      name: _dlt_list_idx
+      data_type: bigint
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+  parent: rankings

@@ -1,4 +1,5 @@
 """The source class for continuous data flow sources."""
+import fnmatch
 import os
 import tempfile
 import typing as t
@@ -142,7 +143,9 @@ class pipeline_spec:
             if resources:
                 # Prioritize explicit resource selection
                 for name, resource in source.resources.items():
-                    resource.selected = name in resources
+                    resource.selected = any(
+                        fnmatch.fnmatch(name, pattern) for pattern in resources
+                    )
             else:
                 # Use feature flags to select resources if no explicit selection
                 apply_feature_flags(

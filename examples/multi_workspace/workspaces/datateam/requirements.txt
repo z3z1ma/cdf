@@ -1,2 +1,0 @@
-HackerNews==2.0.0
-mypy==1.7.0

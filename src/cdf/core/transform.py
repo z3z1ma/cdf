@@ -2,6 +2,7 @@ import os
 import re
 import typing as t
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import sqlmesh.core.constants as sqlmesh_constants
 from ruamel import yaml
@@ -35,6 +36,7 @@ class CDFTransformLoader(SqlMeshLoader):
         models = super()._load_models(macros, jinja_macros)
 
         for context_path, config in self._context.configs.items():
+            data = []
             for path in self._glob_paths(
                 context_path / sqlmesh_constants.MODELS,
                 config=config,
@@ -44,7 +46,13 @@ class CDFTransformLoader(SqlMeshLoader):
                     continue
                 self._track_file(path)
                 with path.open() as f:
-                    spec = CDFStagingSpec(**YAML.load(f))
+                    specs = YAML.load(f)
+                    if not isinstance(specs, list):
+                        specs = [specs]
+                    data.extend((s, Path(path)) for s in specs)
+
+            for raw_spec, path in data:
+                spec = CDFStagingSpec(**raw_spec)
 
                 input_table = parse_one(spec.input, into=exp.Table)
                 meta_path = context_path / "metadata" / f"{input_table.db}.yaml"

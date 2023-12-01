@@ -1,0 +1,9 @@
+- input: us_zip_codes_metrics_v1.us_cities
+  prefix: 'us_'
+  suffix: ''
+  excludes: []
+  exclude_patterns: []
+  includes: []
+  include_patterns: []
+  predicate: ''
+  computed_columns: []
