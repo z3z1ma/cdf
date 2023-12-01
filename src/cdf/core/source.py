@@ -224,10 +224,10 @@ class pipeline_spec:
 
 
 def export_pipelines(*pipelines: pipeline_spec, scope: dict | None = None) -> None:
-    """Export sources to the callers global scope.
+    """Export pipelines to the callers global scope.
 
     Args:
-        pipelines (pipeline_spec): The pipelines to export.
+        *pipelines (pipeline_spec): The pipelines to export.
         scope (dict | None, optional): The scope to export to. Defaults to globals().
     """
     if scope is None:
