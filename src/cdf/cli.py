@@ -661,10 +661,32 @@ def init_workspace(
         raise typer.BadParameter("Directory must be empty.")
     logger.info("Initializing workspace in %s", directory)
     for dir_ in c.DIR_LAYOUT:
+        # Basic directory layout
         directory.joinpath(dir_).mkdir(parents=True, exist_ok=False)
+    for dir_ in (
+        "macros",
+        "scripts",
+        c.PIPELINES_PATH,
+        c.PUBLISHERS_PATH,
+        c.TRANSFORMS_PATH,
+    ):
+        # Add init files to importable directories
+        directory.joinpath(dir_, "__init__.py").touch()
     directory.joinpath(c.CONFIG_FILE).touch()
     directory.joinpath(".env").touch()
-    directory.joinpath(".gitignore").touch()
+    directory.joinpath(".gitignore").write_text(
+        "\n".join(
+            [
+                "__pycache__",
+                "*.pyc",
+                ".env",
+                ".venv",
+                ".cache",
+                "logs",
+                "cdf_secrets.toml",
+            ]
+        )
+    )
     directory.joinpath("requirements.txt").touch()
 
 
