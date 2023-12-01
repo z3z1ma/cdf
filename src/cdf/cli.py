@@ -600,18 +600,25 @@ def generate_staging_layer(
         with fp.open() as fd:
             meta = _yaml.YAML(typ="safe").load(fd)
         for table_, meta in meta.items():
-            table = f"cdf_staging.stg_{fp.stem}__{table_}"
-            if table in context.models:
-                logger.debug("Skipping %s, already exists", table)
+            # Check if the table exists
+            output_table = f"cdf_staging.stg_{fp.stem}__{table_}"
+            if output_table in context.models:
+                logger.debug("Skipping %s, already exists", output_table)
                 continue
-            logger.info("Generating %s", table)
-            table = parse_one(table, into=exp.Table)
-            p = ws.transform_path / "staging" / table.db / f"{table.name}.yaml"
+            # Generate the table
+            logger.info("Generating %s", output_table)
+            input_table = parse_one(f"{fp.stem}.{table_}", into=exp.Table)
+            p = (
+                ws.transform_path
+                / "staging"
+                / input_table.db
+                / f"{input_table.name}.yaml"
+            )
             p.parent.mkdir(parents=True, exist_ok=True)
             with p.open("w") as f:
                 _yaml.YAML().dump(
                     {
-                        "input": f"{table.db}.{table.name}",
+                        "input": f"{input_table.db}.{input_table.name}",
                         "prefix": "",
                         "suffix": "",
                         "excludes": [],
