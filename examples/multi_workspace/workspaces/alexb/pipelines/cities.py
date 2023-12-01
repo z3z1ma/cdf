@@ -17,8 +17,8 @@ def us_zip_codes():
 
 
 export_pipelines(
-    pipeline_spec(us_zip_codes),
-    pipeline_spec(
+    pipeline_spec(us_zip_codes),  # The bare minimum to register a pipeline
+    pipeline_spec(  # A fancier pipeline with inline metric capture
         us_zip_codes,
         "us_zip_codes_metrics",
         metrics={
