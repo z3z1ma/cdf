@@ -24,3 +24,6 @@ ingest.destination="duckdb"
 ingest.credentials="duckdb:///cdf.duckdb"
 transform.type="duckdb"
 transform.database="cdf.duckdb"
+
+[ff]
+provider = "local"

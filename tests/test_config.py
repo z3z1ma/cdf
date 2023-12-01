@@ -24,7 +24,7 @@ def test_get_config(empty_provider):
     # Test case 1: Can get config from local files, in this case the top-level config
     providers = list(
         find_config_providers(
-            search_paths=["tests/fixtures"],
+            search_paths=["./examples/multi_workspace/workspaces/alexb"],
             search_cwd=False,
         )
     )
@@ -44,7 +44,10 @@ def test_get_config(empty_provider):
     # Test case 5: Can get multiple config providers
     providers = list(
         find_config_providers(
-            search_paths=["tests/fixtures/ut_project"],
+            search_paths=[
+                "./examples/multi_workspace/workspaces/alexb",
+                "./examples/multi_workspace/workspaces/connorl",
+            ],
             search_cwd=False,
         )
     )
