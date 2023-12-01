@@ -434,6 +434,8 @@ def publish(
     ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
+    from cdf.core.publisher import Payload
+
     project: Project = ctx.obj
     ws, pub = _parse_ws_component(publisher)
     workspace = project[ws]
@@ -444,9 +446,7 @@ def publish(
             raise typer.BadParameter(
                 f"Model {runner.from_model} not found in transform context."
             )
-        from cdf.core.publisher import Payload
-
-        return runner(data=Payload(context.fetchdf(runner.query)), **json.loads(opts))
+        runner(data=Payload(context.fetchdf(runner.query)), **json.loads(opts))
 
 
 @app.command("execute-script", rich_help_panel="Utility")
