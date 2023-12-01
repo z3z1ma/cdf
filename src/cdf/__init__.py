@@ -2,7 +2,7 @@ from dlt import pipeline as pipeline
 from dlt.common.configuration import with_config as with_config
 
 import cdf.core.logger as logger
-from cdf.core.publisher import export_publishers, publisher_spec
+from cdf.core.publisher import Payload, export_publishers, publisher_spec
 from cdf.core.source import (
     CDFResource,
     CDFSource,
@@ -22,6 +22,7 @@ __all__ = [
     "PipeGen",
     "publisher_spec",
     "export_publishers",
+    "Payload",
     "logger",
     "with_config",
     "pipeline",

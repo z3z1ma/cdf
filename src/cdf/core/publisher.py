@@ -11,7 +11,10 @@ if t.TYPE_CHECKING:
 
 
 class Payload(t.NamedTuple):
+    """A payload to publish sent to the first pos arg of a publisher."""
+
     payload: "pd.DataFrame"
+    last_execution_time: str | None = None
 
 
 class _Runner(t.Protocol):
