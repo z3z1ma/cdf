@@ -30,8 +30,8 @@ def get_some_pokemon() -> "PipeGen":
 
 __CDF_PIPELINES__ = [
     pipeline_spec(
-        pipeline_name="pokemon",
-        pipeline_gen=get_some_pokemon,
+        name="pokemon",
+        pipe=get_some_pokemon,
         version=1,
         owners=("qa-team"),
         description="Extracts pokemon data from an API.",

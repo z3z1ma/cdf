@@ -25,8 +25,7 @@ def node_info():
 
 export_pipelines(
     pipeline_spec(
-        pipeline_name="node_info",
-        pipeline_gen=node_info,
+        pipe=node_info,
         version=1,
         owners=("qa-team"),
         description="A source that emits random data.",

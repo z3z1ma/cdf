@@ -141,8 +141,8 @@ def get_rust_stuff() -> "PipeGen":
 # This is the only addition required to an existing dlt source file to get the benefits of cdf
 __CDF_PIPELINES__ = [
     {
-        "pipeline_name": "hackernews",
-        "pipeline_gen": get_rust_stuff,
+        "name": "hackernews",
+        "pipe": get_rust_stuff,
         "version": 1,
         "owners": ("qa-team"),
         "description": "Extracts hackernews data from an API.",
@@ -160,8 +160,8 @@ from cdf import export_pipelines, pipeline_spec  # noqa
 
 export_pipelines(
     pipeline_spec(
-        "hackernews_2",
-        pipeline_gen=get_rust_stuff,
+        name="hackernews_2",
+        pipe=get_rust_stuff,
         version=2,
         owners=("qa-team"),
         description="Extracts hackernews data from an API.",

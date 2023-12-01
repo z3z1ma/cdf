@@ -13,8 +13,7 @@ def source1():
 
 __CDF_PIPELINES__ = [
     {
-        "pipeline_name": "source1",
-        "pipeline_gen": source1,
+        "pipe": source1,
         "version": 1,
         "owners": ("qa-team"),
         "description": "A source that enumerates integers.",

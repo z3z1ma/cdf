@@ -79,6 +79,9 @@ def main(
         dlt.config["runtime.log_level"] = "DEBUG"
         sqlmesh.configure_logging(force_debug=True)
 
+    if ctx.invoked_subcommand in ("init-project", "init-workspace"):
+        return
+
     ctx.obj = Project.find_nearest(root)
     ctx.obj.meta["root"] = root
 
@@ -208,14 +211,14 @@ def discover(
     with workspace.runtime_source(src, **json.loads(opts)) as rt_source:
         rich.print(
             f"\nDiscovered {len(rt_source.resources)} resources in"
-            f" [b red]{pipeline}.v{workspace[src].version}[/b red]:"
+            f" [b red]{pipeline}.v{workspace.pipelines[src].version}[/b red]:"
         )
         for i, resource in enumerate(rt_source.resources.values(), start=1):
             if resource.selected:
                 rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
             else:
                 rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
-        _print_meta(workspace[src])
+        _print_meta(workspace.pipelines[src])
 
 
 @app.command(rich_help_panel="Inspect")
@@ -257,7 +260,7 @@ def head(
             )
         res = rt_source.resources[resource]
         rich.print(
-            f"\nHead of [b red]{resource}[/b red] in [b blue]{pipeline}.v{workspace[src].version}[/b blue]:"
+            f"\nHead of [b red]{resource}[/b red] in [b blue]{pipeline}.v{workspace.pipelines[src].version}[/b blue]:"
         )
         it = flatten_stream(res)
         while num > 0 and (v := next(it, None)):  # type: ignore
@@ -298,13 +301,11 @@ def run_pipeline(
     workspace = project[ws]
     with workspace.overlay():
         pipe = workspace.pipelines[src]
-
-        sink_opts = workspace.sinks[sink].ingest
-        if "BUCKET_URL" in os.environ:
-            sink_opts["staging"] = "filesystem"
-
-        info = pipe.run(resources, sink_opts, **json.loads(opts))  # type: ignore
-    logging.info(info)
+        info = pipe.run(workspace, sink, resources, **json.loads(opts))
+    logger.info(info)
+    if pipe.runtime_metrics:
+        logger.info("Runtime Metrics:")
+        logger.info(pipe.runtime_metrics)
 
 
 @transform.callback(invoke_without_command=True)
@@ -331,7 +332,6 @@ def transform_entrypoint(
                 f" For example: cdf transform {next(iter(project.keys()))} {workspace}"
             )
         elif workspace in project:
-            # invoke help
             ctx.invoke(transform, ["--help"])
         else:
             raise typer.BadParameter(
@@ -624,6 +624,74 @@ def generate_staging_layer(
                     },
                     f,
                 )
+
+
+@app.command("init-workspace", rich_help_panel="Utility")
+def init_workspace(
+    directory: t.Annotated[
+        Path,
+        typer.Argument(
+            help="The directory to initialize the workspace in. Must be empty.",
+            dir_okay=True,
+            file_okay=False,
+            resolve_path=True,
+        ),
+    ] = Path.cwd(),
+) -> None:
+    """:art: Initialize a new workspace.
+
+    \f
+    Args:
+        directory: The directory to initialize the workspace in. Must be empty.
+    """
+    if any(os.listdir(directory)):
+        raise typer.BadParameter("Directory must be empty.")
+    logger.info("Initializing workspace in %s", directory)
+    for dir_ in c.DIR_LAYOUT:
+        directory.joinpath(dir_).mkdir(parents=True, exist_ok=False)
+    directory.joinpath(c.CONFIG_FILE).touch()
+    directory.joinpath(".env").touch()
+    directory.joinpath(".gitignore").touch()
+    directory.joinpath("requirements.txt").touch()
+
+
+@app.command("init-project", rich_help_panel="Utility")
+def init_project(
+    ctx: typer.Context,
+    directories: t.Annotated[
+        t.List[Path],
+        typer.Argument(
+            help="The directory to initialize the project in. Must be empty.",
+            dir_okay=True,
+            file_okay=False,
+            resolve_path=False,
+        ),
+    ],
+    root: t.Annotated[
+        Path,
+        typer.Option(
+            ..., "-r", "--root", help="The directory to initialize the project."
+        ),
+    ] = Path.cwd(),
+) -> None:
+    """:art: Initialize a new project in the current directory.
+    \f
+    Args:
+        root: The directory to initialize the project in.
+        directories: The directories in which to inialize workspaces relative to the project root.
+    """
+    import tomlkit
+
+    root.mkdir(parents=True, exist_ok=True)
+    if any(os.listdir(d) for d in directories):
+        raise typer.BadParameter("Directories must be empty.")
+    if any(d.is_absolute() for d in directories):
+        raise typer.BadParameter("Directories must be relative paths.")
+    root.joinpath(c.WORKSPACE_FILE).write_text(
+        tomlkit.dumps({"workspace": [str(d.relative_to(root)) for d in directories]})
+    )
+    for directory in directories:
+        ctx.invoke(init_workspace, directory=root / directory)
 
 
 def _parse_ws_component(component: str) -> t.Tuple[str, str]:

@@ -6,8 +6,8 @@ from cdf import pipeline_spec
 
 __CDF_PIPELINES__ = [
     pipeline_spec(
-        "chess_player_data_discrete",
-        pipeline_gen=partial(
+        name="chess_player_data_discrete",
+        pipe=partial(
             source,
             ["magnuscarlsen", "vincentkeymer", "dommarajugukesh", "rpragchess"],
             start_month="2022/11",
@@ -19,8 +19,8 @@ __CDF_PIPELINES__ = [
         tags=("api", "live", "test"),
     ),
     pipeline_spec(
-        "chess_player_data",
-        pipeline_gen=partial(
+        name="chess_player_data",
+        pipe=partial(
             source,
             ["magnuscarlsen", "vincentkeymer", "dommarajugukesh", "rpragchess"],
         ),

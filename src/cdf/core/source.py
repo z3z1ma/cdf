@@ -13,6 +13,10 @@ from dlt.sources import DltResource as CDFResource
 from dlt.sources import DltSource as CDFSource
 
 import cdf.core.constants as c
+from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
+
+if t.TYPE_CHECKING:
+    from cdf.core.workspace import Workspace
 
 P = t.ParamSpec("P")
 
@@ -66,10 +70,10 @@ class SinkOptions(t.TypedDict, total=False):
 
 @dataclass
 class pipeline_spec:
-    pipeline_name: str
-    """The name of the pipeline."""
-    pipeline_gen: CDFPipeline
-    """The pipeline generator function."""
+    pipe: CDFPipeline
+    """The pipeline generator function or cdf source."""
+    name: str | None = None
+    """The name of the pipeline. Inferred from the pipe function if not provided."""
     version: int = 1
     """The pipeline version. This is appended to the target dataset name."""
     owners: t.Sequence[str] = ()
@@ -87,7 +91,7 @@ class pipeline_spec:
     accumulated into this dict. The metric definitions are callables that take
     the current item and the current metric value and return the new metric value.
     """
-    enabled = True
+    enabled: bool = True
     """Whether this pipeline is enabled."""
 
     def unwrap(self, **kwargs) -> PipeGen:
@@ -102,60 +106,85 @@ class pipeline_spec:
             freely manipulate the source in place before sending or can simply keep the source and
             close the generator. Business logic can be codified by the end user based on the interface.
         """
-        ctx = (
-            self.pipeline_gen(**kwargs)
-            if callable(self.pipeline_gen)
-            else self.pipeline_gen
-        )
+        ctx = self.pipe(**kwargs) if callable(self.pipe) else self.pipe
         if isinstance(ctx, CDFSource):
             ctx = _basic_pipe(ctx)
         return ctx
 
     def __post_init__(self) -> None:
-        _pipe = self.pipeline_gen
+        if self.name is None:
+            self.name = self.pipe.__name__
+
+        _pipe = self.pipe
         _metrics = {}
 
         def _run(
+            workspace: "Workspace",
+            sink: str,
             resources: t.List[str] | None = None,
-            sink_opts: SinkOptions | None = None,
-            apply_flags=lambda src: src,
             **kwargs,
         ) -> LoadInfo:
+            """Run the pipeline."""
             nonlocal _metrics, _pipe
 
             ctx = self.unwrap(**kwargs)
             source = next(ctx)
 
-            if resources is None:
-                # Use feature flags to select resources
-                apply_flags(source)
-            else:
+            feature_flags, meta = get_or_create_flag_dispatch(
+                None,
+                source=source,
+                workspace=workspace,
+            )
+
+            if config_hash := meta.get("config_hash"):
+                workspace.raise_on_ff_lock_mismatch(config_hash)
+
+            if resources:
                 # Prioritize explicit resource selection
                 for name, resource in source.resources.items():
                     resource.selected = name in resources
+            else:
+                # Use feature flags to select resources if no explicit selection
+                apply_feature_flags(
+                    source,
+                    feature_flags,
+                    workspace=workspace,
+                    raise_on_no_resources=True,
+                )
 
+            def agg_map(resource: str, metric_name: str, fn: MetricAccumulator):
+                def _aggregator(item):
+                    _metrics[resource][metric_name] = fn(
+                        item, _metrics[resource][metric_name]
+                    )
+                    return item
+
+                return _aggregator
+
+            # Integrate metric capture
             for resource, metric_defs in self.metrics.items():
                 _metrics.setdefault(resource, {})
                 for metric_name, fn in metric_defs.items():
                     _metrics[resource].setdefault(metric_name, 0)
+                    source.resources[resource].add_map(
+                        agg_map(resource, metric_name, fn)
+                    )
 
-                    def agg(item) -> Metric:
-                        _metrics[resource][metric_name] = fn(
-                            item, _metrics[resource][metric_name]
-                        )
-                        return item
-
-                    source.resources[resource].add_map(agg)
+            # Get sink config
+            # TODO: migrate to dlt 0.4.
+            sink_opts = t.cast(SinkOptions, workspace.sinks[sink].ingest)
+            if "BUCKET_URL" in os.environ:
+                sink_opts["staging"] = "filesystem"
 
             tmpdir = tempfile.TemporaryDirectory()
             try:
                 ctx.send(
                     dlt.pipeline(
-                        f"cdf-{self.pipeline_name}",
-                        dataset_name=f"{self.pipeline_name}_v{self.version}",
+                        f"cdf-{self.name}",
+                        dataset_name=f"{self.name}_v{self.version}",
                         progress=os.getenv("CDF_PROGRESS", "alive_progress"),  # type: ignore
                         pipelines_dir=tmpdir.name,
-                        **(sink_opts or {}),
+                        **sink_opts,
                     )
                 )
                 raise RuntimeError("Pipeline did not complete.")
@@ -173,12 +202,22 @@ class pipeline_spec:
 
     def __call__(
         self,
-        resources: t.List[str],
-        sink_opts: SinkOptions,
-        apply_flags=lambda src: src,
+        workspace: "Workspace",
+        sink: str,
+        resources: t.List[str] | None = None,
         **kwargs,
     ) -> LoadInfo:
-        return self.run(resources, sink_opts, apply_flags, **kwargs)
+        """Run the pipeline.
+
+        Args:
+            workspace (Workspace): The workspace.
+            sink (str): The sink to run the pipeline on.
+            resources (t.List[str] | None, optional): The resources to run. Defaults to None.
+
+        Returns:
+            LoadInfo: The load info.
+        """
+        return self.run(workspace, sink, resources, **kwargs)
 
 
 def export_pipelines(*pipelines: pipeline_spec, scope: dict | None = None) -> None:

@@ -1,3 +1,4 @@
 {
+  "source:datateam.us_zip_codes:us_cities": true,
   "source:datateam.hackernews:keyword_hits": true
 }

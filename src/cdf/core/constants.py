@@ -26,3 +26,15 @@ PIPELINES_PATH = "./pipelines"
 TRANSFORMS_PATH = "./models"
 PUBLISHERS_PATH = "./publishers"
 LOCKFILE_PATH = "./cdf.lock"
+
+DIR_LAYOUT = (
+    PIPELINES_PATH,
+    TRANSFORMS_PATH,
+    PUBLISHERS_PATH,
+    "./audits",
+    "./macros",
+    "./metadata",
+    "./scripts",
+    "./seeds",
+    "./tests",
+)

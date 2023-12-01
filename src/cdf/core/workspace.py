@@ -350,12 +350,18 @@ class Workspace:
     @property
     def has_transforms(self) -> bool:
         """True if workspace has transforms."""
-        return self.transform_path.exists()
+        return (
+            self.transform_path.exists()
+            and len(list(self.transform_path.iterdir())) > 0
+        )
 
     @property
     def has_dependencies(self) -> bool:
         """True if workspace has a virtual environment spec."""
-        return self.requirements_path.exists()
+        return (
+            self.requirements_path.exists()
+            and len(self.requirements_path.read_text().strip().splitlines()) > 0
+        )
 
     @property
     def capabilities(self) -> WorkspaceCapabilities:
@@ -678,7 +684,7 @@ class Workspace:
                         assert isinstance(
                             spec, pipeline_spec
                         ), f"{spec} is not a pipeline"
-                        self._pipelines[spec.pipeline_name] = spec
+                        self._pipelines[spec.name] = spec
         return self._pipelines
 
     @property
@@ -728,10 +734,13 @@ class Workspace:
         except KeyError:
             raise ValueError(
                 f"Could not find transform gateway {sink} for {self.namespace}."
+                f" Please add a [sink.{sink}] entry to your cdf_config.toml file."
             )
         except StopIteration:
             raise ValueError(
                 f"Could not find prod transform gateway for {self.namespace}."
+                " Please add a [sink.<name>] entry to your cdf_config.toml file and/or"
+                " ensure one of your sinks has a prod key set to true."
             )
 
         try:
@@ -848,7 +857,7 @@ class Workspace:
     def runtime_source(self, pipeline_name: str, **kwargs) -> t.Iterator[CDFSource]:
         """Get a runtime source from the workspace.
 
-        A runtime source is a the quivalent to the source cdf would generate itself in a typical
+        A runtime source is a the equivalent to the source cdf would generate itself in a typical
         pipeline execution. The source is pulled out from the pipeline generator.
 
         Args:
@@ -874,18 +883,6 @@ class Workspace:
 
         with with_config_providers_from_workspace(workspace=self):
             yield
-
-    # TODO: the two methods below should return a union component type of a pipeline/publisher/transform
-    def __getitem__(self, name: str) -> pipeline_spec:
-        """Get a pipeline from the workspace."""
-        return self.pipelines[name]
-
-    def __getattr__(self, name: str) -> pipeline_spec:
-        """Get a pipeline from the workspace."""
-        try:
-            return self.pipelines[name]
-        except KeyError:
-            raise AttributeError(f"Workspace has no pipeline {name}")
 
     def __repr__(self) -> str:
         return f"Workspace(root='{self._root.relative_to(Path.cwd())}', capabilities={self.capabilities})"
