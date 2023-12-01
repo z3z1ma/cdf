@@ -1,0 +1,48 @@
+us_cities:
+  columns:
+    zip_code:
+      name: zip_code
+      data_type: bigint
+      nullable: true
+    latitude:
+      name: latitude
+      data_type: double
+      nullable: true
+    longitude:
+      name: longitude
+      data_type: double
+      nullable: true
+    city:
+      name: city
+      data_type: text
+      nullable: true
+    state:
+      name: state
+      data_type: text
+      nullable: true
+    county:
+      name: county
+      data_type: text
+      nullable: true
+    _dlt_load_id:
+      name: _dlt_load_id
+      data_type: text
+      nullable: false
+    _dlt_id:
+      name: _dlt_id
+      data_type: text
+      nullable: false
+      unique: true
+    latitude__v_text:
+      name: latitude__v_text
+      data_type: text
+      nullable: true
+      variant: true
+    longitude__v_text:
+      name: longitude__v_text
+      data_type: text
+      nullable: true
+      variant: true
+  write_disposition: replace
+  name: us_cities
+  resource: us_cities

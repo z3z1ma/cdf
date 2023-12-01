@@ -529,8 +529,9 @@ def metadata(ctx: typer.Context, workspace: str) -> None:
     from ruamel.yaml import YAML
     from sqlglot import exp, parse_one
 
+    logger.info("Fetching and aggregating metadata from sqlmesh and dlt")
     project: Project = ctx.obj
-    yaml = YAML(typ="safe")
+    yaml = YAML(typ="rt")
 
     ws = project[workspace]
     with ws.overlay():
@@ -579,6 +580,9 @@ def metadata(ctx: typer.Context, workspace: str) -> None:
 def generate_staging_layer(
     ctx: typer.Context,
     workspace: str,
+    fetch_metadata: bool = typer.Option(
+        True, help="Regenerate metadata before running"
+    ),
 ) -> None:
     """:floppy_disk: Generate a staging layer for a catalog.
 
@@ -589,12 +593,17 @@ def generate_staging_layer(
     Args:
         ctx: The CLI context.
         workspace: The workspace to generate staging layers for.
+        fetch_metadata: Whether to fetch metadata before generating staging layers.
     """
     from ruamel.yaml import YAML
     from sqlglot import exp, parse_one
 
+    if fetch_metadata:
+        metadata(ctx, workspace)
+
+    logger.info("Generating cdf DSL staging layer")
     project: Project = ctx.obj
-    yaml = YAML(typ="safe")
+    yaml = YAML(typ="rt")
 
     ws = project[workspace]
     context = ws.get_transform_context()
