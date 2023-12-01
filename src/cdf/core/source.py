@@ -1,4 +1,4 @@
-"""The source class for continuous data flow sources."""
+"""The source class for continuous data framework sources."""
 import fnmatch
 import os
 import tempfile

@@ -62,7 +62,7 @@ def main(
         ),
     ] = False,
 ):
-    """:sparkles: a [b]framework[b] for managing and running [u]continousdataflow[/u] projects. :sparkles:
+    """:sparkles: a [b]framework[b] for managing and running [u]continousdataframework[/u] projects. :sparkles:
 
     [b/]
     - ( :electric_plug: ) [b blue]pipelines[/b blue]    are responsible for fetching data from a data pipeline.
