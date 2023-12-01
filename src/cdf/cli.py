@@ -1,6 +1,5 @@
 """CLI for cdf."""
 import json
-import logging
 import os
 import subprocess
 import sys
@@ -338,9 +337,9 @@ def transform_entrypoint(
                 f"Workspace `{workspace}` not found. Available workspaces: {', '.join(project.keys())}"
             )
     if "." in workspace:
-        workspace, destination = _parse_ws_component(workspace)
+        workspace, sink = _parse_ws_component(workspace)
     else:
-        destination = None
+        sink = None
     workspaces = workspace.split(",")
     main_workspace = workspaces[0]
     # Ensure we have a primary workspace
@@ -361,7 +360,7 @@ def transform_entrypoint(
                 f"No transforms discovered in workspace `{ws}`. Add transforms to {c.TRANSFORMS_PATH} to enable them."
             )
     # Swap context to SQLMesh context
-    ctx.obj = project.get_transform_context(workspaces, sink=destination)
+    ctx.obj = project.get_transform_context(workspaces, sink=sink)
 
 
 SQLMESH_COMMANDS = (
