@@ -1,5 +1,5 @@
+import fnmatch
 import os
-import re
 import typing as t
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -69,11 +69,11 @@ class CDFTransformLoader(SqlMeshLoader):
                     exp.column(c).as_(f"{spec.prefix}{c}{spec.suffix}")
                     for c in meta[input_table.name]["columns"]
                     if c not in spec.excludes
-                    and not any(re.match(p, c) for p in spec.exclude_patterns)
+                    and not any(fnmatch.fnmatch(c, p) for p in spec.exclude_patterns)
                     and (not spec.includes or c in spec.includes)
                     and (
                         not spec.include_patterns
-                        or any(re.match(p, c) for p in spec.include_patterns)
+                        or any(fnmatch.fnmatch(c, p) for p in spec.include_patterns)
                     )
                 ]
                 projection = [
