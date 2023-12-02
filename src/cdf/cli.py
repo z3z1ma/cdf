@@ -432,6 +432,10 @@ def publish(
     opts: str = typer.Argument(
         "{}", help="JSON formatted options to forward to the publisher."
     ),
+    prompt_on_untracked: bool = typer.Option(
+        True,
+        help="Prompt the user before publishing untracked data. Defaults to True.",
+    ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
     from cdf.core.publisher import Payload
@@ -443,9 +447,15 @@ def publish(
         runner = workspace.publishers[pub]
         context = workspace.get_transform_context()
         if runner.from_model not in context.models:
-            raise typer.BadParameter(
-                f"Model {runner.from_model} not found in transform context."
+            logger.warning(
+                "Model %s not found in transform context. We cannot track lineage or enforce data quality.",
+                runner.from_model,
             )
+            if prompt_on_untracked:
+                typer.confirm(
+                    "Model not found in transform context. We cannot track lineage or enforce data quality. Continue?",
+                    abort=True,
+                )
         runner(data=Payload(context.fetchdf(runner.query)), **json.loads(opts))
 
 
