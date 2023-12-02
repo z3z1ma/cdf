@@ -256,19 +256,9 @@ class HarnessFeatureFlagProvider(AbstractFeatureFlagProvider):
         Returns:
             bool: True if the flag exists, False otherwise
         """
-        try:
-            # Very fast method, eventually consistent on upstream mutation
-            if "flags/" + self._cdf_id_to_harness_id(identifier) in list(
-                self.client._repository.cache.keys()
-            ):
-                return True
-            # Slower but strongly consistent
-            self.get_one(identifier)
-            return True
-        except requests.HTTPError as e:
-            if e.response and e.response.status_code in (404, 400):
-                return False
-            raise
+        return "flags/" + self._cdf_id_to_harness_id(identifier) in list(
+            self.client._repository.cache.keys()
+        )
 
     def get_one(self, identifier: str) -> bool:
         """Get a flag from the harness feature flag sdk client
@@ -302,7 +292,10 @@ class HarnessFeatureFlagProvider(AbstractFeatureFlagProvider):
         """
         resp = requests.post(
             "https://app.harness.io/gateway/cf/admin/features",
-            params={"account": self.account, "organization": self.organization},
+            params={
+                "accountIdentifier": self.account,
+                "orgIdentifier": self.organization,
+            },
             headers={"Content-Type": "application/json", "x-api-key": self.api_key},
             json={
                 "defaultOnVariation": "on-variation",
