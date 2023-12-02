@@ -1,14 +1,13 @@
 <div align="center">
 <h1 align="center">
-<img src="https://raw.githubusercontent.com/PKief/vscode-material-icon-theme/ec559a9f6bfd399b82bb44393651661b08aaf7ba/icons/folder-markdown-open.svg" width="100" />
-<br>CDF</h1>
-<h3>◦ Cdf: Code, Deploy, Flourish-Unleash Your Dev Potential!</h3>
-<h3>◦ Developed with the software and tools below.</h3>
+<img src="https://raw.githubusercontent.com/PKief/vscode-material-icon-theme/ec559a9f6bfd399b82bb44393651661b08aaf7ba/icons/database.svg" width="100" />
+<br>CDF (Continuous Data Framework)</h1>
+<h3>Craft end-to-end data pipelines and manage them continuously</h3>
 
 <p align="center">
-<img src="https://img.shields.io/badge/YAML-CB171E.svg?style=flat-square&logo=YAML&logoColor=white" alt="YAML" />
 <img src="https://img.shields.io/badge/Python-3776AB.svg?style=flat-square&logo=Python&logoColor=white" alt="Python" />
-<img src="https://img.shields.io/badge/JSON-000000.svg?style=flat-square&logo=JSON&logoColor=white" alt="JSON" />
+<img src="https://img.shields.io/badge/sqlmesh-0.57.0+-blue" alt="SQLMesh" />
+<img src="https://img.shields.io/badge/dlt-0.4.0+-blue" alt="dlt" />
 </p>
 <img src="https://img.shields.io/github/license/z3z1ma/cdf?style=flat-square&color=5D6D7E" alt="GitHub license" />
 <img src="https://img.shields.io/github/last-commit/z3z1ma/cdf?style=flat-square&color=5D6D7E" alt="git-last-commit" />
