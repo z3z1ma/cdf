@@ -21,7 +21,7 @@
 - [📖 Table of Contents](#-table-of-contents)
 - [📍 Overview](#-overview)
 - [📦 Features](#-features)
-- [📂 repository Structure](#-repository-structure)
+- [📂 Repository Structure](#-repository-structure)
 - [⚙️ Modules](#modules)
 - [🚀 Getting Started](#-getting-started)
     - [🔧 Installation](#-installation)
@@ -148,9 +148,9 @@ A collection of core modules for the CDF framework.
 
 Please ensure you have the following dependencies installed on your system:
 
-`- Python 3.10+`
+- `Python 3.10+`
 
-`- duckdb 0.9+`
+- `duckdb 0.9+`
 
 ### 🔧 Installation
 
@@ -176,6 +176,79 @@ cd cdf
 ```sh
 pip install -e .
 ```
+
+### 🤖 Running cdf
+
+#### Configuration
+
+Set up the environment:
+
+- Create a `.env` file in your project root.
+- Define necessary variables like `CDF_ROOT` and `CDF_LOG_LEVEL`.
+
+#### CLI Commands
+
+##### General Structure
+
+```bash
+cdf [OPTIONS] COMMAND [ARGS]...
+```
+
+Global Options:
+- `--help`: Display help.
+- `--version`: Show version.
+
+##### Commands Overview
+
+1. **Project Initialization**:
+   - `init-project`: Initializes a new project.
+   - `init-workspace`: Creates a new workspace.
+
+2. **Project and Workspace Management**:
+   - `index`: Prints an index of components.
+   - `docs`: Generates project documentation.
+   - `path`: Displays the path of the project/workspace.
+
+3. **Data Pipeline Operations**:
+   - `pipeline`: Ingests data from a specified pipeline.
+   - `discover`: Discovers resources within a pipeline.
+   - `head`: Shows the first N rows of a resource.
+
+4. **Transform Operations**:
+   - `transform`: Transforms data in a database.
+
+5. **Publishing Data**:
+   - `publish`: Publishes data to external systems.
+
+6. **Utility Commands**:
+   - `execute_script`: Executes a script in a workspace.
+   - `execute_bin`: Runs an executable from the workspace's environment.
+   - `fetch_metadata`: Regenerates metadata for a workspace.
+   - `generate_staging_layer`: Generates staging layers for catalogs.
+
+#### Integrating a Source
+
+- Export a `__CDF_PIPELINES__` variable with source metadata.
+- Use either direct dictionary definition or `export_sources` for a more readable format.
+
+#### Configuring a Source
+
+- Centralized configuration in `cdf_config.toml`.
+- Jinja templating and environment variable overrides.
+- Simplified management for multiple sources with similar configuration.
+
+#### Running a Pipeline via Programmatic API
+
+- Utilize the `Project` and `Workspace` classes.
+- Example provided demonstrates pipeline execution.
+
+#### Sources, Models, and Publishers
+
+- Define sources in the `sources` directory with specific metadata.
+- Use SQLMesh for defining models with opinionated behaviors and macros.
+- Define publishers in the `publishers` directory to publish data to external systems.
+
+---
 
 ### 🧪 Tests
 
