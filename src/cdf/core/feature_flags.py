@@ -346,8 +346,10 @@ class HarnessFeatureFlagProvider(AbstractFeatureFlagProvider):
 
     def drop_many(self, identifiers: t.List[str]) -> None:
         """Drop many flags from the Harness Platform API
+
         Args:
             identifiers (list[str]): A list of flag identifiers
+
         Raises:
             HTTPError: If the request fails
         """
