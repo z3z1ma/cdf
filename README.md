@@ -81,13 +81,13 @@ More comprehensive documentation is available at https://z3z1ma.github.io/cdf. (
 | 🏷️ | **Versioning & Tagging** | Advanced version control and tagging for components, enabling effective management and tracking of data pipelines. |
 | 📊 | **Data Management**      | Simplifies complex data pipeline creation, management, and execution, catering to continuous data integration and deployment. |
 
-This table offers a snapshot of the `cdf` framework's features, emphasizing its robust, user-friendly, and scalable nature, making it an ideal choice for modern data engineering teams.
 
 
 ## 📂 Repository Structure
 
-The following is the structure of the `cdf` repository workspace:
+The following is the structure of a `cdf` repository workspace:
 
+`cdf init-workspace`
 ```sh
 .
 ├── audits
@@ -121,7 +121,7 @@ It extends the structure of a `sqlmesh` project with the following additions:
 
 ## ⚙️ Modules
 
-<details open><summary>CDF Core</summary>
+<details closed><summary>CDF Core</summary>
 
 A collection of core modules for the CDF framework.
 
