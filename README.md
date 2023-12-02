@@ -61,7 +61,7 @@ In essence, cdf is not just a framework but a paradigm shift in continuous data
 integration and deployment, offering an unparalleled experience to teams
 dedicated to streamlining their data operations.
 
-More comprehensive documentation is available at https://z3z1ma.github.io/cdf. (wip)
+More comprehensive documentation will be available at https://z3z1ma.github.io/cdf but for now see the [examples](https://github.com/z3z1ma/cdf/tree/main/examples) directory for sample projects as the fastest way to get started.
 
 ## 📦 Features
 
