@@ -179,7 +179,7 @@ pip install -e .
 
 ### 🤖 Running cdf
 
-Please refer to the [documentation](https://z3z1ma.github.io/cdf) for more detailed information or refer to the [examples](https:://github.com/z3z1ma/cdf/tree/main/examples) directory for sample projects.
+Please refer to the [documentation](https://z3z1ma.github.io/cdf) for more detailed information or refer to the [examples](https://github.com/z3z1ma/cdf/tree/main/examples) directory for sample projects.
 
 The following is just a brief overview of the CLI.
 
