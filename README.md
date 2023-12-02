@@ -188,7 +188,7 @@ The following is just a brief overview of the CLI.
 Set up the environment:
 
 - Create and enter an empty directory and run `cdf init-workspace`.
-- Alternatively run `cdf init-project alexb kaelahf orionb` to create a project with multiple workspaces for each user or team.
+- Alternatively run `cdf init-project <user1> <team2> <team3>` to create a project with multiple workspaces for each user or team.
 
 #### CLI Commands
 
