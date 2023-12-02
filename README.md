@@ -179,12 +179,14 @@ pip install -e .
 
 ### 🤖 Running cdf
 
+Please refer to the [documentation](https://z3z1ma.github.io/cdf) for more detailed information. (wip)
+The following is just a brief overview of the CLI.
+
 #### Configuration
 
 Set up the environment:
 
-- Create a `.env` file in your project root.
-- Define necessary variables like `CDF_ROOT` and `CDF_LOG_LEVEL`.
+- Create and enter an empty directory and run `cdf init-workspace`.
 
 #### CLI Commands
 
@@ -197,6 +199,8 @@ cdf [OPTIONS] COMMAND [ARGS]...
 Global Options:
 - `--help`: Display help.
 - `--version`: Show version.
+- `--log-level`: Set log level.
+- `--debug`: Enable debug mode which sets log level on underlying libraries.
 
 ##### Commands Overview
 
@@ -215,16 +219,16 @@ Global Options:
    - `head`: Shows the first N rows of a resource.
 
 4. **Transform Operations**:
-   - `transform`: Transforms data in a database.
+  - `transform`: Transforms data in a database. Entry point for SQLMesh with cdf semantics injected.
 
 5. **Publishing Data**:
    - `publish`: Publishes data to external systems.
 
 6. **Utility Commands**:
-   - `execute_script`: Executes a script in a workspace.
-   - `execute_bin`: Runs an executable from the workspace's environment.
-   - `fetch_metadata`: Regenerates metadata for a workspace.
-   - `generate_staging_layer`: Generates staging layers for catalogs.
+   - `execute-script`: Executes a script in a workspace.
+   - `execute-bin`: Runs an executable from the workspace's environment.
+   - `fetch-metadata`: Regenerates metadata for a workspace.
+   - `generate-staging-layer`: Generates staging layers for catalogs.
 
 #### Integrating a Source
 
