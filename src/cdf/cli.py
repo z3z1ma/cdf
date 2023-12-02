@@ -26,13 +26,13 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
-transform = typer.Typer(
+transform_app = typer.Typer(
     rich_markup_mode="rich",
     epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
     add_completion=False,
     no_args_is_help=True,
 )
-app.add_typer(transform, name="transform", rich_help_panel="Integrate")
+app.add_typer(transform_app, name="transform", rich_help_panel="Integrate")
 
 dotenv.load_dotenv()
 
@@ -268,8 +268,8 @@ def head(
             num -= 1
 
 
-@app.command("pipeline", rich_help_panel="Integrate")
-def run_pipeline(
+@app.command(rich_help_panel="Integrate")
+def pipeline(
     ctx: typer.Context,
     pipeline: t.Annotated[
         str, typer.Argument(help="The <workspace>.<pipeline> to ingest.")
@@ -307,8 +307,8 @@ def run_pipeline(
         logger.info(pipe.runtime_metrics)
 
 
-@transform.callback(invoke_without_command=True)
-def transform_entrypoint(
+@transform_app.callback(invoke_without_command=True)
+def transform(
     ctx: typer.Context,
     workspace: t.Annotated[
         str,
@@ -331,7 +331,7 @@ def transform_entrypoint(
                 f" For example: cdf transform {next(iter(project.keys()))} {workspace}"
             )
         elif workspace in project:
-            ctx.invoke(transform, ["--help"])
+            ctx.invoke(transform_app, ["--help"])
         else:
             raise typer.BadParameter(
                 f"Workspace `{workspace}` not found. Available workspaces: {', '.join(project.keys())}"
@@ -417,7 +417,7 @@ def _get_transform_command_wrapper(name: str):
 
 
 for passthrough in SQLMESH_COMMANDS:
-    transform.command(
+    transform_app.command(
         passthrough,
         context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
     )(_get_transform_command_wrapper(passthrough))
@@ -460,7 +460,7 @@ def publish(
 
 
 @app.command("execute-script", rich_help_panel="Utility")
-def run_script(
+def execute_script(
     ctx: typer.Context,
     script: t.Annotated[str, typer.Argument(help="The <workspace>.<script> to run")],
     opts: str = typer.Argument(
@@ -494,7 +494,7 @@ def run_script(
     rich_help_panel="Utility",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def run_bin(ctx: typer.Context, executable: str) -> None:
+def execute_bin(ctx: typer.Context, executable: str) -> None:
     """:rocket: Run an executable located in a workspace venv bin directory.
 
     This is convenient for running package scripts installed in a workspace environment without having to specify the
@@ -523,7 +523,7 @@ def run_bin(ctx: typer.Context, executable: str) -> None:
 
 
 @app.command("fetch-metadata", rich_help_panel="Utility")
-def metadata(ctx: typer.Context, workspace: str) -> None:
+def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
     """:floppy_disk: Regenerate workspace metadata.
 
     Data is stored in <workspace>/metadata/<destination>/<catalog>.yaml
@@ -590,8 +590,8 @@ def metadata(ctx: typer.Context, workspace: str) -> None:
 def generate_staging_layer(
     ctx: typer.Context,
     workspace: str,
-    fetch_metadata: bool = typer.Option(
-        True, help="Regenerate metadata before running"
+    fetch_metadata_: bool = typer.Option(
+        True, "-f", "--fetch-metadata", help="Regenerate metadata before running"
     ),
 ) -> None:
     """:floppy_disk: Generate a staging layer for a catalog.
@@ -608,8 +608,8 @@ def generate_staging_layer(
     from ruamel.yaml import YAML
     from sqlglot import exp, parse_one
 
-    if fetch_metadata:
-        metadata(ctx, workspace)
+    if fetch_metadata_:
+        fetch_metadata(ctx, workspace)
 
     logger.info("Generating cdf DSL staging layer")
     project: Project = ctx.obj
@@ -649,7 +649,7 @@ def generate_staging_layer(
             yaml.dump(stg_specs, f)
 
 
-@app.command("init-workspace", rich_help_panel="Utility")
+@app.command("init-workspace", rich_help_panel="Project Initialization")
 def init_workspace(
     directory: t.Annotated[
         Path,
@@ -703,7 +703,7 @@ def init_workspace(
     directory.joinpath("requirements.txt").touch()
 
 
-@app.command("init-project", rich_help_panel="Utility")
+@app.command("init-project", rich_help_panel="Project Initialization")
 def init_project(
     ctx: typer.Context,
     directories: t.Annotated[
