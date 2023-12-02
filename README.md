@@ -188,6 +188,7 @@ The following is just a brief overview of the CLI.
 Set up the environment:
 
 - Create and enter an empty directory and run `cdf init-workspace`.
+- Alternatively run `cdf init-project alexb kaelahf orionb` to create a project with multiple workspaces for each user or team.
 
 #### CLI Commands
 
@@ -220,7 +221,7 @@ Global Options:
    - `head`: Shows the first N rows of a resource.
 
 4. **Transform Operations**:
-  - `transform`: Transforms data in a database. Entry point for SQLMesh with cdf semantics injected.
+   - `transform`: Transforms data in a database. Entry point for SQLMesh with cdf semantics injected.
 
 5. **Publishing Data**:
    - `publish`: Publishes data to external systems.
