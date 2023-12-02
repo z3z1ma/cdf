@@ -119,7 +119,7 @@ class LocalFeatureFlagProvider(AbstractFeatureFlagProvider):
         Returns:
             bool: True if the flag exists, False otherwise
         """
-        return identifier in LocalFeatureFlagProvider.get_flags(self.workspace)
+        return identifier in LocalFeatureFlagProvider.read_from_disk(self.workspace)
 
     def get_one(self, identifier: str) -> bool:
         """Get a flag.
@@ -130,7 +130,9 @@ class LocalFeatureFlagProvider(AbstractFeatureFlagProvider):
         Returns:
             bool: True if the flag is enabled, False otherwise
         """
-        return LocalFeatureFlagProvider.get_flags(self.workspace).get(identifier, False)
+        return LocalFeatureFlagProvider.read_from_disk(self.workspace).get(
+            identifier, False
+        )
 
     def create_one(
         self, identifier: str, display_name: str | None = None, **kwargs: t.Any
@@ -143,7 +145,7 @@ class LocalFeatureFlagProvider(AbstractFeatureFlagProvider):
             **kwargs: Additional keyword arguments to pass to the implementation
         """
         with LocalFeatureFlagProvider._MUTEX:
-            existing_flags = LocalFeatureFlagProvider.get_flags(self.workspace)
+            existing_flags = LocalFeatureFlagProvider.read_from_disk(self.workspace)
             existing_flags[identifier] = False
             self.workspace.root.joinpath(c.FLAG_FILE).write_text(
                 json.dumps(existing_flags, indent=2)
@@ -156,7 +158,7 @@ class LocalFeatureFlagProvider(AbstractFeatureFlagProvider):
             identifier (str): The unique identifier for the flag
         """
         with LocalFeatureFlagProvider._MUTEX:
-            existing_flags = LocalFeatureFlagProvider.get_flags(self.workspace)
+            existing_flags = LocalFeatureFlagProvider.read_from_disk(self.workspace)
             existing_flags.pop(identifier, None)
             self.workspace.root.joinpath(c.FLAG_FILE).write_text(
                 json.dumps(existing_flags, indent=2)
@@ -164,7 +166,7 @@ class LocalFeatureFlagProvider(AbstractFeatureFlagProvider):
 
     @lru_cache(maxsize=10)
     @staticmethod
-    def get_flags(workspace: "Workspace") -> t.Dict[str, bool]:
+    def read_from_disk(workspace: "Workspace") -> t.Dict[str, bool]:
         """Get flags for a workspace.
 
         Args:
