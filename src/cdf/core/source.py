@@ -14,7 +14,7 @@ from dlt.sources import DltResource as CDFResource
 from dlt.sources import DltSource as CDFSource
 
 import cdf.core.constants as c
-from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
+import cdf.core.feature_flags as ff
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
@@ -131,15 +131,6 @@ class pipeline_spec:
             ctx = self.unwrap(**kwargs)
             source = next(ctx)
 
-            feature_flags, meta = get_or_create_flag_dispatch(
-                None,
-                source=source,
-                workspace=workspace,
-            )
-
-            if config_hash := meta.get("config_hash"):
-                workspace.raise_on_ff_lock_mismatch(config_hash)
-
             if resources:
                 # Prioritize explicit resource selection
                 for name, resource in source.resources.items():
@@ -148,12 +139,7 @@ class pipeline_spec:
                     )
             else:
                 # Use feature flags to select resources if no explicit selection
-                apply_feature_flags(
-                    source,
-                    feature_flags,
-                    workspace=workspace,
-                    raise_on_no_resources=True,
-                )
+                ff.process_source(source, ff.get_provider(workspace))
 
             def agg_map(resource: str, metric_name: str, fn: MetricAccumulator):
                 def _aggregator(item):
@@ -174,7 +160,7 @@ class pipeline_spec:
                     )
 
             # Get sink config
-            # TODO: migrate to dlt 0.4.
+            # TODO: migrate to dlt 0.4.0
             sink_opts = t.cast(SinkOptions, workspace.sinks[sink].ingest)
             if "BUCKET_URL" in os.environ:
                 sink_opts["staging"] = "filesystem"

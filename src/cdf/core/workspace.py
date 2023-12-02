@@ -16,8 +16,8 @@ import tomlkit as toml
 import virtualenv
 
 import cdf.core.constants as c
+import cdf.core.feature_flags as ff
 import cdf.core.logger as logger
-from cdf.core.feature_flags import apply_feature_flags, get_or_create_flag_dispatch
 from cdf.core.publisher import publisher_spec
 from cdf.core.source import CDFSource, pipeline_spec
 from cdf.core.transform import CDFTransformLoader
@@ -870,14 +870,7 @@ class Workspace:
         with self.overlay():
             ctx = self.pipelines[pipeline_name].unwrap(**kwargs)
             source = next(ctx)
-            feature_flags, meta = get_or_create_flag_dispatch(
-                None,
-                source=source,
-                workspace=self,
-            )
-            if config_hash := meta.get("config_hash"):
-                self.raise_on_ff_lock_mismatch(config_hash)
-            yield apply_feature_flags(source, feature_flags, workspace=self)
+            yield ff.process_source(source, ff.get_provider(self))
 
     @contextmanager
     def configured(self) -> t.Iterator[None]:

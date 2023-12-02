@@ -1,22 +1,14 @@
-"""Feature flags for CDF.
-
-Our primary usage pattern of FF is to get a bunch of flags
-for a single component, so we should optimize for that
-This means we may not need to pull every possible flag into
-the cache. Thus our main entrypoint should be something like
-get_component_ff(component_id: str, populate_cache_fn=get_or_create_flag_dispatch)
-
-component_id = <source|transform|publisher>:<name>
-flag_name = <component_id>:<flag_name>
-"""
+"""Feature flags for CDF."""
+import abc
 import json
 import logging
 import typing as t
+from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-from hashlib import sha256
 from threading import Lock
 
 import dlt
+from dlt.common.configuration import with_config
 from dlt.sources import DltSource
 from dlt.sources.helpers import requests
 from featureflags.client import CfClient, Config, Target
@@ -26,478 +18,460 @@ from featureflags.util import log as _ff_logger
 
 import cdf.core.constants as c
 import cdf.core.logger as logger
-from cdf.core.config import populate_fn_kwargs_from_config
-from cdf.core.monads import Result
-from cdf.core.utils import get_source_component_id, qualify_source_component_id
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
 
-FlagDict = t.Dict[str, bool]
-SourceFlagDict = t.Dict[DltSource, FlagDict]
-
 Provider = t.Literal["local", "harness", "launchdarkly"]
 
 
-class FnPopulateCache(t.Protocol):
-    def __call__(
+class AbstractFeatureFlagProvider(abc.ABC):
+    """Base class for feature flag providers"""
+
+    def __init__(self, workspace: "Workspace"):
+        self.workspace = workspace
+
+    @abc.abstractmethod
+    def exists(self, identifier: str) -> bool:
+        """Check if a flag exists.
+
+        Args:
+            identifier (str): The unique identifier for the flag
+
+        Returns:
+            bool: True if the flag exists, False otherwise
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def get_one(self, identifier: str) -> bool:
+        """Get a flag.
+
+        Args:
+            identifier (str): The unique identifier for the flag
+
+        Returns:
+            bool: True if the flag is enabled, False otherwise
+        """
+        raise NotImplementedError
+
+    def get_many(self, identifiers: t.List[str]) -> t.List[bool]:
+        """Get many flags.
+
+        Args:
+            identifiers (list[str]): A list of flag identifiers
+
+        Returns:
+            dict: A mapping of flag identifiers to enabled status
+        """
+        return [self.get_one(i) for i in identifiers]
+
+    @abc.abstractmethod
+    def create_one(
+        self, identifier: str, display_name: str | None = None, **kwargs: t.Any
+    ) -> None:
+        """Create a flag.
+
+        Args:
+            identifier (str): A unique identifier for the flag
+            display_name (str): The display name for the flag which may be leveraged by the provider
+            **kwargs: Additional keyword arguments to pass to the implementation
+        """
+        raise NotImplementedError
+
+    def create_many(self, mappings: t.Dict[str, str], **kwargs: t.Any) -> None:
+        """Create many flags.
+
+        Args:
+            mappings (dict): A mapping of flag identifiers to display names
+        """
+        for k, v in mappings.items():
+            self.create_one(k, v, **kwargs)
+
+    @abc.abstractmethod
+    def drop_one(self, identifier: str) -> None:
+        """Drop a flag.
+
+        Args:
+            identifier (str): The unique identifier for the flag
+        """
+        raise NotImplementedError
+
+    def drop_many(self, identifiers: t.List[str]) -> None:
+        """Drop many flags.
+
+        Args:
+            identifiers (list[str]): A list of flag identifiers
+        """
+        for i in identifiers:
+            self.drop_one(i)
+
+
+class LocalFeatureFlagProvider(AbstractFeatureFlagProvider):
+    _MUTEX = Lock()
+
+    def exists(self, identifier: str) -> bool:
+        """Check if a flag exists.
+
+        Args:
+            identifier (str): The unique identifier for the flag
+
+        Returns:
+            bool: True if the flag exists, False otherwise
+        """
+        return identifier in LocalFeatureFlagProvider.get_flags(self.workspace)
+
+    def get_one(self, identifier: str) -> bool:
+        """Get a flag.
+
+        Args:
+            identifier (str): The unique identifier for the flag
+
+        Returns:
+            bool: True if the flag is enabled, False otherwise
+        """
+        return LocalFeatureFlagProvider.get_flags(self.workspace).get(identifier, False)
+
+    def create_one(
+        self, identifier: str, display_name: str | None = None, **kwargs: t.Any
+    ) -> None:
+        """Create a flag.
+
+        Args:
+            identifier (str): A unique identifier for the flag
+            display_name (str): The display name for the flag which may be leveraged by the provider
+            **kwargs: Additional keyword arguments to pass to the implementation
+        """
+        with LocalFeatureFlagProvider._MUTEX:
+            existing_flags = LocalFeatureFlagProvider.get_flags(self.workspace)
+            existing_flags[identifier] = False
+            self.workspace.root.joinpath(c.FLAG_FILE).write_text(
+                json.dumps(existing_flags, indent=2)
+            )
+
+    def drop_one(self, identifier: str) -> None:
+        """Drop a flag.
+
+        Args:
+            identifier (str): The unique identifier for the flag
+        """
+        with LocalFeatureFlagProvider._MUTEX:
+            existing_flags = LocalFeatureFlagProvider.get_flags(self.workspace)
+            existing_flags.pop(identifier, None)
+            self.workspace.root.joinpath(c.FLAG_FILE).write_text(
+                json.dumps(existing_flags, indent=2)
+            )
+
+    @lru_cache(maxsize=10)
+    @staticmethod
+    def get_flags(workspace: "Workspace") -> t.Dict[str, bool]:
+        """Get flags for a workspace.
+
+        Args:
+            workspace (Workspace): The workspace to get flags for
+
+        Returns:
+            dict: A mapping of flag identifiers to enabled status
+        """
+        logger.debug("Searching for flags in %s", workspace.root)
+
+        feature_flags = {}
+        f = workspace.root / c.FLAG_FILE
+
+        if f.exists():
+            try:
+                feature_flags.update(json.loads(f.read_text()))
+            except json.JSONDecodeError as err:
+                logger.warning("Failed to parse flags in %s: %s", f, err)
+
+        return feature_flags
+
+
+class HarnessFeatureFlagProvider(AbstractFeatureFlagProvider):
+    class _Cache(dict, Cache):
+        """This exists because the default harness LRU impl sucks and does not work with >1000 flags"""
+
+        def set(self, key: str, value: bool) -> None:
+            """Set a flag in the cache."""
+            self[key] = value
+
+        def remove(self, key: str | t.List[str]) -> None:
+            """Remove a flag from the cache."""
+            if isinstance(key, str):
+                self.pop(key, None)
+            for k in key:
+                self.pop(k, None)
+
+    @with_config(sections=("ff", "harness"))
+    def __init__(
         self,
-        cache: FlagDict | None,
-        source: DltSource,
         workspace: "Workspace",
-        *kwargs: t.Any,
-    ) -> FlagDict:
+        api_key: str = dlt.secrets.value,
+        sdk_key: str = dlt.secrets.value,
+        account: str = dlt.config.value,
+        organization: str = dlt.config.value,
+        project: str = dlt.config.value,
+        environment: str = dlt.config.value,
+    ):
+        super().__init__(workspace)
+        self.api_key = api_key
+        self.sdk_key = sdk_key
+        self.account = account
+        self.organization = organization
+        self.project = project
+        self.environment = environment
+        _ff_logger.setLevel(logging.ERROR)
+        self.client = HarnessFeatureFlagProvider.get_client(sdk_key)
+
+    @lru_cache(maxsize=1)
+    @staticmethod
+    def get_client(sdk_key: str = dlt.secrets.value) -> CfClient:
+        """Get a harness client. This is cached so we don't have to create a new client.
+
+        Args:
+            sdk_key: The sdk key to use to authenticate with harness.
+
+        Returns:
+            The client.
+        """
+        client = CfClient(
+            sdk_key=sdk_key,
+            config=Config(
+                enable_stream=False,
+                enable_analytics=False,
+                cache=HarnessFeatureFlagProvider._Cache(),
+            ),
+        )
+        client.wait_for_initialization()
+        return client
+
+    def exists(self, identifier: str) -> bool:
+        """Check if a flag exists in the Harness Platform API
+
+        We make this fast by checking the SDK cache.
+
+        Args:
+            identifier (str): The identifier for the flag
+
+        Returns:
+            bool: True if the flag exists, False otherwise
+        """
+        try:
+            # Very fast method, eventually consistent on upstream mutation
+            if "flags/" + self._cdf_id_to_harness_id(identifier) in list(
+                self.client._repository.cache.keys()
+            ):
+                return True
+            # Slower but strongly consistent
+            self.get_one(identifier)
+            return True
+        except requests.HTTPError as e:
+            if e.response and e.response.status_code in (404, 400):
+                return False
+            raise
+
+    def get_one(self, identifier: str) -> bool:
+        """Get a flag from the harness feature flag sdk client
+
+        Args:
+            identifier (str): The flag identifier
+
+        Returns:
+            bool: True if the flag is enabled, False otherwise
+        """
+        return self.client.bool_variation(
+            self._cdf_id_to_harness_id(identifier), Target("cdf"), False
+        )
+
+    def create_one(
+        self,
+        identifier: str,
+        name: str,
+        description: str = "Toggle to extract this resource - managed by cdf",
+        **kwargs: t.Any,
+    ) -> None:
+        """Create a flag in the harness platform api
+
+        Args:
+            identifier (str): The identifier for the flag
+            name (str): The name for the flag
+            **kwargs: Additional keyword arguments to pass to the Harness Platform API
+
+        Raises:
+            HTTPError: If the response from the Harness Platform API is not successful
+        """
+        resp = requests.post(
+            "https://app.harness.io/gateway/cf/admin/features",
+            params={"account": self.account, "organization": self.organization},
+            headers={"Content-Type": "application/json", "x-api-key": self.api_key},
+            json={
+                "defaultOnVariation": "on-variation",
+                "defaultOffVariation": "off-variation",
+                "description": description,
+                "identifier": self._cdf_id_to_harness_id(identifier),
+                "name": name,
+                "kind": FeatureConfigKind.BOOLEAN.value,
+                "permanent": True,
+                "project": self.project,
+                "variations": [
+                    {
+                        "identifier": "on-variation",
+                        "value": "true",
+                    },
+                    {
+                        "identifier": "off-variation",
+                        "value": "false",
+                    },
+                ],
+                **kwargs,
+            },
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def drop_one(self, identifier: str) -> None:
+        """Drop a flag from the Harness Platform API
+
+        Args:
+            identifier (str): The identifier for the flag
+
+        Raises:
+            HTTPError: If the request fails
+        """
+        resp = requests.delete(
+            f"https://app.harness.io/gateway/cf/admin/features/{identifier}",
+            headers={"x-api-key": self.api_key},
+            params={
+                "accountIdentifier": self.account,
+                "orgIdentifier": self.organization,
+                "projectIdentifier": self.project,
+            },
+        )
+        resp.raise_for_status()
+        self.client._repository.cache.remove([f"flags/{identifier}"])
+        self.client._polling_processor.retrieve_flags_and_segments()
+
+    def drop_many(self, identifiers: t.List[str]) -> None:
+        """Drop many flags from the Harness Platform API
+        Args:
+            identifiers (list[str]): A list of flag identifiers
+        Raises:
+            HTTPError: If the request fails
+        """
+
+        def _drop(i: str) -> None:
+            resp = requests.delete(
+                f"https://app.harness.io/gateway/cf/admin/features/{i}",
+                headers={"x-api-key": self.api_key},
+                params={
+                    "accountIdentifier": self.account,
+                    "orgIdentifier": self.organization,
+                    "projectIdentifier": self.project,
+                },
+            )
+            resp.raise_for_status()
+            self.client._repository.cache.remove([f"flags/{i}"])
+
+        with ThreadPoolExecutor() as executor:
+            executor.map(_drop, identifiers)
+        executor.shutdown(wait=True)
+
+        self.client._polling_processor.retrieve_flags_and_segments()
+
+    @staticmethod
+    def _harness_id_to_cdf_id(harness_id: str) -> str:
+        """Convert a harness platform api flag id to a cdf flag id
+
+        Example:
+            flags/pipeline__datateam__sfdc__account -> pipeline:datateam.sfdc:account
+
+        Args:
+            harness_id (str): The Harness Platform API flag identifier
+
+        Returns:
+            str: The cdf flag identifier
+        """
+        if harness_id.upper().startswith("FLAGS/"):
+            harness_id = harness_id.split("/", 1)[1]
+
+        typ, workspace, component, subcomponent = harness_id.split("__", 3)
+        return f"{typ}:{workspace}.{component}:{subcomponent}"
+
+    @staticmethod
+    def _cdf_id_to_harness_id(cdf_id: str) -> str:
+        """Convert a cdf flag id to a harness platform api flag id
+
+        Example:
+            pipeline:datateam.sfdc:account -> pipeline__datateam__sfdc__account
+
+        Args:
+            cdf_id (str): The cdf flag identifier
+
+        Returns:
+            str: The Harness Platform API flag identifier
+        """
+        typ, workspace_component, subcomponent = cdf_id.split(":", 2)
+        workspace, component = workspace_component.split(".", 1)
+        return f"{typ}__{workspace}__{component}__{subcomponent}"
+
+
+class LaunchDarklyFeatureFlagProvider(AbstractFeatureFlagProvider):
+    ...
+
+
+class SupportsFeatureFlags(t.Protocol):
+    """Bare minimum interface to integrate feature flags with a workspace component"""
+
+    workspace: "Workspace"
+
+    def create_one(
+        self, identifier: str, display_name: str | None = None, **kwargs: t.Any
+    ) -> None:
+        ...
+
+    def exists(self, identifier: str) -> bool:
+        ...
+
+    def get_one(self, identifier: str) -> bool:
         ...
 
 
-CACHE: SourceFlagDict = {}
-_LOCAL_CACHE_MUTEX = Lock()
+def process_source(source: DltSource, provider: SupportsFeatureFlags) -> DltSource:
+    def _get_id(r: str) -> str:
+        return f"pipeline:{provider.workspace.namespace}.{source.name}:{r}"
 
-
-class _Cache(dict, Cache):
-    """This exists because the default harness LRU impl sucks and does not work with >1000 flags"""
-
-    def set(self, key: str, value: bool) -> None:
-        """Set a flag in the cache."""
-        self[key] = value
-
-    def remove(self, key) -> None:
-        """Remove a flag from the cache."""
-        self.pop(key, None)
-
-
-@lru_cache(maxsize=1)
-def _get_harness_client(sdk_key: str) -> CfClient:
-    """Get a harness client. This is cached so we don't have to create a new client.
-
-    Args:
-        sdk_key: The sdk key to use to authenticate with harness.
-
-    Returns:
-        The client.
-    """
-    client = CfClient(
-        sdk_key=sdk_key,
-        config=Config(enable_stream=False, enable_analytics=False, cache=_Cache()),
-    )
-    client.wait_for_initialization()
-    return client
-
-
-# TODO: we should add dlt's @with_source over almost ALL these functions,
-# we are essentially leveraging the config now; but more haphazardly or manually
-
-
-def _create_harness_flag(
-    identifier: str,
-    name: str,
-    api_key: str,
-    account: str,
-    organization: str,
-    project: str,
-    description: str = "Toggle to extract this resource - managed by cdf",
-    **kwargs: t.Any,
-) -> Result[dict]:
-    """Create a flag in the Harness Platform API
-
-    Args:
-        identifier (str): The identifier for the flag
-        name (str): The name for the flag
-        **kwargs: Additional keyword arguments to pass to the Harness Platform API
-
-    Returns:
-        dict: The response from the Harness Platform API
-
-    Raises:
-        AssertionError: If the number of variations is less than two
-        requests.exceptions.HTTPError: If the response from the Harness Platform API
-            is not successful
-    """
-    variations = [
-        {
-            "identifier": "on-variation",
-            "value": "true",
-        },
-        {
-            "identifier": "off-variation",
-            "value": "false",
-        },
-    ]
-    resp = requests.post(
-        "https://app.harness.io/gateway/cf/admin/features",
-        params={
-            "account": account,
-            "organization": organization,
-        },
-        headers={
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-        },
-        json={
-            "defaultOnVariation": variations[0]["identifier"],
-            "defaultOffVariation": variations[1]["identifier"],
-            "description": description,
-            "identifier": identifier,
-            "name": name,
-            "kind": FeatureConfigKind.BOOLEAN.value,
-            "permanent": True,
-            "project": project,
-            "variations": variations,
-            **kwargs,
-        },
-    )
-    if resp.ok:
-        return Result(resp.json(), None)
-    return Result(None, RuntimeError(resp.text))
-
-
-@lru_cache(maxsize=1)
-def _get_harness_flag(
-    identifier: str,
-    api_key: str,
-    account: str,
-    organization: str,
-    project: str,
-    environment: str,
-) -> Result[dict]:
-    """Get a flag from the Harness Platform API
-
-    Args:
-        identifier (str): The flag identifier
-
-    Returns:
-        dict: The flag
-
-    Raises:
-        requests.exceptions.HTTPError: If the request fails
-    """
-    resp = requests.get(
-        f"https://app.harness.io/gateway/cf/admin/features/{identifier}",
-        headers={"x-api-key": api_key},
-        params={
-            "account": account,
-            "organization": organization,
-            "project": project,
-            "environment": environment,
-            "metrics": False,
-        },
-    )
-    if resp.ok:
-        return Result(resp.json(), None)
-    return Result(None, Exception(resp.text))
-
-
-def _harness_flag_exists(identifier: str, ff_client: CfClient) -> bool:
-    """Check if a flag exists in the Harness Platform API
-
-    We make this fast by checking the SDK cache.
-
-    Args:
-        identifier (str): The identifier for the flag
-
-    Returns:
-        bool: True if the flag exists, False otherwise
-    """
-    try:
-        return f"flags/{identifier}" in list(
-            ff_client._repository.cache.keys()
-        ) or bool(Result.apply(_get_harness_flag, identifier))
-    except requests.HTTPError as e:
-        if e.response and e.response.status_code in (404, 400):
-            return False
-        raise
-
-
-def _harness_id_to_component_id(harness_id: str, typ: str = "source") -> str:
-    """Convert a Harness Platform API flag id to a component id
-
-    Example:
-        source__datateam__sfdc__account -> source:datateam.sfdc:account
-
-    Args:
-        harness_id (str): The Harness Platform API flag id
-
-    Returns:
-        str: The component id
-    """
-    if harness_id.upper().startswith("FLAGS/"):
-        harness_id = harness_id.split("/", 1)[1]
-    ws, harness_id = harness_id.split("__", 1)
-    src, res = harness_id.split("__", 1)
-    return f"{typ}:{ws}.{src}:{res}"
-
-
-def _component_id_to_harness_id(component_id: str) -> str:
-    """Convert a component id to a Harness Platform API flag id
-
-    Example:
-        source:datateam.sfdc:account -> source__datateam__sfdc__account
-
-    Args:
-        component_id (str): The component id
-
-    Returns:
-        str: The Harness Platform API flag id
-    """
-    typ, ws_comp, meta = component_id.split(":", 2)
-    ws, comp = ws_comp.split(".", 1)
-    return f"{typ}__{ws}__{comp}__{meta}"
-
-
-def get_or_create_flag_harness(
-    cache: FlagDict | None,
-    /,
-    source: DltSource,
-    workspace: "Workspace",
-    *,
-    account: str,
-    project: str,
-    organization: str,
-    sdk_key: str,
-    api_key: str,
-) -> t.Tuple[FlagDict, dict]:
-    """Populate a cache with flags.
-
-    Args:
-        cache: A cache to populate.
-        source: The DltSource to get flags for.
-        workspace: The workspace which we are getting flags for.
-        account: The harness account id.
-        project: The harness project id.
-        organization: The harness organization id.
-        sdk_key: The sdk key to use with Harness FF. This is specific to an env in Harness.
-        api_key: The api key to use to authenticate with harness. This is used to create flags
-            via the platform api which is separate from the FF SDK.
-
-    Returns:
-        dict: The populated cache.
-    """
-    _ff_logger.setLevel(logging.ERROR)  # harness is so noisy for our use case
-    cache = cache if cache is not None else CACHE.setdefault(source, {})
-    ff_client = _get_harness_client(sdk_key or dlt.secrets["ff.harness.sdk_key"])
-    cache.update(
-        {
-            _harness_id_to_component_id(k): ff_client.bool_variation(
-                k[6:], Target("cdf"), False
-            )
-            for k in ff_client._repository.cache.keys()
-        }
-    )
-    for resource in source.resources.keys():
-        component = get_source_component_id(source, resource, workspace.namespace)
-        if component in cache:
-            continue
-        harness_safeident = _component_id_to_harness_id(component)
-        exists = _harness_flag_exists(harness_safeident, ff_client)
-        if not exists:
-            _create_harness_flag(
-                harness_safeident,
-                f"Extract {' '.join(component.split(':')[1:]).title()}",
-                api_key=api_key,
-                account=account,
-                organization=organization,
-                project=project,
-            )
-            cache[component] = False
+    resources = source.resources.keys()
+    for r in resources:
+        id_ = _get_id(r)
+        if not provider.exists(id_):
+            provider.create_one(id_, f"Extract {source.name.title()} {r.title()}")
+            source.resources[r].selected = False
         else:
-            rv = ff_client.bool_variation(harness_safeident, Target("cdf"), False)
-            cache[component] = rv
-    return cache, {"config_hash": sha256(sdk_key.encode()).hexdigest()}
+            source.resources[r].selected = provider.get_one(id_)
+    return source
 
 
-def get_or_create_flag_launchdarkly(
-    cache: FlagDict | None,
-    /,
-    source: DltSource,
-    workspace: "Workspace",
-    *,
-    account: str | None = None,
-    api_key: str | None = None,
-) -> t.Tuple[FlagDict, dict]:
-    """Populate a cache with flags. This is not implemented.
+@with_config(sections=("ff",))
+def get_provider(
+    workspace: "Workspace", provider: Provider | None = None
+) -> AbstractFeatureFlagProvider:
+    """Get a feature flag provider.
 
     Args:
-        cache: A cache to populate.
-        source: The DltSource to get flags for.
-        workspace: The workspace which we are getting flags for.
-        account: The launchdarkly account id.
-        api_key: The api key to use to authenticate with launchdarkly.
+        workspace (Workspace): The workspace to get the provider for
+        provider (Provider): The provider to use, if None will use the configured provider
 
     Returns:
-        dict: The populated cache.
+        BaseFeatureFlagProvider: The provider
     """
-    _ = cache, source, workspace, account, api_key
-    raise NotImplementedError
 
-
-def _write_local_flag_file(
-    cache: FlagDict,
-    source: DltSource,
-    workspace: "Workspace",
-) -> None:
-    """Write a flag file to the workspace.
-
-    Args:
-        cache: The populated cache representing existing flags.
-        source: The DltSource to diff against.
-        workspace: The workspace which we are operating in.
-    """
-    with _LOCAL_CACHE_MUTEX:
-        discovered = {}
-        for resource in source.resources.keys():
-            component = get_source_component_id(source, resource, workspace.namespace)
-            if component not in cache:
-                discovered[component] = False
-        if discovered:
-            fpath = workspace.root / c.FLAG_FILES[0]
-            logger.debug("Updating flags in %s", fpath)
-            if fpath.exists():
-                known = json.loads(fpath.read_text())
-                discovered.update(known)
-            fpath.write_text(json.dumps(discovered, indent=2))
-
-
-def get_or_create_flag_local(
-    cache: FlagDict | None,
-    /,
-    source: DltSource,
-    workspace: "Workspace",
-) -> t.Tuple[FlagDict, dict]:
-    """Populate a cache with flags.
-
-    Args:
-        cache: A cache to populate.
-        source: The DltSource to get flags for.
-        workspace: The workspace which we are getting flags for.
-
-    Returns:
-        dict: The populated cache.
-    """
-    cache = cache if cache is not None else CACHE.setdefault(source, {})
-
-    for path in (
-        workspace.root,
-        workspace.root / c.PIPELINES_PATH,
-    ):
-        logger.debug("Searching for flags in %s", path)
-        flags = {}
-
-        # Find flags
-        for f in c.FLAG_FILES:
-            fp = path / f
-            if not fp.exists():
-                continue
-            try:
-                flags.update(json.loads(fp.read_text()))
-            except json.JSONDecodeError as e:
-                logger.warning("Failed to parse flags in %s: %s", fp, e)
-
-        # Qualify flags as needed
-        for component_id in list(flags.keys()):
-            qualified_component_id = qualify_source_component_id(
-                component_id, workspace.namespace
-            )
-            if qualified_component_id != component_id:
-                logger.debug(
-                    "Found flag %s, qualified as %s",
-                    component_id,
-                    qualified_component_id,
-                )
-                flags[qualified_component_id] = flags.pop(component_id)
-
-        logger.debug("Found flags: %s", flags)
-        cache.update(flags)
-
-    # Write new flags to flag file
-    _write_local_flag_file(cache, source, workspace)
-
-    return cache, {}
-
-
-def toggle_flag_dispatch() -> Result:
-    raise NotImplementedError
-
-
-def delete_flag_dispatch() -> Result:
-    raise NotImplementedError
-
-
-def get_or_create_flag_dispatch(
-    cache: FlagDict | None,
-    /,
-    source: DltSource,
-    workspace: "Workspace",
-    provider: Provider | None = None,
-    **kwargs: t.Any,
-) -> t.Tuple[FlagDict, dict]:
-    """Populate a cache with flags.
-
-    This function dispatches to the appropriate implementation based on the
-    provider specified in the config.
-
-    Args:
-        cache: A cache to populate.
-        source: The DltSource to get flags for. The implementation should use this information
-            to scope requests to the feature flag provider when possible.
-        workspace: The workspace which we are getting flags for. The implementation should use this information
-            to ensure flags are namespaced to the workspace. Two workspaces can have the same source names.
-        provider: The provider to use. If falsey, the provider from the config is used. If there is no
-            resolved provider, the local provider is used.
-        **kwargs: Additional keyword arguments to pass to the implementation. These will be supplemented
-            by the dlt config providers.
-
-    Returns:
-        dict: The populated cache.
-    """
-    cache = cache if cache is not None else CACHE.setdefault(source, {})
-
-    try:
-        provider = provider or dlt.config["ff.provider"]
-    except KeyError:
-        provider = "local"
-
-    if provider == "local":
-        fn = get_or_create_flag_local
+    if provider == "local" or provider is None:
+        return LocalFeatureFlagProvider(workspace)
     elif provider == "harness":
-        fn = get_or_create_flag_harness
+        return HarnessFeatureFlagProvider(workspace)
     elif provider == "launchdarkly":
-        fn = get_or_create_flag_launchdarkly
+        return LaunchDarklyFeatureFlagProvider(workspace)  # type: ignore
     else:
         raise ValueError(
             f"Invalid provider: {provider}, must be one of {t.get_args(Provider)}"
         )
-
-    kwargs = populate_fn_kwargs_from_config(
-        fn,
-        kwargs,
-        private_attrs={"cache", "source", "workspace"},
-        config_path=["ff", provider],
-    )
-    return fn(cache, source, workspace, **kwargs)
-
-
-def apply_feature_flags(
-    source: DltSource,
-    flags: t.Dict[str, bool],
-    workspace: "Workspace",
-    raise_on_no_resources: bool = False,
-) -> DltSource:
-    """Apply feature flags to a source."""
-
-    logger.debug("Applying feature flags for source %s", source.name)
-    for resource in source.resources.values():
-        key = get_source_component_id(source, resource, workspace.namespace)
-        fv = flags.get(key)
-        if fv is None:
-            logger.debug("No flag for %s", key)
-            fv = False
-        elif fv is False:
-            logger.debug("Flag for %s is False", key)
-        elif fv is True:
-            logger.debug("Flag for %s is True", key)
-        resource.selected = fv
-
-    if raise_on_no_resources and not source.resources.selected:
-        raise ValueError(f"No resources selected for source {source.name}")
-
-    return source

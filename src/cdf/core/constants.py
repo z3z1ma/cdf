@@ -9,14 +9,8 @@ WORKSPACE_FILE = "cdf_workspace.toml"
 CONFIG_FILE = "cdf_config.toml"
 SECRETS_FILE = "cdf_secrets.toml"
 
-# Ancillary flag files if using local flags for resource configuration
-FLAG_FILES = [
-    "cdf.json",
-    ".cdf.json",
-    "cdf_flags.json",
-    ".cdf_flags.json",
-    "flags.json",
-]
+# Flag file if using local flags for resource configuration
+FLAG_FILE = "cdf_flags.json"
 
 # The default workspace name, in a single-workspace layout it is always "default"
 DEFAULT_WORKSPACE = "default"

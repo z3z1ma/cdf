@@ -1,0 +1,13 @@
+{
+  "pipeline:alexb.us_zip_codes:us_cities": true,
+  "pipeline:alexb.dota2_stats:pro_players": false,
+  "pipeline:alexb.dota2_stats:pro_matches": false,
+  "pipeline:alexb.dota2_stats:distribution": false,
+  "pipeline:alexb.dota2_stats:rankings": false,
+  "pipeline:alexb.dota2_stats:benchmarks": false,
+  "pipeline:alexb.dota2_stats:heroes": true,
+  "pipeline:alexb.dota2_stats:hero_stats": false,
+  "pipeline:alexb.dota2_stats:leagues": false,
+  "pipeline:alexb.dota2_stats:teams": false,
+  "pipeline:alexb.dota2_stats:constants": false
+}
