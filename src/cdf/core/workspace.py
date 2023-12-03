@@ -94,6 +94,20 @@ class Project:
         ws = ", ".join(f"'{ns}'" for ns in self._workspaces.keys())
         return f"Project({self.root_name}, workspaces=[{ws}])"
 
+    def __add__(self, other: "Project | Workspace") -> "Project":
+        if isinstance(other, Workspace):
+            self.add_workspace(other)
+            return self
+        elif isinstance(other, Project):
+            proj = Project(
+                list(self._workspaces.values()) + list(other._workspaces.values()),
+                self.root_name,
+            )
+            proj.meta = {**self.meta, **other.meta}
+            return proj
+        else:
+            return NotImplemented
+
     def keys(self) -> t.Set[str]:
         return set(self._workspaces.keys())
 
@@ -331,20 +345,32 @@ class Workspace:
             root (str | Path): Path to wrap as a workspace.
             namespace (str, optional): Namespace of workspace. Defaults to c.DEFAULT_WORKSPACE.
         """
+        self.meta = {}
         self.namespace = namespace
         self._root = Path(root).expanduser().resolve()
         if not self._root.exists():
             raise ValueError(
                 f"Tried to init Workspace with nonexistent path {self.root}"
             )
-        self._pipeline_paths = None
-        self._publisher_paths = None
-        self._requirements = None
+
+        self.pipeline_paths = self._get_python_fpaths(c.PIPELINES_PATH)
+        self.publisher_paths = self._get_python_fpaths(c.PUBLISHERS_PATH)
+        self.script_paths = self._get_python_fpaths(c.SCRIPTS_PATH)
+        self.transform_path = self.root / c.TRANSFORMS_PATH
+        self.config_path = self.root / c.CONFIG_FILE
+        self.secrets_path = self.root / c.SECRETS_FILE
+        self.lockfile_path = self.root / c.LOCKFILE_PATH
+        self.sinks_path = self.root / c.SINKS_FILE
+        self.requirements_path = self.root / c.REQUIREMENTS_FILE
+
+        self._overlay_active = False
         self._did_inject_config_providers = False
+
         self._pipelines = {}
         self._publishers = {}
         self._sinks = {}
-        self.meta = {}
+        self._scripts = {}
+
         if not self.lockfile_path.exists():
             self.lockfile_path.touch()
 
@@ -393,45 +419,6 @@ class Workspace:
         }
 
     @property
-    def pipeline_paths(self) -> t.List[Path]:
-        """List of paths to pipeline modules."""
-        if self._pipeline_paths is None:
-            self._pipeline_paths = self._get_pipeline_paths()
-        return self._pipeline_paths
-
-    @property
-    def publisher_paths(self) -> t.List[Path]:
-        """List of paths to publisher modules."""
-        if self._publisher_paths is None:
-            self._publisher_paths = self._get_publisher_paths()
-        return self._publisher_paths
-
-    @property
-    def transform_path(self) -> Path:
-        """Path to transform directory."""
-        return self.root / c.TRANSFORMS_PATH
-
-    @property
-    def config_path(self) -> Path:
-        """Path to Workspace config file."""
-        return self.root / c.CONFIG_FILE
-
-    @property
-    def secrets_path(self) -> Path:
-        """Path to Workspace secrets file."""
-        return self.root / c.SECRETS_FILE
-
-    @property
-    def lockfile_path(self) -> Path:
-        """Path to Workspace lockfile."""
-        return self.root / c.LOCKFILE_PATH
-
-    @property
-    def requirements_path(self) -> Path:
-        """Path to requirements.txt."""
-        return self.root / "requirements.txt"
-
-    @property
     def python_path(self) -> Path:
         """Get path to Workspace python.
 
@@ -440,7 +427,7 @@ class Workspace:
         """
         if not self.has_dependencies:
             return Path(sys.executable)
-        return self.root / ".venv" / "bin" / "python"
+        return self.root / c.VENV_PATH / "bin" / "python"
 
     @property
     def pip_path(self) -> Path:
@@ -451,31 +438,7 @@ class Workspace:
         """
         if not self.has_dependencies:
             return Path(sys.executable).parent / "pip"
-        return self.root / ".venv" / "bin" / "pip"
-
-    def _get_pipeline_paths(self) -> t.List[Path]:
-        """List of paths to pipeline modules.
-
-        Returns:
-            List of paths to pipeline modules.
-        """
-        return [
-            path
-            for path in self.root.joinpath(c.PIPELINES_PATH).glob("*.py")
-            if path.name != "__init__.py"
-        ]
-
-    def _get_publisher_paths(self) -> t.List[Path]:
-        """List of paths to publisher modules.
-
-        Returns:
-            List of paths to publisher modules.
-        """
-        return [
-            path
-            for path in self.root.joinpath(c.PUBLISHERS_PATH).glob("*.py")
-            if path.name != "__init__.py"
-        ]
+        return self.root / c.VENV_PATH / "bin" / "pip"
 
     @requires_dependencies
     def get_bin(self, name: str, must_exist: bool = False) -> Path:
@@ -492,40 +455,24 @@ class Workspace:
         Returns:
             Path to binary.
         """
-        bin_path = self.root / ".venv" / "bin" / name
+        bin_path = self.root / c.VENV_PATH / "bin" / name
         if must_exist and not bin_path.exists():
-            raise ValueError(f"Could not find binary {name} in {self.root}")
+            raise ValueError(f"Could not find bin {name} in {self.root}")
         return bin_path
 
-    def get_script(self, name: str, must_exist: bool = False) -> Path:
-        """Get script in workspace as bytecode.
-
-        Args:
-            name (str): Name of script.
-            must_exist (bool): If True, raises ValueError if script does not exist.
-
-        Raises:
-            ValueError if script does not exist and must_exist is True.
-            CompileError if script cannot be compiled.
-
-        Returns:
-            Path to script.
-        """
-        script_path = self.root / c.SCRIPTS_PATH / f"{name}.py"
-        if must_exist and not script_path.exists():
-            raise ValueError(f"Could not find script {name} in {self.root}")
-        return script_path
-
     @lru_cache(maxsize=1)
-    def read_lockfile(self) -> dict:
+    def read_lock(self) -> dict:
         """Read lockfile.
 
         Returns:
             Dictionary of lockfile contents.
         """
-        return toml.loads(self.lockfile_path.read_text())
+        with suppress(FileNotFoundError):
+            return toml.loads(self.lockfile_path.read_text())
+        self.lockfile_path.touch()
+        return {}
 
-    def write_lockfile(self, lockfile: dict) -> int:
+    def write_lock(self, lockfile: dict) -> int:
         """Write lockfile.
 
         Args:
@@ -534,10 +481,10 @@ class Workspace:
         Returns:
             Number of bytes written.
         """
-        self.read_lockfile.cache_clear()
+        self.read_lock.cache_clear()
         return self.lockfile_path.write_text(toml.dumps(lockfile))
 
-    def put_value_lockfile(self, key: str, value: t.Any) -> int:
+    def put_kv_lock(self, key: str, value: t.Any) -> int:
         """Put a value in the lockfile. Overwrites existing values.
 
         Args:
@@ -547,11 +494,11 @@ class Workspace:
         Returns:
             Number of bytes written.
         """
-        lockfile = self.read_lockfile()
+        lockfile = self.read_lock()
         lockfile[key] = value
-        return self.write_lockfile(lockfile)
+        return self.write_lock(lockfile)
 
-    def get_value_lockfile(self, key: str) -> t.Dict[str, t.Any]:
+    def get_kv_lock(self, key: str) -> t.Dict[str, t.Any]:
         """Get a value from the lockfile.
 
         Args:
@@ -560,13 +507,13 @@ class Workspace:
         Returns:
             Value from lockfile.
         """
-        return self.read_lockfile()[key]
+        return self.read_lock()[key]
 
     @requires_dependencies
     def _setup_deps(self, force: bool = False) -> None:
         """Install dependencies if requirements.txt is newer than virtual environment."""
         req_mtime = self.requirements_path.stat().st_mtime
-        venv_mtime = (self.root / ".venv").stat().st_mtime
+        venv_mtime = (self.root / c.VENV_PATH).stat().st_mtime
         if (req_mtime > venv_mtime) or force:
             logger.info("Change detected. Updating dependencies for %s", self.root)
             subprocess.check_call(
@@ -578,7 +525,7 @@ class Workspace:
                     self.requirements_path,
                 ]
             )
-            (self.root / ".venv").touch()
+            (self.root / c.VENV_PATH).touch()
 
     @requires_dependencies
     def _setup_venv(self) -> None:
@@ -589,7 +536,7 @@ class Workspace:
         """
         virtualenv.cli_run(
             [
-                str(self.root / ".venv"),
+                str(self.root / c.VENV_PATH),
                 "--symlink-app-data",
                 "--download",
                 "--pip=bundle",
@@ -630,8 +577,11 @@ class Workspace:
         as a subprocess, but is significantly faster and allows us to use the same interpreter. It
         also injects workspace config into the context.
         """
+        if self._overlay_active:
+            yield
+            return
         self.ensure_venv()
-        activate = self.root / ".venv" / "bin" / "activate_this.py"
+        activate = self.root / c.VENV_PATH / "bin" / "activate_this.py"
         environ, syspath, sysprefix, sysmodules = (
             os.environ.copy(),
             sys.path.copy(),
@@ -643,7 +593,9 @@ class Workspace:
         sys.path.insert(0, str(self.root))
         if self._mod_cache:
             sys.modules.update(self._mod_cache)
-        with self.configured():
+        dotenv.load_dotenv(self.root / ".env")
+        with self.providers():
+            self._overlay_active = True
             yield
         self._mod_cache = sys.modules.copy()
         new_modules = set(sys.modules) - set(sysmodules)
@@ -657,6 +609,7 @@ class Workspace:
             syspath,
             sysprefix,
         )
+        self._overlay_active = False
 
     def inject_workspace_config_providers(self) -> None:
         """Inject workspace config into context"""
@@ -728,12 +681,6 @@ class Workspace:
         return self._publishers
 
     @property
-    @requires_transforms
-    def transforms(self) -> t.Mapping[str, sqlmesh.Model]:
-        """Load transforms from workspace."""
-        return self.get_transform_context().models
-
-    @property
     def sinks(self) -> t.Dict[str, sink_spec]:
         """Load publishers from workspace."""
         if not self._sinks:
@@ -760,8 +707,43 @@ class Workspace:
             )
         return self._sinks
 
+    @t.runtime_checkable
+    class Script(t.Protocol):
+        def __call__(self, workspace: "Workspace", **kwargs: t.Any) -> None:
+            ...
+
+    @property
+    def scripts(self) -> t.Dict[str, Script]:
+        """Load scripts from workspace."""
+        if not self._scripts:
+            with (
+                _IMPORT_LOCK,
+                self.overlay(),
+            ):
+                for path in self.script_paths:
+                    mod, _ = load_module_from_path(path)
+                    entrypoint = getattr(mod, "entrypoint", None)
+                    if entrypoint is None:
+                        raise ValueError(
+                            f"Could not find entrypoint in {path} for script {mod}"
+                        )
+                    if not isinstance(entrypoint, Workspace.Script):
+                        raise ValueError(
+                            f"Entrypoint in {path} for script {mod} is not a Script."
+                            " Scripts must be callables which take a Workspace as the first argument."
+                        )
+                    self._scripts[mod.__name__] = entrypoint
+        return self._scripts
+
+    @property
+    @requires_transforms
+    def transforms(self) -> t.Mapping[str, sqlmesh.Model]:
+        """Load transforms from workspace using the first available context."""
+        context = self.transform_context()
+        return context.models
+
     @lru_cache(maxsize=1)
-    def get_transform_context(self, sink: str | None = None) -> sqlmesh.Context:
+    def transform_context(self, sink: str | None = None) -> sqlmesh.Context:
         """Get a sqlmesh context for the workspace.
 
         This method loads the sqlmesh config from the workspace config file and returns a
@@ -774,9 +756,12 @@ class Workspace:
             sqlmesh.Context: A sqlmesh context.
         """
         transform_opts = {}
-        with self.configured(), suppress(KeyError):
+        with self.overlay(), suppress(KeyError):
             transform_opts = dlt.config["transforms"]
-        sink_ = self.sinks[sink or "default"]
+        if sink is None:
+            sink_ = next(s for s in self.sinks.values() if s.gateway)
+        else:
+            sink_ = self.sinks[sink]
         return sink_.transform_context(str(self.root), **transform_opts)
 
     @contextmanager
@@ -797,13 +782,37 @@ class Workspace:
             yield ff.process_source(source, ff.get_provider(self))
 
     @contextmanager
-    def configured(self) -> t.Iterator[None]:
+    def providers(self) -> t.Iterator[None]:
         """Context manager to inject workspace config into context."""
         from cdf.core.config import with_config_providers_from_workspace
 
-        dotenv.load_dotenv(self.root / ".env")
         with with_config_providers_from_workspace(workspace=self):
             yield
 
+    def _get_python_fpaths(
+        self, *subpath: str, include_init: bool = False
+    ) -> t.List[Path]:
+        """List of paths to pipeline modules.
+
+        Returns:
+            List of paths to pipeline modules.
+        """
+        return [
+            path
+            for path in self.root.joinpath(*subpath).glob("*.py")
+            if path.name != "__init__.py" or include_init
+        ]
+
     def __repr__(self) -> str:
         return f"Workspace(root='{self._root.relative_to(Path.cwd())}', capabilities={self.capabilities})"
+
+    def __add__(self, other: "Workspace") -> Project:
+        return Project([self, other])
+
+    def __radd__(self, other: "Workspace") -> Project:
+        return Project([other, self])
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Workspace):
+            return NotImplemented
+        return self.root == other.root

@@ -13,6 +13,12 @@ SECRETS_FILE = "cdf_secrets.toml"
 # Flag file if using local flags for resource configuration
 FLAG_FILE = "cdf_flags.json"
 
+# The file containing the sinks for a workspace
+SINKS_FILE = "cdf_sinks.py"
+
+# Default requirements file
+REQUIREMENTS_FILE = "requirements.txt"
+
 # The default workspace name, in a single-workspace layout it is always "default"
 DEFAULT_WORKSPACE = "default"
 
@@ -22,6 +28,7 @@ TRANSFORMS_PATH = "./models"
 PUBLISHERS_PATH = "./publishers"
 METADATA_PATH = "./metadata"
 SCRIPTS_PATH = "./scripts"
+VENV_PATH = "./venv"
 
 LOCKFILE_PATH = "./cdf.lock"
 

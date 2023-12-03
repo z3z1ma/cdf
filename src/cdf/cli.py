@@ -441,7 +441,7 @@ def publish(
     workspace = project[ws]
     with workspace.overlay():
         runner = workspace.publishers[pub]
-        context = workspace.get_transform_context()
+        context = workspace.transform_context()
         if runner.from_model not in context.models:
             logger.warning(
                 "Model %s not found in transform context. We cannot track lineage or enforce data quality.",
@@ -475,14 +475,11 @@ def execute_script(
         ctx: The CLI context.
         script: The script to run.
     """
-    from cdf.core.utils import load_module_from_path
-
     project: Project = ctx.obj
     ws, script = _parse_ws_component(script)
     workspace = project[ws]
     with workspace.overlay():
-        mod, _ = load_module_from_path(workspace.get_script(script, must_exist=True))
-        mod.entrypoint(workspace, **json.loads(opts))
+        workspace.scripts[script](workspace, **json.loads(opts))
 
 
 @app.command(
@@ -543,7 +540,7 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
 
     ws = project[workspace]
     with ws.overlay():
-        context = ws.get_transform_context(sink)
+        context = ws.transform_context(sink)
         schema_out = ws.root / "schema.yaml"
         schema_out.unlink(missing_ok=True)
 
@@ -616,7 +613,7 @@ def generate_staging_layer(
     workspace, sink = _parse_ws_component(workspace)
 
     ws = project[workspace]
-    context = ws.get_transform_context(sink)
+    context = ws.transform_context(sink)
     for fp in (ws.root / "metadata" / sink).iterdir():
         with fp.open() as fd:
             meta = yaml.load(fd)
@@ -691,16 +688,16 @@ def init_workspace(
                 "__pycache__",
                 "*.pyc",
                 ".env",
-                ".venv",
+                c.VENV_PATH,
                 ".cache",
                 "logs",
-                "cdf_secrets.toml",
+                c.SECRETS_FILE,
                 "*.duckdb",
                 "*.duckdb.wal",
             ]
         )
     )
-    directory.joinpath("requirements.txt").touch()
+    directory.joinpath(c.REQUIREMENTS_FILE).touch()
 
 
 @app.command("init-project", rich_help_panel="Project Initialization")
