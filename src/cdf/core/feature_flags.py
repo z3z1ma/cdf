@@ -182,7 +182,7 @@ class LocalFeatureFlagProvider(AbstractFeatureFlagProvider):
 
         if f.exists():
             try:
-                feature_flags.update(json.loads(f.read_text()))
+                feature_flags.update(json.loads(f.read_bytes()))
             except json.JSONDecodeError as err:
                 logger.warning("Failed to parse flags in %s: %s", f, err)
 
@@ -340,6 +340,7 @@ class HarnessFeatureFlagProvider(AbstractFeatureFlagProvider):
                 "accountIdentifier": self.account,
                 "orgIdentifier": self.organization,
                 "projectIdentifier": self.project,
+                "forceDelete": True,
             },
         )
         resp.raise_for_status()
@@ -364,6 +365,7 @@ class HarnessFeatureFlagProvider(AbstractFeatureFlagProvider):
                     "accountIdentifier": self.account,
                     "orgIdentifier": self.organization,
                     "projectIdentifier": self.project,
+                    "forceDelete": True,
                 },
             )
             resp.raise_for_status()

@@ -16,23 +16,53 @@ from sqlmesh.utils.jinja import JinjaMacroRegistry
 YAML = yaml.YAML(typ="safe")
 
 
+DLT_TO_SQLGLOT = {
+    "complex": exp.DataType.build("json"),
+    "text": exp.DataType.build("text"),
+    "double": exp.DataType.build("double"),
+    "bool": exp.DataType.build("boolean"),
+    "date": exp.DataType.build("date"),
+    "bigint": exp.DataType.build("bigint"),
+    "binary": exp.DataType.build("binary"),
+    "timestamp": exp.DataType.build("timestamp"),
+    "time": exp.DataType.build("time"),
+    "decimal": exp.DataType.build("decimal"),
+    "wei": exp.DataType.build("numeric"),
+}
+"""Converts DLT data types to SQLGlot data types."""
+
+
 @dataclass
 class CDFStagingSpec:
+    """Staging specification/DSL for cdf."""
+
     input: str
+    """The input table."""
     prefix: str = ""
+    """The prefix to apply to all columns."""
     suffix: str = ""
+    """The suffix to apply to all columns."""
     excludes: t.List[str] = field(default_factory=list)
+    """Columns to exclude."""
     exclude_patterns: t.List[str] = field(default_factory=list)
+    """Column patterns to exclude."""
     includes: t.List[str] = field(default_factory=list)
+    """Columns to include."""
     include_patterns: t.List[str] = field(default_factory=list)
+    """Column patterns to include."""
     predicate: str = ""
+    """The predicate to apply to the input table."""
     computed_columns: t.List[str] = field(default_factory=list)
+    """Computed columns to add."""
 
 
 class CDFTransformLoader(SqlMeshLoader):
+    """Custom SQLMesh loader for cdf."""
+
     def _load_models(
         self, macros: MacroRegistry, jinja_macros: JinjaMacroRegistry
     ) -> UniqueKeyDict[str, Model]:
+        """Adds behavior to load cdf staging models."""
         models = super()._load_models(macros, jinja_macros)
 
         for context_path, config in self._context.configs.items():
@@ -104,9 +134,7 @@ class CDFTransformLoader(SqlMeshLoader):
                 parent_model = create_external_model(
                     name=spec.input,
                     columns={
-                        c["name"]: exp.DataType.build(
-                            c["data_type"] if c["data_type"] != "complex" else "json"
-                        )
+                        c["name"]: DLT_TO_SQLGLOT[c["data_type"]]
                         for c in meta[input_table.name]["columns"].values()
                     },
                     dialect=config.model_defaults.dialect,

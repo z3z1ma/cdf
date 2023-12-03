@@ -129,8 +129,16 @@ class Project:
         return cls([Workspace(path, ns) for ns, path in workspaces.items()])
 
     @classmethod
-    def default(cls, path: Path | str | None = None) -> "Project":
+    def default(
+        cls, path: Path | str | None = None, load_dotenv: bool = True
+    ) -> "Project":
         """Create a project from the current working directory."""
+        if path is None:
+            path = Path.cwd()
+        elif isinstance(path, str):
+            path = Path(path).expanduser().resolve()
+        if load_dotenv:
+            dotenv.load_dotenv(path / ".env")
         return cls([Workspace.find_nearest(path, raise_no_marker=True)])
 
     @classmethod
@@ -177,7 +185,10 @@ class Project:
 
     @classmethod
     def find_nearest(
-        cls, path: Path | str | None = None, raise_no_marker: bool = False
+        cls,
+        path: Path | str | None = None,
+        raise_no_marker: bool = False,
+        load_dotenv: bool = True,
     ) -> "Project":
         """Find nearest project.
 
@@ -185,6 +196,8 @@ class Project:
 
         Args:
             path (Path): The path to search from.
+            raise_no_marker (bool, optional): Whether to raise an error if no project is found.
+            load_dotenv (bool, optional): Whether to load the .env file if no project is found.
         """
         if path is None:
             path = Path.cwd()
@@ -194,13 +207,13 @@ class Project:
         while path.parents:
             workspace_spec = path / c.WORKSPACE_FILE
             if workspace_spec.exists():
-                return cls.from_workspace_toml(workspace_spec)
+                return cls.from_workspace_toml(workspace_spec, load_dotenv=load_dotenv)
             path = path.parent
         if raise_no_marker:
             raise ValueError(
                 f"Could not find a project root in {path} or any of its parents"
             )
-        return cls.default(orig_path)
+        return cls.default(orig_path, load_dotenv=load_dotenv)
 
 
 class WorkspaceCapabilities(t.TypedDict):
@@ -306,13 +319,12 @@ class Workspace:
         self,
         root: str | Path,
         namespace: str = c.DEFAULT_WORKSPACE,
-        load_dotenv: bool = True,
     ) -> None:
         """Initialize a workspace.
 
         Args:
             root (str | Path): Path to wrap as a workspace.
-            load_dotenv (bool): Whether to load dotenv file in workspace root.
+            namespace (str, optional): Namespace of workspace. Defaults to c.DEFAULT_WORKSPACE.
         """
         self.namespace = namespace
         self._root = Path(root).expanduser().resolve()
@@ -326,8 +338,6 @@ class Workspace:
         self._did_inject_config_providers = False
         self._pipelines = {}
         self._publishers = {}
-        if load_dotenv:
-            dotenv.load_dotenv(self.root / ".env")
         self.meta = {}
         if not self.lockfile_path.exists():
             self.lockfile_path.touch()
@@ -626,6 +636,7 @@ class Workspace:
             sys.prefix,
             sys.modules.copy(),
         )
+        dotenv.load_dotenv(self.root / ".env")
         if self.has_dependencies:
             exec(activate.read_bytes(), {"__file__": str(activate)})
         sys.path.insert(0, str(self.root))
