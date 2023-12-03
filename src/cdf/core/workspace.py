@@ -2,8 +2,7 @@ import os
 import subprocess
 import sys
 import typing as t
-from contextlib import contextmanager
-from dataclasses import dataclass
+from contextlib import contextmanager, suppress
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
@@ -19,9 +18,10 @@ import cdf.core.constants as c
 import cdf.core.feature_flags as ff
 import cdf.core.logger as logger
 from cdf.core.publisher import publisher_spec
+from cdf.core.sink import destination, gateway, sink_spec
 from cdf.core.source import CDFSource, pipeline_spec
 from cdf.core.transform import CDFTransformLoader
-from cdf.core.utils import deep_merge, load_module_from_path
+from cdf.core.utils import load_module_from_path
 
 _IMPORT_LOCK = Lock()
 
@@ -109,15 +109,20 @@ class Project:
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
-        # TODO: require a "global" sink here?
-        main_ws = workspaces[0]
-        context = self[main_ws].get_transform_context(sink=sink)
-        if len(workspaces) == 1:
-            return context
-        for other_ws in workspaces[1:]:
-            ws = self[other_ws]
-            context.configs[ws.root] = ws._transform_config(sink=sink)
-        return context
+        configs = {}
+        for ws in workspaces:
+            transform_opts = {}
+            with self[ws].overlay(), suppress(KeyError):
+                transform_opts = dlt.config["transforms"]
+            configs[self[ws].root] = (
+                self[ws].sinks[sink or "default"].transform_config(**transform_opts)
+            )
+        return sqlmesh.Context(
+            config=configs,
+            paths=[str(self[ws].root) for ws in workspaces],
+            gateway="cdf_managed",
+            loader=CDFTransformLoader,
+        )
 
     @classmethod
     def from_dict(cls, workspaces: t.Dict[str, Path | str]) -> "Project":
@@ -338,6 +343,7 @@ class Workspace:
         self._did_inject_config_providers = False
         self._pipelines = {}
         self._publishers = {}
+        self._sinks = {}
         self.meta = {}
         if not self.lockfile_path.exists():
             self.lockfile_path.touch()
@@ -455,9 +461,7 @@ class Workspace:
         """
         return [
             path
-            for path in self.root.joinpath(
-                c.PIPELINES_PATH,
-            ).glob("*.py")
+            for path in self.root.joinpath(c.PIPELINES_PATH).glob("*.py")
             if path.name != "__init__.py"
         ]
 
@@ -469,9 +473,7 @@ class Workspace:
         """
         return [
             path
-            for path in self.root.joinpath(
-                c.PUBLISHERS_PATH,
-            ).glob("*.py")
+            for path in self.root.joinpath(c.PUBLISHERS_PATH).glob("*.py")
             if path.name != "__init__.py"
         ]
 
@@ -509,7 +511,7 @@ class Workspace:
         Returns:
             Path to script.
         """
-        script_path = self.root / "scripts" / f"{name}.py"
+        script_path = self.root / c.SCRIPTS_PATH / f"{name}.py"
         if must_exist and not script_path.exists():
             raise ValueError(f"Could not find script {name} in {self.root}")
         return script_path
@@ -636,7 +638,6 @@ class Workspace:
             sys.prefix,
             sys.modules.copy(),
         )
-        dotenv.load_dotenv(self.root / ".env")
         if self.has_dependencies:
             exec(activate.read_bytes(), {"__file__": str(activate)})
         sys.path.insert(0, str(self.root))
@@ -647,7 +648,10 @@ class Workspace:
         self._mod_cache = sys.modules.copy()
         new_modules = set(sys.modules) - set(sysmodules)
         for mod in new_modules:
-            del sys.modules[mod]
+            # Make an effort to scrub modules that were imported from the workspace
+            p = getattr(sys.modules[mod], "__file__", None)
+            if p is not None and Path(p).is_relative_to(self.root):
+                del sys.modules[mod]
         os.environ, sys.path, sys.prefix = (
             environ,
             syspath,
@@ -729,48 +733,32 @@ class Workspace:
         """Load transforms from workspace."""
         return self.get_transform_context().models
 
-    def _transform_config(self, sink: str | None = None) -> sqlmesh.Config:
-        """Get a sqlmesh config for the workspace.
-
-        Args:
-            sink (str, optional): Name of transform gateway. Defaults to None.
-
-        Returns:
-            sqlmesh.Config: A sqlmesh config.
-        """
-
-        try:
-            if sink is not None:
-                gateway_conf = self.sinks[sink].transform
-            else:
-                gateway_conf = next(
-                    _sink.transform for _sink in self.sinks.values() if _sink.prod
-                )
-        except KeyError:
-            raise ValueError(
-                f"Could not find transform gateway {sink} for {self.namespace}."
-                f" Please add a [sink.{sink}] entry to your cdf_config.toml file."
+    @property
+    def sinks(self) -> t.Dict[str, sink_spec]:
+        """Load publishers from workspace."""
+        if not self._sinks:
+            with (
+                _IMPORT_LOCK,
+                self.overlay(),
+            ):
+                mod, _ = load_module_from_path(self.root / "cdf_sinks.py")
+                for spec in getattr(mod, c.CDF_SINKS, []):
+                    if isinstance(spec, dict):
+                        spec = sink_spec(**spec)
+                    assert isinstance(spec, sink_spec), f"{spec} is not a sink"
+                    self._sinks[spec.name] = spec
+            self._sinks.setdefault(
+                "default",
+                sink_spec(
+                    name="default",
+                    environment="dev",
+                    destination=destination.duckdb("cdf.duckdb"),
+                    gateway=gateway.parse_obj(
+                        {"connection": {"type": "duckdb", "database": "cdf.duckdb"}}
+                    ),
+                ),
             )
-        except StopIteration:
-            raise ValueError(
-                f"Could not find prod transform gateway for {self.namespace}."
-                " Please add a [sink.<name>] entry to your cdf_config.toml file and/or"
-                " ensure one of your sinks has a prod key set to true."
-            )
-
-        try:
-            with self.configured():
-                transform_conf = dlt.config["transforms"]
-        except KeyError:
-            transform_conf = {}
-
-        return sqlmesh.Config.parse_obj(
-            {
-                "gateways": {"cdf_managed": {"connection": gateway_conf}},
-                **transform_conf,
-                "default_gateway": "cdf_managed",
-            }
-        )
+        return self._sinks
 
     @lru_cache(maxsize=1)
     def get_transform_context(self, sink: str | None = None) -> sqlmesh.Context:
@@ -785,86 +773,11 @@ class Workspace:
         Returns:
             sqlmesh.Context: A sqlmesh context.
         """
-        return sqlmesh.Context(
-            config=self._transform_config(sink=sink),
-            paths=[str(self.root)],
-            loader=CDFTransformLoader,
-        )
-
-    @dataclass
-    class SinkInfo:
-        prod: bool
-        """There should be only 1 prod sink per workspace.
-
-        The prod sink is used for the `cdf metadata` command.
-        """
-        ingest: dict
-        """These are kwargs passed directly to dlt.pipeline in order to configure the sink."""
-        transform: dict
-        """There are kwargs passed directly to sqlmesh gateway in order to configure the sink."""
-
-    DEFAULT_SINK = SinkInfo(
-        False,
-        {"destination": "duckdb", "credentials": "duckdb:///cdf.duckdb"},
-        {"type": "duckdb", "database": "cdf.duckdb"},
-    )
-
-    @property
-    def sinks(self) -> t.Dict[str, SinkInfo]:
-        with self.configured():
-            try:
-                user_sinks = dlt.config["sinks"]
-            except KeyError:
-                user_sinks = {}
-            sinks = {
-                k: Workspace.SinkInfo(
-                    v["prod"],
-                    deep_merge(v.get("common", {}), v.get("ingest", {})),
-                    deep_merge(v.get("common", {}), v.get("transform", {})),
-                )
-                for k, v in user_sinks.items()
-            }
-            sinks["default"] = Workspace.DEFAULT_SINK
-            sinks[None] = Workspace.DEFAULT_SINK
-            return sinks
-
-    @property
-    def prod_sink(self) -> t.Tuple[str, SinkInfo]:
-        """Get the prod sink for the workspace.
-
-        Raises:
-            ValueError if workspace has no prod sink.
-
-        Returns:
-            Tuple[str, SinkInfo]: A tuple of the prod sink name and the SinkInfo.
-        """
-        for name, info in self.sinks.items():
-            if info.prod:
-                return name, info
-        raise ValueError(f"Workspace {self.root} has no prod sink")
-
-    def raise_on_ff_lock_mismatch(self, config_hash: str) -> None:
-        """Raise an error if the FF cache key does not match the lockfile.
-
-        This is used to ensure that FF configuration for a workspace is consistent across
-        runs. It does this by storing a hash of the FF configuration in the lockfile and
-        comparing it to the current FF configuration. If the hash does not match, it raises
-        an error.
-
-        Args:
-            config_hash (str): The cache key to validate.
-        """
-        lockfile_cache_key = self.get_value_lockfile("ff").get("config_hash")
-        if not lockfile_cache_key:
-            self.put_value_lockfile("ff", {"config_hash": config_hash})
-        elif lockfile_cache_key != config_hash:
-            raise ValueError(
-                "FF cache key mismatch. Expected %s, got %s -- you should use the correct FF configuration"
-                " to ensure you are using the correct values, alternatively delete the lockfile to"
-                " regenerate the hash",
-                config_hash,
-                lockfile_cache_key,
-            )
+        transform_opts = {}
+        with self.configured(), suppress(KeyError):
+            transform_opts = dlt.config["transforms"]
+        sink_ = self.sinks[sink or "default"]
+        return sink_.transform_context(str(self.root), **transform_opts)
 
     @contextmanager
     @requires_pipelines
@@ -888,6 +801,7 @@ class Workspace:
         """Context manager to inject workspace config into context."""
         from cdf.core.config import with_config_providers_from_workspace
 
+        dotenv.load_dotenv(self.root / ".env")
         with with_config_providers_from_workspace(workspace=self):
             yield
 

@@ -85,9 +85,21 @@ class CDFTransformLoader(SqlMeshLoader):
                 spec = CDFStagingSpec(**raw_spec)
 
                 input_table = parse_one(spec.input, into=exp.Table)
-                meta_path = context_path / "metadata" / f"{input_table.db}.yaml"
+                candidates = sorted(
+                    [
+                        candidate
+                        for candidate in context_path.glob(
+                            f"metadata/*/{input_table.db}.yaml"
+                        )
+                        if candidate.is_file()
+                    ],
+                    key=lambda c: c.stat().st_mtime,
+                    reverse=True,
+                )
 
-                if not meta_path.exists():
+                meta_path = next(iter(candidates), None)
+
+                if meta_path is None or not meta_path.exists():
                     raise Exception(
                         f"Metadata file not found: {meta_path}, run cdf metadata"
                     )

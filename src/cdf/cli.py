@@ -8,7 +8,6 @@ import typing as t
 from pathlib import Path
 
 import dlt
-import dotenv
 import rich
 import typer
 
@@ -33,8 +32,6 @@ transform_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(transform_app, name="transform", rich_help_panel="Integrate")
-
-dotenv.load_dotenv()
 
 
 @app.callback()
@@ -272,9 +269,8 @@ def head(
 def pipeline(
     ctx: typer.Context,
     pipeline: t.Annotated[
-        str, typer.Argument(help="The <workspace>.<pipeline> to ingest.")
+        str, typer.Argument(help="The <workspace>.<pipeline>:<sink> to run.")
     ],
-    sink: t.Annotated[str, typer.Option(..., "-s", "--sink")] = "default",
     opts: str = typer.Argument(
         "{}", help="JSON formatted options to forward to the pipeline."
     ),
@@ -287,16 +283,16 @@ def pipeline(
     \f
     Args:
         ctx: The CLI context.
-        pipeline: The pipeline to ingest from.
+        pipeline: The pipeline to ingest from and the sink to ingest into.
         opts: JSON formatted options to forward to the pipeline.
-        sink: The destination to ingest to.
         resources: The resources to ingest.
 
     Raises:
         typer.BadParameter: If no resources are selected.
     """
     project: Project = ctx.obj
-    ws, src = _parse_ws_component(pipeline)
+    ws, src_sink = _parse_ws_component(pipeline)
+    src, sink = src_sink.split(":", 1)
     workspace = project[ws]
     with workspace.overlay():
         pipe = workspace.pipelines[src]
@@ -543,9 +539,11 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
     project: Project = ctx.obj
     yaml = YAML(typ="rt")
 
+    workspace, sink = _parse_ws_component(workspace)
+
     ws = project[workspace]
     with ws.overlay():
-        context = ws.get_transform_context()
+        context = ws.get_transform_context(sink)
         schema_out = ws.root / "schema.yaml"
         schema_out.unlink(missing_ok=True)
 
@@ -566,7 +564,7 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
             pipe = dlt.pipeline(
                 f"cdf-{name}",
                 dataset_name=dataset,
-                **ws.prod_sink[1].ingest,
+                destination=ws.sinks[sink].unwrap()[0],
                 pipelines_dir=d.name,
             )
             pipe.activate()
@@ -579,7 +577,7 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
                     catalog.setdefault(table.name, {}).update(meta)
             d.cleanup()
 
-    meta_path = ws.root / "metadata"
+    meta_path = ws.root / c.METADATA_PATH / sink
     meta_path.mkdir(exist_ok=True)
     for catalog, tables in output.items():
         with meta_path.joinpath(f"{catalog}.yaml").open("w") as f:
@@ -615,9 +613,11 @@ def generate_staging_layer(
     project: Project = ctx.obj
     yaml = YAML(typ="rt")
 
+    workspace, sink = _parse_ws_component(workspace)
+
     ws = project[workspace]
-    context = ws.get_transform_context()
-    for fp in (ws.root / "metadata").iterdir():
+    context = ws.get_transform_context(sink)
+    for fp in (ws.root / "metadata" / sink).iterdir():
         with fp.open() as fd:
             meta = yaml.load(fd)
         stg_specs = []
@@ -676,7 +676,7 @@ def init_workspace(
         directory.joinpath(dir_).mkdir(parents=True, exist_ok=False)
     for dir_ in (
         "macros",
-        "scripts",
+        c.SCRIPTS_PATH,
         c.PIPELINES_PATH,
         c.PUBLISHERS_PATH,
         c.TRANSFORMS_PATH,

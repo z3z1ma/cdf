@@ -1,10 +1,11 @@
 """A publisher that pushes data to httpbin.org"""
-import dlt
 import pandas as pd
 import requests
 
+import cdf
 
-def post(data, test_str: str = dlt.config.value) -> None:
+
+def post(data, test_str: str = cdf.value) -> None:
     """Post the data to httpbin.org
 
     Args:

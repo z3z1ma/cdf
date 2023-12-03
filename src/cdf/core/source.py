@@ -6,7 +6,7 @@ import typing as t
 from dataclasses import dataclass, field
 
 import dlt
-from dlt.common.destination.reference import JobClientBase, TDestinationReferenceArg
+from dlt.common.destination.reference import JobClientBase
 from dlt.common.pipeline import LoadInfo, SupportsPipeline
 from dlt.common.typing import TDataItem
 from dlt.destinations.sql_client import SqlClientBase
@@ -59,14 +59,6 @@ def _basic_pipe(source: CDFSource) -> PipeGen:
     """
     pipeline = yield source
     return pipeline.run(source)
-
-
-class SinkOptions(t.TypedDict, total=False):
-    """The sink options."""
-
-    destination: TDestinationReferenceArg
-    credentials: t.Any
-    staging: TDestinationReferenceArg
 
 
 @dataclass
@@ -159,12 +151,7 @@ class pipeline_spec:
                         agg_map(resource, metric_name, fn)
                     )
 
-            # Get sink config
-            # TODO: migrate to dlt 0.4.0
-            sink_opts = t.cast(SinkOptions, workspace.sinks[sink].ingest)
-            if "BUCKET_URL" in os.environ:
-                sink_opts["staging"] = "filesystem"
-
+            destination, staging, _ = workspace.sinks[sink].unwrap()
             tmpdir = tempfile.TemporaryDirectory()
             try:
                 ctx.send(
@@ -173,7 +160,8 @@ class pipeline_spec:
                         dataset_name=f"{self.name}_v{self.version}",
                         progress=os.getenv("CDF_PROGRESS", "alive_progress"),  # type: ignore
                         pipelines_dir=tmpdir.name,
-                        **sink_opts,
+                        destination=destination,
+                        staging=staging,
                     )
                 )
                 raise RuntimeError("Pipeline did not complete.")

@@ -3,6 +3,7 @@
 # The main export symbols for CDF modules
 CDF_PIPELINES = "__CDF_PIPELINES__"
 CDF_PUBLISHERS = "__CDF_PUBLISHERS__"
+CDF_SINKS = "__CDF_SINKS__"
 
 # Core files
 WORKSPACE_FILE = "cdf_workspace.toml"
@@ -19,16 +20,20 @@ DEFAULT_WORKSPACE = "default"
 PIPELINES_PATH = "./pipelines"
 TRANSFORMS_PATH = "./models"
 PUBLISHERS_PATH = "./publishers"
+METADATA_PATH = "./metadata"
+SCRIPTS_PATH = "./scripts"
+
 LOCKFILE_PATH = "./cdf.lock"
 
+# The default layout of a CDF workspace
 DIR_LAYOUT = (
     PIPELINES_PATH,
     TRANSFORMS_PATH,
     PUBLISHERS_PATH,
+    SCRIPTS_PATH,
+    METADATA_PATH,
     "./audits",
     "./macros",
-    "./metadata",
-    "./scripts",
     "./seeds",
     "./tests",
 )

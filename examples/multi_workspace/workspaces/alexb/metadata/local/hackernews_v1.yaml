@@ -32,10 +32,6 @@ keyword_hits:
       name: story_title
       data_type: text
       nullable: true
-    story_url:
-      name: story_url
-      data_type: text
-      nullable: true
     updated_at:
       name: updated_at
       data_type: timestamp
@@ -49,6 +45,10 @@ keyword_hits:
       data_type: text
       nullable: false
       unique: true
+    story_url:
+      name: story_url
+      data_type: text
+      nullable: true
     num_comments:
       name: num_comments
       data_type: bigint

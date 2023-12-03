@@ -17,6 +17,7 @@ from dlt.common.configuration import with_config as with_config
 
 import cdf.core.logger as logger
 from cdf.core.publisher import Payload, export_publishers, publisher_spec
+from cdf.core.sink import destination, export_sinks, gateway, sink_spec
 from cdf.core.source import (
     CDFResource,
     CDFSource,
@@ -40,10 +41,14 @@ __all__ = [
     "publisher_spec",
     "export_publishers",
     "Payload",
+    "sink_spec",
+    "export_sinks",
     "logger",
     "with_config",
     "pipeline",
     "value",
     "secret",
     "configspec",
+    "destination",
+    "gateway",
 ]
