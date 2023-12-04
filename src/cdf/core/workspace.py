@@ -605,7 +605,7 @@ class Workspace:
         )
         if self.has_dependencies:
             exec(activate.read_bytes(), {"__file__": str(activate)})
-        sys.path.insert(0, str(self.root))
+        sys.path.append(str(self.root))
         if self._mod_cache:
             sys.modules.update(self._mod_cache)
         dotenv.load_dotenv(self.root / ".env")
