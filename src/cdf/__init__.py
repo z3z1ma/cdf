@@ -30,6 +30,7 @@ from cdf.core.workspace import Project, Workspace
 
 config = dlt.config.value
 secret = dlt.secrets.value
+incremental = dlt.sources.incremental
 
 __all__ = [
     "CDFSource",
@@ -53,4 +54,5 @@ __all__ = [
     "destination",
     "gateway",
     "session",
+    "incremental",
 ]
