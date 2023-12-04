@@ -559,7 +559,7 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
             d = tempfile.TemporaryDirectory()
             dataset = f"{name}_v{src.version}"
             pipe = dlt.pipeline(
-                f"cdf-{name}",
+                name,
                 dataset_name=dataset,
                 destination=ws.sinks[sink].unwrap()[0],
                 pipelines_dir=d.name,

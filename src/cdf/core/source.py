@@ -156,7 +156,7 @@ class pipeline_spec:
             try:
                 ctx.send(
                     dlt.pipeline(
-                        f"cdf-{self.name}",
+                        self.name,  # type: ignore
                         dataset_name=f"{self.name}_v{self.version}",
                         progress=os.getenv("CDF_PROGRESS", "alive_progress"),  # type: ignore
                         pipelines_dir=tmpdir.name,
