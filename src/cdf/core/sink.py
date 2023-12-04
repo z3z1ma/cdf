@@ -42,7 +42,7 @@ class sink_spec:
 
         if destination is not None:
             destination.config_params = destination.config_params or {}
-            destination.config_params["destination_name"] = self.name
+            # destination.config_params["destination_name"] = self.name
             destination.config_params["environment"] = self.environment
 
         if staging is not None:

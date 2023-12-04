@@ -714,7 +714,9 @@ class Workspace:
                 sink_spec(
                     name="default",
                     environment="dev",
-                    destination=destination.duckdb("cdf.duckdb"),
+                    destination=destination.duckdb(
+                        "cdf.duckdb", destination_name="default"
+                    ),
                     gateway=gateway.parse_obj(
                         {"connection": {"type": "duckdb", "database": "cdf.duckdb"}}
                     ),
