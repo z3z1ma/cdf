@@ -6,7 +6,7 @@ authors = [
     {name = "z3z1ma", email = "butler.alex2010@gmail.com"},
 ]
 dependencies = [
-    "dlt[duckdb]~=0.4.1a0",
+    "dlt[duckdb] @ git+https://github.com/dlt-hub/dlt.git@fcb7d5e8f0792849de15476617754cc433def59d",
     "sqlmesh~=0.57.0",
     "typer[all]>=0.8.0",
     "alive-progress>=3.1.4",
@@ -32,3 +32,6 @@ cdf = "cdf.cli:app"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+allow-direct-references = true
