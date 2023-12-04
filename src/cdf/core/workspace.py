@@ -149,7 +149,10 @@ class Project:
 
     @classmethod
     def default(
-        cls, path: Path | str | None = None, load_dotenv: bool = True
+        cls,
+        path: Path | str | None = None,
+        load_dotenv: bool = True,
+        append_syspath: bool = True,
     ) -> "Project":
         """Create a project from the current working directory."""
         if path is None:
@@ -158,11 +161,13 @@ class Project:
             path = Path(path).expanduser().resolve()
         if load_dotenv:
             dotenv.load_dotenv(path / ".env")
+        if append_syspath:
+            sys.path.append(str(path))
         return cls([Workspace.find_nearest(path, raise_no_marker=True)])
 
     @classmethod
     def from_workspace_toml(
-        cls, path: Path | str, load_dotenv: bool = True
+        cls, path: Path | str, load_dotenv: bool = True, append_syspath: bool = True
     ) -> "Project":
         """Create a project from a workspace.toml file.
 
@@ -199,6 +204,8 @@ class Project:
 
         if load_dotenv:
             dotenv.load_dotenv(path.parent / ".env")
+        if append_syspath:
+            sys.path.append(str(path.parent))
 
         return cls.from_dict(parsed)
 
@@ -208,6 +215,7 @@ class Project:
         path: Path | str | None = None,
         raise_no_marker: bool = False,
         load_dotenv: bool = True,
+        append_syspath: bool = True,
     ) -> "Project":
         """Find nearest project.
 
@@ -217,6 +225,7 @@ class Project:
             path (Path): The path to search from.
             raise_no_marker (bool, optional): Whether to raise an error if no project is found.
             load_dotenv (bool, optional): Whether to load the .env file if no project is found.
+            append_syspath (bool, optional): Whether to append the project root to sys.path.
         """
         if path is None:
             path = Path.cwd()
@@ -226,13 +235,19 @@ class Project:
         while path.parents:
             workspace_spec = path / c.WORKSPACE_FILE
             if workspace_spec.exists():
-                return cls.from_workspace_toml(workspace_spec, load_dotenv=load_dotenv)
+                return cls.from_workspace_toml(
+                    workspace_spec,
+                    load_dotenv=load_dotenv,
+                    append_syspath=append_syspath,
+                )
             path = path.parent
         if raise_no_marker:
             raise ValueError(
                 f"Could not find a project root in {path} or any of its parents"
             )
-        return cls.default(orig_path, load_dotenv=load_dotenv)
+        return cls.default(
+            orig_path, load_dotenv=load_dotenv, append_syspath=append_syspath
+        )
 
 
 class WorkspaceCapabilities(t.TypedDict):

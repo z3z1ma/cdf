@@ -28,7 +28,7 @@ TRANSFORMS_PATH = "./models"
 PUBLISHERS_PATH = "./publishers"
 METADATA_PATH = "./metadata"
 SCRIPTS_PATH = "./scripts"
-VENV_PATH = "./venv"
+VENV_PATH = "./.venv"
 
 LOCKFILE_PATH = "./cdf.lock"
 
