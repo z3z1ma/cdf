@@ -831,3 +831,6 @@ class Workspace:
         if not isinstance(other, Workspace):
             return NotImplemented
         return self.root == other.root
+
+    def __hash__(self) -> int:
+        return hash(self.root)
