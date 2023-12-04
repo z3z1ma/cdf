@@ -30,5 +30,5 @@ dev = [
 cdf = "cdf.cli:app"
 
 [build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
