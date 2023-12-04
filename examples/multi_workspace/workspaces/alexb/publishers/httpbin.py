@@ -5,7 +5,7 @@ import requests
 import cdf
 
 
-def post(data, test_str: str = cdf.value) -> None:
+def post(data, test_str: str = cdf.config) -> None:
     """Post the data to httpbin.org
 
     Args:

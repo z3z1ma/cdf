@@ -14,6 +14,7 @@ import dlt
 from dlt import pipeline as pipeline
 from dlt.common.configuration import configspec as configspec
 from dlt.common.configuration import with_config as with_config
+from dlt.sources.helpers.requests import Client as session
 
 import cdf.core.logger as logger
 from cdf.core.publisher import Payload, export_publishers, publisher_spec
@@ -27,7 +28,7 @@ from cdf.core.source import (
 )
 from cdf.core.workspace import Project, Workspace
 
-value = dlt.config.value
+config = dlt.config.value
 secret = dlt.secrets.value
 
 __all__ = [
@@ -46,9 +47,10 @@ __all__ = [
     "logger",
     "with_config",
     "pipeline",
-    "value",
+    "config",
     "secret",
     "configspec",
     "destination",
     "gateway",
+    "session",
 ]
