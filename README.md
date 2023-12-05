@@ -319,6 +319,10 @@ This project is distributed under the [Apache 2.0](http://www.apache.org/license
 ## 👏 Acknowledgments
 
 - Harness (https://harness.io/) for being the proving grounds in which the initial concept of this project was born.
+- SQLMesh (https://sqlmesh.com) for being a foundational pillar of this project as well as the team for their support,
+advice, and guidance.
+- DLT (https://dlthub.com) for being the other foundational pillar of this project as well as the team for their
+support, advice, and guidance.
 
 [**Return**](#Top)
 
