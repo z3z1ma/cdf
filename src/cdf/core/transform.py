@@ -74,7 +74,6 @@ class CDFTransformLoader(SqlMeshLoader):
             ):
                 if not os.path.getsize(path):
                     continue
-                self._track_file(path)
                 with path.open() as f:
                     specs = YAML.load(f)
                     if not isinstance(specs, list):
