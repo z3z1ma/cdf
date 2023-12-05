@@ -129,7 +129,9 @@ class Project:
             with self[ws].overlay(), suppress(KeyError):
                 transform_opts = dlt.config["transforms"]
             configs[self[ws].root] = (
-                self[ws].sinks[sink or "default"].transform_config(**transform_opts)
+                self[ws]
+                .sinks[sink or "default"]
+                .transform_config(self[ws].namespace, **transform_opts)
             )
         return sqlmesh.Context(
             config=configs,
@@ -777,7 +779,7 @@ class Workspace:
             sink_ = next(s for s in self.sinks.values() if s.gateway)
         else:
             sink_ = self.sinks[sink]
-        return sink_.transform_context(str(self.root), **transform_opts)
+        return sink_.transform_context(str(self.root), self.namespace, **transform_opts)
 
     @contextmanager
     @requires_pipelines

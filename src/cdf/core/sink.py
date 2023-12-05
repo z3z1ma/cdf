@@ -52,7 +52,7 @@ class sink_spec:
 
         return destination, staging, gateway
 
-    def transform_config(self, **transform_opts: t.Any) -> sqlmesh.Config:
+    def transform_config(self, project: str, **transform_opts: t.Any) -> sqlmesh.Config:
         """Create a transform config for this sink.
 
         Args:
@@ -67,10 +67,13 @@ class sink_spec:
                 "gateways": {"cdf_managed": gateway},
                 **transform_opts,
                 "default_gateway": "cdf_managed",
+                "project": project,
             }
         )
 
-    def transform_context(self, path: str, **transform_opts: t.Any) -> sqlmesh.Context:
+    def transform_context(
+        self, path: str, project: str, **transform_opts: t.Any
+    ) -> sqlmesh.Context:
         """Create a transform context for this sink.
 
         Args:
@@ -81,7 +84,7 @@ class sink_spec:
             sqlmesh.Context: The transform context.
         """
         return sqlmesh.Context(
-            config=self.transform_config(**transform_opts),
+            config=self.transform_config(project, **transform_opts),
             paths=[path],
             loader=CDFTransformLoader,
         )
