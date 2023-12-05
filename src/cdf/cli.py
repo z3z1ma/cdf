@@ -452,6 +452,9 @@ def publish(
                     "Model not found in transform context. We cannot track lineage or enforce data quality. Continue?",
                     abort=True,
                 )
+        else:
+            model = context.models[runner.from_model]
+            logger.info("Parsed dependencies: %s", model.depends_on)
         runner(data=Payload(context.fetchdf(runner.query)), **json.loads(opts))
 
 
