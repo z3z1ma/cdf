@@ -201,18 +201,32 @@ def remove_config_providers(*names: str) -> None:
             Container()[ConfigProvidersContext].pop(name)
 
 
+WORKSPACE_PROVIDER_CACHE: t.Dict[
+    str, t.Tuple[providers.ConfigProvider, providers.ConfigProvider]
+] = {}
+"""A cache of config providers keyed by workspace."""
+
+
 def inject_config_providers_from_workspace(workspace: "Workspace") -> None:
     """Add config providers from a workspace.
+
+    The providers are cached so that they are not recreated on every call. This permits
+    persistent mutation of the providers in user code using dlt.config[...] = ... which
+    creates a more consistent user interface while allowing the library to be flexible
+    in entering and exiting contexts.
 
     Args:
         workspace: The workspace to add config providers from.
     """
-    workspace_cfg = config_provider_factory(
-        f"{workspace.namespace}.config", project_dir=workspace.root, secrets=False
-    )
-    workspace_secrets = config_provider_factory(
-        f"{workspace.namespace}.secrets", project_dir=workspace.root, secrets=True
-    )
+    if workspace in WORKSPACE_PROVIDER_CACHE:
+        workspace_cfg, workspace_secrets = WORKSPACE_PROVIDER_CACHE[workspace]
+    else:
+        workspace_cfg = config_provider_factory(
+            f"{workspace.namespace}.config", project_dir=workspace.root, secrets=False
+        )
+        workspace_secrets = config_provider_factory(
+            f"{workspace.namespace}.secrets", project_dir=workspace.root, secrets=True
+        )
     inject_config_providers([workspace_cfg, workspace_secrets])
 
 
