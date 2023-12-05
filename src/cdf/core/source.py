@@ -1,5 +1,6 @@
 """The source class for continuous data framework sources."""
 import fnmatch
+import inspect
 import os
 import tempfile
 import typing as t
@@ -107,6 +108,8 @@ class pipeline_spec:
     def __post_init__(self) -> None:
         if self.name is None:
             self.name = self.pipe.__name__
+
+        self.description = inspect.cleandoc(self.description)
 
         _pipe = self.pipe
         _metrics = {}
