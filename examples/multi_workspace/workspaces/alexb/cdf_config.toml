@@ -12,3 +12,7 @@ model_defaults.dialect = "duckdb"
 
 [ff]
 provider = "local"
+
+
+[whatever]
+key = {{ 1 + 1}}

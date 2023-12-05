@@ -1,8 +1,11 @@
 """Echo the model data to stdout"""
 import pandas as pd
 
+import cdf
 
-def echo(data) -> None:
+
+@cdf.with_config(sections=("whatever",))
+def echo(data, key=cdf.config) -> None:
     """The echo publisher
 
     Args:
@@ -10,6 +13,7 @@ def echo(data) -> None:
     """
     df: pd.DataFrame = data.payload
     print(df)
+    print(key)
 
 
 __CDF_PUBLISHERS__ = [
