@@ -103,6 +103,8 @@ def fn_to_str(fn: t.Callable | functools.partial) -> str:
     """Convert a function to a string representation."""
     if isinstance(fn, functools.partial):
         fn = fn.func
+    if hasattr(fn, "__wrapped__"):
+        fn = t.cast(t.Callable, fn.__wrapped__)
     parts = [
         f"mod: {fn.__module__}",
         f"fn: {fn.__name__}",
