@@ -5,7 +5,7 @@ import cdf
 
 
 @cdf.with_config(sections=("whatever",))
-def echo(data, key=cdf.config) -> None:
+def echo(data, key=cdf.inject_config) -> None:
     """The echo publisher
 
     Args:

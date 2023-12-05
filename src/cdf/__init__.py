@@ -28,9 +28,13 @@ from cdf.core.source import (
 )
 from cdf.core.workspace import Project, Workspace
 
-config = dlt.config.value
-secret = dlt.secrets.value
+inject_config = dlt.config.value
+"""A sentinel value used to mark a value as needing to be injected from a config provider."""
+inject_secret = dlt.secrets.value
+"""A sentinel value used to mark a value as needing to be injected from a secret provider."""
+
 incremental = dlt.sources.incremental
+"""Add incremental support to a resource."""
 
 __all__ = [
     "CDFSource",
@@ -48,8 +52,8 @@ __all__ = [
     "logger",
     "with_config",
     "pipeline",
-    "config",
-    "secret",
+    "inject_config",
+    "inject_secret",
     "configspec",
     "destination",
     "gateway",

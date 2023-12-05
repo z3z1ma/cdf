@@ -109,9 +109,11 @@ def export_sinks(*sinks: sink_spec, scope: dict | None = None) -> None:
     (scope or globals()).setdefault(c.CDF_SINKS, []).extend(sinks)
 
 
-# Re-export for convenience
 gateway = GatewayConfig
+"""Create a SQLMesh gateway."""
+
 destination = dlt.destinations
+"""Create a DLT destination."""
 
 
 __all__ = [

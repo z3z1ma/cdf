@@ -4,7 +4,7 @@ LOCAL_DB = "cdf.duckdb"
 
 
 @cdf.with_config(sections=("bigquery", "prod"))
-def prod(credentials: str = cdf.secret):
+def prod(credentials: str = cdf.inject_secret):
     return cdf.destination.bigquery(
         credentials,  # type: ignore
         # http_timeout
@@ -24,7 +24,7 @@ def development():
 
 
 @cdf.with_config(sections=("bigquery", "staging"))
-def prod_staging(credentials: str = cdf.secret):
+def prod_staging(credentials: str = cdf.inject_secret):
     return cdf.destination.filesystem(
         "gs://harness_analytics_staging/cdf",
         credentials,
