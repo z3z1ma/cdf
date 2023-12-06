@@ -24,6 +24,7 @@ app = typer.Typer(
     epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
     add_completion=False,
     no_args_is_help=True,
+    chain=True,
 )
 transform_app = typer.Typer(
     rich_markup_mode="rich",
