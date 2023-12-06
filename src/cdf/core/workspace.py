@@ -196,12 +196,8 @@ class Project:
             conf = toml.load(f).get("workspace", {"members": []})
 
         parsed = {}
-        for spec in conf["members"]:
-            if ":" in spec:
-                namespace, subpath = spec.split(":", 1)
-            else:
-                subpath = spec
-                namespace = Path(subpath).name
+        for subpath in conf["members"]:
+            namespace = Path(subpath).name
             member_path = path.parent / subpath
             if append_syspath:
                 # Permit 'absolute' importing by namespace
