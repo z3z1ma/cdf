@@ -40,7 +40,7 @@ class SupportsPipelineClients(SupportsPipeline, t.Protocol):
 
 
 PipeGen = t.Generator[CDFSource, SupportsPipelineClients, LoadInfo]
-CDFPipeline = t.Callable[..., PipeGen | CDFSource] | PipeGen
+CDFPipeline = t.Callable[..., PipeGen | CDFSource] | PipeGen | CDFSource
 
 
 def _basic_pipe(source: CDFSource) -> PipeGen:
@@ -107,7 +107,11 @@ class pipeline_spec:
 
     def __post_init__(self) -> None:
         if self.name is None:
-            self.name = self.pipe.__name__
+            self.name = (
+                self.pipe.name
+                if isinstance(self.pipe, CDFSource)
+                else self.pipe.__name__
+            )
 
         self.description = inspect.cleandoc(self.description)
 
