@@ -104,12 +104,14 @@ def do(fn: t.Callable[[A], B], it: t.Iterable[A]) -> t.List[B]:
 
 def fn_to_str(fn: t.Callable | functools.partial | DltSource) -> str:
     """Convert a function to a string representation."""
-    if isinstance(fn, DltSource):
-        return f"object: DltSource({fn.name}), id: {id(fn)}"
     if isinstance(fn, functools.partial):
         fn = fn.func
     if hasattr(fn, "__wrapped__"):
         fn = t.cast(t.Callable, fn.__wrapped__)
+    if isinstance(fn, DltSource):
+        return f"object: DltSource({fn.name}), id: {id(fn)}"
+    if isinstance(fn, types.GeneratorType):
+        return f"object: Generator, id: {id(fn)}"
     parts = [
         f"mod: {fn.__module__}",
         f"fn: {fn.__name__}",
