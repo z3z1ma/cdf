@@ -102,8 +102,10 @@ def do(fn: t.Callable[[A], B], it: t.Iterable[A]) -> t.List[B]:
     return list(map(fn, it))
 
 
-def fn_to_str(fn: t.Callable | functools.partial) -> str:
+def fn_to_str(fn: t.Callable | functools.partial | DltSource) -> str:
     """Convert a function to a string representation."""
+    if isinstance(fn, DltSource):
+        return f"object: DltSource({fn.name}), id: {id(fn)}"
     if isinstance(fn, functools.partial):
         fn = fn.func
     if hasattr(fn, "__wrapped__"):
