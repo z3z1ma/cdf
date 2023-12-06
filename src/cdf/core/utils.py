@@ -63,7 +63,7 @@ def deep_merge(lhs: dict, rhs: dict) -> dict:
 
 
 def load_module_from_path(
-    path: Path, execute: bool = True
+    path: Path, execute: bool = True, /, package: str | None = None
 ) -> t.Tuple[types.ModuleType, ModuleSpec]:
     """Load a module from a path.
 
@@ -76,8 +76,11 @@ def load_module_from_path(
     """
     spec = spec_from_file_location(path.stem, path)
     if spec is None or spec.loader is None:
-        raise ValueError(f"Could not load source {path}")
+        raise RuntimeError(f"Could not load source {path}")
     module = module_from_spec(spec)
+    module.__file__ = str(path)
+    if package:
+        module.__package__ = package
     sys.modules[spec.name] = module
     if execute:
         spec.loader.exec_module(module)

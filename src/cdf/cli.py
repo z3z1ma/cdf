@@ -93,7 +93,7 @@ def index(ctx: typer.Context) -> None:
         rich.print(f"\n ~ {workspace}")
         if not any(workspace.capabilities.values()):
             rich.print(
-                f"   No capabilities discovered. Add {c.PIPELINES_PATH}, {c.TRANSFORMS_PATH}, or {c.PUBLISHERS_PATH}"
+                f"   No capabilities discovered. Add {c.PIPELINES}, {c.TRANSFORMS}, or {c.PUBLISHERS}"
             )
             continue
         if workspace.has_pipelines:
@@ -353,7 +353,7 @@ def transform(
             raise typer.BadParameter(f"Workspace `{ws}` not found.")
         if not project[ws].has_transforms:
             raise typer.BadParameter(
-                f"No transforms discovered in workspace `{ws}`. Add transforms to {c.TRANSFORMS_PATH} to enable them."
+                f"No transforms discovered in workspace `{ws}`. Add transforms to {c.TRANSFORMS} to enable them."
             )
     # Swap context to SQLMesh context
     ctx.obj = project.get_transform_context(workspaces, sink=sink)
@@ -577,7 +577,7 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
                     catalog.setdefault(table.name, {}).update(meta)
             d.cleanup()
 
-    meta_path = ws.root / c.METADATA_PATH / sink
+    meta_path = ws.root / c.METADATA / sink
     meta_path.mkdir(exist_ok=True)
     for catalog, tables in output.items():
         with meta_path.joinpath(f"{catalog}.yaml").open("w") as f:
@@ -676,10 +676,10 @@ def init_workspace(
         directory.joinpath(dir_).mkdir(parents=True, exist_ok=False)
     for dir_ in (
         "macros",
-        c.SCRIPTS_PATH,
-        c.PIPELINES_PATH,
-        c.PUBLISHERS_PATH,
-        c.TRANSFORMS_PATH,
+        c.SCRIPTS,
+        c.PIPELINES,
+        c.PUBLISHERS,
+        c.TRANSFORMS,
     ):
         # Add init files to importable directories
         directory.joinpath(dir_, "__init__.py").touch()
@@ -691,7 +691,7 @@ def init_workspace(
                 "__pycache__",
                 "*.pyc",
                 ".env",
-                c.VENV_PATH,
+                c.VENV,
                 ".cache",
                 "logs",
                 c.SECRETS_FILE,

@@ -23,24 +23,27 @@ REQUIREMENTS_FILE = "requirements.txt"
 DEFAULT_WORKSPACE = "default"
 
 # Paths relative to a root which constitute the layout of a CDF workspace
-PIPELINES_PATH = "./pipelines"
-TRANSFORMS_PATH = "./models"
-PUBLISHERS_PATH = "./publishers"
-METADATA_PATH = "./metadata"
-SCRIPTS_PATH = "./scripts"
-VENV_PATH = "./.venv"
+PIPELINES = "pipelines"
+TRANSFORMS = "models"
+PUBLISHERS = "publishers"
+METADATA = "metadata"
+SCRIPTS = "scripts"
 
-LOCKFILE_PATH = "./cdf.lock"
+# Default virtual environment path
+VENV = ".venv"
+
+# The default lockfile path
+LOCKFILE = "cdf.lock"
 
 # The default layout of a CDF workspace
 DIR_LAYOUT = (
-    PIPELINES_PATH,
-    TRANSFORMS_PATH,
-    PUBLISHERS_PATH,
-    SCRIPTS_PATH,
-    METADATA_PATH,
-    "./audits",
-    "./macros",
-    "./seeds",
-    "./tests",
+    PIPELINES,
+    TRANSFORMS,
+    PUBLISHERS,
+    SCRIPTS,
+    METADATA,
+    "audits",
+    "macros",
+    "seeds",
+    "tests",
 )

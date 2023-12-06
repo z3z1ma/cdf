@@ -346,9 +346,9 @@ class Workspace:
         ".git",
         c.CONFIG_FILE,
         c.SECRETS_FILE,
-        c.PIPELINES_PATH,
-        c.TRANSFORMS_PATH,
-        c.PUBLISHERS_PATH,
+        c.PIPELINES,
+        c.TRANSFORMS,
+        c.PUBLISHERS,
     ]
 
     def __init__(
@@ -370,13 +370,13 @@ class Workspace:
                 f"Tried to init Workspace with nonexistent path {self.root}"
             )
 
-        self.pipeline_paths = self._get_python_fpaths(c.PIPELINES_PATH)
-        self.publisher_paths = self._get_python_fpaths(c.PUBLISHERS_PATH)
-        self.script_paths = self._get_python_fpaths(c.SCRIPTS_PATH)
-        self.transform_path = self.root / c.TRANSFORMS_PATH
+        self.pipeline_paths = self._get_python_fpaths(c.PIPELINES)
+        self.publisher_paths = self._get_python_fpaths(c.PUBLISHERS)
+        self.script_paths = self._get_python_fpaths(c.SCRIPTS)
+        self.transform_path = self.root / c.TRANSFORMS
         self.config_path = self.root / c.CONFIG_FILE
         self.secrets_path = self.root / c.SECRETS_FILE
-        self.lockfile_path = self.root / c.LOCKFILE_PATH
+        self.lockfile_path = self.root / c.LOCKFILE
         self.sinks_path = self.root / c.SINKS_FILE
         self.requirements_path = self.root / c.REQUIREMENTS_FILE
 
@@ -444,7 +444,7 @@ class Workspace:
         """
         if not self.has_dependencies:
             return Path(sys.executable)
-        return self.root / c.VENV_PATH / "bin" / "python"
+        return self.root / c.VENV / "bin" / "python"
 
     @property
     def pip_path(self) -> Path:
@@ -455,7 +455,7 @@ class Workspace:
         """
         if not self.has_dependencies:
             return Path(sys.executable).parent / "pip"
-        return self.root / c.VENV_PATH / "bin" / "pip"
+        return self.root / c.VENV / "bin" / "pip"
 
     @requires_dependencies
     def get_bin(self, name: str, must_exist: bool = False) -> Path:
@@ -472,7 +472,7 @@ class Workspace:
         Returns:
             Path to binary.
         """
-        bin_path = self.root / c.VENV_PATH / "bin" / name
+        bin_path = self.root / c.VENV / "bin" / name
         if must_exist and not bin_path.exists():
             raise ValueError(f"Could not find bin {name} in {self.root}")
         return bin_path
@@ -530,7 +530,7 @@ class Workspace:
     def _setup_deps(self, force: bool = False) -> None:
         """Install dependencies if requirements.txt is newer than virtual environment."""
         req_mtime = self.requirements_path.stat().st_mtime
-        venv_mtime = (self.root / c.VENV_PATH).stat().st_mtime
+        venv_mtime = (self.root / c.VENV).stat().st_mtime
         if (req_mtime > venv_mtime) or force:
             logger.info("Change detected. Updating dependencies for %s", self.root)
             subprocess.check_call(
@@ -542,7 +542,7 @@ class Workspace:
                     self.requirements_path,
                 ]
             )
-            (self.root / c.VENV_PATH).touch()
+            (self.root / c.VENV).touch()
 
     @requires_dependencies
     def _setup_venv(self) -> None:
@@ -553,7 +553,7 @@ class Workspace:
         """
         virtualenv.cli_run(
             [
-                str(self.root / c.VENV_PATH),
+                str(self.root / c.VENV),
                 "--symlink-app-data",
                 "--download",
                 "--pip=bundle",
@@ -598,7 +598,7 @@ class Workspace:
             yield
             return
         self.ensure_venv()
-        activate = self.root / c.VENV_PATH / "bin" / "activate_this.py"
+        activate = self.root / c.VENV / "bin" / "activate_this.py"
         environ, syspath, sysprefix, sysmodules = (
             os.environ.copy(),
             sys.path.copy(),
@@ -667,7 +667,7 @@ class Workspace:
                 self.overlay(),
             ):
                 for path in self.pipeline_paths:
-                    mod, _ = load_module_from_path(path)
+                    mod, _ = load_module_from_path(path, package=c.PIPELINES)
                     for spec in getattr(mod, c.CDF_PIPELINES, []):
                         if isinstance(spec, dict):
                             spec = pipeline_spec(**spec)
@@ -687,7 +687,7 @@ class Workspace:
                 self.overlay(),
             ):
                 for path in self.publisher_paths:
-                    mod, _ = load_module_from_path(path)
+                    mod, _ = load_module_from_path(path, package=c.PUBLISHERS)
                     for spec in getattr(mod, c.CDF_PUBLISHERS, []):
                         if isinstance(spec, dict):
                             spec = publisher_spec(**spec)
@@ -738,7 +738,7 @@ class Workspace:
                 self.overlay(),
             ):
                 for path in self.script_paths:
-                    mod, _ = load_module_from_path(path)
+                    mod, _ = load_module_from_path(path, package=c.SCRIPTS)
                     entrypoint = getattr(mod, "entrypoint", None)
                     if entrypoint is None:
                         raise ValueError(
