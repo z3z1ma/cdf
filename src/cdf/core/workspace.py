@@ -202,7 +202,11 @@ class Project:
             else:
                 subpath = spec
                 namespace = Path(subpath).name
-            parsed[namespace] = path.parent / subpath
+            member_path = path.parent / subpath
+            if append_syspath:
+                # Permit 'absolute' importing by namespace
+                sys.path.append(str(member_path.parent))
+            parsed[namespace] = member_path
 
         if load_dotenv:
             dotenv.load_dotenv(path.parent / ".env")
