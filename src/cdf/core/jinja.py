@@ -12,6 +12,17 @@ import tomlkit
 YAML = ruamel.yaml.YAML(typ="safe")
 
 
+def _to_yaml(obj):
+    buf = io.StringIO()
+    YAML.dump(obj, buf)
+    return buf.getvalue()
+
+
+def _from_yaml(s):
+    buf = io.StringIO(s)
+    return YAML.load(buf)
+
+
 class ShortEnvExtension(jinja2.ext.Extension):
     """
     Jinja2 extension to add a filter for environment variables.
@@ -23,22 +34,17 @@ class ShortEnvExtension(jinja2.ext.Extension):
         super().__init__(environment)
         environment.filters["env"] = lambda s: os.getenv(s)
         environment.filters["envq"] = lambda s: f'"{os.getenv(s)}"'
+        environment.filters["to_json"] = lambda s: json.dumps(s)
+        environment.filters["from_json"] = lambda s: json.loads(s)
+        environment.filters["to_yaml"] = _to_yaml
+        environment.filters["from_yaml"] = _from_yaml
+        environment.filters["to_toml"] = lambda s: tomlkit.dumps(s)
+        environment.filters["from_toml"] = lambda s: tomlkit.loads(s)
 
 
 ENVIRONMENT = jinja2.Environment(
     extensions=["jinja2.ext.do", "jinja2.ext.loopcontrols", ShortEnvExtension],
 )
-
-
-def _to_yaml(obj):
-    buf = io.StringIO()
-    YAML.dump(obj, buf)
-    return buf.getvalue()
-
-
-def _from_yaml(s):
-    buf = io.StringIO(s)
-    return YAML.load(buf)
 
 
 JINJA_METHODS = {
@@ -54,12 +60,6 @@ JINJA_METHODS = {
     "weeks_later": lambda n: (datetime.now() + timedelta(weeks=n)).strftime("%Y-%m-%d"),
     "b64encode": lambda s: base64.b64encode(s.encode("utf-8")).decode("utf-8"),
     "b64decode": lambda s: base64.b64decode(s.encode("utf-8")).decode("utf-8"),
-    "to_json": lambda s: json.dumps(s),
-    "from_json": lambda s: json.loads(s),
-    "to_yaml": _to_yaml,
-    "from_yaml": _from_yaml,
-    "to_toml": lambda s: tomlkit.dumps(s),
-    "from_toml": lambda s: tomlkit.loads(s),
 }
 """
 Methods available to the config rendering context.
