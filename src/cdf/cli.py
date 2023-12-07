@@ -319,6 +319,8 @@ def transform(
     This swaps the CLI context to a transform context which makes it compatible with the sqlmesh CLI
     while still allowing us to augment behavior with opinionated defaults.
     """
+    import dotenv
+
     project: Project = ctx.obj
     if ctx.invoked_subcommand is None:
         if workspace in SQLMESH_COMMANDS:
@@ -343,6 +345,15 @@ def transform(
         raise typer.BadParameter(
             "Cannot run transforms without a primary workspace. Specify a workspace in the first position."
         )
+    project[main_workspace].ensure_venv()
+    activate = project[main_workspace].root / c.VENV / "bin" / "activate_this.py"
+    if project[main_workspace].has_dependencies:
+        exec(activate.read_bytes(), {"__file__": str(activate)})
+    sys.path.append(str(project[main_workspace].root))
+    if project[main_workspace]._mod_cache:
+        sys.modules.update(project[main_workspace]._mod_cache)
+    dotenv.load_dotenv(project[main_workspace].root / ".env")
+    project[main_workspace].inject_workspace_config_providers()
     # A special case for running a plan with all workspaces accessible to the context
     if any(ws == "*" for ws in workspaces):
         others = project.keys().difference(main_workspace)
