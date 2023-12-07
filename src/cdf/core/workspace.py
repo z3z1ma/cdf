@@ -127,7 +127,7 @@ class Project:
         for ws in workspaces:
             transform_opts = {}
             with self[ws].overlay(), suppress(KeyError):
-                transform_opts = dlt.config["transforms"]
+                transform_opts = dlt.config["transform"]
             configs[self[ws].root] = (
                 self[ws]
                 .sinks[sink or "default"]
@@ -774,7 +774,7 @@ class Workspace:
         """
         transform_opts = {}
         with self.overlay(), suppress(KeyError):
-            transform_opts = dlt.config["transforms"]
+            transform_opts = dlt.config["transform"]
         if sink is None:
             sink_ = next(s for s in self.sinks.values() if s.gateway)
         else:
