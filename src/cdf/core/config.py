@@ -218,6 +218,8 @@ def inject_config_providers_from_workspace(workspace: "Workspace") -> None:
     Args:
         workspace: The workspace to add config providers from.
     """
+    JINJA_METHODS["workspace"] = workspace
+    JINJA_METHODS["workspace_root"] = JINJA_METHODS["root"] = workspace.root
     if workspace in WORKSPACE_PROVIDER_CACHE:
         workspace_cfg, workspace_secrets = WORKSPACE_PROVIDER_CACHE[workspace]
     else:

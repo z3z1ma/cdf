@@ -15,4 +15,4 @@ provider = "local"
 
 
 [whatever]
-key = {{ 1 + 1}}
+key = '{{ root }}'
