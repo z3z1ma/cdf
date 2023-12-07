@@ -345,7 +345,6 @@ class Workspace:
     ROOT_MARKERS = [
         ".git",
         c.CONFIG_FILE,
-        c.SECRETS_FILE,
         c.PIPELINES,
         c.TRANSFORMS,
         c.PUBLISHERS,
@@ -375,7 +374,6 @@ class Workspace:
         self.script_paths = self._get_python_fpaths(c.SCRIPTS)
         self.transform_path = self.root / c.TRANSFORMS
         self.config_path = self.root / c.CONFIG_FILE
-        self.secrets_path = self.root / c.SECRETS_FILE
         self.lockfile_path = self.root / c.LOCKFILE
         self.sinks_path = self.root / c.SINKS_FILE
         self.requirements_path = self.root / c.REQUIREMENTS_FILE

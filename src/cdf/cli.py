@@ -694,7 +694,6 @@ def init_workspace(
                 c.VENV,
                 ".cache",
                 "logs",
-                c.SECRETS_FILE,
                 "*.duckdb",
                 "*.duckdb.wal",
             ]

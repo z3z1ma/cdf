@@ -8,7 +8,6 @@ CDF_SINKS = "__CDF_SINKS__"
 # Core files
 WORKSPACE_FILE = "cdf_workspace.toml"
 CONFIG_FILE = "cdf_config.toml"
-SECRETS_FILE = "cdf_secrets.toml"
 
 # Flag file if using local flags for resource configuration
 FLAG_FILE = "cdf_flags.json"

@@ -59,79 +59,26 @@ class CDFConfigTomlProvider(providers.TomlFileProvider):
 
     @property
     def supports_secrets(self) -> bool:
-        return False
+        return True
 
     @property
     def is_writable(self) -> bool:
-        return False
+        return True
 
 
-class CDFSecretsTomlProvider(providers.TomlFileProvider):
-    """An opinionated secrets provider for CDF."""
-
-    def __init__(self, project_dir: str | Path = ".") -> None:
-        self._name = c.SECRETS_FILE
-        super().__init__(
-            c.SECRETS_FILE, project_dir=str(project_dir), add_global_config=True
-        )
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @name.setter
-    def name(self, value: str) -> None:
-        self._name = value
-
-    _read_toml = staticmethod(read_toml)
-
-    @property
-    def supports_secrets(self) -> bool:
-        return False
-
-    @property
-    def is_writable(self) -> bool:
-        return False
-
-
-@t.overload
 def config_provider_factory(
-    custom_name: str,
-    project_dir: str | Path = ".",
-    secrets: bool = False,
+    custom_name: str | None = None, project_dir: str | Path = "."
 ) -> CDFConfigTomlProvider:
-    ...
-
-
-@t.overload
-def config_provider_factory(
-    custom_name: str,
-    project_dir: str | Path = ".",
-    secrets: bool = True,
-) -> CDFSecretsTomlProvider:
-    ...
-
-
-def config_provider_factory(
-    custom_name: str | None = None,
-    project_dir: str | Path = ".",
-    secrets: bool = False,
-) -> CDFConfigTomlProvider | CDFSecretsTomlProvider:
     """Create a config provider.
 
     Args:
         name: The name of the config provider.
         project_dir: The project directory to use.
-        secrets: Whether the config provider supports secrets.
 
     Returns:
         The config provider.
     """
-    provider = (
-        CDFSecretsTomlProvider(project_dir=project_dir)
-        if secrets
-        else CDFConfigTomlProvider(project_dir=project_dir)
-    )
+    provider = CDFConfigTomlProvider(project_dir=project_dir)
     if custom_name:
         # Providers require unique names when added to the container
         provider.name = custom_name
@@ -162,8 +109,6 @@ def find_config_providers(
         while depth < max_depth and path.parents:
             if path.joinpath(c.CONFIG_FILE).exists():
                 yield CDFConfigTomlProvider(project_dir=path)
-            if path.joinpath(c.SECRETS_FILE).exists():
-                yield CDFSecretsTomlProvider(project_dir=path)
             path = path.parent
             depth += 1
 
@@ -201,9 +146,7 @@ def remove_config_providers(*names: str) -> None:
             Container()[ConfigProvidersContext].pop(name)
 
 
-WORKSPACE_PROVIDER_CACHE: t.Dict[
-    str, t.Tuple[providers.ConfigProvider, providers.ConfigProvider]
-] = {}
+WORKSPACE_PROVIDER_CACHE: t.Dict[str, providers.ConfigProvider] = {}
 """A cache of config providers keyed by workspace."""
 
 
@@ -221,15 +164,12 @@ def inject_config_providers_from_workspace(workspace: "Workspace") -> None:
     JINJA_METHODS["workspace"] = workspace
     JINJA_METHODS["workspace_root"] = JINJA_METHODS["root"] = workspace.root
     if workspace in WORKSPACE_PROVIDER_CACHE:
-        workspace_cfg, workspace_secrets = WORKSPACE_PROVIDER_CACHE[workspace]
+        workspace_cfg = WORKSPACE_PROVIDER_CACHE[workspace]
     else:
         workspace_cfg = config_provider_factory(
-            f"{workspace.namespace}.config", project_dir=workspace.root, secrets=False
+            f"{workspace.namespace}.config", project_dir=workspace.root
         )
-        workspace_secrets = config_provider_factory(
-            f"{workspace.namespace}.secrets", project_dir=workspace.root, secrets=True
-        )
-    inject_config_providers([workspace_cfg, workspace_secrets])
+    inject_config_providers([workspace_cfg])
 
 
 def remove_config_providers_from_workspace(workspace: "Workspace") -> None:
@@ -238,9 +178,7 @@ def remove_config_providers_from_workspace(workspace: "Workspace") -> None:
     Args:
         workspace: The workspace to remove config providers from.
     """
-    remove_config_providers(
-        f"{workspace.namespace}.config", f"{workspace.namespace}.secrets"
-    )
+    remove_config_providers(f"{workspace.namespace}.config")
 
 
 @contextlib.contextmanager
