@@ -30,17 +30,17 @@ class Project:
     """A project encapsulates a collection of workspaces."""
 
     def __init__(
-        self, workspaces: t.List["Workspace"], root_name: str | None = None
+        self, workspaces: t.List["Workspace"], name: str | None = None, **meta: t.Any
     ) -> None:
         """Initialize a project.
 
         Args:
             workspaces (t.List[Workspace]): List of workspaces.
-            root_name (str, optional): Name of root path in project. Defaults to the current working directory.
+            name (str, optional): Name of root path in project. Defaults to the current working directory.
         """
         self._workspaces = {ws.namespace: ws for ws in workspaces}
-        self.root_name = root_name or Path.cwd().name
-        self.meta = {}
+        self.name = name or Path.cwd().name
+        self.meta = meta
 
     @property
     def workspaces(self) -> MappingProxyType[str, "Workspace"]:
@@ -76,7 +76,7 @@ class Project:
         try:
             return self._workspaces[name]
         except KeyError:
-            raise AttributeError(f"Project {self.root_name} has no workspace {name}")
+            raise AttributeError(f"Project {self.name} has no workspace {name}")
 
     def __getitem__(self, name: str) -> "Workspace":
         return self._workspaces[name]
@@ -92,7 +92,7 @@ class Project:
 
     def __repr__(self) -> str:
         ws = ", ".join(f"'{ns}'" for ns in self._workspaces.keys())
-        return f"Project({self.root_name}, workspaces=[{ws}])"
+        return f"Project({self.name}, workspaces=[{ws}])"
 
     def __add__(self, other: "Project | Workspace") -> "Project":
         if isinstance(other, Workspace):
@@ -101,7 +101,7 @@ class Project:
         elif isinstance(other, Project):
             proj = Project(
                 list(self._workspaces.values()) + list(other._workspaces.values()),
-                self.root_name,
+                self.name,
             )
             proj.meta = {**self.meta, **other.meta}
             return proj
@@ -141,13 +141,13 @@ class Project:
         )
 
     @classmethod
-    def from_dict(cls, workspaces: t.Dict[str, Path | str]) -> "Project":
+    def from_dict(cls, workspaces: t.Dict[str, Path | str], **meta: t.Any) -> "Project":
         """Create a project from a dictionary of paths.
 
         Args:
             members (t.Dict[str, Path | str]): Dictionary of members.
         """
-        return cls([Workspace(path, ns) for ns, path in workspaces.items()])
+        return cls([Workspace(path, ns) for ns, path in workspaces.items()], **meta)
 
     @classmethod
     def default(
@@ -156,7 +156,10 @@ class Project:
         load_dotenv: bool = True,
         append_syspath: bool = True,
     ) -> "Project":
-        """Create a project from the current working directory."""
+        """Create a project from the current working directory.
+
+        This populates the meta attribute of the project with the path to the project root.
+        """
         if path is None:
             path = Path.cwd()
         elif isinstance(path, str):
@@ -165,7 +168,11 @@ class Project:
             dotenv.load_dotenv(path / ".env")
         if append_syspath:
             sys.path.append(str(path))
-        return cls([Workspace.find_nearest(path, raise_no_marker=True)])
+        return cls(
+            [Workspace.find_nearest(path, raise_no_marker=True)],
+            root=path,
+            default=True,
+        )
 
     @classmethod
     def from_workspace_toml(
@@ -182,6 +189,8 @@ class Project:
             "projects/data",
             "projects/marketing"
         ]
+
+        This populates the meta attribute of the project with the path to the project root.
 
         Args:
             path (Path): Path to workspace.toml.
@@ -209,7 +218,7 @@ class Project:
         if append_syspath:
             sys.path.append(str(path.parent))
 
-        return cls.from_dict(parsed)
+        return cls.from_dict(parsed, root=path.parent)
 
     @classmethod
     def find_nearest(
@@ -222,6 +231,7 @@ class Project:
         """Find nearest project.
 
         If no cdf_workspace.toml file is found, returns the current working directory as a project.
+        This populates the meta attribute of the project with the path to the project root.
 
         Args:
             path (Path): The path to search from.

@@ -5,6 +5,7 @@ import subprocess
 import sys
 import tempfile
 import typing as t
+from enum import Enum
 from pathlib import Path
 
 import dlt
@@ -32,6 +33,16 @@ transform_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(transform_app, name="transform", rich_help_panel="Integrate")
+
+
+class Delimiter(str, Enum):
+    """Enum of delimiters for the CLI."""
+
+    DOT = "."
+    DCOLON = "::"
+    ARROW = "->"
+    DARRROW = ">>"
+    PIPE = "|"
 
 
 @app.callback()
@@ -79,7 +90,6 @@ def main(
         return
 
     ctx.obj = Project.find_nearest(root)
-    ctx.obj.meta["root"] = root
 
 
 @app.command(rich_help_panel="Project Info")
@@ -202,7 +212,14 @@ def discover(
     """
     logger.debug("Discovering pipeline %s", pipeline)
     project: Project = ctx.obj
-    ws, src = _parse_ws_component(pipeline)
+    try:
+        ws, src = _parse_ws_component(
+            pipeline, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specify a pipeline in the form <workspace>.<pipeline>"
+        ) from e
     workspace = project[ws]
     with workspace.runtime_source(src, **json.loads(opts)) as rt_source:
         rich.print(
@@ -221,9 +238,8 @@ def discover(
 def head(
     ctx: typer.Context,
     pipeline: t.Annotated[
-        str, typer.Argument(help="The <workspace>.<pipeline> to inspect.")
+        str, typer.Argument(help="The <workspace>.<pipeline>.<resource> to inspect.")
     ],
-    resource: str,
     opts: str = typer.Argument(
         "{}", help="JSON formatted options to forward to the pipeline."
     ),
@@ -247,7 +263,14 @@ def head(
     from cdf.core.utils import flatten_stream
 
     project: Project = ctx.obj
-    ws, src = _parse_ws_component(pipeline)
+    try:
+        ws, src, resource = _parse_ws_component(
+            pipeline, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specify a pipeline and resource in the form <workspace>.<pipeline>.<resource>"
+        ) from e
     workspace = project[ws]
     with workspace.runtime_source(src, **json.loads(opts)) as rt_source:
         if resource not in rt_source.resources:
@@ -291,19 +314,18 @@ def pipeline(
         typer.BadParameter: If no resources are selected.
     """
     project: Project = ctx.obj
-    ws, src_sink = _parse_ws_component(pipeline)
-    if "->" in src_sink:
-        src, sink = src_sink.split("->", 1)
-    elif "::" in src_sink:
-        src, sink = src_sink.split("::", 1)
-    elif ">>" in src_sink:
-        src, sink = src_sink.split(">>", 1)
-    else:
-        raise typer.BadParameter("Must specify a sink with `->` or `>>`.")
+    try:
+        ws, src, sink = _parse_ws_component(
+            pipeline, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specify a pipeline and sink in the form <workspace>.<pipeline>.<sink>"
+        ) from e
     workspace = project[ws]
     with workspace.overlay():
-        pipe = workspace.pipelines[src.strip()]
-        info = pipe.run(workspace, sink.strip(), resources, **json.loads(opts))
+        pipe = workspace.pipelines[src]
+        info = pipe.run(workspace, sink, resources, **json.loads(opts))
     logger.info(info)
     if pipe.runtime_metrics:
         logger.info("Runtime Metrics:")
@@ -341,21 +363,14 @@ def transform(
             raise typer.BadParameter(
                 f"Workspace `{workspace}` not found. Available workspaces: {', '.join(project.keys())}"
             )
-    # Support workspace qualified component syntax
-    if "." in workspace:
-        workspace, sink = _parse_ws_component(workspace)
-    # Support pipeline sink syntax for transforms
-    elif "->" in workspace:
-        workspace, sink = workspace.split("->", 1)
-    elif "::" in workspace:
-        workspace, sink = workspace.split("::", 1)
-    elif ">>" in workspace:
-        workspace, sink = workspace.split(">>", 1)
-    else:
-        sink = None
-    workspace = workspace.strip()
-    if sink:
-        sink = sink.strip()
+    try:
+        workspace, sink = _parse_ws_component(
+            workspace, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specify a sink in the form <workspace>.<sink>"
+        ) from e
     workspaces = workspace.split(",")
     main_workspace = workspaces[0]
     # Ensure we have a primary workspace
@@ -466,7 +481,14 @@ def publish(
     from cdf.core.publisher import Payload
 
     project: Project = ctx.obj
-    ws, pub = _parse_ws_component(publisher)
+    try:
+        ws, pub = _parse_ws_component(
+            publisher, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specify a publisher in the form <workspace>.<publisher>"
+        ) from e
     workspace = project[ws]
     with workspace.overlay():
         runner = workspace.publishers[pub]
@@ -508,7 +530,14 @@ def execute_script(
         script: The script to run.
     """
     project: Project = ctx.obj
-    ws, script = _parse_ws_component(script)
+    try:
+        ws, script = _parse_ws_component(
+            script, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specify a script in the form <workspace>.<script>"
+        ) from e
     workspace = project[ws]
     with workspace.overlay():
         workspace.scripts[script](workspace, **json.loads(opts))
@@ -539,11 +568,18 @@ def execute_bin(ctx: typer.Context, executable: str) -> None:
         subprocess.CalledProcessError: If the executable returns a non-zero exit code.
     """
     project: Project = ctx.obj
-    ws, comp = _parse_ws_component(executable)
-    rich.print(">>> Running", ws, comp, file=sys.stderr)
+    try:
+        ws, bin_ = _parse_ws_component(
+            executable, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specify a bin in the form <workspace>.<bin>"
+        ) from e
+    rich.print(">>> Running", ws, bin_, file=sys.stderr)
     workspace = project[ws]
     with workspace.overlay():
-        proc = subprocess.run([workspace.get_bin(comp, must_exist=True), *ctx.args])
+        proc = subprocess.run([workspace.get_bin(bin_, must_exist=True), *ctx.args])
     raise typer.Exit(proc.returncode)
 
 
@@ -568,7 +604,14 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
     project: Project = ctx.obj
     yaml = YAML(typ="rt")
 
-    workspace, sink = _parse_ws_component(workspace)
+    try:
+        workspace, sink = _parse_ws_component(
+            workspace, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specifc a sink in the form <workspace>.<sink>"
+        ) from e
 
     ws = project[workspace]
     with ws.overlay():
@@ -655,7 +698,14 @@ def generate_staging_layer(
     project: Project = ctx.obj
     yaml = YAML(typ="rt")
 
-    workspace, sink = _parse_ws_component(workspace)
+    try:
+        workspace, sink = _parse_ws_component(
+            workspace, add_default_workspace=project.meta.get("default", False)
+        )
+    except ValueError as e:
+        raise typer.BadParameter(
+            "Must specifc a sink in the form <workspace>.<pipeline>"
+        ) from e
 
     ws = project[workspace]
     context = ws.transform_context(sink)
@@ -798,19 +848,36 @@ def init_project(
         ctx.invoke(init_workspace, directory=root / directory)
 
 
-def _parse_ws_component(component: str) -> t.Tuple[str, str]:
-    """Parse a workspace.component string into a tuple.
+def _parse_ws_component(
+    component: str, add_default_workspace: bool = False
+) -> t.Tuple[str, ...]:
+    """Parse a workspace.component string into a tuple of parts.
+
+    We support the following syntaxes (with all combinations of delimiters)
+    workspace.component
+    workspace.component.sink
+    workspace.component -> sink
+    workspace.component >> sink
+    workspace.component :: sink
+    workspace.component | sink
+    workspace >> component >> sink
+
+    if operating in a project with a default workspace indicating a flat single-tenant structure,
+    no workspace should be specified in the component string.
 
     Args:
         component: The component string to parse.
 
     Returns:
-        A tuple of (workspace, component).
+        A tuple of parts.
     """
-    if "." in component:
-        ws, comp = component.split(".", 1)
-        return ws, comp
-    return c.DEFAULT_WORKSPACE, component
+    parts = [component]
+    if add_default_workspace:
+        parts.insert(0, c.DEFAULT_WORKSPACE)
+    while delim := next((d for d in Delimiter if d.value in parts[-1]), None):
+        parts.extend(parts.pop().split(delim.value, 1))
+    parts = [p.strip() for p in parts]
+    return (*parts,)
 
 
 def _print_meta(meta: "pipeline_spec | publisher_spec") -> None:
