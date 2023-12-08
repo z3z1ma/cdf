@@ -294,9 +294,9 @@ def pipeline(
     ws, src_sink = _parse_ws_component(pipeline)
     if "->" in src_sink:
         src, sink = src_sink.split("->", 1)
-    if "::" in src_sink:
+    elif "::" in src_sink:
         src, sink = src_sink.split("::", 1)
-    if ">>" in src_sink:
+    elif ">>" in src_sink:
         src, sink = src_sink.split(">>", 1)
     else:
         raise typer.BadParameter("Must specify a sink with `->` or `>>`.")
@@ -346,7 +346,6 @@ def transform(
         workspace, sink = _parse_ws_component(workspace)
     # Support pipeline sink syntax for transforms
     elif "->" in workspace:
-        workspace, sink = workspace.split("->", 1)
         workspace, sink = workspace.split("->", 1)
     elif "::" in workspace:
         workspace, sink = workspace.split("::", 1)
