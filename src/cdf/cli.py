@@ -658,6 +658,10 @@ def generate_staging_layer(
     ws = project[workspace]
     context = ws.transform_context(sink)
     for fp in (ws.root / "metadata" / sink).iterdir():
+        if fp.name == "_cdf_external.yaml":
+            continue
+        if not fp.is_file() or not fp.name.endswith(".yaml"):
+            continue
         with fp.open() as fd:
             meta = yaml.load(fd)
         stg_specs = []
