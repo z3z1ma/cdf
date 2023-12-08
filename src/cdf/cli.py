@@ -292,11 +292,18 @@ def pipeline(
     """
     project: Project = ctx.obj
     ws, src_sink = _parse_ws_component(pipeline)
-    src, sink = src_sink.split(":", 1)
+    if "->" in src_sink:
+        src, sink = src_sink.split("->", 1)
+    if "::" in src_sink:
+        src, sink = src_sink.split("::", 1)
+    if ">>" in src_sink:
+        src, sink = src_sink.split(">>", 1)
+    else:
+        raise typer.BadParameter("Must specify a sink with `->` or `>>`.")
     workspace = project[ws]
     with workspace.overlay():
-        pipe = workspace.pipelines[src]
-        info = pipe.run(workspace, sink, resources, **json.loads(opts))
+        pipe = workspace.pipelines[src.strip()]
+        info = pipe.run(workspace, sink.strip(), resources, **json.loads(opts))
     logger.info(info)
     if pipe.runtime_metrics:
         logger.info("Runtime Metrics:")
@@ -334,10 +341,22 @@ def transform(
             raise typer.BadParameter(
                 f"Workspace `{workspace}` not found. Available workspaces: {', '.join(project.keys())}"
             )
+    # Support workspace qualified component syntax
     if "." in workspace:
         workspace, sink = _parse_ws_component(workspace)
+    # Support pipeline sink syntax for transforms
+    elif "->" in workspace:
+        workspace, sink = workspace.split("->", 1)
+        workspace, sink = workspace.split("->", 1)
+    elif "::" in workspace:
+        workspace, sink = workspace.split("::", 1)
+    elif ">>" in workspace:
+        workspace, sink = workspace.split(">>", 1)
     else:
         sink = None
+    workspace = workspace.strip()
+    if sink:
+        sink = sink.strip()
     workspaces = workspace.split(",")
     main_workspace = workspaces[0]
     # Ensure we have a primary workspace
@@ -544,7 +563,7 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
         workspace: The workspace to regenerate metadata for.
     """
     from ruamel.yaml import YAML
-    from sqlglot import exp, parse_one
+    from sqlglot import exp
 
     logger.info("Fetching and aggregating metadata from sqlmesh and dlt")
     project: Project = ctx.obj
@@ -554,21 +573,10 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
 
     ws = project[workspace]
     with ws.overlay():
-        context = ws.transform_context(sink)
-        schema_out = ws.root / "schema.yaml"
-        schema_out.unlink(missing_ok=True)
-
-        context.create_external_models()
-        meta = yaml.load(schema_out.read_text()) or []
-        schema_out.unlink(missing_ok=True)
-
+        seen = set()
         output = {}
-        for entry in meta:
-            table = parse_one(entry["name"], into=exp.Table)
-            catalog = output.setdefault(table.db, {})
-            columns = [{"data_type": c} for c in entry["columns"]]
-            entry["columns"] = columns
-            catalog[table.name] = entry
+
+        # Fetch metadata from dlt ingestion pipelines
         for name, src in ws.pipelines.items():
             d = tempfile.TemporaryDirectory()
             dataset = f"{name}_v{src.version}"
@@ -583,13 +591,34 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
             for schema in pipe.schemas.values():
                 for meta in schema.data_tables():
                     assert meta["name"]
-                    table = parse_one(meta["name"], into=exp.Table)
+                    table = exp.table_(meta["name"], dataset).sql()
                     catalog = output.setdefault(dataset, {})
-                    catalog.setdefault(table.name, {}).update(meta)
+                    catalog.setdefault(table, {}).update(meta)
+                    seen.add(table)
             d.cleanup()
 
+        context = ws.transform_context(sink)
+        tmp_schema_dump = ws.root / "schema.yaml"
+        tmp_schema_dump.unlink(missing_ok=True)
+
+        # Generate a schema dump for the context
+        context.create_external_models()
+
+    meta = yaml.load(tmp_schema_dump.read_text()) or []
+    tmp_schema_dump.unlink(missing_ok=True)
+
+    # Filter out tables we've already seen
+    meta = [m for m in meta if m["name"] not in seen]
+
+    # Write the schema dump to the workspace metadata directory
     meta_path = ws.root / c.METADATA / sink
     meta_path.mkdir(exist_ok=True)
+
+    unmanaged_metadata = meta_path / "_cdf_external.yaml"
+    unmanaged_metadata.parent.mkdir(parents=True, exist_ok=True)
+    with unmanaged_metadata.open("w") as f:
+        yaml.dump(meta, f)
+
     for catalog, tables in output.items():
         with meta_path.joinpath(f"{catalog}.yaml").open("w") as f:
             yaml.dump(tables, f)

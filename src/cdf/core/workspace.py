@@ -136,7 +136,7 @@ class Project:
         return sqlmesh.Context(
             config=configs,
             paths=[str(self[ws].root) for ws in workspaces],
-            gateway="cdf_managed",
+            gateway=sink or "default",
             loader=CDFTransformLoader,
         )
 

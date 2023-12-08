@@ -7,28 +7,41 @@ from pathlib import Path
 import sqlmesh.core.constants as sqlmesh_constants
 from ruamel import yaml
 from sqlglot import exp, parse_one
+from sqlmesh import Config
 from sqlmesh.core.loader import SqlMeshLoader
 from sqlmesh.core.macros import MacroRegistry
 from sqlmesh.core.model import Model, create_external_model, create_sql_model
 from sqlmesh.utils import UniqueKeyDict
 from sqlmesh.utils.jinja import JinjaMacroRegistry
 
-YAML = yaml.YAML(typ="safe")
+import cdf.core.constants as c
+
+YAML = yaml.YAML(typ="rt")
 
 
-DLT_TO_SQLGLOT = {
-    "complex": exp.DataType.build("json"),
-    "text": exp.DataType.build("text"),
-    "double": exp.DataType.build("double"),
-    "bool": exp.DataType.build("boolean"),
-    "date": exp.DataType.build("date"),
-    "bigint": exp.DataType.build("bigint"),
-    "binary": exp.DataType.build("binary"),
-    "timestamp": exp.DataType.build("timestamp"),
-    "time": exp.DataType.build("time"),
-    "decimal": exp.DataType.build("decimal"),
-    "wei": exp.DataType.build("numeric"),
-}
+class _DataTypeDict(dict):
+    """A mapping of data types which fallsback to unknown."""
+
+    def __missing__(self, key) -> exp.DataType:
+        _ = key
+        return exp.DataType.build("unknown")
+
+
+DLT_TO_SQLGLOT = _DataTypeDict(
+    {
+        "complex": exp.DataType.build("json"),
+        "text": exp.DataType.build("text"),
+        "double": exp.DataType.build("double"),
+        "bool": exp.DataType.build("boolean"),
+        "date": exp.DataType.build("date"),
+        "bigint": exp.DataType.build("bigint"),
+        "binary": exp.DataType.build("binary"),
+        "timestamp": exp.DataType.build("timestamptz"),
+        "time": exp.DataType.build("time"),
+        "decimal": exp.DataType.build("decimal"),
+        "wei": exp.DataType.build("numeric"),
+    }
+)
 """Converts DLT data types to SQLGlot data types."""
 
 
@@ -59,6 +72,59 @@ class CDFStagingSpec:
 class CDFTransformLoader(SqlMeshLoader):
     """Custom SQLMesh loader for cdf."""
 
+    def _process_cdf_external(
+        self,
+        models: UniqueKeyDict,
+        /,
+        config: Config,
+        path: Path,
+    ) -> UniqueKeyDict[str, Model]:
+        for schema in YAML.load(path):
+            model = create_external_model(
+                **schema,
+                dialect=config.model_defaults.dialect,
+                path=path,
+                project=config.project,
+            )
+            models[model.name] = model
+        return models
+
+    def _process_cdf_internal(
+        self,
+        models: UniqueKeyDict,
+        /,
+        config: Config,
+        path: Path,
+    ) -> UniqueKeyDict[str, Model]:
+        for name, meta in YAML.load(path).items():
+            model = create_external_model(
+                name,
+                columns={
+                    c["name"]: DLT_TO_SQLGLOT[c.get("data_type", "unknown")]
+                    for c in meta["columns"].values()
+                },
+                dialect=config.model_defaults.dialect,
+                path=path,
+                project=config.project,
+            )
+            models[model.name] = model
+        return models
+
+    def _load_external_models(self) -> UniqueKeyDict[str, Model]:
+        models: UniqueKeyDict = UniqueKeyDict("models")
+        for context_path, config in self._context.configs.items():
+            base_path = Path(context_path / c.METADATA / config.default_gateway_name)
+            cdf_external = base_path / "_cdf_external.yaml"
+            for path in base_path.glob("*.yaml"):
+                if not os.path.getsize(path):
+                    continue
+                self._track_file(path)
+                if path.samefile(cdf_external):
+                    models = self._process_cdf_external(models, config, path)
+                else:
+                    models = self._process_cdf_internal(models, config, path)
+        return models
+
     def _load_models(
         self, macros: MacroRegistry, jinja_macros: JinjaMacroRegistry
     ) -> UniqueKeyDict[str, Model]:
@@ -84,19 +150,12 @@ class CDFTransformLoader(SqlMeshLoader):
                 spec = CDFStagingSpec(**raw_spec)
 
                 input_table = parse_one(spec.input, into=exp.Table)
-                candidates = sorted(
-                    [
-                        candidate
-                        for candidate in context_path.glob(
-                            f"metadata/*/{input_table.db}.yaml"
-                        )
-                        if candidate.is_file()
-                    ],
-                    key=lambda c: c.stat().st_mtime,
-                    reverse=True,
+                meta_path = (
+                    context_path
+                    / c.METADATA
+                    / config.default_gateway_name
+                    / f"{input_table.db}.yaml"
                 )
-
-                meta_path = next(iter(candidates), None)
 
                 if meta_path is None or not meta_path.exists():
                     raise Exception(
@@ -141,17 +200,5 @@ class CDFTransformLoader(SqlMeshLoader):
                     project=config.project,
                 )
                 models[model.name] = model
-
-                parent_model = create_external_model(
-                    name=spec.input,
-                    columns={
-                        c["name"]: DLT_TO_SQLGLOT[c["data_type"]]
-                        for c in meta[input_table.name]["columns"].values()
-                    },
-                    dialect=config.model_defaults.dialect,
-                    path=path,
-                    project=config.project,
-                )
-                models[parent_model.name] = parent_model
 
         return models

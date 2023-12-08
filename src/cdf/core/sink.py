@@ -64,9 +64,9 @@ class sink_spec:
         _, _, gateway = self.unwrap()
         return sqlmesh.Config.parse_obj(
             {
-                "gateways": {"cdf_managed": gateway},
+                "gateways": {self.name: gateway},
                 **transform_opts,
-                "default_gateway": "cdf_managed",
+                "default_gateway": self.name,
                 "project": project,
             }
         )
