@@ -629,7 +629,10 @@ def generate_staging_layer(
     ctx: typer.Context,
     workspace: str,
     fetch_metadata_: bool = typer.Option(
-        True, "-f", "--fetch-metadata", help="Regenerate metadata before running"
+        True,
+        "-f",
+        "--fetch-metadata/--no-fetch-metadata",
+        help="Regenerate metadata before running",
     ),
 ) -> None:
     """:floppy_disk: Generate a staging layer for a catalog.

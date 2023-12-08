@@ -167,7 +167,7 @@ class CDFTransformLoader(SqlMeshLoader):
 
                 base_projection = [
                     exp.column(c).as_(f"{spec.prefix}{c}{spec.suffix}")
-                    for c in meta[input_table.name]["columns"]
+                    for c in meta[input_table.sql()]["columns"]
                     if c not in spec.excludes
                     and not any(fnmatch.fnmatch(c, p) for p in spec.exclude_patterns)
                     and (not spec.includes or c in spec.includes)
