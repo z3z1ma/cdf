@@ -100,6 +100,7 @@ class pipeline_spec:
             freely manipulate the source in place before sending or can simply keep the source and
             close the generator. Business logic can be codified by the end user based on the interface.
         """
+        dlt.pipeline(self.name)  # Generate namespace
         ctx = self.pipe(**kwargs) if callable(self.pipe) else self.pipe
         if isinstance(ctx, CDFSource):
             ctx = _basic_pipe(ctx)

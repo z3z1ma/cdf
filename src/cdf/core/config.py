@@ -21,7 +21,7 @@ from dlt.common.configuration.specs.config_providers_context import (
 )
 
 import cdf.core.constants as c
-from cdf.core.jinja import ENVIRONMENT, JINJA_METHODS
+from cdf.core.jinja import ENVIRONMENT, JINJA_CONTEXT
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
@@ -32,7 +32,7 @@ def read_toml(toml_path: str) -> tomlkit.TOMLDocument:
         with open(toml_path, "r", encoding="utf-8") as f:
             context = f.read()
             template = ENVIRONMENT.from_string(context)
-            f = template.render(**JINJA_METHODS)
+            f = template.render(**JINJA_CONTEXT, **os.environ)
             return tomlkit.loads(f)
     else:
         return tomlkit.document()
@@ -161,8 +161,8 @@ def inject_config_providers_from_workspace(workspace: "Workspace") -> None:
     Args:
         workspace: The workspace to add config providers from.
     """
-    JINJA_METHODS["workspace"] = workspace
-    JINJA_METHODS["workspace_root"] = JINJA_METHODS["root"] = workspace.root
+    JINJA_CONTEXT["workspace"] = workspace
+    JINJA_CONTEXT["root"] = workspace.root
     if workspace in WORKSPACE_PROVIDER_CACHE:
         workspace_cfg = WORKSPACE_PROVIDER_CACHE[workspace]
     else:
