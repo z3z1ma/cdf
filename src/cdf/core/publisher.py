@@ -18,8 +18,6 @@ class Payload(t.NamedTuple):
 
 
 class _Runner(t.Protocol):
-    __wrapped__: t.Callable[..., None]
-
     def __call__(self, data: Payload, **kwargs) -> None:
         ...
 
@@ -30,10 +28,12 @@ class publisher_spec:
     """The name of the publisher."""
     runner: _Runner
     """The publisher function. The first pos arg will be the data to publish."""
-    from_model: str
+    select: t.Dict[str, str]
+    """Column name mapping used to translate column names to the API names declaratively."""
+    from_: str
     """The model to publish from."""
-    mapping: t.Dict[str, str]
-    """Column name remapping used to translate column names to the API names declaratively."""
+    where: str | None = None
+    """A predicate to filter the data to publish."""
     version: int = 1
     """The version of the publisher. Used to track execution history."""
     owners: t.Sequence[str] = ()
@@ -49,16 +49,19 @@ class publisher_spec:
 
     def __post_init__(self) -> None:
         projection = (
-            [exp.column(name).as_(alias) for name, alias in self.mapping.items()]
-            if self.mapping
+            [
+                exp.column(name).as_(alias, quoted=True)
+                for name, alias in self.select.items()
+            ]
+            if self.select
             else [exp.Star()]
         )
-        self.query = exp.select(*projection).from_(self.from_model)
+        self.query = exp.select(*projection).from_(self.from_).where(self.where)
         runner = self.runner
         self.runner = with_config(
             runner, sections=("publishers", runner.__module__, runner.__name__)
         )
-        self.runner.__wrapped__ = runner
+        self.runner.__wrapped__ = runner  # type: ignore
 
     def __call__(self, data: Payload, **kwargs) -> None:
         """Run the publisher.

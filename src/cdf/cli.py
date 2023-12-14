@@ -124,7 +124,7 @@ def index(ctx: typer.Context) -> None:
             deps = [
                 dep.split("#", 1)[0].strip()  # Basic requirements.txt parsing
                 for dep in workspace.requirements_path.read_text().splitlines()
-                if dep and not dep.startswith("#")
+                if dep.strip() and not dep.strip().startswith("#")
             ]
             rich.print(f"\n   [green]Dependencies[/green]: {len(deps)}")
             for i, dep in enumerate(deps, start=1):
@@ -482,21 +482,21 @@ def publish(
 
     project: Project = ctx.obj
     try:
-        ws, pub = _parse_ws_component(
+        ws, sink, pub = _parse_ws_component(
             publisher, add_default_workspace=project.meta.get("default", False)
         )
     except ValueError as e:
         raise typer.BadParameter(
-            "Must specify a publisher in the form <workspace>.<publisher>"
+            "Must specify a publisher in the form <workspace>.<sink>.<publisher>"
         ) from e
     workspace = project[ws]
     with workspace.overlay():
         runner = workspace.publishers[pub]
-        context = workspace.transform_context()
-        if runner.from_model not in context.models:
+        context = workspace.transform_context(sink)
+        if runner.from_ not in context.models:
             logger.warning(
                 "Model %s not found in transform context. We cannot track lineage or enforce data quality.",
-                runner.from_model,
+                runner.from_,
             )
             if prompt_on_untracked:
                 typer.confirm(
@@ -504,7 +504,7 @@ def publish(
                     abort=True,
                 )
         else:
-            model = context.models[runner.from_model]
+            model = context.models[runner.from_]
             logger.info("Parsed dependencies: %s", model.depends_on)
         runner(data=Payload(context.fetchdf(runner.query)), **json.loads(opts))
 
