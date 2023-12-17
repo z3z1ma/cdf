@@ -43,6 +43,7 @@ class Delimiter(str, Enum):
     ARROW = "->"
     DARRROW = ">>"
     PIPE = "|"
+    FSLASH = "/"
 
 
 @app.callback()
@@ -861,6 +862,7 @@ def _parse_ws_component(
     workspace.component :: sink
     workspace.component | sink
     workspace >> component >> sink
+    workspace/component/sink
 
     if operating in a project with a default workspace indicating a flat single-tenant structure,
     no workspace should be specified in the component string.
