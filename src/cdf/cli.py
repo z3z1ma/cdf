@@ -119,7 +119,7 @@ def index(ctx: typer.Context) -> None:
         if workspace.has_publishers:
             rich.print(f"\n   [yellow]Publishers[/yellow]: {len(workspace.publishers)}")
             for i, (name, meta) in enumerate(workspace.publishers.items(), start=1):
-                fn = meta.runner.__wrapped__
+                fn = getattr(meta.runner, "__wrapped__", meta.runner)
                 rich.print(f"   {i}) {name} ({fn_to_str(fn)})")
         if workspace.has_dependencies:
             deps = [
@@ -479,7 +479,7 @@ def publish(
     ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
-    from cdf.core.publisher import Payload
+    from cdf.core.component import PublisherData
 
     project: Project = ctx.obj
     try:
@@ -507,7 +507,7 @@ def publish(
         else:
             model = context.models[runner.from_]
             logger.info("Parsed dependencies: %s", model.depends_on)
-        runner(data=Payload(context.fetchdf(runner.query)), **json.loads(opts))
+        runner(data=PublisherData(context.fetchdf(runner.query)), **json.loads(opts))
 
 
 @app.command("execute-script", rich_help_panel="Utility")

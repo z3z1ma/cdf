@@ -7,43 +7,31 @@ import typing as t
 from dataclasses import dataclass, field
 
 import dlt
-from dlt.common.destination.reference import JobClientBase
-from dlt.common.pipeline import LoadInfo, SupportsPipeline
+from dlt.common.pipeline import LoadInfo
 from dlt.common.typing import TDataItem
-from dlt.destinations.sql_client import SqlClientBase
+from dlt.pipeline.pipeline import Pipeline
 from dlt.sources import DltResource as CDFResource
 from dlt.sources import DltSource as CDFSource
 
-import cdf.core.constants as c
 import cdf.core.feature_flags as ff
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
 
+
 P = t.ParamSpec("P")
+
 
 Metric = t.Union[float, int]
 MetricAccumulator = t.Callable[[TDataItem, Metric], Metric]
 MetricDefs = t.Dict[str, MetricAccumulator]
 
 
-class SupportsPipelineClients(SupportsPipeline, t.Protocol):
-    def sql_client(
-        self, schema_name: str | None = None, credentials: t.Any = None
-    ) -> SqlClientBase[t.Any]:
-        ...
-
-    def destination_client(
-        self, schema_name: str | None = None, credentials: t.Any = None
-    ) -> JobClientBase:
-        ...
+CDFPipeline = t.Generator[CDFSource, Pipeline, LoadInfo]
+CDFPipelineSpec = t.Callable[..., CDFPipeline | CDFSource] | CDFPipeline | CDFSource
 
 
-PipeGen = t.Generator[CDFSource, SupportsPipelineClients, LoadInfo]
-CDFPipeline = t.Callable[..., PipeGen | CDFSource] | PipeGen | CDFSource
-
-
-def _basic_pipe(source: CDFSource) -> PipeGen:
+def _basic_pipe(source: CDFSource) -> CDFPipeline:
     """Wraps a source to conform to our expected interface.
 
     Args:
@@ -64,8 +52,10 @@ def _basic_pipe(source: CDFSource) -> PipeGen:
 
 @dataclass
 class pipeline_spec:
-    pipe: CDFPipeline
-    """The pipeline generator function or cdf source."""
+    """A pipeline specification."""
+
+    pipe: CDFPipelineSpec
+    """The pipeline coroutine or cdf source."""
     name: str | None = None
     """The name of the pipeline. Inferred from the pipe function if not provided."""
     version: int = 1
@@ -88,7 +78,7 @@ class pipeline_spec:
     enabled: bool = True
     """Whether this pipeline is enabled."""
 
-    def unwrap(self, **kwargs) -> PipeGen:
+    def unwrap(self, **kwargs) -> CDFPipeline:
         """Unwrap the pipeline spec into a PipeGen.
 
         Args:
@@ -100,6 +90,8 @@ class pipeline_spec:
             freely manipulate the source in place before sending or can simply keep the source and
             close the generator. Business logic can be codified by the end user based on the interface.
         """
+        if self.name is None:
+            raise ValueError("Pipeline name must be provided.")
         dlt.pipeline(self.name)  # Generate namespace
         ctx = self.pipe(**kwargs) if callable(self.pipe) else self.pipe
         if isinstance(ctx, CDFSource):
@@ -205,23 +197,4 @@ class pipeline_spec:
         return self.run(workspace, sink, resources, **kwargs)
 
 
-def export_pipelines(*pipelines: pipeline_spec, scope: dict | None = None) -> None:
-    """Export pipelines to the callers global scope.
-
-    Args:
-        *pipelines (pipeline_spec): The pipelines to export.
-        scope (dict | None, optional): The scope to export to. Defaults to globals().
-    """
-    if scope is None:
-        import inspect
-
-        frame = inspect.currentframe()
-        if frame is not None:
-            frame = frame.f_back
-        if frame is not None:
-            scope = frame.f_globals
-
-    (scope or globals()).setdefault(c.CDF_PIPELINES, []).extend(pipelines)
-
-
-__all__ = ["CDFSource", "CDFResource", "pipeline_spec", "export_pipelines"]
+__all__ = ["CDFSource", "CDFResource", "pipeline_spec"]

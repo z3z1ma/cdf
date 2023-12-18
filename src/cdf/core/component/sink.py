@@ -6,12 +6,13 @@ import sqlmesh
 from dlt.common.destination.reference import Destination
 from sqlmesh.core.config.gateway import GatewayConfig
 
-import cdf.core.constants as c
-from cdf.core.transform import CDFTransformLoader
+from cdf.core.component._model.loader import CDFTransformLoader
 
 
 @dataclass
 class sink_spec:
+    """A sink specification."""
+
     name: str
     """The name of the sink."""
     environment: str
@@ -64,15 +65,15 @@ class sink_spec:
         _, _, gateway = self.unwrap()
         return sqlmesh.Config.parse_obj(
             {
-                "gateways": {self.name: gateway},
                 **transform_opts,
+                "gateways": {self.name: gateway},
                 "default_gateway": self.name,
                 "project": project,
             }
         )
 
     def transform_context(
-        self, path: str, project: str, **transform_opts: t.Any
+        self, path: str, project: str, load: bool = True, **transform_opts: t.Any
     ) -> sqlmesh.Context:
         """Create a transform context for this sink.
 
@@ -87,26 +88,8 @@ class sink_spec:
             config=self.transform_config(project, **transform_opts),
             paths=[path],
             loader=CDFTransformLoader,
+            load=load,
         )
-
-
-def export_sinks(*sinks: sink_spec, scope: dict | None = None) -> None:
-    """Export sinks to the callers global scope.
-
-    Args:
-        *sinks (sink_spec): The sinks to export.
-        scope (dict | None, optional): The scope to export to. Defaults to globals().
-    """
-    if scope is None:
-        import inspect
-
-        frame = inspect.currentframe()
-        if frame is not None:
-            frame = frame.f_back
-        if frame is not None:
-            scope = frame.f_globals
-
-    (scope or globals()).setdefault(c.CDF_SINKS, []).extend(sinks)
 
 
 gateway = GatewayConfig
@@ -116,9 +99,4 @@ destination = dlt.destinations
 """Create a DLT destination."""
 
 
-__all__ = [
-    "gateway",
-    "destination",
-    "sink_spec",
-    "export_sinks",
-]
+__all__ = ["gateway", "destination", "sink_spec"]

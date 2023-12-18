@@ -17,24 +17,28 @@ from dlt.common.configuration import with_config as with_config
 from dlt.sources.helpers.requests import Client as session
 
 import cdf.core.logger as logger
-from cdf.core.publisher import Payload, export_publishers, publisher_spec
-from cdf.core.sink import destination, export_sinks, gateway, sink_spec
-from cdf.core.source import (
-    CDFResource,
-    CDFSource,
-    PipeGen,
-    export_pipelines,
+from cdf.core.component import (
+    CDFPipeline,
+    PublisherData,
+    destination,
+    export,
+    gateway,
     pipeline_spec,
+    publisher_spec,
+    sink_spec,
 )
 from cdf.core.workspace import Project, Workspace
 
+# Re-export most commonly accessed dlt symbols
+
+CDFSource = dlt.sources.DltSource
+CDFResource = dlt.sources.DltResource
+
 inject_config = dlt.config.value
-"""A sentinel value used to mark a value as needing to be injected from a config provider."""
 inject_secret = dlt.secrets.value
-"""A sentinel value used to mark a value as needing to be injected from a secret provider."""
 
 incremental = dlt.sources.incremental
-"""Add incremental support to a resource."""
+
 
 __all__ = [
     "CDFSource",
@@ -42,13 +46,11 @@ __all__ = [
     "Project",
     "Workspace",
     "pipeline_spec",
-    "export_pipelines",
-    "PipeGen",
+    "CDFPipeline",
     "publisher_spec",
-    "export_publishers",
-    "Payload",
+    "PublisherData",
     "sink_spec",
-    "export_sinks",
+    "export",
     "logger",
     "with_config",
     "pipeline",

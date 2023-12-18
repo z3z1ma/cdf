@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import sqlmesh.core.constants as sqlmesh_constants
+from dlt.common.schema.typing import TTableSchema
 from ruamel import yaml
 from sqlglot import exp, parse_one
 from sqlmesh import Config
@@ -68,17 +69,54 @@ class CDFStagingSpec:
     computed_columns: t.List[str] = field(default_factory=list)
     """Computed columns to add."""
 
+    def to_query(self, cdf_metadata: t.Dict[str, TTableSchema]) -> exp.Select:
+        """Converts the staging specification to a query by applying rules.
+
+        Args:
+            cdf_metadata (t.Dict[str, TTableSchema]): Metadata from a cdf yaml file.
+
+        Raises:
+            ValueError: If no columns are selected.
+
+        Returns:
+            exp.Select: The query.
+        """
+        input_table = parse_one(self.input, into=exp.Table)
+        base_projection = [
+            exp.column(c).as_(f"{self.prefix}{c}{self.suffix}")
+            for c in cdf_metadata[input_table.sql()].get("columns", [])
+            if c not in self.excludes
+            and not any(fnmatch.fnmatch(c, p) for p in self.exclude_patterns)
+            and (not self.includes or c in self.includes)
+            and (
+                not self.include_patterns
+                or any(fnmatch.fnmatch(c, p) for p in self.include_patterns)
+            )
+        ]
+        projection = [
+            *base_projection,
+            *[parse_one(c) for c in self.computed_columns],
+        ]
+        if not projection:
+            raise ValueError(f"No columns selected when staging {input_table.sql()}")
+        select = exp.select(*projection).from_(input_table)
+        if self.predicate:
+            select = select.where(self.predicate)
+
+        return select
+
 
 class CDFTransformLoader(SqlMeshLoader):
     """Custom SQLMesh loader for cdf."""
 
-    def _process_cdf_external(
+    def _process_cdf_unmanaged(
         self,
         models: UniqueKeyDict,
         /,
         config: Config,
         path: Path,
     ) -> UniqueKeyDict[str, Model]:
+        """Processes an unmanaged cdf yaml file."""
         for schema in YAML.load(path):
             model = create_external_model(
                 **schema,
@@ -89,13 +127,14 @@ class CDFTransformLoader(SqlMeshLoader):
             models[model.name] = model
         return models
 
-    def _process_cdf_internal(
+    def _process_cdf_managed(
         self,
         models: UniqueKeyDict,
         /,
         config: Config,
         path: Path,
     ) -> UniqueKeyDict[str, Model]:
+        """Processes a managed cdf yaml file."""
         for name, meta in YAML.load(path).items():
             model = create_external_model(
                 name,
@@ -111,18 +150,19 @@ class CDFTransformLoader(SqlMeshLoader):
         return models
 
     def _load_external_models(self) -> UniqueKeyDict[str, Model]:
+        """Adds behavior to load cdf source models."""
         models: UniqueKeyDict = UniqueKeyDict("models")
         for context_path, config in self._context.configs.items():
             base_path = Path(context_path / c.METADATA / config.default_gateway_name)
-            cdf_external = base_path / "_cdf_external.yaml"
+            cdf_external = base_path / "_cdf_unmanaged.yaml"
             for path in base_path.glob("*.yaml"):
                 if not os.path.getsize(path):
                     continue
                 self._track_file(path)
                 if path.samefile(cdf_external):
-                    models = self._process_cdf_external(models, config, path)
+                    models = self._process_cdf_unmanaged(models, config, path)
                 else:
-                    models = self._process_cdf_internal(models, config, path)
+                    models = self._process_cdf_managed(models, config, path)
         return models
 
     def _load_models(
@@ -147,9 +187,9 @@ class CDFTransformLoader(SqlMeshLoader):
                     data.extend((s, Path(path)) for s in specs)
 
             for raw_spec, path in data:
-                spec = CDFStagingSpec(**raw_spec)
+                staging_spec = CDFStagingSpec(**raw_spec)
+                input_table = parse_one(staging_spec.input, into=exp.Table)
 
-                input_table = parse_one(spec.input, into=exp.Table)
                 meta_path = (
                     context_path
                     / c.METADATA
@@ -158,35 +198,21 @@ class CDFTransformLoader(SqlMeshLoader):
                 )
 
                 if meta_path is None or not meta_path.exists():
-                    raise Exception(
-                        f"Metadata file not found: {meta_path}, run cdf metadata"
+                    raise FileNotFoundError(
+                        f"Metadata file {meta_path} not found for staging spec {path},"
+                        " run cdf fetch-metadata <workspace>.<sink>"
                     )
 
                 with meta_path.open() as f:
-                    meta = YAML.load(f)
+                    cdf_metadata = YAML.load(f)
 
-                base_projection = [
-                    exp.column(c).as_(f"{spec.prefix}{c}{spec.suffix}")
-                    for c in meta[input_table.sql()]["columns"]
-                    if c not in spec.excludes
-                    and not any(fnmatch.fnmatch(c, p) for p in spec.exclude_patterns)
-                    and (not spec.includes or c in spec.includes)
-                    and (
-                        not spec.include_patterns
-                        or any(fnmatch.fnmatch(c, p) for p in spec.include_patterns)
-                    )
-                ]
-                projection = [
-                    *base_projection,
-                    *[parse_one(c) for c in spec.computed_columns],
-                ]
-                select = exp.select(*projection).from_(input_table)
-                if spec.predicate:
-                    select = select.where(spec.predicate)
+                select = staging_spec.to_query(cdf_metadata)
+                select.add_comments(
+                    [f"Source: {meta_path.relative_to(self._context.path)}"]
+                )
 
-                # TODO: get audits + grain ascertained from dlt
+                # TODO: get audits + grain ascertained from dlt in add to model
 
-                select.add_comments([f"Source: {path.relative_to(self._context.path)}"])
                 model = create_sql_model(
                     f"cdf_staging.stg_{input_table.db}__{input_table.name}",
                     select,

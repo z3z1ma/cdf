@@ -17,10 +17,14 @@ import virtualenv
 import cdf.core.constants as c
 import cdf.core.feature_flags as ff
 import cdf.core.logger as logger
-from cdf.core.publisher import publisher_spec
-from cdf.core.sink import destination, gateway, sink_spec
-from cdf.core.source import CDFSource, pipeline_spec
-from cdf.core.transform import CDFTransformLoader
+from cdf.core.component import (
+    CDFTransformLoader,
+    destination,
+    gateway,
+    pipeline_spec,
+    publisher_spec,
+    sink_spec,
+)
 from cdf.core.utils import load_module_from_path
 
 _IMPORT_LOCK = Lock()
@@ -587,6 +591,27 @@ class Workspace:
                 self._setup_venv()
             self._setup_deps(force=False)
 
+    # def ensure_pex(self) -> None:
+    #     """Build a pex from the requirements string."""
+    #     output = filesystem.executable_path(plugin.pex_name)
+    #     # Build the pex (deferred import speeds up the CLI)
+    #     import pex.bin.pex
+    #
+    #     try:
+    #         pex.bin.pex.main(
+    #             ["-o", output, "--no-emit-warnings", *plugin.pip_url.split()]
+    #         )
+    #     except SystemExit as e:
+    #         # A failed pex build will exit with a non-zero code
+    #         # Successfully built pexes will exit with either 0 or None
+    #         if e.code is not None and e.code != 0:
+    #             # If the pex fails to build, delete the compromised pex
+    #             try:
+    #                 os.remove(output)
+    #             except FileNotFoundError:
+    #                 pass
+    #             raise
+
     _mod_cache: t.Dict[str, ModuleType] = {}
     """Class var to cache modules between runs of the context manager"""
 
@@ -791,7 +816,9 @@ class Workspace:
 
     @contextmanager
     @requires_pipelines
-    def runtime_source(self, pipeline_name: str, **kwargs) -> t.Iterator[CDFSource]:
+    def runtime_source(
+        self, pipeline_name: str, **kwargs
+    ) -> t.Iterator[dlt.sources.DltSource]:
         """Get a runtime source from the workspace.
 
         A runtime source is a the equivalent to the source cdf would generate itself in a typical
