@@ -1,5 +1,6 @@
 """The source class for continuous data framework sources."""
 import fnmatch
+import functools
 import inspect
 import os
 import tempfile
@@ -7,6 +8,7 @@ import typing as t
 from dataclasses import dataclass, field
 
 import dlt
+from dlt.common.destination.capabilities import TLoaderFileFormat
 from dlt.common.pipeline import LoadInfo
 from dlt.common.typing import TDataItem
 from dlt.pipeline.pipeline import Pipeline
@@ -74,6 +76,12 @@ class pipeline_spec:
     Metrics are captured on a per resource basis during pipeline execution and are
     accumulated into this dict. The metric definitions are callables that take
     the current item and the current metric value and return the new metric value.
+    """
+    loader_file_format: TLoaderFileFormat | None = None
+    """Set the format to be used when loading data, IE parquet, jsonl
+
+    If max_table_nesting or a complex type is detected in the source, we will automatically
+    coerce the loader format to jsonl by default.
     """
     enabled: bool = True
     """Whether this pipeline is enabled."""
@@ -154,16 +162,25 @@ class pipeline_spec:
             destination, staging, _ = workspace.sinks[sink].unwrap()
             tmpdir = tempfile.TemporaryDirectory()
             try:
-                ctx.send(
-                    dlt.pipeline(
-                        self.name,  # type: ignore
-                        dataset_name=f"{self.name}_v{self.version}",
-                        progress=os.getenv("CDF_PROGRESS", "alive_progress"),  # type: ignore
-                        pipelines_dir=tmpdir.name,
-                        destination=destination,
-                        staging=staging,
-                    )
+                p = dlt.pipeline(
+                    self.name,  # type: ignore
+                    dataset_name=f"{self.name}_v{self.version}",
+                    progress=os.getenv("CDF_PROGRESS", "alive_progress"),  # type: ignore
+                    pipelines_dir=tmpdir.name,
+                    destination=destination,
+                    staging=staging,
                 )
+                if source.max_table_nesting is not None or any(
+                    typ.get("data_type") == "complex"
+                    for table in source.schema.tables.values()
+                    for typ in table.get("columns", {}).values()
+                ):
+                    p.run = functools.partial(p.run, loader_file_format="jsonl")
+                elif self.loader_file_format:
+                    p.run = functools.partial(
+                        p.run, loader_file_format=self.loader_file_format
+                    )
+                ctx.send(p)
                 raise RuntimeError("Pipeline did not complete.")
             except StopIteration as e:
                 load_info = t.cast(LoadInfo, e.value)
