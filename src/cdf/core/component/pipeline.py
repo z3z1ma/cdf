@@ -170,16 +170,22 @@ class pipeline_spec:
                     destination=destination,
                     staging=staging,
                 )
-                if source.max_table_nesting is not None or any(
+                has_complex_type = any(
                     typ.get("data_type") == "complex"
                     for table in source.schema.tables.values()
                     for typ in table.get("columns", {}).values()
-                ):
-                    p.run = functools.partial(p.run, loader_file_format="jsonl")
-                elif self.loader_file_format:
+                )
+                if self.loader_file_format:
                     p.run = functools.partial(
                         p.run, loader_file_format=self.loader_file_format
                     )
+                elif (
+                    (source.max_table_nesting is not None or has_complex_type)
+                    and destination
+                    and destination.capabilities().preferred_loader_file_format
+                    == "parquet"  # Ensure parquet is coerced to jsonl if we have complex types
+                ):
+                    p.run = functools.partial(p.run, loader_file_format="jsonl")
                 ctx.send(p)
                 raise RuntimeError("Pipeline did not complete.")
             except StopIteration as e:
