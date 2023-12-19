@@ -160,6 +160,7 @@ class pipeline_spec:
                     )
 
             destination, staging, _ = workspace.sinks[sink].unwrap()
+            assert destination is not None, "Destination must be provided."
             tmpdir = tempfile.TemporaryDirectory()
             try:
                 p = dlt.pipeline(
@@ -170,20 +171,23 @@ class pipeline_spec:
                     destination=destination,
                     staging=staging,
                 )
+                caps = destination.capabilities()
                 has_complex_type = any(
                     typ.get("data_type") == "complex"
                     for table in source.schema.tables.values()
                     for typ in table.get("columns", {}).values()
                 )
+                has_parquet_preference = (
+                    caps.preferred_loader_file_format == "parquet"
+                    or caps.preferred_staging_file_format == "parquet"
+                )
                 if self.loader_file_format:
-                    p.run = functools.partial(
+                    p.run = functools.partial(  # Prefer user specified format
                         p.run, loader_file_format=self.loader_file_format
                     )
                 elif (
                     (source.max_table_nesting is not None or has_complex_type)
-                    and destination
-                    and destination.capabilities().preferred_loader_file_format
-                    == "parquet"  # Ensure parquet is coerced to jsonl if we have complex types
+                    and has_parquet_preference  # Ensure parquet is coerced to jsonl if we have complex types
                 ):
                     p.run = functools.partial(p.run, loader_file_format="jsonl")
                 ctx.send(p)
