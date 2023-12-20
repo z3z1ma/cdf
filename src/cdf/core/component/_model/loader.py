@@ -123,8 +123,9 @@ class CDFTransformLoader(SqlMeshLoader):
                 dialect=config.model_defaults.dialect,
                 path=path,
                 project=config.project,
+                default_catalog=self._context.default_catalog,
             )
-            models[model.name] = model
+            models[getattr(model, "fqn", model.name)] = model
         return models
 
     def _process_cdf_managed(
@@ -145,8 +146,9 @@ class CDFTransformLoader(SqlMeshLoader):
                 dialect=config.model_defaults.dialect,
                 path=path,
                 project=config.project,
+                default_catalog=self._context.default_catalog,
             )
-            models[model.name] = model
+            models[getattr(model, "fqn", model.name)] = model
         return models
 
     def _load_external_models(self) -> UniqueKeyDict[str, Model]:
@@ -225,6 +227,6 @@ class CDFTransformLoader(SqlMeshLoader):
                     time_column_format=config.time_column_format,
                     project=config.project,
                 )
-                models[model.name] = model
+                models[getattr(model, "fqn", model.name)] = model
 
         return models
