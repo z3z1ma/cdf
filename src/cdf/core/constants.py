@@ -1,48 +1,80 @@
 """Constants for the CDF module."""
+import typing as t
 
-# The main export symbols for CDF modules
-CDF_PIPELINES = "__CDF_PIPELINES__"
-CDF_PUBLISHERS = "__CDF_PUBLISHERS__"
-CDF_SINKS = "__CDF_SINKS__"
+TComponents = t.Literal[
+    "pipelines",
+    "models",
+    "publishers",
+    "scripts",
+    "sinks",
+    "pipelines.metrics",
+    "pipelines.filters",
+]
+"""CDF component types"""
 
-# Core files
-WORKSPACE_FILE = "cdf_workspace.toml"
-CONFIG_FILE = "cdf_config.toml"
+COMPONENTS = t.get_args(TComponents)
+"""The various component types in CDF (which correspond to directories in a workspace)"""
 
-# Flag file if using local flags for resource configuration
-FLAG_FILE = "cdf_flags.json"
-
-# The file containing the sinks for a workspace
-SINKS_FILE = "cdf_sinks.py"
-
-# Default requirements file
-REQUIREMENTS_FILE = "requirements.txt"
-
-# The default workspace name, in a single-workspace layout it is always "default"
-DEFAULT_WORKSPACE = "default"
-
-# Paths relative to a root which constitute the layout of a CDF workspace
 PIPELINES = "pipelines"
-TRANSFORMS = "models"
+MODELS = "models"
 PUBLISHERS = "publishers"
-METADATA = "metadata"
 SCRIPTS = "scripts"
+SINKS = "sinks"
+METRICS = "pipelines.metrics"
+FILTERS = "pipelines.filters"
+METADATA = "metadata"
 
-# Default virtual environment path
-VENV = ".venv"
+SPECS = "spec"
+"""A namespace used in a cdf configuration TOML to declare specifications"""
 
-# The default lockfile path
-LOCKFILE = "cdf.lock"
+TRANSFORM_SPEC = "transform"
+"""A namespace used in a cdf configuration TOML to declare SQLMesh config kwargs"""
 
-# The default layout of a CDF workspace
+DEFAULT_WORKSPACE = "default"
+"""The default workspace name, in a single-workspace layout it is always 'default'"""
+
+PROJECT_FILE = "cdf_project.toml"
+"""The top-level file used in a multi-workspace layout to declare workspaces via relative paths"""
+
+CONFIG_FILE = "cdf_config.toml"
+"""The primary configuration file for a CDF workspace"""
+
+LOCK_FILE = "cdf.lock"
+"""A file which stores auto-generated information which should be committed to git such as hashes"""
+
+FLAG_FILE = "cdf_flags.json"
+"""Flag file if using local flags for resource configuration"""
+
+SQLMESH_METADATA_FILE = "_cdf_unmanaged.yaml"
+"""File for sqlmesh external models which are not managed/ingested by CDF"""
+
 DIR_LAYOUT = (
     PIPELINES,
-    TRANSFORMS,
+    MODELS,
     PUBLISHERS,
+    SINKS,
     SCRIPTS,
     METADATA,
+    METRICS,
+    FILTERS,
     "audits",
     "macros",
     "seeds",
     "tests",
 )
+"""The default layout of a CDF workspace"""
+
+INTERNAL_SCHEMA = "cdf_internal"
+"""An internal schema used to track metadata"""
+
+LOAD_INFO_TABLE = "load_info"
+"""Table which tracks load info"""
+
+EXC_INFO_TABLE = "exc_info"
+"""Table which track failures in pipeline execution"""
+
+METRIC_INFO_TABLE = "_cdf_metrics"
+"""Table which tracks runtime metrics"""
+
+DEFAULT_CONFIG = {"ff": {"provider": "local"}}
+"""Default configuration for a CDF workspace"""

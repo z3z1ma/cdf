@@ -9,7 +9,6 @@ that augment dlt and sqlmesh including automated virtual environment management,
 discoverability of pipelines and publishers, automated configuration management, and
 more.
 """
-
 import dlt
 from dlt import pipeline as pipeline
 from dlt.common.configuration import configspec as configspec
@@ -17,26 +16,24 @@ from dlt.common.configuration import with_config as with_config
 from dlt.sources.helpers.requests import Client as session
 
 import cdf.core.logger as logger
-from cdf.core.component import (
-    CDFPipeline,
-    PublisherData,
+from cdf.core.spec import (
+    CooperativePipelineInterface,
+    PipelineSpecification,
+    PublisherInterface,
+    PublisherSpecification,
+    SinkInterface,
+    SinkSpecification,
+    SupportsComponentMetadata,
     destination,
-    export,
     gateway,
-    pipeline_spec,
-    publisher_spec,
-    sink_spec,
 )
 from cdf.core.workspace import Project, Workspace
 
 # Re-export most commonly accessed dlt symbols
-
 CDFSource = dlt.sources.DltSource
 CDFResource = dlt.sources.DltResource
-
 inject_config = dlt.config.value
 inject_secret = dlt.secrets.value
-
 incremental = dlt.sources.incremental
 
 
@@ -45,12 +42,13 @@ __all__ = [
     "CDFResource",
     "Project",
     "Workspace",
-    "pipeline_spec",
-    "CDFPipeline",
-    "publisher_spec",
-    "PublisherData",
-    "sink_spec",
-    "export",
+    "PipelineSpecification",
+    "CooperativePipelineInterface",
+    "PublisherSpecification",
+    "PublisherInterface",
+    "SinkSpecification",
+    "SinkInterface",
+    "SupportsComponentMetadata",
     "logger",
     "with_config",
     "pipeline",

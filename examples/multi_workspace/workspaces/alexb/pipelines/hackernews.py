@@ -129,10 +129,10 @@ def keyword_hits(
 
 
 if t.TYPE_CHECKING:
-    from cdf import PipeGen
+    from cdf import CooperativePipelineInterface
 
 
-def get_rust_stuff() -> "PipeGen":
+def get_rust_stuff() -> "CooperativePipelineInterface":
     source = hn_search(keywords=["rust"])
     pipeline = yield source
     return pipeline.run(source)
@@ -144,7 +144,7 @@ __CDF_PIPELINES__ = [
         "name": "hackernews",
         "pipe": get_rust_stuff,
         "version": 1,
-        "owners": ("qa-team"),
+        "owner": "qa-team",
         "description": "Extracts hackernews data from an API.",
         "tags": ("live", "simple", "test"),
         "metrics": {
@@ -156,16 +156,16 @@ __CDF_PIPELINES__ = [
 ]
 
 # Also worth metioning, above is exactly the same as:
-from cdf import export_pipelines, pipeline_spec  # noqa
+from cdf import PipelineSpecification, export  # noqa
 
-export_pipelines(
-    pipeline_spec(
+export(
+    PipelineSpecification(
         name="hackernews_2",
         pipe=get_rust_stuff,
         version=2,
-        owners=("qa-team"),
+        owner="qa-team",
         description="Extracts hackernews data from an API.",
-        tags=("live", "simple", "test"),
+        tags=["live", "simple", "test"],
         metrics={
             "keyword_hits": {
                 "count": lambda _, metric=0: metric + 1,

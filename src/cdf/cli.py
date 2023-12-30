@@ -1,7 +1,6 @@
 """CLI for cdf."""
 import json
 import os
-import subprocess
 import sys
 import tempfile
 import typing as t
@@ -11,12 +10,14 @@ from pathlib import Path
 import dlt
 import rich
 import typer
+from croniter import croniter
 
 import cdf.core.constants as c
+import cdf.core.context as cdf_context
 import cdf.core.logger as logger
 
 if t.TYPE_CHECKING:
-    from cdf import Project, pipeline_spec, publisher_spec
+    from cdf import Project, SupportsComponentMetadata
 
 T = t.TypeVar("T")
 
@@ -44,6 +45,7 @@ class Delimiter(str, Enum):
     DARRROW = ">>"
     PIPE = "|"
     FSLASH = "/"
+    TO = "-to-"
 
 
 @app.callback()
@@ -67,7 +69,19 @@ def main(
     debug: t.Annotated[
         bool,
         typer.Option(
-            ..., "-d", "--debug", help="Run in debug mode, force log level to debug"
+            ...,
+            "-d",
+            "--debug",
+            help="Run in debug mode, force log level to debug in cdf, dlt, and sqlmesh.",
+        ),
+    ] = False,
+    install: t.Annotated[
+        bool,
+        typer.Option(
+            ...,
+            "-i",
+            "--install",
+            help="Install the component being invoked during runtime. This is experimental and may be removed in the future.",
         ),
     ] = False,
 ):
@@ -75,12 +89,16 @@ def main(
 
     [b/]
     - ( :electric_plug: ) [b blue]pipelines[/b blue]    are responsible for fetching data from a data pipeline.
-    - ( :shuffle_tracks_button: ) [b red]transforms[/b red] are responsible for transforming data in a data warehouse.
+    - ( :shuffle_tracks_button: ) [b red]models[/b red] are responsible for transforming data in a data warehouse.
     - ( :mailbox: ) [b yellow]publishers[/b yellow] are responsible for publishing data to an external system.
     """
-    from cdf import Project
+    from cdf.core.workspace import Project
+
+    if install:
+        cdf_context.enable_autoinstall()
 
     logger.set_level(log_level.upper() if not debug else "DEBUG")
+    logger.monkeypatch_dlt()
     if debug:
         import sqlmesh
 
@@ -95,41 +113,28 @@ def main(
 
 @app.command(rich_help_panel="Project Info")
 def index(ctx: typer.Context) -> None:
-    """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Transforms[/red], and [yellow]Publishers[/yellow][/b] loaded from the pipeline directory paths."""
-    from cdf.core.utils import fn_to_str
-
+    """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], and [yellow]Publishers[/yellow][/b] loaded from the pipeline directory paths."""
     project: Project = ctx.obj
     rich.print(f" {project}")
-    for _, workspace in project:
-        rich.print(f"\n ~ {workspace}")
-        if not any(workspace.capabilities.values()):
-            rich.print(
-                f"   No capabilities discovered. Add {c.PIPELINES}, {c.TRANSFORMS}, or {c.PUBLISHERS}"
-            )
-            continue
-        if workspace.has_pipelines:
+    for _, workspace in project.items():
+        with workspace.runtime_context():
+            rich.print(f"\n ~ {workspace}")
+
             rich.print(f"\n   [blue]Pipelines[/blue]: {len(workspace.pipelines)}")
             for i, (name, meta) in enumerate(workspace.pipelines.items(), start=1):
-                fn = meta.run.__wrapped__
-                rich.print(f"   {i}) {name} ({fn_to_str(fn)})")
-        if workspace.has_transforms:
-            rich.print(f"\n   [red]Transforms[/red]: {len(workspace.transforms)}")
-            for i, (name, _) in enumerate(workspace.transforms.items(), start=1):
-                rich.print(f"   {i}) {name}")
-        if workspace.has_publishers:
+                rich.print(f"   {i}) {name} ({meta.entrypoint_info})")
+
+            rich.print(f"\n   [red]Models[/red]: {len(workspace.models)}")
+            for i, (name, meta) in enumerate(workspace.models.items(), start=1):
+                rich.print(f"   {i}) {name} ({meta.kind})")
+
             rich.print(f"\n   [yellow]Publishers[/yellow]: {len(workspace.publishers)}")
             for i, (name, meta) in enumerate(workspace.publishers.items(), start=1):
-                fn = getattr(meta.runner, "__wrapped__", meta.runner)
-                rich.print(f"   {i}) {name} ({fn_to_str(fn)})")
-        if workspace.has_dependencies:
-            deps = [
-                dep.split("#", 1)[0].strip()  # Basic requirements.txt parsing
-                for dep in workspace.requirements_path.read_text().splitlines()
-                if dep.strip() and not dep.strip().startswith("#")
-            ]
-            rich.print(f"\n   [green]Dependencies[/green]: {len(deps)}")
-            for i, dep in enumerate(deps, start=1):
-                rich.print(f"   {i}) {dep}")
+                rich.print(f"   {i}) {name} ({meta.entrypoint_info})")
+
+            rich.print(f"\n   [green]Scripts[/green]: {len(workspace.scripts)}")
+            for i, (name, meta) in enumerate(workspace.scripts.items(), start=1):
+                rich.print(f"   {i}) {name} ({meta.entrypoint_info})")
     rich.print("")
 
 
@@ -137,42 +142,24 @@ def index(ctx: typer.Context) -> None:
 def docs(ctx: typer.Context) -> None:
     """:book: Render documentation for the project."""
     project: Project = ctx.obj
-    docs_path = project.meta["root"].joinpath("docs")
+    docs_path = project.root.joinpath("docs")
     if not docs_path.exists():
         docs_path.mkdir()
     md_doc = "# CDF Project\n\n"
-    for _, workspace in project:
-        md_doc += f"## ✨ {workspace.namespace.title()} Space\n\n"
-        if workspace.has_dependencies:
-            md_doc += "### 🧱 Dependencies\n\n"
-            deps = subprocess.check_output([workspace.pip_path, "freeze"], text=True)
-            for dep in deps.splitlines():
-                md_doc += f"- `{dep}`\n"
-            md_doc += "\n"
-        if workspace.has_pipelines:
+    for workspace in project.values():
+        md_doc += f"## ✨ {workspace.name.title()} Space\n\n"
+        if workspace.pipelines:
             md_doc += "### 🚚 Pipelines\n\n"
             for name, meta in workspace.pipelines.items():
-                md_doc += f"#### {name}\n\n"
-                md_doc += f"- **Description**: {meta.description}\n"
-                md_doc += f"- **Owners**: {meta.owners}\n"
-                md_doc += f"- **Tags**: {', '.join(meta.tags)}\n"
-                md_doc += f"- **Cron**: {meta.cron or 'Not Scheduled'}\n\n"
-        if workspace.has_transforms:
-            md_doc += "### 🔄 Transforms\n\n"
-            for name, meta in workspace.transforms.items():
-                md_doc += f"#### {name}\n\n"
-                md_doc += f"- **Description**: {meta.description}\n"
-                md_doc += f"- **Owner**: {meta.owner}\n"
-                md_doc += f"- **Tags**: {', '.join(meta.tags)}\n"
-                md_doc += f"- **Cron**: {meta.cron or 'Not Scheduled'}\n\n"
-        if workspace.has_publishers:
+                md_doc += _metadata_to_md_section(name, meta)
+        if workspace.models:
+            md_doc += "### 🔄 Models\n\n"
+            for name, meta in workspace.models.items():
+                md_doc += _metadata_to_md_section(name, meta)
+        if workspace.publishers:
             md_doc += "### 🖋️ Publishers\n\n"
             for name, meta in workspace.publishers.items():
-                md_doc += f"#### {name}\n\n"
-                md_doc += f"- **Description**: {meta.description}\n"
-                md_doc += f"- **Owners**: {meta.owners}\n"
-                md_doc += f"- **Tags**: {', '.join(meta.tags)}\n"
-                md_doc += f"- **Cron**: {meta.cron or 'Not Scheduled'}\n"
+                md_doc += _metadata_to_md_section(name, meta)
         md_doc += "\n"
     rich.print(md_doc)
 
@@ -190,7 +177,7 @@ def path(
     if workspace:
         print(project[workspace].root.absolute(), file=sys.stdout, flush=True)
     else:
-        print(project.meta["root"].absolute(), file=sys.stdout, flush=True)
+        print(project.root.absolute(), file=sys.stdout, flush=True)
 
 
 @app.command(rich_help_panel="Inspect")
@@ -214,12 +201,12 @@ def discover(
     logger.debug("Discovering pipeline %s", pipeline)
     project: Project = ctx.obj
     try:
-        ws, src = _parse_ws_component(
-            pipeline, add_default_workspace=project.meta.get("default", False)
-        )
+        ws, src = _parse_ws_component(pipeline, project=project)
     except ValueError as e:
+        form = "<workspace>.<pipeline>" if len(project) > 1 else "<pipeline>"
         raise typer.BadParameter(
-            "Must specify a pipeline in the form <workspace>.<pipeline>"
+            f"Must specify a pipeline in the form {form}, got {pipeline!r}; {e}",
+            param=ctx.command.params[0],
         ) from e
     workspace = project[ws]
     with workspace.runtime_source(src, **json.loads(opts)) as rt_source:
@@ -232,7 +219,7 @@ def discover(
                 rich.print(f"  {i}) [b green]{resource.name}[/b green] (enabled: True)")
             else:
                 rich.print(f"  {i}) [b red]{resource.name}[/b red] (enabled: False)")
-        _print_meta(workspace.pipelines[src])
+        _print_metadata(workspace.pipelines[src])
 
 
 @app.command(rich_help_panel="Inspect")
@@ -265,12 +252,16 @@ def head(
 
     project: Project = ctx.obj
     try:
-        ws, src, resource = _parse_ws_component(
-            pipeline, add_default_workspace=project.meta.get("default", False)
-        )
+        ws, src, resource = _parse_ws_component(pipeline, project=project)
     except ValueError as e:
+        form = (
+            "<workspace>.<pipeline>.<resource>"
+            if len(project) > 1
+            else "<pipeline>.<resource>"
+        )
         raise typer.BadParameter(
-            "Must specify a pipeline and resource in the form <workspace>.<pipeline>.<resource>"
+            f"Must specify a pipeline and resource in the form {form}, got {pipeline!r}; {e}",
+            param=ctx.command.params[0],
         ) from e
     workspace = project[ws]
     with workspace.runtime_source(src, **json.loads(opts)) as rt_source:
@@ -293,7 +284,7 @@ def head(
 def pipeline(
     ctx: typer.Context,
     pipeline: t.Annotated[
-        str, typer.Argument(help="The <workspace>.<pipeline>:<sink> to run.")
+        str, typer.Argument(help="The <workspace>.<pipeline>.<sink> to run.")
     ],
     opts: str = typer.Argument(
         "{}", help="JSON formatted options to forward to the pipeline."
@@ -316,30 +307,29 @@ def pipeline(
     """
     project: Project = ctx.obj
     try:
-        ws, src, sink = _parse_ws_component(
-            pipeline, add_default_workspace=project.meta.get("default", False)
-        )
+        ws, pipe, sink = _parse_ws_component(pipeline, project=project)
     except ValueError as e:
+        form = (
+            "<workspace>.<pipeline>.<sink>" if len(project) > 1 else "<pipeline>.<sink>"
+        )
         raise typer.BadParameter(
-            "Must specify a pipeline and sink in the form <workspace>.<pipeline>.<sink>"
+            f"Must specify a pipeline and sink in the form {form}, got {pipeline!r}; {e}",
+            param=ctx.command.params[0],
         ) from e
     workspace = project[ws]
-    with workspace.overlay():
-        pipe = workspace.pipelines[src]
-        info = pipe.run(workspace, sink, resources, **json.loads(opts))
-    logger.info(info)
-    if pipe.runtime_metrics:
-        logger.info("Runtime Metrics:")
-        logger.info(pipe.runtime_metrics)
+    with workspace.runtime_context():
+        logger.info(
+            workspace.pipelines[pipe](workspace, sink, resources, **json.loads(opts))
+        )
 
 
 @transform_app.callback(invoke_without_command=True)
 def transform(
     ctx: typer.Context,
-    workspace: t.Annotated[
+    sink: t.Annotated[
         str,
         typer.Argument(
-            help="A comma separated list of 1 or more workspaces to include in the context. The first workspace is the primary workspace."
+            help="The <workspace>.<sink> to operate in. Workspace can be omitted in a single workspace project."
         ),
     ],
 ) -> None:
@@ -349,59 +339,44 @@ def transform(
     This swaps the CLI context to a transform context which makes it compatible with the sqlmesh CLI
     while still allowing us to augment behavior with opinionated defaults.
     """
-    import dotenv
-
     project: Project = ctx.obj
     if ctx.invoked_subcommand is None:
-        if workspace in SQLMESH_COMMANDS:
+        if sink in SQLMESH_COMMANDS and len(project) > 1:
             raise typer.BadParameter(
-                f"When running a {workspace} command, you must specify a workspace."
-                f" For example: cdf transform {next(iter(project.keys()))} {workspace}"
+                f"When running a {sink} command, you must specify a workspace."
+                f" For example: cdf transform {next(iter(project.keys()))} {sink}"
             )
-        elif workspace in project:
+        elif sink in project or sink in next(iter(project.values())).sinks:
             ctx.invoke(transform_app, ["--help"])
         else:
             raise typer.BadParameter(
-                f"Workspace `{workspace}` not found. Available workspaces: {', '.join(project.keys())}"
+                f"Workspace `{sink}` not found. Available workspaces: {', '.join(project.keys())}"
             )
     try:
-        workspace, sink = _parse_ws_component(
-            workspace, add_default_workspace=project.meta.get("default", False)
-        )
+        workspace, sink = _parse_ws_component(sink, project=project)
     except ValueError as e:
+        form = "<workspace>.<sink>" if len(project) > 1 else "<sink>"
         raise typer.BadParameter(
-            "Must specify a sink in the form <workspace>.<sink>"
+            f"Must specify a sink in the form {form}, got {sink!r}; {e}",
         ) from e
     workspaces = workspace.split(",")
     main_workspace = workspaces[0]
     # Ensure we have a primary workspace
     if main_workspace == "*":
         raise typer.BadParameter(
-            "Cannot run transforms without a primary workspace. Specify a workspace in the first position."
+            "Cannot run models without a primary workspace. Specify a workspace in the first position."
         )
-    project[main_workspace].ensure_venv()
-    activate = project[main_workspace].root / c.VENV / "bin" / "activate_this.py"
-    if project[main_workspace].has_dependencies:
-        exec(activate.read_bytes(), {"__file__": str(activate)})
-    sys.path.append(str(project[main_workspace].root))
-    if project[main_workspace]._mod_cache:
-        sys.modules.update(project[main_workspace]._mod_cache)
-    dotenv.load_dotenv(project[main_workspace].root / ".env")
-    project[main_workspace].inject_workspace_config_providers()
     # A special case for running a plan with all workspaces accessible to the context
     if any(ws == "*" for ws in workspaces):
-        others = project.keys().difference(main_workspace)
+        others = set(project.keys()).difference(main_workspace)
         workspaces = [main_workspace, *others]
     # Ensure all workspaces exist and are valid
     for ws in workspaces:
         if ws not in project:
             raise typer.BadParameter(f"Workspace `{ws}` not found.")
-        if not project[ws].has_transforms:
-            raise typer.BadParameter(
-                f"No transforms discovered in workspace `{ws}`. Add transforms to {c.TRANSFORMS} to enable them."
-            )
     # Swap context to SQLMesh context
-    ctx.obj = project.get_transform_context(workspaces, sink=sink)
+    project[main_workspace].runtime_context().__enter__()
+    ctx.obj = project.transform_context(*workspaces, sink=sink)
 
 
 SQLMESH_COMMANDS = (
@@ -424,6 +399,7 @@ SQLMESH_COMMANDS = (
     "table_diff",
     "rewrite",
 )
+"""A list of sqlmesh commands worth wrapping."""
 
 
 def _get_transform_command_wrapper(name: str):
@@ -468,7 +444,7 @@ for passthrough in SQLMESH_COMMANDS:
 def publish(
     ctx: typer.Context,
     publisher: t.Annotated[
-        str, typer.Argument(help="the <workspace>.<publisher> to run")
+        str, typer.Argument(help="the <workspace>.<sink>.<publisher> to run")
     ],
     opts: str = typer.Argument(
         "{}", help="JSON formatted options to forward to the publisher."
@@ -479,19 +455,21 @@ def publish(
     ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
-    from cdf.core.component import PublisherData
-
     project: Project = ctx.obj
     try:
-        ws, sink, pub = _parse_ws_component(
-            publisher, add_default_workspace=project.meta.get("default", False)
-        )
+        ws, sink, pub = _parse_ws_component(publisher, project=project)
     except ValueError as e:
+        form = (
+            "<workspace>.<sink>.<publisher>"
+            if len(project) > 1
+            else "<sink>.<publisher>"
+        )
         raise typer.BadParameter(
-            "Must specify a publisher in the form <workspace>.<sink>.<publisher>"
+            f"Must specify a publisher in the form {form}, got {publisher!r}; {e}",
+            param=ctx.command.params[0],
         ) from e
     workspace = project[ws]
-    with workspace.overlay():
+    with workspace.runtime_context():
         runner = workspace.publishers[pub]
         context = workspace.transform_context(sink)
         if runner.from_ not in context.models:
@@ -507,7 +485,7 @@ def publish(
         else:
             model = context.models[runner.from_]
             logger.info("Parsed dependencies: %s", model.depends_on)
-        runner(data=PublisherData(context.fetchdf(runner.query)), **json.loads(opts))
+        runner(df=context.fetchdf(runner.query), **json.loads(opts))
 
 
 @app.command("execute-script", rich_help_panel="Utility")
@@ -532,60 +510,20 @@ def execute_script(
     """
     project: Project = ctx.obj
     try:
-        ws, script = _parse_ws_component(
-            script, add_default_workspace=project.meta.get("default", False)
-        )
+        ws, script = _parse_ws_component(script, project=project)
     except ValueError as e:
+        form = "<workspace>.<script>" if len(project) > 1 else "<script>"
         raise typer.BadParameter(
-            "Must specify a script in the form <workspace>.<script>"
+            f"Must specify a script in the form {form}, got {script!r}; {e}",
+            param=ctx.command.params[0],
         ) from e
     workspace = project[ws]
-    with workspace.overlay():
+    with workspace.runtime_context():
         workspace.scripts[script](workspace, **json.loads(opts))
 
 
-@app.command(
-    "execute-bin",
-    rich_help_panel="Utility",
-    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
-)
-def execute_bin(ctx: typer.Context, executable: str) -> None:
-    """:rocket: Run an executable located in a workspace venv bin directory.
-
-    This is convenient for running package scripts installed in a workspace environment without having to specify the
-    full path to the executable. It is purely a convenience method and is not required to operate within a CDF
-    project. All arguments should be passed after a -- separator.
-
-    \f
-    Example:
-        cdf bin my_workspace.pip -- --help
-        cdf bin my_workspace.gcloud -- --help
-
-    Args:
-        ctx: The CLI context.
-        executable: The executable to run. <workspace>.<executable>
-
-    Raises:
-        subprocess.CalledProcessError: If the executable returns a non-zero exit code.
-    """
-    project: Project = ctx.obj
-    try:
-        ws, bin_ = _parse_ws_component(
-            executable, add_default_workspace=project.meta.get("default", False)
-        )
-    except ValueError as e:
-        raise typer.BadParameter(
-            "Must specify a bin in the form <workspace>.<bin>"
-        ) from e
-    rich.print(">>> Running", ws, bin_, file=sys.stderr)
-    workspace = project[ws]
-    with workspace.overlay():
-        proc = subprocess.run([workspace.get_bin(bin_, must_exist=True), *ctx.args])
-    raise typer.Exit(proc.returncode)
-
-
 @app.command("fetch-metadata", rich_help_panel="Utility")
-def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
+def fetch_metadata(ctx: typer.Context, sink: str) -> None:
     """:floppy_disk: Regenerate workspace metadata.
 
     Data is stored in <workspace>/metadata/<destination>/<catalog>.yaml
@@ -606,19 +544,20 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
     yaml = YAML(typ="rt")
 
     try:
-        workspace, sink = _parse_ws_component(
-            workspace, add_default_workspace=project.meta.get("default", False)
-        )
+        workspace, sink_name = _parse_ws_component(sink, project=project)
     except ValueError as e:
+        form = "<workspace>.<sink>" if len(project) > 1 else "<sink>"
         raise typer.BadParameter(
-            "Must specifc a sink in the form <workspace>.<sink>"
+            f"Must specifc a sink in the form {form}, got {sink!r}; {e}",
+            param=ctx.command.params[0],
         ) from e
 
     ws = project[workspace]
-    with ws.overlay():
+    with ws.runtime_context():
+        context = ws.transform_context(sink_name)
+
         seen = set()
         output = {}
-
         # Fetch metadata from dlt ingestion pipelines
         for name, src in ws.pipelines.items():
             d = tempfile.TemporaryDirectory()
@@ -626,21 +565,23 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
             pipe = dlt.pipeline(
                 name,
                 dataset_name=dataset,
-                destination=ws.sinks[sink].unwrap()[0],
+                destination=ws.sinks[sink_name].destination,
                 pipelines_dir=d.name,
             )
-            pipe.activate()
             pipe.sync_destination()
             for schema in pipe.schemas.values():
                 for meta in schema.data_tables():
                     assert meta["name"]
-                    table = exp.table_(meta["name"], dataset).sql()
+                    table = exp.table_(
+                        meta["name"],
+                        dataset,
+                        catalog=context.config.model_defaults.catalog,
+                    ).sql()
                     catalog = output.setdefault(dataset, {})
                     catalog.setdefault(table, {}).update(meta)
                     seen.add(table)
             d.cleanup()
 
-        context = ws.transform_context(sink)
         tmp_schema_dump = ws.root / "schema.yaml"
         tmp_schema_dump.unlink(missing_ok=True)
 
@@ -654,10 +595,10 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
     meta = [m for m in meta if m["name"] not in seen]
 
     # Write the schema dump to the workspace metadata directory
-    meta_path = ws.root / c.METADATA / sink
+    meta_path = ws.root / c.METADATA / sink_name
     meta_path.mkdir(exist_ok=True)
 
-    unmanaged_metadata = meta_path / "_cdf_external.yaml"
+    unmanaged_metadata = meta_path / c.SQLMESH_METADATA_FILE
     unmanaged_metadata.parent.mkdir(parents=True, exist_ok=True)
     with unmanaged_metadata.open("w") as f:
         yaml.dump(meta, f)
@@ -670,7 +611,7 @@ def fetch_metadata(ctx: typer.Context, workspace: str) -> None:
 @app.command("generate-staging-layer", rich_help_panel="Utility")
 def generate_staging_layer(
     ctx: typer.Context,
-    workspace: str,
+    sink: str,
     fetch_metadata_: bool = typer.Option(
         True,
         "-f",
@@ -686,31 +627,31 @@ def generate_staging_layer(
     \f
     Args:
         ctx: The CLI context.
-        workspace: The workspace to generate staging layers for.
+        sink: The sink to generate staging layers for.
         fetch_metadata: Whether to fetch metadata before generating staging layers.
     """
     from ruamel.yaml import YAML
     from sqlglot import exp, parse_one
 
     if fetch_metadata_:
-        fetch_metadata(ctx, workspace)
+        fetch_metadata(ctx, sink)
 
     logger.info("Generating cdf DSL staging layer")
     project: Project = ctx.obj
     yaml = YAML(typ="rt")
 
     try:
-        workspace, sink = _parse_ws_component(
-            workspace, add_default_workspace=project.meta.get("default", False)
-        )
+        workspace, sink_name = _parse_ws_component(sink, project=project)
     except ValueError as e:
+        form = "<workspace>.<sink>" if len(project) > 1 else "<sink>"
         raise typer.BadParameter(
-            "Must specifc a sink in the form <workspace>.<pipeline>"
+            f"Must specifc a sink in the form {form}, got {sink!r}; {e}",
+            param=ctx.command.params[0],
         ) from e
 
     ws = project[workspace]
-    context = ws.transform_context(sink)
-    for fp in (ws.root / "metadata" / sink).iterdir():
+    context = ws.transform_context(sink_name)
+    for fp in (ws.root / "metadata" / sink_name).iterdir():
         if fp.name == "_cdf_external.yaml":
             continue
         if not fp.is_file() or not fp.name.endswith(".yaml"):
@@ -740,7 +681,7 @@ def generate_staging_layer(
                     "computed_columns": [],
                 }
             )
-        p = ws.transform_path / "staging" / fp.stem / "schema.yaml"
+        p = ws.root / c.MODELS / "staging" / fp.stem / "schema.yaml"
         p.parent.mkdir(parents=True, exist_ok=True)
         with p.open("w") as f:
             yaml.dump(stg_specs, f)
@@ -770,16 +711,7 @@ def init_workspace(
     logger.info("Initializing workspace in %s", directory)
     for dir_ in c.DIR_LAYOUT:
         # Basic directory layout
-        directory.joinpath(dir_).mkdir(parents=True, exist_ok=False)
-    for dir_ in (
-        "macros",
-        c.SCRIPTS,
-        c.PIPELINES,
-        c.PUBLISHERS,
-        c.TRANSFORMS,
-    ):
-        # Add init files to importable directories
-        directory.joinpath(dir_, "__init__.py").touch()
+        directory.joinpath(*dir_.split(".")).mkdir(parents=True, exist_ok=False)
     directory.joinpath(c.CONFIG_FILE).touch()
     directory.joinpath(".env").touch()
     directory.joinpath(".gitignore").write_text(
@@ -788,7 +720,6 @@ def init_workspace(
                 "__pycache__",
                 "*.pyc",
                 ".env",
-                c.VENV,
                 ".cache",
                 "logs",
                 "*.duckdb",
@@ -796,7 +727,6 @@ def init_workspace(
             ]
         )
     )
-    directory.joinpath(c.REQUIREMENTS_FILE).touch()
 
 
 @app.command("init-project", rich_help_panel="Project Initialization")
@@ -833,7 +763,7 @@ def init_project(
     if any(os.listdir(root / d) for d in directories if d.exists()):
         raise typer.BadParameter("Directories must be empty.")
     logger.info("Initializing project in %s", root)
-    root.joinpath(c.WORKSPACE_FILE).write_text(
+    root.joinpath(c.PROJECT_FILE).write_text(
         tomlkit.dumps(
             {
                 "workspace": {
@@ -849,8 +779,57 @@ def init_project(
         ctx.invoke(init_workspace, directory=root / directory)
 
 
+@app.command("develop", rich_help_panel="Project Initialization")
+def develop(
+    ctx: typer.Context,
+    component: str = typer.Argument("*", help="The component to develop."),
+) -> None:
+    """:hammer_and_wrench: Install project components in the active virtual environment."""
+    if "VIRTUAL_ENV" not in os.environ:
+        raise typer.BadParameter("Must be run in a virtual environment.")
+    elif not Path(os.environ["VIRTUAL_ENV"]).is_dir():
+        # Sanity check
+        raise typer.BadParameter(
+            "VIRTUAL_ENV is not a directory. Ensure you are in a valid virtual environment."
+        )
+    # From here-on, we assume we are in a valid virtual environment and will use the pip module
+    project: Project = ctx.obj
+    ws_, *component_path = _parse_ws_component(component, project=project)
+    ws = project[ws_]
+    if not component_path or component_path[0] == "*":
+        for comp in ws.pipelines.values():
+            comp.install()
+        for comp in ws.publishers.values():
+            comp.install()
+        for comp in ws.scripts.values():
+            comp.install()
+    elif len(component_path) == 1:
+        (typ,) = component_path
+        if typ == c.PIPELINES:
+            for comp in ws.pipelines.values():
+                comp.install()
+        elif typ == c.PUBLISHERS:
+            for comp in ws.publishers.values():
+                comp.install()
+        elif typ == c.SCRIPTS:
+            for comp in ws.scripts.values():
+                comp.install()
+    else:
+        typ, comp_name = component_path
+        if typ == c.PIPELINES:
+            comp = ws.pipelines[comp_name].install()
+        elif typ == c.PUBLISHERS:
+            comp = ws.publishers[comp_name].install()
+        elif typ == c.SCRIPTS:
+            comp = ws.scripts[comp_name].install()
+        else:
+            raise typer.BadParameter(
+                "Must specify a component in the form <workspace>.<type>.<component>"
+            )
+
+
 def _parse_ws_component(
-    component: str, add_default_workspace: bool = False
+    component: str, project: "Project | None" = None
 ) -> t.Tuple[str, ...]:
     """Parse a workspace.component string into a tuple of parts.
 
@@ -865,7 +844,7 @@ def _parse_ws_component(
     workspace/component/sink
 
     if operating in a project with a default workspace indicating a flat single-tenant structure,
-    no workspace should be specified in the component string.
+    no workspace should be specified in the component string. Same goes for a single workspace project.
 
     Args:
         component: The component string to parse.
@@ -874,24 +853,55 @@ def _parse_ws_component(
         A tuple of parts.
     """
     parts = [component]
-    if add_default_workspace:
-        parts.insert(0, c.DEFAULT_WORKSPACE)
-    while delim := next((d for d in Delimiter if d.value in parts[-1]), None):
-        parts.extend(parts.pop().split(delim.value, 1))
+
+    # Parse
+    while delim := next(
+        (d for d in Delimiter if d.value in parts[-1]),
+        None,
+    ):
+        parts.extend(parts.pop(-1).split(delim.value, 1))
+
     parts = [p.strip() for p in parts]
-    return (*parts,)
+
+    # Inject workspace in a single-tenant project
+    if project and len(project) == 1:
+        ws = next(iter(project))
+        if parts[0] != ws:
+            parts.insert(0, ws)
+    if project and parts[0] not in project:
+        raise ValueError(f"Workspace {parts[0]} not found in project.")
+
+    return tuple(parts)
 
 
-def _print_meta(meta: "pipeline_spec | publisher_spec") -> None:
-    """Print common component metadata.
+def _print_metadata(metadata: "SupportsComponentMetadata") -> None:
+    """
+    Print common component metadata.
 
     Args:
         meta: The component metadata.
     """
-    rich.print(f"\nOwners: [yellow]{meta.owners}[/yellow]")
-    rich.print(f"Description: {meta.description}")
-    rich.print(f"Tags: {meta.tags}")
-    rich.print(f"Cron: {meta.cron}\n")
+    rich.print(f"\n[b]Owners[/b]: [yellow]{metadata.owner}[/yellow]")
+    description = metadata.description.replace("\n", " ")
+    rich.print(f"[b]Description[/b]: {description}")
+    rich.print(f"[b]Tags[/b]: {', '.join(metadata.tags)}")
+    if metadata.cron:
+        cron = (
+            " ".join(metadata.cron.expressions)
+            if isinstance(metadata.cron, croniter)
+            else metadata.cron
+        )
+        rich.print(f"[b]Cron[/b]: {cron}\n")
+
+
+def _metadata_to_md_section(name: str, metadata: "SupportsComponentMetadata"):
+    """Convert a component's metadata to a markdown section."""
+    md_doc = f"#### {name}\n\n"
+    md_doc += f"- **Description**: {metadata.description}\n"
+    md_doc += f"- **Owners**: {metadata.owner}\n"
+    md_doc += f"- **Tags**: {', '.join(metadata.tags)}\n"
+    md_doc += f"- **Cron**: {metadata.cron or 'Not Scheduled'}\n\n"
+    return md_doc
 
 
 if __name__ == "__main__":

@@ -106,3 +106,12 @@ def __getattr__(name: str) -> "LogMethod":
     if not LOGGER.extra.get("configured"):
         configure()
     return getattr(LOGGER, name)
+
+
+def monkeypatch_dlt() -> None:
+    """Monkeypatch the dlt logging module."""
+    from dlt.common.runtime import logger
+
+    patched = create("dlt")
+    setattr(logger, "_init_logging", lambda *a, **kw: patched)
+    setattr(logger, "LOGGER", patched)

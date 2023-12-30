@@ -1,247 +1,258 @@
+"""Continuous data framework workspaces and projects"""
+import getpass
 import os
 import subprocess
 import sys
 import typing as t
-from contextlib import contextmanager, suppress
-from functools import lru_cache
+import warnings
+from contextlib import contextmanager
+from functools import cache, wraps
 from pathlib import Path
 from threading import Lock
-from types import MappingProxyType, ModuleType
+from types import MappingProxyType
 
 import dlt
+import dlt.common.configuration.providers as providers
 import dotenv
 import sqlmesh
-import tomlkit as toml
-import virtualenv
+import tomlkit
+from dlt.common.configuration.container import Container
+from dlt.common.configuration.specs.config_providers_context import (
+    ConfigProvidersContext,
+)
 
 import cdf.core.constants as c
+import cdf.core.context as context
 import cdf.core.feature_flags as ff
-import cdf.core.logger as logger
-from cdf.core.component import (
-    CDFTransformLoader,
-    destination,
-    gateway,
-    pipeline_spec,
-    publisher_spec,
-    sink_spec,
+import cdf.core.jinja as jinja
+from cdf.core.spec import (
+    CDF_REGISTRY,
+    CDFModelLoader,
+    ComponentSpecification,
+    PipelineSpecification,
+    PublisherSpecification,
+    ScriptSpecification,
+    SinkSpecification,
 )
-from cdf.core.utils import load_module_from_path
 
-_IMPORT_LOCK = Lock()
+_LOADING_MUTEX: Lock = Lock()
+"""A lock which ensures that operations such as component loading are atomic."""
 
 
-class Project:
+def _find_git_root(*paths: str | Path) -> Path | None:
+    """
+    Finds the common git root.
+
+    Args:
+        *paths: The paths to search.
+
+    Returns:
+        Path: The common git root or None.
+    """
+    roots = []
+    for path in paths:
+        path = Path(path).resolve()
+        for parent in [path] + list(path.parents):
+            if (parent / ".git").is_dir():
+                roots.append(parent)
+    if not roots or len(set(roots)) != 1:
+        return None
+    return roots[0]
+
+
+def _find_common_path(*paths: str | Path) -> Path | None:
+    """
+    Finds the common path for a list of paths.
+
+    Args:
+        *paths: The paths to search.
+
+    Returns:
+        Path: The common path or None.
+    """
+    if not paths:
+        return None
+    common_path = Path(os.path.commonpath([Path(p).resolve() for p in paths]))
+    if not common_path.parents:
+        return None
+    return common_path
+
+
+def _coerce_to_workspace(obj: "str | Path | Workspace") -> "Workspace":
+    """
+    Get a workspace from a workspace-like object.
+
+    Args:
+        workspace: The path to the workspace.
+
+    Raises:
+        TypeError: If object is not coercible to a workspace.
+
+    Returns:
+        Workspace: A workspace.
+    """
+    if isinstance(obj, (str, Path)):
+        return Workspace(obj)
+    elif isinstance(obj, Workspace):
+        return obj
+    else:
+        raise TypeError(f"Expected PathLike or Workspace, got {type(obj)}")
+
+
+class Project(t.Dict["str", "Workspace"]):
     """A project encapsulates a collection of workspaces."""
 
+    class TOMLSpec(t.TypedDict):
+        """A project specification."""
+
+        name: str | None
+        """The name of the project."""
+        members: t.List[str]
+        """A list of workspace paths."""
+        sinks: t.List[dict]
+        """Global sinks."""
+
     def __init__(
-        self, workspaces: t.List["Workspace"], name: str | None = None, **meta: t.Any
+        self,
+        *members: "str | Path | Workspace",
+        name: str | None,
+        root: Path | None = None,
+        setup: bool = True,
     ) -> None:
-        """Initialize a project.
+        """
+        Initialize a project.
 
         Args:
-            workspaces (t.List[Workspace]): List of workspaces.
-            name (str, optional): Name of root path in project. Defaults to the current working directory.
+            *members: The paths to the workspaces.
+            name: The name of the project.
+            root: The root of the project. Defaults to None.
+            setup: Whether to load the .env and update sys.path. Defaults to True.
         """
-        self._workspaces = {ws.namespace: ws for ws in workspaces}
-        self.name = name or Path.cwd().name
-        self.meta = meta
+        if not name:
+            warnings.warn(
+                "Project name not provided -- we will infer it from the project members but it is"
+                " highly recommended that you provide one explicitly to avoid unexpected behavior.",
+                category=UserWarning,
+            )
+        self._root = root
+        self._name = name
+        self._seq = context.get_project_number()
 
-    @property
-    def workspaces(self) -> MappingProxyType[str, "Workspace"]:
-        return MappingProxyType(self._workspaces)
+        ws = [_coerce_to_workspace(w) for w in members]
+        super().__init__({w.name: w for w in ws})
 
-    def add_workspace(self, workspace: "Workspace", replace: bool = True) -> None:
-        """Add a workspace to the project.
+        if setup:
+            self.setup()
+
+    @classmethod
+    def default(cls, path: str | Path | None = None) -> "Project":
+        """
+        Create a project assuming a single workspace at the given path or cwd.
+
+        Args:
+            path: The path to the workspace. Defaults to None.
 
         Raises:
-            ValueError if workspace already exists and replace is False.
-
-        Args:
-            workspace (Workspace): The workspace to add.
-        """
-        if workspace.namespace in self._workspaces and not replace:
-            raise ValueError(
-                f"Workspace with namespace {workspace.namespace} already exists"
-            )
-        self._workspaces[workspace.namespace] = workspace
-
-    def remove_workspace(self, namespace: str) -> "Workspace":
-        """Remove a workspace from the project.
-
-        Raises:
-            KeyError if workspace does not exist.
-
-        Args:
-            namespace (str): The namespace of the workspace to remove.
-        """
-        return self._workspaces.pop(namespace)
-
-    def __getattr__(self, name: str) -> "Workspace":
-        try:
-            return self._workspaces[name]
-        except KeyError:
-            raise AttributeError(f"Project {self.name} has no workspace {name}")
-
-    def __getitem__(self, name: str) -> "Workspace":
-        return self._workspaces[name]
-
-    def __iter__(self) -> t.Iterator[t.Tuple[str, "Workspace"]]:
-        return iter(self._workspaces.items())
-
-    def __len__(self) -> int:
-        return len(self._workspaces)
-
-    def __contains__(self, name: str) -> bool:
-        return name in self._workspaces
-
-    def __repr__(self) -> str:
-        ws = ", ".join(f"'{ns}'" for ns in self._workspaces.keys())
-        return f"Project({self.name}, workspaces=[{ws}])"
-
-    def __add__(self, other: "Project | Workspace") -> "Project":
-        if isinstance(other, Workspace):
-            self.add_workspace(other)
-            return self
-        elif isinstance(other, Project):
-            proj = Project(
-                list(self._workspaces.values()) + list(other._workspaces.values()),
-                self.name,
-            )
-            proj.meta = {**self.meta, **other.meta}
-            return proj
-        else:
-            return NotImplemented
-
-    def keys(self) -> t.Set[str]:
-        return set(self._workspaces.keys())
-
-    def get_transform_context(
-        self, workspaces: t.Sequence[str], sink: str | None = None
-    ) -> sqlmesh.Context:
-        """Get a sqlmesh context for a list of workspaces.
-
-        Args:
-            workspaces (t.Tuple[str, ...]): List of workspace namespaces.
-            sink (str, optional): Name of transform gateway. Defaults to None.
+            ValueError: If path is supplied but does not exist.
 
         Returns:
-            sqlmesh.Context: A sqlmesh context.
-        """
-        configs = {}
-        for ws in workspaces:
-            transform_opts = {}
-            with self[ws].overlay(), suppress(KeyError):
-                transform_opts = dlt.config["transform"]
-            configs[self[ws].root] = (
-                self[ws]
-                .sinks[sink or "default"]
-                .transform_config(self[ws].namespace, **transform_opts)
-            )
-        return sqlmesh.Context(
-            config=configs,
-            paths=[str(self[ws].root) for ws in workspaces],
-            gateway=sink or "default",
-            loader=CDFTransformLoader,
-        )
-
-    @classmethod
-    def from_dict(cls, workspaces: t.Dict[str, Path | str], **meta: t.Any) -> "Project":
-        """Create a project from a dictionary of paths.
-
-        Args:
-            members (t.Dict[str, Path | str]): Dictionary of members.
-        """
-        return cls([Workspace(path, ns) for ns, path in workspaces.items()], **meta)
-
-    @classmethod
-    def default(
-        cls,
-        path: Path | str | None = None,
-        load_dotenv: bool = True,
-        append_syspath: bool = True,
-    ) -> "Project":
-        """Create a project from the current working directory.
-
-        This populates the meta attribute of the project with the path to the project root.
+            Project: A project.
         """
         if path is None:
             path = Path.cwd()
         elif isinstance(path, str):
             path = Path(path).expanduser().resolve()
-        if load_dotenv:
-            dotenv.load_dotenv(path / ".env")
-        if append_syspath:
-            sys.path.append(str(path))
+        workspace = Workspace.find_nearest(path, must_exist=True)
         return cls(
-            [Workspace.find_nearest(path, raise_no_marker=True)],
-            root=path,
-            default=True,
+            workspace,
+            name=c.DEFAULT_WORKSPACE,
+            root=workspace.root,
         )
 
     @classmethod
-    def from_workspace_toml(
-        cls, path: Path | str, load_dotenv: bool = True, append_syspath: bool = True
-    ) -> "Project":
-        """Create a project from a workspace.toml file.
+    def from_spec(cls, spec: "Project.TOMLSpec", root: Path | None = None) -> "Project":
+        """
+        Create a project from a TOML spec.
+
+        Args:
+            spec: A Project TOML spec.
+            root: The root of the project. Defaults to None.
+
+        Returns:
+            Project: A project.
+        """
+        project = cls(*spec["members"], name=spec.get("name"), root=root)
+        if global_sinks := spec.get("sinks"):
+            for workspace in project.values():
+                workspace.config_dict.setdefault(
+                    c.SPECS,
+                    {},
+                ).setdefault(
+                    c.SINKS,
+                    [],
+                ).extend(global_sinks)
+        return project
+
+    @classmethod
+    def from_spec_path(cls, config_path: Path | str) -> "Project":
+        """
+        Create a project from a cdf_project.toml file.
 
         This is the canonical way to create a project. The workspace.toml file is a TOML file
         that contains a [workspace] section with a members key. The members key is a list of
         member specs. For example:
 
-        [workspace]
+        ```toml
+        [project]
+        name = "my_project"
         members = [
-            "projects/data",
-            "projects/marketing"
+            "workspace/data",
+            "workspace/marketing"
         ]
 
-        This populates the meta attribute of the project with the path to the project root.
+        [[sinks]]
+        name = "global-sink"
+        entrypoint = "common.sinks:postgres"
+        ```
 
         Args:
             path (Path): Path to workspace.toml.
+
+        Returns:
+            Project: A project.
         """
-        if isinstance(path, str):
-            path = Path(path).expanduser().resolve()
-
-        if not path.exists():
-            raise ValueError(f"Could not find workspace.toml at {path}")
-
-        with open(path) as f:
-            conf = toml.load(f).get("workspace", {"members": []})
-
-        parsed = {}
-        for subpath in conf["members"]:
-            namespace = Path(subpath).name
-            member_path = path.parent / subpath
-            if append_syspath:
-                # Permit 'absolute' importing by namespace
-                sys.path.append(str(member_path.parent))
-            parsed[namespace] = member_path
-
-        if load_dotenv:
-            dotenv.load_dotenv(path.parent / ".env")
-        if append_syspath:
-            sys.path.append(str(path.parent))
-
-        return cls.from_dict(parsed, root=path.parent)
+        if isinstance(config_path, str):
+            config_path = Path(config_path).expanduser().resolve()
+        if not config_path.exists():
+            raise ValueError(f"Could not find TOML at {config_path}")
+        dotenv.load_dotenv(config_path.parent / ".env")
+        with config_path.open("r") as f:
+            conf: Project.TOMLSpec = (
+                tomlkit.loads(jinja.render(f.read()))
+                .unwrap()
+                .get("project", {"name": None, "members": []})
+            )
+        return cls.from_spec(conf, root=config_path.parent)
 
     @classmethod
     def find_nearest(
-        cls,
-        path: Path | str | None = None,
-        raise_no_marker: bool = False,
-        load_dotenv: bool = True,
-        append_syspath: bool = True,
+        cls, path: Path | str | None = None, must_exist: bool = False
     ) -> "Project":
-        """Find nearest project.
+        """
+        Find nearest project.
 
         If no cdf_workspace.toml file is found, returns the current working directory as a project.
         This populates the meta attribute of the project with the path to the project root.
 
         Args:
-            path (Path): The path to search from.
-            raise_no_marker (bool, optional): Whether to raise an error if no project is found.
-            load_dotenv (bool, optional): Whether to load the .env file if no project is found.
-            append_syspath (bool, optional): Whether to append the project root to sys.path.
+            path: The path to search from.
+            must_exist: Whether to raise an error if no project is found.
+
+        Raises:
+            ValueError: If no project is found and must_exist is True.
+
+        Returns:
+            Project: A project.
         """
         if path is None:
             path = Path.cwd()
@@ -249,432 +260,285 @@ class Project:
             path = Path(path).expanduser().resolve()
         orig_path = path
         while path.parents:
-            workspace_spec = path / c.WORKSPACE_FILE
+            workspace_spec = path / c.PROJECT_FILE
             if workspace_spec.exists():
-                return cls.from_workspace_toml(
-                    workspace_spec,
-                    load_dotenv=load_dotenv,
-                    append_syspath=append_syspath,
-                )
+                return cls.from_spec_path(workspace_spec)
             path = path.parent
-        if raise_no_marker:
+        if must_exist:
             raise ValueError(
-                f"Could not find a project root in {path} or any of its parents"
+                f"Could not find a project TOML in {path} or any of its parents"
             )
-        return cls.default(
-            orig_path, load_dotenv=load_dotenv, append_syspath=append_syspath
+        return cls.default(orig_path)
+
+    @property
+    def root(self) -> Path:
+        """Get the root of the project. Infer from workspaces if not set."""
+        if self._root:
+            return self._root
+        return self._infer_root() or Path.cwd()
+
+    @property
+    def name(self) -> str:
+        """Get the name of the project. Infer from workspaces if not set."""
+        if self._name:
+            return self._name
+        return f"project_{self._seq}"
+
+    def _infer_root(self) -> Path | None:
+        """
+        Infer the root of the project.
+
+        If there is 1 workspace, use it as the root. If there are multiple workspaces, prefer
+        a common git root if possible, otherwise a common path. If there is no common path or
+        ambiguous git root, return None.
+        """
+        if len(self) == 1:
+            return next(iter(self.values())).root
+        gitpath = _find_git_root(*[w.root for w in self.values()])
+        if gitpath:
+            return gitpath
+        if len(self) > 1:
+            commonpath = _find_common_path(*[w.root for w in self.values()])
+            if commonpath and commonpath != commonpath.root:
+                return commonpath
+        return None
+
+    def setup(self) -> None:
+        """Load the .env and update sys.path such that all workspaces are importable."""
+        dotenv.load_dotenv(self.root / ".env")
+        sys.path.append(str(self.root))
+        for ws in self.values():
+            sys.path.append(str(ws.root.parent))
+
+    def add_workspace(self, workspace: "Workspace") -> None:
+        """Add a workspace to the project."""
+        self[workspace.name] = workspace
+
+    def remove_workspace(self, name: str) -> None:
+        """Remove a workspace from the project."""
+        del self[name]
+
+    def transform_context(
+        self, *workspaces: str, sink: str | None = None
+    ) -> sqlmesh.Context:
+        """
+        Get a sqlmesh context for a list of workspaces.
+
+        Args:
+            workspaces: Names of workspaces to include in the context. The first workspace
+                is used as the root.
+            sink: Name of transform gateway. Defaults to None.
+
+        Returns:
+            sqlmesh.Context: A sqlmesh context.
+        """
+        return sqlmesh.Context(
+            config={
+                self[workspace].root: self[workspace].transform_config(sink)
+                for workspace in workspaces
+            },
         )
 
+    def __getitem__(self, name: str) -> "Workspace":
+        """Get a workspace by name."""
+        try:
+            workspace = super().__getitem__(name)
+        except KeyError as e:
+            raise KeyError(f"Workspace {name} not found in project {self.name}") from e
+        context.set_active_workspace(workspace)
+        workspace.config.activate()
+        return workspace
 
-class WorkspaceCapabilities(t.TypedDict):
-    """A dict which describes the capabilties available within a workspace"""
+    def __setitem__(self, name: str, workspace: "Workspace") -> None:
+        """Add a workspace to the project. The workspace name must match the key."""
+        if not isinstance(workspace, Workspace):
+            raise ValueError(f"Expected Workspace, got {type(workspace)}")
+        try:
+            workspace.root.relative_to(self.root)
+        except ValueError as e:
+            raise ValueError(
+                f"Workspace {workspace.name} is not a member (subdir) of project {self.name}"
+            ) from e
+        if name != workspace.name:
+            raise KeyError(
+                f"Workspace name {workspace.name} does not match key {name} in setitem call"
+            )
+        super().__setitem__(name, workspace)
 
-    pipeline: bool
-    publish: bool
-    transform: bool
-    dependency: bool
+    def __delitem__(self, name: str) -> None:
+        """Remove a workspace from the project."""
+        try:
+            self.pop(name).clear()
+        except KeyError as e:
+            raise KeyError(f"Workspace {name} not found in project {self.name}") from e
+
+    def __getattr__(self, name: str) -> "Workspace":
+        """Get a workspace by name."""
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(
+                f"Workspace {name} not found in project {self.name}"
+            ) from e
+
+    def __delattr__(self, name: str) -> None:
+        """Remove a workspace from the project."""
+        try:
+            del self[name]
+        except KeyError as e:
+            raise AttributeError(
+                f"Workspace {name} not found in project {self.name}"
+            ) from e
+
+    def __repr__(self) -> str:
+        """Get a string representation of the project."""
+        workspaces = list(self.values())
+        return f"Project('{self.name}', {workspaces=})"
 
 
-T = t.TypeVar("T")
+V = t.TypeVar("V", bound=ComponentSpecification | sqlmesh.Model)
+
+
+class WorkspaceRegistryProxy(t.Dict[str, V]):
+    """A mapping proxy that allows component access via dict or attrs."""
+
+    def __getattr__(self, name: str) -> V:
+        try:
+            return self[name]
+        except KeyError as e:
+            raise AttributeError(f"Component {name} not found in workspace") from e
+
+    def __setattr__(self, name: str, value: V) -> None:
+        raise AttributeError("Cannot set attributes on a workspace registry proxy")
+
+    def __delattr__(self, name: str) -> None:
+        raise AttributeError("Cannot delete attributes on a workspace registry proxy")
+
+    def __setitem__(self, name: str, value: V) -> None:
+        raise TypeError("Cannot set items on a workspace registry proxy")
+
+    def __delitem__(self, name: str) -> None:
+        raise TypeError("Cannot delete items on a workspace registry proxy")
+
+
 P = t.ParamSpec("P")
+T = t.TypeVar("T", bound=t.Callable[..., t.Any])
 
 
-def requires_pipelines(func: t.Callable[P, T]) -> t.Callable[P, T]:
-    """Decorator to ensure that a workspace has pipelines.
+def lazy_load(*types: t.Type[ComponentSpecification]) -> t.Callable[[T], T]:
+    """Decorator to lazy load a particular component type from the workspace."""
 
-    Raises:
-        ValueError if workspace has no pipelines.
-    """
+    def decorator(fn: t.Callable[P, T]) -> T:
+        @wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs):
+            t.cast("Workspace", args[0]).load(*types)
+            return fn(*args, **kwargs)
 
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        self = t.cast("Workspace", args[0])
-        if not self.has_pipelines:
-            raise ValueError(f"Workspace {self.root} has no pipelines")
-        return func(*args, **kwargs)
+        return t.cast(T, wrapper)
 
-    return wrapper
-
-
-def requires_publishers(func: t.Callable[P, T]) -> t.Callable[P, T]:
-    """Decorator to ensure that a workspace has publishers.
-
-    Raises:
-        ValueError if workspace has no publishers.
-    """
-
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        self = t.cast("Workspace", args[0])
-        if not self.has_publishers:
-            raise ValueError(f"Workspace {self.root} has no publishers")
-        return func(*args, **kwargs)
-
-    return wrapper
-
-
-def requires_transforms(func: t.Callable[P, T]) -> t.Callable[P, T]:
-    """Decorator to ensure that a workspace has transforms.
-
-    Raises:
-        ValueError if workspace has no transforms.
-    """
-
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        self = t.cast("Workspace", args[0])
-        if not self.has_transforms:
-            raise ValueError(f"Workspace {self.root} has no transforms")
-        return func(*args, **kwargs)
-
-    return wrapper
-
-
-def requires_dependencies(func: t.Callable[P, T]) -> t.Callable[P, T]:
-    """Decorator to ensure that a workspace has dependencies.
-
-    Raises:
-        ValueError if workspace has no dependencies.
-    """
-
-    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-        self = t.cast("Workspace", args[0])
-        if not self.has_dependencies:
-            raise ValueError(f"Workspace {self.root} has no dependencies")
-        return func(*args, **kwargs)
-
-    return wrapper
+    return decorator
 
 
 class Workspace:
-    """A workspace encapsulates a directory containing pipelines, publishers, metadata, and transforms.
+    """A workspace encapsulates a directory containing pipelines, publishers, metadata, and models.
 
-    We can think of a Workspace as a pathlib.Path with some additional functionality. A Workspace
-    has capabilities based on the presence of certain directories. For example, if a workspace has
-    a `pipelines` directory, we can say that the workspace has the capability to ingest data. If a
-    workspace has a `publishers` directory, we can say that the workspace has the capability to
-    publish data. If a workspace has a `transforms` directory, we can say that the workspace has
-    the capability to transform data. A workspace may have any combination of these capabilities.
-
-    Each of these capabilties is exposed as a property on the Workspace class.
+    We can think of a Workspace as a pathlib.Path with properties based on a configuration file in
+    the workspace root. Therefore a workspace can be serialized as tarball and deserialized as a
+    workspace. This is useful for packaging and deploying workspaces.
     """
 
-    ROOT_MARKERS = [
+    ROOT_MARKERS: t.ClassVar[t.List[str]] = [
         ".git",
         c.CONFIG_FILE,
-        c.PIPELINES,
-        c.TRANSFORMS,
-        c.PUBLISHERS,
     ]
+
+    class ConfigProvider(providers.StringTomlProvider):
+        """Provider for CDF which reads from a TOML file rendering it with the CDF jinja environment."""
+
+        def __init__(self, workspace: "Workspace") -> None:
+            """Initialize a config provider."""
+            self._name = workspace.name
+            config_path = workspace.root / c.CONFIG_FILE
+            if not config_path.is_file():
+                raise FileNotFoundError(f"Config file {config_path} not found.")
+            with config_path.open("r", encoding="utf-8") as f:
+                super().__init__(jinja.render(f.read()))
+            self.data = self._toml.unwrap()
+
+        def __getitem__(self, key: str) -> t.Any:
+            """Get a config value."""
+            self.activate()
+            return dlt.config[key]
+
+        def activate(self) -> None:
+            """Set the config instance as the active config."""
+            ctx = Container()[ConfigProvidersContext]
+            ctx.providers = [providers.EnvironProvider(), self]
+
+        def deactivate(self) -> None:
+            """Remove the config instance from the active config."""
+            ctx = Container()[ConfigProvidersContext]
+            ctx.providers = [providers.EnvironProvider()]
+
+        @property
+        def name(self) -> str:
+            """Get the name of the config."""
+            return self._name
 
     def __init__(
         self,
         root: str | Path,
-        namespace: str = c.DEFAULT_WORKSPACE,
+        mkdir: bool = False,
+        load: bool = False,
     ) -> None:
-        """Initialize a workspace.
+        """
+        Initialize a workspace.
 
         Args:
-            root (str | Path): Path to wrap as a workspace.
-            namespace (str, optional): Namespace of workspace. Defaults to c.DEFAULT_WORKSPACE.
-        """
-        self.meta = {}
-        self.namespace = namespace
-        self._root = Path(root).expanduser().resolve()
-        if not self._root.exists():
-            raise ValueError(
-                f"Tried to init Workspace with nonexistent path {self.root}"
-            )
-
-        self.pipeline_paths = self._get_python_fpaths(c.PIPELINES)
-        self.publisher_paths = self._get_python_fpaths(c.PUBLISHERS)
-        self.script_paths = self._get_python_fpaths(c.SCRIPTS)
-        self.transform_path = self.root / c.TRANSFORMS
-        self.config_path = self.root / c.CONFIG_FILE
-        self.lockfile_path = self.root / c.LOCKFILE
-        self.sinks_path = self.root / c.SINKS_FILE
-        self.requirements_path = self.root / c.REQUIREMENTS_FILE
-
-        self._overlay_active = False
-        self._did_inject_config_providers = False
-
-        self._pipelines = {}
-        self._publishers = {}
-        self._sinks = {}
-        self._scripts = {}
-
-        if not self.lockfile_path.exists():
-            self.lockfile_path.touch()
-
-    @property
-    def root(self) -> Path:
-        """Root path of workspace."""
-        return self._root
-
-    @property
-    def has_pipelines(self) -> bool:
-        """True if workspace has pipelines."""
-        return len(self.pipeline_paths) > 0
-
-    @property
-    def has_publishers(self) -> bool:
-        """True if workspace has publishers."""
-        return len(self.publisher_paths) > 0
-
-    @property
-    def has_transforms(self) -> bool:
-        """True if workspace has transforms."""
-        rv = self.transform_path.exists() and list(
-            path
-            for ext in ["sql", "yml", "yaml"]
-            for path in self.transform_path.rglob(f"*.{ext}")
-            if path.is_file()
-        )
-        return bool(rv)
-
-    @property
-    def has_dependencies(self) -> bool:
-        """True if workspace has a virtual environment spec."""
-        return (
-            self.requirements_path.exists()
-            and len(self.requirements_path.read_text().strip().splitlines()) > 0
-        )
-
-    @property
-    def capabilities(self) -> WorkspaceCapabilities:
-        """Get the capabilities for the workspace"""
-        return {
-            "pipeline": self.has_pipelines,
-            "transform": self.has_transforms,
-            "publish": self.has_publishers,
-            "dependency": self.has_dependencies,
-        }
-
-    @property
-    def python_path(self) -> Path:
-        """Get path to Workspace python.
-
-        Returns:
-            Path to python executable. If there is no requirements.txt, returns system python
-        """
-        if not self.has_dependencies:
-            return Path(sys.executable)
-        return self.root / c.VENV / "bin" / "python"
-
-    @property
-    def pip_path(self) -> Path:
-        """Get path to workspace pip.
-
-        Returns:
-            Path to pip executable. If there is no requirements.txt, returns the most probable system pip
-        """
-        if not self.has_dependencies:
-            return Path(sys.executable).parent / "pip"
-        return self.root / c.VENV / "bin" / "pip"
-
-    @requires_dependencies
-    def get_bin(self, name: str, must_exist: bool = False) -> Path:
-        """Get path to binary in workspace.
-
-        Args:
-            name (str): Name of binary.
-            must_exist (bool): If True, raises ValueError if binary does not exist.
+            root: The root of the workspace.
+            mkdir: Whether to create the workspace if it does not exist.
+                Defaults to False.
+            load: Whether to load the workspace components eagerly. Defaults to False.
 
         Raises:
-            ValueError if binary does not exist and must_exist is True or if workspace has no
-                dependencies.
+            ValueError: If the workspace does not exist and mkdir is False.
 
         Returns:
-            Path to binary.
+            Workspace: A workspace.
         """
-        bin_path = self.root / c.VENV / "bin" / name
-        if must_exist and not bin_path.exists():
-            raise ValueError(f"Could not find bin {name} in {self.root}")
-        return bin_path
+        self.root = Path(root).expanduser().resolve()
+        if not self.root.exists():
+            if mkdir:
+                self.root.mkdir(parents=True)
+            else:
+                raise ValueError(
+                    f"Tried to init Workspace with nonexistent path {self.root}"
+                )
 
-    @lru_cache(maxsize=1)
-    def read_lock(self) -> dict:
-        """Read lockfile.
+        self.registry = MappingProxyType(CDF_REGISTRY[self.name])
+        self.config = Workspace.ConfigProvider(self)
+        self._loaded: t.Dict[t.Type[ComponentSpecification], bool] = {}
 
-        Returns:
-            Dictionary of lockfile contents.
-        """
-        with suppress(FileNotFoundError):
-            return toml.loads(self.lockfile_path.read_text())
-        self.lockfile_path.touch()
-        return {}
-
-    def write_lock(self, lockfile: dict) -> int:
-        """Write lockfile.
-
-        Args:
-            lockfile (dict): Dictionary of lockfile contents.
-
-        Returns:
-            Number of bytes written.
-        """
-        self.read_lock.cache_clear()
-        return self.lockfile_path.write_text(toml.dumps(lockfile))
-
-    def put_kv_lock(self, key: str, value: t.Any) -> int:
-        """Put a value in the lockfile. Overwrites existing values.
-
-        Args:
-            key (str): Key to put.
-            value (t.Any): Value to put.
-
-        Returns:
-            Number of bytes written.
-        """
-        lockfile = self.read_lock()
-        lockfile[key] = value
-        return self.write_lock(lockfile)
-
-    def get_kv_lock(self, key: str) -> t.Dict[str, t.Any]:
-        """Get a value from the lockfile.
-
-        Args:
-            key (str): Key to get.
-
-        Returns:
-            Value from lockfile.
-        """
-        return self.read_lock()[key]
-
-    @requires_dependencies
-    def _setup_deps(self, force: bool = False) -> None:
-        """Install dependencies if requirements.txt is newer than virtual environment."""
-        req_mtime = self.requirements_path.stat().st_mtime
-        venv_mtime = (self.root / c.VENV).stat().st_mtime
-        if (req_mtime > venv_mtime) or force:
-            logger.info("Change detected. Updating dependencies for %s", self.root)
-            subprocess.check_call(
-                [
-                    self.pip_path,
-                    "install",
-                    "--upgrade",
-                    "-r",
-                    self.requirements_path,
-                ]
-            )
-            (self.root / c.VENV).touch()
-
-    @requires_dependencies
-    def _setup_venv(self) -> None:
-        """Create a virtual environment.
-
-        The canonical route to this method is via ensure_venv, but developers can call this
-        directly for more control or override the implementation in a Workspace subclass.
-        """
-        virtualenv.cli_run(
-            [
-                str(self.root / c.VENV),
-                "--symlink-app-data",
-                "--download",
-                "--pip=bundle",
-                "--setuptools=bundle",
-                "--wheel=bundle",
-                "--system-site-packages",
-                "--prompt",
-                f"cdf.{self.namespace}",
-            ]
-        )
-        self.requirements_path.touch()
-
-    def ensure_venv(self) -> None:
-        """Create a virtual environment for the workspace if it does not exist.
-
-        This method creates a virtual environment for the workspace if it does not exist. It also
-        installs the requirements.txt into the virtual environment. If the requirements.txt is
-        newer than the virtual environment, it reinstalls the requirements.txt. If the workspace has no
-        dependencies, this method is a no-op.
-        """
-        if self.has_dependencies:
-            if not self.python_path.exists():
-                self._setup_venv()
-            self._setup_deps(force=False)
-
-    # def ensure_pex(self) -> None:
-    #     """Build a pex from the requirements string."""
-    #     output = filesystem.executable_path(plugin.pex_name)
-    #     # Build the pex (deferred import speeds up the CLI)
-    #     import pex.bin.pex
-    #
-    #     try:
-    #         pex.bin.pex.main(
-    #             ["-o", output, "--no-emit-warnings", *plugin.pip_url.split()]
-    #         )
-    #     except SystemExit as e:
-    #         # A failed pex build will exit with a non-zero code
-    #         # Successfully built pexes will exit with either 0 or None
-    #         if e.code is not None and e.code != 0:
-    #             # If the pex fails to build, delete the compromised pex
-    #             try:
-    #                 os.remove(output)
-    #             except FileNotFoundError:
-    #                 pass
-    #             raise
-
-    _mod_cache: t.Dict[str, ModuleType] = {}
-    """Class var to cache modules between runs of the context manager"""
-
-    @contextmanager
-    def overlay(self) -> t.Iterator[None]:
-        """Context manager to fully configure a workspace for runtime use.
-
-        This context manager ensures that side effects from importing modules in the workspace
-        or from activating the virtual environment are contained to the context. It does this by
-        storing the original sys.path, sys.prefix, sys.modules, and os.environ and restoring them
-        after the context exits. It caches the modules that were imported during the context and
-        restores them on re-entry to ensure consistent interpreter state. This is not as idiomatic
-        as a subprocess, but is significantly faster and allows us to use the same interpreter. It
-        also injects workspace config into the context.
-        """
-        if self._overlay_active:
-            yield
-            return
-        self.ensure_venv()
-        activate = self.root / c.VENV / "bin" / "activate_this.py"
-        environ, syspath, sysprefix, sysmodules = (
-            os.environ.copy(),
-            sys.path.copy(),
-            sys.prefix,
-            sys.modules.copy(),
-        )
-        if self.has_dependencies:
-            exec(activate.read_bytes(), {"__file__": str(activate)})
-        sys.path.append(str(self.root))
-        if self._mod_cache:
-            sys.modules.update(self._mod_cache)
-        dotenv.load_dotenv(self.root / ".env")
-        with self.providers():
-            self._overlay_active = True
-            yield
-        self._mod_cache = sys.modules.copy()
-        new_modules = set(sys.modules) - set(sysmodules)
-        for mod in new_modules:
-            # Make an effort to scrub modules that were imported from the workspace
-            p = getattr(sys.modules[mod], "__file__", None)
-            if p is not None and Path(p).is_relative_to(self.root):
-                del sys.modules[mod]
-        os.environ, sys.path, sys.prefix = (
-            environ,
-            syspath,
-            sysprefix,
-        )
-        self._overlay_active = False
-
-    def inject_workspace_config_providers(self) -> None:
-        """Inject workspace config into context"""
-        from cdf.core.config import inject_config_providers_from_workspace
-
-        if self._did_inject_config_providers:
-            return
-
-        inject_config_providers_from_workspace(workspace=self)
-        self._did_inject_config_providers = True
+        if load:
+            self.load()
 
     @classmethod
     def find_nearest(
-        cls, path: Path | str | None = None, raise_no_marker: bool = False
+        cls, path: str | Path | None = None, must_exist: bool = False
     ) -> "Workspace":
+        """
+        Find nearest workspace recursing up the directory tree.
+
+        Args:
+            path: Path to search from. Defaults to the current working directory.
+            must_exist: Whether to raise an error if no workspace is found. Defaults to False.
+
+        Raises:
+            ValueError: If no workspace is found and must_exist is True.
+
+        Returns:
+            Workspace: The nearest workspace.
+        """
         if path is None:
             path = Path.cwd()
         elif isinstance(path, str):
@@ -684,190 +548,237 @@ class Workspace:
             if any((path / marker).exists() for marker in cls.ROOT_MARKERS):
                 return cls(path)
             path = path.parent
-        if raise_no_marker:
+
+        if must_exist:
             raise ValueError(
                 f"Could not find a workspace root in {path} or any of its parents"
             )
+
         return cls(path)
 
     @property
-    @requires_pipelines
-    def pipelines(self) -> t.Dict[str, pipeline_spec]:
-        """Load pipelines from workspace."""
-        if not self._pipelines:
-            with (
-                _IMPORT_LOCK,
-                self.overlay(),
-            ):
-                for path in self.pipeline_paths:
-                    mod, _ = load_module_from_path(path, package=c.PIPELINES)
-                    for spec in getattr(mod, c.CDF_PIPELINES, []):
-                        if isinstance(spec, dict):
-                            spec = pipeline_spec(**spec)
-                        assert isinstance(
-                            spec, pipeline_spec
-                        ), f"{spec} is not a pipeline"
-                        self._pipelines[spec.name] = spec
-        return self._pipelines
+    def name(self) -> str:
+        """Get the namespace of the workspace."""
+        return self.root.name
 
     @property
-    @requires_publishers
-    def publishers(self) -> t.Dict[str, publisher_spec]:
-        """Load publishers from workspace."""
-        if not self._publishers:
-            with (
-                _IMPORT_LOCK,
-                self.overlay(),
-            ):
-                for path in self.publisher_paths:
-                    mod, _ = load_module_from_path(path, package=c.PUBLISHERS)
-                    for spec in getattr(mod, c.CDF_PUBLISHERS, []):
-                        if isinstance(spec, dict):
-                            spec = publisher_spec(**spec)
-                        assert isinstance(
-                            spec, publisher_spec
-                        ), f"{spec} is not a publisher"
-                        self._publishers[spec.name] = spec
-        return self._publishers
+    def config_dict(self) -> t.Dict[str, t.Any]:
+        """Get the configuration for the workspace."""
+        return self.config.data
 
-    @property
-    def sinks(self) -> t.Dict[str, sink_spec]:
-        """Load publishers from workspace."""
-        if not self._sinks:
-            with (
-                _IMPORT_LOCK,
-                self.overlay(),
-            ):
-                mod, _ = load_module_from_path(self.root / "cdf_sinks.py")
-                for spec in getattr(mod, c.CDF_SINKS, []):
-                    if isinstance(spec, dict):
-                        spec = sink_spec(**spec)
-                    assert isinstance(spec, sink_spec), f"{spec} is not a sink"
-                    self._sinks[spec.name] = spec
-            self._sinks.setdefault(
-                "default",
-                sink_spec(
-                    name="default",
-                    environment="dev",
-                    destination=destination.duckdb("cdf.duckdb"),
-                    gateway=gateway.parse_obj(
-                        {"connection": {"type": "duckdb", "database": "cdf.duckdb"}}
-                    ),
-                ),
+    def load(self, *types: t.Type[ComponentSpecification]) -> None:
+        """Load the components in the workspace."""
+        if not types:
+            types = (
+                PipelineSpecification,
+                PublisherSpecification,
+                SinkSpecification,
+                ScriptSpecification,
             )
-        return self._sinks
+        specs = self.config_dict.get(c.SPECS, {})
+        for typ in types:
+            if self._loaded.get(typ, False):
+                continue
 
-    @t.runtime_checkable
-    class Script(t.Protocol):
-        def __call__(self, workspace: "Workspace", **kwargs: t.Any) -> None:
-            ...
+            with _LOADING_MUTEX, self.runtime_context():
+                for comp in specs.get(typ._key.default, []):  # type: ignore
+                    typ(**comp)
+            self._loaded[typ] = True
 
-    @property
-    def scripts(self) -> t.Dict[str, Script]:
-        """Load scripts from workspace."""
-        if not self._scripts:
-            with (
-                _IMPORT_LOCK,
-                self.overlay(),
-            ):
-                for path in self.script_paths:
-                    mod, _ = load_module_from_path(path, package=c.SCRIPTS)
-                    entrypoint = getattr(mod, "entrypoint", None)
-                    if entrypoint is None:
-                        raise ValueError(
-                            f"Could not find entrypoint in {path} for script {mod}"
-                        )
-                    if not isinstance(entrypoint, Workspace.Script):
-                        raise ValueError(
-                            f"Entrypoint in {path} for script {mod} is not a Script."
-                            " Scripts must be callables which take a Workspace as the first argument."
-                        )
-                    self._scripts[mod.__name__] = entrypoint
-        return self._scripts
+    def clear(self) -> None:
+        """Clear the components in the workspace."""
+        self.registry[c.PIPELINES].clear()
+        self.registry[c.PUBLISHERS].clear()
+        self.registry[c.SINKS].clear()
+        self.registry[c.SCRIPTS].clear()
+        self.config.deactivate()
+        self._loaded.clear()
 
     @property
-    @requires_transforms
-    def transforms(self) -> t.Mapping[str, sqlmesh.Model]:
+    @lazy_load(PipelineSpecification)
+    def pipelines(self) -> WorkspaceRegistryProxy[PipelineSpecification]:
+        """Get the pipelines in the workspace."""
+        context.set_active_workspace(self)
+        self.config.activate()
+        return WorkspaceRegistryProxy(self.registry[c.PIPELINES])
+
+    @property
+    @lazy_load(PublisherSpecification)
+    def publishers(self) -> WorkspaceRegistryProxy[PublisherSpecification]:
+        """Get the publishers in the workspace."""
+        context.set_active_workspace(self)
+        self.config.activate()
+        return WorkspaceRegistryProxy(self.registry[c.PUBLISHERS])
+
+    @property
+    @lazy_load(SinkSpecification)
+    def sinks(self) -> WorkspaceRegistryProxy[SinkSpecification]:
+        """Get the sinks in the workspace."""
+        context.set_active_workspace(self)
+        self.config.activate()
+        return WorkspaceRegistryProxy(self.registry[c.SINKS])
+
+    @property
+    @lazy_load(ScriptSpecification)
+    def scripts(self) -> WorkspaceRegistryProxy[ScriptSpecification]:
+        """Get the scripts in the workspace."""
+        context.set_active_workspace(self)
+        self.config.activate()
+        return WorkspaceRegistryProxy(self.registry[c.SCRIPTS])
+
+    @property
+    def models(self) -> WorkspaceRegistryProxy[sqlmesh.Model]:
         """Load transforms from workspace using the first available context."""
-        context = self.transform_context()
-        return context.models
-
-    @lru_cache(maxsize=1)
-    def transform_context(self, sink: str | None = None) -> sqlmesh.Context:
-        """Get a sqlmesh context for the workspace.
-
-        This method loads the sqlmesh config from the workspace config file and returns a
-        sqlmesh context.
-
-        Args:
-            sink (str, optional): Name of transform gateway. Defaults to None.
-
-        Returns:
-            sqlmesh.Context: A sqlmesh context.
-        """
-        transform_opts = {}
-        with self.overlay(), suppress(KeyError):
-            transform_opts = dlt.config["transform"]
-        if sink is None:
-            sink_ = next(s for s in self.sinks.values() if s.gateway)
-        else:
-            sink_ = self.sinks[sink]
-        return sink_.transform_context(str(self.root), self.namespace, **transform_opts)
+        transform = self.transform_context(next(iter(self.sinks)))
+        return WorkspaceRegistryProxy(transform.models)
 
     @contextmanager
-    @requires_pipelines
+    def runtime_context(self) -> t.Iterator[None]:
+        """Runtime context for a workspace."""
+        origcontext = context.get_active_workspace()
+        origsyspath = sys.path
+
+        context.set_active_workspace(self)
+        sys.path.insert(0, str(self.root))
+
+        self.config.activate()
+        yield
+        self.config.deactivate()
+
+        sys.path = origsyspath
+        context.set_active_workspace(origcontext)
+
+    @cache
+    def transform_config(self, sink_name: str, **opts: t.Any) -> sqlmesh.Config:
+        """
+        Create a transform config for this workspace.
+
+        Args:
+            sink: The name of the sink to use.
+
+        Returns:
+            sqlmesh.Config: The transform config.
+        """
+        if sink_name not in self.sinks:
+            raise ValueError(f"Sink {sink_name} not found in workspace {self.name}")
+        sink = self.sinks[sink_name]
+        gateway = sink.gateway
+        if gateway is None:
+            raise ValueError(f"Sink {sink_name} does not have a gateway configured.")
+        git_branch_proc = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            cwd=self.root,
+        )
+        if git_branch_proc.returncode != 0:
+            default_target_environment = "prod"
+        else:
+            git_branch = git_branch_proc.stdout.decode("utf-8").strip()
+            if git_branch in ["master", "main"]:
+                default_target_environment = "prod"
+            else:
+                default_target_environment = git_branch or "dev"
+        transform_opts = self.config_dict.get(c.TRANSFORM_SPEC, {}) | opts
+        conf = sqlmesh.Config(
+            **transform_opts,
+            gateways={"cdf": gateway},
+            default_gateway="cdf",
+            project=self.name,
+            loader=CDFModelLoader,
+            loader_kwargs=dict(sink=sink_name),
+            username=os.getenv("CDF_USER", getpass.getuser()),
+            default_target_environment=default_target_environment,
+            notification_targets=[
+                {  # type: ignore
+                    "type": "slack_webhook",
+                    "url": "...",
+                    "notify_on": [
+                        "apply_start",
+                        "apply_end",
+                        "apply_failure",
+                        "run_start",
+                        "run_end",
+                        "run_failure",
+                        "audit_failure",
+                    ],
+                }
+            ],
+        )
+        return conf
+
+    @cache
+    def transform_context(self, sink: str) -> sqlmesh.Context:
+        """
+        Create a transform context for this sink.
+
+        Args:
+            sink: The name of the sink to use.
+
+        Returns:
+            sqlmesh.Context: The transform context.
+        """
+        return sqlmesh.Context(config={self.root: self.transform_config(sink)})
+
+    @contextmanager
     def runtime_source(
         self, pipeline_name: str, **kwargs
     ) -> t.Iterator[dlt.sources.DltSource]:
-        """Get a runtime source from the workspace.
+        """
+        Get a runtime source from the workspace.
 
         A runtime source is a the equivalent to the source cdf would generate itself in a typical
-        pipeline execution. The source is pulled out from the pipeline generator.
+        pipeline execution. The source is pulled out from the cooperative pipeline interface.
 
         Args:
-            pipeline_name (str): Name of source to get.
+            pipeline_name: Name of source to get.
             **kwargs: Keyword args to pass to pipeline function if it is a callable.
         """
-        with self.overlay():
-            ctx = self.pipelines[pipeline_name].unwrap(**kwargs)
-            source = next(ctx)
-            yield ff.process_source(source, ff.get_provider(self))
-
-    @contextmanager
-    def providers(self) -> t.Iterator[None]:
-        """Context manager to inject workspace config into context."""
-        from cdf.core.config import with_config_providers_from_workspace
-
-        with with_config_providers_from_workspace(workspace=self):
-            yield
-
-    def _get_python_fpaths(
-        self, *subpath: str, include_init: bool = False
-    ) -> t.List[Path]:
-        """List of paths to pipeline modules.
-
-        Returns:
-            List of paths to pipeline modules.
-        """
-        return [
-            path
-            for path in self.root.joinpath(*subpath).glob("*.py")
-            if path.name != "__init__.py" or include_init
-        ]
+        with self.runtime_context():
+            yield ff.process_source(
+                next(self.pipelines[pipeline_name].unwrap(**kwargs)),
+                ff.get_provider(self),
+            )
 
     def __repr__(self) -> str:
-        return f"Workspace(root='{self._root.relative_to(Path.cwd())}', capabilities={self.capabilities})"
+        """Get a string representation of the workspace."""
+        specs = self.config_dict.get(c.SPECS, {})
+        root = self.root.relative_to(Path.cwd())
+        pipelines = [p["entrypoint"] for p in specs.get(c.PIPELINES, [])]
+        publishers = [p["entrypoint"] for p in specs.get(c.PUBLISHERS, [])]
+        sinks = [p["entrypoint"] for p in specs.get(c.SINKS, [])]
+        scripts = [p["entrypoint"] for p in specs.get(c.SCRIPTS, [])]
+        return f"Workspace('{self.name}', {root=}, {pipelines=}, {publishers=}, {sinks=}, {scripts=})"
 
-    def __add__(self, other: "Workspace") -> Project:
-        return Project([self, other])
+    def __getattr__(self, name: str) -> t.Any:
+        """Proxy to the pathlib.Path obj so a workspace behaves like an augmented pathlib.Path."""
+        if hasattr(self.root, name):
+            return getattr(self.root, name)
+        raise AttributeError(f"Workspace has no attribute {name}")
 
-    def __radd__(self, other: "Workspace") -> Project:
-        return Project([other, self])
+    def __getstate__(self) -> t.Dict[str, t.Any]:
+        """Get the state of the workspace."""
+        return {
+            "root": self.root.as_posix(),
+            "_config": self.config.dumps(),
+        }
 
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Workspace):
-            return NotImplemented
-        return self.root == other.root
+    def __setstate__(self, state: t.Dict[str, t.Any]) -> None:
+        """Set the state of the workspace."""
+        self.__init__(state["root"])
+        self.config.loads(state["_config"])
 
-    def __hash__(self) -> int:
-        return hash(self.root)
+    if t.TYPE_CHECKING:
+        as_posix = Path.as_posix
+        as_uri = Path.as_uri
+        drive = Path.drive
+        exists = Path.exists
+        is_dir = Path.is_dir
+        iterdir = Path.iterdir
+        match = Path.match
+        mkdir = Path.mkdir
+        parent = Path.parent
+        parents = Path.parents
+        relative_to = Path.relative_to
+        rename = Path.rename
+        replace = Path.replace
+        resolve = Path.resolve

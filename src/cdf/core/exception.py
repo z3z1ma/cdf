@@ -1,21 +1,13 @@
 """All common exceptions for the cdf package."""
 
 
-class RegistryTypeError(TypeError):
-    ...
+class CDFException(Exception):
+    pass
 
 
-class RegistryAttributeError(AttributeError):
-    ...
+class CDFConfigMissing(CDFException, KeyError):
+    pass
 
 
-class SourceNotFoundError(RegistryAttributeError):
-    ...
-
-
-class SourceDirectoryNotFoundError(FileNotFoundError):
-    ...
-
-
-class SourceDirectoryEmpty(FileNotFoundError):
-    ...
+class CDFConfigInvalid(CDFException, ValueError):
+    pass

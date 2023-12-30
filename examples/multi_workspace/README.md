@@ -39,7 +39,7 @@
 - **Tags**: 
 - **Cron**: Not Scheduled
 
-### 🔄 Transforms
+### 🔄 Models
 
 #### mart.dim_state
 

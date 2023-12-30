@@ -9,5 +9,6 @@
   "pipeline:alexb.dota2_stats:hero_stats": false,
   "pipeline:alexb.dota2_stats:leagues": false,
   "pipeline:alexb.dota2_stats:teams": false,
-  "pipeline:alexb.dota2_stats:constants": false
+  "pipeline:alexb.dota2_stats:constants": false,
+  "pipeline:alexb.meltano_hub_repo:singer_taps": false
 }

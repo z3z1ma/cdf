@@ -1,0 +1,7 @@
+[project]
+
+name = "my-project"
+members = [
+  "workspaces/alexb",
+  # "workspaces/connorl",
+]

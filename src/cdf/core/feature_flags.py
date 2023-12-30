@@ -437,7 +437,7 @@ class SupportsFeatureFlags(t.Protocol):
 
 def process_source(source: DltSource, provider: SupportsFeatureFlags) -> DltSource:
     def _get_id(r: str) -> str:
-        return f"pipeline:{provider.workspace.namespace}.{source.name}:{r}"
+        return f"pipeline:{provider.workspace.name}.{source.name}:{r}"
 
     resources = source.resources.keys()
     for r in resources:

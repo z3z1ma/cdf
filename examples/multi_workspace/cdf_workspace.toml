@@ -1,6 +1,0 @@
-[workspace]
-
-members = [
-  "workspaces/alexb",
-  "workspaces/connorl",
-]
