@@ -106,7 +106,7 @@ class PublisherSpecification(ComponentSpecification, Packageable, Schedulable):
             "Published %d rows in %.3f seconds (thoughput %.2f/s)",
             records_affected,
             pubend - pubstart,
-            max(records_affected / pubend - pubstart, 0),
+            max(records_affected / (pubend - pubstart), 0),
         )
         return records_affected
 
