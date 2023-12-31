@@ -98,6 +98,7 @@ def main(
         cdf_context.enable_autoinstall()
 
     logger.set_level(log_level.upper() if not debug else "DEBUG")
+    logger.monkeypatch_sqlglot()
     logger.monkeypatch_dlt()
     if debug:
         import sqlmesh
@@ -457,7 +458,7 @@ def publish(
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
     project: Project = ctx.obj
     try:
-        ws, sink, pub = _parse_ws_component(publisher, project=project)
+        ws, sink, pub_name = _parse_ws_component(publisher, project=project)
     except ValueError as e:
         form = (
             "<workspace>.<sink>.<publisher>"
@@ -470,12 +471,12 @@ def publish(
         ) from e
     workspace = project[ws]
     with workspace.runtime_context():
-        runner = workspace.publishers[pub]
+        pub = workspace.publishers[pub_name]
         context = workspace.transform_context(sink)
-        if runner.from_ not in context.models:
+        if pub.from_ not in context.models:
             logger.warning(
                 "Model %s not found in transform context. We cannot track lineage or enforce data quality.",
-                runner.from_,
+                pub.from_,
             )
             if prompt_on_untracked:
                 typer.confirm(
@@ -483,9 +484,9 @@ def publish(
                     abort=True,
                 )
         else:
-            model = context.models[runner.from_]
+            model = context.models[pub.from_]
             logger.info("Parsed dependencies: %s", model.depends_on)
-        runner(df=context.fetchdf(runner.query), **json.loads(opts))
+        pub(context, **json.loads(opts))
 
 
 @app.command("execute-script", rich_help_panel="Utility")
@@ -565,7 +566,7 @@ def fetch_metadata(ctx: typer.Context, sink: str) -> None:
             pipe = dlt.pipeline(
                 name,
                 dataset_name=dataset,
-                destination=ws.sinks[sink_name].destination,
+                destination=ws.sinks[sink_name]("destination"),
                 pipelines_dir=d.name,
             )
             pipe.sync_destination()

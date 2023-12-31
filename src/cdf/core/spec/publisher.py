@@ -1,10 +1,12 @@
 """The spec classes for continuous data framework publishers."""
+import time
 import typing as t
 
 import pydantic
 from sqlglot import exp
 
 import cdf.core.constants as c
+import cdf.core.logger as logger
 from cdf.core.spec.base import ComponentSpecification, Packageable, Schedulable
 
 if t.TYPE_CHECKING:
@@ -61,13 +63,16 @@ class PublisherSpecification(ComponentSpecification, Packageable, Schedulable):
         )
         return exp.select(*projection).from_(self.from_).where(self.where)
 
-    def __call__(self, context: "sqlmesh.Context", safe: bool = False, **kwargs) -> int:
+    def __call__(
+        self, context: "sqlmesh.Context", strict: bool = False, **kwargs
+    ) -> int:
         """Run the publisher.
 
         Args:
             context (Context): The sqlmesh context to use.
-            safe (bool): Whether to check that the model is managed by the cdf transformation layer
-                before publishing. Defaults to False. This will throw an error if the model is not managed.
+            strict (bool): If set to true, we assert that the publisher spec's `from` is a model known to
+                the cdf transformation layer (aka a managed model). This ensures more controls, audits, and
+                user-input is present ensuring safer publish operations. Defaults to false.
             **kwargs: The kwargs to forward to the publisher.
 
         Returns:
@@ -75,20 +80,35 @@ class PublisherSpecification(ComponentSpecification, Packageable, Schedulable):
         """
         if context.config.default_gateway not in self.affinity:
             raise ValueError(
-                f"Publisher {self.name} cannot publish from {context.config.default_gateway}."
+                f"Publisher {self.name} cannot publish from sink `{context.config.default_gateway}`."
             )
-        if self.from_ not in context.models and safe:
+        if self.from_ not in context.models and strict:
             raise ValueError(
-                f"Publisher {self.name} will not publish from {self.from_} because it is not managed by the"
+                f"Publisher {self.name} will not publish from `{self.from_}` because it is not managed by the"
                 " cdf transformation layer and thus its integrity cannot be guaranteed."
             )
 
+        logger.debug(self.query.sql(dialect=context.config.dialect))
+        logger.info("Executing query")
+        querystart = time.perf_counter()
         df = context.fetchdf(self.query, quote_identifiers=True)
+        queryend = time.perf_counter()
+        logger.info("Fetched %d rows in %.3f seconds", len(df), queryend - querystart)
         if df.empty:
             return 0
 
         # TODO: Add last_execution_time to the payload. We need to track it via some data pipeline state.
-        return self.pub(df, **kwargs)
+        logger.info("Publishing data")
+        pubstart = time.perf_counter()
+        records_affected = self.pub(df, **kwargs)
+        pubend = time.perf_counter()
+        logger.info(
+            "Published %d rows in %.3f seconds (thoughput %.2f/s)",
+            records_affected,
+            pubend - pubstart,
+            max(records_affected / pubend - pubstart, 0),
+        )
+        return records_affected
 
 
 __all__ = ["PublisherSpecification", "PublisherInterface"]

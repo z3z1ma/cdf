@@ -1,7 +1,9 @@
 """The spec classes for continuous data framework scripts."""
+import time
 import typing as t
 
 import cdf.core.constants as c
+import cdf.core.logger as logger
 from cdf.core.spec.base import ComponentSpecification, Packageable, Schedulable
 
 if t.TYPE_CHECKING:
@@ -39,7 +41,14 @@ class ScriptSpecification(ComponentSpecification, Packageable, Schedulable):
         Returns:
             int: The exit code.
         """
-        return self.script(workspace, **kwargs)
+        logger.info("Executing script")
+        scriptstart = time.perf_counter()
+        returncode = self.script(workspace, **kwargs)
+        scriptend = time.perf_counter()
+        logger.info(
+            "Script execution completed in %.3f seconds", scriptend - scriptstart
+        )
+        return returncode
 
 
 __all__ = ["ScriptSpecification", "ScriptInterface"]

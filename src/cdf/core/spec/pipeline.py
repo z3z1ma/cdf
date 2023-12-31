@@ -3,7 +3,6 @@ import atexit
 import decimal
 import fnmatch
 import functools
-import logging
 import tempfile
 import time
 import types
@@ -79,7 +78,7 @@ class PipelineMetricSpecification(ComponentSpecification):
 
         def _aggregator(item):
             nonlocal first, elapsed
-            t1 = time.perf_counter()
+            compstart = time.perf_counter()
             if first:
                 state[resource_name][metric_name] = func(item)
                 first = False
@@ -88,8 +87,8 @@ class PipelineMetricSpecification(ComponentSpecification):
                 item,
                 state[resource_name][metric_name],
             )
-            t2 = time.perf_counter()
-            elapsed += t2 - t1
+            compend = time.perf_counter()
+            elapsed += compend - compstart
             return item
 
         state.setdefault(resource_name, {})
@@ -233,7 +232,6 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
                 simply keep the source and close the generator. Business logic can
                 be codified by the end user based on the interface.
         """
-
         # HACK: Generate namespace eagerly for source name scoped config resolution
         # https://github.com/dlt-hub/dlt/issues/816
         dlt.pipeline(self.name)
@@ -294,8 +292,8 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
         destination, staging, _ = workspace.sinks[sink]()
         assert destination is not None, "Destination must be provided."
         tmpdir = tempfile.TemporaryDirectory()
+        pipestart = time.perf_counter()
         try:
-            p1 = time.perf_counter()
             p = dlt.pipeline(
                 self.name,
                 dataset_name=self.versioned_name,
@@ -337,12 +335,11 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
         except StopIteration as e:
             load_info = t.cast(LoadInfo, e.value)
             if t.TYPE_CHECKING:
-                p1 = 0.0
                 p = dlt.pipeline()
-            p2 = time.perf_counter()
+            pipeterm = time.perf_counter()
 
             # Track the metadata associated with the load job
-            logger.info("Pipeline execution took %.3f seconds", p2 - p1)
+            logger.info("Pipeline execution took %.3f seconds", pipeterm - pipestart)
             logger.info(f"Writing load info for {self.name} {self.version} {sink}")
             p.run(
                 [load_info.asdict()],
@@ -372,12 +369,11 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
             return load_info
         except Exception as e:
             if t.TYPE_CHECKING:
-                p1 = 0.0
                 p = dlt.pipeline()
-            p2 = time.perf_counter()
+            pipeterm = time.perf_counter()
 
             # If we have a pipeline object, track the exception
-            logger.error("Pipeline failed after %s seconds", p2 - p1)
+            logger.error("Pipeline failed after %s seconds", pipeterm - pipestart)
             logger.error(f"Writing exception for {self.name} {self.version} {sink}")
             try:
                 p.run(
@@ -387,16 +383,17 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
                             "pipeline": self.name,
                             "version": self.version,
                             "sink": sink,
+                            **p.last_trace.asdict(),
                         }
                     ],
                     dataset_name=c.INTERNAL_SCHEMA,
                     table_name=c.EXC_INFO_TABLE,
                     write_disposition="append",
                 )
-            except (NameError, UnboundLocalError) as write_e:
+            except (NameError, UnboundLocalError) as nopipe:
                 logger.error(
                     "Pipeline object not found. Exception not written to BQ. %s",
-                    write_e,
+                    nopipe,
                 )
             except Exception as write_e:
                 logger.error("Exception not written to BQ. %s", write_e)

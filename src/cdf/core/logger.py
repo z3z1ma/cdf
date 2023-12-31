@@ -1,6 +1,7 @@
 """Logger for CDF"""
 import logging
 import typing as t
+import warnings
 
 from rich.logging import RichHandler
 
@@ -53,6 +54,7 @@ def configure(level: int | str = logging.INFO) -> None:
         LOG_LEVEL,
         markup=True,
         rich_tracebacks=True,
+        omit_repeated_times=False,
     )
     LOGGER.logger.addHandler(console_handler)
     LOGGER.extra["configured"] = True
@@ -115,3 +117,17 @@ def monkeypatch_dlt() -> None:
     patched = create("dlt")
     setattr(logger, "_init_logging", lambda *a, **kw: patched)
     setattr(logger, "LOGGER", patched)
+
+
+def monkeypatch_sqlglot() -> None:
+    logger = logging.getLogger("sqlglot")
+    patched = create("sqlglot")
+    logger.handlers = patched.handlers
+    logger.setLevel(logging.ERROR)
+    logger.propagate = False
+    warnings.filterwarnings(
+        "ignore",
+        message=r"^Possible nested set .*",
+        category=FutureWarning,
+        module="sqlglot",
+    )
