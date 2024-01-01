@@ -338,16 +338,6 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
                 p = dlt.pipeline()
             pipeterm = time.perf_counter()
 
-            # Track the metadata associated with the load job
-            logger.info("Pipeline execution took %.3f seconds", pipeterm - pipestart)
-            logger.info(f"Writing load info for {self.name} {self.version} {sink}")
-            p.run(
-                [load_info.asdict()],
-                dataset_name=c.INTERNAL_SCHEMA,
-                table_name=c.LOAD_INFO_TABLE,
-                write_disposition="append",
-            )
-
             # Track runtime metrics
             if any(self.metrics.values()):
                 metric_state["load_ids"] = [pkg.load_id for pkg in load_info.load_packages]  # type: ignore
@@ -360,6 +350,16 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
                 )
             else:
                 logger.info("No runtime metrics to write")
+
+            # Track the metadata associated with the load job
+            logger.info("Pipeline execution took %.3f seconds", pipeterm - pipestart)
+            logger.info(f"Writing load info for {self.name} {self.version} {sink}")
+            p.run(
+                [load_info.asdict()],
+                dataset_name=c.INTERNAL_SCHEMA,
+                table_name=c.LOAD_INFO_TABLE,
+                write_disposition="append",
+            )
 
             if p.runtime_config.slack_incoming_hook:
                 for package in load_info.load_packages:

@@ -13,11 +13,19 @@ runtime.log_level = "INFO"
 model_defaults.dialect = "duckdb"
 
 [[spec.pipelines]]
-entrypoint = ".cities:us_zip_codes"
-name = "us_zip_codes_raw"
+entrypoint = ".dota2:dota2_stats"
+name = "dota2"
+description = "Dota2 data from the OpenDota API and repository"
+tags = ["games", "dota2"]
+metrics."*" = [
+  { entrypoint = "cdf.builtin.metrics:count", name = "count" },
+]
 
 [[spec.pipelines]]
 entrypoint = ".cities:us_zip_codes"
+name = "zip_codes"
+description = "US zip codes"
+tags = ["geography", "us"]
 metrics.us_cities = [
   { entrypoint = ".cities:longest_name" },
   { entrypoint = ".cities:min_latitude" },

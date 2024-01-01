@@ -103,7 +103,7 @@ class PublisherSpecification(ComponentSpecification, Packageable, Schedulable):
         records_affected = self.pub(df, **kwargs)
         pubend = time.perf_counter()
         logger.info(
-            "Published %d rows in %.3f seconds (thoughput %.2f/s)",
+            "Published %d rows in %.3f seconds (throughput %.2f/s)",
             records_affected,
             pubend - pubstart,
             max(records_affected / (pubend - pubstart), 0),

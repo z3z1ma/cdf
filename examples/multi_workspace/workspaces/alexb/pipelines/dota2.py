@@ -1,5 +1,4 @@
 """Dota2 is a Massive Online Battle Arena game based on Warcraft."""
-
 import dlt
 import dlt.sources.helpers.requests as requests
 
@@ -110,15 +109,3 @@ def dota2_stats():
         teams(),
         constants(),
     )
-
-
-__CDF_PIPELINES__ = [
-    {
-        "name": dota2_stats.__name__,
-        "pipe": dota2_stats,
-        "owners": ["z3z1ma"],
-        "tags": ["gaming", "moba"],
-        "cron": "@daily",
-        "description": __doc__,
-    }
-]
