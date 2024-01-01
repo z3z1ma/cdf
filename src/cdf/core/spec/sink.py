@@ -9,7 +9,7 @@ import cdf.core.constants as c
 import cdf.core.logger as logger
 from cdf.core.spec.base import ComponentSpecification
 
-SinkCoercibleTo = t.Literal["all", "destination", "staging", "gateway"]
+_AsTypes = t.Literal["destination", "staging", "gateway"]
 """A sink is a callable which can be coerced to any of the above parts at calltime as a convenience"""
 
 
@@ -38,7 +38,7 @@ class SinkSpecification(ComponentSpecification):
     _key = c.SINKS
 
     @t.overload
-    def __call__(self, as_: t.Literal["all"] = "all") -> SinkInterface:
+    def __call__(self, as_: None = None) -> SinkInterface:
         ...
 
     @t.overload
@@ -57,22 +57,22 @@ class SinkSpecification(ComponentSpecification):
 
     def __call__(
         self,
-        as_: SinkCoercibleTo = "all",
+        as_: _AsTypes | None = None,
     ) -> SinkInterface | Destination | GatewayConfig | None:
         """Return the sink components"""
         if self._tuple is None:
             logger.info("Instantiating sink %s", self.name)
-            dest, stg, gateway = self._main()
-            for d in (dest, stg):
-                if d is not None:
+            destination, staging, gateway = self._main()
+            for part in (destination, staging):
+                if part is not None:
                     name = self.name
-                    if d is stg:
+                    if part is staging:
                         name += "-staging"
-                    dest.config_params = dest.config_params or {}
-                    dest.config_params["destination_name"] = name
-                    dest.config_params["environment"] = self.environment
-            self._tuple = SinkInterface(dest, stg, gateway)
-        if as_ == "all":
+                    part.config_params = part.config_params or {}
+                    part.config_params["destination_name"] = name
+                    part.config_params["environment"] = self.environment
+            self._tuple = SinkInterface(destination, staging, gateway)
+        if as_ is None:
             return self._tuple
         elif as_ == "destination":
             return self._tuple.destination
@@ -82,7 +82,7 @@ class SinkSpecification(ComponentSpecification):
             return self._tuple.gateway
         else:
             raise ValueError(
-                f"Cannot coerce sink to {as_}, must be one of {t.get_args(SinkCoercibleTo)}"
+                f"Cannot coerce sink to {as_}, must be one of {t.get_args(_AsTypes)}"
             )
 
 

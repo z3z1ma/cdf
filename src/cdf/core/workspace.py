@@ -662,8 +662,7 @@ class Workspace:
         if sink_name not in self.sinks:
             raise ValueError(f"Sink {sink_name} not found in workspace {self.name}")
         sink = self.sinks[sink_name]
-        gateway = sink(as_="gateway")
-        if gateway is None:
+        if sink("gateway") is None:
             raise ValueError(f"Sink {sink_name} does not have a gateway configured.")
         git_branch_proc = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -681,7 +680,7 @@ class Workspace:
         transform_opts = self.config_dict.get(c.TRANSFORM_SPEC, {}) | opts
         conf = sqlmesh.Config(
             **transform_opts,
-            gateways={sink.name: gateway},
+            gateways={sink.name: sink("gateway")},
             default_gateway=sink.name,
             project=self.name,
             loader=CDFModelLoader,
