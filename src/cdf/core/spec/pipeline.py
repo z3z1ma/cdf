@@ -354,8 +354,12 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
             # Track the metadata associated with the load job
             logger.info("Pipeline execution took %.3f seconds", pipeterm - pipestart)
             logger.info(f"Writing load info for {self.name} {self.version} {sink}")
+            load_dict = load_info.asdict()
+            load_dict.pop(  # Not needed, nor well structured due to variant key
+                "metrics", None
+            )
             p.run(
-                [load_info.asdict()],
+                [load_dict],
                 dataset_name=c.INTERNAL_SCHEMA,
                 table_name=c.LOAD_INFO_TABLE,
                 write_disposition="append",
