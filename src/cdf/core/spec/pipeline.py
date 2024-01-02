@@ -13,6 +13,7 @@ import pydantic
 from dlt.common.destination.capabilities import TLoaderFileFormat
 from dlt.common.pipeline import LoadInfo
 from dlt.common.runtime.collector import LogCollector
+from dlt.common.schema import Schema
 from dlt.common.schema.typing import TSchemaEvolutionMode
 from dlt.common.typing import TDataItem
 from dlt.pipeline.pipeline import Pipeline
@@ -358,11 +359,15 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
             load_dict.pop(  # Not needed, nor well structured due to variant key
                 "metrics", None
             )
+
             p.run(
                 [load_dict],
                 dataset_name=c.INTERNAL_SCHEMA,
                 table_name=c.LOAD_INFO_TABLE,
                 write_disposition="append",
+                schema=Schema(  # Ensure inherited schema settings are not used
+                    "cdf_load_info"
+                ),
             )
 
             if p.runtime_config.slack_incoming_hook:
