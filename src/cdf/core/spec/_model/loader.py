@@ -128,8 +128,9 @@ class CDFModelLoader(SqlMeshLoader):
                 dialect=config.model_defaults.dialect,
                 path=path,
                 project=config.project,
+                default_catalog=self._context.default_catalog,
             )
-            models[getattr(model, "fqn", model.name)] = model
+            models[model.fqn] = model
         return models
 
     def _process_cdf_managed(
@@ -150,8 +151,9 @@ class CDFModelLoader(SqlMeshLoader):
                 dialect=config.model_defaults.dialect,
                 path=path,
                 project=config.project,
+                default_catalog=self._context.default_catalog,
             )
-            models[getattr(model, "fqn", model.name)] = model
+            models[model.fqn] = model
         return models
 
     # Overrides

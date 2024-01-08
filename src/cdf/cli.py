@@ -377,7 +377,7 @@ def transform(
             raise typer.BadParameter(f"Workspace `{ws}` not found.")
     # Swap context to SQLMesh context
     project[main_workspace].runtime_context().__enter__()
-    ctx.obj = project.transform_context(*workspaces, sink=sink)
+    ctx.obj = project.transform_context(*workspaces, sink=sink, load=False)
 
 
 SQLMESH_COMMANDS = (
@@ -425,6 +425,9 @@ def _get_transform_command_wrapper(name: str):
 
     def _passthrough(ctx: typer.Context) -> None:
         nonlocal cmd
+
+        if name not in ("create_external_models", "migrate", "rollback", "ui"):
+            ctx.obj.load()
         parser = cmd.make_parser(ctx)
         opts, args, _ = parser.parse_args(ctx.args)
         return ctx.invoke(cmd, *args, **opts)

@@ -319,7 +319,7 @@ class Project(t.Dict["str", "Workspace"]):
         del self[name]
 
     def transform_context(
-        self, *workspaces: str, sink: str | None = None
+        self, *workspaces: str, sink: str | None = None, load: bool = True
     ) -> sqlmesh.Context:
         """
         Get a sqlmesh context for a list of workspaces.
@@ -337,6 +337,7 @@ class Project(t.Dict["str", "Workspace"]):
                 self[workspace].root: self[workspace].transform_config(sink)
                 for workspace in workspaces
             },
+            load=load,
         )
 
     def __getitem__(self, name: str) -> "Workspace":
@@ -662,7 +663,8 @@ class Workspace:
         if sink_name not in self.sinks:
             raise ValueError(f"Sink {sink_name} not found in workspace {self.name}")
         sink = self.sinks[sink_name]
-        if sink("gateway") is None:
+        gateway = sink("gateway")
+        if gateway is None:
             raise ValueError(f"Sink {sink_name} does not have a gateway configured.")
         git_branch_proc = subprocess.run(
             ["git", "rev-parse", "--abbrev-ref", "HEAD"],
@@ -680,7 +682,7 @@ class Workspace:
         transform_opts = self.config_dict.get(c.TRANSFORM_SPEC, {}) | opts
         conf = sqlmesh.Config(
             **transform_opts,
-            gateways={sink.name: sink("gateway")},
+            gateways={sink.name: gateway},
             default_gateway=sink.name,
             project=self.name,
             loader=CDFModelLoader,
