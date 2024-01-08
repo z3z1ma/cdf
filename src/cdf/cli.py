@@ -274,11 +274,11 @@ def head(
         rich.print(
             f"\nHead of [b red]{resource}[/b red] in [b blue]{pipeline}.v{workspace.pipelines[src].version}[/b blue]:"
         )
-        it = flatten_stream(res)
-        while num > 0 and (v := next(it, None)):  # type: ignore
-            rich.print(v)
-            v = next(it, None)
+        for rec in flatten_stream(res):
+            rich.print(rec)
             num -= 1
+            if num == 0:
+                break
 
 
 @app.command(rich_help_panel="Integrate")
@@ -459,6 +459,8 @@ def publish(
     ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
+    from sqlmesh.core.dialect import normalize_model_name
+
     project: Project = ctx.obj
     try:
         ws, sink, pub_name = _parse_ws_component(publisher, project=project)
@@ -476,7 +478,12 @@ def publish(
     with workspace.runtime_context():
         pub = workspace.publishers[pub_name]
         context = workspace.transform_context(sink)
-        if pub.from_ not in context.models:
+        normalized_name = normalize_model_name(
+            pub.from_,
+            dialect=context.config.dialect,
+            default_catalog=context.default_catalog,
+        )
+        if normalized_name not in context.models:
             logger.warning(
                 "Model %s not found in transform context. We cannot track lineage or enforce data quality.",
                 pub.from_,
@@ -487,9 +494,10 @@ def publish(
                     abort=True,
                 )
         else:
-            model = context.models[pub.from_]
+            # TODO: check the model intervals to ensure recency?
+            model = context.models[normalized_name]
             logger.info("Parsed dependencies: %s", model.depends_on)
-        pub(context, **json.loads(opts))
+        pub(context, **json.loads(opts))  # returns rows affected
 
 
 @app.command("execute-script", rich_help_panel="Utility")
