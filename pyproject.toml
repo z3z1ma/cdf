@@ -7,7 +7,7 @@ authors = [
 ]
 dependencies = [
     "dlt[duckdb]>=0.4.0",
-    "sqlmesh>=0.63.0",
+    "sqlmesh", # >=0.63.0
     "typer[all]>=0.8.0",
     "harness-featureflags>=1.2.0",
     "python-dotenv>=1.0.0",
