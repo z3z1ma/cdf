@@ -136,6 +136,10 @@ class CDFModelLoader(SqlMeshLoader):
                 project=config.project,
                 default_catalog=self._context.default_catalog,
             )
+            # We do our best to avoid conflicts, but if there is any
+            # duplication across schema files -- prefer managed metadata
+            if model.fqn in models:
+                continue
             models[model.fqn] = model
         self.__cache[path_key] = models
         self.__mutated = True
@@ -178,15 +182,14 @@ class CDFModelLoader(SqlMeshLoader):
             base_path = Path(context_path / c.METADATA / self._sink)
             base_path.mkdir(parents=True, exist_ok=True)
             cdf_unmanaged = base_path / c.SQLMESH_METADATA_FILE
-            cdf_unmanaged.touch()
             for path in base_path.glob(f"*.{EXT}"):
-                if not os.path.getsize(path):
+                if not os.path.getsize(path) or path.samefile(cdf_unmanaged):
                     continue
                 self._track_file(path)
-                if path.samefile(cdf_unmanaged):
-                    models = self._process_cdf_unmanaged(models, config, path)
-                else:
-                    models = self._process_cdf_managed(models, config, path)
+                models = self._process_cdf_managed(models, config, path)
+            if cdf_unmanaged.exists():
+                self._track_file(cdf_unmanaged)
+                models = self._process_cdf_unmanaged(models, config, cdf_unmanaged)
         return models
 
     def _load_models(

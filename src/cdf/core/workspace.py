@@ -708,7 +708,7 @@ class Workspace:
         return conf
 
     @cache
-    def transform_context(self, sink: str) -> sqlmesh.Context:
+    def transform_context(self, sink: str, load: bool = True) -> sqlmesh.Context:
         """
         Create a transform context for this sink.
 
@@ -718,7 +718,9 @@ class Workspace:
         Returns:
             sqlmesh.Context: The transform context.
         """
-        return sqlmesh.Context(config={self.root: self.transform_config(sink)})
+        return sqlmesh.Context(
+            config={self.root: self.transform_config(sink)}, load=load
+        )
 
     @contextmanager
     def runtime_source(

@@ -1,4 +1,6 @@
 """CLI for cdf."""
+import datetime
+import fnmatch
 import json
 import os
 import sys
@@ -115,11 +117,12 @@ def main(
 @app.command(rich_help_panel="Project Info")
 def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], and [yellow]Publishers[/yellow][/b] loaded from the pipeline directory paths."""
+
     project: Project = ctx.obj
-    rich.print(f" {project}")
+    rich.print(f" {project.name}")
     for _, workspace in project.items():
         with workspace.runtime_context():
-            rich.print(f"\n ~ {workspace}")
+            rich.print(f"\n ~ {workspace.name}")
 
             rich.print(f"\n   [blue]Pipelines[/blue]: {len(workspace.pipelines)}")
             for i, (name, meta) in enumerate(workspace.pipelines.items(), start=1):
@@ -494,9 +497,16 @@ def publish(
                     abort=True,
                 )
         else:
-            # TODO: check the model intervals to ensure recency?
             model = context.models[normalized_name]
-            logger.info("Parsed dependencies: %s", model.depends_on)
+            # Ensure the model is not missing intervals before publishing
+            snapshot = context.get_snapshot(normalized_name)
+            assert snapshot, f"Snapshot not found for {normalized_name}"
+            if snapshot.missing_intervals(
+                datetime.date.today() - datetime.timedelta(days=7),
+                datetime.date.today(),
+            ):
+                logger.error("Model %s has missing intervals. Cannot publish.", model)
+                raise typer.Exit()
         pub(context, **json.loads(opts))  # returns rows affected
 
 
@@ -535,7 +545,22 @@ def execute_script(
 
 
 @app.command("fetch-metadata", rich_help_panel="Utility")
-def fetch_metadata(ctx: typer.Context, sink: str) -> None:
+def fetch_metadata(
+    ctx: typer.Context,
+    sink: str,
+    pipelines: t.List[str] = typer.Option(
+        [],
+        "-p",
+        "--pipeline",
+        help="Glob pattern for pipelines to fetch metadata for. Defaults to all. Passing any value will disable fetching metadata for external references. Can be specified multiple times.",
+    ),
+    unmanaged: bool = typer.Option(
+        True,
+        "-u",
+        "--unmanaged/--skip-unmanaged",
+        help="Fetch external references in transformations which are not managed by cdf pipelines.",
+    ),
+) -> None:
     """:floppy_disk: Regenerate workspace metadata.
 
     Data is stored in <workspace>/metadata/<destination>/<catalog>.yaml
@@ -549,11 +574,16 @@ def fetch_metadata(ctx: typer.Context, sink: str) -> None:
         workspace: The workspace to regenerate metadata for.
     """
     from ruamel.yaml import YAML
-    from sqlglot import exp
+    from sqlmesh.core.dialect import normalize_model_name
 
     logger.info("Fetching and aggregating metadata from sqlmesh and dlt")
     project: Project = ctx.obj
     yaml = YAML(typ="rt")
+
+    if pipelines and unmanaged:
+        logger.info("Skipping unmanaged models since we are fetching a managed subset")
+        unmanaged = False
+    pipelines = pipelines or ["*"]
 
     try:
         workspace, sink_name = _parse_ws_component(sink, project=project)
@@ -565,59 +595,68 @@ def fetch_metadata(ctx: typer.Context, sink: str) -> None:
         ) from e
 
     ws = project[workspace]
-    with ws.runtime_context():
-        context = ws.transform_context(sink_name)
-
-        seen = set()
-        output = {}
-        # Fetch metadata from dlt ingestion pipelines
-        for name, src in ws.pipelines.items():
-            d = tempfile.TemporaryDirectory()
-            dataset = f"{name}_v{src.version}"
-            pipe = dlt.pipeline(
-                name,
-                dataset_name=dataset,
-                destination=ws.sinks[sink_name]("destination"),
-                pipelines_dir=d.name,
-            )
-            pipe.sync_destination()
-            for schema in pipe.schemas.values():
-                for meta in schema.data_tables():
-                    assert meta["name"]
-                    table = exp.table_(
-                        meta["name"],
-                        dataset,
-                        catalog=context.config.model_defaults.catalog,
-                    ).sql()
-                    catalog = output.setdefault(dataset, {})
-                    catalog.setdefault(table, {}).update(meta)
-                    seen.add(table)
-            d.cleanup()
-
-        tmp_schema_dump = ws.root / "schema.yaml"
-        tmp_schema_dump.unlink(missing_ok=True)
-
-        # Generate a schema dump for the context
-        context.create_external_models()
-
-    meta = yaml.load(tmp_schema_dump.read_text()) or []
-    tmp_schema_dump.unlink(missing_ok=True)
-
-    # Filter out tables we've already seen
-    meta = [m for m in meta if m["name"] not in seen]
-
-    # Write the schema dump to the workspace metadata directory
     meta_path = ws.root / c.METADATA / sink_name
     meta_path.mkdir(exist_ok=True)
 
-    unmanaged_metadata = meta_path / c.SQLMESH_METADATA_FILE
-    unmanaged_metadata.parent.mkdir(parents=True, exist_ok=True)
-    with unmanaged_metadata.open("w") as f:
-        yaml.dump(meta, f)
+    with ws.runtime_context():
+        seen = set()
+        output = {}
 
-    for catalog, tables in output.items():
-        with meta_path.joinpath(f"{catalog}.yaml").open("w") as f:
-            yaml.dump(tables, f)
+        for name, src in ws.pipelines.items():
+            if not any(fnmatch.fnmatch(name, pat) for pat in pipelines):
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                dataset = f"{name}_v{src.version}"
+                pipe = dlt.pipeline(
+                    name,
+                    dataset_name=dataset,
+                    destination=ws.sinks[sink_name]("destination"),
+                    pipelines_dir=tmp,
+                )
+                pipe.sync_destination()
+                for schema in pipe.schemas.values():
+                    d = output.setdefault(dataset, {})
+                    for metadata in schema.data_tables() + schema.dlt_tables():
+                        assert metadata["name"]  # for type checking
+                        d[(k := f"{dataset}.{metadata['name']}")] = metadata
+                        seen.add(k)
+
+        if unmanaged:
+            context = ws.transform_context(sink_name, load=False)
+            seen = [
+                normalize_model_name(
+                    name,
+                    dialect=context.config.dialect,
+                    default_catalog=context.default_catalog,
+                )
+                for name in seen
+            ]
+
+            capture_dump = ws.root / "schema.yaml"
+            capture_dump.unlink(missing_ok=True)
+
+            # NOTE: eventually we should implement this ourselves to reduce overhead
+            context.create_external_models()
+
+            external_models = yaml.load(capture_dump.read_text()) or []
+            capture_dump.unlink(missing_ok=True)
+
+            def _unseen(d: dict) -> bool:
+                return (
+                    normalize_model_name(
+                        d["name"],
+                        dialect=context.config.dialect,
+                        default_catalog=context.default_catalog,
+                    )
+                    not in seen
+                )
+
+            unmanaged_f = meta_path / c.SQLMESH_METADATA_FILE
+            unmanaged_f.parent.mkdir(parents=True, exist_ok=True)
+            yaml.dump(list(filter(_unseen, external_models)), unmanaged_f)
+
+    for schema_name, metadata in output.items():
+        yaml.dump(metadata, meta_path.joinpath(f"{schema_name}.yaml"))
 
 
 @app.command("generate-staging-layer", rich_help_panel="Utility")
