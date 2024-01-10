@@ -1,6 +1,7 @@
 """The spec classes and custom loader for continuous data framework models"""
 import fnmatch
 import os
+import pickle
 import typing as t
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from dlt.common.schema.typing import TTableSchema
 from ruamel import yaml
 from sqlglot import exp, parse_one
 from sqlmesh import Config
+from sqlmesh import __version__ as sqlmesh_version
 from sqlmesh.core.loader import SqlMeshLoader
 from sqlmesh.core.macros import MacroRegistry
 from sqlmesh.core.model import Model, create_external_model, create_sql_model
@@ -113,6 +115,7 @@ class CDFModelLoader(SqlMeshLoader):
     def __init__(self, sink: str) -> None:
         super().__init__()
         self._sink = sink
+        self.__mutated = False
 
     def _process_cdf_unmanaged(
         self,
@@ -122,6 +125,9 @@ class CDFModelLoader(SqlMeshLoader):
         path: Path,
     ) -> UniqueKeyDict[str, Model]:
         """Processes an unmanaged cdf yaml file."""
+        path_key = f"{path.as_posix()}@{path.stat().st_mtime}"
+        if path_key in self.__cache:
+            return self.__cache[path_key]
         for schema in YAML.load(path):
             model = create_external_model(
                 **schema,
@@ -131,6 +137,8 @@ class CDFModelLoader(SqlMeshLoader):
                 default_catalog=self._context.default_catalog,
             )
             models[model.fqn] = model
+        self.__cache[path_key] = models
+        self.__mutated = True
         return models
 
     def _process_cdf_managed(
@@ -141,12 +149,15 @@ class CDFModelLoader(SqlMeshLoader):
         path: Path,
     ) -> UniqueKeyDict[str, Model]:
         """Processes a managed cdf yaml file."""
-        for name, meta in YAML.load(path).items():
+        path_key = f"{path.as_posix()}@{path.stat().st_mtime}"
+        if path_key in self.__cache:
+            return self.__cache[path_key]
+        for name, schema in YAML.load(path).items():
             model = create_external_model(
                 name,
                 columns={
                     c["name"]: DLT_TO_SQLGLOT[c.get("data_type", "unknown")]
-                    for c in meta["columns"].values()
+                    for c in schema["columns"].values()
                 },
                 dialect=config.model_defaults.dialect,
                 path=path,
@@ -154,6 +165,8 @@ class CDFModelLoader(SqlMeshLoader):
                 default_catalog=self._context.default_catalog,
             )
             models[model.fqn] = model
+        self.__cache[path_key] = models
+        self.__mutated = True
         return models
 
     # Overrides
@@ -180,7 +193,19 @@ class CDFModelLoader(SqlMeshLoader):
         self, macros: MacroRegistry, jinja_macros: JinjaMacroRegistry
     ) -> UniqueKeyDict[str, Model]:
         """Adds behavior to load cdf staging models."""
+        self.__cache_path = (
+            self._context.path / ".cache" / f"external.{sqlmesh_version}"
+        )
+        self.__cache_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.__cache_path.exists():
+            with self.__cache_path.open("rb") as cache_contents:
+                self.__cache = pickle.load(cache_contents)
+        else:
+            self.__cache = {}
         models = super()._load_models(macros, jinja_macros)
+        if self.__mutated:
+            with self.__cache_path.open("wb") as cache_file:
+                pickle.dump(self.__cache, cache_file)
 
         for context_path, config in self._context.configs.items():
             data = []
