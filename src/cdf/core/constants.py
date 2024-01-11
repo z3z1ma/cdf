@@ -27,6 +27,9 @@ METADATA = "metadata"
 SPECS = "spec"
 """A namespace used in a cdf configuration TOML to declare specifications"""
 
+STAGING = "staging"
+"""A namespace used in a cdf configuration TOML to declare staging model generation"""
+
 TRANSFORM_SPEC = "transform"
 """A namespace used in a cdf configuration TOML to declare SQLMesh config kwargs"""
 

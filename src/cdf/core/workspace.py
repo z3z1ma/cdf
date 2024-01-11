@@ -33,6 +33,7 @@ from cdf.core.spec import (
     PublisherSpecification,
     ScriptSpecification,
     SinkSpecification,
+    StagingSpecification,
 )
 
 _LOADING_MUTEX: Lock = Lock()
@@ -519,6 +520,7 @@ class Workspace:
         self.registry = MappingProxyType(CDF_REGISTRY[self.name])
         self.config = Workspace.ConfigProvider(self)
         self._loaded: t.Dict[t.Type[ComponentSpecification], bool] = {}
+        self._staging_specs: t.Optional[t.List[StagingSpecification]] = None
 
         if load:
             self.load()
@@ -632,6 +634,15 @@ class Workspace:
         """Load transforms from workspace using the first available context."""
         transform = self.transform_context(next(iter(self.sinks)))
         return WorkspaceRegistryProxy(transform.models)
+
+    @property
+    def staging_specs(self) -> t.List[StagingSpecification]:
+        if self._staging_specs is None:
+            self._staging_specs = [
+                StagingSpecification.model_validate(s)
+                for s in self.config_dict.get(c.SPECS, {}).get(c.STAGING, [])
+            ]
+        return self._staging_specs
 
     @contextmanager
     def runtime_context(self) -> t.Iterator[None]:

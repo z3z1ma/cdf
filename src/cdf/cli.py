@@ -669,6 +669,12 @@ def generate_staging_layer(
         "--fetch-metadata/--no-fetch-metadata",
         help="Regenerate metadata before running",
     ),
+    tables: t.List[str] = typer.Option(
+        [],
+        "-t",
+        "--table",
+        help="Glob pattern for tables to generate staging models for. Defaults to all. Can be specified multiple times.",
+    ),
 ) -> None:
     """:floppy_disk: Generate a staging layer for a catalog.
 
@@ -681,15 +687,17 @@ def generate_staging_layer(
         sink: The sink to generate staging layers for.
         fetch_metadata: Whether to fetch metadata before generating staging layers.
     """
-    from ruamel.yaml import YAML
-    from sqlglot import exp, parse_one
+    from sqlglot import exp
+    from sqlmesh.core.dialect import format_model_expressions
+    from sqlmesh.core.model import create_sql_model
 
     if fetch_metadata_:
-        fetch_metadata(ctx, sink)
+        fetch_metadata(ctx, sink, [], True)
+
+    tables = tables or ["*"]
 
     logger.info("Generating cdf DSL staging layer")
     project: Project = ctx.obj
-    yaml = YAML(typ="rt")
 
     try:
         workspace, sink_name = _parse_ws_component(sink, project=project)
@@ -702,40 +710,43 @@ def generate_staging_layer(
 
     ws = project[workspace]
     context = ws.transform_context(sink_name)
-    for fp in (ws.root / "metadata" / sink_name).iterdir():
-        if fp.name == "_cdf_external.yaml":
+    for model in context.models.values():
+        ref = exp.to_table(model.fqn)
+        if model.kind.name.value != "EXTERNAL":
             continue
-        if not fp.is_file() or not fp.name.endswith(".yaml"):
+        if ref.name.startswith("_"):
             continue
-        with fp.open() as fd:
-            meta = yaml.load(fd)
-        stg_specs = []
-        for table, meta in meta.items():
-            # Check if the output table already exists in the context
-            output = f"cdf_staging.stg_{fp.stem}__{table}"
-            if output in context.models:
-                logger.debug("Skipping %s, already exists", output)
-                continue
-            # Generate the DSL for the new table and write it to the staging layer
-            logger.info("Generating %s", output)
-            new_table = parse_one(f"{fp.stem}.{table}", into=exp.Table)
-            stg_specs.append(
-                {
-                    "input": f"{new_table.db}.{new_table.name}",
-                    "prefix": "",
-                    "suffix": "",
-                    "excludes": [],
-                    "exclude_patterns": [],
-                    "includes": [],
-                    "include_patterns": [],
-                    "predicate": "",
-                    "computed_columns": [],
-                }
+        if not any(fnmatch.fnmatch(model.fqn, pat) for pat in tables):
+            continue
+        specs = list(filter(lambda s: s.is_applicable(ref), ws.staging_specs))
+        if not specs:
+            continue
+        select = exp.select(
+            *[
+                exp.cast(exp.column(c, "this"), typ)
+                for c, typ in model.columns_to_types_or_raise.items()
+            ]
+        ).from_(ref.as_("this"))
+        mut_ref = ref
+        for transform_func in specs:
+            select, mut_ref = transform_func(select)
+        if mut_ref == ref:
+            raise ValueError(
+                f"Applicable staging spec did not transform {ref} reference"
             )
-        p = ws.root / c.MODELS / "staging" / fp.stem / "schema.yaml"
+        renderable = create_sql_model(
+            mut_ref.sql(),
+            query=select,
+            module_path=ws.root,
+            dialect=context.config.dialect,
+            project=context.config.project,
+            time_column_format=context.config.time_column_format,
+            physical_schema_override=context.config.physical_schema_override,
+        )
+        def_ = renderable.render_definition()
+        p = ws.root / c.MODELS / c.STAGING / ref.db / f"{ref.name}.sql"
         p.parent.mkdir(parents=True, exist_ok=True)
-        with p.open("w") as f:
-            yaml.dump(stg_specs, f)
+        p.write_text(format_model_expressions(def_, dialect=renderable.dialect))
 
 
 @app.command("init-workspace", rich_help_panel="Project Initialization")

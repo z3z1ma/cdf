@@ -18,6 +18,7 @@ from cdf.core.spec.pipeline import (
 from cdf.core.spec.publisher import PublisherInterface, PublisherSpecification
 from cdf.core.spec.script import ScriptInterface, ScriptSpecification
 from cdf.core.spec.sink import SinkInterface, SinkSpecification, destination, gateway
+from cdf.core.spec.staging import StagingRuleset, StagingSpecification
 
 __all__ = [
     "CDFSource",
@@ -40,4 +41,6 @@ __all__ = [
     "SupportsComponentMetadata",
     "gateway",
     "destination",
+    "StagingRuleset",
+    "StagingSpecification",
 ]
