@@ -50,7 +50,7 @@ class CDFModelLoader(SqlMeshLoader):
     def __init__(self, sink: str) -> None:
         super().__init__()
         self._sink = sink
-        self.__mutated = False
+        self._mutated = False
 
     def _process_cdf_unmanaged(
         self,
@@ -61,8 +61,8 @@ class CDFModelLoader(SqlMeshLoader):
     ) -> UniqueKeyDict[str, Model]:
         """Processes an unmanaged cdf yaml file."""
         path_key = f"{path.as_posix()}@{path.stat().st_mtime}"
-        if path_key in self.__cache:
-            return self.__cache[path_key]
+        if path_key in self._cache:
+            return self._cache[path_key]
         for schema in YAML.load(path):
             model = create_external_model(
                 **schema,
@@ -76,8 +76,8 @@ class CDFModelLoader(SqlMeshLoader):
             if model.fqn in models:
                 continue
             models[model.fqn] = model
-        self.__cache[path_key] = models
-        self.__mutated = True
+        self._cache[path_key] = models
+        self._mutated = True
         return models
 
     def _process_cdf_managed(
@@ -89,8 +89,8 @@ class CDFModelLoader(SqlMeshLoader):
     ) -> UniqueKeyDict[str, Model]:
         """Processes a managed cdf yaml file."""
         path_key = f"{path.as_posix()}@{path.stat().st_mtime}"
-        if path_key in self.__cache:
-            return self.__cache[path_key]
+        if path_key in self._cache:
+            return self._cache[path_key]
         for name, schema in YAML.load(path).items():
             model = create_external_model(
                 name,
@@ -104,8 +104,8 @@ class CDFModelLoader(SqlMeshLoader):
                 default_catalog=self._context.default_catalog,
             )
             models[model.fqn] = model
-        self.__cache[path_key] = models
-        self.__mutated = True
+        self._cache[path_key] = models
+        self._mutated = True
         return models
 
     # Overrides
@@ -131,17 +131,20 @@ class CDFModelLoader(SqlMeshLoader):
         self, macros: MacroRegistry, jinja_macros: JinjaMacroRegistry
     ) -> UniqueKeyDict[str, Model]:
         """Adds behavior to load cdf staging models."""
-        self.__cache_path = (
-            self._context.path / ".cache" / f"external.{sqlmesh_version}"
-        )
-        self.__cache_path.parent.mkdir(parents=True, exist_ok=True)
-        if self.__cache_path.exists():
-            with self.__cache_path.open("rb") as cache_contents:
-                self.__cache = pickle.load(cache_contents)
+
+        self._cache_path = self._context.path / ".cache" / f"external.{sqlmesh_version}"
+        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if self._cache_path.exists():
+            with self._cache_path.open("rb") as cache_contents:
+                self._cache = pickle.load(cache_contents)
         else:
-            self.__cache = {}
+            self._cache = {}
+
         models = super()._load_models(macros, jinja_macros)
-        if self.__mutated:
-            with self.__cache_path.open("wb") as cache_file:
-                pickle.dump(self.__cache, cache_file)
+
+        if self._mutated:
+            with self._cache_path.open("wb") as cache_file:
+                pickle.dump(self._cache, cache_file)
+
         return models

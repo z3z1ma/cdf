@@ -150,6 +150,43 @@ class Packageable(pydantic.BaseModel):
         return requirements
 
 
+class Executable(pydantic.BaseModel):
+    """A mixin for entrypoint based executable components."""
+
+    entrypoint: t.Annotated[
+        str,
+        pydantic.Field(..., pattern=r"^.*:.*$", frozen=True),
+    ]
+    """The entrypoint of the component."""
+
+    _main: t.Callable | None = None
+    """Container for the entrypoint function."""
+
+    @property
+    def main(self) -> t.Callable[..., t.Any]:
+        """Get the entrypoint function."""
+        if self._main is None:
+            self._main = self.load_entrypoint()
+        return self._main
+
+    def load_entrypoint(self) -> t.Any:
+        """Load the entrypoint."""
+        mod, func = self.entrypoint.split(":")
+        try:
+            module = importlib.import_module(mod, getattr(self, "_key", None))
+        except ModuleNotFoundError:
+            raise ValueError(f"Module {mod} not found.")
+        except Exception as e:
+            raise ValueError(f"Error importing module {mod}: {e}")
+        try:
+            func = getattr(module, func)
+        except AttributeError:
+            raise ValueError(f"Function {func} not found in module {mod}.")
+        except Exception as e:
+            raise ValueError(f"Error importing function {func} from module {mod}: {e}")
+        return func
+
+
 class ComponentSpecification(pydantic.BaseModel):
     """
     A component specification.
@@ -168,11 +205,6 @@ class ComponentSpecification(pydantic.BaseModel):
         ),
     ]
     """The name of the component."""
-    entrypoint: t.Annotated[
-        str,
-        pydantic.Field(..., pattern=r"^.*:.*$", frozen=True),
-    ]
-    """The entrypoint of the component."""
     version: t.Annotated[int, pydantic.Field(1, ge=1, le=999, frozen=True)] = 1
     """The version of the component."""
     owner: str | None = None
@@ -190,8 +222,6 @@ class ComponentSpecification(pydantic.BaseModel):
     """Determines the namespace of the component in the registry"""
     _autoregister: bool = True
     """Whether to autoregister the component."""
-    _main: t.Any = None
-    """The main entrypoint."""
 
     @property
     def versioned_name(self) -> str:
@@ -227,7 +257,7 @@ class ComponentSpecification(pydantic.BaseModel):
         """Ensure the description has no leading whitespace."""
         return inspect.cleandoc(description)
 
-    @pydantic.model_validator(mode="before")
+    @pydantic.model_validator(mode="before")  # type: ignore
     @classmethod
     def _spec_validator(cls, data: t.Any) -> t.Any:
         """Perform validation on the spec ensuring forward compatibility."""
@@ -244,46 +274,43 @@ class ComponentSpecification(pydantic.BaseModel):
             logger.info(f"Skipping disabled component: {self.name}")
             return self
         workspace = context.get_active_workspace()
-        if context.is_autoinstall_enabled() and isinstance(self, Packageable):
+
+        if isinstance(self, Packageable) and context.is_autoinstall_enabled():
             # TODO: this is a cheap fast implementation until we overhaul packaging as a concept
             if workspace:
-                key = hashlib.md5(self.entrypoint.encode()).hexdigest()
-                touchfile = workspace.root / ".cdf" / key
+                hashkey = hashlib.md5(self.__class__.__name__.encode())
+                hashkey.update(self.versioned_name.encode())
+                hashkey.update(str(sorted(self.requirements)).encode())
+                touchfile = workspace.root / ".cdf" / hashkey.hexdigest()
+                touchfile.parent.mkdir(exist_ok=True, parents=True)
                 if not touchfile.exists():
                     self.install()
-                touchfile = workspace.root / ".cdf" / key
-                touchfile.parent.mkdir(exist_ok=True, parents=True)
                 touchfile.touch()
             else:
                 self.install()
 
-        mod, func = self.entrypoint.split(":")
-        try:
-            module = importlib.import_module(mod, self._key)
-        except ModuleNotFoundError:
-            raise ValueError(f"Module {mod} not found.")
-        except Exception as e:
-            raise ValueError(f"Error importing module {mod}: {e}")
-        try:
-            func = getattr(module, func)
-        except AttributeError:
-            raise ValueError(f"Function {func} not found in module {mod}.")
-        except Exception as e:
-            raise ValueError(f"Error importing function {func} from module {mod}: {e}")
-        self._main = func
-        if self.name.startswith("anon_"):
-            n = _get_name_from_func(func) or _get_name_from_entrypoint(self.entrypoint)
-            self.name = n or self.name
-        if self.description == _NO_DESCRIPTION:
-            self.description = _get_description_from_func(func)
+        if isinstance(self, Executable):
+            if self.name.startswith("anon_"):
+                n = _get_name_from_func(self.main) or _get_name_from_entrypoint(
+                    self.entrypoint
+                )
+                self.name = n or self.name
+            if self.description == _NO_DESCRIPTION:
+                self.description = _get_description_from_func(self.main)
+
         if workspace and self._autoregister:
             ComponentSpecification.register(self, workspace.name)
+
         return self
 
     @property
     def entrypoint_info(self) -> str:
         """Convert an entrypoint function to a useful string representation."""
+        if not isinstance(self, Executable):
+            return "N/A"
         fn = self._main
+        if fn is None:
+            fn = self.load_entrypoint()
         if isinstance(fn, functools.partial):
             fn = fn.func
         if hasattr(fn, "name"):
@@ -371,5 +398,6 @@ __all__ = [
     "CDF_REGISTRY",
     "Schedulable",
     "Packageable",
+    "Executable",
     "SupportsComponentMetadata",
 ]

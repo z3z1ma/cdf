@@ -29,6 +29,7 @@ from cdf.core.spec import (
     CDF_REGISTRY,
     CDFModelLoader,
     ComponentSpecification,
+    NotebookSpecification,
     PipelineSpecification,
     PublisherSpecification,
     ScriptSpecification,
@@ -79,12 +80,15 @@ def _find_common_path(*paths: str | Path) -> Path | None:
     return common_path
 
 
-def _coerce_to_workspace(obj: "str | Path | Workspace") -> "Workspace":
+def _coerce_member_to_workspace(
+    obj: "str | Path | Workspace", root: Path | None
+) -> "Workspace":
     """
     Get a workspace from a workspace-like object.
 
     Args:
         workspace: The path to the workspace.
+        root: The root of the project. Defaults to None.
 
     Raises:
         TypeError: If object is not coercible to a workspace.
@@ -92,8 +96,16 @@ def _coerce_to_workspace(obj: "str | Path | Workspace") -> "Workspace":
     Returns:
         Workspace: A workspace.
     """
-    if isinstance(obj, (str, Path)):
-        return Workspace(obj)
+    if isinstance(obj, str):
+        if root is None:
+            raise ValueError("Must specify root if passing a path")
+        return Workspace(root / obj)
+    elif isinstance(obj, Path):
+        if root is None:
+            raise ValueError("Must specify root if passing a path")
+        if obj.is_absolute():
+            return Workspace(obj)
+        return Workspace(root / obj)
     elif isinstance(obj, Workspace):
         return obj
     else:
@@ -139,7 +151,7 @@ class Project(t.Dict["str", "Workspace"]):
         self._name = name
         self._seq = context.get_project_number()
 
-        ws = [_coerce_to_workspace(w) for w in members]
+        ws = [_coerce_member_to_workspace(w, root) for w in members]
         super().__init__({w.name: w for w in ws})
 
         if setup:
@@ -622,6 +634,14 @@ class Workspace:
         return WorkspaceRegistryProxy(self.registry[c.SINKS])
 
     @property
+    @lazy_load(NotebookSpecification)
+    def notebooks(self) -> WorkspaceRegistryProxy[NotebookSpecification]:
+        """Get the notebooks in the workspace."""
+        context.set_active_workspace(self)
+        self.config.activate()
+        return WorkspaceRegistryProxy(self.registry[c.NOTEBOOKS])
+
+    @property
     @lazy_load(ScriptSpecification)
     def scripts(self) -> WorkspaceRegistryProxy[ScriptSpecification]:
         """Get the scripts in the workspace."""
@@ -690,7 +710,11 @@ class Workspace:
                 default_target_environment = "prod"
             else:
                 default_target_environment = git_branch or "dev"
-        transform_opts = self.config_dict.get(c.TRANSFORM_SPEC, {}) | opts
+        transform_opts = (
+            dict(default_target_environment=default_target_environment)
+            | self.config_dict.get(c.TRANSFORM_SPEC, {})
+            | opts
+        )
         conf = sqlmesh.Config(
             **transform_opts,
             gateways={sink.name: gateway},
@@ -698,23 +722,6 @@ class Workspace:
             project=self.name,
             loader=CDFModelLoader,
             loader_kwargs=dict(sink=sink_name),
-            username=os.getenv("CDF_USER", getpass.getuser()),
-            default_target_environment=default_target_environment,
-            notification_targets=[
-                {  # type: ignore
-                    "type": "slack_webhook",
-                    "url": "...",
-                    "notify_on": [
-                        "apply_start",
-                        "apply_end",
-                        "apply_failure",
-                        "run_start",
-                        "run_end",
-                        "run_failure",
-                        "audit_failure",
-                    ],
-                }
-            ],
         )
         return conf
 
@@ -756,7 +763,10 @@ class Workspace:
     def __repr__(self) -> str:
         """Get a string representation of the workspace."""
         specs = self.config_dict.get(c.SPECS, {})
-        root = self.root.relative_to(Path.cwd())
+        if self.root.is_relative_to(Path.cwd()):
+            root = self.root.relative_to(Path.cwd())
+        else:
+            root = self.root
         pipelines = [p["entrypoint"] for p in specs.get(c.PIPELINES, [])]
         publishers = [p["entrypoint"] for p in specs.get(c.PUBLISHERS, [])]
         sinks = [p["entrypoint"] for p in specs.get(c.SINKS, [])]

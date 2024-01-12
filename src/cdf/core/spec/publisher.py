@@ -7,7 +7,12 @@ from sqlglot import exp
 
 import cdf.core.constants as c
 import cdf.core.logger as logger
-from cdf.core.spec.base import ComponentSpecification, Packageable, Schedulable
+from cdf.core.spec.base import (
+    ComponentSpecification,
+    Executable,
+    Packageable,
+    Schedulable,
+)
 
 if t.TYPE_CHECKING:
     import pandas as pd
@@ -24,7 +29,9 @@ class PublisherInterface(t.Protocol):
         ...
 
 
-class PublisherSpecification(ComponentSpecification, Packageable, Schedulable):
+class PublisherSpecification(
+    ComponentSpecification, Executable, Packageable, Schedulable
+):
     """A publisher specification."""
 
     select: t.Dict[str, str]
@@ -41,7 +48,7 @@ class PublisherSpecification(ComponentSpecification, Packageable, Schedulable):
     @property
     def pub(self) -> PublisherInterface:
         """The publisher function."""
-        return self._main
+        return self.main
 
     @pydantic.field_validator("affinity", mode="after")
     @classmethod

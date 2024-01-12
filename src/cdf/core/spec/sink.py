@@ -6,8 +6,7 @@ from dlt.common.destination.reference import Destination
 from sqlmesh.core.config.gateway import GatewayConfig
 
 import cdf.core.constants as c
-import cdf.core.logger as logger
-from cdf.core.spec.base import ComponentSpecification
+from cdf.core.spec.base import ComponentSpecification, Executable
 
 _AsTypes = t.Literal["destination", "staging", "gateway"]
 """A sink is a callable which can be coerced to any of the above parts at calltime as a convenience"""
@@ -28,7 +27,7 @@ class SinkInterface(t.NamedTuple):
     gateway: GatewayConfig | None
 
 
-class SinkSpecification(ComponentSpecification):
+class SinkSpecification(ComponentSpecification, Executable):
     """A sink specification."""
 
     environment: str
@@ -61,8 +60,7 @@ class SinkSpecification(ComponentSpecification):
     ) -> SinkInterface | Destination | GatewayConfig | None:
         """Return the sink components"""
         if self._tuple is None:
-            logger.info("Instantiating sink %s", self.name)
-            destination, staging, gateway = self._main()
+            destination, staging, gateway = self.main()
             for part in (destination, staging):
                 if part is not None:
                     name = self.name

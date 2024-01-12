@@ -1,5 +1,6 @@
 import ast
 import base64
+import getpass
 import io
 import json
 import os
@@ -134,6 +135,7 @@ BASE_JINJA_CONTEXT = {
     "weeks_later": lambda n: (datetime.now() + timedelta(weeks=n)).strftime("%Y-%m-%d"),
     "cat": _cat,
     "include": _include,
+    "getuser": getpass.getuser,
     "workspace": None,
     "root": None,
 }
@@ -182,6 +184,7 @@ def render(
     - weeks_ago: Returns the date n weeks ago in YYYY-MM-DD format.
     - weeks_later: Returns the date n weeks later in YYYY-MM-DD format.
     - cat: Concatenates one or more files into a string.
+    - getuser: Gets the current user.
     - workspace: The active workspace.
     - root: The root of the active workspace.
     - env_var: Gets an environment variable with a default value.

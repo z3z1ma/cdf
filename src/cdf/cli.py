@@ -3,6 +3,7 @@ import datetime
 import fnmatch
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import typing as t
@@ -515,7 +516,7 @@ def execute_script(
     ctx: typer.Context,
     script: t.Annotated[str, typer.Argument(help="The <workspace>.<script> to run")],
     opts: str = typer.Argument(
-        "{}", help="JSON formatted options to forward to the publisher."
+        "{}", help="JSON formatted options to forward to the script."
     ),
 ) -> None:
     """:rocket: Run a script in a workspace environment.
@@ -529,6 +530,7 @@ def execute_script(
     Args:
         ctx: The CLI context.
         script: The script to run.
+        opts: JSON formatted options to forward to the script.
     """
     project: Project = ctx.obj
     try:
@@ -542,6 +544,73 @@ def execute_script(
     workspace = project[ws]
     with workspace.runtime_context():
         workspace.scripts[script](workspace, **json.loads(opts))
+
+
+@app.command(rich_help_panel="Utility")
+def jupyter(
+    ctx: typer.Context,
+    workspace: str = typer.Argument(
+        default=None, help="The <workspace> to open jupyter lab in."
+    ),
+) -> None:
+    """:rocket: Open juptyer lab in a workspace environment.
+
+    \f
+    Args:
+        ctx: The CLI context.
+    """
+    project: Project = ctx.obj
+    ws = workspace or next(iter(project.keys()))
+    with project[ws].runtime_context():
+        pythonpath = sys.path.copy()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = ":".join(pythonpath)
+        subprocess.check_call(
+            ["jupyter", "lab"],
+            cwd=project[ws].root,
+            env=env,
+        )
+
+
+@app.command("execute-notebook", rich_help_panel="Utility")
+def execute_notebook(
+    ctx: typer.Context,
+    notebook: t.Annotated[
+        str, typer.Argument(help="The <workspace>.<notebook> to run")
+    ],
+    opts: str = typer.Argument(
+        "{}", help="JSON formatted parameters to forward to the notebook."
+    ),
+) -> None:
+    """:rocket: Run a notebook in a workspace environment.
+
+    A notebook is an arbitrary ipynb file located in the ./notebooks directory of a workspace.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        notebook: The notebook to run.
+        opts: JSON formatted parameters to forward to the notebook.
+    """
+    project: Project = ctx.obj
+    try:
+        ws, notebook = _parse_ws_component(notebook, project=project)
+    except ValueError as e:
+        form = "<workspace>.<notebook>" if len(project) > 1 else "<notebook>"
+        raise typer.BadParameter(
+            f"Must specify a notebook in the form {form}, got {notebook!r}; {e}",
+            param=ctx.command.params[0],
+        ) from e
+    workspace = project[ws]
+    with workspace.runtime_context():
+        origvar = os.environ.get("PYTHONPATH")
+        pythonpath = sys.path.copy()
+        os.environ["PYTHONPATH"] = ":".join(pythonpath)
+        workspace.notebooks[notebook](workspace, **json.loads(opts))
+        if origvar is None:
+            os.environ.pop("PYTHONPATH")
+        else:
+            os.environ["PYTHONPATH"] = origvar
 
 
 @app.command("fetch-metadata", rich_help_panel="Utility")
@@ -675,6 +744,12 @@ def generate_staging_layer(
         "--table",
         help="Glob pattern for tables to generate staging models for. Defaults to all. Can be specified multiple times.",
     ),
+    overwrite: bool = typer.Option(
+        False,
+        "-o",
+        "--overwrite",
+        help="Overwrite existing staging models. Defaults to False.",
+    ),
 ) -> None:
     """:floppy_disk: Generate a staging layer for a catalog.
 
@@ -746,6 +821,10 @@ def generate_staging_layer(
         def_ = renderable.render_definition()
         p = ws.root / c.MODELS / c.STAGING / ref.db / f"{ref.name}.sql"
         p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and not overwrite:
+            logger.info("Skipping %s since it already exists", p)
+            continue
+        logger.info("Writing %s", p)
         p.write_text(format_model_expressions(def_, dialect=renderable.dialect))
 
 

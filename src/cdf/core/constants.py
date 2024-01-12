@@ -9,6 +9,7 @@ TComponents = t.Literal[
     "sinks",
     "pipelines.metrics",
     "pipelines.filters",
+    "notebooks",
 ]
 """CDF component types"""
 
@@ -23,6 +24,7 @@ SINKS = "sinks"
 METRICS = "pipelines.metrics"
 FILTERS = "pipelines.filters"
 METADATA = "metadata"
+NOTEBOOKS = "notebooks"
 
 SPECS = "spec"
 """A namespace used in a cdf configuration TOML to declare specifications"""
@@ -57,6 +59,7 @@ DIR_LAYOUT = (
     PUBLISHERS,
     SINKS,
     SCRIPTS,
+    NOTEBOOKS,
     METADATA,
     METRICS,
     FILTERS,

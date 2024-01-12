@@ -25,7 +25,12 @@ import cdf.core.constants as c
 import cdf.core.context as context
 import cdf.core.feature_flags as ff
 import cdf.core.logger as logger
-from cdf.core.spec.base import ComponentSpecification, Packageable, Schedulable
+from cdf.core.spec.base import (
+    ComponentSpecification,
+    Executable,
+    Packageable,
+    Schedulable,
+)
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
@@ -49,7 +54,7 @@ class MetricInterface(t.Protocol):
         ...
 
 
-class PipelineMetricSpecification(ComponentSpecification):
+class PipelineMetricSpecification(ComponentSpecification, Executable):
     """Defines metrics which can be captured during pipeline execution"""
 
     input_: t.Dict[str, t.Any] = pydantic.Field({}, alias="input")
@@ -66,8 +71,8 @@ class PipelineMetricSpecification(ComponentSpecification):
     @property
     def func(self) -> MetricInterface:
         if self.input_:
-            return self._main(**self.input_)
-        return self._main
+            return self.main(**self.input_)
+        return self.main
 
     def __call__(self, resource: CDFResource, state: MetricState) -> None:
         """Adds a metric aggregator to a resource"""
@@ -114,7 +119,7 @@ class FilterInterface(t.Protocol):
         ...
 
 
-class PipelineFilterSpecification(ComponentSpecification):
+class PipelineFilterSpecification(ComponentSpecification, Executable):
     """Defines filters which can be applied to pipeline execution"""
 
     input_: t.Dict[str, t.Any] = pydantic.Field({}, alias="input")
@@ -131,8 +136,8 @@ class PipelineFilterSpecification(ComponentSpecification):
     @property
     def func(self) -> FilterInterface:
         if self.input_:
-            return self._main(**self.input_)
-        return self._main
+            return self.main(**self.input_)
+        return self.main
 
     def __call__(self, resource: CDFResource) -> None:
         """Adds a filter to a resource"""
@@ -158,7 +163,9 @@ def _basic_pipe(source: CDFSource) -> CooperativePipelineInterface:
     return pipeline.run(source)
 
 
-class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
+class PipelineSpecification(
+    ComponentSpecification, Executable, Packageable, Schedulable
+):
     """A pipeline specification."""
 
     metrics: InlineMetricSpecifications = {}
@@ -193,7 +200,7 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
     @property
     def pipe(self) -> PipelineInterface:
         """Get the pipeline."""
-        return self._main
+        return self.main
 
     @property
     def metric_state(self) -> types.MappingProxyType[str, t.Dict[str, Metric]]:
@@ -354,7 +361,7 @@ class PipelineSpecification(ComponentSpecification, Packageable, Schedulable):
 
             # Track the metadata associated with the load job
             logger.info("Pipeline execution took %.3f seconds", pipeterm - pipestart)
-            logger.info(f"Writing load info for {self.name} {self.version} {sink}")
+            logger.info(f"Writing load info for {self.versioned_name}({sink})")
             load_dict = load_info.asdict()
             load_dict.pop(  # Not needed, nor well structured due to variant key
                 "metrics", None

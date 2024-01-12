@@ -190,17 +190,15 @@ class StagingSpecification(pydantic.BaseModel, frozen=True):
     """
     Staging specification/DSL for cdf.
 
-    Rules are applied in the order they are defined. The output of one rule is the input of the next. Outputs
+    Rulesets are applied in the order they are matched. The output of one rule is the input of the next. Outputs
     are determined based on the output pattern. The default output pattern is `{resource_name}`. Another common
     pattern can be expressed as `stg_{dataset_name}__{table_name}`.
     """
 
     input: str
-    """A glob pattern for the tables to apply the ruleset to."""
-    output: str = "staging/{node.name}.sql"
-    """A format string for the output model path."""
-    naming_convention: str = "{node.db}_staging.{node.name}"
-    """A format string for the output table name."""
+    """A glob pattern for the input tables to apply the ruleset to."""
+    output: str = "{table.db}_staging.{table.name}"
+    """A format string for the output table names."""
     rule: StagingRuleset = StagingRuleset()
     """The ruleset to apply to matches."""
     ignores: t.Tuple[str, ...] = ()
@@ -233,5 +231,5 @@ class StagingSpecification(pydantic.BaseModel, frozen=True):
         assert from_, f"No table found in select statement: {select.sql()}"
         return (
             self.rule.apply(select),
-            exp.to_table(self.naming_convention.format(node=from_, **from_.args)),
+            exp.to_table(self.output.format(table=from_, **from_.args)),
         )

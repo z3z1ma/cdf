@@ -8,6 +8,7 @@ from cdf.core.spec.base import (
     Schedulable,
     SupportsComponentMetadata,
 )
+from cdf.core.spec.notebook import NotebookSpecification
 from cdf.core.spec.pipeline import (
     CDFResource,
     CDFSource,
@@ -43,4 +44,5 @@ __all__ = [
     "destination",
     "StagingRuleset",
     "StagingSpecification",
+    "NotebookSpecification",
 ]

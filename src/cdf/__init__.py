@@ -18,6 +18,7 @@ from dlt.sources.helpers.requests import Client as session
 import cdf.core.logger as logger
 from cdf.core.spec import (
     CooperativePipelineInterface,
+    NotebookSpecification,
     PipelineSpecification,
     PublisherInterface,
     PublisherSpecification,
@@ -46,6 +47,7 @@ __all__ = [
     "Workspace",
     "PipelineSpecification",
     "CooperativePipelineInterface",
+    "NotebookSpecification",
     "PublisherSpecification",
     "PublisherInterface",
     "SinkSpecification",

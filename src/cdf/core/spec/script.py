@@ -4,7 +4,12 @@ import typing as t
 
 import cdf.core.constants as c
 import cdf.core.logger as logger
-from cdf.core.spec.base import ComponentSpecification, Packageable, Schedulable
+from cdf.core.spec.base import (
+    ComponentSpecification,
+    Executable,
+    Packageable,
+    Schedulable,
+)
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
@@ -21,7 +26,7 @@ class ScriptInterface(t.Protocol):
         ...
 
 
-class ScriptSpecification(ComponentSpecification, Packageable, Schedulable):
+class ScriptSpecification(ComponentSpecification, Executable, Packageable, Schedulable):
     """A script specification."""
 
     _key = c.SCRIPTS
@@ -29,7 +34,7 @@ class ScriptSpecification(ComponentSpecification, Packageable, Schedulable):
     @property
     def script(self) -> ScriptInterface:
         """The script function."""
-        return self._main
+        return self.main
 
     def __call__(self, workspace: "Workspace", **kwargs) -> int:
         """Call the script.
