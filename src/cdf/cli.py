@@ -269,6 +269,7 @@ def head(
             param=ctx.command.params[0],
         ) from e
     workspace = project[ws]
+    cdf_context.LIMIT.set(num)
     with workspace.runtime_source(src, **json.loads(opts)) as rt_source:
         if resource not in rt_source.resources:
             raise typer.BadParameter(

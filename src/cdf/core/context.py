@@ -1,4 +1,5 @@
 """Context module."""
+import contextvars
 import typing as t
 
 if t.TYPE_CHECKING:
@@ -51,3 +52,7 @@ def disable_autoinstall() -> None:
 def is_autoinstall_enabled() -> bool:
     """Check if autoinstall is enabled."""
     return _AUTOINSTALL_ENABLED
+
+
+LIMIT = contextvars.ContextVar("cli_limit", default=None)
+"""A limit set by the cdf head command which pipelines can respect to be more efficient."""

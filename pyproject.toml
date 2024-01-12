@@ -1,6 +1,6 @@
 [project]
 name = "cdf"
-version = "0.5.1"
+version = "0.5.2"
 description = "A framework to manage data continuously"
 authors = [
     {name = "z3z1ma", email = "butler.alex2010@gmail.com"},

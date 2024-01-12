@@ -16,6 +16,7 @@ from dlt.common.configuration import with_config as with_config
 from dlt.sources.helpers.requests import Client as session
 
 import cdf.core.logger as logger
+from cdf.core.context import LIMIT
 from cdf.core.spec import (
     CooperativePipelineInterface,
     NotebookSpecification,
@@ -65,4 +66,5 @@ __all__ = [
     "gateway",
     "session",
     "incremental",
+    "LIMIT",
 ]

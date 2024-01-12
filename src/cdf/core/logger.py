@@ -1,4 +1,5 @@
 """Logger for CDF"""
+import contextlib
 import logging
 import typing as t
 import warnings
@@ -14,9 +15,7 @@ if t.TYPE_CHECKING:
     class LogMethod(t.Protocol):
         """Protocol for logger methods."""
 
-        def __call__(
-            self, message: Representable, *args: t.Any, **kwargs: t.Any
-        ) -> None:
+        def __call__(self, msg: Representable, *args: t.Any, **kwargs: t.Any) -> None:
             ...
 
 
@@ -86,6 +85,11 @@ def create(name: str | None = None) -> CDFLoggerAdapter | logging.Logger:
     return LOGGER.logger.getChild(name)
 
 
+def log_level() -> str:
+    """Returns current log level"""
+    return logging.getLevelName(LOGGER.logger.level)
+
+
 def set_level(level: int | str) -> None:
     """Set the package log level.
 
@@ -103,11 +107,25 @@ def set_level(level: int | str) -> None:
         LOGGER.setLevel(LOG_LEVEL := level)
 
 
+@contextlib.contextmanager
+def suppress_and_warn() -> t.Iterator[None]:
+    """Suppresses exception and logs it as warning"""
+    try:
+        yield
+    except Exception:
+        LOGGER.warning("Suppressed exception", exc_info=True)
+
+
 def __getattr__(name: str) -> "LogMethod":
     """Get a logger method from the package logger."""
     if not LOGGER.extra.get("configured"):
         configure()
-    return getattr(LOGGER, name)
+
+    def wrapper(msg: "Representable", *args: t.Any, **kwargs: t.Any) -> None:
+        stacklevel = 3 if name == "exception" else 2
+        getattr(LOGGER, name)(msg, *args, **kwargs, stacklevel=stacklevel)
+
+    return wrapper
 
 
 def monkeypatch_dlt() -> None:
