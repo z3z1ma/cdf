@@ -76,6 +76,7 @@ def main(
             "-d",
             "--debug",
             help="Run in debug mode, force log level to debug in cdf, dlt, and sqlmesh.",
+            envvar="CDF_DEBUG",
         ),
     ] = False,
     install: t.Annotated[
@@ -85,9 +86,10 @@ def main(
             "-i",
             "--install",
             help="Install the component being invoked during runtime. This is experimental and may be removed in the future.",
+            envvar="CDF_AUTO_INSTALL",
         ),
     ] = False,
-):
+) -> None:
     """:sparkles: a [b]framework[b] for managing and running [u]continousdataframework[/u] projects. :sparkles:
 
     [b/]
@@ -269,7 +271,7 @@ def head(
             param=ctx.command.params[0],
         ) from e
     workspace = project[ws]
-    cdf_context.LIMIT.set(num)
+    token = cdf_context.LIMIT.set(num)
     with workspace.runtime_source(src, **json.loads(opts)) as rt_source:
         if resource not in rt_source.resources:
             raise typer.BadParameter(
@@ -284,6 +286,7 @@ def head(
             num -= 1
             if num == 0:
                 break
+    cdf_context.LIMIT.reset(token)
 
 
 @app.command(rich_help_panel="Integrate")
@@ -408,7 +411,7 @@ SQLMESH_COMMANDS = (
 """A list of sqlmesh commands worth wrapping."""
 
 
-def _get_transform_command_wrapper(name: str):
+def _get_transform_command_wrapper(name: str) -> t.Callable[[typer.Context], None]:
     """Passthrough for sqlmesh commands.
 
     Args:
@@ -1036,7 +1039,7 @@ def _print_metadata(metadata: "SupportsComponentMetadata") -> None:
         rich.print(f"[b]Cron[/b]: {cron}\n")
 
 
-def _metadata_to_md_section(name: str, metadata: "SupportsComponentMetadata"):
+def _metadata_to_md_section(name: str, metadata: "SupportsComponentMetadata") -> str:
     """Convert a component's metadata to a markdown section."""
     md_doc = f"#### {name}\n\n"
     md_doc += f"- **Description**: {metadata.description}\n"

@@ -1,6 +1,6 @@
 """Context module."""
-import contextvars
 import typing as t
+from contextvars import ContextVar
 
 if t.TYPE_CHECKING:
     from cdf.core.workspace import Workspace
@@ -54,5 +54,5 @@ def is_autoinstall_enabled() -> bool:
     return _AUTOINSTALL_ENABLED
 
 
-LIMIT = contextvars.ContextVar("cli_limit", default=None)
+LIMIT: ContextVar[int | None] = ContextVar("cli_limit", default=None)
 """A limit set by the cdf head command which pipelines can respect to be more efficient."""
