@@ -372,9 +372,8 @@ class PipelineSpecification(
                 dataset_name=c.INTERNAL_SCHEMA,
                 table_name=c.LOAD_INFO_TABLE,
                 write_disposition="append",
-                schema=Schema(  # Ensure inherited schema settings are not used
-                    "cdf_load_info"
-                ),
+                # Ensure inherited schema settings are not used
+                schema=Schema("cdf_load_info"),
             )
 
             if p.runtime_config.slack_incoming_hook:
@@ -405,6 +404,8 @@ class PipelineSpecification(
                     dataset_name=c.INTERNAL_SCHEMA,
                     table_name=c.EXC_INFO_TABLE,
                     write_disposition="append",
+                    # Ensure inherited schema settings are not used
+                    schema=Schema("cdf_exc_info"),
                 )
             except (NameError, UnboundLocalError) as nopipe:
                 logger.error(
