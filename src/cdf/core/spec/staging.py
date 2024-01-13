@@ -168,6 +168,7 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
         column node ignoring any existing aliases. This rule implements a simple aliasing DSL for the format
         string. The following variables are available:
         - `column`: The base column node.
+        - `projection`: The projection which wraps the column node. IE an alias or a cast, etc.
         - `ref`: The source table node.
 
         This rule takes precedence over the homogeneous aliasing rules as it operates on the base column node.
@@ -194,7 +195,9 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
 
         for projection in tree.selects:
             column = _ensure(projection.find(exp.Column))
-            alias = exp.to_identifier(fmt.format(column=column, ref=ref))
+            alias = exp.to_identifier(
+                fmt.format(column=column, projection=projection, ref=ref)
+            )
             if isinstance(projection, exp.Alias):
                 projection.set("alias", alias)
             else:

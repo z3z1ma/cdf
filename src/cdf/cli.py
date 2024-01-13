@@ -825,21 +825,21 @@ def generate_staging_layer(
 
     def _generate_staging_model(
         ref: exp.Table,
-        specs: t.List[StagingSpecification],
+        transformers: t.List[StagingSpecification],
         mapping: t.Dict[str, exp.DataType],
         target: Path,
-    ) -> None:
+    ) -> int:
         logger.info("Generating model for %s", target)
         select = exp.select(
             *[exp.cast(exp.column(c, "this"), typ) for c, typ in mapping.items()]
         ).from_(ref.as_("this"))
         mut_ref = ref
-        for transform_func in specs:
+        for transform_func in transformers:
             select, mut_ref = transform_func(select)
         if mut_ref == ref:
-            raise ValueError(
-                f"Applicable staging spec did not transform {ref} reference"
-            )
+            msg = "Applicable staging spec did not transform %s reference"
+            logger.warning(msg, ref)
+            return 0
         renderable = create_sql_model(
             mut_ref.sql(),
             query=select,
@@ -865,11 +865,12 @@ def generate_staging_layer(
             contents = f"-- fmt: off\n{bloc.strip()};\n-- fmt: on\n\n{fmt_query}"
 
         logger.info("Writing staging model for %s to %s", ref, target)
-        target.write_text(contents)
+        return target.write_text(contents)
 
     tpe = ThreadPoolExecutor(
         max_workers=(os.cpu_count() or 1) * 2, thread_name_prefix="cdf"
     )
+    jobs = []
     for model in context.models.values():
         ref = exp.to_table(model.fqn)
         if model.kind.name.value != "EXTERNAL":
@@ -889,10 +890,18 @@ def generate_staging_layer(
         if target.exists() and not overwrite:
             logger.info("Skipping %s since it already exists", target)
             continue
-        tpe.submit(
-            _generate_staging_model, ref, specs, model.columns_to_types_or_raise, target
+        jobs.append(
+            tpe.submit(
+                _generate_staging_model,
+                ref,
+                specs,
+                model.columns_to_types_or_raise,
+                target,
+            )
         )
-    tpe.shutdown(wait=True)
+    if not all(job.result() for job in jobs):
+        raise typer.Exit(1)
+    tpe.shutdown()
 
 
 @app.command("init-workspace", rich_help_panel="Project Initialization")
