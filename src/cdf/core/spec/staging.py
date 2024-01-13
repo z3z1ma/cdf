@@ -3,7 +3,6 @@ import fnmatch
 import functools
 import importlib
 import inspect
-import re
 import typing as t
 
 import pydantic
@@ -335,7 +334,9 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
         - Applies all custom transforms. (user-defined)
 
         Custom transforms are applied in the order they are defined. They are entrypoint paths to functions
-        which accept and return a select statement. They are applied after all other rules.
+        which accept a select statement and should mutate the tree in place. Transforms are applied after all
+        other rules except GPT annotation and sorting. This allows custom transforms to be used to implement
+        more complex rules.
 
         Args:
             tree (exp.Select): The select statement to apply the rules to.
@@ -362,7 +363,7 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
                     f"Custom transform must define a transform function: {t_entry}"
                 ) from e
 
-            tree = t_func(tree)
+            t_func(tree)
 
         return tree
 
@@ -576,7 +577,7 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
 
     def apply(self, tree: exp.Select, dialect: str | None = None) -> exp.Select:
         """
-        Applies the ruleset to a select statement.
+        Applies the ruleset to a select statement modifying it in place.
 
         Args:
             select (exp.Select): The select statement to apply the ruleset to. The from must be aliased as "this".
@@ -595,16 +596,16 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
         else:
             tree.meta["staging_ruleset"] += self
 
-        tree = self.apply_projection_filtering_rules(tree)
-        tree = self.apply_heterogeneous_aliasing(tree)
-        tree = self.apply_homogeneous_aliasing(tree)
-        tree = self.apply_remove_dunders(tree)
-        tree = self.apply_computed_columns(tree, dialect=dialect)
-        tree = self.apply_join_load_table(tree)
-        tree = self.apply_predicates(tree)
-        tree = self.apply_custom_transforms(tree)
-        tree = self.apply_gpt_annotate(tree)
-        tree = self.apply_sort(tree)
+        self.apply_projection_filtering_rules(tree, copy=False)
+        self.apply_remove_dunders(tree, copy=False)
+        self.apply_heterogeneous_aliasing(tree, copy=False)
+        self.apply_homogeneous_aliasing(tree, copy=False)
+        self.apply_computed_columns(tree, copy=False, dialect=dialect)
+        self.apply_join_load_table(tree, copy=False)
+        self.apply_predicates(tree, copy=False)
+        self.apply_custom_transforms(tree, copy=False)
+        self.apply_gpt_annotate(tree, copy=False)
+        self.apply_sort(tree, copy=False)
 
         return tree
 
