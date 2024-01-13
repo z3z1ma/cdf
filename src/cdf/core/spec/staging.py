@@ -424,13 +424,12 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
                 {
                     "role": "system",
                     "content": (
-                        "You are a SQL annotater that annotates SQL queries via comments, reorders columns into "
-                        "logical groups, and outputs the updated query. The entire query is always "
-                        "returned. Column descriptions are optional and are added as a comment at the end a line. "
-                        "If the description cannot be inferred from the context, you should leave it blank. "
-                        "Descriptions do not explain the query semantics. Descriptions explain the business meaning "
-                        "of the column. Your goal is to add as many column descriptions as possible. You output "
-                        "syntactically correct SQL and nothing else."
+                        "You are a SQL annotater that annotates SQL queries via comments and outputs the updated "
+                        "query. The entire query is always returned. Column descriptions are optional and are added "
+                        "as a comment at the end a line. If the description cannot be inferred from the context, you "
+                        "should leave it blank. Descriptions do not explain the query semantics. Descriptions explain "
+                        "the business meaning of the column. Your goal is to add as many column descriptions as "
+                        "possible. You output syntactically correct SQL and nothing else."
                     ),
                 },
                 {
@@ -447,7 +446,7 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
                         abc::text as abc,
                         payments::int as payments,
                         xyz::int as xyz
-                    FROM users
+                    FROM app.users
                     """
                     ),
                 },
@@ -456,19 +455,16 @@ class StagingRuleset(pydantic.BaseModel, frozen=True):
                     "content": inspect.cleandoc(
                         """
                     SELECT
-                        id::text as id,  -- The user id in our dbms
+                        id::text as id,  -- The user id in the system
+                        created_at::timestamp as created_at, -- The time the user was created
                         name::text as name, -- The user name as it appears in the UI
                         email::text as email, -- The email affiliated with the user
-
-                        payments::int as payments, -- The number of payments the user has made
-                        balance::float as balance, -- The number of dollars in the user's account
-
-                        created_at::timestamp as created_at, -- The time the user was created
                         updated_at::timestamp as updated_at -- The last time the user was updated
-
+                        balance::float as balance, -- The number of dollars in the user's account
                         abc::text as abc,
+                        payments::int as payments, -- The number of payments the user has made
                         xyz::int as xyz
-                    FROM users
+                    FROM app.users
                     """
                     ),
                 },
