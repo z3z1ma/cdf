@@ -1,12 +1,15 @@
 """CLI for cdf."""
 import datetime
 import fnmatch
+import getpass
+import importlib.util
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import typing as t
+from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
 from pathlib import Path
 
@@ -18,6 +21,7 @@ from croniter import croniter
 import cdf.core.constants as c
 import cdf.core.context as cdf_context
 import cdf.core.logger as logger
+from cdf.core.spec.staging import StagingSpecification
 
 if t.TYPE_CHECKING:
     from cdf import Project, SupportsComponentMetadata
@@ -142,6 +146,14 @@ def index(ctx: typer.Context) -> None:
             rich.print(f"\n   [green]Scripts[/green]: {len(workspace.scripts)}")
             for i, (name, meta) in enumerate(workspace.scripts.items(), start=1):
                 rich.print(f"   {i}) {name} ({meta.entrypoint_info})")
+
+            rich.print(f"\n   [cyan]Notebooks[/cyan]: {len(workspace.notebooks)}")
+            for i, (name, meta) in enumerate(workspace.notebooks.items(), start=1):
+                rich.print(f"   {i}) {name} ({meta.entrypoint_info})")
+
+            rich.print(f"\n   [magenta]Sinks[/magenta]: {len(workspace.sinks)}")
+            for i, (name, meta) in enumerate(workspace.sinks.items(), start=1):
+                rich.print(f"   {i}) {name} ({meta.entrypoint_info})")
     rich.print("")
 
 
@@ -166,6 +178,14 @@ def docs(ctx: typer.Context) -> None:
         if workspace.publishers:
             md_doc += "### 🖋️ Publishers\n\n"
             for name, meta in workspace.publishers.items():
+                md_doc += _metadata_to_md_section(name, meta)
+        if workspace.scripts:
+            md_doc += "### 📜 Scripts\n\n"
+            for name, meta in workspace.scripts.items():
+                md_doc += _metadata_to_md_section(name, meta)
+        if workspace.notebooks:
+            md_doc += "### 📓 Notebooks\n\n"
+            for name, meta in workspace.notebooks.items():
                 md_doc += _metadata_to_md_section(name, meta)
         md_doc += "\n"
     rich.print(md_doc)
@@ -754,6 +774,12 @@ def generate_staging_layer(
         "--overwrite",
         help="Overwrite existing staging models. Defaults to False.",
     ),
+    sqlfmt_preset: bool = typer.Option(
+        False,
+        "-s",
+        "--sqlfmt",
+        help="A preset which will wrap the MODEL def with a no fmt directive and will format the model body with sqlfmt.",
+    ),
 ) -> None:
     """:floppy_disk: Generate a staging layer for a catalog.
 
@@ -769,6 +795,13 @@ def generate_staging_layer(
     from sqlglot import exp
     from sqlmesh.core.dialect import format_model_expressions
     from sqlmesh.core.model import create_sql_model
+
+    if sqlfmt_preset:
+        maybe_spec = importlib.util.find_spec("sqlfmt")
+        if not maybe_spec:
+            raise typer.BadParameter(
+                "The sqlfmt preset requires sqlfmt to be installed."
+            )
 
     if fetch_metadata_:
         fetch_metadata(ctx, sink, [], True)
@@ -789,22 +822,16 @@ def generate_staging_layer(
 
     ws = project[workspace]
     context = ws.transform_context(sink_name)
-    for model in context.models.values():
-        ref = exp.to_table(model.fqn)
-        if model.kind.name.value != "EXTERNAL":
-            continue
-        if ref.name.startswith("_"):
-            continue
-        if not any(fnmatch.fnmatch(model.fqn, pat) for pat in tables):
-            continue
-        specs = list(filter(lambda s: s.is_applicable(ref), ws.staging_specs))
-        if not specs:
-            continue
+
+    def _generate_staging_model(
+        ref: exp.Table,
+        specs: t.List[StagingSpecification],
+        mapping: t.Dict[str, exp.DataType],
+        target: Path,
+    ) -> None:
+        logger.info("Generating model for %s", target)
         select = exp.select(
-            *[
-                exp.cast(exp.column(c, "this"), typ)
-                for c, typ in model.columns_to_types_or_raise.items()
-            ]
+            *[exp.cast(exp.column(c, "this"), typ) for c, typ in mapping.items()]
         ).from_(ref.as_("this"))
         mut_ref = ref
         for transform_func in specs:
@@ -821,15 +848,51 @@ def generate_staging_layer(
             project=context.config.project,
             time_column_format=context.config.time_column_format,
             physical_schema_override=context.config.physical_schema_override,
+            tags=["staging", "cdf", "generated"],
+            owner=os.getenv("CDF_USER", getpass.getuser()),
         )
         def_ = renderable.render_definition()
-        p = ws.root / c.MODELS / c.STAGING / ref.db / f"{ref.name}.sql"
-        p.parent.mkdir(parents=True, exist_ok=True)
-        if p.exists() and not overwrite:
-            logger.info("Skipping %s since it already exists", p)
+        contents = format_model_expressions(def_, dialect=renderable.dialect)
+        if sqlfmt_preset:
+            import sqlfmt.api
+            import sqlfmt.mode
+
+            bloc, query = contents.split(";", 1)
+            fmt_query = sqlfmt.api.format_string(
+                query,
+                sqlfmt.mode.Mode(line_length=120, single_process=True, quiet=True),
+            )
+            contents = f"-- fmt: off\n{bloc.strip()};\n-- fmt: on\n\n{fmt_query}"
+
+        logger.info("Writing staging model for %s to %s", ref, target)
+        target.write_text(contents)
+
+    tpe = ThreadPoolExecutor(
+        max_workers=(os.cpu_count() or 1) * 2, thread_name_prefix="cdf"
+    )
+    for model in context.models.values():
+        ref = exp.to_table(model.fqn)
+        if model.kind.name.value != "EXTERNAL":
             continue
-        logger.info("Writing %s", p)
-        p.write_text(format_model_expressions(def_, dialect=renderable.dialect))
+        if ref.name.startswith("_"):
+            continue
+        basic_fqn = ".".join(
+            map(lambda t: t.strip('"'), (ref.catalog, ref.db, ref.name))
+        )
+        if not any(fnmatch.fnmatch(basic_fqn, pat) for pat in tables):
+            continue
+        specs = list(filter(lambda s: s.is_applicable(ref), ws.staging_specs))
+        if not specs:
+            continue
+        target = ws.root / c.MODELS / c.STAGING / ref.db / f"{ref.name}.sql"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if target.exists() and not overwrite:
+            logger.info("Skipping %s since it already exists", target)
+            continue
+        tpe.submit(
+            _generate_staging_model, ref, specs, model.columns_to_types_or_raise, target
+        )
+    tpe.shutdown(wait=True)
 
 
 @app.command("init-workspace", rich_help_panel="Project Initialization")
