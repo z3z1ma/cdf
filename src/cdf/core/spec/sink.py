@@ -41,9 +41,7 @@ class SinkSpecification(ComponentSpecification, Executable):
         ...
 
     @t.overload
-    def __call__(
-        self, as_: t.Literal["destination"] = "destination"
-    ) -> Destination | None:
+    def __call__(self, as_: t.Literal["destination"] = "destination") -> Destination | None:
         ...
 
     @t.overload
@@ -62,13 +60,14 @@ class SinkSpecification(ComponentSpecification, Executable):
         if self._tuple is None:
             destination, staging, gateway = self.main()
             for part in (destination, staging):
-                if part is not None:
-                    name = self.name
-                    if part is staging:
-                        name += "-staging"
-                    part.config_params = part.config_params or {}
-                    part.config_params["destination_name"] = name
-                    part.config_params["environment"] = self.environment
+                if part is None:
+                    continue
+                name = self.name
+                if part is staging:
+                    name += "-staging"
+                part.config_params = part.config_params or {}
+                part.config_params["destination_name"] = name
+                part.config_params["environment"] = self.environment
             self._tuple = SinkInterface(destination, staging, gateway)
         if as_ is None:
             return self._tuple
@@ -79,9 +78,7 @@ class SinkSpecification(ComponentSpecification, Executable):
         elif as_ == "gateway":
             return self._tuple.gateway
         else:
-            raise ValueError(
-                f"Cannot coerce sink to {as_}, must be one of {t.get_args(_AsTypes)}"
-            )
+            raise ValueError(f"Cannot coerce sink to {as_}, must be one of {t.get_args(_AsTypes)}")
 
 
 gateway = GatewayConfig

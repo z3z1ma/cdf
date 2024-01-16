@@ -1,19 +1,16 @@
 """The spec classes and custom loader for continuous data framework models"""
 import os
-import pickle
 from pathlib import Path
 
 from ruamel import yaml
 from sqlglot import exp
 from sqlmesh import Config
-from sqlmesh import __version__ as sqlmesh_version
 from sqlmesh.core.loader import SqlMeshLoader
-from sqlmesh.core.macros import MacroRegistry
 from sqlmesh.core.model import Model, create_external_model
 from sqlmesh.utils import UniqueKeyDict
-from sqlmesh.utils.jinja import JinjaMacroRegistry
 
 import cdf.core.constants as c
+import cdf.core.logger as logger
 
 YAML = yaml.YAML(typ="rt")
 EXT = "yaml"
@@ -60,10 +57,16 @@ class CDFModelLoader(SqlMeshLoader):
         path: Path,
     ) -> UniqueKeyDict[str, Model]:
         """Processes an unmanaged cdf yaml file."""
-        path_key = f"{path.as_posix()}@{path.stat().st_mtime}"
-        if path_key in self._cache:
-            return self._cache[path_key]
-        for schema in YAML.load(path):
+        try:
+            data = YAML.load(path)
+            if not data:
+                return models
+            # TODO: replace with pydantic validator?
+            assert isinstance(data, list), "Expected a list of schemas"
+        except Exception as e:
+            logger.error("Failed to parse %s", path)
+            raise e
+        for schema in data:
             model = create_external_model(
                 **schema,
                 dialect=config.model_defaults.dialect,
@@ -71,13 +74,16 @@ class CDFModelLoader(SqlMeshLoader):
                 project=config.project,
                 default_catalog=self._context.default_catalog,
             )
-            # We do our best to avoid conflicts, but if there is any
-            # duplication across schema files -- prefer managed metadata
+            # We do our best to avoid conflicts, but if there is any duplication
+            # across managed -> unmanaged schema files -- prefer existing managed metadata
             if model.fqn in models:
+                logger.warn(
+                    "Duplicate external model definition %s found while parsing %s",
+                    model.fqn,
+                    path,
+                )
                 continue
             models[model.fqn] = model
-        self._cache[path_key] = models
-        self._mutated = True
         return models
 
     def _process_cdf_managed(
@@ -88,10 +94,16 @@ class CDFModelLoader(SqlMeshLoader):
         path: Path,
     ) -> UniqueKeyDict[str, Model]:
         """Processes a managed cdf yaml file."""
-        path_key = f"{path.as_posix()}@{path.stat().st_mtime}"
-        if path_key in self._cache:
-            return self._cache[path_key]
-        for name, schema in YAML.load(path).items():
+        try:
+            data = YAML.load(path)
+            if not data:
+                return models
+            # TODO: replace with pydantic validator?
+            assert isinstance(data, dict), "Expected a dict of model names to schemas"
+        except Exception as e:
+            logger.error("Failed to parse %s", path)
+            raise e
+        for name, schema in data.items():
             model = create_external_model(
                 name,
                 columns={
@@ -104,11 +116,7 @@ class CDFModelLoader(SqlMeshLoader):
                 default_catalog=self._context.default_catalog,
             )
             models[model.fqn] = model
-        self._cache[path_key] = models
-        self._mutated = True
         return models
-
-    # Overrides
 
     def _load_external_models(self) -> UniqueKeyDict[str, Model]:
         """Adds behavior to load cdf source models."""
@@ -125,26 +133,4 @@ class CDFModelLoader(SqlMeshLoader):
             if cdf_unmanaged.exists():
                 self._track_file(cdf_unmanaged)
                 models = self._process_cdf_unmanaged(models, config, cdf_unmanaged)
-        return models
-
-    def _load_models(
-        self, macros: MacroRegistry, jinja_macros: JinjaMacroRegistry
-    ) -> UniqueKeyDict[str, Model]:
-        """Adds behavior to load cdf staging models."""
-
-        self._cache_path = self._context.path / ".cache" / f"external.{sqlmesh_version}"
-        self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if self._cache_path.exists():
-            with self._cache_path.open("rb") as cache_contents:
-                self._cache = pickle.load(cache_contents)
-        else:
-            self._cache = {}
-
-        models = super()._load_models(macros, jinja_macros)
-
-        if self._mutated:
-            with self._cache_path.open("wb") as cache_file:
-                pickle.dump(self._cache, cache_file)
-
         return models

@@ -1,9 +1,7 @@
-.git/
 __pycache__/
 
-.pdm-python
-.pdm-build/
+.git/
 
+dist/
 logs/
 
-scratch.py
