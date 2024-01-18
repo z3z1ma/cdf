@@ -15,6 +15,8 @@ from pathlib import Path
 
 import dlt
 import rich
+import rich.traceback
+import sqlmesh
 import typer
 from croniter import croniter
 
@@ -106,13 +108,14 @@ def main(
     if install:
         cdf_context.enable_autoinstall()
 
+    rich.traceback.install(suppress=[dlt, typer, sqlmesh])
     logger.set_level(log_level.upper() if not debug else "DEBUG")
+
     logger.monkeypatch_sqlglot()
     logger.monkeypatch_dlt()
-    if debug:
-        import sqlmesh
 
-        dlt.config["runtime.log_level"] = "DEBUG"
+    if debug:
+        os.environ["RUNTIME__LOG_LEVEL"] = "DEBUG"
         sqlmesh.configure_logging(force_debug=True)
 
     if ctx.invoked_subcommand in ("init-project", "init-workspace"):
