@@ -269,6 +269,7 @@ class PipelineSpecification(
         Returns:
             LoadInfo: The load info.
         """
+        force_replace = kwargs.pop("_cdf_replace", None)
         ctx = self.unwrap(**kwargs)
         source = next(ctx)
 
@@ -338,6 +339,11 @@ class PipelineSpecification(
 
             # Passthrough schema contract to pipeline entrypoint
             p.run = functools.partial(p.run, schema_contract=self.schema_contract)
+
+            # Set write disposition to replace if requested by cdf
+            if force_replace:
+                p.run = functools.partial(p.run, write_disposition="replace")
+
             ctx.send(p)
             raise RuntimeError("Pipeline did not complete.")
         except StopIteration as e:

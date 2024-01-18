@@ -324,6 +324,15 @@ def pipeline(
     resources: t.List[str] = typer.Option(
         ..., "-r", "--resource", default_factory=list
     ),
+    replace: t.Annotated[
+        bool,
+        typer.Option(
+            ...,
+            "-F",
+            "--replace",
+            help="Force the write disposition to replace ignoring state. Useful to force a full refresh of some resources.",
+        ),
+    ] = False,
 ) -> None:
     """:inbox_tray: Ingest data from a [b blue]pipeline[/b blue] into a data store where it can be [b red]Transformed[/b red].
 
@@ -337,6 +346,10 @@ def pipeline(
     Raises:
         typer.BadParameter: If no resources are selected.
     """
+    if replace and not resources:
+        raise typer.BadParameter(
+            "Must explicitly specify resources when using -F/--replace"
+        )
     project: Project = ctx.obj
     try:
         ws, pipe, sink = _parse_ws_component(pipeline, project=project)
@@ -351,7 +364,9 @@ def pipeline(
     workspace = project[ws]
     with workspace.runtime_context():
         logger.info(
-            workspace.pipelines[pipe](workspace, sink, resources, **json.loads(opts))
+            workspace.pipelines[pipe](
+                workspace, sink, resources, **json.loads(opts), _cdf_replace=replace
+            ),
         )
 
 
