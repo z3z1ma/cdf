@@ -391,6 +391,12 @@ class PipelineSpecification(
             logger.error("Pipeline failed after %s seconds", pipeterm - pipestart)
             logger.error(f"Writing exception for {self.name} {self.version} {sink}")
             try:
+                traces = [
+                    trace_info
+                    for step in p.last_trace.steps
+                    for trace_info in step.exception_traces
+                    if trace_info
+                ]
                 p.run(
                     [
                         {
@@ -398,7 +404,7 @@ class PipelineSpecification(
                             "pipeline": self.name,
                             "version": self.version,
                             "sink": sink,
-                            **p.last_trace.asdict(),
+                            "traces": traces,
                         }
                     ],
                     dataset_name=c.INTERNAL_SCHEMA,
