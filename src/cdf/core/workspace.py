@@ -720,8 +720,8 @@ class Workspace:
             gateways={sink.name: gateway},
             default_gateway=sink.name,
             project=self.name,
-            loader=CDFModelLoader,
-            loader_kwargs=dict(sink=sink_name),
+            # loader=CDFModelLoader,
+            # loader_kwargs=dict(sink=sink_name),
         )
         return conf
 
