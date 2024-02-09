@@ -9,62 +9,6 @@ that augment dlt and sqlmesh including automated virtual environment management,
 discoverability of pipelines and publishers, automated configuration management, and
 more.
 """
-import dlt
-from dlt import pipeline as pipeline
-from dlt.common.configuration import configspec as configspec
-from dlt.common.configuration import with_config as with_config
-from dlt.sources.helpers.requests import Client as session
+from cdf.core.pipeline import data_pipeline, return_source_pipeline
 
-import cdf.core.logger as logger
-from cdf.core.context import LIMIT
-from cdf.core.spec import (
-    CooperativePipelineInterface,
-    NotebookSpecification,
-    PipelineSpecification,
-    PublisherInterface,
-    PublisherSpecification,
-    SinkInterface,
-    SinkSpecification,
-    StagingRuleset,
-    StagingSpecification,
-    SupportsComponentMetadata,
-    destination,
-    gateway,
-)
-from cdf.core.workspace import Project, Workspace
-
-# Re-export most commonly accessed dlt symbols
-CDFSource = dlt.sources.DltSource
-CDFResource = dlt.sources.DltResource
-inject_config = dlt.config.value
-inject_secret = dlt.secrets.value
-incremental = dlt.sources.incremental
-
-
-__all__ = [
-    "CDFSource",
-    "CDFResource",
-    "Project",
-    "Workspace",
-    "PipelineSpecification",
-    "CooperativePipelineInterface",
-    "NotebookSpecification",
-    "PublisherSpecification",
-    "PublisherInterface",
-    "SinkSpecification",
-    "SinkInterface",
-    "StagingSpecification",
-    "StagingRuleset",
-    "SupportsComponentMetadata",
-    "logger",
-    "with_config",
-    "pipeline",
-    "inject_config",
-    "inject_secret",
-    "configspec",
-    "destination",
-    "gateway",
-    "session",
-    "incremental",
-    "LIMIT",
-]
+__all__ = ["data_pipeline", "return_source_pipeline"]

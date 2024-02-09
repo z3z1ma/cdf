@@ -106,10 +106,7 @@ class CDFModelLoader(SqlMeshLoader):
         for name, schema in data.items():
             model = create_external_model(
                 name,
-                columns={
-                    c["name"]: DLT_TO_SQLGLOT[c.get("data_type", "unknown")]
-                    for c in schema["columns"].values()
-                },
+                columns={c["name"]: DLT_TO_SQLGLOT[c.get("data_type", "unknown")] for c in schema["columns"].values()},
                 dialect=config.model_defaults.dialect,
                 path=path,
                 project=config.project,
@@ -134,3 +131,10 @@ class CDFModelLoader(SqlMeshLoader):
                 self._track_file(cdf_unmanaged)
                 models = self._process_cdf_unmanaged(models, config, cdf_unmanaged)
         return models
+
+    def _track_file(self, path: Path) -> None:
+        """Project file to track for modifications"""
+        try:
+            super()._track_file(path)
+        except Exception:
+            pass
