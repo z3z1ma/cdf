@@ -546,7 +546,7 @@ def publish(
             assert snapshot, f"Snapshot not found for {normalized_name}"
             if snapshot.missing_intervals(
                 datetime.date.today() - datetime.timedelta(days=7),
-                datetime.date.today(),
+                datetime.date.today() - datetime.timedelta(days=1),
             ):
                 logger.error("Model %s has missing intervals. Cannot publish.", model)
                 raise typer.Exit()
