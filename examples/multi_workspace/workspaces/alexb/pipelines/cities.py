@@ -16,5 +16,6 @@ def us_cities():
     ).json()
 
 
-pipe = dlt.pipeline("cities")
-load_info = pipe.run(us_cities(), destination="duckdb", table_name="cities")
+if __name__ == "__main__":
+    pipe = dlt.pipeline("cities")
+    load_info = pipe.run(us_cities(), destination="duckdb", table_name="cities")

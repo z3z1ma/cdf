@@ -84,3 +84,6 @@ METRIC_INFO_TABLE = "_cdf_metrics"
 
 DEFAULT_CONFIG = {"ff": {"provider": "local"}}
 """Default configuration for a CDF workspace"""
+
+SOURCE_CONTAINER = "__sources__"
+"""A key used to capture sources during runtime"""

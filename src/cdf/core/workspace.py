@@ -2,6 +2,7 @@
 The workspace module is responsible for generating the Workspace data structure
 """
 import itertools
+import sys
 import typing as t
 from operator import attrgetter
 from pathlib import Path
@@ -11,14 +12,22 @@ import tomlkit
 
 import cdf.core.constants as c
 import cdf.core.logger as logger
-from cdf.core.monads import Just, Maybe, Nothing, Result, State
+from cdf.core.monads import Err, Ok, Result, State
 from cdf.core.parser import ParsedComponent, process_script
 
 PathLike = t.Union[str, Path]
 
 
-class WorkspaceDoesNotExist(ValueError):
+class DoesNotExist(ValueError):
+    """An error raised when something does not exist."""
+
+
+class WorkspaceDoesNotExist(DoesNotExist):
     """An error raised when a workspace does not exist."""
+
+
+class ComponentDoesNotExist(DoesNotExist):
+    """An error raised when a component does not exist."""
 
 
 class InvalidWorkspace(ValueError):
@@ -46,7 +55,7 @@ class Workspace(t.NamedTuple):
         key: t.Literal[
             "pipelines", "publishers", "scripts", "notebooks", "all"
         ] = "all",
-    ) -> Maybe[ParsedComponent]:
+    ) -> Result[ParsedComponent, DoesNotExist]:
         """Finds a component by name."""
         if key == "all":
             candidates = itertools.chain(
@@ -59,12 +68,12 @@ class Workspace(t.NamedTuple):
             candidates = getattr(self, key)
         for component in candidates:
             if component.name == name:
-                return Just(component)
-        return Nothing()
+                return Ok(component)
+        return Err(ComponentDoesNotExist(f"Component not found: {name}"))
 
     def exists(self, name: str) -> bool:
         """Checks if a component exists by name."""
-        return self.search(name).is_just()
+        return self.search(name).is_ok()
 
 
 @Result.lift
@@ -103,12 +112,12 @@ class Project(t.NamedTuple):
     def name(self) -> str:
         return self.root.name
 
-    def search(self, name: str) -> Maybe[Workspace]:
+    def search(self, name: str) -> Result[Workspace, DoesNotExist]:
         """Finds a workspace by name."""
         for member in self.members:
             if member.name == name:
-                return Just(member)
-        return Nothing()
+                return Ok(member)
+        return Err(WorkspaceDoesNotExist(f"Workspace not found: {name}"))
 
 
 @Result.lift
@@ -138,3 +147,18 @@ def load_project(path: PathLike) -> Project:
         path,
         tuple(process_directory(path.joinpath(member)).unwrap() for member in members),
     )
+
+
+class HasRoot(t.Protocol):
+    @property
+    def root(self) -> Path:
+        ...
+
+
+T = t.TypeVar("T", bound=HasRoot)
+
+
+def augment_sys_path(this: T) -> T:
+    """Augments sys.path with the workspace root."""
+    sys.path.append(str(this.root))
+    return this

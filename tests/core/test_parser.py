@@ -7,12 +7,12 @@ import cdf.core.dialect as d
 from cdf.core.parser import (
     ParserError,
     extract_docstring_or_raise,
-    generate_runtime_code,
     parse_cdf_component_spec,
     parse_python_ast,
     process_script,
     props_to_dict,
 )
+from cdf.core.rewriter import rewrite_pipeline
 
 
 @pytest.fixture
@@ -77,12 +77,12 @@ def test_process_script():
         process_script("tests/core/fixtures/bad_spec.txt").unwrap()
 
     script = process_script("tests/core/fixtures/basic_pipe.py").unwrap()
-    assert script.specification["name"] == "data_pipeline"
+    assert script.name == "data_pipeline"
     assert script.type_ == "pipeline"
 
 
 def test_generate_runtime_code(cdf_mod):
-    dump = parse_python_ast(cdf_mod).bind(generate_runtime_code).unwrap()
+    dump = parse_python_ast(cdf_mod).bind(rewrite_pipeline).unwrap()
     lines = dump.splitlines()
     assert lines[0] == "import cdf"
     assert "dlt.pipeline" not in dump

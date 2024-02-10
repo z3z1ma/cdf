@@ -1,11 +1,14 @@
 """
-This module contains functions for parsing cdf python scripts into metadata and runtime code.
+This module contains functions for parsing cdf python scripts into metadata and AST.
 
 Metadata is parsed from the docstring of the python script and is expected to be in cdf DSL format.
-Runtime code is generated from the python script AST and is used to execute the script within the cdf framework.
+This is a SQL-like syntax that is used to define the metadata of a cdf component.
+
+PIPELINE (
+  name my_pipeline
+);
 """
 import ast
-import copy
 import typing as t
 from pathlib import Path
 
@@ -171,37 +174,13 @@ def props_to_dict(
     )
 
 
-# TODO: move to rewriter.py, no more rewriting in parser.py
-@Result.lift
-def rewrite_runtime_script(tree: ast.Module) -> str:
-    """Generates a runtime code from a python script ast.
-
-    Args:
-        tree: The ast of a python script.
-
-    Returns:
-        str: The runtime code of the python script.
-    """
-    tree = copy.deepcopy(tree)
-    tree.body[0] = ast.Import(names=[ast.alias(name="cdf", asname=None)])
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            node_v = t.cast(ast.Name, node.func.value)
-            if node.func.attr == "pipeline" and node_v.id == "dlt":
-                node_v.id = "cdf"
-                node.func.attr = "return_source_pipeline"
-    tree = ast.fix_missing_locations(tree)
-    modstr = ast.unparse(tree)
-    return "\n".join(line for line in modstr.splitlines() if line.strip())
-
-
 class ParsedComponent(t.NamedTuple):
     """A parsed cdf python script."""
 
     type_: str
     """The type of the component."""
-    runtime_code: str
-    """The runtime code for the script."""
+    tree: ast.Module
+    """The AST of the script."""
     specification: immutabledict[str, Result[t.Any, ParserError]]
     """The parsed cdf metadata."""
     path: Path
@@ -241,7 +220,7 @@ def process_script(path: PathLike) -> ParsedComponent:
         ) from spec_tree.unwrap_err()
     return ParsedComponent(
         type_=spec_tree.map(lambda node: node.key).unwrap(),
-        runtime_code=rewrite_runtime_script(script.tree).unwrap(),
+        tree=script.tree,
         specification=spec_tree(props_to_dict).unwrap(),
         path=path,
         mtime=path.stat().st_mtime,

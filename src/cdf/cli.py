@@ -1,4 +1,5 @@
 """CLI for cdf."""
+import runpy
 import tempfile
 import typing as t
 from enum import Enum
@@ -7,11 +8,11 @@ from pathlib import Path
 import rich
 import rich.traceback
 import typer
-from croniter import croniter
 
+import cdf.core.constants as c
 from cdf.core.monads import Err, Ok, Result
-from cdf.core.pipeline import CDFReturn
-from cdf.core.workspace import Project, load_project
+from cdf.core.rewriter import intercepting_pipe_rewriter, rewrite_pipeline
+from cdf.core.workspace import Project, augment_sys_path, load_project
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -19,31 +20,6 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
 )
-
-
-class Delimiter(str, Enum):
-    """Enum of delimiters for the CLI."""
-
-    DOT = "."
-    DCOLON = "::"
-    ARROW = "->"
-    DARRROW = ">>"
-    PIPE = "|"
-    FSLASH = "/"
-    TO = "-to-"
-
-    @classmethod
-    def _split(
-        cls, string: str, into: int = 2
-    ) -> Result[t.Tuple[str, ...], ValueError]:
-        parts = [string]
-
-        while delimiter := next((d.value for d in cls if d.value in parts[-1]), None):
-            parts.extend(parts.pop().split(delimiter, 1))
-
-        if len(parts) != into:
-            return Err(ValueError(f"Expected {into} parts but got {len(parts)}."))
-        return Ok(tuple(p.strip() for p in parts))
 
 
 @app.callback()
@@ -91,44 +67,18 @@ def discover(
     pipeline: t.Annotated[
         str, typer.Argument(help="The <workspace>.<pipeline> to discover.")
     ],
-    opts: str = typer.Argument(
-        "{}", help="JSON formatted options to forward to the pipeline."
-    ),
 ) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources."""
-    project: Project = ctx.obj
-    if len(project.members) > 1:
-        segments, err = Delimiter._split(pipeline, into=2).to_parts()
-        if err:
-            raise typer.BadParameter("Invalid pipeline format.") from err
-        workspace, pipeline = segments
-    else:
-        workspace, pipeline = project.name, pipeline
-    rich.print(f"Searching for {pipeline} in {workspace}...")
-    maybe_pipe = project.search(workspace).bind(
-        lambda ws: ws.search(pipeline, key="pipelines")
-    )
-    if maybe_pipe.is_nothing():
+    project: Project = augment_sys_path(ctx.obj)
+    fqn, err = Separator.split(pipeline, into=2).to_parts()
+    if err:
         raise typer.BadParameter(
-            f"Pipeline {pipeline} not found in {workspace}. Ensure the workspace exists and the pipeline is defined."
+            f"Expected 2 parts <workspace>.<pipeline>. Got {pipeline}",
+            param_hint="pipeline",
         )
-    pipe = maybe_pipe.unwrap()
-    import os
-    import runpy
-
-    os.environ["RUNTIME__LOG_LEVEL"] = "INFO"
-    with tempfile.TemporaryDirectory() as tmpdir:
-        f = Path(tmpdir) / "__main__.py"
-        # TODO: rewriting should be deferred since we do different things based on the entrypoint
-        f.write_bytes(pipe.runtime_code.encode("utf-8"))
-        try:
-            # TODO: set __module__ (or whatever it is) to enable relative imports form workspace
-            runpy.run_path(str(f.absolute()), run_name="__main__")
-        except CDFReturn as e:
-            sources = e.value
-            for source in sources:
-                rich.print(source)
-    rich.print(pipe)
+    (workspace, pipeline) = fqn
+    for source in _get_sources_or_raise(project, workspace, pipeline):
+        rich.print(source.resources)
 
 
 @app.command(rich_help_panel="Inspect")
@@ -137,9 +87,6 @@ def head(
     pipeline: t.Annotated[
         str, typer.Argument(help="The <workspace>.<pipeline>.<resource> to inspect.")
     ],
-    opts: str = typer.Argument(
-        "{}", help="JSON formatted options to forward to the pipeline."
-    ),
     num: t.Annotated[int, typer.Option("-n", "--num-rows")] = 5,
 ) -> None:
     """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]pipeline[/b blue]. Defaults to [cyan]5[/cyan].
@@ -151,12 +98,35 @@ def head(
         ctx: The CLI context.
         pipeline: The pipeline to inspect.
         resource: The resource to inspect.
-        opts: JSON formatted options to forward to the pipeline.
         num: The number of rows to print.
 
     Raises:
         typer.BadParameter: If the resource is not found in the pipeline.
     """
+    project: Project = augment_sys_path(ctx.obj)
+    fqn, err = Separator.split(pipeline, into=3).to_parts()
+    if err:
+        raise typer.BadParameter(
+            f"Expected 3 parts <workspace>.<pipeline>.<resource>. Got {pipeline}",
+            param_hint="pipeline",
+        )
+    (workspace, pipeline, resource) = fqn
+    sources = _get_sources_or_raise(project, workspace, pipeline)
+    candidates = [
+        r for s in sources for r in s.resources.values() if r.name == resource
+    ]
+    if not candidates:
+        raise typer.BadParameter(
+            f"Resource {resource} not found in pipeline {pipeline}.",
+            param_hint="resource",
+        )
+    r, i = iter(candidates[0]), 0
+    while i < num:
+        try:
+            rich.print(next(r))
+        except StopIteration:
+            break
+        i += 1
 
 
 @app.command(rich_help_panel="Integrate")
@@ -165,9 +135,6 @@ def pipeline(
     pipeline: t.Annotated[
         str, typer.Argument(help="The <workspace>.<pipeline>.<sink> to run.")
     ],
-    opts: str = typer.Argument(
-        "{}", help="JSON formatted options to forward to the pipeline."
-    ),
     resources: t.List[str] = typer.Option(
         ..., "-r", "--resource", default_factory=list
     ),
@@ -186,7 +153,6 @@ def pipeline(
     \f
     Args:
         ctx: The CLI context.
-        pipeline: The pipeline to ingest from and the sink to ingest into.
         opts: JSON formatted options to forward to the pipeline.
         resources: The resources to ingest.
 
@@ -370,10 +336,38 @@ def develop(
     """:hammer_and_wrench: Install project components in the active virtual environment."""
 
 
-def _parse_ws_component(
-    component: str, project: "Project | None" = None
-) -> t.Tuple[str, ...]:
-    """Parse a workspace.component string into a tuple of parts.
+def _get_sources_or_raise(project: Project, workspace: str, pipeline: str):
+    """Get the sources from a dlt pipelines script or raise an error if unable to."""
+
+    def _get_sources(code: str) -> t.Set[t.Any]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "__main__.py"
+            f.write_text(code)
+            exports = runpy.run_path(
+                tmpdir,
+                run_name="__main__",
+                init_globals={c.SOURCE_CONTAINER: set()},
+            )
+        return exports[c.SOURCE_CONTAINER]
+
+    rich.print(f"Searching for {pipeline} in {workspace}...")
+    sources, err = (
+        project.search(workspace)
+        .map(augment_sys_path)
+        .bind(lambda w: w.search(pipeline, key="pipelines"))
+        .map(lambda pipe: pipe.tree)
+        .map(lambda tree: rewrite_pipeline(tree, rewriter=intercepting_pipe_rewriter))
+        .map(lambda code: _get_sources(code.unwrap()))
+        .to_parts()
+    )
+    if err:
+        raise err
+    return sources
+
+
+class Separator(str, Enum):
+    """
+    Enum of delimiters for the CLI.
 
     We support the following syntaxes (with all combinations of delimiters)
     workspace.component
@@ -384,66 +378,27 @@ def _parse_ws_component(
     workspace.component | sink
     workspace >> component >> sink
     workspace/component/sink
-
-    if operating in a project with a default workspace indicating a flat single-tenant structure,
-    no workspace should be specified in the component string. Same goes for a single workspace project.
-
-    Args:
-        component: The component string to parse.
-
-    Returns:
-        A tuple of parts.
+    workspace/component-to-sink
     """
-    parts = [component]
 
-    # Parse
-    while delim := next(
-        (d for d in Delimiter if d.value in parts[-1]),
-        None,
-    ):
-        parts.extend(parts.pop(-1).split(delim.value, 1))
+    DOT = "."
+    DCOLON = "::"
+    ARROW = "->"
+    DARRROW = ">>"
+    PIPE = "|"
+    FSLASH = "/"
+    TO = "-to-"
 
-    parts = [p.strip() for p in parts]
+    @classmethod
+    def split(cls, string: str, into: int = 2) -> Result[t.Tuple[str, ...], ValueError]:
+        parts = [string]
 
-    # Inject workspace in a single-tenant project
-    if project and len(project) == 1:
-        ws = next(iter(project))
-        if parts[0] != ws:
-            parts.insert(0, ws)
-    if project and parts[0] not in project:
-        raise ValueError(f"Workspace {parts[0]} not found in project.")
+        while delimiter := next((d.value for d in cls if d.value in parts[-1]), None):
+            parts.extend(parts.pop().split(delimiter, 1))
 
-    return tuple(parts)
-
-
-def _print_metadata(metadata) -> None:
-    """
-    Print common component metadata.
-
-    Args:
-        meta: The component metadata.
-    """
-    rich.print(f"\n[b]Owners[/b]: [yellow]{metadata.owner}[/yellow]")
-    description = metadata.description.replace("\n", " ")
-    rich.print(f"[b]Description[/b]: {description}")
-    rich.print(f"[b]Tags[/b]: {', '.join(metadata.tags)}")
-    if metadata.cron:
-        cron = (
-            " ".join(metadata.cron.expressions)
-            if isinstance(metadata.cron, croniter)
-            else metadata.cron
-        )
-        rich.print(f"[b]Cron[/b]: {cron}\n")
-
-
-def _metadata_to_md_section(name: str, metadata) -> str:
-    """Convert a component's metadata to a markdown section."""
-    md_doc = f"#### {name}\n\n"
-    md_doc += f"- **Description**: {metadata.description}\n"
-    md_doc += f"- **Owners**: {metadata.owner}\n"
-    md_doc += f"- **Tags**: {', '.join(metadata.tags)}\n"
-    md_doc += f"- **Cron**: {metadata.cron or 'Not Scheduled'}\n\n"
-    return md_doc
+        if len(parts) != into:
+            return Err(ValueError(f"Expected {into} parts but got {len(parts)}."))
+        return Ok(tuple(p.strip() for p in parts))
 
 
 if __name__ == "__main__":

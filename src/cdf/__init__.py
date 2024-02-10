@@ -9,6 +9,6 @@ that augment dlt and sqlmesh including automated virtual environment management,
 discoverability of pipelines and publishers, automated configuration management, and
 more.
 """
-from cdf.core.pipeline import data_pipeline, return_source_pipeline
+from cdf.core.pipeline import intercepting_pipeline, pipeline
 
-__all__ = ["data_pipeline", "return_source_pipeline"]
+__all__ = ["intercepting_pipeline", "pipeline"]

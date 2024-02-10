@@ -26,11 +26,11 @@ class Monad(t.Generic[T], abc.ABC):
         return hash(self._value)
 
     @abc.abstractmethod
-    def bind(self, func: t.Callable[[T], TMonad]) -> TMonad:
+    def bind(self, func: t.Callable[[T], "Monad[U]"]) -> "Monad[U]":
         pass
 
     @abc.abstractmethod
-    def map(self, func: t.Callable[[T], U]) -> TMonad:  # type: ignore
+    def map(self, func: t.Callable[[T], U]) -> "Monad[U]":
         pass
 
     @abc.abstractmethod
@@ -45,10 +45,10 @@ class Monad(t.Generic[T], abc.ABC):
     def unwrap_or(self, default: U) -> t.Union[T, U]:
         pass
 
-    def __call__(self, func: t.Callable[[T], TMonad]) -> TMonad:
+    def __call__(self, func: t.Callable[[T], "Monad[U]"]) -> "Monad[U]":
         return self.bind(func)
 
-    def __rshift__(self, func: t.Callable[[T], TMonad]) -> TMonad:
+    def __rshift__(self, func: t.Callable[[T], "Monad[U]"]) -> "Monad[U]":
         return self.bind(func)
 
 
@@ -65,6 +65,17 @@ class Maybe(Monad[T], abc.ABC):
     @abc.abstractmethod
     def is_nothing(self) -> bool:
         pass
+
+    if t.TYPE_CHECKING:
+
+        def bind(self, func: t.Callable[[T], "Maybe[U]"]) -> "Maybe[U]":
+            ...
+
+        def map(self, func: t.Callable[[T], U]) -> "Maybe[U]":
+            ...
+
+        def filter(self, predicate: t.Callable[[T], bool]) -> "Maybe[T]":
+            ...
 
     def unwrap(self) -> T:
         """Unwraps the value of the Maybe.
@@ -105,7 +116,7 @@ class Maybe(Monad[T], abc.ABC):
         @functools.wraps(func)
         def wrapper(value: U | Maybe[U]) -> Maybe[T]:
             if isinstance(value, Maybe):
-                return value.map(func)
+                return value.map(func)  # type: ignore
             value = t.cast(U, value)
             try:
                 result = func(value)
@@ -272,7 +283,7 @@ class Result(Monad[T], t.Generic[T, E]):
 
         def wrapper(result: U | Result[U, E]) -> Result[T, E]:
             if isinstance(result, Result):
-                return result.map(func)
+                return result.map(func)  # type: ignore
             result = t.cast(U, result)
             try:
                 return Ok(func(result))
@@ -280,6 +291,17 @@ class Result(Monad[T], t.Generic[T, E]):
                 return Err(t.cast(E, e))
 
         return wrapper
+
+    if t.TYPE_CHECKING:
+
+        def bind(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]":
+            ...
+
+        def map(self, func: t.Callable[[T], U]) -> "Result[U, E]":
+            ...
+
+        def filter(self, predicate: t.Callable[[T], bool]) -> "Result[T, E]":
+            ...
 
     def __iter__(self) -> t.Iterator[T]:
         """Allows safely unwrapping the value of the Result using a for construct."""

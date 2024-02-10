@@ -117,8 +117,14 @@ def dota2_stats():
     )
 
 
-pipe = dlt.pipeline("dota2")
+if __name__ == "__main__":
+    pipe = dlt.pipeline("dota2")
 
-source = dota2_stats().with_resources("pro_players", "pro_matches", "teams", "heroes")
+    source = dota2_stats().with_resources(
+        "pro_players",
+        "pro_matches",
+        "teams",
+        "heroes",
+    )
 
-pipe.run(source, destination="duckdb")
+    pipe.run(source, destination="duckdb")

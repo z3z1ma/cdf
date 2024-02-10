@@ -7,8 +7,8 @@ PIPELINE (
     owner 'jdoe'
 );
 
-@METRIC("account_*", row_count); -- Number of rows
-@FILTER("account_*", pii_filter); -- Sensitive data
+--@METRIC("account_*", row_count); -- Number of rows
+--@FILTER("account_*", pii_filter); -- Sensitive data
 """
 import dlt
 
