@@ -70,13 +70,7 @@ def discover(
 ) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources."""
     project: Project = augment_sys_path(ctx.obj)
-    fqn, err = Separator.split(pipeline, into=2).to_parts()
-    if err:
-        raise typer.BadParameter(
-            f"Expected 2 parts <workspace>.<pipeline>. Got {pipeline}",
-            param_hint="pipeline",
-        )
-    (workspace, pipeline) = fqn
+    workspace, pipeline = Separator.split(pipeline, into=2).unwrap()
     for source in _get_sources_or_raise(project, workspace, pipeline):
         rich.print(source.resources)
 
@@ -84,10 +78,10 @@ def discover(
 @app.command(rich_help_panel="Inspect")
 def head(
     ctx: typer.Context,
-    pipeline: t.Annotated[
+    resource: t.Annotated[
         str, typer.Argument(help="The <workspace>.<pipeline>.<resource> to inspect.")
     ],
-    num: t.Annotated[int, typer.Option("-n", "--num-rows")] = 5,
+    n: t.Annotated[int, typer.Option("-n", "--rows")] = 5,
 ) -> None:
     """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]pipeline[/b blue]. Defaults to [cyan]5[/cyan].
 
@@ -97,36 +91,31 @@ def head(
     Args:
         ctx: The CLI context.
         pipeline: The pipeline to inspect.
-        resource: The resource to inspect.
-        num: The number of rows to print.
+        n: The number of rows to print.
 
     Raises:
         typer.BadParameter: If the resource is not found in the pipeline.
     """
     project: Project = augment_sys_path(ctx.obj)
-    fqn, err = Separator.split(pipeline, into=3).to_parts()
-    if err:
-        raise typer.BadParameter(
-            f"Expected 3 parts <workspace>.<pipeline>.<resource>. Got {pipeline}",
-            param_hint="pipeline",
-        )
-    (workspace, pipeline, resource) = fqn
-    sources = _get_sources_or_raise(project, workspace, pipeline)
+    workspace, pipeline, resource = Separator.split(resource, into=3).unwrap()
     candidates = [
-        r for s in sources for r in s.resources.values() if r.name == resource
+        res
+        for src in _get_sources_or_raise(project, workspace, pipeline)
+        for res in src.resources.values()
+        if res.name == resource
     ]
     if not candidates:
         raise typer.BadParameter(
             f"Resource {resource} not found in pipeline {pipeline}.",
             param_hint="resource",
         )
-    r, i = iter(candidates[0]), 0
-    while i < num:
+    producer, j = iter(candidates[0]), 0
+    while j < n:
         try:
-            rich.print(next(r))
+            rich.print(next(producer))
         except StopIteration:
             break
-        i += 1
+        j += 1
 
 
 @app.command(rich_help_panel="Integrate")
@@ -344,13 +333,10 @@ def _get_sources_or_raise(project: Project, workspace: str, pipeline: str):
             f = Path(tmpdir) / "__main__.py"
             f.write_text(code)
             exports = runpy.run_path(
-                tmpdir,
-                run_name="__main__",
-                init_globals={c.SOURCE_CONTAINER: set()},
+                tmpdir, run_name="__main__", init_globals={c.SOURCE_CONTAINER: set()}
             )
         return exports[c.SOURCE_CONTAINER]
 
-    rich.print(f"Searching for {pipeline} in {workspace}...")
     sources, err = (
         project.search(workspace)
         .map(augment_sys_path)
@@ -390,14 +376,20 @@ class Separator(str, Enum):
     TO = "-to-"
 
     @classmethod
-    def split(cls, string: str, into: int = 2) -> Result[t.Tuple[str, ...], ValueError]:
+    def split(
+        cls, string: str, into: int = 2
+    ) -> Result[t.Tuple[str, ...], typer.BadParameter]:
         parts = [string]
 
         while delimiter := next((d.value for d in cls if d.value in parts[-1]), None):
             parts.extend(parts.pop().split(delimiter, 1))
 
         if len(parts) != into:
-            return Err(ValueError(f"Expected {into} parts but got {len(parts)}."))
+            return Err(
+                typer.BadParameter(
+                    f"Expected {into} part fqn but parsed {len(parts)} from {string}."
+                )
+            )
         return Ok(tuple(p.strip() for p in parts))
 
 
