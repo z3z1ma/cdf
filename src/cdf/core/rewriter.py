@@ -1,10 +1,12 @@
 """This module contains the logic for rewriting the ast of a python script.
 
 Headers provide the ability to adjust the behavior of scripts without modifying the original source code. This
-is acheived through dynamic patching of the upstream interface. We expose these as functions so they can be
-tested and used in a more modular fashion. The headers are extracted from the function bodies for top-level
-insertion into scripts. Return values ind function parameters are purely for testing purposes. They are stripped
-when the headers are used in practice.
+is achieved through dynamic wrapping of the upstream interface.
+
+The headers are extracted from the function bodies for top-level insertion into scripts. Return values and
+function parameters are stripped from the function bodies during conversion to headers. This confers the
+significant benefit of having fully functional and testable wrappers for the pipeline constructor outside of
+the rewriting mechanism.
 """
 import ast
 import inspect
@@ -20,6 +22,10 @@ if t.TYPE_CHECKING:
 
     PipeFactory = t.Callable[..., Pipeline]
     SimpleSink = t.Tuple[str, t.Any, t.Any]
+
+
+class RewriteError(ex.CDFError):
+    """An error raised when rewriting fails."""
 
 
 def _to_header(
@@ -45,7 +51,16 @@ def _to_header(
 # We want this code to be injected with minimal changes to the original source
 # code so we keep it compact and disable black formatting for this section.
 def get_entrypoint() -> "PipeFactory":
-    """Provides a canonical entrypoint for the dlt.pipeline constructor."""
+    """Provides a canonical entrypoint for the dlt.pipeline constructor.
+
+    This is used by all other wrappers to ensure a consistent entrypoint for the pipeline constructor and to provide
+    a separate reference for wrapping. This separate reference allows us to run rewritte pipelines safely across
+    threads or long running processes. As such, it is added to the top of the script by the rewriter by default.
+
+    The rewriter also replaces all calls to `dlt.pipeline` with the `__entrypoint__` function. Any fancy calls
+    to `dlt.pipeline` that are not direct calls will not be rewritten and will not be wrapped. This is a limitation
+    of the rewriter and is not expected to be a problem in practice. This decision lets us keep complexity very low.
+    """
     from dlt import pipeline as __entrypoint__
     return __entrypoint__
 
@@ -57,7 +72,7 @@ def source_capture_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
     """
     import functools, cdf.core.constants as c # isort:skip
     from dlt.extract.extract import data_to_sources
-    container = locals()[c.SOURCE_CONTAINER] = set()
+    locals()[c.SOURCE_CONTAINER] = container = set()
     def __wrap__(__pipefunc__: "PipeFactory"):
         @functools.wraps(__pipefunc__)
         def wrapper(*args, **kwargs):
@@ -175,6 +190,16 @@ def replace_disposition_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
         return wrapper
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
+
+
+def feature_flag_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
+    """Wraps the pipeline with feature flagging.
+
+    This is a placeholder for future use. It is not currently implemented.
+    """
+    pass
+
+    return __entrypoint__
 # End of injectable function bodies
 
 # fmt: on
@@ -194,6 +219,7 @@ resource_filter_header = lambda *patts: _to_header(  # noqa
     resource_filter_wrapper, prepends=[ast.parse(f"resource_patterns = {patts!r}")]
 )
 replace_disposition_header = _to_header(replace_disposition_wrapper)
+feature_flag_header = _to_header(feature_flag_wrapper)
 
 
 def create_rewriter(root: str) -> ast.NodeTransformer:
@@ -270,4 +296,4 @@ def rewrite_pipeline(
             "\n".join(line for line in stringified_code.splitlines() if line.strip())
         )
     except Exception as e:
-        return Err(ex.CDFError(f"Failed to rewrite pipeline: {e}"))
+        return Err(RewriteError(f"Failed to rewrite pipeline: {e}"))
