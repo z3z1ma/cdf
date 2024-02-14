@@ -19,7 +19,7 @@ if t.TYPE_CHECKING:
     from dlt.pipeline.pipeline import Pipeline
 
     PipeFactory = t.Callable[..., Pipeline]
-    sink = ("duckdb", None, None)
+    SimpleSink = t.Tuple[str, t.Any, t.Any]
 
 
 def _to_header(
@@ -78,7 +78,7 @@ def source_capture_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 
-def parametrized_destination_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
+def parametrized_destination_wrapper(__entrypoint__: "PipeFactory", sink: "SimpleSink" = ("duckdb", None, None)) -> "PipeFactory":
     """Parameterizes destination via wrapping a nonlocal `sink` var and overriding the destination parameter. 
 
     The parameter is overridden in the `run` and `load` methods of the pipeline. The `sink` variable is expected
@@ -114,7 +114,7 @@ def parametrized_destination_wrapper(__entrypoint__: "PipeFactory") -> "PipeFact
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 
-def get_duckdb_destination() -> t.Tuple[str, t.Any, t.Any]:
+def get_duckdb_destination() -> "SimpleSink":
     """Minimum via sink definition for duckdb destination."""
     sink=("duckdb", None, None)
     return sink
