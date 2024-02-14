@@ -11,14 +11,15 @@ import dotenv
 import tomlkit
 
 import cdf.core.constants as c
+import cdf.core.exceptions as ex
 import cdf.core.logger as logger
-from cdf.core.monads import Err, Ok, Result, State
+from cdf.core.monads import Err, Ok, Result
 from cdf.core.parser import ParsedComponent, process_script
 
 PathLike = t.Union[str, Path]
 
 
-class DoesNotExist(ValueError):
+class DoesNotExist(ex.CDFError, ValueError):
     """An error raised when something does not exist."""
 
 
@@ -30,11 +31,11 @@ class ComponentDoesNotExist(DoesNotExist):
     """An error raised when a component does not exist."""
 
 
-class InvalidWorkspace(ValueError):
+class InvalidWorkspace(ex.CDFError, ValueError):
     """An error raised when a workspace is invalid."""
 
 
-class InvalidProjectDefinition(ValueError):
+class InvalidProjectDefinition(ex.CDFError, ValueError):
     """An error raised when a project definition is invalid."""
 
 
@@ -44,6 +45,7 @@ class Workspace(t.NamedTuple):
     publishers: t.Tuple[ParsedComponent, ...] = ()
     scripts: t.Tuple[ParsedComponent, ...] = ()
     notebooks: t.Tuple[ParsedComponent, ...] = ()
+    sinks: t.Tuple[ParsedComponent, ...] = ()
 
     @property
     def name(self) -> str:
@@ -53,7 +55,7 @@ class Workspace(t.NamedTuple):
         self,
         name: str,
         key: t.Literal[
-            "pipelines", "publishers", "scripts", "notebooks", "all"
+            "pipelines", "publishers", "scripts", "notebooks", "sinks", "all"
         ] = "all",
     ) -> Result[ParsedComponent, DoesNotExist]:
         """Finds a component by name."""
@@ -63,6 +65,7 @@ class Workspace(t.NamedTuple):
                 self.publishers,
                 self.scripts,
                 self.notebooks,
+                self.sinks,
             )
         else:
             candidates = getattr(self, key)
@@ -100,7 +103,10 @@ def process_directory(path: PathLike) -> Workspace:
         return (subdirectory, tuple(vec))
 
     return Workspace(
-        path, **dict(map(_process, (c.PIPELINES, c.PUBLISHERS, c.SCRIPTS, c.NOTEBOOKS)))
+        path,
+        **dict(
+            map(_process, (c.PIPELINES, c.PUBLISHERS, c.SCRIPTS, c.NOTEBOOKS, c.SINKS))
+        ),
     )
 
 
@@ -159,6 +165,6 @@ T = t.TypeVar("T", bound=HasRoot)
 
 
 def augment_sys_path(this: T) -> T:
-    """Augments sys.path with the workspace root."""
+    """Augments sys.path with the project/workspace root."""
     sys.path.append(str(this.root))
     return this

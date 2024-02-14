@@ -1,0 +1,2 @@
+class CDFError(Exception):
+    pass

@@ -193,6 +193,17 @@ class ParsedComponent(t.NamedTuple):
         """The name of the component."""
         return self.specification["name"].unwrap_or(self.path.stem)
 
+    def to_script(self) -> str:
+        """Returns a python script representation of the parsed component."""
+        return "\n".join(
+            [
+                f"# {self.type_}",
+                f"# {self.specification}",
+                f"# {self.path}",
+                ast.unparse(self.tree),
+            ]
+        )
+
 
 @Result.lift
 def process_script(path: PathLike) -> ParsedComponent:

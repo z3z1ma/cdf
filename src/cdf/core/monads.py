@@ -11,7 +11,9 @@ from typing_extensions import Self
 
 T = t.TypeVar("T")  # The type of the value inside the Monad
 U = t.TypeVar("U")  # The transformed type of the value inside the Monad
-E = t.TypeVar("E", bound=BaseException)  # The type of the error inside the Result
+E = t.TypeVar(
+    "E", bound=BaseException, contravariant=True
+)  # The type of the error inside the Result
 P = t.ParamSpec("P")
 
 TState = t.TypeVar("TState")  # The type of the state
@@ -261,7 +263,7 @@ class Result(Monad[T], t.Generic[T, E]):
         pass
 
     @abc.abstractmethod
-    def unwrap_err(self) -> E:
+    def unwrap_err(self) -> BaseException:
         pass
 
     @abc.abstractmethod
@@ -362,7 +364,7 @@ class Ok(Result[T, E]):
         """
         return self._value
 
-    def unwrap_err(self) -> E:
+    def unwrap_err(self) -> BaseException:
         """Raises a ValueError since the Result is an Ok."""
         raise ValueError("Called unwrap_err on Ok")
 
@@ -446,7 +448,7 @@ class Err(Result[T, E]):
         """
         return default
 
-    def unwrap_err(self) -> E:
+    def unwrap_err(self) -> BaseException:
         """Unwraps the error of the Err.
 
         Returns:

@@ -20,7 +20,11 @@ class Publisher(exp.Expression):
     arg_types = {"expressions": True}
 
 
-CDFComponentDSL = t.Union[Pipeline, Script, Notebook, Publisher]
+class Sink(exp.Expression):
+    arg_types = {"expressions": True}
+
+
+CDFComponentDSL = t.Union[Pipeline, Script, Notebook, Publisher, Sink]
 
 
 def _create_parser(parser_type: t.Type[exp.Expression]) -> t.Callable:
@@ -50,12 +54,13 @@ PARSERS = {
     "SCRIPT": _create_parser(Script),
     "NOTEBOOK": _create_parser(Notebook),
     "PUBLISHER": _create_parser(Publisher),
+    "SINK": _create_parser(Sink),
 }
 
 
 def _render_spec(
     self: generator.Generator,
-    expression: Pipeline | Script | Notebook | Publisher,
+    expression: Pipeline | Script | Notebook | Publisher | Sink,
     name: str,
 ) -> str:
     props = ",\n".join(
@@ -105,5 +110,10 @@ class CDF(Dialect):
                 self,
                 expression,
                 "PUBLISHER",
+            ),
+            Sink: lambda self, expression: _render_spec(
+                self,
+                expression,
+                "SINK",
             ),
         }

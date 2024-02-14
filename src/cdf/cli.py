@@ -1,4 +1,5 @@
 """CLI for cdf."""
+import os
 import runpy
 import tempfile
 import typing as t
@@ -11,7 +12,15 @@ import typer
 
 import cdf.core.constants as c
 from cdf.core.monads import Err, Ok, Result
-from cdf.core.rewriter import intercepting_pipe_rewriter, rewrite_pipeline
+from cdf.core.rewriter import (
+    basic_destination_header,
+    noop_header,
+    parametrized_destination_header,
+    replace_disposition_header,
+    resource_filter_header,
+    rewrite_pipeline,
+    source_capture_header,
+)
 from cdf.core.workspace import Project, augment_sys_path, load_project
 
 app = typer.Typer(
@@ -122,10 +131,17 @@ def head(
 def pipeline(
     ctx: typer.Context,
     pipeline: t.Annotated[
-        str, typer.Argument(help="The <workspace>.<pipeline>.<sink> to run.")
+        str, typer.Argument(help="The <workspace>.<pipeline> to run.")
+    ],
+    destination: t.Annotated[
+        str, typer.Argument(help="The <workspace>.<sink> to run the pipeline to.")
     ],
     resources: t.List[str] = typer.Option(
-        ..., "-r", "--resource", default_factory=list
+        ...,
+        "-r",
+        "--resource",
+        default_factory=lambda: ["*"],
+        help="Glob pattern for resources to run. Can be specified multiple times.",
     ),
     replace: t.Annotated[
         bool,
@@ -148,6 +164,35 @@ def pipeline(
     Raises:
         typer.BadParameter: If no resources are selected.
     """
+    project: Project = augment_sys_path(ctx.obj)
+    workspace, pipeline = Separator.split(pipeline, into=2).unwrap()
+    os.environ["RUNTIME__LOG_LEVEL"] = "INFO"
+    sink_header = (
+        project.search(workspace)
+        .bind(lambda w: w.search(destination, key="sinks"))
+        .map(lambda sink: sink.tree)
+        .unwrap_or(basic_destination_header(destination))
+    )
+    code = (
+        project.search(workspace)
+        .map(augment_sys_path)
+        .bind(lambda w: w.search(pipeline, key="pipelines"))
+        .map(lambda pipe: pipe.tree)
+        .bind(
+            lambda tree: rewrite_pipeline(
+                tree,
+                sink_header,
+                parametrized_destination_header,
+                resource_filter_header(*resources),
+                replace and replace_disposition_header or noop_header,
+            )
+        )
+        .unwrap()
+    )
+    with tempfile.TemporaryDirectory() as tmpdir:
+        f = Path(tmpdir) / "__main__.py"
+        f.write_text(code)
+        _ = runpy.run_path(tmpdir, run_name="__main__")
 
 
 @app.command(rich_help_panel="Integrate")
@@ -332,9 +377,7 @@ def _get_sources_or_raise(project: Project, workspace: str, pipeline: str):
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "__main__.py"
             f.write_text(code)
-            exports = runpy.run_path(
-                tmpdir, run_name="__main__", init_globals={c.SOURCE_CONTAINER: set()}
-            )
+            exports = runpy.run_path(tmpdir, run_name="__main__")
         return exports[c.SOURCE_CONTAINER]
 
     sources, err = (
@@ -342,7 +385,7 @@ def _get_sources_or_raise(project: Project, workspace: str, pipeline: str):
         .map(augment_sys_path)
         .bind(lambda w: w.search(pipeline, key="pipelines"))
         .map(lambda pipe: pipe.tree)
-        .map(lambda tree: rewrite_pipeline(tree, rewriter=intercepting_pipe_rewriter))
+        .map(lambda tree: rewrite_pipeline(tree, source_capture_header))
         .map(lambda code: _get_sources(code.unwrap()))
         .to_parts()
     )
