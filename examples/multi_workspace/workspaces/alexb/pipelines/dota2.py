@@ -117,25 +117,13 @@ def dota2_stats():
     )
 
 
-import dlt
-from dlt.common.configuration import with_config
+pipe = dlt.pipeline("dota2")
 
+source = dota2_stats().with_resources(
+    "pro_players",
+    "pro_matches",
+    "teams",
+    "heroes",
+)
 
-@with_config(sections=("test", "section"))
-def foo(x=dlt.config.value):
-    return x
-
-
-assert foo() == 1
-
-if __name__ == "__main__":
-    pipe = dlt.pipeline("dota2")
-
-    source = dota2_stats().with_resources(
-        "pro_players",
-        "pro_matches",
-        "teams",
-        "heroes",
-    )
-
-    pipe.run(source, destination="duckdb")
+pipe.run(source, destination="duckdb")

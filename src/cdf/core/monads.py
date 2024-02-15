@@ -490,10 +490,12 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
             kwargs: Keyword arguments to pass to the coroutine function.
         """
         self._loop = asyncio.get_event_loop()
-        if inspect.iscoroutinefunction(coro_func):
+        if callable(coro_func):
             coro = coro_func(*args, **kwargs)
-        else:
+        elif inspect.iscoroutine(coro_func):
             coro = t.cast(t.Coroutine[None, None, T], coro_func)
+        else:
+            raise ValueError("Invalid coroutine function")
         self._future: asyncio.Future[T] = asyncio.ensure_future(coro, loop=self._loop)
 
     @classmethod

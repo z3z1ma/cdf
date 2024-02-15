@@ -1,7 +1,6 @@
 -- Data team workspace, demo project
 WORKSPACE (
-  name datateam,
-  owner alexb,
+  name alexb,
   tags [public]
 );
 

@@ -9,9 +9,11 @@ import rich.traceback
 import typer
 
 import cdf.core.constants as c
+import cdf.core.context as cdf_ctx
 from cdf.core.monads import Err, Ok, Result
 from cdf.core.rewriter import (
     basic_destination_header,
+    feature_flag_header,
     noop_header,
     parametrized_destination_header,
     replace_disposition_header,
@@ -106,8 +108,10 @@ def discover(
     """
     project: Project = augment_sys_path(ctx.obj)
     ws, pipe = Separator.split(pipeline, 2).unwrap()
-    for source in _get_sources_or_raise(project, ws, pipe):
-        rich.print(source.resources)
+    for i, source in enumerate(_get_sources_or_raise(project, ws, pipe), 1):
+        rich.print(f"{i}: {source.name}")
+        for j, resource in enumerate(source.resources.values(), 1):
+            rich.print(f"{i}.{j}: {resource.name} (enabled: {resource.selected})")
 
 
 @app.command(rich_help_panel="Inspect")
@@ -170,7 +174,7 @@ def pipeline(
         ...,
         "-r",
         "--resource",
-        default_factory=lambda: ["*"],
+        default_factory=lambda: [],
         help="Glob pattern for resources to run. Can be specified multiple times.",
     ),
     replace: t.Annotated[
@@ -198,6 +202,7 @@ def pipeline(
     project: Project = augment_sys_path(ctx.obj)
     ws, pipe = Separator.split(pipeline, 2).unwrap()
     workspace = project.search(ws).map(augment_sys_path).unwrap()
+    token = cdf_ctx.active_workspace.set(workspace)
     (
         Ok(workspace)
         .bind(lambda w: w.search(pipe, key="pipelines"))
@@ -212,13 +217,16 @@ def pipeline(
                     .unwrap_or(basic_destination_header(destination))
                 ),
                 parametrized_destination_header,
-                resource_filter_header(*resources),
+                resource_filter_header(*resources)
+                if resources
+                else feature_flag_header,
                 replace_disposition_header if replace else noop_header,
             )
         )
         .bind(lambda code: run(code, root=workspace.root))
         .unwrap()
     )
+    cdf_ctx.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Integrate")
@@ -262,7 +270,7 @@ def execute_script(
     (
         Ok(workspace)
         .bind(lambda w: w.search(script, key="scripts"))
-        .bind(lambda pipe: rewrite_pipeline(pipe.tree))
+        .bind(lambda pipe: rewrite_script(pipe.tree))
         .bind(lambda code: run(code, root=workspace.root))
         .unwrap()
     )
@@ -411,7 +419,11 @@ def develop(
 
 def _get_sources_or_raise(project: Project, ws: str, pipe: str):
     """Get the sources from a dlt pipelines script or raise an error if unable to."""
+    from cdf.core.feature_flags import create_harness_provider
+
+    ff_provider = create_harness_provider()
     workspace = project.search(ws).map(augment_sys_path).unwrap()
+    token = cdf_ctx.active_workspace.set(workspace)
     sources, err = (
         Ok(workspace)
         .map(augment_sys_path)
@@ -422,9 +434,10 @@ def _get_sources_or_raise(project: Project, ws: str, pipe: str):
         .map(lambda exports: exports[c.SOURCE_CONTAINER])
         .to_parts()
     )
+    cdf_ctx.active_workspace.reset(token)
     if err:
         raise err
-    return sources
+    return list(map(lambda s: ff_provider(s, workspace), sources))
 
 
 class Separator(str, Enum):

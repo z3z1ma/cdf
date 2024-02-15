@@ -51,7 +51,8 @@ def _to_header(
 # We want this code to be injected with minimal changes to the original source
 # code so we keep it compact and disable black formatting for this section.
 def get_entrypoint() -> "PipeFactory":
-    """Provides a canonical entrypoint for the dlt.pipeline constructor.
+    """
+    Provides a canonical entrypoint for the dlt.pipeline constructor.
 
     This is used by all other wrappers to ensure a consistent entrypoint for the pipeline constructor and to provide
     a separate reference for wrapping. This separate reference allows us to run rewritte pipelines safely across
@@ -61,11 +62,25 @@ def get_entrypoint() -> "PipeFactory":
     to `dlt.pipeline` that are not direct calls will not be rewritten and will not be wrapped. This is a limitation
     of the rewriter and is not expected to be a problem in practice. This decision lets us keep complexity very low.
     """
+    import os # isort:skip
     from dlt import pipeline as __entrypoint__
+    from dlt.common.configuration.container import Container
+    from dlt.common.configuration.providers import (ConfigTomlProvider,
+                                                    EnvironProvider,
+                                                    SecretsTomlProvider)
+    from dlt.common.configuration.specs.config_providers_context import \
+        ConfigProvidersContext
+    __ctx = Container()[ConfigProvidersContext]
+    __ctx.providers = [
+        EnvironProvider(),
+        SecretsTomlProvider(os.path.join(os.path.dirname(__file__), ".dlt")),
+        ConfigTomlProvider(os.path.join(os.path.dirname(__file__), ".dlt")),
+    ]
     return __entrypoint__
 
 def source_capture_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
-    """Overwrites the extract method of a pipeline to capture the sources and return an empty list.
+    """
+    Overwrites the extract method of a pipeline to capture the sources and return an empty list.
 
     This causes the pipeline to be executed in a dry-run mode essentially while sources are captured
     and returned to the caller. Pipelines scripts remain valid via this mechanism.
@@ -94,7 +109,8 @@ def source_capture_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
     return __entrypoint__
 
 def parametrized_destination_wrapper(__entrypoint__: "PipeFactory", sink: "SimpleSink" = ("duckdb", None, None)) -> "PipeFactory":
-    """Parameterizes destination via wrapping a nonlocal `sink` var and overriding the destination parameter. 
+    """
+    Parameterizes destination via wrapping a nonlocal `sink` var and overriding the destination parameter. 
 
     The parameter is overridden in the `run` and `load` methods of the pipeline. The `sink` variable is expected
     to be a tuple of the form (destination, staging, gateway) and is expected to be injected via another header.
@@ -163,7 +179,8 @@ def resource_filter_wrapper(__entrypoint__: "PipeFactory", *resource_patterns: s
     return __entrypoint__
 
 def replace_disposition_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
-    """Ignores state and truncates the destination table before loading.
+    """
+    Ignores state and truncates the destination table before loading.
 
     Schema inference history is preserved. This is standard dlt behavior. This is aimed at reloading
     data in existing tables given a long term support pipeline with a stable schema and potential
@@ -191,21 +208,38 @@ def replace_disposition_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 
-
 def feature_flag_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
-    """Wraps the pipeline with feature flagging.
-
-    This is a placeholder for future use. It is not currently implemented.
-    """
-    pass
-
+    """Wraps the pipeline with feature flagging."""
+    import functools # isort:skip
+    from dlt.extract.extract import data_to_sources # isort:skip
+    from cdf.core.context import active_workspace # isort:skip
+    from cdf.core.feature_flags import create_harness_provider
+    ff = create_harness_provider()
+    def __wrap__(__pipefunc__: "PipeFactory"):
+        @functools.wraps(__pipefunc__)
+        def wrapper(*args, **kwargs):
+            pipe = __pipefunc__(*args, **kwargs)
+            extract = pipe.extract
+            @functools.wraps(extract)
+            def _extract(data, **kwargs):
+                with pipe._maybe_destination_capabilities():
+                    forward = kwargs.copy()
+                    forward.pop("workers", None)
+                    forward.pop("max_parallel_items", None)
+                    data = data_to_sources(data, pipe, **forward)
+                for i, source in enumerate(data):
+                    data[i] = ff(source, active_workspace.get())
+                return extract(data, **kwargs)
+            pipe.extract = _extract
+            return pipe
+        return wrapper
+    __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 # End of injectable function bodies
-
 # fmt: on
 
+# Wrappers are converted -> to headers for use in the rewriter
 
-# Wrappers are converted to headers for use in the rewriter
 # These headers are executed eagerly in the top-level scope
 noop_header = ast.parse("pass")
 entrypoint_header = _to_header(get_entrypoint)
@@ -220,6 +254,7 @@ resource_filter_header = lambda *patts: _to_header(  # noqa
 )
 replace_disposition_header = _to_header(replace_disposition_wrapper)
 feature_flag_header = _to_header(feature_flag_wrapper)
+# End of headers
 
 
 def create_rewriter(root: str) -> ast.NodeTransformer:
@@ -271,7 +306,8 @@ rewriters = {
 def rewrite_pipeline(
     tree: ast.Module, *headers: ast.Module, copy: bool = True
 ) -> Result[str, ex.CDFError]:
-    """Generates code from a python script ast with additional headers.
+    """
+    Generates code from a python script ast with additional headers.
 
     Headers are prepended to the script and provide the ability to adjust the behavior of scripts
     without modifying the original source code.
@@ -302,6 +338,7 @@ def rewrite_pipeline(
 def rewrite_script(
     tree: ast.Module, *headers: ast.Module, copy=True
 ) -> Result[str, ex.CDFError]:
+    """Generates code from a python script ast with additional headers."""
     try:
         tree = deepcopy(tree) if copy else tree
         for header in reversed(headers):

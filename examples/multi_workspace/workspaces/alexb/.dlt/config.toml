@@ -2,5 +2,5 @@
 log_level="INFO"
 # log_format="JSON"
 
-[test.section]
+[test.ok]
 x=1

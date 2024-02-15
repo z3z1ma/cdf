@@ -1,6 +1,7 @@
 import contextlib
 import os
 import runpy
+import shutil
 import tempfile
 import typing as t
 from pathlib import Path
@@ -8,9 +9,6 @@ from pathlib import Path
 from cdf.core.monads import Err, Ok, Result
 
 PathLike = t.Union[str, Path]
-
-ENV_PROJECT_DIR = "DLT_PROJECT_DIR"
-"""Config injection support leveraging workspace-specific .dlt/config.toml and .dlt/secrets.toml files"""
 
 
 def run(
@@ -26,9 +24,10 @@ def run(
         Result[t.Dict[str, t.Any], Exception]: The result of the code execution.
     """
     try:
-        origprojdir = os.environ.get(ENV_PROJECT_DIR)
-        os.environ[ENV_PROJECT_DIR] = str(root)
         with tempfile.TemporaryDirectory() as tmpdir:
+            root_settings, temp_settings = Path(root) / ".dlt", Path(tmpdir) / ".dlt"
+            if root_settings.exists():
+                shutil.copytree(root_settings, temp_settings)
             f = Path(tmpdir) / "__main__.py"
             f.write_text(code)
             if quiet:
@@ -41,8 +40,3 @@ def run(
         return Ok(exports)
     except Exception as e:
         return Err(e)
-    finally:
-        if origprojdir is not None:
-            os.environ[ENV_PROJECT_DIR] = origprojdir
-        else:
-            del os.environ[ENV_PROJECT_DIR]

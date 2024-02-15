@@ -1,6 +1,9 @@
 """Context module."""
+import typing as t
 from contextvars import ContextVar
 
-logger = ContextVar("logger", default=None)
+if t.TYPE_CHECKING:
+    from cdf.core.workspace import Workspace
 
-replace = ContextVar("replace", default=False)
+
+active_workspace: ContextVar["Workspace"] = ContextVar("active_workspace")
