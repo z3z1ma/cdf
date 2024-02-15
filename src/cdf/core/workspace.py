@@ -112,7 +112,7 @@ def process_directory(path: PathLike) -> Workspace:
         meta=(
             process_definition(path / c.WORKSPACE_FILE)
             .map(lambda def_: def_.specification)
-            .unwrap_or(immutabledict(name=path.name))
+            .unwrap_or(immutabledict(name=Ok(path.name)))
         ),
     )
 
@@ -148,7 +148,7 @@ def load_project(path: PathLike) -> Project:
         return Project(
             path,
             (process_directory(path).unwrap(),),
-            meta=immutabledict(name=path.name),
+            meta=immutabledict(name=Ok(path.name)),
         )
 
     try:

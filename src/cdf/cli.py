@@ -43,24 +43,47 @@ def main(
         envvar="CDF_ROOT",
     ),
 ) -> None:
+    """CDF: Data Engineering Framework.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        root: The project root path.
+    """
     ctx.obj = load_project(root).unwrap()
 
 
 @app.command(rich_help_panel="Project Info")
 def index(ctx: typer.Context) -> None:
-    """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], and [yellow]Publishers[/yellow][/b] loaded from the pipeline directory paths."""
+    """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], and [yellow]Publishers[/yellow][/b] loaded from the pipeline directory paths.
+
+    \f
+    Args:
+        ctx: The CLI context.
+    """
     rich.print(ctx.obj)
 
 
 @app.command(rich_help_panel="Project Info")
 def docs(ctx: typer.Context) -> None:
-    """:book: Render documentation for the project."""
+    """:book: Render documentation for the project.
+
+    \f
+    Args:
+        ctx: The CLI context.
+    """
     rich.print("Not implemented yet.")
 
 
 @app.command(rich_help_panel="Project Info")
 def path(ctx: typer.Context, workspace: str = typer.Argument(default=None)) -> None:
-    """:file_folder: Print the project root path. Pass a workspace to print the workspace root path."""
+    """:file_folder: Print the project root path. Pass a workspace to print the workspace root path.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        workspace: The workspace to print the path for.
+    """
     if workspace:
         rich.print(next(ws.root for ws in ctx.obj.members if ws.name == workspace))
     else:
@@ -74,7 +97,13 @@ def discover(
         str, typer.Argument(help="The <workspace>.<pipeline> to discover.")
     ],
 ) -> None:
-    """:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources."""
+    """:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        pipeline: The pipeline to discover in the form of <workspace>.<pipeline>.
+    """
     project: Project = augment_sys_path(ctx.obj)
     ws, pipe = Separator.split(pipeline, 2).unwrap()
     for source in _get_sources_or_raise(project, ws, pipe):
@@ -96,7 +125,7 @@ def head(
     \f
     Args:
         ctx: The CLI context.
-        pipeline: The pipeline to inspect.
+        resource: The resource to inspect in the form of <workspace>.<pipeline>.<resource>.
         n: The number of rows to print.
 
     Raises:
@@ -150,7 +179,7 @@ def pipeline(
             ...,
             "-F",
             "--force-replace",
-            help="Force the write disposition to replace ignoring state. Useful to force a full refresh of some resources.",
+            help="Force the write disposition to replace ignoring state. Useful to force a reload of incremental resources.",
         ),
     ] = False,
 ) -> None:
@@ -159,8 +188,9 @@ def pipeline(
     \f
     Args:
         ctx: The CLI context.
-        opts: JSON formatted options to forward to the pipeline.
-        resources: The resources to ingest.
+        pipeline: The pipeline to run in the form of <workspace>.<pipeline>.
+        resources: The resources to ingest as a sequence of glob patterns.
+        replace: Whether to force replace the write disposition.
 
     Raises:
         typer.BadParameter: If no resources are selected.
