@@ -1,43 +1,39 @@
-"""
-Generate a sandbox in the filesystem in which to run code
-It should update sys path to include the sandbox
-And it should clean up the sandbox when done
-Furthermore it should take all user code and put it in the sandbox
-such that imports work correctly throughout the sandbox which is
-analagous to a cdf workspace, and futher to a python package
+import os
+import runpy
+import tempfile
+import typing as t
+from pathlib import Path
+
+from cdf.core.monads import Err, Ok, Result
+
+PathLike = t.Union[str, Path]
+
+ENV_PROJECT_DIR = "DLT_PROJECT_DIR"
+"""Config injection support leveraging workspace-specific .dlt/config.toml and .dlt/secrets.toml files"""
 
 
+def run(code: str, root: PathLike = ".") -> Result[t.Dict[str, t.Any], Exception]:
+    """Run code in a sandbox.
 
+    Args:
+        code (str): The code to run.
+        root (PathLike, optional): The root directory. Defaults to ".".
 
-
-
-
-
-OK it gets more interesting
-
-1. We want to be able to get the "source" of a pipeline script that is being passed into
-the pipline.exract method. 
-
-So we need to dynamically inject an importable module into the sandbox
-that contains hooks which will convert pipeline.extract into a method
-that simply prints the resources 
-
-Our rewriter already replaces the pipeline constructor with our own constructor.
-So presumably this mechanism can be leveraged for this. Perhaps like this?
-
-
-from cdf.pipeline import echo_pipeline, head_pipeline, debug_pipeline?
-
-and `rewriter` will replace `dlt.pipeline` with `echo_pipeline` or `head_pipeline` or `debug_pipeline`
-
-One consideration is that user may do 1 of 2 entrypoints,
-pipeline.run or pipeline.extract.
-
-pipeline.run will ultimately call pipeline.extract, so we can just replace pipeline.extract
-
-we also need to throw a catchable exception I think as a primitive "go to" mechanism
-to jump back out. In fact the exception can carry back a value which is another damn good idea.
-
-Maybe the Exception is actually the genious idea here. We can use it to carry back the value
-containing whatever tf we want.
-"""
+    Returns:
+        Result[t.Dict[str, t.Any], Exception]: The result of the code execution.
+    """
+    try:
+        origprojdir = os.environ.get(ENV_PROJECT_DIR)
+        os.environ[ENV_PROJECT_DIR] = str(root)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            f = Path(tmpdir) / "__main__.py"
+            f.write_text(code)
+            exports = runpy.run_path(tmpdir, run_name="__main__")
+        return Ok(exports)
+    except Exception as e:
+        return Err(e)
+    finally:
+        if origprojdir is not None:
+            os.environ[ENV_PROJECT_DIR] = origprojdir
+        else:
+            del os.environ[ENV_PROJECT_DIR]

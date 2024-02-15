@@ -16,7 +16,7 @@ from immutabledict import immutabledict
 from sqlglot import exp, parse_one
 
 from cdf.core.dialect import CDFComponentDSL
-from cdf.core.monads import Result
+from cdf.core.monads import Ok, Result
 
 PathLike = t.Union[str, Path]
 
@@ -166,12 +166,13 @@ def props_to_dict(
     Returns:
         t.Dict[str, t.Any]: A dictionary representation of the cdf DSL node.
     """
-    return immutabledict(
-        {
-            _convert(prop.this).unwrap_or(prop.this): _convert(prop.args["value"])
-            for prop in raw_spec.expressions
-        }
-    )
+    meta = {
+        _convert(prop.this).unwrap_or(prop.this): _convert(prop.args["value"])
+        for prop in raw_spec.expressions
+    }
+    if raw_spec.comments and "description" not in meta:
+        meta["description"] = Ok("\n".join(raw_spec.comments).strip())
+    return immutabledict(meta)
 
 
 class ParsedComponent(t.NamedTuple):
@@ -193,7 +194,7 @@ class ParsedComponent(t.NamedTuple):
         """The name of the component."""
         return self.specification["name"].unwrap_or(self.path.stem)
 
-    def to_script(self) -> str:
+    def _to_script(self) -> str:
         """Returns a python script representation of the parsed component."""
         return "\n".join(
             [
@@ -216,7 +217,7 @@ def process_script(path: PathLike) -> ParsedComponent:
         ParserError: If the file is not a python script or the cdf DSL cannot be parsed.
 
     Returns:
-        CDFRawComponentSpec: The parsed cdf python script and metadata.
+        ParsedComponent: The parsed cdf python script and metadata.
     """
     path = Path(path)
     script, err = (
@@ -233,6 +234,49 @@ def process_script(path: PathLike) -> ParsedComponent:
         type_=spec_tree.map(lambda node: node.key).unwrap(),
         tree=script.tree,
         specification=spec_tree(props_to_dict).unwrap(),
+        path=path,
+        mtime=path.stat().st_mtime,
+    )
+
+
+class ParsedDDL(t.NamedTuple):
+    """A parsed cdf DDL file."""
+
+    type_: str
+    """The type of the component."""
+    specification: immutabledict[str, Result[t.Any, ParserError]]
+    """The parsed cdf metadata."""
+    path: Path
+    """The path to the DDL file."""
+    mtime: float
+    """The last modified time of the DDL file."""
+
+    @property
+    def name(self) -> str:
+        """The name of the component."""
+        return self.specification["name"].unwrap_or(self.path.parent.name)
+
+
+@Result.lift
+def process_definition(path: PathLike) -> ParsedDDL:
+    """Parses the DDL statement in a cdf file such as cdf_project.sql or cdf_workspace.sql.
+
+    Args:
+        path: The path to the sql file.
+
+    Raises:
+        ParserError: If the cdf DSL cannot be parsed.
+
+    Returns:
+        ParsedComponent: The parsed cdf
+    """
+    path = Path(path)
+    spec_tree, err = parse_cdf_component_spec(path.read_text()).to_parts()
+    if err:
+        raise ParserError(f"Failed to parse cdf DSL: {path}") from err
+    return ParsedDDL(
+        type_=spec_tree.key,
+        specification=props_to_dict(spec_tree).unwrap(),
         path=path,
         mtime=path.stat().st_mtime,
     )

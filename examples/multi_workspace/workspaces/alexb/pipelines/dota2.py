@@ -117,6 +117,17 @@ def dota2_stats():
     )
 
 
+import dlt
+from dlt.common.configuration import with_config
+
+
+@with_config(sections=("test", "section"))
+def foo(x=dlt.config.value):
+    return x
+
+
+assert foo() == 1
+
 if __name__ == "__main__":
     pipe = dlt.pipeline("dota2")
 

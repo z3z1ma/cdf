@@ -1,6 +1,4 @@
-"""
-The workspace module is responsible for generating the Workspace data structure
-"""
+"""The workspace module is responsible for generating the immutable Project/Workspace data structure"""
 import itertools
 import sys
 import typing as t
@@ -8,13 +6,13 @@ from operator import attrgetter
 from pathlib import Path
 
 import dotenv
-import tomlkit
+from immutabledict import immutabledict
 
 import cdf.core.constants as c
 import cdf.core.exceptions as ex
 import cdf.core.logger as logger
 from cdf.core.monads import Err, Ok, Result
-from cdf.core.parser import ParsedComponent, process_script
+from cdf.core.parser import ParsedComponent, process_definition, process_script
 
 PathLike = t.Union[str, Path]
 
@@ -46,10 +44,11 @@ class Workspace(t.NamedTuple):
     scripts: t.Tuple[ParsedComponent, ...] = ()
     notebooks: t.Tuple[ParsedComponent, ...] = ()
     sinks: t.Tuple[ParsedComponent, ...] = ()
+    meta: immutabledict = immutabledict()
 
     @property
     def name(self) -> str:
-        return self.root.name
+        return self.meta.get("name", self.root.name)
 
     def search(
         self,
@@ -107,16 +106,22 @@ def process_directory(path: PathLike) -> Workspace:
         **dict(
             map(_process, (c.PIPELINES, c.PUBLISHERS, c.SCRIPTS, c.NOTEBOOKS, c.SINKS))
         ),
+        meta=(
+            process_definition(path / c.WORKSPACE_FILE)
+            .map(lambda def_: def_.specification)
+            .unwrap_or(immutabledict(name=path.name))
+        ),
     )
 
 
 class Project(t.NamedTuple):
     root: Path
     members: t.Tuple[Workspace, ...]
+    meta: immutabledict = immutabledict()
 
     @property
     def name(self) -> str:
-        return self.root.name
+        return self.meta.get("name", self.root.name)
 
     def search(self, name: str) -> Result[Workspace, DoesNotExist]:
         """Finds a workspace by name."""
@@ -134,12 +139,15 @@ def load_project(path: PathLike) -> Project:
 
     project_file = path.joinpath(c.PROJECT_FILE)
     if not project_file.exists():
-        return Project(path, (process_directory(path).unwrap(),))
+        return Project(
+            path,
+            (process_directory(path).unwrap(),),
+            meta=immutabledict(name=path.name),
+        )
 
     try:
-        with project_file.open() as f:
-            doc = tomlkit.parse(f.read())
-        members = doc.value["project"]["members"]
+        def_ = process_definition(project_file).unwrap()
+        members = def_.specification["members"].unwrap()
     except KeyError as key_err:
         raise InvalidProjectDefinition(
             f"Invalid project definition: {project_file}"
@@ -152,6 +160,7 @@ def load_project(path: PathLike) -> Project:
     return Project(
         path,
         tuple(process_directory(path.joinpath(member)).unwrap() for member in members),
+        meta=def_.specification,
     )
 
 

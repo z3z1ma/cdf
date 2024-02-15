@@ -1,7 +1,5 @@
 """CLI for cdf."""
-import os
-import runpy
-import tempfile
+import itertools
 import typing as t
 from enum import Enum
 from pathlib import Path
@@ -19,8 +17,10 @@ from cdf.core.rewriter import (
     replace_disposition_header,
     resource_filter_header,
     rewrite_pipeline,
+    rewrite_script,
     source_capture_header,
 )
+from cdf.core.sandbox import run
 from cdf.core.workspace import Project, augment_sys_path, load_project
 
 app = typer.Typer(
@@ -59,10 +59,7 @@ def docs(ctx: typer.Context) -> None:
 
 
 @app.command(rich_help_panel="Project Info")
-def path(
-    ctx: typer.Context,
-    workspace: str = typer.Argument(default=None),
-) -> None:
+def path(ctx: typer.Context, workspace: str = typer.Argument(default=None)) -> None:
     """:file_folder: Print the project root path. Pass a workspace to print the workspace root path."""
     if workspace:
         rich.print(next(ws.root for ws in ctx.obj.members if ws.name == workspace))
@@ -79,8 +76,8 @@ def discover(
 ) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources."""
     project: Project = augment_sys_path(ctx.obj)
-    workspace, pipeline = Separator.split(pipeline, into=2).unwrap()
-    for source in _get_sources_or_raise(project, workspace, pipeline):
+    ws, pipe = Separator.split(pipeline, 2).unwrap()
+    for source in _get_sources_or_raise(project, ws, pipe):
         rich.print(source.resources)
 
 
@@ -106,25 +103,29 @@ def head(
         typer.BadParameter: If the resource is not found in the pipeline.
     """
     project: Project = augment_sys_path(ctx.obj)
-    workspace, pipeline, resource = Separator.split(resource, into=3).unwrap()
-    candidates = [
-        res
-        for src in _get_sources_or_raise(project, workspace, pipeline)
-        for res in src.resources.values()
-        if res.name == resource
-    ]
-    if not candidates:
+    ws, pipe, resource = Separator.split(resource, 3).unwrap()
+    target = next(
+        filter(
+            lambda r: r.name == resource,
+            (
+                resource
+                for src in _get_sources_or_raise(project, ws, pipe)
+                for resource in src.resources.values()
+            ),
+        ),
+        None,
+    )
+    if target is None:
         raise typer.BadParameter(
-            f"Resource {resource} not found in pipeline {pipeline}.",
+            f"Resource {resource} not found in pipeline {pipe}.",
             param_hint="resource",
         )
-    producer, j = iter(candidates[0]), 0
-    while j < n:
-        try:
-            rich.print(next(producer))
-        except StopIteration:
-            break
-        j += 1
+    list(
+        map(
+            lambda it: rich.print(it[1]),
+            itertools.takewhile(lambda it: it[0] < n, enumerate(target)),
+        )
+    )
 
 
 @app.command(rich_help_panel="Integrate")
@@ -148,7 +149,7 @@ def pipeline(
         typer.Option(
             ...,
             "-F",
-            "--replace",
+            "--force-replace",
             help="Force the write disposition to replace ignoring state. Useful to force a full refresh of some resources.",
         ),
     ] = False,
@@ -165,34 +166,29 @@ def pipeline(
         typer.BadParameter: If no resources are selected.
     """
     project: Project = augment_sys_path(ctx.obj)
-    workspace, pipeline = Separator.split(pipeline, into=2).unwrap()
-    os.environ["RUNTIME__LOG_LEVEL"] = "INFO"
-    sink_header = (
-        project.search(workspace)
-        .bind(lambda w: w.search(destination, key="sinks"))
-        .map(lambda sink: sink.tree)
-        .unwrap_or(basic_destination_header(destination))
-    )
-    code = (
-        project.search(workspace)
-        .map(augment_sys_path)
-        .bind(lambda w: w.search(pipeline, key="pipelines"))
+    ws, pipe = Separator.split(pipeline, 2).unwrap()
+    workspace = project.search(ws).map(augment_sys_path).unwrap()
+    (
+        Ok(workspace)
+        .bind(lambda w: w.search(pipe, key="pipelines"))
         .map(lambda pipe: pipe.tree)
         .bind(
             lambda tree: rewrite_pipeline(
                 tree,
-                sink_header,
+                (
+                    Ok(workspace)  # Get the destination header
+                    .bind(lambda w: w.search(destination, key="sinks"))
+                    .map(lambda sink: sink.tree)
+                    .unwrap_or(basic_destination_header(destination))
+                ),
                 parametrized_destination_header,
                 resource_filter_header(*resources),
-                replace and replace_disposition_header or noop_header,
+                replace_disposition_header if replace else noop_header,
             )
         )
+        .bind(lambda code: run(code, root=workspace.root))
         .unwrap()
     )
-    with tempfile.TemporaryDirectory() as tmpdir:
-        f = Path(tmpdir) / "__main__.py"
-        f.write_text(code)
-        _ = runpy.run_path(tmpdir, run_name="__main__")
 
 
 @app.command(rich_help_panel="Integrate")
@@ -210,15 +206,13 @@ def publish(
     ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
+    rich.print("Not implemented yet.")
 
 
 @app.command("execute-script", rich_help_panel="Utility")
 def execute_script(
     ctx: typer.Context,
     script: t.Annotated[str, typer.Argument(help="The <workspace>.<script> to run")],
-    opts: str = typer.Argument(
-        "{}", help="JSON formatted options to forward to the script."
-    ),
 ) -> None:
     """:rocket: Run a script in a workspace environment.
 
@@ -231,8 +225,17 @@ def execute_script(
     Args:
         ctx: The CLI context.
         script: The script to run.
-        opts: JSON formatted options to forward to the script.
     """
+    project: Project = augment_sys_path(ctx.obj)
+    ws, script = Separator.split(script, 2).unwrap()
+    workspace = project.search(ws).map(augment_sys_path).unwrap()
+    (
+        Ok(workspace)
+        .bind(lambda w: w.search(script, key="scripts"))
+        .bind(lambda pipe: rewrite_pipeline(pipe.tree))
+        .bind(lambda code: run(code, root=workspace.root))
+        .unwrap()
+    )
 
 
 @app.command(rich_help_panel="Utility")
@@ -248,6 +251,7 @@ def jupyter(
     Args:
         ctx: The CLI context.
     """
+    rich.print("Not implemented yet.")
 
 
 @app.command("execute-notebook", rich_help_panel="Utility")
@@ -270,6 +274,7 @@ def execute_notebook(
         notebook: The notebook to run.
         opts: JSON formatted parameters to forward to the notebook.
     """
+    rich.print("Not implemented yet.")
 
 
 @app.command("generate-staging-layer", rich_help_panel="Utility")
@@ -312,6 +317,7 @@ def generate_staging_layer(
         sink: The sink to generate staging layers for.
         fetch_metadata: Whether to fetch metadata before generating staging layers.
     """
+    rich.print("Not implemented yet.")
 
 
 @app.command("init-workspace", rich_help_panel="Project Initialization")
@@ -332,6 +338,7 @@ def init_workspace(
     Args:
         directory: The directory to initialize the workspace in. Must be empty.
     """
+    rich.print("Not implemented yet.")
 
 
 @app.command("init-project", rich_help_panel="Project Initialization")
@@ -360,6 +367,7 @@ def init_project(
         root: The directory to initialize the project in.
         directories: The directories in which to inialize workspaces relative to the project root.
     """
+    rich.print("Not implemented yet.")
 
 
 @app.command("develop", rich_help_panel="Project Initialization")
@@ -368,25 +376,20 @@ def develop(
     component: str = typer.Argument("*", help="The component to develop."),
 ) -> None:
     """:hammer_and_wrench: Install project components in the active virtual environment."""
+    rich.print("Not implemented yet.")
 
 
-def _get_sources_or_raise(project: Project, workspace: str, pipeline: str):
+def _get_sources_or_raise(project: Project, ws: str, pipe: str):
     """Get the sources from a dlt pipelines script or raise an error if unable to."""
-
-    def _get_sources(code: str) -> t.Set[t.Any]:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            f = Path(tmpdir) / "__main__.py"
-            f.write_text(code)
-            exports = runpy.run_path(tmpdir, run_name="__main__")
-        return exports[c.SOURCE_CONTAINER]
-
+    workspace = project.search(ws).map(augment_sys_path).unwrap()
     sources, err = (
-        project.search(workspace)
+        Ok(workspace)
         .map(augment_sys_path)
-        .bind(lambda w: w.search(pipeline, key="pipelines"))
+        .bind(lambda w: w.search(pipe, key="pipelines"))
         .map(lambda pipe: pipe.tree)
-        .map(lambda tree: rewrite_pipeline(tree, source_capture_header))
-        .map(lambda code: _get_sources(code.unwrap()))
+        .bind(lambda tree: rewrite_pipeline(tree, source_capture_header))
+        .bind(lambda code: run(code, root=workspace.root))
+        .map(lambda exports: exports[c.SOURCE_CONTAINER])
         .to_parts()
     )
     if err:

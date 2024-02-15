@@ -1,0 +1,6 @@
+[runtime]
+log_level="INFO"
+# log_format="JSON"
+
+[test.section]
+x=1

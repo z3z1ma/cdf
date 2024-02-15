@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import typing as t
 
 from sqlglot import exp, generator, parser, tokens
@@ -24,7 +26,17 @@ class Sink(exp.Expression):
     arg_types = {"expressions": True}
 
 
-CDFComponentDSL = t.Union[Pipeline, Script, Notebook, Publisher, Sink]
+class Project(exp.Expression):
+    arg_types = {"expressions": True}
+
+
+class Workspace(exp.Expression):
+    arg_types = {"expressions": True}
+
+
+CDFComponentDSL = t.Union[
+    Pipeline, Script, Notebook, Publisher, Sink, Project, Workspace
+]
 
 
 def _create_parser(parser_type: t.Type[exp.Expression]) -> t.Callable:
@@ -55,12 +67,14 @@ PARSERS = {
     "NOTEBOOK": _create_parser(Notebook),
     "PUBLISHER": _create_parser(Publisher),
     "SINK": _create_parser(Sink),
+    "PROJECT": _create_parser(Project),
+    "WORKSPACE": _create_parser(Workspace),
 }
 
 
 def _render_spec(
     self: generator.Generator,
-    expression: Pipeline | Script | Notebook | Publisher | Sink,
+    expression: Pipeline | Script | Notebook | Publisher | Sink | Project | Workspace,
     name: str,
 ) -> str:
     props = ",\n".join(
@@ -91,29 +105,18 @@ class CDF(Dialect):
 
     class Generator(generator.Generator):
         TRANSFORMS = {
-            Pipeline: lambda self, expression: _render_spec(
+            klass: lambda self, expression: _render_spec(
                 self,
                 expression,
-                "PIPELINE",
-            ),
-            Script: lambda self, expression: _render_spec(
-                self,
-                expression,
-                "SCRIPT",
-            ),
-            Notebook: lambda self, expression: _render_spec(
-                self,
-                expression,
-                "NOTEBOOK",
-            ),
-            Publisher: lambda self, expression: _render_spec(
-                self,
-                expression,
-                "PUBLISHER",
-            ),
-            Sink: lambda self, expression: _render_spec(
-                self,
-                expression,
-                "SINK",
-            ),
+                def_,
+            )
+            for klass, def_ in (
+                (Pipeline, "PIPELINE"),
+                (Script, "SCRIPT"),
+                (Notebook, "NOTEBOOK"),
+                (Publisher, "PUBLISHER"),
+                (Sink, "SINK"),
+                (Project, "PROJECT"),
+                (Workspace, "WORKSPACE"),
+            )
         }

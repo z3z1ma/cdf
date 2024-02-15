@@ -297,3 +297,20 @@ def rewrite_pipeline(
         )
     except Exception as e:
         return Err(RewriteError(f"Failed to rewrite pipeline: {e}"))
+
+
+def rewrite_script(
+    tree: ast.Module, *headers: ast.Module, copy=True
+) -> Result[str, ex.CDFError]:
+    try:
+        tree = deepcopy(tree) if copy else tree
+        for header in reversed(headers):
+            tree.body = [*header.body, *tree.body]
+        stringified_code = ast.unparse(
+            ast.fix_missing_locations(rewriters[c.SCRIPTS].visit(tree))
+        )
+        return Ok(
+            "\n".join(line for line in stringified_code.splitlines() if line.strip())
+        )
+    except Exception as e:
+        return Err(RewriteError(f"Failed to rewrite script: {e}"))

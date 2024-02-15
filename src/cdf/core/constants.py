@@ -38,7 +38,10 @@ TRANSFORM_SPEC = "transform"
 DEFAULT_WORKSPACE = "default"
 """The default workspace name, in a single-workspace layout it is always 'default'"""
 
-PROJECT_FILE = "cdf_project.toml"
+WORKSPACE_FILE = "cdf_workspace.sql"
+"""A descriptor file used to associate metadata with a workspace"""
+
+PROJECT_FILE = "cdf_project.sql"
 """The top-level file used in a multi-workspace layout to declare workspaces via relative paths"""
 
 CONFIG_FILE = "cdf_config.toml"
