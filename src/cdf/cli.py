@@ -10,6 +10,7 @@ import typer
 
 import cdf.core.constants as c
 import cdf.core.context as cdf_ctx
+import cdf.core.logger as logger
 from cdf.core.monads import Err, Ok, Result
 from cdf.core.rewriter import (
     basic_destination_header,
@@ -24,6 +25,8 @@ from cdf.core.rewriter import (
 )
 from cdf.core.sandbox import run
 from cdf.core.workspace import Project, augment_sys_path, load_project
+
+logger.monkeypatch_dlt()
 
 app = typer.Typer(
     rich_markup_mode="rich",

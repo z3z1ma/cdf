@@ -6,7 +6,8 @@ is achieved through dynamic wrapping of the upstream interface.
 The headers are extracted from the function bodies for top-level insertion into scripts. Return values and
 function parameters are stripped from the function bodies during conversion to headers. This confers the
 significant benefit of having fully functional and testable wrappers for the pipeline constructor outside of
-the rewriting mechanism.
+the rewriting mechanism. In a generalized sense, this takes decorators which operate on a function argument
+and unnests the scope such that it operates on a local variable of the same name as the function argument.
 """
 import ast
 import inspect
@@ -62,20 +63,7 @@ def get_entrypoint() -> "PipeFactory":
     to `dlt.pipeline` that are not direct calls will not be rewritten and will not be wrapped. This is a limitation
     of the rewriter and is not expected to be a problem in practice. This decision lets us keep complexity very low.
     """
-    import os # isort:skip
     from dlt import pipeline as __entrypoint__
-    from dlt.common.configuration.container import Container
-    from dlt.common.configuration.providers import (ConfigTomlProvider,
-                                                    EnvironProvider,
-                                                    SecretsTomlProvider)
-    from dlt.common.configuration.specs.config_providers_context import \
-        ConfigProvidersContext
-    __ctx = Container()[ConfigProvidersContext]
-    __ctx.providers = [
-        EnvironProvider(),
-        SecretsTomlProvider(os.path.join(os.path.dirname(__file__), ".dlt")),
-        ConfigTomlProvider(os.path.join(os.path.dirname(__file__), ".dlt")),
-    ]
     return __entrypoint__
 
 def source_capture_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":

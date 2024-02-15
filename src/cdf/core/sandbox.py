@@ -6,6 +6,16 @@ import tempfile
 import typing as t
 from pathlib import Path
 
+from dlt.common.configuration.container import Container
+from dlt.common.configuration.providers import (
+    ConfigTomlProvider,
+    EnvironProvider,
+    SecretsTomlProvider,
+)
+from dlt.common.configuration.specs.config_providers_context import (
+    ConfigProvidersContext,
+)
+
 from cdf.core.monads import Err, Ok, Result
 
 PathLike = t.Union[str, Path]
@@ -28,6 +38,12 @@ def run(
             root_settings, temp_settings = Path(root) / ".dlt", Path(tmpdir) / ".dlt"
             if root_settings.exists():
                 shutil.copytree(root_settings, temp_settings)
+            ctx = Container()[ConfigProvidersContext]
+            ctx.providers = [
+                EnvironProvider(),
+                SecretsTomlProvider(os.path.join(root, ".dlt")),
+                ConfigTomlProvider(os.path.join(root, ".dlt")),
+            ]
             f = Path(tmpdir) / "__main__.py"
             f.write_text(code)
             if quiet:
