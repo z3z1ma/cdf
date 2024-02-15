@@ -48,7 +48,10 @@ class Workspace(t.NamedTuple):
 
     @property
     def name(self) -> str:
-        return self.meta.get("name", self.root.name)
+        maybe_name = self.meta.get("name")
+        if maybe_name is not None:
+            return maybe_name.unwrap_or(self.root.name)
+        return self.root.name
 
     def search(
         self,
@@ -121,7 +124,10 @@ class Project(t.NamedTuple):
 
     @property
     def name(self) -> str:
-        return self.meta.get("name", self.root.name)
+        maybe_name = self.meta.get("name")
+        if maybe_name is not None:
+            return maybe_name.unwrap_or(self.root.name)
+        return self.root.name
 
     def search(self, name: str) -> Result[Workspace, DoesNotExist]:
         """Finds a workspace by name."""

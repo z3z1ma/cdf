@@ -388,7 +388,7 @@ def _get_sources_or_raise(project: Project, ws: str, pipe: str):
         .bind(lambda w: w.search(pipe, key="pipelines"))
         .map(lambda pipe: pipe.tree)
         .bind(lambda tree: rewrite_pipeline(tree, source_capture_header))
-        .bind(lambda code: run(code, root=workspace.root))
+        .bind(lambda code: run(code, root=workspace.root, quiet=True))
         .map(lambda exports: exports[c.SOURCE_CONTAINER])
         .to_parts()
     )

@@ -239,7 +239,7 @@ def process_script(path: PathLike) -> ParsedComponent:
     )
 
 
-class ParsedDDL(t.NamedTuple):
+class ParsedDefinition(t.NamedTuple):
     """A parsed cdf DDL file."""
 
     type_: str
@@ -258,7 +258,7 @@ class ParsedDDL(t.NamedTuple):
 
 
 @Result.lift
-def process_definition(path: PathLike) -> ParsedDDL:
+def process_definition(path: PathLike) -> ParsedDefinition:
     """Parses the DDL statement in a cdf file such as cdf_project.sql or cdf_workspace.sql.
 
     Args:
@@ -274,7 +274,7 @@ def process_definition(path: PathLike) -> ParsedDDL:
     spec_tree, err = parse_cdf_component_spec(path.read_text()).to_parts()
     if err:
         raise ParserError(f"Failed to parse cdf DSL: {path}") from err
-    return ParsedDDL(
+    return ParsedDefinition(
         type_=spec_tree.key,
         specification=props_to_dict(spec_tree).unwrap(),
         path=path,

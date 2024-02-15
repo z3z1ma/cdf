@@ -1,3 +1,4 @@
+import contextlib
 import os
 import runpy
 import tempfile
@@ -12,7 +13,9 @@ ENV_PROJECT_DIR = "DLT_PROJECT_DIR"
 """Config injection support leveraging workspace-specific .dlt/config.toml and .dlt/secrets.toml files"""
 
 
-def run(code: str, root: PathLike = ".") -> Result[t.Dict[str, t.Any], Exception]:
+def run(
+    code: str, root: PathLike = ".", quiet=False
+) -> Result[t.Dict[str, t.Any], Exception]:
     """Run code in a sandbox.
 
     Args:
@@ -28,7 +31,13 @@ def run(code: str, root: PathLike = ".") -> Result[t.Dict[str, t.Any], Exception
         with tempfile.TemporaryDirectory() as tmpdir:
             f = Path(tmpdir) / "__main__.py"
             f.write_text(code)
-            exports = runpy.run_path(tmpdir, run_name="__main__")
+            if quiet:
+                with open(os.devnull, "w") as ignore, contextlib.redirect_stdout(
+                    ignore
+                ), contextlib.redirect_stderr(ignore):
+                    exports = runpy.run_path(tmpdir, run_name="__main__")
+            else:
+                exports = runpy.run_path(tmpdir, run_name="__main__")
         return Ok(exports)
     except Exception as e:
         return Err(e)
