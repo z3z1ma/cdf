@@ -1,7 +1,6 @@
 import contextlib
 import os
 import runpy
-import shutil
 import tempfile
 import typing as t
 from pathlib import Path
@@ -34,16 +33,13 @@ def run(
         Result[t.Dict[str, t.Any], Exception]: The result of the code execution.
     """
     try:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            root_settings, temp_settings = Path(root) / ".dlt", Path(tmpdir) / ".dlt"
-            if root_settings.exists():
-                shutil.copytree(root_settings, temp_settings)
-            ctx = Container()[ConfigProvidersContext]
-            ctx.providers = [
-                EnvironProvider(),
-                SecretsTomlProvider(os.path.join(root, ".dlt")),
-                ConfigTomlProvider(os.path.join(root, ".dlt")),
-            ]
+        C = ConfigProvidersContext()
+        C.providers = [
+            EnvironProvider(),
+            SecretsTomlProvider(os.path.join(root, ".dlt")),
+            ConfigTomlProvider(os.path.join(root, ".dlt")),
+        ]
+        with tempfile.TemporaryDirectory() as tmpdir, Container().injectable_context(C):
             f = Path(tmpdir) / "__main__.py"
             f.write_text(code)
             if quiet:
