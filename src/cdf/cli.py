@@ -24,7 +24,7 @@ from cdf.core.rewriter import (
     source_capture_header,
 )
 from cdf.core.sandbox import run
-from cdf.core.workspace import Project, augment_sys_path, load_project
+from cdf.core.workspace import Project, augment_sys_path, find_nearest
 
 logger.monkeypatch_dlt()
 
@@ -55,7 +55,7 @@ def main(
         ctx: The CLI context.
         root: The project root path.
     """
-    ctx.obj = load_project(root).unwrap()
+    ctx.obj = find_nearest(root).unwrap()
 
 
 @app.command(rich_help_panel="Project Info")

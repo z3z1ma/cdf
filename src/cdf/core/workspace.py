@@ -84,7 +84,7 @@ class Workspace(t.NamedTuple):
 @Result.lift
 def process_directory(path: PathLike) -> Workspace:
     """Parses a workspace from a given path."""
-    path = Path(path)
+    path = Path(path).resolve()
     if not path.exists():
         raise WorkspaceDoesNotExist(f"Directory not found: {path}")
     if not path.is_dir():
@@ -136,20 +136,26 @@ class Project(t.NamedTuple):
                 return Ok(member)
         return Err(WorkspaceDoesNotExist(f"Workspace not found: {name}"))
 
+    @classmethod
+    def from_cwd(cls) -> "Project":
+        cwd = Path.cwd()
+        return Project(
+            cwd,
+            (process_directory(cwd).unwrap(),),
+            meta=immutabledict({"name": Ok(cwd.name)}),
+        )
 
-@Result.lift
-def load_project(path: PathLike) -> Project:
+
+def find_nearest(path: PathLike = ".") -> Result[Project, ex.CDFError]:
     """Loads a project"""
-    path = Path(path)
+    path = Path(path).resolve()
     dotenv.load_dotenv(path.joinpath(".env"))
 
     project_file = path.joinpath(c.PROJECT_FILE)
     if not project_file.exists():
-        return Project(
-            path,
-            (process_directory(path).unwrap(),),
-            meta=immutabledict(name=Ok(path.name)),
-        )
+        if not path.parents:
+            return Ok(Project.from_cwd())
+        return find_nearest(path.parent)
 
     try:
         def_ = process_definition(project_file).unwrap()
@@ -163,10 +169,14 @@ def load_project(path: PathLike) -> Project:
             f"Failed to load project definition: {project_file}"
         ) from e
 
-    return Project(
-        path,
-        tuple(process_directory(path.joinpath(member)).unwrap() for member in members),
-        meta=def_.specification,
+    return Ok(
+        Project(
+            path,
+            tuple(
+                process_directory(path.joinpath(member)).unwrap() for member in members
+            ),
+            meta=def_.specification,
+        )
     )
 
 

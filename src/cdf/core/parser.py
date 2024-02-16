@@ -43,7 +43,7 @@ def read_script(path: PathLike) -> str:
     Returns:
         str: The content of the python file.
     """
-    path = Path(path)
+    path = Path(path).resolve()
     if not path.exists():
         raise ScriptNotFoundError(f"File not found: {path}")
     if not (path.is_file() and path.suffix == ".py"):
@@ -219,7 +219,7 @@ def process_script(path: PathLike) -> ParsedComponent:
     Returns:
         ParsedComponent: The parsed cdf python script and metadata.
     """
-    path = Path(path)
+    path = Path(path).resolve()
     script, err = (
         read_script(path) >> parse_python_ast >> extract_docstring_or_raise
     ).to_parts()
@@ -270,7 +270,7 @@ def process_definition(path: PathLike) -> ParsedDefinition:
     Returns:
         ParsedComponent: The parsed cdf
     """
-    path = Path(path)
+    path = Path(path).resolve()
     spec_tree, err = parse_cdf_component_spec(path.read_text()).to_parts()
     if err:
         raise ParserError(f"Failed to parse cdf DSL: {path}") from err
