@@ -15,6 +15,7 @@ from cdf.core.monads import Err, Ok, Result
 from cdf.core.rewriter import (
     basic_destination_header,
     feature_flag_header,
+    import_anchor_header,
     noop_header,
     parametrized_destination_header,
     replace_disposition_header,
@@ -208,14 +209,15 @@ def pipeline(
     token = cdf_ctx.active_workspace.set(workspace)
     (
         Ok(workspace)
-        .bind(lambda w: w.search(pipe, key="pipelines"))
+        .bind(lambda w: w.search(pipe, key=c.PIPELINES))
         .map(lambda pipe: pipe.tree)
         .bind(
             lambda tree: rewrite_pipeline(
                 tree,
+                import_anchor_header(c.PIPELINES),
                 (
                     Ok(workspace)  # Get the destination header
-                    .bind(lambda w: w.search(destination, key="sinks"))
+                    .bind(lambda w: w.search(destination, key=c.SINKS))
                     .map(lambda sink: sink.tree)
                     .unwrap_or(basic_destination_header(destination))
                 ),
@@ -430,9 +432,13 @@ def _get_sources_or_raise(project: Project, ws: str, pipe: str):
     sources, err = (
         Ok(workspace)
         .map(augment_sys_path)
-        .bind(lambda w: w.search(pipe, key="pipelines"))
+        .bind(lambda w: w.search(pipe, key=c.PIPELINES))
         .map(lambda pipe: pipe.tree)
-        .bind(lambda tree: rewrite_pipeline(tree, source_capture_header))
+        .bind(
+            lambda tree: rewrite_pipeline(
+                tree, import_anchor_header(c.PIPELINES), source_capture_header
+            )
+        )
         .bind(lambda code: run(code, root=workspace.root, quiet=True))
         .map(lambda exports: exports[c.SOURCE_CONTAINER])
         .to_parts()

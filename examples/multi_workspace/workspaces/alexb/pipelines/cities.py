@@ -8,6 +8,8 @@ PIPELINE (
 import dlt
 import requests
 
+from .test1.chore import foo
+
 
 @dlt.resource(write_disposition="replace", standalone=True)
 def us_cities():

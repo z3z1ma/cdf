@@ -296,17 +296,12 @@ resource_filter_header = lambda *patts: _to_header(  # noqa
 )
 replace_disposition_header = _to_header(inject_replace_disposition)
 feature_flag_header = _to_header(inject_feature_flags)
+import_anchor_header = lambda mod: ast.parse(f"__package__ = {mod!r}")  # noqa
 # End of headers
 
 
 def create_rewriter(root: str) -> ast.NodeTransformer:
     """Creates an import rewriter class with a custom root module."""
-
-    def _reroot(_, node: ast.ImportFrom) -> ast.ImportFrom:
-        if node.level >= 1:
-            node.module = f"{root}.{node.module}"
-            node.level -= 1
-        return node
 
     def _substitute_entrypoint(self, node: ast.Call) -> ast.Call:
         if isinstance(node.func, ast.Attribute):
@@ -323,7 +318,7 @@ def create_rewriter(root: str) -> ast.NodeTransformer:
                     return self.generic_visit(new)
         return node
 
-    overrides: dict = {"visit_ImportFrom": _reroot}
+    overrides: dict = {}
     if root == c.PIPELINES:
         overrides["visit_Call"] = _substitute_entrypoint
 

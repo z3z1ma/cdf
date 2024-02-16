@@ -1,4 +1,5 @@
-""" -- Dota2 is a Massive Online Battle Arena game based on Warcraft
+"""
+-- Dota2 is a Massive Online Battle Arena game based on Warcraft
 PIPELINE (
     name dota2,
     cron '0 0 * * *',
