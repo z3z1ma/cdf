@@ -1,4 +1,4 @@
-"""The workspace module is responsible for generating the immutable Project/Workspace data structure"""
+"""The workspace module is responsible for generating the immutable Project/Workspace data structure."""
 import itertools
 import sys
 import typing as t

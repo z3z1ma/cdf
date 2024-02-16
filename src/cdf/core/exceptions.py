@@ -1,6 +1,9 @@
+"""Exceptions for the CDF package."""
+
+
 class CDFError(Exception):
-    pass
+    """Base class for all CDF exceptions."""
 
 
 class CDFPipelineError(CDFError):
-    pass
+    """Base class for all CDF pipeline exceptions."""

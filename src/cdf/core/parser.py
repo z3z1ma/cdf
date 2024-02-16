@@ -2,7 +2,7 @@
 This module contains functions for parsing cdf python scripts into metadata and AST.
 
 Metadata is parsed from the docstring of the python script and is expected to be in cdf DSL format.
-This is a SQL-like syntax that is used to define the metadata of a cdf component.
+This is a SQL-like syntax that is used to define the metadata of a cdf component, project, or workspace.
 
 PIPELINE (
   name my_pipeline

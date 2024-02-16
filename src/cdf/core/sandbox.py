@@ -1,3 +1,4 @@
+"""Sandbox for executing cdf scripts with a temporary environment."""
 import contextlib
 import os
 import runpy

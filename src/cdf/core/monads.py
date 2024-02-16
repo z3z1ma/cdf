@@ -1,4 +1,4 @@
-"""Contains classes & types common in CDF. This includes Monads."""
+"""Contains monadic types and functions for working with them."""
 from __future__ import annotations
 
 import abc
