@@ -9,6 +9,8 @@ significant benefit of having fully functional and testable wrappers for the pip
 the rewriting mechanism. In a generalized sense, this takes decorators which operate on a function
 and unnests the scope such that it operates on a local variable of the same name as the function argument.
 """
+from __future__ import annotations
+
 import ast
 import inspect
 import typing as t
@@ -22,7 +24,7 @@ if t.TYPE_CHECKING:
     from dlt.pipeline.pipeline import Pipeline
 
     PipeFactory = t.Callable[..., Pipeline]
-    SimpleSink = t.Tuple[str, t.Any, t.Any]
+    SinkStruct = t.Tuple[str, t.Any, t.Any] | t.Callable[[], t.Tuple[str, t.Any, t.Any]]
 
 
 class RewriteError(ex.CDFError):
@@ -107,7 +109,7 @@ def inject_source_capture(__entrypoint__: "PipeFactory") -> "PipeFactory":
 
 
 def inject_destination_parametrization(
-    __entrypoint__: "PipeFactory", sink: "SimpleSink" = ("duckdb", None, None)
+    __entrypoint__: "PipeFactory", sink: "SinkStruct" = ("duckdb", None, None)
 ) -> "PipeFactory":
     """
     Parameterizes destination via wrapping a nonlocal `sink` var and overriding the destination parameter.
@@ -117,6 +119,9 @@ def inject_destination_parametrization(
     """
     import functools
     import inspect
+
+    if callable(sink):
+        sink = sink()
 
     def __wrap__(__pipefunc__: "PipeFactory"):
         __unwrapped__ = inspect.unwrap(__pipefunc__)
