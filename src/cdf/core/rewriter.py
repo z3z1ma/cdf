@@ -6,7 +6,7 @@ is achieved through dynamic wrapping of the upstream interface.
 The headers are extracted from the function bodies for top-level insertion into scripts. Return values and
 function parameters are stripped from the function bodies during conversion to headers. This confers the
 significant benefit of having fully functional and testable wrappers for the pipeline constructor outside of
-the rewriting mechanism. In a generalized sense, this takes decorators which operate on a function argument
+the rewriting mechanism. In a generalized sense, this takes decorators which operate on a function
 and unnests the scope such that it operates on a local variable of the same name as the function argument.
 """
 import ast
@@ -46,40 +46,46 @@ def _to_header(
     return ast.Module(body=header)
 
 
-# fmt: off
-# ruff: noqa: E401 E702 F401 F823 F841
+# The following functions serve 2 purposes:
+# 1. They provide wrappers which can be used to modify the behavior of the dlt.pipeline instance.
+# 2. They are converted to headers which mutate the behavior of the pipeline constructor when prepended to a script.
 
-# We want this code to be injected with minimal changes to the original source
-# code so we keep it compact and disable black formatting for this section.
-def get_entrypoint() -> "PipeFactory":
+
+def get_entrypoint_ref() -> "PipeFactory":
     """
-    Provides a canonical entrypoint for the dlt.pipeline constructor.
+    Provides a canonical reference for the dlt.pipeline constructor.
 
     This is used by all other wrappers to ensure a consistent entrypoint for the pipeline constructor and to provide
-    a separate reference for wrapping. This separate reference allows us to run rewritte pipelines safely across
-    threads or long running processes. As such, it is added to the top of the script by the rewriter by default.
-
-    The rewriter also replaces all calls to `dlt.pipeline` with the `__entrypoint__` function. Any fancy calls
-    to `dlt.pipeline` that are not direct calls will not be rewritten and will not be wrapped. This is a limitation
-    of the rewriter and is not expected to be a problem in practice. This decision lets us keep complexity very low.
+    a separate reference for wrapping. This separate reference allows us to run rewritten pipelines safely across
+    threads or long running processes since we avoid assignments to the global scope. As such, it is added to the top
+    of the script by the rewriter by default.
     """
     from dlt import pipeline as __entrypoint__
+
     return __entrypoint__
 
-def source_capture_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
+
+def inject_source_capture(__entrypoint__: "PipeFactory") -> "PipeFactory":
     """
     Overwrites the extract method of a pipeline to capture the sources and return an empty list.
 
     This causes the pipeline to be executed in a dry-run mode essentially while sources are captured
     and returned to the caller. Pipelines scripts remain valid via this mechanism.
     """
-    import functools, cdf.core.constants as c # isort:skip
+    import functools
+
     from dlt.extract.extract import data_to_sources
-    locals()[c.SOURCE_CONTAINER] = container = set()
+
+    import cdf.core.constants as c
+
+    L = locals()
+    L[c.SOURCE_CONTAINER] = container = set()
+
     def __wrap__(__pipefunc__: "PipeFactory"):
         @functools.wraps(__pipefunc__)
         def wrapper(*args, **kwargs):
             pipe = __pipefunc__(*args, **kwargs)
+
             @functools.wraps(pipe.extract)
             def _extract(data, **kwargs):
                 with pipe._maybe_destination_capabilities():
@@ -90,27 +96,37 @@ def source_capture_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
                 for source in sources:
                     container.add(source)
                 return []
-            pipe.extract = _extract # type: ignore
+
+            setattr(pipe, "extract", _extract)
             return pipe
+
         return wrapper
+
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 
-def parametrized_destination_wrapper(__entrypoint__: "PipeFactory", sink: "SimpleSink" = ("duckdb", None, None)) -> "PipeFactory":
+
+def inject_destination_parametrization(
+    __entrypoint__: "PipeFactory", sink: "SimpleSink" = ("duckdb", None, None)
+) -> "PipeFactory":
     """
-    Parameterizes destination via wrapping a nonlocal `sink` var and overriding the destination parameter. 
+    Parameterizes destination via wrapping a nonlocal `sink` var and overriding the destination parameter.
 
     The parameter is overridden in the `run` and `load` methods of the pipeline. The `sink` variable is expected
     to be a tuple of the form (destination, staging, gateway) and is expected to be injected via another header.
     """
-    import functools, inspect # isort:skip
+    import functools
+    import inspect
+
     def __wrap__(__pipefunc__: "PipeFactory"):
         __unwrapped__ = inspect.unwrap(__pipefunc__)
         spec = inspect.getfullargspec(__unwrapped__)
+
         @functools.wraps(__pipefunc__)
         def wrapper(*args, **kwargs):
             ckwargs = inspect.getcallargs(__unwrapped__, *args, **kwargs)
-            ckwargs["destination"] = sink[0]; ckwargs["staging"] = sink[1]
+            ckwargs["destination"] = sink[0]
+            ckwargs["staging"] = sink[1]
             cargs = [ckwargs.pop(k) for k in spec.args if k in ckwargs]
             if spec.varargs:
                 cargs.extend(ckwargs.pop(spec.varargs, []))
@@ -118,55 +134,79 @@ def parametrized_destination_wrapper(__entrypoint__: "PipeFactory", sink: "Simpl
                 ckwargs.update(ckwargs.pop(spec.varkw, {}))
             pipe = __pipefunc__(*cargs, **ckwargs)
             run = pipe.run
+
             @functools.wraps(run)
             def _run(data, **kwargs):
-                kwargs["destination"] = sink[0]; kwargs["staging"] = sink[1]
+                kwargs["destination"] = sink[0]
+                kwargs["staging"] = sink[1]
                 return run(data, **kwargs)
-            pipe.run = _run # type: ignore
+
+            setattr(pipe, "run", _run)
             load = pipe.load
+
             @functools.wraps(load)
             def _load(destination=None, dataset_name=None, credentials=None, **kwargs):
-                return load(sink[0], dataset_name, credentials, **kwargs) # type: ignore
-            pipe.load = _load
+                return load(sink[0], dataset_name, credentials, **kwargs)  # type: ignore
+
+            setattr(pipe, "load", _load)
             return pipe
+
         return wrapper
+
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 
-def get_duckdb_destination() -> "SimpleSink":
+
+def inject_duckdb_destination() -> "SimpleSink":
     """Minimum via sink definition for duckdb destination."""
-    sink=("duckdb", None, None)
+    sink = ("duckdb", None, None)
     return sink
 
-def resource_filter_wrapper(__entrypoint__: "PipeFactory", *resource_patterns: str) -> "PipeFactory":
+
+def inject_resource_selection(
+    __entrypoint__: "PipeFactory", *resource_patterns: str
+) -> "PipeFactory":
     """Filters resources in the extract method of a pipeline based on a list of patterns."""
-    import functools, fnmatch # isort:skip
+    import fnmatch
+    import functools
+
     from dlt.extract.extract import data_to_sources
+
     def __wrap__(__pipefunc__: "PipeFactory"):
         @functools.wraps(__pipefunc__)
         def wrapper(*args, **kwargs):
             pipe = __pipefunc__(*args, **kwargs)
             extract = pipe.extract
+
             @functools.wraps(extract)
             def _extract(data, **kwargs):
                 with pipe._maybe_destination_capabilities():
-                    forward = kwargs.copy()
-                    forward.pop("workers", None)
-                    forward.pop("max_parallel_items", None)
-                    data = data_to_sources(data, pipe, **forward)
+                    fwd = kwargs.copy()
+                    fwd.pop("workers", None)
+                    fwd.pop("max_parallel_items", None)
+                    data = data_to_sources(data, pipe, **fwd)
                 for i, source in enumerate(data):
-                    data[i] = source.with_resources(*[
-                        r for r in source.selected_resources
-                        if any(fnmatch.fnmatch(r, patt) for patt in resource_patterns)
-                    ])
+                    data[i] = source.with_resources(
+                        *[
+                            r
+                            for r in source.selected_resources
+                            if any(
+                                fnmatch.fnmatch(r, patt) for patt in resource_patterns
+                            )
+                        ]
+                    )
                 return extract(data, **kwargs)
-            pipe.extract = _extract
+
+            setattr(pipe, "extract", _extract)
             return pipe
+
         return wrapper
+
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 
-def replace_disposition_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
+
+def inject_replace_disposition(__entrypoint__: "PipeFactory") -> "PipeFactory":
     """
     Ignores state and truncates the destination table before loading.
 
@@ -175,73 +215,87 @@ def replace_disposition_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
     upstream mutability. To clear schema inference data, drop the target dataset instead.
     """
     import functools
+
     def __wrap__(__pipefunc__: "PipeFactory"):
         @functools.wraps(__pipefunc__)
         def wrapper(*args, **kwargs):
             pipe = __pipefunc__(*args, **kwargs)
             run = pipe.run
+
             @functools.wraps(run)
             def _run(data, **kwargs):
                 kwargs["write_disposition"] = "replace"
                 return run(data, **kwargs)
-            pipe.run = _run # type: ignore
+
+            setattr(pipe, "run", _run)
             extract = pipe.extract
+
             @functools.wraps(extract)
             def _extract(data, **kwargs):
                 kwargs["write_disposition"] = "replace"
                 return extract(data, **kwargs)
-            pipe.extract = _extract
+
+            setattr(pipe, "extract", _extract)
             return pipe
+
         return wrapper
+
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
 
-def feature_flag_wrapper(__entrypoint__: "PipeFactory") -> "PipeFactory":
+
+def inject_feature_flags(__entrypoint__: "PipeFactory") -> "PipeFactory":
     """Wraps the pipeline with feature flagging."""
-    import functools # isort:skip
-    from dlt.extract.extract import data_to_sources # isort:skip
-    from cdf.core.context import active_workspace # isort:skip
+    import functools
+
+    from dlt.extract.extract import data_to_sources
+
+    from cdf.core.context import active_workspace
     from cdf.core.feature_flags import create_harness_provider
+
     ff = create_harness_provider()
+
     def __wrap__(__pipefunc__: "PipeFactory"):
         @functools.wraps(__pipefunc__)
         def wrapper(*args, **kwargs):
             pipe = __pipefunc__(*args, **kwargs)
             extract = pipe.extract
+
             @functools.wraps(extract)
             def _extract(data, **kwargs):
                 with pipe._maybe_destination_capabilities():
-                    forward = kwargs.copy()
-                    forward.pop("workers", None)
-                    forward.pop("max_parallel_items", None)
-                    data = data_to_sources(data, pipe, **forward)
+                    fwd = kwargs.copy()
+                    fwd.pop("workers", None)
+                    fwd.pop("max_parallel_items", None)
+                    data = data_to_sources(data, pipe, **fwd)
                 for i, source in enumerate(data):
                     data[i] = ff(source, active_workspace.get())
                 return extract(data, **kwargs)
-            pipe.extract = _extract
+
+            setattr(pipe, "extract", _extract)
             return pipe
+
         return wrapper
+
     __entrypoint__ = __wrap__(__entrypoint__)
     return __entrypoint__
-# End of injectable function bodies
-# fmt: on
 
-# Wrappers are converted -> to headers for use in the rewriter
 
-# These headers are executed eagerly in the top-level scope
+# Injector wrappers are converted to headers for use in the rewriter
+# These headers encapsulate top-level code executed during script execution
 noop_header = ast.parse("pass")
-entrypoint_header = _to_header(get_entrypoint)
-source_capture_header = _to_header(source_capture_wrapper)
-duckdb_destination_header = _to_header(get_duckdb_destination)
-parametrized_destination_header = _to_header(parametrized_destination_wrapper)
+entrypoint_header = _to_header(get_entrypoint_ref)
+source_capture_header = _to_header(inject_source_capture)
+duckdb_destination_header = _to_header(inject_duckdb_destination)
+parametrized_destination_header = _to_header(inject_destination_parametrization)
 basic_destination_header = lambda d="duckdb": ast.parse(  # noqa
     f"sink=({d!r}, None, None)"
 )
 resource_filter_header = lambda *patts: _to_header(  # noqa
-    resource_filter_wrapper, prepends=[ast.parse(f"resource_patterns = {patts!r}")]
+    inject_resource_selection, prepends=[ast.parse(f"resource_patterns = {patts!r}")]
 )
-replace_disposition_header = _to_header(replace_disposition_wrapper)
-feature_flag_header = _to_header(feature_flag_wrapper)
+replace_disposition_header = _to_header(inject_replace_disposition)
+feature_flag_header = _to_header(inject_feature_flags)
 # End of headers
 
 
