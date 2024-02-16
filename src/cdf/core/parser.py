@@ -194,7 +194,7 @@ class ParsedComponent(t.NamedTuple):
         """The name of the component."""
         return self.specification["name"].unwrap_or(self.path.stem)
 
-    def _to_script(self) -> str:
+    def to_script(self) -> str:
         """Returns a python script representation of the parsed component."""
         return "\n".join(
             [

@@ -10,6 +10,7 @@ discoverability of pipelines and publishers, automated configuration management,
 more.
 """
 
-from cdf.core.workspace import find_nearest
+from cdf.core.sandbox import run
+from cdf.core.workspace import find_nearest, get_gateway
 
-__all__ = ["find_nearest"]
+__all__ = ["find_nearest", "run", "get_gateway"]

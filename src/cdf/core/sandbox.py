@@ -16,6 +16,7 @@ from dlt.common.configuration.specs.config_providers_context import (
     ConfigProvidersContext,
 )
 
+import cdf.core.exceptions as ex
 from cdf.core.monads import Err, Ok, Result
 
 PathLike = t.Union[str, Path]
@@ -23,7 +24,7 @@ PathLike = t.Union[str, Path]
 
 def run(
     code: str, root: PathLike = ".", quiet=False
-) -> Result[t.Dict[str, t.Any], Exception]:
+) -> Result[t.Dict[str, t.Any], ex.CDFError]:
     """Run code in a sandbox.
 
     Args:
@@ -52,4 +53,4 @@ def run(
                 exports = runpy.run_path(tmpdir, run_name="__main__")
         return Ok(exports)
     except Exception as e:
-        return Err(e)
+        return Err(ex.CDFError(f"Error running code: {e}"))

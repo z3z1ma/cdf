@@ -11,6 +11,7 @@ from immutabledict import immutabledict
 import cdf.core.constants as c
 import cdf.core.exceptions as ex
 import cdf.core.logger as logger
+import cdf.core.sandbox as sandbox
 from cdf.core.monads import Err, Ok, Result
 from cdf.core.parser import ParsedComponent, process_definition, process_script
 
@@ -193,3 +194,16 @@ def augment_sys_path(this: T) -> T:
     """Augments sys.path with the project/workspace root."""
     sys.path.append(str(this.root))
     return this
+
+
+def get_gateway(
+    project: Project, workspace: str, sink: str
+) -> Result[t.Dict[str, t.Any], ex.CDFError]:
+    """Gets a SQLMesh gateway from a project sink tuple. Useful in config.py"""
+    return (
+        Ok(project)
+        .bind(lambda p: p.search(workspace))
+        .bind(lambda w: w.search(sink, "sinks"))
+        .bind(lambda c: sandbox.run(c.to_script()))
+        .map(lambda ex: ex["sink"][2])
+    )

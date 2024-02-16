@@ -12,7 +12,7 @@ from typing_extensions import Self
 T = t.TypeVar("T")  # The type of the value inside the Monad
 U = t.TypeVar("U")  # The transformed type of the value inside the Monad
 E = t.TypeVar(
-    "E", bound=BaseException, contravariant=True
+    "E", bound=BaseException, covariant=True
 )  # The type of the error inside the Result
 P = t.ParamSpec("P")
 
@@ -303,6 +303,12 @@ class Result(Monad[T], t.Generic[T, E]):
             ...
 
         def filter(self, predicate: t.Callable[[T], bool]) -> "Result[T, E]":
+            ...
+
+        def __call__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]":
+            ...
+
+        def __rshift__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]":
             ...
 
     def __iter__(self) -> t.Iterator[T]:
