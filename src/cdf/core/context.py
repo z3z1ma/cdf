@@ -7,3 +7,4 @@ if t.TYPE_CHECKING:
 
 
 active_workspace: ContextVar["Workspace"] = ContextVar("active_workspace")
+debug: ContextVar[bool] = ContextVar("debug", default=False)

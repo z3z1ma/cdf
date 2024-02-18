@@ -286,6 +286,20 @@ def inject_feature_flags(__entrypoint__: "PipeFactory") -> "PipeFactory":
     return __entrypoint__
 
 
+def inject_debugger() -> t.Callable[[t.Any, t.Any, t.Any], None]:
+    """Installs a post-mortem debugger for unhandled exceptions."""
+    import pdb
+    import sys
+    import traceback
+
+    def debug_hook(etype, value, tb):
+        traceback.print_exception(etype, value, tb)
+        pdb.post_mortem(tb)
+
+    sys.excepthook = debug_hook
+    return debug_hook
+
+
 # Injector wrappers are converted to headers for use in the rewriter
 # These headers encapsulate top-level code executed during script execution
 noop_header = ast.parse("pass")
@@ -302,6 +316,7 @@ resource_filter_header = lambda *patts: _to_header(  # noqa
 replace_disposition_header = _to_header(inject_replace_disposition)
 feature_flag_header = _to_header(inject_feature_flags)
 import_anchor_header = lambda mod: ast.parse(f"__package__ = {mod!r}")  # noqa
+debugger_header = _to_header(inject_debugger)
 # End of headers
 
 

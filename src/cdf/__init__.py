@@ -9,18 +9,32 @@ that augment dlt and sqlmesh including automated virtual environment management,
 discoverability of pipelines and publishers, automated configuration management, and
 more.
 """
+import typing as t
+
+import dlt.sources.helpers.requests as requests
 from dlt import config
 from dlt import destinations as destination
 from dlt import secrets
 from dlt.common.configuration import with_config
+from dlt.sources import incremental
+from sqlmesh.core.config import ConnectionConfig
 from sqlmesh.core.config import GatewayConfig as gateway
-from sqlmesh.core.config import parse_connection_config
+from sqlmesh.core.config import parse_connection_config as _parse_connection_config
 
+import cdf.core.logger as logger
 from cdf.core.sandbox import run
 from cdf.core.workspace import find_nearest, get_gateway
 
 inject_config = config.value
 inject_secret = secrets.value
+
+session = requests.Client
+
+
+def connection(type_: str, /, **kwargs: t.Any) -> ConnectionConfig:
+    kwargs["type"] = type_
+    return _parse_connection_config(kwargs)
+
 
 __all__ = [
     "find_nearest",
@@ -33,5 +47,9 @@ __all__ = [
     "inject_secret",
     "destination",
     "gateway",
-    "parse_connection_config",
+    "connection",
+    "logger",
+    "session",
+    "requests",
+    "incremental",
 ]

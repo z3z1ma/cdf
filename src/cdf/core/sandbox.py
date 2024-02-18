@@ -53,4 +53,4 @@ def run(
                 exports = runpy.run_path(tmpdir, run_name="__main__")
         return Ok(exports)
     except Exception as e:
-        return Err(ex.CDFError(f"Error running code: {e}"))
+        return Err(ex.CDFError(f"Error running code: {e}", e))

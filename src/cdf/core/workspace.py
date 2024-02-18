@@ -190,9 +190,11 @@ class HasRoot(t.Protocol):
 T = t.TypeVar("T", bound=HasRoot)
 
 
-def augment_sys_path(this: T) -> T:
+def augment_sys_path(this: T, parent: bool = False) -> T:
     """Augments sys.path with the project/workspace root."""
     sys.path.append(str(this.root))
+    if parent:
+        sys.path.append(str(this.root.parent))
     return this
 
 

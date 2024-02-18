@@ -1,4 +1,5 @@
 """CLI for cdf."""
+import functools
 import itertools
 import typing as t
 from enum import Enum
@@ -14,6 +15,7 @@ import cdf.core.logger as logger
 from cdf.core.monads import Err, Ok, Result
 from cdf.core.rewriter import (
     basic_destination_header,
+    debugger_header,
     feature_flag_header,
     import_anchor_header,
     noop_header,
@@ -48,6 +50,9 @@ def main(
         help="Path to the project root. Defaults to cwd. Parent dirs are searched for a workspace file.",
         envvar="CDF_ROOT",
     ),
+    debug: bool = typer.Option(
+        False, "--debug", "-d", help="Enable debug mode. Defaults to False."
+    ),
 ) -> None:
     """CDF: Data Engineering Framework.
 
@@ -57,6 +62,8 @@ def main(
         root: The project root path.
     """
     ctx.obj = find_nearest(root).unwrap()
+    if debug:
+        cdf_ctx.debug.set(True)
 
 
 @app.command(rich_help_panel="Project Info")
@@ -205,7 +212,11 @@ def pipeline(
     """
     project: Project = augment_sys_path(ctx.obj)
     ws, pipe = Separator.split(pipeline, 2).unwrap()
-    workspace = project.search(ws).map(augment_sys_path).unwrap()
+    workspace = (
+        project.search(ws)
+        .map(functools.partial(augment_sys_path, parent=True))
+        .unwrap()
+    )
     token = cdf_ctx.active_workspace.set(workspace)
     (
         Ok(workspace)
@@ -226,6 +237,7 @@ def pipeline(
                 if resources
                 else feature_flag_header,
                 replace_disposition_header if replace else noop_header,
+                debugger_header if cdf_ctx.debug.get() else noop_header,
             )
         )
         .bind(lambda code: run(code, root=workspace.root))
@@ -271,7 +283,11 @@ def execute_script(
     """
     project: Project = augment_sys_path(ctx.obj)
     ws, script = Separator.split(script, 2).unwrap()
-    workspace = project.search(ws).map(augment_sys_path).unwrap()
+    workspace = (
+        project.search(ws)
+        .map(functools.partial(augment_sys_path, parent=True))
+        .unwrap()
+    )
     (
         Ok(workspace)
         .bind(lambda w: w.search(script, key="scripts"))
@@ -427,16 +443,19 @@ def _get_sources_or_raise(project: Project, ws: str, pipe: str):
     from cdf.core.feature_flags import create_harness_provider
 
     ff_provider = create_harness_provider()
-    workspace = project.search(ws).map(augment_sys_path).unwrap()
+    workspace = project.search(ws).unwrap()
     token = cdf_ctx.active_workspace.set(workspace)
     sources, err = (
         Ok(workspace)
-        .map(augment_sys_path)
+        .map(functools.partial(augment_sys_path, parent=True))
         .bind(lambda w: w.search(pipe, key=c.PIPELINES))
         .map(lambda pipe: pipe.tree)
         .bind(
             lambda tree: rewrite_pipeline(
-                tree, import_anchor_header(c.PIPELINES), source_capture_header
+                tree,
+                import_anchor_header(c.PIPELINES),
+                source_capture_header,
+                debugger_header if cdf_ctx.debug.get() else noop_header,
             )
         )
         .bind(lambda code: run(code, root=workspace.root, quiet=True))
