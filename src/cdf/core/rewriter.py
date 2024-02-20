@@ -162,7 +162,7 @@ def inject_destination_parametrization(
     return __entrypoint__
 
 
-def inject_duckdb_destination() -> "SimpleSink":
+def inject_duckdb_destination() -> "SinkStruct":
     """Minimum via sink definition for duckdb destination."""
     sink = ("duckdb", None, None)
     return sink

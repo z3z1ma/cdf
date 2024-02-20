@@ -98,7 +98,10 @@ def create_harness_provider(
 
     def _processor(source: "DltSource", workspace: "Workspace") -> "DltSource":
         nonlocal client
-        client = client.unwrap()
+        if isinstance(client, Promise):
+            client = client.unwrap()
+        else:
+            client._polling_processor.retrieve_flags_and_segments()
         cache = client._repository.cache
         ns = f"pipeline__{workspace.name}__{source.name}"
 
@@ -108,11 +111,11 @@ def create_harness_provider(
             return f"{ns}__{r}"
 
         resource_lookup = {
-            get_resource_id(key): resource
-            for key, resource in source.selected_resources.items()
+            get_resource_id(key): resource for key, resource in source.resources.items()
         }
+        every_resource = resource_lookup.keys()
+        selected_resources = set(map(get_resource_id, source.selected_resources.keys()))
 
-        target_flags = set(resource_lookup.keys())
         current_flags = set(
             filter(
                 lambda f: f.startswith(ns),
@@ -120,9 +123,8 @@ def create_harness_provider(
             )
         )
 
-        removed = current_flags.difference(target_flags)
-        added = target_flags.difference(current_flags)
-        existing = target_flags.intersection(current_flags)
+        removed = current_flags.difference(every_resource)
+        added = selected_resources.difference(current_flags)
 
         list(tpe.map(drop, removed))
         for f in tpe.map(
@@ -134,8 +136,9 @@ def create_harness_provider(
             ],
         ):
             resource_lookup[f].selected = False
-        for f in existing:
+        for f in current_flags.intersection(selected_resources):
             resource_lookup[f].selected = client.bool_variation(f, Target("cdf"), False)
+
         return source
 
     return _processor

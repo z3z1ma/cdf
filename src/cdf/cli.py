@@ -221,6 +221,7 @@ def pipeline(
     (
         Ok(workspace)
         .bind(lambda w: w.search(pipe, key=c.PIPELINES))
+        .map(cdf_ctx.set_current_spec)
         .map(lambda pipe: pipe.tree)
         .bind(
             lambda tree: rewrite_pipeline(
@@ -250,18 +251,29 @@ def pipeline(
 def publish(
     ctx: typer.Context,
     publisher: t.Annotated[
-        str, typer.Argument(help="the <workspace>.<sink>.<publisher> to run")
+        str, typer.Argument(help="the <workspace>.<publisher> to run")
     ],
-    opts: str = typer.Argument(
-        "{}", help="JSON formatted options to forward to the publisher."
-    ),
     prompt_on_untracked: bool = typer.Option(
         True,
         help="Prompt the user before publishing untracked data. Defaults to True.",
     ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
-    rich.print("Not implemented yet.")
+    project: Project = augment_sys_path(ctx.obj)
+    ws, publisher = Separator.split(publisher, 2).unwrap()
+    workspace = (
+        project.search(ws)
+        .map(functools.partial(augment_sys_path, parent=True))
+        .unwrap()
+    )
+    (
+        Ok(workspace)
+        .bind(lambda w: w.search(publisher, key="publishers"))
+        .map(cdf_ctx.set_current_spec)
+        .bind(lambda pipe: rewrite_script(pipe.tree))
+        .bind(lambda code: run(code, root=workspace.root))
+        .unwrap()
+    )
 
 
 @app.command("execute-script", rich_help_panel="Utility")
@@ -291,6 +303,7 @@ def execute_script(
     (
         Ok(workspace)
         .bind(lambda w: w.search(script, key="scripts"))
+        .map(cdf_ctx.set_current_spec)
         .bind(lambda pipe: rewrite_script(pipe.tree))
         .bind(lambda code: run(code, root=workspace.root))
         .unwrap()
@@ -449,6 +462,7 @@ def _get_sources_or_raise(project: Project, ws: str, pipe: str):
         Ok(workspace)
         .map(functools.partial(augment_sys_path, parent=True))
         .bind(lambda w: w.search(pipe, key=c.PIPELINES))
+        .map(cdf_ctx.set_current_spec)
         .map(lambda pipe: pipe.tree)
         .bind(
             lambda tree: rewrite_pipeline(

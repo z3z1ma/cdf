@@ -207,5 +207,7 @@ def get_gateway(
         .bind(lambda p: p.search(workspace))
         .bind(lambda w: w.search(sink, "sinks"))
         .bind(lambda c: sandbox.run(c.to_script()))
-        .map(lambda ex: ex["sink"][2])
+        .map(lambda ex: ex["sink"])
+        .map(lambda sink: sink() if callable(sink) else sink)
+        .map(lambda sink: sink[2])
     )

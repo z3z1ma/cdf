@@ -9,7 +9,9 @@ that augment dlt and sqlmesh including automated virtual environment management,
 discoverability of pipelines and publishers, automated configuration management, and
 more.
 """
+import os
 import typing as t
+from types import SimpleNamespace
 
 import dlt.sources.helpers.requests as requests
 from dlt import config
@@ -22,6 +24,7 @@ from sqlmesh.core.config import GatewayConfig as gateway
 from sqlmesh.core.config import parse_connection_config as _parse_connection_config
 
 import cdf.core.logger as logger
+from cdf.core.context import current_spec as _current_spec
 from cdf.core.sandbox import run
 from cdf.core.workspace import find_nearest, get_gateway
 
@@ -29,6 +32,17 @@ inject_config = config.value
 inject_secret = secrets.value
 
 session = requests.Client
+
+
+def current_spec() -> SimpleNamespace:
+    rid = os.urandom(4).hex()
+    return _current_spec.get(
+        SimpleNamespace(
+            name=f"anon_{rid}",
+            version=0,
+            versioned_name=f"cdf_{rid}_v0",
+        )
+    )
 
 
 def connection(type_: str, /, **kwargs: t.Any) -> ConnectionConfig:
@@ -52,4 +66,5 @@ __all__ = [
     "session",
     "requests",
     "incremental",
+    "current_spec",
 ]

@@ -34,6 +34,7 @@ def run(
     Returns:
         Result[t.Dict[str, t.Any], Exception]: The result of the code execution.
     """
+    root = Path(root)
     try:
         C = ConfigProvidersContext()
         C.providers = [
@@ -41,6 +42,9 @@ def run(
             SecretsTomlProvider(os.path.join(root, ".dlt")),
             ConfigTomlProvider(os.path.join(root, ".dlt")),
         ]
+        runkwargs: t.Dict[str, t.Any] = dict(
+            run_name="__main__", init_globals={"__root__": str(root.resolve())}
+        )
         with tempfile.TemporaryDirectory() as tmpdir, Container().injectable_context(C):
             f = Path(tmpdir) / "__main__.py"
             f.write_text(code)
@@ -48,9 +52,9 @@ def run(
                 with open(os.devnull, "w") as ignore, contextlib.redirect_stdout(
                     ignore
                 ), contextlib.redirect_stderr(ignore):
-                    exports = runpy.run_path(tmpdir, run_name="__main__")
+                    exports = runpy.run_path(tmpdir, **runkwargs)
             else:
-                exports = runpy.run_path(tmpdir, run_name="__main__")
+                exports = runpy.run_path(tmpdir, **runkwargs)
         return Ok(exports)
     except Exception as e:
         return Err(ex.CDFError(f"Error running code: {e}", e))
