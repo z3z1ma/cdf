@@ -19,7 +19,8 @@ def set_current_spec(component: "ParsedComponent") -> "ParsedComponent":
         **{k: v.unwrap_or(None) for k, v in component.specification.items()}
     )
     ns.name = component.name
-    if hasattr(ns, "version"):
-        ns.versioned_name = f"{component.name}_v{ns.version}"
+    if not hasattr(ns, "version"):
+        ns.version = 0
+    ns.versioned_name = f"{component.name}_v{ns.version}"
     current_spec.set(ns)
     return component
