@@ -35,6 +35,7 @@ session = requests.Client
 
 
 def current_spec() -> SimpleNamespace:
+    """Get the current component specification as parsed from the docstring."""
     rid = os.urandom(4).hex()
     return _current_spec.get(
         SimpleNamespace(
