@@ -12,6 +12,7 @@ from featureflags.evaluations.feature import FeatureConfigKind
 from featureflags.interface import Cache
 from featureflags.util import log as _ff_logger
 
+import cdf.core.logger as logger
 from cdf.core.monads import Promise
 
 if t.TYPE_CHECKING:
@@ -62,6 +63,7 @@ def create_harness_provider(
     client = Promise(lambda: asyncio.to_thread(_get_client))
 
     def drop(ident: str) -> str:
+        logger.info(f"Deleting feature flag {ident}")
         requests.delete(
             f"https://app.harness.io/gateway/cf/admin/features/{ident}",
             headers={"x-api-key": api_key},
@@ -75,6 +77,7 @@ def create_harness_provider(
         return ident
 
     def create(ident: str, name: str) -> str:
+        logger.info(f"Creating feature flag {ident}")
         requests.post(
             "https://app.harness.io/gateway/cf/admin/features",
             params={"accountIdentifier": account, "orgIdentifier": organization},
