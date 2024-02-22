@@ -211,3 +211,31 @@ def get_gateway(
         .map(lambda sink: sink() if callable(sink) else sink)
         .map(lambda sink: sink[2])
     )
+
+
+if t.TYPE_CHECKING:
+    import sqlmesh
+
+
+__context_cache = {}
+"""
+A simple cache for SQLMesh contexts. 
+
+This is for perf and correctness, since we may request the same context multiple times between user code and lib code.
+"""
+
+
+def to_context(
+    workspace: Workspace, gateway: str | None = None
+) -> Result["sqlmesh.Context", ex.CDFError]:
+    """Gets a SQLMesh context from a project sink."""
+    import sqlmesh  # deferred
+
+    if workspace.root in __context_cache:
+        return __context_cache[workspace.root]
+
+    ctx_obj = Ok(workspace).map(
+        lambda ws: sqlmesh.Context(paths=[ws.root], gateway=gateway)
+    )
+    __context_cache[workspace.root] = ctx_obj
+    return ctx_obj

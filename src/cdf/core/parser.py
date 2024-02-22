@@ -142,7 +142,7 @@ def _convert(prop: exp.Expression) -> t.Any:
         else:
             return prop.text("this")
     if isinstance(prop, (exp.Identifier, exp.Column)):
-        return prop.text("this")
+        return prop.sql(identify=False)
     elif isinstance(prop, (exp.Array, exp.Tuple)):
         return [_convert(v).unwrap() for v in prop.expressions]
     elif isinstance(prop, exp.Properties):

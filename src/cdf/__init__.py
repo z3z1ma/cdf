@@ -24,9 +24,10 @@ from sqlmesh.core.config import GatewayConfig as gateway
 from sqlmesh.core.config import parse_connection_config as _parse_connection_config
 
 import cdf.core.logger as logger
+from cdf.core.context import active_workspace
 from cdf.core.context import current_spec as _current_spec
 from cdf.core.sandbox import run
-from cdf.core.workspace import find_nearest, get_gateway
+from cdf.core.workspace import Workspace, find_nearest, get_gateway, to_context
 
 inject_config = config.value
 inject_secret = secrets.value
@@ -36,12 +37,12 @@ session = requests.Client
 
 def current_spec() -> SimpleNamespace:
     """Get the current component specification as parsed from the docstring."""
-    rid = os.urandom(4).hex()
+    uid = os.urandom(4).hex()
     return _current_spec.get(
         SimpleNamespace(
-            name=f"anon_{rid}",
+            name=f"anon_{uid}",
             version=0,
-            versioned_name=f"cdf_{rid}_v0",
+            versioned_name=f"cdf_{uid}_v0",
         )
     )
 
@@ -49,6 +50,20 @@ def current_spec() -> SimpleNamespace:
 def connection(type_: str, /, **kwargs: t.Any) -> ConnectionConfig:
     kwargs["type"] = type_
     return _parse_connection_config(kwargs)
+
+
+def current_workspace() -> Workspace:
+    """Get the current workspace."""
+    return active_workspace.get()
+
+
+if t.TYPE_CHECKING:
+    import sqlmesh
+
+
+def current_context(gateway: str | None = None) -> "sqlmesh.Context":
+    """Get the current SQLMesh context."""
+    return to_context(current_workspace(), gateway).unwrap()
 
 
 __all__ = [
@@ -68,4 +83,6 @@ __all__ = [
     "requests",
     "incremental",
     "current_spec",
+    "current_workspace",
+    "to_context",
 ]

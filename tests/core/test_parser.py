@@ -12,7 +12,7 @@ from cdf.core.parser import (
     process_script,
     props_to_dict,
 )
-from cdf.core.rewriter import rewrite_pipeline
+from cdf.core.rewriter import rewrite_script
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ def test_process_script():
 
 
 def test_generate_runtime_code(cdf_mod):
-    dump = parse_python_ast(cdf_mod).bind(rewrite_pipeline).unwrap()
+    dump = parse_python_ast(cdf_mod).bind(rewrite_script).unwrap()
     lines = dump.splitlines()
     assert lines[0] == "import cdf"
     assert "dlt.pipeline" not in dump

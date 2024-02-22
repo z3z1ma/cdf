@@ -14,17 +14,17 @@ import cdf.core.context as cdf_ctx
 import cdf.core.logger as logger
 from cdf.core.monads import Err, Ok, Result
 from cdf.core.rewriter import (
-    basic_destination_header,
-    debugger_header,
-    feature_flag_header,
-    import_anchor_header,
-    noop_header,
-    parametrized_destination_header,
-    replace_disposition_header,
-    resource_filter_header,
-    rewrite_pipeline,
+    add_debugger,
+    anchor_imports,
+    apply_feature_flags,
+    assert_recent_intervals,
+    capture_sources,
+    filter_resources,
+    force_replace_disposition,
+    noop,
+    parametrize_destination,
     rewrite_script,
-    source_capture_header,
+    set_basic_destination,
 )
 from cdf.core.sandbox import run
 from cdf.core.workspace import Project, augment_sys_path, find_nearest
@@ -217,34 +217,32 @@ def pipeline(
         .map(functools.partial(augment_sys_path, parent=True))
         .unwrap()
     )
-    token = cdf_ctx.active_workspace.set(workspace)
-    (
-        Ok(workspace)
-        .bind(lambda w: w.search(pipe, key=c.PIPELINES))
-        .map(cdf_ctx.set_current_spec)
-        .map(lambda pipe: pipe.tree)
-        .bind(
-            lambda tree: rewrite_pipeline(
-                tree,
-                import_anchor_header(c.PIPELINES),
-                (
-                    Ok(workspace)  # Get the destination header
-                    .bind(lambda w: w.search(destination, key=c.SINKS))
-                    .map(lambda sink: sink.tree)
-                    .unwrap_or(basic_destination_header(destination))
-                ),
-                parametrized_destination_header,
-                resource_filter_header(*resources)
-                if resources
-                else feature_flag_header,
-                replace_disposition_header if replace else noop_header,
-                debugger_header if cdf_ctx.debug.get() else noop_header,
+    with cdf_ctx.workspace_context(workspace):
+        (
+            Ok(workspace)
+            .bind(lambda w: w.search(pipe, key=c.PIPELINES))
+            .map(cdf_ctx.set_current_spec)
+            .map(lambda pipe: pipe.tree)
+            .bind(
+                lambda tree: rewrite_script(
+                    tree,
+                    c.PIPELINES,
+                    anchor_imports(c.PIPELINES),
+                    (
+                        Ok(workspace)  # Get the destination header
+                        .bind(lambda w: w.search(destination, key=c.SINKS))
+                        .map(lambda sink: sink.tree)
+                        .unwrap_or(set_basic_destination(destination))
+                    ),
+                    parametrize_destination,
+                    filter_resources(*resources) if resources else apply_feature_flags,
+                    force_replace_disposition if replace else noop,
+                    add_debugger if cdf_ctx.debug.get() else noop,
+                )
             )
+            .bind(lambda code: run(code, root=workspace.root))
+            .unwrap()
         )
-        .bind(lambda code: run(code, root=workspace.root))
-        .unwrap()
-    )
-    cdf_ctx.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Integrate")
@@ -253,10 +251,6 @@ def publish(
     publisher: t.Annotated[
         str, typer.Argument(help="the <workspace>.<publisher> to run")
     ],
-    prompt_on_untracked: bool = typer.Option(
-        True,
-        help="Prompt the user before publishing untracked data. Defaults to True.",
-    ),
 ) -> None:
     """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system."""
     project: Project = augment_sys_path(ctx.obj)
@@ -266,14 +260,19 @@ def publish(
         .map(functools.partial(augment_sys_path, parent=True))
         .unwrap()
     )
-    (
-        Ok(workspace)
-        .bind(lambda w: w.search(publisher, key="publishers"))
-        .map(cdf_ctx.set_current_spec)
-        .bind(lambda pipe: rewrite_script(pipe.tree))
-        .bind(lambda code: run(code, root=workspace.root))
-        .unwrap()
-    )
+    with cdf_ctx.workspace_context(workspace):
+        (
+            Ok(workspace)
+            .bind(lambda w: w.search(publisher, key=c.PUBLISHERS))
+            .map(cdf_ctx.set_current_spec)
+            .bind(
+                lambda pipe: rewrite_script(
+                    pipe.tree, c.PUBLISHERS, assert_recent_intervals
+                )
+            )
+            .bind(lambda code: run(code, root=workspace.root))
+            .unwrap()
+        )
 
 
 @app.command("execute-script", rich_help_panel="Utility")
@@ -300,14 +299,15 @@ def execute_script(
         .map(functools.partial(augment_sys_path, parent=True))
         .unwrap()
     )
-    (
-        Ok(workspace)
-        .bind(lambda w: w.search(script, key="scripts"))
-        .map(cdf_ctx.set_current_spec)
-        .bind(lambda pipe: rewrite_script(pipe.tree))
-        .bind(lambda code: run(code, root=workspace.root))
-        .unwrap()
-    )
+    with cdf_ctx.workspace_context(workspace):
+        (
+            Ok(workspace)
+            .bind(lambda w: w.search(script, key="scripts"))
+            .map(cdf_ctx.set_current_spec)
+            .bind(lambda pipe: rewrite_script(pipe.tree, c.SCRIPTS))
+            .bind(lambda code: run(code, root=workspace.root))
+            .unwrap()
+        )
 
 
 @app.command(rich_help_panel="Utility")
@@ -442,41 +442,32 @@ def init_project(
     rich.print("Not implemented yet.")
 
 
-@app.command("develop", rich_help_panel="Project Initialization")
-def develop(
-    ctx: typer.Context,
-    component: str = typer.Argument("*", help="The component to develop."),
-) -> None:
-    """:hammer_and_wrench: Install project components in the active virtual environment."""
-    rich.print("Not implemented yet.")
-
-
 def _get_sources_or_raise(project: Project, ws: str, pipe: str):
     """Get the sources from a dlt pipelines script or raise an error if unable to."""
     from cdf.core.feature_flags import create_harness_provider
 
     ff_provider = create_harness_provider()
     workspace = project.search(ws).unwrap()
-    token = cdf_ctx.active_workspace.set(workspace)
-    sources, err = (
-        Ok(workspace)
-        .map(functools.partial(augment_sys_path, parent=True))
-        .bind(lambda w: w.search(pipe, key=c.PIPELINES))
-        .map(cdf_ctx.set_current_spec)
-        .map(lambda pipe: pipe.tree)
-        .bind(
-            lambda tree: rewrite_pipeline(
-                tree,
-                import_anchor_header(c.PIPELINES),
-                source_capture_header,
-                debugger_header if cdf_ctx.debug.get() else noop_header,
+    with cdf_ctx.workspace_context(workspace):
+        sources, err = (
+            Ok(workspace)
+            .map(functools.partial(augment_sys_path, parent=True))
+            .bind(lambda w: w.search(pipe, key=c.PIPELINES))
+            .map(cdf_ctx.set_current_spec)
+            .map(lambda pipe: pipe.tree)
+            .bind(
+                lambda tree: rewrite_script(
+                    tree,
+                    c.PIPELINES,
+                    anchor_imports(c.PIPELINES),
+                    capture_sources,
+                    add_debugger if cdf_ctx.debug.get() else noop,
+                )
             )
+            .bind(lambda code: run(code, root=workspace.root, quiet=True))
+            .map(lambda exports: exports[c.SOURCE_CONTAINER])
+            .to_parts()
         )
-        .bind(lambda code: run(code, root=workspace.root, quiet=True))
-        .map(lambda exports: exports[c.SOURCE_CONTAINER])
-        .to_parts()
-    )
-    cdf_ctx.active_workspace.reset(token)
     if err:
         raise err
     return list(map(lambda s: ff_provider(s, workspace), sources))
@@ -492,19 +483,15 @@ class Separator(str, Enum):
     workspace.component -> sink
     workspace.component >> sink
     workspace.component :: sink
-    workspace.component | sink
     workspace >> component >> sink
     workspace/component/sink
-    workspace/component-to-sink
     """
 
     DOT = "."
     DCOLON = "::"
     ARROW = "->"
     DARRROW = ">>"
-    PIPE = "|"
     FSLASH = "/"
-    TO = "-to-"
 
     @classmethod
     def split(

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import types
 import typing as t
 from copy import deepcopy
 
@@ -21,6 +22,7 @@ import cdf.core.exceptions as ex
 from cdf.core.monads import Err, Ok, Result
 
 if t.TYPE_CHECKING:
+    import sqlmesh
     from dlt.pipeline.pipeline import Pipeline
 
     PipeFactory = t.Callable[..., Pipeline]
@@ -41,7 +43,7 @@ def _to_header(
     tree = ast.parse(source)
     func_def = t.cast(ast.FunctionDef, tree.body[0])
     header = func_def.body[:-1]
-    for p in prepends or []:
+    for p in reversed(prepends or []):
         header = [*p.body, *header]
     for a in appends or []:
         header.extend(a.body)
@@ -286,7 +288,7 @@ def inject_feature_flags(__entrypoint__: "PipeFactory") -> "PipeFactory":
     return __entrypoint__
 
 
-def inject_debugger() -> t.Callable[[t.Any, t.Any, t.Any], None]:
+def setup_debugger() -> t.Callable[[t.Any, t.Any, t.Any], None]:
     """Installs a post-mortem debugger for unhandled exceptions."""
     import pdb
     import sys
@@ -300,23 +302,71 @@ def inject_debugger() -> t.Callable[[t.Any, t.Any, t.Any], None]:
     return debug_hook
 
 
+def raise_on_missing_intervals(
+    context: "sqlmesh.Context", spec: types.SimpleNamespace
+) -> None:
+    """Checks for missing intervals in tracked dependencies based on the active context."""
+    import datetime
+
+    from sqlmesh.core.dialect import normalize_model_name
+
+    import cdf.core.logger as logger
+
+    if hasattr(spec, "depends_on"):
+        models = context.models
+        for dependency in spec.depends_on:
+            normalized_name = normalize_model_name(
+                dependency, context.default_catalog, context.default_dialect
+            )
+            if normalized_name not in models:
+                raise ValueError(
+                    f"Cannot find tracked dependency {dependency} in models."
+                )
+            model = models[normalized_name]
+            # Ensure the model is not missing intervals before publishing
+            snapshot = context.get_snapshot(normalized_name)
+            assert snapshot, f"Snapshot not found for {normalized_name}"
+            if snapshot.missing_intervals(
+                datetime.date.today() - datetime.timedelta(days=7),
+                datetime.date.today() - datetime.timedelta(days=1),
+            ):
+                raise ValueError(
+                    f"Model {model} has missing intervals. Cannot publish."
+                )
+            logger.info(f"Model {model} has no missing intervals.")
+        logger.info("All tracked dependencies passed interval check.")
+    else:
+        logger.warn("No tracked dependencies found in spec. Skipping interval check.")
+    return None
+
+
 # Injector wrappers are converted to headers for use in the rewriter
 # These headers encapsulate top-level code executed during script execution
-noop_header = ast.parse("pass")
-entrypoint_header = _to_header(get_entrypoint_ref)
-source_capture_header = _to_header(inject_source_capture)
-duckdb_destination_header = _to_header(inject_duckdb_destination)
-parametrized_destination_header = _to_header(inject_destination_parametrization)
-basic_destination_header = lambda d="duckdb": ast.parse(  # noqa
+
+noop = ast.parse("pass")
+add_entrypoint = _to_header(get_entrypoint_ref)
+capture_sources = _to_header(inject_source_capture)
+set_duckdb_destination = _to_header(inject_duckdb_destination)
+parametrize_destination = _to_header(inject_destination_parametrization)
+set_basic_destination = lambda d="duckdb": ast.parse(  # noqa
     f"sink=({d!r}, None, None)"
 )
-resource_filter_header = lambda *patts: _to_header(  # noqa
+filter_resources = lambda *patts: _to_header(  # noqa
     inject_resource_selection, prepends=[ast.parse(f"resource_patterns = {patts!r}")]
 )
-replace_disposition_header = _to_header(inject_replace_disposition)
-feature_flag_header = _to_header(inject_feature_flags)
-import_anchor_header = lambda mod: ast.parse(f"__package__ = {mod!r}")  # noqa
-debugger_header = _to_header(inject_debugger)
+force_replace_disposition = _to_header(inject_replace_disposition)
+apply_feature_flags = _to_header(inject_feature_flags)
+anchor_imports = lambda mod: ast.parse(f"__package__ = {mod!r}")  # noqa
+add_debugger = _to_header(setup_debugger)
+assert_recent_intervals = _to_header(
+    raise_on_missing_intervals,
+    prepends=[
+        ast.parse("import cdf"),
+        ast.parse("context = cdf.current_context()"),
+        ast.parse("spec = cdf.current_spec()"),
+    ],
+)
+
 # End of headers
 
 
@@ -360,8 +410,8 @@ rewriters = {
 }
 
 
-def rewrite_pipeline(
-    tree: ast.Module, *headers: ast.Module, copy: bool = True
+def rewrite_script(
+    tree: ast.Module, comp_type: str, *headers: ast.Module, copy: bool = True
 ) -> Result[str, ex.CDFError]:
     """
     Generates code from a python script ast with additional headers.
@@ -371,6 +421,7 @@ def rewrite_pipeline(
 
     Args:
         tree: The ast of a python script.
+        comp_type: The type of the component.
         headers: Additional ast nodes to prepend to the tree in the order they are provided.
         copy: Whether to deepcopy the tree before rewriting. Defaults to True.
 
@@ -381,30 +432,13 @@ def rewrite_pipeline(
         tree = deepcopy(tree) if copy else tree
         for header in reversed(headers):
             tree.body = [*header.body, *tree.body]
-        tree.body = [*entrypoint_header.body, *tree.body]
+        if comp_type == c.PIPELINES:
+            tree.body = [*add_entrypoint.body, *tree.body]
         stringified_code = ast.unparse(
-            ast.fix_missing_locations(rewriters[c.PIPELINES].visit(tree))
+            ast.fix_missing_locations(rewriters[comp_type].visit(tree))
         )
         return Ok(
             "\n".join(line for line in stringified_code.splitlines() if line.strip())
         )
     except Exception as e:
         return Err(RewriteError(f"Failed to rewrite pipeline: {e}"))
-
-
-def rewrite_script(
-    tree: ast.Module, *headers: ast.Module, copy=True
-) -> Result[str, ex.CDFError]:
-    """Generates code from a python script ast with additional headers."""
-    try:
-        tree = deepcopy(tree) if copy else tree
-        for header in reversed(headers):
-            tree.body = [*header.body, *tree.body]
-        stringified_code = ast.unparse(
-            ast.fix_missing_locations(rewriters[c.SCRIPTS].visit(tree))
-        )
-        return Ok(
-            "\n".join(line for line in stringified_code.splitlines() if line.strip())
-        )
-    except Exception as e:
-        return Err(RewriteError(f"Failed to rewrite script: {e}"))

@@ -1,4 +1,5 @@
 """Context module."""
+import contextlib
 import typing as t
 from contextvars import ContextVar
 from types import SimpleNamespace
@@ -24,3 +25,13 @@ def set_current_spec(component: "ParsedComponent") -> "ParsedComponent":
     ns.versioned_name = f"{component.name}_v{ns.version}"
     current_spec.set(ns)
     return component
+
+
+@contextlib.contextmanager
+def workspace_context(workspace: "Workspace") -> t.Iterator[None]:
+    """Activate a workspace for a context."""
+    token = active_workspace.set(workspace)
+    try:
+        yield
+    finally:
+        active_workspace.reset(token)
