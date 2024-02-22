@@ -171,7 +171,7 @@ def inject_duckdb_destination() -> "SinkStruct":
 
 
 def inject_resource_selection(
-    __entrypoint__: "PipeFactory", *resource_patterns: str
+    __entrypoint__: "PipeFactory", *resource_patterns: str, invert: bool = False
 ) -> "PipeFactory":
     """Filters resources in the extract method of a pipeline based on a list of patterns."""
     import fnmatch
@@ -200,6 +200,7 @@ def inject_resource_selection(
                             if any(
                                 fnmatch.fnmatch(r, patt) for patt in resource_patterns
                             )
+                            ^ invert
                         ]
                     )
                 return extract(data, **kwargs)
@@ -347,8 +348,13 @@ parametrize_destination = _to_header(inject_destination_parametrization)
 set_basic_destination = lambda d="duckdb": ast.parse(  # noqa
     f"sink=({d!r}, None, None)"
 )
-filter_resources = lambda *patts: _to_header(  # noqa
-    inject_resource_selection, prepends=[ast.parse(f"resource_patterns = {patts!r}")]
+include_resources = lambda *patts: _to_header(  # noqa
+    inject_resource_selection,
+    prepends=[ast.parse(f"resource_patterns = {patts!r}"), ast.parse("invert = False")],
+)
+exclude_resources = lambda *patts: _to_header(  # noqa
+    inject_resource_selection,
+    prepends=[ast.parse(f"resource_patterns = {patts!r}"), ast.parse("invert = True")],
 )
 force_replace_disposition = _to_header(inject_replace_disposition)
 apply_feature_flags = _to_header(inject_feature_flags)

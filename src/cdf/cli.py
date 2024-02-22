@@ -19,8 +19,9 @@ from cdf.core.rewriter import (
     apply_feature_flags,
     assert_recent_intervals,
     capture_sources,
-    filter_resources,
+    exclude_resources,
     force_replace_disposition,
+    include_resources,
     noop,
     parametrize_destination,
     rewrite_script,
@@ -188,6 +189,13 @@ def pipeline(
         default_factory=lambda: [],
         help="Glob pattern for resources to run. Can be specified multiple times.",
     ),
+    excludes: t.List[str] = typer.Option(
+        ...,
+        "-x",
+        "--exclude",
+        default_factory=lambda: [],
+        help="Glob pattern for resources to exclude. Can be specified multiple times.",
+    ),
     replace: t.Annotated[
         bool,
         typer.Option(
@@ -235,7 +243,8 @@ def pipeline(
                         .unwrap_or(set_basic_destination(destination))
                     ),
                     parametrize_destination,
-                    filter_resources(*resources) if resources else apply_feature_flags,
+                    include_resources(*resources) if resources else apply_feature_flags,
+                    exclude_resources(*excludes) if excludes else noop,
                     force_replace_disposition if replace else noop,
                     add_debugger if cdf_ctx.debug.get() else noop,
                 )
