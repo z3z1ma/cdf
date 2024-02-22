@@ -104,6 +104,7 @@ def create_harness_provider(
         if isinstance(client, Promise):
             client = client.unwrap()
         else:
+            client._repository.cache.clear()
             client._polling_processor.retrieve_flags_and_segments()
         cache = client._repository.cache
         ns = f"pipeline__{workspace.name}__{source.name}"
