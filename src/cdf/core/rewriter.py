@@ -305,7 +305,7 @@ def setup_debugger() -> t.Callable[[t.Any, t.Any, t.Any], None]:
 def raise_on_missing_intervals(
     context: "sqlmesh.Context", spec: types.SimpleNamespace
 ) -> None:
-    """Checks for missing intervals in tracked dependencies based on the active context."""
+    """Checks for missing intervals in tracked dependencies based on depends_on attribute of the spec."""
     import datetime
 
     from sqlmesh.core.dialect import normalize_model_name
@@ -323,7 +323,6 @@ def raise_on_missing_intervals(
                     f"Cannot find tracked dependency {dependency} in models."
                 )
             model = models[normalized_name]
-            # Ensure the model is not missing intervals before publishing
             snapshot = context.get_snapshot(normalized_name)
             assert snapshot, f"Snapshot not found for {normalized_name}"
             if snapshot.missing_intervals(
@@ -339,9 +338,6 @@ def raise_on_missing_intervals(
         logger.warn("No tracked dependencies found in spec. Skipping interval check.")
     return None
 
-
-# Injector wrappers are converted to headers for use in the rewriter
-# These headers encapsulate top-level code executed during script execution
 
 noop = ast.parse("pass")
 add_entrypoint = _to_header(get_entrypoint_ref)
@@ -366,8 +362,6 @@ assert_recent_intervals = _to_header(
         ast.parse("spec = cdf.current_spec()"),
     ],
 )
-
-# End of headers
 
 
 def create_rewriter(root: str) -> ast.NodeTransformer:

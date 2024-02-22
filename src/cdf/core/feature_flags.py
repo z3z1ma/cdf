@@ -1,6 +1,7 @@
 """Feature flags for CDF."""
 import asyncio
 import logging
+import os
 import typing as t
 from concurrent.futures import ThreadPoolExecutor
 
@@ -44,9 +45,9 @@ class _HarnessCache(dict, Cache):
 def create_harness_provider(
     api_key: str = dlt.secrets.value,
     sdk_key: str = dlt.secrets.value,
-    account: str = dlt.config.value,
-    organization: str = dlt.config.value,
-    project: str = dlt.config.value,
+    account: str = os.getenv("HARNESS_ACCOUNT_ID", dlt.config.value),
+    organization: str = os.getenv("HARNESS_ORG_ID", dlt.config.value),
+    project: str = os.getenv("HARNESS_PROJECT_ID", dlt.config.value),
 ) -> SupportsFFs:
     _ff_logger.setLevel(logging.ERROR)
 
