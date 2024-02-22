@@ -68,7 +68,12 @@ class PublisherSpecification(
             if self.select
             else [exp.Star()]
         )
-        return exp.select(*projection).from_(self.from_).where(self.where)
+        return (
+            exp.select(*projection)
+            .from_(self.from_)
+            .where(self.where)
+            .order_by("account_id desc")
+        )
 
     def __call__(
         self, context: "sqlmesh.Context", strict: bool = False, **kwargs

@@ -1,58 +1,37 @@
 """Context module."""
+import contextlib
 import typing as t
 from contextvars import ContextVar
+from types import SimpleNamespace
 
 if t.TYPE_CHECKING:
+    from cdf.core.parser import ParsedComponent
     from cdf.core.workspace import Workspace
 
-_ACTIVE_WORKSPACE: "Workspace | None" = None
-"""The active workspace."""
+
+active_workspace: ContextVar["Workspace"] = ContextVar("active_workspace")
+debug: ContextVar[bool] = ContextVar("debug", default=False)
+current_spec: ContextVar[SimpleNamespace] = ContextVar("current_pipeline")
 
 
-def set_active_workspace(workspace: "Workspace | None") -> None:
-    """Set the active workspace."""
-    global _ACTIVE_WORKSPACE
-    _ACTIVE_WORKSPACE = workspace
+def set_current_spec(component: "ParsedComponent") -> "ParsedComponent":
+    """Set the current component specification."""
+    ns = SimpleNamespace(
+        **{k: v.unwrap_or(None) for k, v in component.specification.items()}
+    )
+    ns.name = component.name
+    if not hasattr(ns, "version"):
+        ns.version = 0
+    ns.versioned_name = f"{component.name}_v{ns.version}"
+    current_spec.set(ns)
+    return component
 
 
-def get_active_workspace() -> "Workspace | None":
-    """Get the active workspace."""
-    return _ACTIVE_WORKSPACE
-
-
-_ANON_PROJECT_NUMBER: int = 1
-"""A counter for anonymous project names."""
-
-
-def get_project_number() -> int:
-    """Get an anonymous project name, increments on access."""
-    global _ANON_PROJECT_NUMBER
-
-    ix = _ANON_PROJECT_NUMBER
-    _ANON_PROJECT_NUMBER += 1
-    return ix
-
-
-_AUTOINSTALL_ENABLED: bool = False
-"""A flag which indicates if autoinstall is enabled."""
-
-
-def enable_autoinstall() -> None:
-    """Enable autoinstall."""
-    global _AUTOINSTALL_ENABLED
-    _AUTOINSTALL_ENABLED = True
-
-
-def disable_autoinstall() -> None:
-    """Disable autoinstall."""
-    global _AUTOINSTALL_ENABLED
-    _AUTOINSTALL_ENABLED = False
-
-
-def is_autoinstall_enabled() -> bool:
-    """Check if autoinstall is enabled."""
-    return _AUTOINSTALL_ENABLED
-
-
-LIMIT: ContextVar[int | None] = ContextVar("cli_limit", default=None)
-"""A limit set by the cdf head command which pipelines can respect to be more efficient."""
+@contextlib.contextmanager
+def workspace_context(workspace: "Workspace") -> t.Iterator[None]:
+    """Activate a workspace for a context."""
+    token = active_workspace.set(workspace)
+    try:
+        yield
+    finally:
+        active_workspace.reset(token)

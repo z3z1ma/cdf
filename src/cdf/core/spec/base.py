@@ -358,7 +358,9 @@ class ComponentRegistry(t.Dict[str, T]):
                 f"ComponentRegistry only accepts instances of ComponentSpecification, not {type(spec)}"
             )
         if key in self:
-            raise KeyError(f"Component {key} already registered in registry.")
+            if self[key] == spec:
+                return
+            # raise KeyError(f"Component {key} already registered in registry.")
         super().__setitem__(key, spec)
 
     def __getitem__(self, key: str) -> T:

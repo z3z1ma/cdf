@@ -9,62 +9,80 @@ that augment dlt and sqlmesh including automated virtual environment management,
 discoverability of pipelines and publishers, automated configuration management, and
 more.
 """
-import dlt
-from dlt import pipeline as pipeline
-from dlt.common.configuration import configspec as configspec
-from dlt.common.configuration import with_config as with_config
-from dlt.sources.helpers.requests import Client as session
+import os
+import typing as t
+from types import SimpleNamespace
+
+import dlt.sources.helpers.requests as requests
+from dlt import config
+from dlt import destinations as destination
+from dlt import secrets
+from dlt.common.configuration import with_config
+from dlt.sources import incremental
+from sqlmesh.core.config import ConnectionConfig
+from sqlmesh.core.config import GatewayConfig as gateway
+from sqlmesh.core.config import parse_connection_config as _parse_connection_config
 
 import cdf.core.logger as logger
-from cdf.core.context import LIMIT
-from cdf.core.spec import (
-    CooperativePipelineInterface,
-    NotebookSpecification,
-    PipelineSpecification,
-    PublisherInterface,
-    PublisherSpecification,
-    SinkInterface,
-    SinkSpecification,
-    StagingRuleset,
-    StagingSpecification,
-    SupportsComponentMetadata,
-    destination,
-    gateway,
-)
-from cdf.core.workspace import Project, Workspace
+from cdf.core.context import active_workspace
+from cdf.core.context import current_spec as _current_spec
+from cdf.core.sandbox import run
+from cdf.core.workspace import Workspace, find_nearest, get_gateway, to_context
 
-# Re-export most commonly accessed dlt symbols
-CDFSource = dlt.sources.DltSource
-CDFResource = dlt.sources.DltResource
-inject_config = dlt.config.value
-inject_secret = dlt.secrets.value
-incremental = dlt.sources.incremental
+inject_config = config.value
+inject_secret = secrets.value
+
+session = requests.Client
+
+
+def current_spec() -> SimpleNamespace:
+    """Get the current component specification as parsed from the docstring."""
+    uid = os.urandom(4).hex()
+    return _current_spec.get(
+        SimpleNamespace(
+            name=f"anon_{uid}",
+            version=0,
+            versioned_name=f"cdf_{uid}_v0",
+        )
+    )
+
+
+def connection(type_: str, /, **kwargs: t.Any) -> ConnectionConfig:
+    kwargs["type"] = type_
+    return _parse_connection_config(kwargs)
+
+
+def current_workspace() -> Workspace:
+    """Get the current workspace."""
+    return active_workspace.get()
+
+
+if t.TYPE_CHECKING:
+    import sqlmesh
+
+
+def current_context(gateway: str | None = None) -> "sqlmesh.Context":
+    """Get the current SQLMesh context."""
+    return to_context(current_workspace(), gateway).unwrap()
 
 
 __all__ = [
-    "CDFSource",
-    "CDFResource",
-    "Project",
-    "Workspace",
-    "PipelineSpecification",
-    "CooperativePipelineInterface",
-    "NotebookSpecification",
-    "PublisherSpecification",
-    "PublisherInterface",
-    "SinkSpecification",
-    "SinkInterface",
-    "StagingSpecification",
-    "StagingRuleset",
-    "SupportsComponentMetadata",
-    "logger",
+    "find_nearest",
+    "run",
+    "get_gateway",
     "with_config",
-    "pipeline",
+    "config",
+    "secrets",
     "inject_config",
     "inject_secret",
-    "configspec",
     "destination",
     "gateway",
+    "connection",
+    "logger",
     "session",
+    "requests",
     "incremental",
-    "LIMIT",
+    "current_spec",
+    "current_workspace",
+    "to_context",
 ]
