@@ -21,14 +21,10 @@
 - [📖 Table of Contents](#-table-of-contents)
 - [📍 Overview](#-overview)
 - [📦 Features](#-features)
-- [📂 Repository Structure](#-repository-structure)
-- [⚙️ Modules](#modules)
 - [🚀 Getting Started](#-getting-started)
-    - [🔧 Installation](#-installation)
-    - [🤖 Running cdf](#-running-cdf)
-    - [🧪 Tests](#-tests)
-- [🛣 Roadmap](#-roadmap)
+- [📚 Documentation](#-documentation)
 - [🤝 Contributing](#-contributing)
+- [🛣 Roadmap](#-roadmap)
 - [📄 License](#-license)
 - [👏 Acknowledgments](#-acknowledgments)
 
@@ -36,225 +32,69 @@
 
 ## 📍 Overview
 
-The Continuous Data Framework (cdf) is a transformative Python-based framework
-purpose-built for data platform engineers and teams seeking to revolutionize
-their data integration and deployment workflows. At its core, cdf harmonizes
-best-in-class open source tools like dlt and sqlmesh, crafting a user-friendly
-yet robust interface for crafting and managing data pipelines. This
-forward-thinking framework excels in fostering a unified data platform,
-simplifying and enhancing the processes for data scientists and engineers
-alike.
+CDF (Continuous Data Framework) is an integrated framework designed to manage data across the entire lifecycle, from ingestion through transformation to publishing. It is built on top of two open-source projects, `sqlmesh` and `dlt`, providing a unified interface for complex data operations. CDF simplifies data engineering workflows, offering scalable solutions from small to large projects through an opinionated project structure that supports both multi-workspace and single-workspace layouts.
 
-With its comprehensive CLI, cdf empowers users to effortlessly manage
-workspaces, each a hub for intricate pipelines that encompass data retrieval,
-transformation, and publishing. The framework is intelligently designed with
-feature flags, advanced configuration management, and a Python API, making it
-an essential tool for creating, managing, and executing sophisticated data
-pipelines. Its keen emphasis on workspace customization and command-line
-utilities for project initialization, metadata handling, data transformation,
-and external publishing, positions cdf as the go-to solution for collaborative
-development in multi-user environments. Each workspace supports individual
-configurations, encouraging teamwork while maintaining the integrity of
-pipeline versioning.
+## Features
 
-In essence, cdf is not just a framework but a paradigm shift in continuous data
-integration and deployment, offering an unparalleled experience to teams
-dedicated to streamlining their data operations.
+- **Unified Data Management**: Seamlessly manage data pipelines, transformations, and publishing within a single framework.
+- **Opinionated Project Structure**: Adopt a scalable project structure that grows with your data needs, from single to multiple workspaces.
+- **Automated Environment Management**: Automatically manage virtual environments to isolate and manage dependencies.
+- **Automated Component Discoverability**: Automatically discover pipelines, models, publishers, and other components within your workspace.
+- **Enhanced Configuration Management**: Leverage automated configuration management for streamlined setup and deployment.
+- **Extensible and Scalable**: Designed to scale from small to large data projects, providing extensible components for custom operations.
 
-More comprehensive documentation will be available at https://z3z1ma.github.io/cdf but for now see the [examples](https://github.com/z3z1ma/cdf/tree/main/examples) directory for sample projects as the fastest way to get started.
+## Getting Started
 
-## 📦 Features
+1. **Installation**:
 
+    CDF requires Python 3.8 or newer. Install CDF using pip:
 
-|    | Feature                  | Description                                                                                                        |
-|----|--------------------------|--------------------------------------------------------------------------------------------------------------------|
-| ⚙️ | **Architecture**         | cdf employs a Python-based, multi-workspace architecture, enhancing modularity and facilitating separation of concerns within data engineering projects. |
-| 📄 | **Documentation**        | Comprehensive and user-friendly, aiding in easy setup, customization, and utilization of the framework. |
-| 🔗 | **Dependencies**         | Built on Python, leveraging libraries like `dlt`, `sqlmesh`, `typer` for database operations and intuitive CLI interactions. |
-| 🧩 | **Modularity**           | Features distinct workspaces, config files, and a clear separation between core functionalities and user-defined pipelines, models, and publishers. |
-| 🧪 | **Testing**              | Robust testing framework ensuring reliability and stability of data operations. (wip) |
-| ⚡️ | **Performance**          | Optimized for high performance, benefiting from efficient underlying libraries and minimal abstraction overhead. |
-| 🔌 | **Integrations**         | Use dlt verified sources out of the box or roll your own sources. |
-| 📶 | **Scalability**          | The framework's multi-workspace design and modular approach contribute to a high level of scalability, ideal for growing data demands. |
-| 🚀 | **Ease of Use**          | User-centric design with a streamlined CLI and Python API, making it accessible for both beginners and experienced engineers. |
-| 🌐 | **Collaboration**        | Facilitates collaborative development with support for multi-user environments and individual workspace configurations. |
-| 🏷️ | **Versioning & Tagging** | Advanced version control and tagging for components, enabling effective management and tracking of data pipelines. |
-| 📊 | **Data Management**      | Simplifies complex data pipeline creation, management, and execution, catering to continuous data integration and deployment. |
+    ```bash
+    pip install cdf
+    ```
 
+2. **Initialize a Workspace or Project**:
 
+    Create a new workspace or project in your desired directory:
 
-## 📂 Repository Structure
+    ```bash
+    cdf init-workspace /path/to/workspace
+    # or
+    cdf init-project /path/to/project
+    ```
 
-The following is the structure of a `cdf` repository workspace:
+3. **Run Pipelines and Scripts**:
 
-`cdf init-workspace`
-```sh
-.
-├── audits
-├── macros
-│   └── __init__.py
-├── metadata
-├── models
-│   └── __init__.py
-├── pipelines
-│   └── __init__.py
-├── publishers
-│   └── __init__.py
-├── scripts
-│   └── __init__.py
-├── seeds
-├── tests
-├── cdf_config.toml
-└── requirements.txt
+    Execute data pipelines, scripts, or notebooks within your workspace:
 
-```
+    ```bash
+    cdf pipeline workspace_name.pipeline_name
+    cdf execute-script workspace_name.script_name
+    ```
 
-It extends the structure of a `sqlmesh` project with the following additions:
+4. **Publish Data**:
 
-- `metadata`: A directory containing metadata files for the project.
-- `cdf_config.toml`: A centralized templated configuration file for the project.
-- `pipelines`: A directory containing pipeline definitions.
-- `publishers`: A directory containing publisher definitions.
-- `scripts`: A directory containing free-form flexible scripts for the project.
+    Publish transformed data to external systems or sinks:
+
+    ```bash
+    cdf publish workspace_name.publisher_name
+    ```
+
+## Documentation
+
+For detailed documentation, including API references and tutorials, visit [CDF Documentation](#).
+
+## Contributing
+
+Contributions to CDF are welcome! Please refer to the [contributing guidelines](CONTRIBUTING.md) for more information on how to submit pull requests, report issues, or suggest enhancements.
+
+## License
+
+CDF is licensed under [MIT License](LICENSE).
 
 ---
 
-## ⚙️ Modules
-
-<details closed><summary>CDF Core</summary>
-
-A collection of core modules for the CDF framework.
-
-| File | Summary |
-| --- | --- |
-| [exception.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/exception.py) | This code defines a set of custom exceptions for the'cdf' package, each inheriting from a standard Python exception type. These include errors for type and attribute issues within a registry context, and file-related errors for when a source directory is not found or empty. |
-| [config.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/config.py) | The code establishes a framework to manage configuration and secrets within a CDF (presumed to mean Custom Data Framework) project using TOML files. It defines custom config providers `CDFConfigTomlProvider` and `CDFSecretsTomlProvider` which search for a `cdf_config.toml` and a secrets file in the working directory or its parents up to 3 levels deep. Factories and helpers create, find, inject, or remove these providers in a global context. It also offers a function to populate function arguments using these configurations. The code integrates with an extensible `Workspace` object, facilitating workspace-specific configurations. |
-| [constants.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/constants.py) | The code defines constants for CDF. It specifies key export symbols, names of core configuration files (workspace, config, secrets, and flags), a default workspace name, and paths for components within the CDF workspace structure. The `DIR_LAYOUT` tuple outlines the expected directory structure of a CDF workspace, including locations for pipelines, models, publishers, and other resources such as audits, macros, metadata, scripts, seeds, and tests. |
-| [feature_flags.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/feature_flags.py) | The provided Python code defines a framework for managing feature flags within a Continuous Delivery Foundation (CDF) application. It includes abstract and concrete implementations of feature flag providers for local storage, Harness, and stubs for LaunchDarkly. Feature flags are used to toggle application features on and off without deploying new code.The core classes and functions:-`AbstractFeatureFlagProvider`: Defines abstract methods for checking, getting, creating, and dropping feature flags.-`LocalFeatureFlagProvider`: Implements the abstract class with a local file system-based storage mechanism.-`HarnessFeatureFlagProvider`: Implements the abstract class using the Harness feature flag service, including methods for interacting with the Harness API.-`process_source`: A function that processes and updates a data source's resources based on feature flags.-`get_provider`: Factory method returning an instance of the specific feature flag provider based on the given input.The code integrates with other CDF components, using caching and concurrency control (locks) for performance and safety. It also contains utility functions for translating between internal identifiers and external service identifiers. |
-| [jinja.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/jinja.py) | The `jinja.py` file establishes a Jinja2 environment enabling'do' and'loopcontrols' extensions for additional templating features. It defines `JINJA_METHODS` with three functions: one to retrieve environment variables, another to format the current date as "YYYY-MM-DD," and a third for the previous day's date in the same format. These can be used within Jinja2 templates to inject dynamic content based on system environment settings and dates. |
-| [logger.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/logger.py) | This code defines a customizable logging system for a package called "CDF." It features a `CDFLoggerAdapter` extending standard logging functionality and uses the `rich` library for enhanced console output. Users can configure the logger with a default or specified log level, retrieve the main logger or a named child logger, and set the log level dynamically. The logger is configured only once to avoid multiple configurations. The code includes dynamic attribute access to logger methods and type annotations for strict typing. |
-| [utils.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/utils.py) | The `utils.py` module in the `cdf` package includes several utility functions for path augmentation, deep dictionary merging, module loading, function application, function representation, iterable flattening, JSON file searching and merging, and source component identification. It manipulates sys.path, applies supplied functions to iterable sequences, transforms functions to string descriptions, recursively flattens nested lists or tuples, searches for and combines JSON files up to a defined depth, and generates canonical identifiers for resources within a given source or workspace. |
-| [transform.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/transform.py) | The script defines a data loading and transformation system for a SQL-based data framework. The `CDFTransformLoader` class extends `SqlMeshLoader` and focuses on processing YAML files containing model specifications to create SQL views. It utilizes file globs to locate YAML specs, constructs SQL projections with optional column prefix/suffix and computed columns, filters columns based on inclusion/exclusion patterns, and optionally applies predicates. Additionally, it handles metadata files for schema information and tracks source file paths. Models are registered with unique keys in a dictionary, supporting both SQL and external table models. |
-| [monads.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/monads.py) | The code defines a generic `Monad` class and its two subclasses, `Option` and `Result`, all providing methods such as `map`, `flatmap`, `unwrap`, and various dunder methods (e.g., `__repr__`, `__bool__`, `__eq__`) in Python, while handling optional values (`None`) through the `Option` class and error-handling via the `Result` class, enhancing functional programming patterns within the context of the common data format (CDF) module. |
-| [publisher.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/publisher.py) | The code defines a system for publishing data using customizable publishers with scheduled execution. The `Payload` class encapsulates data frames and their last execution timestamp. The `publisher_spec` dataclass describes a publisher with attributes for naming, the execution function (`runner`), source model, column mapping, version, owners, description, tags, cron scheduling, and enablement status. A publisher transforms column names for an external API and configures the runner with specific settings. The `export_publishers` function adds given publishers to the global scope, facilitating their retrieval and management in a centralized way. |
-| [workspace.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/workspace.py) | The provided code defines two main classes, `Project` and `Workspace`, for managing projects and workspaces containing data pipelines, transformations, publications, and dependencies. `Project` deals with multiple workspaces, allowing adding or removing workspaces, and interacting with them collectively or individually. It can be created from a toml config, current directory, or dictionary. `Workspace` encapsulates a directory with its capabilities determined by the presence of specific subdirectories or files (pipelines, publishers, models, dependencies). It supports operations such as setting up a virtual environment, managing dependencies, reading/writing configs and lockfiles, and executing SQL transformations. Decorators enforce workspace capabilities for certain functions. Both classes provide utilities for loading configurations and components (pipelines, publishers, transforms) from the filesystem. The code is replete with context managers and decorators to manage environment state and ensure the proper setup of workspaces for execution. |
-| [source.py](https://github.com/z3z1ma/cdf/blob/main/src/cdf/core/source.py) | The code defines a framework for building, running, and exporting data pipelines in a "Continuous Data Framework (CDF)." It allows the creation of pipelines that selectively process data resources with integrated metric capture. Pipelines are defined using `pipeline_spec`, which includes metadata and logic to run the pipeline with a specified sink and optional resources. Metrics are defined per resource and integrated into the pipeline using decorators. `export_pipelines` exports the defined pipelines to a global scope. The `SupportsPipelineClients` protocol ensures that pipeline clients support necessary methods. The code extensively uses Python type annotations for static type checking and readability. |
-
-</details>
-
-## 🚀 Getting Started
-
-***Dependencies***
-
-Please ensure you have the following dependencies installed on your system:
-
-- `Python 3.10+`
-
-- `duckdb 0.9+`
-
-### 🔧 Installation
-
-Install `cdf` with `pip`:
-```sh
-pip install cdf # concrete name on pypi pending
-```
-
-Or install `cdf` from source:
-
-
-1. Clone the cdf repository:
-```sh
-git clone https://github.com/z3z1ma/cdf
-```
-
-2. Change to the project directory:
-```sh
-cd cdf
-```
-
-3. Install the package:
-```sh
-pip install -e .
-```
-
-### 🤖 Running cdf
-
-Please refer to the [documentation](https://z3z1ma.github.io/cdf) for more detailed information or refer to the [examples](https://github.com/z3z1ma/cdf/tree/main/examples) directory for sample projects.
-
-The following is just a brief overview of the CLI.
-
-#### Configuration
-
-Set up the environment:
-
-- Create and enter an empty directory and run `cdf init-workspace`.
-- Alternatively run `cdf init-project <user1> <team2> <team3>` to create a project with multiple workspaces for each user or team.
-
-#### CLI Commands
-
-##### General Structure
-
-```bash
-cdf [OPTIONS] COMMAND [ARGS]...
-```
-
-Global Options:
-- `--help`: Display help.
-- `--version`: Show version.
-- `--log-level`: Set log level.
-- `--debug`: Enable debug mode which sets log level on underlying libraries.
-
-##### Commands Overview
-
-1. **Project Initialization**:
-   - `init-project`: Initializes a new project.
-   - `init-workspace`: Creates a new workspace.
-
-2. **Project and Workspace Management**:
-   - `index`: Prints an index of components.
-   - `docs`: Generates project documentation.
-   - `path`: Displays the path of the project/workspace.
-
-3. **Data Pipeline Operations**:
-   - `pipeline`: Ingests data from a specified pipeline.
-   - `discover`: Discovers resources within a pipeline.
-   - `head`: Shows the first N rows of a resource.
-
-4. **Transform Operations**:
-   - `transform`: Transforms data in a database. Entry point for SQLMesh with cdf semantics injected.
-
-5. **Publishing Data**:
-   - `publish`: Publishes data to external systems.
-
-6. **Utility Commands**:
-   - `execute-script`: Executes a script in a workspace.
-   - `execute-bin`: Runs an executable from the workspace's environment.
-   - `fetch-metadata`: Regenerates metadata for a workspace.
-   - `generate-staging-layer`: Generates staging layers for catalogs.
-
-#### Integrating a Source
-
-- Add entries to the TOML
-
-#### Configuring a Source
-
-- Centralized configuration in `cdf_config.toml`.
-- Jinja templating and environment variable overrides.
-- Simplified management for multiple sources with similar configuration.
-
-#### Running a Pipeline via Programmatic API
-
-- Utilize the `Project` and `Workspace` classes.
-- Example provided demonstrates pipeline execution.
-
-#### Sources, Models, and Publishers
-
-- Define sources in the `sources` directory with specific metadata.
-- Use SQLMesh for defining models with opinionated behaviors and macros.
-- Define publishers in the `publishers` directory to publish data to external systems.
-
----
-
+This README provides an overview of the CDF tool, highlighting its primary features, installation steps, basic usage examples, and contribution guidelines. It serves as a starting point for users to understand the capabilities of CDF and how it can be integrated into their data engineering workflows.
 ### 🧪 Tests
 
 Run the tests with `pytest`:
@@ -265,7 +105,7 @@ pytest tests
 
 ## 🛣 Project Roadmap
 
-> - [ ] `ℹ️  Automated metadata capture into prod sink`
+TODO: Add a roadmap for the project.
 
 
 ## 🤝 Contributing
@@ -300,7 +140,7 @@ Contributions are welcome! Here are several ways you can contribute:
    ```sh
    git push origin new-feature-x
    ```
-7. **Submit a Pull Request**: Create a PR against the original project repository. Clearly describe the changes and their motivations.
+7a. **Submit a Pull Request**: Create a PR against the original project repository. Clearly describe the changes and their motivations.
 
 Once your PR is reviewed and approved, it will be merged into the main branch.
 
