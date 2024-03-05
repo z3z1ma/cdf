@@ -110,6 +110,7 @@ def discover(
     pipeline: t.Annotated[
         str, typer.Argument(help="The <workspace>.<pipeline> to discover.")
     ],
+    no_quiet: bool = False,
 ) -> None:
     """:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources.
 
@@ -117,10 +118,13 @@ def discover(
     Args:
         ctx: The CLI context.
         pipeline: The pipeline to discover in the form of <workspace>.<pipeline>.
+        no_quiet: Whether to suppress the output during discovery.
     """
     project: Project = augment_sys_path(ctx.obj)
     ws, pipe = Separator.split(pipeline, 2).unwrap()
-    for i, source in enumerate(_get_sources_or_raise(project, ws, pipe), 1):
+    for i, source in enumerate(
+        _get_sources_or_raise(project, ws, pipe, quiet=not no_quiet), 1
+    ):
         rich.print(f"{i}: {source.name}")
         for j, resource in enumerate(source.resources.values(), 1):
             rich.print(f"{i}.{j}: {resource.name} (enabled: {resource.selected})")
@@ -451,11 +455,11 @@ def init_project(
     rich.print("Not implemented yet.")
 
 
-def _get_sources_or_raise(project: Project, ws: str, pipe: str):
+def _get_sources_or_raise(project: Project, ws: str, pipe: str, quiet: bool = True):
     """Get the sources from a dlt pipelines script or raise an error if unable to."""
-    from cdf.core.feature_flags import create_harness_provider
+    from cdf.core.feature_flags import create_provider
 
-    ff_provider = create_harness_provider()
+    ff_provider = create_provider()
     workspace = project.search(ws).unwrap()
     with cdf_ctx.workspace_context(workspace):
         sources, err = (
@@ -473,7 +477,7 @@ def _get_sources_or_raise(project: Project, ws: str, pipe: str):
                     add_debugger if cdf_ctx.debug.get() else noop,
                 )
             )
-            .bind(lambda code: run(code, root=workspace.root, quiet=True))
+            .bind(lambda code: run(code, root=workspace.root, quiet=quiet))
             .map(lambda exports: exports[c.SOURCE_CONTAINER])
             .to_parts()
         )

@@ -259,9 +259,9 @@ def inject_feature_flags(__entrypoint__: "PipeFactory") -> "PipeFactory":
     from dlt.extract.extract import data_to_sources
 
     from cdf.core.context import active_workspace
-    from cdf.core.feature_flags import create_harness_provider
+    from cdf.core.feature_flags import create_provider
 
-    ff = create_harness_provider()
+    ff = create_provider()
 
     def __wrap__(__pipefunc__: "PipeFactory"):
         @functools.wraps(__pipefunc__)

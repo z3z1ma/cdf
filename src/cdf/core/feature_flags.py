@@ -147,3 +147,19 @@ def create_harness_provider(
         return source
 
     return _processor
+
+
+def create_noop_provider() -> SupportsFFs:
+    def _processor(source: "DltSource", workspace: "Workspace") -> "DltSource":
+        return source
+
+    return _processor
+
+
+@with_config(sections=("ff",))
+def create_provider(provider: t.Optional[str] = None) -> SupportsFFs:
+    if provider == "harness":
+        logger.info("Using Harness feature flags")
+        return create_harness_provider()
+    logger.info("No feature flag provider configured")
+    return create_noop_provider()
