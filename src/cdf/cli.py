@@ -473,6 +473,7 @@ def _get_sources_or_raise(project: Project, ws: str, pipe: str, quiet: bool = Tr
                     tree,
                     c.PIPELINES,
                     anchor_imports(c.PIPELINES),
+                    force_replace_disposition,
                     capture_sources,
                     add_debugger if cdf_ctx.debug.get() else noop,
                 )

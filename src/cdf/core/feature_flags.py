@@ -131,7 +131,8 @@ def create_harness_provider(
         removed = current_flags.difference(every_resource)
         added = selected_resources.difference(current_flags)
 
-        list(tpe.map(drop, removed))
+        if os.getenv("HARNESS_FF_AUTORECONCILE", "0") == "1":
+            list(tpe.map(drop, removed))
         for f in tpe.map(
             create,
             added,
