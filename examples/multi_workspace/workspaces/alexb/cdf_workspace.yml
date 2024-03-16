@@ -1,0 +1,73 @@
+name: alexb
+description: This workspace is a playground for experimenting with the cdf API.
+tags:
+  - public
+pipelines:
+  # question, do we provide a cdf.pipeline function which limits the pipelines
+  # to just a single named pipeline per pipeline script? is that more for brevity,
+  # consistency, or what? whats the advantage and why do i need to ask? I guess
+  # it lets us map a specification to a physical thing. We could do interesting
+  # things with the pipeline state and storage given this assumption since we
+  # basically are declaring up front, statically, the name of the pipeline.
+  # Well I suppose we also need dataset declared statically, THEN it is indeed
+  # quite interestnig since our "sinks"/"destinations" are decoupled from ingest scripts
+  - name: us_cities
+    alias: cities
+    $schema: schemas/us_cities.yml
+    version: 1
+    # by default, dataset is set to a sentinel value which indicates that it is
+    # a concatenation of the pipeline name and the default (1) or user specified version number
+    dataset: $versioned
+    description: Extracts us city and zip data from a git repo.
+    config:
+      something: 1
+      other: abc
+    tags:
+      - prod
+      - geo
+    # we should convert a pipeline to a cacheable PEX file?
+    requirements:
+      - requests
+  # given just a name, we assume a file named ./pipelines/<name>_pipeline.py
+  # alternatively you can supply a path themselves via a path key
+  - name: dota2
+    description: Extracts interesting data from opendota API and git repo.
+    tags:
+      - prod
+      - hobby
+  - name: hackernews
+    description: A verified source which has been modified. Extracts data using the Algolia search API.
+    tags:
+      - prod
+      - sentiment
+  - name: taps
+    schema:
+      tap_dummy:
+        description: A test table
+        user:
+          data_type: text
+          description: A user ID
+        birthday:
+          data_type: text
+    description: Some singer taps in a YAML file for the sole purpose of testing.
+    tags:
+      - testing
+publishers:
+  - name: echo
+  - name: httbin
+    description: Make a POST request to pastebin.
+    tags: [testing]
+scripts:
+  hello:
+    description: Prints hello world!
+sinks:
+  local:
+    description: A simple duckdb destination.
+transforms:
+  provider: sqlmesh
+# workspace-level feature flags if needed, also needed for single workspace layout
+feature_flags:
+  provider: local
+  options:
+    path: ./flags.json
+

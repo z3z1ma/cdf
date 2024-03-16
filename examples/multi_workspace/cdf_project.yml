@@ -1,0 +1,12 @@
+name: my-project
+members:
+  - workspaces/alexb
+  - workspaces/connorl
+feature_flags:
+  provider: local
+  options:
+    path: ./flags.json
+filesystem:
+  provider: gcs
+  options: {}
+

@@ -1,4 +1,5 @@
 """The workspace module is responsible for generating the immutable Project/Workspace data structure."""
+
 import itertools
 import sys
 import typing as t
@@ -183,8 +184,7 @@ def find_nearest(path: PathLike = ".") -> Result[Project, ex.CDFError]:
 
 class HasRoot(t.Protocol):
     @property
-    def root(self) -> Path:
-        ...
+    def root(self) -> Path: ...
 
 
 T = t.TypeVar("T", bound=HasRoot)
@@ -217,7 +217,7 @@ if t.TYPE_CHECKING:
     import sqlmesh
 
 
-__context_cache = {}
+_context_cache = {}
 """
 A simple cache for SQLMesh contexts. 
 
@@ -231,11 +231,11 @@ def to_context(
     """Gets a SQLMesh context from a project sink."""
     import sqlmesh  # deferred
 
-    if workspace.root in __context_cache:
-        return __context_cache[workspace.root]
+    if workspace.root in _context_cache:
+        return _context_cache[workspace.root]
 
     ctx_obj = Ok(workspace).map(
         lambda ws: sqlmesh.Context(paths=[ws.root], gateway=gateway)
     )
-    __context_cache[workspace.root] = ctx_obj
+    _context_cache[workspace.root] = ctx_obj
     return ctx_obj
