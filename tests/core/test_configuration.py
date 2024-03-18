@@ -20,9 +20,9 @@ default:
       path: /tmp
 production:
   feature_flags:
-    provider: remote
+    provider: harness
     options:
-      url: https://flags.example.com
+      api_key: 123
 """
 
 

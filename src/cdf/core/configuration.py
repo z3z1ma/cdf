@@ -39,6 +39,38 @@ def load_project_config(
             load_dotenv=True,
             envvar="CDF_CONFIG_PATH",
             merge_enabled=True,
+            validators=[dynaconf.Validator("name", "members", must_exist=True)],
+        )
+    except Exception as e:
+        return M.error(e)
+    else:
+        return M.ok(settings)
+
+
+def load_workspace_config(
+    root: PathLike,
+) -> M.Result[dynaconf.Dynaconf, Exception]:
+    """Load configuration data from a workspace root path.
+
+    Args:
+        root: The root path to the workspace.
+
+    Returns:
+        A Result monad with the configuration data if successful. Otherwise, a Result monad with an
+        error.
+    """
+    try:
+        workspace = Path(root).resolve()
+        if not workspace.is_dir():
+            return M.error(FileNotFoundError(f"Workspace not found: {workspace}"))
+        settings = dynaconf.LazySettings(
+            root_path=workspace,
+            settings_files=[f"cdf_workspace.{ext}" for ext in SUPPORTED_EXTENSIONS],
+            includes=[f".cdf_workspace.{ext}" for ext in SUPPORTED_EXTENSIONS],
+            environments=True,
+            envvar_prefix="CDF",
+            env_switcher="CDF_ENVIRONMENT",
+            load_dotenv=True,
             validators=[dynaconf.Validator("name", must_exist=True)],
         )
     except Exception as e:
