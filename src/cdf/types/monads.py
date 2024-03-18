@@ -1,4 +1,5 @@
 """Contains monadic types and functions for working with them."""
+
 from __future__ import annotations
 
 import abc
@@ -11,6 +12,8 @@ from typing_extensions import Self
 
 T = t.TypeVar("T")  # The type of the value inside the Monad
 U = t.TypeVar("U")  # The transformed type of the value inside the Monad
+K = t.TypeVar("K")  # A known type that is not necessarily the same as T
+L = t.TypeVar("L")  # A known type that is not necessarily the same as U
 E = t.TypeVar(
     "E", bound=BaseException, covariant=True
 )  # The type of the error inside the Result
@@ -56,7 +59,7 @@ class Monad(t.Generic[T], abc.ABC):
 
 class Maybe(Monad[T], abc.ABC):
     @classmethod
-    def pure(cls, value: T) -> "Maybe[T]":
+    def pure(cls, value: K) -> "Maybe[K]":
         """Creates a Maybe with a value."""
         return Just(value)
 
@@ -70,14 +73,11 @@ class Maybe(Monad[T], abc.ABC):
 
     if t.TYPE_CHECKING:
 
-        def bind(self, func: t.Callable[[T], "Maybe[U]"]) -> "Maybe[U]":
-            ...
+        def bind(self, func: t.Callable[[T], "Maybe[U]"]) -> "Maybe[U]": ...
 
-        def map(self, func: t.Callable[[T], U]) -> "Maybe[U]":
-            ...
+        def map(self, func: t.Callable[[T], U]) -> "Maybe[U]": ...
 
-        def filter(self, predicate: t.Callable[[T], bool]) -> "Maybe[T]":
-            ...
+        def filter(self, predicate: t.Callable[[T], bool]) -> "Maybe[T]": ...
 
     def unwrap(self) -> T:
         """Unwraps the value of the Maybe.
@@ -105,7 +105,7 @@ class Maybe(Monad[T], abc.ABC):
             return default
 
     @classmethod
-    def lift(cls, func: t.Callable[[U], T]) -> t.Callable[["U | Maybe[U]"], "Maybe[T]"]:
+    def lift(cls, func: t.Callable[[U], K]) -> t.Callable[["U | Maybe[U]"], "Maybe[K]"]:
         """Lifts a function to work within the Maybe monad.
 
         Args:
@@ -116,7 +116,7 @@ class Maybe(Monad[T], abc.ABC):
         """
 
         @functools.wraps(func)
-        def wrapper(value: U | Maybe[U]) -> Maybe[T]:
+        def wrapper(value: U | Maybe[U]) -> Maybe[K]:
             if isinstance(value, Maybe):
                 return value.map(func)  # type: ignore
             value = t.cast(U, value)
@@ -242,7 +242,7 @@ class Nothing(Maybe[T]):
 
 class Result(Monad[T], t.Generic[T, E]):
     @classmethod
-    def pure(cls, value: T) -> "Result[T, E]":
+    def pure(cls, value: K) -> "Result[K, Exception]":
         """Creates an Ok with a value."""
         return Ok(value)
 
@@ -272,8 +272,8 @@ class Result(Monad[T], t.Generic[T, E]):
 
     @classmethod
     def lift(
-        cls, func: t.Callable[[U], T]
-    ) -> t.Callable[["U | Result[U, E]"], "Result[T, E]"]:
+        cls, func: t.Callable[[U], K]
+    ) -> t.Callable[["U | Result[U, Exception]"], "Result[K, Exception]"]:
         """Transforms a function to work with arguments and output wrapped in Result monads.
 
         Args:
@@ -283,33 +283,30 @@ class Result(Monad[T], t.Generic[T, E]):
             A function that takes the same number of unwrapped arguments and returns a Result-wrapped result.
         """
 
-        def wrapper(result: U | Result[U, E]) -> Result[T, E]:
+        def wrapper(result: U | Result[U, Exception]) -> Result[K, Exception]:
             if isinstance(result, Result):
-                return result.map(func)  # type: ignore
+                return result.map(func)
             result = t.cast(U, result)
             try:
                 return Ok(func(result))
             except Exception as e:
-                return Err(t.cast(E, e))
+                return Err(e)
 
         return wrapper
 
     if t.TYPE_CHECKING:
 
-        def bind(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]":
-            ...
+        def bind(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
 
-        def map(self, func: t.Callable[[T], U]) -> "Result[U, E]":
-            ...
+        def map(self, func: t.Callable[[T], U]) -> "Result[U, E]": ...
 
-        def filter(self, predicate: t.Callable[[T], bool]) -> "Result[T, E]":
-            ...
+        def filter(self, predicate: t.Callable[[T], bool]) -> "Result[T, E]": ...
 
-        def __call__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]":
-            ...
+        def __call__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
 
-        def __rshift__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]":
-            ...
+        def __rshift__(
+            self, func: t.Callable[[T], "Result[U, E]"]
+        ) -> "Result[U, E]": ...
 
     def __iter__(self) -> t.Iterator[T]:
         """Allows safely unwrapping the value of the Result using a for construct."""
@@ -505,7 +502,7 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
         self._future: asyncio.Future[T] = asyncio.ensure_future(coro, loop=self._loop)
 
     @classmethod
-    def pure(cls, value: T) -> "Promise[T]":
+    def pure(cls, value: K) -> "Promise[K]":
         """Creates a Promise that is already resolved with a value.
 
         Args:
@@ -892,10 +889,12 @@ class State(t.Generic[S, A], Monad[A], abc.ABC):
 # to_<monad> is the pure function
 # <monad> is the lift function
 
-to_maybe = Maybe.pure
+to_maybe = just = Maybe.pure
+nothing = Nothing[t.Any]()
 maybe = Maybe.lift
 
-to_result = Result.pure
+to_result = ok = Result.pure
+error = lambda e: Err(e)  # noqa: E731
 result = Result.lift
 
 to_promise = Promise.pure
