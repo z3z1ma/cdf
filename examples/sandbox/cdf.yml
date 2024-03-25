@@ -1,2 +1,19 @@
 default:
-  name: workspace
+  name: cdf-test
+  workspaces:
+  - workspace1
+  filesystem:
+    provider: local
+    options:
+      path: /tmp
+prod:
+  feature_flags:
+    provider: harness
+    options:
+      api_key: 123
+dev:
+  feature_flags:
+    provider: local
+    options:
+      path: flags.json
+

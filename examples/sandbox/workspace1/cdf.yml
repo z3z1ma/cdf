@@ -1,0 +1,7 @@
+default:
+  name: workspace1
+  pipelines:
+    us_cities:
+      description: whocares
+      dataset: us_cities_{version}
+      version: 1
