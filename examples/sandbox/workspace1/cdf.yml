@@ -2,6 +2,18 @@ default:
   name: workspace1
   pipelines:
     us_cities:
-      description: whocares
-      dataset: us_cities_{version}
+      description: some pipeline
+      dataset: us_cities_1
       version: 1
+      options:
+        # variables for pipeline_name scoped config
+        x: 100
+        y: 2
+        # all standard pipeline options can be configured
+        progress: log
+        full_refresh: true
+        loader_file_format: jsonl
+        destination_type: duckdb
+        # even runtime options here
+        runtime:
+          dlthub_telemetry: false

@@ -5,12 +5,14 @@ either JSON, YAML or TOML format.
 """
 
 import typing as t
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 
 import dynaconf
 
 import cdf.core.constants as c
+import cdf.core.context as context
 from cdf.types import M, PathLike
 
 SUPPORTED_EXTENSIONS = ["toml", "yaml", "yml", "json", "py"]
@@ -32,13 +34,29 @@ class Configuration:
             name: The name of the workspace.
 
         Returns:
-            The workspace configuration.
+            The project configuration.
         """
         if name in self.workspace_settings:
             return self.workspace_settings[name]
         raise AttributeError(
             f"'{self.__class__.__name__}' object has no attribute '{name}'"
         )
+
+    @contextmanager
+    def scope(self, workspace: str) -> t.Iterator["Configuration"]:
+        """Set the workspace for scoped configuration resolution
+
+        Args:
+            workspace: The workspace with which to resolve configuration
+
+        Returns:
+            The workspace configuration
+        """
+        try:
+            token = context.active_workspace.set(workspace)
+            yield self
+        finally:
+            context.active_workspace.reset(token)
 
     def __getitem__(self, key: t.Union[str, t.Tuple[str, str]]) -> t.Any:
         """Get a configuration value by key.
@@ -53,6 +71,11 @@ class Configuration:
             if (v := self.workspace_settings[key[0]].get(key[1])) is not None:
                 return v
             return self.settings[key[1]]
+        workspace_context = context.active_workspace.get()
+        if workspace_context is None:
+            return self.settings[key]
+        with suppress(KeyError):
+            return self.workspace_settings[workspace_context][key]
         return self.settings[key]
 
     def to_dict(self) -> t.Dict[str, t.Any]:

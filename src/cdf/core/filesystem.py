@@ -1,3 +1,5 @@
+"""An adapter interface for filesystems."""
+
 import fsspec
 
 
