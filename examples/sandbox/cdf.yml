@@ -10,7 +10,7 @@ prod:
   feature_flags:
     provider: harness
     options:
-      api_key: 123
+      api_key: "@format {env[HOME]}"
 dev:
   feature_flags:
     provider: local

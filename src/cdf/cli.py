@@ -65,6 +65,8 @@ def pipeline(ctx: typer.Context, source_to_dest: str):
     assert pipeline.runtime_config["dlthub_telemetry"] is False
     assert pipeline.destination.destination_type.endswith("duckdb")
 
+    print(dlt.config["feature_flags.options"])
+
 
 if __name__ == "__main__":
     app()
