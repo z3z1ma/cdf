@@ -15,7 +15,7 @@ if t.TYPE_CHECKING:
 WLock = Lock()
 
 
-@with_config(sections=("ff", "file"))
+@with_config(sections=("feature_flags", "options"))
 def create_file_provider(
     path: str = dlt.config.value,
 ) -> "SupportsFFs":

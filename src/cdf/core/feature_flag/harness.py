@@ -37,7 +37,7 @@ class _HarnessCache(dict, Cache):
             self.pop(k, None)
 
 
-@with_config(sections=("ff", "harness"))
+@with_config(sections=("feature_flags", "options"))
 def create_harness_provider(
     api_key: str = dlt.secrets.value,
     sdk_key: str = dlt.secrets.value,
