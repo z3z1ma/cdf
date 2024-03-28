@@ -7,6 +7,7 @@ from dlt.common.configuration import with_config
 import cdf.core.logger as logger
 from cdf.core.feature_flag.file import create_file_provider
 from cdf.core.feature_flag.harness import create_harness_provider
+from cdf.core.feature_flag.launchdarkly import create_launchdarkly_provider
 
 if t.TYPE_CHECKING:
     from dlt.sources import DltSource
@@ -26,17 +27,17 @@ def create_noop_provider() -> SupportsFFs:
 
 
 @with_config(sections=("ff",))
-def create_provider(provider: t.Optional[str] = None) -> SupportsFFs:
+def create_provider(provider: t.Optional[str] = None, **options: t.Any) -> SupportsFFs:
     if provider == "file":
         logger.info("Using file-based feature flags")
-        return create_file_provider()
-    elif provider == "harness":
+        return create_file_provider(**options)
+    if provider == "harness":
         logger.info("Using Harness feature flags")
-        return create_harness_provider()
-    elif provider == "launchdarkly":
-        raise NotImplementedError("LaunchDarkly feature flags are not yet supported")
-    elif provider is None or provider == "noop":
+        return create_harness_provider(**options)
+    if provider == "launchdarkly":
+        logger.info("Using LaunchDarkly feature flags")
+        return create_launchdarkly_provider(**options)
+    if provider is None or provider == "noop":
         logger.info("No feature flag provider configured")
-        return create_noop_provider()
-    else:
-        raise ValueError(f"Unknown feature flag provider: {provider}")
+        return create_noop_provider(**options)
+    raise ValueError(f"Unknown feature flag provider: {provider}")
