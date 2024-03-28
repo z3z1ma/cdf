@@ -26,7 +26,7 @@ def create_noop_provider() -> SupportsFFs:
     return _processor
 
 
-@with_config(sections=("ff",))
+@with_config(sections=("feature_flags",))
 def create_provider(provider: t.Optional[str] = None, **options: t.Any) -> SupportsFFs:
     if provider == "file":
         logger.info("Using file-based feature flags")

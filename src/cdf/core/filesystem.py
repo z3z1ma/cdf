@@ -1,9 +1,11 @@
 """An adapter interface for filesystems."""
 
 import fsspec
+from dlt.common.configuration import with_config
 
 
-def load_filesystem(provider: str, **kwargs) -> fsspec.AbstractFileSystem:
+@with_config(sections=("filesystem",))
+def load_filesystem(provider: str, **options) -> fsspec.AbstractFileSystem:
     """Load a filesystem from a provider and kwargs.
 
     Args:
@@ -13,4 +15,4 @@ def load_filesystem(provider: str, **kwargs) -> fsspec.AbstractFileSystem:
     Returns:
         The filesystem.
     """
-    return fsspec.filesystem(provider, **kwargs)
+    return fsspec.filesystem(provider, **options)
