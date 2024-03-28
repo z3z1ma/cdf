@@ -26,18 +26,83 @@ def create_noop_provider() -> SupportsFFs:
     return _processor
 
 
+class NoopProviderOptions(t.TypedDict): ...
+
+
+@t.overload
+def load_feature_flag_provider(
+    provider: None = None,
+    options: t.Optional[NoopProviderOptions] = None,
+) -> SupportsFFs: ...
+
+
+@t.overload
+def load_feature_flag_provider(
+    provider: t.Literal["noop"] = "noop",
+    options: t.Optional[NoopProviderOptions] = None,
+) -> SupportsFFs: ...
+
+
+class FileProviderOptions(t.TypedDict):
+    path: str
+
+
+@t.overload
+def load_feature_flag_provider(
+    provider: t.Literal["file"] = "file",
+    options: t.Optional[FileProviderOptions] = None,
+) -> SupportsFFs: ...
+
+
+class HarnessProviderOptions(t.TypedDict):
+    api_key: str
+    sdk_key: str
+    account: str
+    organization: str
+    project: str
+
+
+@t.overload
+def load_feature_flag_provider(
+    provider: t.Literal["harness"] = "harness",
+    options: t.Optional[HarnessProviderOptions] = None,
+) -> SupportsFFs: ...
+
+
+class LaunchDarklyProviderOptions(t.TypedDict):
+    sdk_key: str
+
+
+@t.overload
+def load_feature_flag_provider(
+    provider: t.Literal["launchdarkly"] = "launchdarkly",
+    options: t.Optional[LaunchDarklyProviderOptions] = None,
+) -> SupportsFFs: ...
+
+
 @with_config(sections=("feature_flags",))
-def create_provider(provider: t.Optional[str] = None, **options: t.Any) -> SupportsFFs:
+def load_feature_flag_provider(
+    provider: t.Optional[t.Literal["file", "harness", "launchdarkly", "noop"]] = None,
+    options: t.Optional[
+        t.Union[
+            NoopProviderOptions,
+            FileProviderOptions,
+            HarnessProviderOptions,
+            LaunchDarklyProviderOptions,
+        ]
+    ] = None,
+) -> SupportsFFs:
+    opts = t.cast(dict, options or {})
     if provider == "file":
         logger.info("Using file-based feature flags")
-        return create_file_provider(**options)
+        return create_file_provider(**opts)
     if provider == "harness":
         logger.info("Using Harness feature flags")
-        return create_harness_provider(**options)
+        return create_harness_provider(**opts)
     if provider == "launchdarkly":
         logger.info("Using LaunchDarkly feature flags")
-        return create_launchdarkly_provider(**options)
+        return create_launchdarkly_provider(**opts)
     if provider is None or provider == "noop":
         logger.info("No feature flag provider configured")
-        return create_noop_provider(**options)
+        return create_noop_provider(**opts)
     raise ValueError(f"Unknown feature flag provider: {provider}")

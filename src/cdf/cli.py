@@ -65,7 +65,11 @@ def pipeline(ctx: typer.Context, source_to_dest: str):
     assert pipeline.runtime_config["dlthub_telemetry"] is False
     assert pipeline.destination.destination_type.endswith("duckdb")
 
-    print(dlt.config["feature_flags.options"])
+    from cdf.core.feature_flag import load_feature_flag_provider
+    from cdf.core.filesystem import load_filesystem_provider
+
+    ff = load_feature_flag_provider("file", options={"path": "feature_flags.json"})
+    fs = load_filesystem_provider()
 
 
 if __name__ == "__main__":

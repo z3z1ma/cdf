@@ -13,7 +13,7 @@ prod:
       api_key: "@format {env[HOME]}"
 dev:
   feature_flags:
-    provider: local
+    provider: file
     options:
       path: flags.json
 
