@@ -40,6 +40,8 @@ def pipeline(ctx: typer.Context, source_to_dest: str):
     source, destination = source_to_dest.split(":", 1)
     source_config = project["pipelines"][source]
     typer.echo(source_config)
+    breakpoint()
+    typer.echo(source_config._root_path)
     typer.echo(
         f"Running pipeline from {source} to {destination} in {context.active_workspace.get()}."
     )
@@ -70,6 +72,11 @@ def pipeline(ctx: typer.Context, source_to_dest: str):
 
     ff = load_feature_flag_provider("file", options={"path": "feature_flags.json"})
     fs = load_filesystem_provider()
+
+    from cdf.core.specification.pipeline import PipelineSpecification, create_pipeline
+
+    p = create_pipeline("us_cities", source_config)  # TODO: we need the root path?
+    print(p)
 
 
 if __name__ == "__main__":
