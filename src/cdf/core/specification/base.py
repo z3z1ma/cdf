@@ -254,16 +254,21 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
 
         def _run() -> t.Any:
             """Run the script"""
-            # TODO: we need the sandbox.py code
             origpath = sys.path[:]
-            sys.path.insert(0, str(self.workspace_path))
+            sys.path = [
+                str(self.workspace_path),
+                *sys.path,
+                str(self.workspace_path.parent),
+            ]
+            mod_pipeline = inspect.getmodulename(str(self.path)) or self.path.stem
+            run_name = f"pipelines.{mod_pipeline}"
             try:
                 return runpy.run_path(
                     str(self.path),
-                    run_name="__main__",
+                    run_name=run_name,
                     init_globals={
                         "__file__": str(self.path),
-                        "__package__": self._folder,
+                        "__cdf_name__": run_name,
                     },
                 )
             finally:

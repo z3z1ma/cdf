@@ -5,8 +5,11 @@ PIPELINE (
     cron '0 0 * * *',
 );
 """
+
 import dlt
 import requests
+
+import cdf
 
 from .test1.chore import foo
 
@@ -18,10 +21,11 @@ def us_cities():
     ).json()
 
 
-resource = us_cities()
+if cdf.is_main():
+    resource = us_cities()
 
-pipeline = dlt.pipeline("cities")
+    pipeline = dlt.pipeline("cities")
 
-load_info = pipeline.run(resource, destination="duckdb", table_name="cities")
+    load_info = pipeline.run(resource, destination="duckdb", table_name="cities")
 
-print(load_info)
+    print(load_info)
