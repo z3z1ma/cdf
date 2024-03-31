@@ -10,7 +10,7 @@ from dlt.common.configuration.specs.config_providers_context import (
 )
 
 if t.TYPE_CHECKING:
-    from cdf.core.configuration import Configuration
+    from cdf.core.configuration import ParsedConfiguration
 
 
 active_workspace: ContextVar[t.Optional[str]] = ContextVar(
@@ -22,7 +22,7 @@ active_workspace: ContextVar[t.Optional[str]] = ContextVar(
 class CDFConfigProvider(ConfigProvider):
     """A configuration provider for CDF settings."""
 
-    def __init__(self, config: "Configuration") -> None:
+    def __init__(self, config: "ParsedConfiguration") -> None:
         self._config = config
         super().__init__()
 
@@ -81,7 +81,7 @@ class CDFConfigProvider(ConfigProvider):
         return True
 
 
-def inject_cdf_config_provider(config: "Configuration") -> None:
+def inject_cdf_config_provider(config: "ParsedConfiguration") -> None:
     """Injects CDFConfigProvider into the ConfigProvidersContext.
 
     Args:

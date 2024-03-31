@@ -6,7 +6,9 @@ import inspect
 import operator
 import os
 import runpy
+import sys
 import typing as t
+from contextlib import suppress
 from pathlib import Path
 
 import pydantic
@@ -23,7 +25,7 @@ def _gen_anon_name() -> str:
     return f"anon_{os.urandom(8).hex()}"
 
 
-class ComponentSpecification(pydantic.BaseModel):
+class BaseComponent(pydantic.BaseModel):
     """
     A component specification.
 
@@ -104,22 +106,48 @@ class ComponentSpecification(pydantic.BaseModel):
         if not self.enabled:
             logger.info(f"Skipping disabled component: {self.name}")
             return self
-
-        if isinstance(self, PythonScript):
-            if self.name.startswith("anon_"):
-                self.name = self.name.replace("anon_", self.script_path.stem)
-            if self.description == _NO_DESCRIPTION:
-                tree = ast.parse(self.script_path.read_text())
-                self.description = ast.get_docstring(tree) or _NO_DESCRIPTION
-
         return self
 
 
-# TODO: we need to track the last execution time of the component to use as the croniter `start_time`
+class WorkspaceComponent(BaseComponent):
+    """A component within a workspace."""
+
+    workspace_path: Path = Path(".")
+    """The path to the workspace containing the component."""
+    component_path: Path = pydantic.Field(Path("."), alias="path")
+    """The path to the component within the workspace folder."""
+
+    _folder: str = "."
+    """The folder within the workspace. Set per component type during subclassing."""
+
+    @property
+    def path(self) -> Path:
+        """Get the path to the component."""
+        return self.workspace_path / self.component_path
+
+    @pydantic.field_validator("workspace_path", mode="before")
+    @classmethod
+    def _workspace_path_validator(cls, path: t.Any) -> Path:
+        """Ensure the workspace path is a Path."""
+        return Path(path).resolve()
+
+    @pydantic.field_validator("component_path", mode="before")
+    @classmethod
+    def _component_path_validator(cls, component_path: t.Any) -> Path:
+        """Ensure the component path is a Path."""
+        path = Path(component_path)
+        if path.is_absolute():
+            raise ValueError("Component path must be a relative path.")
+        ns = cls._folder.default  # type: ignore
+        if path.parts[0] != ns:
+            path = Path(ns) / path
+        return path
+
+
 class Schedulable(pydantic.BaseModel):
     """A mixin for schedulable components."""
 
-    cron_string: str | None = pydantic.Field(None, alias="cron")
+    cron_string: str = pydantic.Field("@daily", serialization_alias="cron")
     """A cron expression for scheduling the primary action associated with the component."""
 
     @property
@@ -127,7 +155,7 @@ class Schedulable(pydantic.BaseModel):
         """Get the croniter instance."""
         if self.cron_string is None:
             return None
-        return croniter(self.cron_string)  # add start time here based on last run
+        return croniter(self.cron_string)  # TODO: add start time here based on last run
 
     def next_run(self) -> t.Optional[int]:
         """Get the next run time for the component."""
@@ -143,25 +171,37 @@ class Schedulable(pydantic.BaseModel):
 
     @pydantic.field_validator("cron_string", mode="before")
     @classmethod
-    def _cron_validator(cls, cron: t.Any) -> str:
+    def _cron_validator(cls, cron_string: t.Any) -> str:
         """Ensure the cron expression is valid."""
-        if isinstance(cron, croniter):
-            return " ".join(cron.expressions)
-        elif isinstance(cron, str):
+        if isinstance(cron_string, croniter):
+            return " ".join(cron_string.expressions)
+        elif isinstance(cron_string, str):
             try:
-                croniter(cron)
-                return cron
+                croniter(cron_string)
             except Exception as e:
-                raise ValueError(f"Invalid cron expression: {cron}") from e
-        raise TypeError(f"Invalid cron type: {type(cron)} is not str or croniter.")
+                raise ValueError(f"Invalid cron expression: {cron_string}") from e
+            else:
+                return cron_string
+        raise TypeError(
+            f"Invalid cron type: {type(cron_string)} is not str or croniter."
+        )
 
 
-class Packageable(pydantic.BaseModel):
-    """A mixin for packageable components."""
+class InstallableRequirements(pydantic.BaseModel):
+    """A mixin for components that support installation of requirements."""
 
     requirements: t.List[t.Annotated[str, pydantic.Field(..., frozen=True)]] = []
+    """The requirements for the component."""
 
-    def install(self) -> None:
+    @pydantic.field_validator("requirements", mode="before")
+    @classmethod
+    def _requirements_validator(cls, requirements: t.Any) -> t.Sequence[str]:
+        """Wrap requirements in a list."""
+        if isinstance(requirements, str):
+            requirements = requirements.split(",")
+        return requirements
+
+    def install_requirements(self) -> None:
         """Install the component."""
         if not self.requirements:
             return
@@ -171,9 +211,23 @@ class Packageable(pydantic.BaseModel):
             import pip
         except ImportError:
             raise ImportError(
-                "pip is required to install requirements. Please install pip."
+                "Pip was not found. Please install pip or recreate the virtual environment."
             )
         pip.main(["install", *self.requirements])
+
+
+class PythonScript(WorkspaceComponent, InstallableRequirements):
+    """A python script component."""
+
+    @pydantic.model_validator(mode="after")
+    def _setup(self):
+        """Import the entrypoint and register the component."""
+        if self.name.startswith("anon_"):
+            self.name = self.name.replace("anon_", self.path.stem)
+        if self.description == _NO_DESCRIPTION:
+            tree = ast.parse(self.path.read_text())
+            self.description = ast.get_docstring(tree) or _NO_DESCRIPTION
+        return self
 
     def package(self, outputdir: str) -> None:
         """Package the component."""
@@ -190,26 +244,9 @@ class Packageable(pydantic.BaseModel):
             # Successfully built pexes will exit with either 0 or None
             if e.code is not None and e.code != 0:
                 # If the pex fails to build, delete the compromised pex
-                try:
+                with suppress(FileNotFoundError):
                     os.remove(output)
-                except FileNotFoundError:
-                    pass
                 raise
-
-    @pydantic.field_validator("requirements", mode="before")
-    @classmethod
-    def _requirements_validator(cls, requirements: t.Any) -> t.Sequence[str]:
-        """Wrap requirements in a list."""
-        if isinstance(requirements, str):
-            requirements = requirements.split(",")
-        return requirements
-
-
-class PythonScript(pydantic.BaseModel):
-    """A mixin for script based executable components."""
-
-    script_path: Path
-    """The path to the script"""
 
     @property
     def main(self) -> t.Callable[..., t.Any]:
@@ -217,35 +254,72 @@ class PythonScript(pydantic.BaseModel):
 
         def _run() -> t.Any:
             """Run the script"""
-            return runpy.run_path(str(self.script_path), run_name="__main__")
+            # TODO: we need the sandbox.py code
+            origpath = sys.path[:]
+            sys.path.insert(0, str(self.workspace_path))
+            try:
+                return runpy.run_path(
+                    str(self.path),
+                    run_name="__main__",
+                    init_globals={
+                        "__file__": str(self.path),
+                        "__package__": self._folder,
+                    },
+                )
+            finally:
+                sys.path = origpath
 
         return _run
 
+    def __call__(self) -> t.Any:
+        """Run the script."""
+        return self.main()
 
-class PythonEntrypoint(pydantic.BaseModel):
-    """A mixin for entrypoint based executable components."""
+
+class PythonEntrypoint(BaseComponent, InstallableRequirements):
+    """A python entrypoint component."""
 
     entrypoint: t.Annotated[
         str, pydantic.Field(..., frozen=True, pattern=r"^[a-zA-Z0-9_]+:[a-zA-Z0-9_]+$")
     ]
     """The entrypoint of the component."""
 
+    @pydantic.model_validator(mode="after")
+    def _setup(self):
+        """Import the entrypoint and register the component."""
+        if self.name.startswith("anon_"):
+            mod, func = self.entrypoint.split(":", 1)
+            self.name = mod.replace(".", "_") + "_" + func.replace(".", "_")
+        if self.description == _NO_DESCRIPTION:
+            self.description = self.main.__doc__ or _NO_DESCRIPTION
+        return self
+
     @property
     def main(self) -> t.Callable[..., t.Any]:
         """Get the entrypoint function."""
+        module, func = self.entrypoint.split(":")
+        mod = importlib.import_module(module)
+        return operator.attrgetter(func)(mod)
 
-        def _run(*args: t.Any, **kwargs: t.Any) -> t.Any:
-            """Run the script"""
-            module, func = self.entrypoint.split(":")
-            mod = importlib.import_module(module)
-            return operator.attrgetter(func)(mod)(*args, **kwargs)
+    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Any:
+        """Run the entrypoint."""
+        return self.main(*args, **kwargs)
 
-        return _run
+
+class CanExecute(t.Protocol):
+    """A protocol specifying the minimum interface executable components satisfy."""
+
+    @property
+    def main(self) -> t.Callable[..., t.Any]: ...
+
+    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Any: ...
 
 
 __all__ = [
-    "ComponentSpecification",
+    "BaseComponent",
     "Schedulable",
-    "Packageable",
     "PythonScript",
+    "PythonEntrypoint",
+    "WorkspaceComponent",
+    "CanExecute",
 ]

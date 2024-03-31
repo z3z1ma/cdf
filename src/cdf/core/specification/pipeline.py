@@ -6,18 +6,16 @@ import fnmatch
 import time
 import types
 import typing as t
+from pathlib import Path
 
 import dlt
+import dynaconf
 from dlt.common.typing import TDataItem
 
 import cdf.core.logger as logger
-from cdf.core.specification.base import (
-    ComponentSpecification,
-    Packageable,
-    PythonEntrypoint,
-    PythonScript,
-    Schedulable,
-)
+from cdf.core.specification.base import PythonEntrypoint, PythonScript, Schedulable
+
+T = t.TypeVar("T")
 
 Metric = t.Union[float, int, decimal.Decimal]
 MetricState = t.Dict[str, t.Dict[str, Metric]]
@@ -29,7 +27,7 @@ class MetricInterface(t.Protocol):
     ) -> Metric: ...
 
 
-class PipelineMetricSpecification(ComponentSpecification, PythonEntrypoint):
+class PipelineMetricSpecification(PythonEntrypoint):
     """Defines metrics which can be captured during pipeline execution"""
 
     options: t.Dict[str, t.Any] = {}
@@ -42,6 +40,7 @@ class PipelineMetricSpecification(ComponentSpecification, PythonEntrypoint):
 
     @property
     def func(self) -> MetricInterface:
+        """A typed property to return the metric function"""
         if self.options:
             return self.main(**self.options)
         return self.main
@@ -54,7 +53,7 @@ class PipelineMetricSpecification(ComponentSpecification, PythonEntrypoint):
         metric_name = self.name
         elapsed = 0.0
 
-        def _aggregator(item):
+        def _aggregator(item: T) -> T:
             nonlocal first, elapsed
             compstart = time.perf_counter()
             if first:
@@ -88,7 +87,7 @@ class FilterInterface(t.Protocol):
     def __call__(self, item: TDataItem) -> bool: ...
 
 
-class PipelineFilterSpecification(ComponentSpecification, PythonEntrypoint):
+class PipelineFilterSpecification(PythonEntrypoint):
     """Defines filters which can be applied to pipeline execution"""
 
     options: t.Dict[str, t.Any] = {}
@@ -101,6 +100,7 @@ class PipelineFilterSpecification(ComponentSpecification, PythonEntrypoint):
 
     @property
     def func(self) -> FilterInterface:
+        """A typed property to return the filter function"""
         if self.options:
             return self.main(**self.options)
         return self.main
@@ -114,9 +114,7 @@ InlineFilterSpecifications = t.Dict[str, t.List[PipelineFilterSpecification]]
 """Mapping of resource name glob patterns to filter specs"""
 
 
-class PipelineSpecification(
-    ComponentSpecification, PythonScript, Packageable, Schedulable
-):
+class PipelineSpecification(PythonScript, Schedulable):
     """A pipeline specification."""
 
     metrics: InlineMetricSpecifications = {}
@@ -139,12 +137,15 @@ class PipelineSpecification(
     _metric_state: t.Dict[str, t.Dict[str, Metric]] = {}
     """Container for runtime metrics."""
 
+    _folder = "pipelines"
+    """The folder where pipeline scripts are stored."""
+
     @property
     def metric_state(self) -> types.MappingProxyType[str, t.Dict[str, Metric]]:
         """Get a read only view of the runtime metrics."""
         return types.MappingProxyType(self._metric_state)
 
-    def __call__(self, source: dlt.sources.DltSource) -> dlt.sources.DltSource:
+    def apply(self, source: dlt.sources.DltSource) -> dlt.sources.DltSource:
         """Apply metrics and filters to a source."""
         for resource in source.selected_resources.values():
             for patt, metric in self.metrics.items():
@@ -157,12 +158,14 @@ class PipelineSpecification(
                         applicator(resource)
         return source
 
+    @classmethod
+    def from_config(
+        cls, name: str, root: Path, config: dynaconf.Dynaconf
+    ) -> "PipelineSpecification":
+        config.setdefault("name", name)
+        config.setdefault("path", f"{name}_pipeline.py")
+        config["workspace_path"] = root
+        return cls.model_validate(config, from_attributes=True)
 
-def create_pipeline(name: str, data: t.Any) -> PipelineSpecification:
-    data.setdefault("name", name)
-    if "script_path" not in data:
-        data["script_path"] = f"{name}_pipeline.py"
-    return PipelineSpecification.model_validate(data)
 
-
-__all__ = ["PipelineSpecification", "create_pipeline"]
+__all__ = ["PipelineSpecification"]

@@ -109,6 +109,7 @@ def load_feature_flag_provider(
 
 
 __all__ = [
+    "SupportsFFs",
     "create_noop_provider",
     "create_file_provider",
     "create_harness_provider",

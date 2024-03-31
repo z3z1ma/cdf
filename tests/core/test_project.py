@@ -1,3 +1,4 @@
+import pathlib
 import typing as t
 
 import dlt
@@ -7,7 +8,28 @@ import cdf.core.context as context
 from cdf.core.configuration import load_config
 from cdf.core.feature_flag import load_feature_flag_provider
 from cdf.core.filesystem import load_filesystem_provider
-from cdf.core.specification.pipeline import PipelineSpecification, create_pipeline
+
+
+# Q: Is a Project a subclass of a Workspace? or vice versa?
+#    No, instead we rely on mixins which are shared between Project & Workspace
+def test_project_ideal_interface():
+    r = (
+        # A project class is created by get_project
+        # This class defines the top-level configuration shared by all workspaces
+        # it also injects itself into the dlt config providers container until __del__
+        get_project("examples/sandbox")
+        # A workspace class is created by get_workspace
+        # This class has config defined as a ChainMap of the workspace and project settings
+        # It also stores its root path
+        >> (lambda project: project.get_workspace("workspace1"))
+        # We can then access the pipeline by name
+        # This returns a PipelineSpecification object
+        # and leverages the root path and workspace settings
+        >> (lambda workspace: workspace.get_pipeline("us_cities"))
+        # The run method sets all the necessary context variables such that
+        # the cdf.pipeline function will function in the script as expected
+        >> (lambda pipeline: pipeline.run())
+    )
 
 
 def test_project_interface():
@@ -40,4 +62,16 @@ def test_project_interface():
     ff = load_feature_flag_provider("file", options={"path": "feature_flags.json"})
     fs = load_filesystem_provider("file", options={"compress": True})
 
-    p = create_pipeline("us_cities", source_config)  # TODO: we need the root path?
+    p = pipeline("us_cities", source_config)  # TODO: we need the root path?
+
+
+def test_project():
+    from cdf.core.project import get_project
+
+    pipeline_ = (
+        get_project("examples/sandbox")
+        .bind(lambda project: project.get_workspace("workspace1"))
+        .bind(lambda workspace: workspace.get_pipeline("us_cities"))
+        .unwrap()
+    )
+    pipeline_.main()
