@@ -3,6 +3,7 @@
 import atexit
 import decimal
 import fnmatch
+import os
 import time
 import types
 import typing as t
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import dlt
 import dynaconf
+import pydantic
 from dlt.common.typing import TDataItem
 
 import cdf.core.logger as logger
@@ -134,11 +136,26 @@ class PipelineSpecification(PythonScript, Schedulable):
     whether the item should be filtered out.
     """
 
+    dataset_name: str = ""
+    """The name of the dataset associated with the pipeline."""
+
     _metric_state: t.Dict[str, t.Dict[str, Metric]] = {}
     """Container for runtime metrics."""
 
     _folder = "pipelines"
     """The folder where pipeline scripts are stored."""
+
+    @pydantic.model_validator(mode="after")
+    def _setup(self: "PipelineSpecification") -> "PipelineSpecification":
+        self.dataset_name = self.dataset_name.format(
+            name=self.name,
+            version=self.version,
+            meta=self.meta,
+            tags=self.tags,
+        ).strip()
+        if not self.dataset_name:
+            self.dataset_name = self.versioned_name
+        return self
 
     @property
     def metric_state(self) -> types.MappingProxyType[str, t.Dict[str, Metric]]:
@@ -157,6 +174,39 @@ class PipelineSpecification(PythonScript, Schedulable):
                     for applicator in filter_:
                         applicator(resource)
         return source
+
+    # TODO: type _wrapper with a protocol
+    @property
+    def main(self) -> t.Callable[..., t.Any]:
+        main = super().main
+
+        # These should stay in regular entrypoint
+        # and are the only definable kwargs?
+        # import_schema_path: str = None,
+        # export_schema_path: str = None,
+        # pipelines_dir: str = None,
+
+        # NOTE: we _could_ keep dataset_name as a kwarg with the caveat that it breaks assumptions if we do not load our primary
+        # payload to the statically configured dataset at least once in the pipeline
+
+        # New entrypoint below
+        # our primary inputs are the parameterized destination
+        def _wrapper(
+            destination: str,  # this will come from the CLI, hydrated from ./sinks or ./destinations
+            staging: t.Optional[
+                str
+            ] = None,  # this is included in the above? though I could see selectively staging per pipeline
+            progress: t.Optional[str] = None,
+        ) -> t.Any:
+            pipeline_name = self.name
+            dataset_name = self.dataset_name
+
+            # 5 vars to inject into context before invoking main
+            # pipeline_name, dataset_name, destination, staging, progress
+
+            return main()
+
+        return _wrapper
 
     @classmethod
     def from_config(

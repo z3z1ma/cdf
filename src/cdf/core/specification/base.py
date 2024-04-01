@@ -16,6 +16,8 @@ from croniter import croniter
 
 import cdf.core.logger as logger
 
+T = t.TypeVar("T")
+
 _NO_DESCRIPTION = "No description provided."
 """A default description for components if not provided or parsed."""
 
@@ -23,6 +25,12 @@ _NO_DESCRIPTION = "No description provided."
 def _gen_anon_name() -> str:
     """Generate an anonymous name for a component."""
     return f"anon_{os.urandom(8).hex()}"
+
+
+def _getmodulename(name: str) -> str:
+    """Wraps inspect.getmodulename to ensure a module name is returned."""
+    rv = inspect.getmodulename(name)
+    return rv or name
 
 
 class BaseComponent(pydantic.BaseModel):
@@ -238,6 +246,8 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
 
         output = os.path.join(outputdir, f"{name}.pex")
         try:
+            # --inject-env in pex can add the __cdf_name__ variable?
+            # or really any other variable that should be injected
             pex.main(["-o", output, ".", *self.requirements])
         except SystemExit as e:
             # A failed pex build will exit with a non-zero code
@@ -249,7 +259,7 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
                 raise
 
     @property
-    def main(self) -> t.Callable[..., t.Any]:
+    def main(self) -> t.Callable[[], t.Any]:
         """Get the entrypoint function."""
 
         def _run() -> t.Any:
@@ -260,8 +270,10 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
                 *sys.path,
                 str(self.workspace_path.parent),
             ]
-            mod_pipeline = inspect.getmodulename(str(self.path)) or self.path.stem
-            run_name = f"pipelines.{mod_pipeline}"
+            parts = map(
+                _getmodulename, self.path.relative_to(self.workspace_path).parts
+            )
+            run_name = ".".join(parts)
             try:
                 return runpy.run_path(
                     str(self.path),

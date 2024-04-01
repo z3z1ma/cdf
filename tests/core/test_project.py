@@ -74,4 +74,10 @@ def test_project():
         .bind(lambda workspace: workspace.get_pipeline("us_cities"))
         .unwrap()
     )
-    pipeline_.main()
+    # TODO: add destination? and dataset?
+    # oh well this is a pipeline specification
+    # we need to investigate the cdf.pipeline entrypoint
+    # but thats in user-code, so we need to communicate with contextvars
+    # So maybe spec.main() *args and **kwargs are stored in contextvars
+    # and we pull them out in the cdf.pipeline's .run() method and equivalents
+    pipeline_.main(destination="...")
