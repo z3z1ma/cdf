@@ -3,6 +3,7 @@
 import typing as t
 from contextvars import ContextVar
 
+import dlt
 from dlt.common.configuration.container import Container
 from dlt.common.configuration.providers import ConfigProvider
 from dlt.common.configuration.specs.config_providers_context import (
@@ -17,6 +18,35 @@ active_workspace: ContextVar[t.Optional[str]] = ContextVar(
     "active_workspace", default=None
 )
 """The active workspace context variable."""
+
+intercepted_sources: ContextVar[t.Set[dlt.sources.DltSource]] = ContextVar(
+    "intercepted_sources"
+)
+"""The intercepted sources context variable."""
+
+
+class ExecutionContext(t.NamedTuple):
+    """The execution context."""
+
+    pipeline_name: str
+    """The pipeline name."""
+    destination: str
+    """The destination."""
+    staging: t.Optional[str] = None
+    """The staging location."""
+    progress: t.Optional[str] = None
+    """The progress collector."""
+    select: t.Optional[t.List[str]] = None
+    """A list of glob patterns to select resources."""
+    exclude: t.Optional[t.List[str]] = None
+    """A list of glob patterns to exclude resources."""
+    force_replace: bool = False
+    """Whether to force replace disposition."""
+    intercept_sources: bool = False
+    """Whether to intercept sources."""
+
+
+execution_context: ContextVar[ExecutionContext] = ContextVar("execution_context")
 
 
 class CDFConfigProvider(ConfigProvider):

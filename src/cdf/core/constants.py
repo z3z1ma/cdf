@@ -6,3 +6,6 @@ CDF_ENVIRONMENT = "CDF_ENVIRONMENT"
 
 DEFAULT_ENVIRONMENT = "prod"
 """Default environment for the project."""
+
+SOURCE_CONTAINER = "__sources__"
+"""A pointer for intercepted sources which collect in a globals dictionary key."""
