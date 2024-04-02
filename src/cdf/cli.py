@@ -7,6 +7,7 @@ import typer
 
 import cdf.core.context as context
 from cdf.core.project import get_project
+from cdf.core.runtime import execute_pipeline_specification
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -43,10 +44,12 @@ def pipeline(ctx: typer.Context, source_to_dest: str) -> t.Any:
     token = context.active_project.set(workspace)
     try:
         source, destination = source_to_dest.split(":", 1)
-        pipe = workspace.get_pipeline(source).unwrap()
-        exports = pipe(destination)
-        typer.echo(pipe.metric_state if pipe.metric_state else "No metrics captured")
-        return exports  # maybe a function which searches for LoadInfo objects from the exports
+        spec = workspace.get_pipeline(source).unwrap()
+        exports = execute_pipeline_specification(spec, destination)
+        typer.echo(spec.metric_state if spec.metric_state else "No metrics captured")
+        return (
+            exports.unwrap()
+        )  # maybe a function which searches for LoadInfo objects from the exports
     finally:
         context.active_project.reset(token)
 

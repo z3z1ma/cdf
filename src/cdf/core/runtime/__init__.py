@@ -1,3 +1,3 @@
-from cdf.core.runtime.pipeline import pipeline
+from cdf.core.runtime.pipeline import execute_pipeline_specification
 
-__all__ = ["pipeline"]
+__all__ = ["execute_pipeline_specification"]

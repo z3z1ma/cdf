@@ -181,57 +181,6 @@ class PipelineSpecification(PythonScript, Schedulable, arbitrary_types_allowed=T
                         applicator(resource)
         return source
 
-    @property
-    def main(self) -> t.Callable[..., t.Any]:
-        """The pipeline entrypoint."""
-        main = super().main
-
-        def _injector(
-            destination: TDestinationReferenceArg,
-            staging: t.Optional[TDestinationReferenceArg] = None,
-            select: t.Optional[t.List[str]] = None,
-            exclude: t.Optional[t.List[str]] = None,
-            force_replace: bool = False,
-            intercept_sources: bool = False,
-            enable_stage: bool = True,
-        ) -> t.Any:
-            """Injects the pipeline context into the main function."""
-            with context.execution_context_manager(
-                pipeline_name=self.name,
-                dataset_name=self.dataset_name,
-                destination=destination,
-                staging=staging,
-                select=select,
-                exclude=exclude,
-                force_replace=force_replace,
-                intercept_sources=set() if intercept_sources else None,
-                enable_stage=enable_stage and bool(staging),
-                applicator=self.apply,
-            ):
-                return main()
-
-        return _injector
-
-    def __call__(
-        self,
-        destination: TDestinationReferenceArg,
-        staging: t.Optional[TDestinationReferenceArg] = None,
-        select: t.Optional[t.List[str]] = None,
-        exclude: t.Optional[t.List[str]] = None,
-        force_replace: bool = False,
-        intercept_sources: bool = False,
-        enable_stage: bool = True,
-    ) -> t.Any:
-        return self.main(
-            destination,
-            staging,
-            select,
-            exclude,
-            force_replace,
-            intercept_sources,
-            enable_stage,
-        )
-
     @classmethod
     def from_config(
         cls, name: str, root: Path, config: dynaconf.Dynaconf

@@ -1,10 +1,12 @@
-"""The runtime pipeline module is responsible for creating and managing pipelines."""
+"""The runtime pipeline module is responsible for executing pipelines from pipeline specifications."""
 
 import fnmatch
 import typing as t
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import dlt
-from dlt.common.destination import TLoaderFileFormat
+from dlt.common.destination import TDestinationReferenceArg, TLoaderFileFormat
 from dlt.common.pipeline import ExtractInfo, LoadInfo
 from dlt.common.schema.typing import (
     TAnySchemaColumns,
@@ -17,9 +19,86 @@ from dlt.pipeline.pipeline import Pipeline
 
 import cdf.core.context as context
 import cdf.core.logger as logger
+from cdf.core.specification import PipelineSpecification
+from cdf.types import M
+
+T = t.TypeVar("T")
 
 
-class CDFPipeline(Pipeline):
+def _ident(x: T) -> T:
+    """An identity function."""
+    return x
+
+
+class RuntimeContext(t.NamedTuple):
+    """The runtime context for a pipeline."""
+
+    pipeline_name: str
+    """The pipeline name."""
+    dataset_name: str
+    """The dataset name."""
+    destination: TDestinationReferenceArg
+    """The destination."""
+    staging: t.Optional[TDestinationReferenceArg] = None
+    """The staging location."""
+    select: t.Optional[t.List[str]] = None
+    """A list of glob patterns to select resources."""
+    exclude: t.Optional[t.List[str]] = None
+    """A list of glob patterns to exclude resources."""
+    force_replace: bool = False
+    """Whether to force replace disposition."""
+    intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None
+    """Stores the intercepted sources in itself if provided."""
+    enable_stage: bool = True
+    """Whether to stage data if a staging location is provided."""
+    applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident
+    """The transformation to apply to the sources."""
+
+
+CONTEXT: ContextVar[RuntimeContext] = ContextVar("runtime_context")
+
+
+@contextmanager
+def runtime_context(
+    pipeline_name: str,
+    dataset_name: str,
+    destination: TDestinationReferenceArg,
+    staging: t.Optional[TDestinationReferenceArg] = None,
+    select: t.Optional[t.List[str]] = None,
+    exclude: t.Optional[t.List[str]] = None,
+    force_replace: bool = False,
+    intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None,
+    enable_stage: bool = True,
+    applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident,
+) -> t.Iterator[None]:
+    """A context manager for setting the runtime context.
+
+    This allows the cdf library to set the context prior to running the pipeline which is
+    ultimately evaluating user code.
+    """
+    token = CONTEXT.set(
+        RuntimeContext(
+            pipeline_name,
+            dataset_name,
+            destination,
+            staging,
+            select,
+            exclude,
+            force_replace,
+            intercept_sources,
+            enable_stage,
+            applicator,
+        )
+    )
+    try:
+        yield
+    finally:
+        CONTEXT.reset(token)
+
+
+class RuntimePipeline(Pipeline):
+    """Overrides certain methods of the dlt pipeline to allow for cdf specific behavior."""
+
     def extract(
         self,
         data: t.Any,
@@ -47,7 +126,7 @@ class CDFPipeline(Pipeline):
                 schema_contract,
             )
 
-        execution_context = context.execution_context.get()
+        execution_context = CONTEXT.get()
         if execution_context.intercept_sources is not None:
             extract_step = Extract(
                 self._schema_storage,
@@ -126,7 +205,7 @@ class CDFPipeline(Pipeline):
                 " cdf will automatically manage the dataset name for you and relies on deterministic naming."
             )
 
-        execution_context = context.execution_context.get()
+        execution_context = CONTEXT.get()
         if execution_context.force_replace:
             write_disposition = "replace"
 
@@ -147,8 +226,8 @@ class CDFPipeline(Pipeline):
         )
 
     @classmethod
-    def from_pipeline(cls, pipeline: Pipeline) -> "CDFPipeline":
-        """Creates a CDFPipeline from a Pipeline."""
+    def from_pipeline(cls, pipeline: Pipeline) -> "RuntimePipeline":
+        """Creates a RuntimePipeline from a dlt Pipeline object."""
         return cls(
             pipeline.pipeline_name,
             pipelines_dir=pipeline.pipelines_dir,
@@ -167,29 +246,52 @@ class CDFPipeline(Pipeline):
         )
 
 
-PipelineFactory = t.Callable[..., Pipeline]
+def pipeline_factory(**overrides: t.Any) -> RuntimePipeline:
+    """Creates a cdf pipeline. This is used in lieu of dlt.pipeline. in user code.
 
-
-def pipeline() -> CDFPipeline:
-    """Creates a cdf pipeline which is a wrapper around a dlt pipeline."""
-    execution_context = context.execution_context.get()
-    pipe_options: dict = {"pipeline_name": execution_context.pipeline_name}
-    for k, v in (
-        ("destination", execution_context.destination),
-        ("dataset_name", execution_context.dataset_name),
-        ("staging", execution_context.staging),
-    ):
-        if v is not None:
-            pipe_options[k] = v
-
-    # lets set pipelines_dir internally?
-    # lets standardize import_schema_path and export_schema_path leveraging fsspec
-    # we should always export schemas to fsspec
-    # we should only import if the schema is configured as "pinned = true"
-
-    return CDFPipeline.from_pipeline(
-        pipeline=dlt.pipeline(**pipe_options),
+    A cdf pipeline is a wrapper around a dlt pipeline that leverages injected information
+    from the runtime context. Raises a ValueError if the runtime context is not set.
+    """
+    runtime = CONTEXT.get()
+    options = dict(
+        pipeline_name=runtime.pipeline_name,
+        destination=runtime.destination,
+        staging=runtime.staging,
+        dataset_name=runtime.dataset_name,
+    )
+    options.update(overrides)
+    return RuntimePipeline.from_pipeline(
+        pipeline=dlt.pipeline(**options),
     )
 
 
-__all__ = ["pipeline"]
+def execute_pipeline_specification(
+    spec: PipelineSpecification,
+    destination: TDestinationReferenceArg,
+    staging: t.Optional[TDestinationReferenceArg] = None,
+    select: t.Optional[t.List[str]] = None,
+    exclude: t.Optional[t.List[str]] = None,
+    force_replace: bool = False,
+    intercept_sources: bool = False,
+    enable_stage: bool = True,
+) -> M.Result[t.Dict[str, t.Any], Exception]:
+    """Executes a pipeline specification."""
+    with runtime_context(
+        pipeline_name=spec.name,
+        dataset_name=spec.dataset_name,
+        destination=destination,
+        staging=staging,
+        select=select,
+        exclude=exclude,
+        force_replace=force_replace,
+        intercept_sources=set() if intercept_sources else None,
+        enable_stage=enable_stage and bool(staging),
+        applicator=spec.apply,
+    ):
+        try:
+            return M.ok(spec.main())
+        except Exception as e:
+            return M.error(e)
+
+
+__all__ = ["pipeline_factory", "execute_pipeline_specification"]

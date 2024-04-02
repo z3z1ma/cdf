@@ -3,7 +3,7 @@ import sys
 import traceback
 
 import cdf.core.context as context
-from cdf.core.runtime import pipeline
+from cdf.core.runtime.pipeline import pipeline_factory as pipeline
 
 
 def execute() -> bool:

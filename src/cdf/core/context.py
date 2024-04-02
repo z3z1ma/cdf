@@ -4,17 +4,13 @@ It facilitates communication between specifications and runtime modules.
 """
 
 import typing as t
-from contextlib import contextmanager
 from contextvars import ContextVar
-from pathlib import Path
 
-import dlt
 from dlt.common.configuration.container import Container
 from dlt.common.configuration.providers import ConfigProvider
 from dlt.common.configuration.specs.config_providers_context import (
     ConfigProvidersContext,
 )
-from dlt.common.destination import TDestinationReferenceArg
 
 if t.TYPE_CHECKING:
     from cdf.core.project import ContinuousDataFramework
@@ -25,83 +21,6 @@ active_project: ContextVar["ContinuousDataFramework"] = ContextVar("active_proje
 
 debug_mode: ContextVar[bool] = ContextVar("debug_mode", default=False)
 """The debug mode context variable."""
-
-T = t.TypeVar("T")
-
-
-def _ident(x: T) -> T:
-    return x
-
-
-class ExecutionContext(t.NamedTuple):
-    """The execution context passed from the CLI."""
-
-    pipeline_name: str
-    """The pipeline name."""
-
-    dataset_name: str
-    """The dataset name."""
-    destination: TDestinationReferenceArg
-    """The destination."""
-    staging: t.Optional[TDestinationReferenceArg] = None
-    """The staging location."""
-
-    select: t.Optional[t.List[str]] = None
-    """A list of glob patterns to select resources."""
-    exclude: t.Optional[t.List[str]] = None
-    """A list of glob patterns to exclude resources."""
-
-    force_replace: bool = False
-    """Whether to force replace disposition."""
-    intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None
-    """Stores the intercepted sources in itself if provided."""
-    enable_stage: bool = True
-    """Whether to stage data if a staging location is provided."""
-
-    applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident
-    """The transformation to apply to the sources."""
-
-
-execution_context: ContextVar[ExecutionContext] = ContextVar("execution_context")
-
-
-@contextmanager
-def execution_context_manager(
-    pipeline_name: str,
-    dataset_name: str,
-    destination: TDestinationReferenceArg,
-    staging: t.Optional[TDestinationReferenceArg] = None,
-    select: t.Optional[t.List[str]] = None,
-    exclude: t.Optional[t.List[str]] = None,
-    force_replace: bool = False,
-    intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None,
-    enable_stage: bool = True,
-    applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident,
-) -> t.Iterator[None]:
-    """A context manager for setting the execution context.
-
-    This allows the cdf library to set the context prior to running the pipeline which is
-    ultimately evaluating user code. It is consumed by the cdf core runtime pipeline and set
-    by the pipeline specification.
-    """
-    token = execution_context.set(
-        ExecutionContext(
-            pipeline_name,
-            dataset_name,
-            destination,
-            staging,
-            select,
-            exclude,
-            force_replace,
-            intercept_sources,
-            enable_stage,
-            applicator,
-        )
-    )
-    try:
-        yield
-    finally:
-        execution_context.reset(token)
 
 
 class CDFConfigProvider(ConfigProvider):
