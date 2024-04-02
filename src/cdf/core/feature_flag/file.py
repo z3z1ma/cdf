@@ -2,6 +2,7 @@
 
 import json
 import typing as t
+from pathlib import Path
 from threading import Lock
 
 import dlt
@@ -20,8 +21,11 @@ def create_file_provider(
     path: str = dlt.config.value,
 ) -> "SupportsFFs":
     def _processor(source: "DltSource") -> "DltSource":
-        with open(path) as file:
-            flags = json.load(file)
+        if not Path(path).exists():
+            flags = {}
+        else:
+            with open(path) as file:
+                flags = json.load(file)
 
         source_name = source.name
         for resource_name, resource in source.selected_resources.items():

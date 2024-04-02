@@ -11,8 +11,8 @@ default:
         y: 2
         # all standard pipeline options can be configured
         progress: log
-        full_refresh: true
-        loader_file_format: jsonl
+        full_refresh: false
+        loader_file_format: insert_values
         destination_type: duckdb
         # even runtime options here
         runtime:

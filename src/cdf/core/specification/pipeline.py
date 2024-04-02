@@ -3,7 +3,6 @@
 import atexit
 import decimal
 import fnmatch
-import os
 import time
 import types
 import typing as t
@@ -12,8 +11,10 @@ from pathlib import Path
 import dlt
 import dynaconf
 import pydantic
+from dlt.common.destination import TDestinationReferenceArg
 from dlt.common.typing import TDataItem
 
+import cdf.core.context as context
 import cdf.core.logger as logger
 from cdf.core.specification.base import PythonEntrypoint, PythonScript, Schedulable
 
@@ -175,38 +176,58 @@ class PipelineSpecification(PythonScript, Schedulable):
                         applicator(resource)
         return source
 
-    # TODO: type _wrapper with a protocol
     @property
     def main(self) -> t.Callable[..., t.Any]:
+        """The pipeline entrypoint."""
         main = super().main
 
-        # These should stay in regular entrypoint
-        # and are the only definable kwargs?
-        # import_schema_path: str = None,
-        # export_schema_path: str = None,
-        # pipelines_dir: str = None,
-
-        # NOTE: we _could_ keep dataset_name as a kwarg with the caveat that it breaks assumptions if we do not load our primary
-        # payload to the statically configured dataset at least once in the pipeline
-
-        # New entrypoint below
-        # our primary inputs are the parameterized destination
-        def _wrapper(
-            destination: str,  # this will come from the CLI, hydrated from ./sinks or ./destinations
-            staging: t.Optional[
-                str
-            ] = None,  # this is included in the above? though I could see selectively staging per pipeline
-            progress: t.Optional[str] = None,
+        def _injector(
+            destination: TDestinationReferenceArg,
+            staging: t.Optional[TDestinationReferenceArg] = None,
+            select: t.Optional[t.List[str]] = None,
+            exclude: t.Optional[t.List[str]] = None,
+            force_replace: bool = False,
+            intercept_sources: bool = False,
+            enable_stage: bool = True,
         ) -> t.Any:
-            pipeline_name = self.name
-            dataset_name = self.dataset_name
-
-            # 5 vars to inject into context before invoking main
-            # pipeline_name, dataset_name, destination, staging, progress
-
+            """Injects the pipeline context into the main function."""
+            context.execution_context.set(
+                context.ExecutionContext(
+                    pipeline_name=self.name,
+                    dataset_name=self.dataset_name,
+                    destination=destination,
+                    staging=staging,
+                    select=select,
+                    exclude=exclude,
+                    force_replace=force_replace,
+                    intercept_sources=set() if intercept_sources else None,
+                    enable_stage=enable_stage and bool(staging),
+                    applicator=self.apply,
+                )
+            )
             return main()
 
-        return _wrapper
+        return _injector
+
+    def __call__(
+        self,
+        destination: TDestinationReferenceArg,
+        staging: t.Optional[TDestinationReferenceArg] = None,
+        select: t.Optional[t.List[str]] = None,
+        exclude: t.Optional[t.List[str]] = None,
+        force_replace: bool = False,
+        intercept_sources: bool = False,
+        enable_stage: bool = True,
+    ) -> t.Any:
+        self.main(
+            destination,
+            staging,
+            select,
+            exclude,
+            force_replace,
+            intercept_sources,
+            enable_stage,
+        )
 
     @classmethod
     def from_config(

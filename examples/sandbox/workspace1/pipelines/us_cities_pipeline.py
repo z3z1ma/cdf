@@ -21,11 +21,11 @@ def us_cities():
     ).json()
 
 
-if cdf.is_main():
+if cdf.execute():
     resource = us_cities()
 
-    pipeline = dlt.pipeline("cities")
+    pipeline = cdf.pipeline()
 
-    load_info = pipeline.run(resource, destination="duckdb", table_name="cities")
+    load_info = pipeline.run(resource, table_name="cities")
 
     print(load_info)

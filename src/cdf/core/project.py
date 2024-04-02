@@ -32,7 +32,7 @@ class ConfigurationOverlay(ChainMap[str, t.Any]):
         def __init__(self, *maps: dynaconf.Dynaconf) -> None: ...
 
 
-class CommonProps:
+class ContinuousDataFramework:
     """Common properties shared by Project and Workspace."""
 
     configuration: ConfigurationOverlay
@@ -49,13 +49,17 @@ class CommonProps:
     def feature_flag_provider(self) -> SupportsFFs:
         """The feature flag provider."""
         ff = self.configuration["feature_flags"]
-        return load_feature_flag_provider(ff.provider, **ff.options.to_dict())
+        return load_feature_flag_provider(ff.provider, options=ff.options.to_dict())
 
     @cached_property
     def filesystem(self) -> fsspec.AbstractFileSystem:
         """The filesystem provider."""
         fs = self.configuration["filesystem"]
-        return load_filesystem_provider(fs.provider, **fs.options.to_dict())
+        return load_filesystem_provider(fs.provider, options=fs.options.to_dict())
+
+    # TODO: we just need to pass the filepath here?
+    @cached_property
+    def sqlmesh_context(self) -> t.Any: ...
 
     def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
         """Get a pipeline by name."""
@@ -70,8 +74,14 @@ class CommonProps:
         except Exception as e:
             return M.error(e)
 
+    def __getitem__(self, key: str) -> t.Any:
+        return self.configuration[key]
 
-class Project(CommonProps):
+    def __setitem__(self, key: str, value: t.Any) -> None:
+        self.configuration[key] = value
+
+
+class Project(ContinuousDataFramework):
     """A CDF project."""
 
     def __init__(
@@ -91,7 +101,7 @@ class Project(CommonProps):
             return M.error(e)
 
 
-class Workspace(CommonProps):
+class Workspace(ContinuousDataFramework):
     """A CDF workspace."""
 
     def __init__(self, name: str, /, *, project: Project) -> None:

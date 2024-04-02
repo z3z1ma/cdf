@@ -98,14 +98,14 @@ def create_harness_provider(
 
     def _processor(source: "DltSource") -> "DltSource":
         nonlocal client
-        workspace = context.active_workspace.get()
+        workspace = context.active_project.get()
         if isinstance(client, Promise):
             client = client.unwrap()
         else:
             client._repository.cache.clear()
             client._polling_processor.retrieve_flags_and_segments()
         cache = client._repository.cache
-        ns = f"pipeline__{workspace}__{source.name}"
+        ns = f"pipeline__{workspace.name}__{source.name}"
 
         tpe = ThreadPoolExecutor(thread_name_prefix="harness-ff")
 
