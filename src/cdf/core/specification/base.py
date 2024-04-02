@@ -297,7 +297,8 @@ class PythonEntrypoint(BaseComponent, InstallableRequirements):
     """A python entrypoint component."""
 
     entrypoint: t.Annotated[
-        str, pydantic.Field(..., frozen=True, pattern=r"^[a-zA-Z0-9_]+:[a-zA-Z0-9_]+$")
+        str,
+        pydantic.Field(..., frozen=True, pattern=r"^[a-zA-Z0-9_\.]+:[a-zA-Z0-9_\.]+$"),
     ]
     """The entrypoint of the component."""
 

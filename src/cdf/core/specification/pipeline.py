@@ -219,7 +219,7 @@ class PipelineSpecification(PythonScript, Schedulable):
         intercept_sources: bool = False,
         enable_stage: bool = True,
     ) -> t.Any:
-        self.main(
+        rv = self.main(
             destination,
             staging,
             select,
@@ -228,6 +228,8 @@ class PipelineSpecification(PythonScript, Schedulable):
             intercept_sources,
             enable_stage,
         )
+        print(self.metric_state)
+        return rv
 
     @classmethod
     def from_config(
