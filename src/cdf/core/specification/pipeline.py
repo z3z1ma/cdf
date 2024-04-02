@@ -117,7 +117,12 @@ InlineFilterSpecifications = t.Dict[str, t.List[PipelineFilterSpecification]]
 """Mapping of resource name glob patterns to filter specs"""
 
 
-class PipelineSpecification(PythonScript, Schedulable):
+class SchemaOptions(pydantic.BaseModel):
+    preferred_types: t.Optional[t.Dict[str, t.List[str]]] = None
+    detections: t.Optional[t.List[str]] = None
+
+
+class PipelineSpecification(PythonScript, Schedulable, arbitrary_types_allowed=True):
     """A pipeline specification."""
 
     metrics: InlineMetricSpecifications = {}
@@ -191,21 +196,19 @@ class PipelineSpecification(PythonScript, Schedulable):
             enable_stage: bool = True,
         ) -> t.Any:
             """Injects the pipeline context into the main function."""
-            context.execution_context.set(
-                context.ExecutionContext(
-                    pipeline_name=self.name,
-                    dataset_name=self.dataset_name,
-                    destination=destination,
-                    staging=staging,
-                    select=select,
-                    exclude=exclude,
-                    force_replace=force_replace,
-                    intercept_sources=set() if intercept_sources else None,
-                    enable_stage=enable_stage and bool(staging),
-                    applicator=self.apply,
-                )
-            )
-            return main()
+            with context.execution_context_manager(
+                pipeline_name=self.name,
+                dataset_name=self.dataset_name,
+                destination=destination,
+                staging=staging,
+                select=select,
+                exclude=exclude,
+                force_replace=force_replace,
+                intercept_sources=set() if intercept_sources else None,
+                enable_stage=enable_stage and bool(staging),
+                applicator=self.apply,
+            ):
+                return main()
 
         return _injector
 
@@ -219,7 +222,7 @@ class PipelineSpecification(PythonScript, Schedulable):
         intercept_sources: bool = False,
         enable_stage: bool = True,
     ) -> t.Any:
-        rv = self.main(
+        return self.main(
             destination,
             staging,
             select,
@@ -228,8 +231,6 @@ class PipelineSpecification(PythonScript, Schedulable):
             intercept_sources,
             enable_stage,
         )
-        print(self.metric_state)
-        return rv
 
     @classmethod
     def from_config(

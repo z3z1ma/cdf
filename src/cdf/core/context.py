@@ -1,7 +1,12 @@
-"""The context module provides thread-safe context variables and injection mechanisms."""
+"""The context module provides thread-safe context variables and injection mechanisms.
+
+It facilitates communication between specifications and runtime modules.
+"""
 
 import typing as t
+from contextlib import contextmanager
 from contextvars import ContextVar
+from pathlib import Path
 
 import dlt
 from dlt.common.configuration.container import Container
@@ -58,6 +63,45 @@ class ExecutionContext(t.NamedTuple):
 
 
 execution_context: ContextVar[ExecutionContext] = ContextVar("execution_context")
+
+
+@contextmanager
+def execution_context_manager(
+    pipeline_name: str,
+    dataset_name: str,
+    destination: TDestinationReferenceArg,
+    staging: t.Optional[TDestinationReferenceArg] = None,
+    select: t.Optional[t.List[str]] = None,
+    exclude: t.Optional[t.List[str]] = None,
+    force_replace: bool = False,
+    intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None,
+    enable_stage: bool = True,
+    applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident,
+) -> t.Iterator[None]:
+    """A context manager for setting the execution context.
+
+    This allows the cdf library to set the context prior to running the pipeline which is
+    ultimately evaluating user code. It is consumed by the cdf core runtime pipeline and set
+    by the pipeline specification.
+    """
+    token = execution_context.set(
+        ExecutionContext(
+            pipeline_name,
+            dataset_name,
+            destination,
+            staging,
+            select,
+            exclude,
+            force_replace,
+            intercept_sources,
+            enable_stage,
+            applicator,
+        )
+    )
+    try:
+        yield
+    finally:
+        execution_context.reset(token)
 
 
 class CDFConfigProvider(ConfigProvider):

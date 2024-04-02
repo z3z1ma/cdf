@@ -1,3 +1,5 @@
+"""The runtime pipeline module is responsible for creating and managing pipelines."""
+
 import fnmatch
 import typing as t
 
@@ -169,6 +171,7 @@ PipelineFactory = t.Callable[..., Pipeline]
 
 
 def pipeline() -> CDFPipeline:
+    """Creates a cdf pipeline which is a wrapper around a dlt pipeline."""
     execution_context = context.execution_context.get()
     pipe_options: dict = {"pipeline_name": execution_context.pipeline_name}
     for k, v in (
@@ -181,8 +184,12 @@ def pipeline() -> CDFPipeline:
 
     # lets set pipelines_dir internally?
     # lets standardize import_schema_path and export_schema_path leveraging fsspec
+    # we should always export schemas to fsspec
+    # we should only import if the schema is configured as "pinned = true"
 
-    return CDFPipeline.from_pipeline(pipeline=dlt.pipeline(**pipe_options))
+    return CDFPipeline.from_pipeline(
+        pipeline=dlt.pipeline(**pipe_options),
+    )
 
 
 __all__ = ["pipeline"]

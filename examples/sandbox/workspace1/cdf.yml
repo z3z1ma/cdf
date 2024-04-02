@@ -8,8 +8,11 @@ default:
       metrics:
         "*":
           - entrypoint: cdf.builtin.metrics:count
+          - entrypoint: cdf.builtin.metrics:max_value
+            options:
+              key: zip_code
       options:
-        progress: log
+        progress: ~
         full_refresh: false
         loader_file_format: insert_values
         runtime:

@@ -58,6 +58,7 @@ class ContinuousDataFramework:
         return load_filesystem_provider(fs.provider, options=fs.options.to_dict())
 
     # TODO: we just need to pass the filepath here?
+    # well previously we generated the Config object inside a user defined sink function...
     @cached_property
     def sqlmesh_context(self) -> t.Any: ...
 
