@@ -10,10 +10,12 @@ import sys
 import typing as t
 from contextlib import suppress
 from pathlib import Path
+from threading import Lock
 
 import pydantic
 from croniter import croniter
 
+import cdf.core.constants as c
 import cdf.core.logger as logger
 
 T = t.TypeVar("T")
@@ -227,6 +229,9 @@ class InstallableRequirements(pydantic.BaseModel):
 class PythonScript(WorkspaceComponent, InstallableRequirements):
     """A python script component."""
 
+    _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
+    """A lock for ensuring thread safety."""
+
     @pydantic.model_validator(mode="after")
     def _setup(self):
         """Import the entrypoint and register the component."""
@@ -246,7 +251,7 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
 
         output = os.path.join(outputdir, f"{name}.pex")
         try:
-            # --inject-env in pex can add the __cdf_name__ variable?
+            # --inject-env in pex can add the c.CDF_MAIN variable?
             # or really any other variable that should be injected
             pex.main(["-o", output, ".", *self.requirements])
         except SystemExit as e:
@@ -275,14 +280,18 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
             )
             run_name = ".".join(parts)
             try:
-                return runpy.run_path(
-                    str(self.path),
-                    run_name=run_name,
-                    init_globals={
-                        "__file__": str(self.path),
-                        "__cdf_name__": run_name,
-                    },
-                )
+                with self._lock:
+                    return runpy.run_path(
+                        str(self.path),
+                        run_name=run_name,
+                        init_globals={
+                            "__file__": str(self.path),
+                            c.CDF_MAIN: run_name,
+                        },
+                    )
+            except Exception as e:
+                logger.exception(f"Error running script {self.name}: {e}")
+                raise
             finally:
                 sys.path = origpath
 

@@ -10,7 +10,7 @@ import fsspec
 from cdf.core.configuration import load_config
 from cdf.core.feature_flag import SupportsFFs, load_feature_flag_provider
 from cdf.core.filesystem import load_filesystem_provider
-from cdf.core.specification import PipelineSpecification
+from cdf.core.specification import PipelineSpecification, SinkSpecification
 from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
@@ -75,6 +75,19 @@ class ContinuousDataFramework:
                     name,
                     root=self.root,
                     config=self.configuration["pipelines"][name],
+                )
+            )
+        except Exception as e:
+            return M.error(e)
+
+    def get_sink(self, name: str) -> M.Result[SinkSpecification, Exception]:
+        """Get a sink by name."""
+        try:
+            return M.ok(
+                SinkSpecification.from_config(
+                    name,
+                    root=self.root,
+                    config=self.configuration["sinks"][name],
                 )
             )
         except Exception as e:

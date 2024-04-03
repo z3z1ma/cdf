@@ -17,4 +17,5 @@ default:
         loader_file_format: insert_values
         runtime:
           dlthub_telemetry: false
-
+  sinks:
+    local: {}

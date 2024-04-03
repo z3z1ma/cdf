@@ -6,3 +6,6 @@ CDF_ENVIRONMENT = "CDF_ENVIRONMENT"
 
 DEFAULT_ENVIRONMENT = "dev"
 """Default environment for the project."""
+
+CDF_MAIN = "__cdf_main__"
+"""A sentinel value that will match the __name__ attribute of a module being executed by CDF."""

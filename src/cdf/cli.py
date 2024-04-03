@@ -5,6 +5,7 @@ import typing as t
 from contextvars import Token
 from pathlib import Path
 
+import dlt
 import rich
 import typer
 
@@ -71,6 +72,14 @@ def pipeline(
             help="Force the write disposition to replace ignoring state. Useful to force a reload of incremental resources.",
         ),
     ] = False,
+    no_stage: t.Annotated[
+        bool,
+        typer.Option(
+            ...,
+            "--no-stage",
+            help="Do not stage the data in the staging destination of the sink even if defined.",
+        ),
+    ] = False,
 ) -> t.Any:
     """:inbox_tray: Ingest data from a [b blue]pipeline[/b blue] into a data store where it can be [b red]Transformed[/b red].
 
@@ -81,20 +90,28 @@ def pipeline(
         select: The resources to ingest as a sequence of glob patterns.
         exclude: The resources to exclude as a sequence of glob patterns.
         force_replace: Whether to force replace the write disposition.
+        no_stage: Whether to disable staging the data in the sink.
     """
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         source, destination = pipeline_to_sink.split(":", 1)
-        spec = workspace.get_pipeline(source).unwrap()
+        pipe = workspace.get_pipeline(source).unwrap()
+        sink, stage = (
+            workspace.get_sink(destination)
+            .map(lambda s: s.sink_ingest())
+            .unwrap_or((destination, None))
+        )
         exports = execute_pipeline_specification(
-            spec,
-            destination,
+            pipe,
+            sink,
+            stage,
             select=select,
             exclude=exclude,
             force_replace=force_replace,
+            enable_stage=not no_stage,
         )
         typer.echo(
-            spec.runtime_metrics if spec.runtime_metrics else "No metrics captured"
+            pipe.runtime_metrics if pipe.runtime_metrics else "No metrics captured"
         )
         return (
             exports.unwrap()
