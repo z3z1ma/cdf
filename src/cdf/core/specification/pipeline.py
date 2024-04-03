@@ -162,7 +162,7 @@ class PipelineSpecification(PythonScript, Schedulable, arbitrary_types_allowed=T
         return self
 
     @property
-    def metric_state(self) -> types.MappingProxyType[str, t.Dict[str, Metric]]:
+    def runtime_metrics(self) -> types.MappingProxyType[str, t.Dict[str, Metric]]:
         """Get a read only view of the runtime metrics."""
         return types.MappingProxyType(self._metric_state)
 

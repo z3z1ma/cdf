@@ -50,21 +50,21 @@ def pipeline(
             help="The source and destination of the pipeline separated by a colon."
         ),
     ],
-    resources: t.List[str] = typer.Option(
+    select: t.List[str] = typer.Option(
         ...,
-        "-r",
-        "--resource",
+        "-s",
+        "--select",
         default_factory=lambda: [],
         help="Glob pattern for resources to run. Can be specified multiple times.",
     ),
-    excludes: t.List[str] = typer.Option(
+    exclude: t.List[str] = typer.Option(
         ...,
         "-x",
         "--exclude",
         default_factory=lambda: [],
         help="Glob pattern for resources to exclude. Can be specified multiple times.",
     ),
-    replace: t.Annotated[
+    force_replace: t.Annotated[
         bool,
         typer.Option(
             ...,
@@ -82,7 +82,7 @@ def pipeline(
         source_to_dest: The source and destination of the pipeline separated by a colon.
         resources: The resources to ingest as a sequence of glob patterns.
         excludes: The resources to exclude as a sequence of glob patterns.
-        replace: Whether to force replace the write disposition.
+        force_replace: Whether to force replace the write disposition.
     """
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
@@ -91,11 +91,13 @@ def pipeline(
         exports = execute_pipeline_specification(
             spec,
             destination,
-            select=resources,
-            exclude=excludes,
-            force_replace=replace,
+            select=select,
+            exclude=exclude,
+            force_replace=force_replace,
         )
-        typer.echo(spec.metric_state if spec.metric_state else "No metrics captured")
+        typer.echo(
+            spec.runtime_metrics if spec.runtime_metrics else "No metrics captured"
+        )
         return (
             exports.unwrap()
         )  # maybe a function which searches for LoadInfo objects from the exports

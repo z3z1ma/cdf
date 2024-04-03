@@ -34,6 +34,8 @@
 
 CDF (Continuous Data Framework) is an integrated framework designed to manage data across the entire lifecycle, from ingestion through transformation to publishing. It is built on top of two open-source projects, `sqlmesh` and `dlt`, providing a unified interface for complex data operations. CDF simplifies data engineering workflows, offering scalable solutions from small to large projects through an opinionated project structure that supports both multi-workspace and single-workspace layouts.
 
+Sources are consumed in pipelines. Pipelines procedurally describe the extraction of one or more sources into a single dataset. The combination of the pipeline script and some static configuration comprises what is called a specification. A pipeline is executed with a sink that is externally injected. Sinks describe a single logical location. This means pipelines are parameterized and the same specification can be reused across different sinks. Sinks are scripts which export an ingest variable that pipelines use and a transform variable which models use. Models are transformations of data within a sink.
+
 ## Features
 
 - **Unified Data Management**: Seamlessly manage data pipelines, transformations, and publishing within a single framework.
