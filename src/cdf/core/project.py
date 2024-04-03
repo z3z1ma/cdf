@@ -49,13 +49,18 @@ class ContinuousDataFramework:
     def feature_flag_provider(self) -> SupportsFFs:
         """The feature flag provider."""
         ff = self.configuration["feature_flags"]
-        return load_feature_flag_provider(ff.provider, options=ff.options.to_dict())
+        options = ff.setdefault("options", {})
+        return load_feature_flag_provider(
+            ff.provider, options=options.to_dict(), fs=self.filesystem
+        )
 
     @cached_property
     def filesystem(self) -> fsspec.AbstractFileSystem:
         """The filesystem provider."""
         fs = self.configuration["filesystem"]
-        return load_filesystem_provider(fs.provider, options=fs.options.to_dict())
+        options = fs.setdefault("options", {})
+        options.setdefault("auto_mkdir", True)
+        return load_filesystem_provider(fs.provider, options=options.to_dict())
 
     # TODO: we just need to pass the filepath here?
     # well previously we generated the Config object inside a user defined sink function...

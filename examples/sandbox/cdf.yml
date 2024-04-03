@@ -3,14 +3,12 @@ default:
   workspaces:
   - workspace1
   filesystem:
-    provider: local
-    options:
-      path: /tmp
+    provider: file
+    root: _storage
 prod:
-  feature_flags:
-    provider: harness
-    options:
-      api_key: "@format {env[HOME]}"
+  filesystem:
+    provider: gcs
+    root: harness_analytics_staging/cdf_test_1
 dev:
   feature_flags:
     provider: file

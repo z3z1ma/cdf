@@ -2,10 +2,10 @@
 
 import json
 import typing as t
-from pathlib import Path
 from threading import Lock
 
 import dlt
+import fsspec
 from dlt.common.configuration import with_config
 
 if t.TYPE_CHECKING:
@@ -19,12 +19,13 @@ WLock = Lock()
 @with_config(sections=("feature_flags", "options"))
 def create_file_provider(
     path: str = dlt.config.value,
+    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> "SupportsFFs":
     def _processor(source: "DltSource") -> "DltSource":
-        if not Path(path).exists():
+        if not fs.exists(path):
             flags = {}
         else:
-            with open(path) as file:
+            with fs.open(path) as file:
                 flags = json.load(file)
 
         source_name = source.name
@@ -32,7 +33,7 @@ def create_file_provider(
             key = f"{source_name}.{resource_name}"
             resource.selected = flags.setdefault(key, False)
 
-        with WLock, open(path, "w") as file:
+        with WLock, fs.open(path, "w") as file:
             json.dump(flags, file, indent=2)
 
         return source

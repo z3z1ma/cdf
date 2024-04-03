@@ -2,6 +2,7 @@
 
 import typing as t
 
+import fsspec
 from dlt.common.configuration import with_config
 
 import cdf.core.logger as logger
@@ -31,15 +32,9 @@ class NoopProviderOptions(t.TypedDict): ...
 
 @t.overload
 def load_feature_flag_provider(
-    provider: None = None,
-    options: t.Optional[NoopProviderOptions] = None,
-) -> SupportsFFs: ...
-
-
-@t.overload
-def load_feature_flag_provider(
     provider: t.Literal["noop"] = "noop",
     options: t.Optional[NoopProviderOptions] = None,
+    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
@@ -51,6 +46,7 @@ class FileProviderOptions(t.TypedDict):
 def load_feature_flag_provider(
     provider: t.Literal["file"] = "file",
     options: t.Optional[FileProviderOptions] = None,
+    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
@@ -66,6 +62,7 @@ class HarnessProviderOptions(t.TypedDict):
 def load_feature_flag_provider(
     provider: t.Literal["harness"] = "harness",
     options: t.Optional[HarnessProviderOptions] = None,
+    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
@@ -77,12 +74,13 @@ class LaunchDarklyProviderOptions(t.TypedDict):
 def load_feature_flag_provider(
     provider: t.Literal["launchdarkly"] = "launchdarkly",
     options: t.Optional[LaunchDarklyProviderOptions] = None,
+    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
 @with_config(sections=("feature_flags",))
 def load_feature_flag_provider(
-    provider: t.Optional[t.Literal["file", "harness", "launchdarkly", "noop"]] = None,
+    provider: t.Literal["file", "harness", "launchdarkly", "noop"] = "noop",
     options: t.Optional[
         t.Union[
             NoopProviderOptions,
@@ -91,11 +89,13 @@ def load_feature_flag_provider(
             LaunchDarklyProviderOptions,
         ]
     ] = None,
+    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs:
     opts = t.cast(dict, options or {})
     if provider == "file":
         logger.info("Using file-based feature flags")
-        return create_file_provider(**opts)
+        assert fs, "File-based feature flags require a filesystem"
+        return create_file_provider(**opts, fs=fs)
     if provider == "harness":
         logger.info("Using Harness feature flags")
         return create_harness_provider(**opts)
