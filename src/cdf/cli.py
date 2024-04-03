@@ -44,11 +44,9 @@ def init(ctx: typer.Context):
 @app.command(rich_help_panel="Integrate")
 def pipeline(
     ctx: typer.Context,
-    source_to_dest: t.Annotated[
+    pipeline_to_sink: t.Annotated[
         str,
-        typer.Argument(
-            help="The source and destination of the pipeline separated by a colon."
-        ),
+        typer.Argument(help="The pipeline and sink separated by a colon."),
     ],
     select: t.List[str] = typer.Option(
         ...,
@@ -79,14 +77,14 @@ def pipeline(
     \f
     Args:
         ctx: The CLI context.
-        source_to_dest: The source and destination of the pipeline separated by a colon.
-        resources: The resources to ingest as a sequence of glob patterns.
-        excludes: The resources to exclude as a sequence of glob patterns.
+        pipeline_to_sink: The pipeline and sink separated by a colon.
+        select: The resources to ingest as a sequence of glob patterns.
+        exclude: The resources to exclude as a sequence of glob patterns.
         force_replace: Whether to force replace the write disposition.
     """
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
-        source, destination = source_to_dest.split(":", 1)
+        source, destination = pipeline_to_sink.split(":", 1)
         spec = workspace.get_pipeline(source).unwrap()
         exports = execute_pipeline_specification(
             spec,
