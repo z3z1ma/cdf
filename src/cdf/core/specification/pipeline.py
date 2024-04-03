@@ -11,10 +11,8 @@ from pathlib import Path
 import dlt
 import dynaconf
 import pydantic
-from dlt.common.destination import TDestinationReferenceArg
 from dlt.common.typing import TDataItem
 
-import cdf.core.context as context
 import cdf.core.logger as logger
 from cdf.core.specification.base import PythonEntrypoint, PythonScript, Schedulable
 

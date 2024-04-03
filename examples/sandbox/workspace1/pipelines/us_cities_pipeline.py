@@ -26,6 +26,7 @@ def us_cities():
 
 if cdf.execute():
     pipeline = cdf.pipeline()
+
     load_info = pipeline.run(us_cities(), table_name="cities")
 
     print(load_info)
