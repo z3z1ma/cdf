@@ -275,7 +275,7 @@ def execute_pipeline_specification(
     force_replace: bool = False,
     intercept_sources: bool = False,
     enable_stage: bool = True,
-    quiet: bool = True,
+    quiet: bool = False,
 ) -> M.Result[t.Any, Exception]:
     """Executes a pipeline specification."""
     with runtime_context(

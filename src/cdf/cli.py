@@ -1,13 +1,14 @@
 """CLI for cdf."""
 
 import typing as t
+from contextvars import Token
 from pathlib import Path
 
 import rich
 import typer
 
 import cdf.core.context as context
-from cdf.core.project import get_project
+from cdf.core.project import Workspace, get_project
 from cdf.core.runtime import execute_pipeline_specification
 
 app = typer.Typer(
@@ -25,9 +26,12 @@ def main(
     ctx: typer.Context,
     workspace: str,
     path: Path = typer.Option(".", "--path", "-p", help="Path to the project."),
+    debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug mode."),
 ):
-    """CDF is a data pipeline framework."""
+    """CDF (continuous data framework) is a framework for end to end data processing."""
     ctx.obj = workspace, path
+    if debug:
+        context.debug_mode.set(True)
 
 
 @app.command()
@@ -79,12 +83,7 @@ def pipeline(
         excludes: The resources to exclude as a sequence of glob patterns.
         replace: Whether to force replace the write disposition.
     """
-    workspace_name, path = ctx.obj
-    workspace = (
-        get_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
-    )
-    context.inject_cdf_config_provider(workspace)
-    token = context.active_project.set(workspace)
+    workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         source, destination = source_to_dest.split(":", 1)
         spec = workspace.get_pipeline(source).unwrap()
@@ -125,13 +124,7 @@ def discover(
         pipeline: The pipeline in which to discover resources.
         no_quiet: Whether to suppress the pipeline stdout.
     """
-    workspace_name, path = ctx.obj
-    workspace = (
-        get_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
-    )
-    context.inject_cdf_config_provider(workspace)
-    token = context.active_project.set(workspace)
-
+    workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         spec = workspace.get_pipeline(pipeline).unwrap()
         for i, source in enumerate(
@@ -146,6 +139,16 @@ def discover(
                 )
     finally:
         context.active_project.reset(token)
+
+
+def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "Token"]:
+    """Unwrap the workspace from the context."""
+    workspace = (
+        get_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
+    )
+    context.inject_cdf_config_provider(workspace)
+    token = context.active_project.set(workspace)
+    return workspace, token
 
 
 if __name__ == "__main__":
