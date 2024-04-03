@@ -18,7 +18,7 @@ conn.load_extension("httpfs")
 
 ingest = dlt.destinations.duckdb(conn)
 
-staging = dlt.destinations.filesystem(
+stage = dlt.destinations.filesystem(
     "file://_storage", layout="{table_name}/{load_id}.{file_id}.{ext}.gz"
 )
 

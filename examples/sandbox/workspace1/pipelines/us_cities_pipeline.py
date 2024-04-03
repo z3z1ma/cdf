@@ -15,7 +15,7 @@ import cdf
 from .test1.chore import foo
 
 
-@dlt.resource(write_disposition="replace", standalone=True)
+@dlt.resource(write_disposition="append", standalone=True)
 def us_cities():
     """Load US cities"""
     foo()

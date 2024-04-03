@@ -26,7 +26,7 @@ class SinkSpecification(WorkspaceComponent, InstallableRequirements):
 
     ingest_config: str = "ingest"
     """The variable which holds the ingest configuration (a dlt destination)."""
-    staging_config: str = "staging"
+    stage_config: str = "stage"
     """The variable which holds the staging configuration (a dlt destination)."""
     transform_config: str = "transform"
     """The variable which holds the transform configuration (a sqlmesh config)."""
@@ -90,7 +90,7 @@ class SinkSpecification(WorkspaceComponent, InstallableRequirements):
         """Get the ingest configuration."""
         if self._exports is None:
             self._exports = self._run()
-        return self._exports[self.ingest_config], self._exports.get(self.staging_config)
+        return self._exports[self.ingest_config], self._exports.get(self.stage_config)
 
     def sink_transform(self) -> GatewayConfig:
         """Get the transform configuration."""
