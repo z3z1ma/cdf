@@ -1,10 +1,3 @@
-"""
-SINK (
-    name local,
-    description 'Local sink to DuckDB'
-);
-"""
-
 import dlt
 import duckdb
 from sqlmesh.core.config import GatewayConfig, parse_connection_config

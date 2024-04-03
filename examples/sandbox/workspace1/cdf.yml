@@ -19,3 +19,4 @@ default:
           dlthub_telemetry: false
   sinks:
     local: {}
+    fs: {}
