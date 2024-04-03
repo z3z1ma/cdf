@@ -1,9 +1,10 @@
 """The runtime pipeline module is responsible for executing pipelines from pipeline specifications."""
 
 import fnmatch
+import os
 import typing as t
-from contextlib import contextmanager
-from contextvars import ContextVar
+from contextlib import contextmanager, nullcontext, redirect_stdout
+from contextvars import ContextVar, copy_context
 
 import dlt
 from dlt.common.destination import TDestinationReferenceArg, TLoaderFileFormat
@@ -126,17 +127,7 @@ class RuntimePipeline(Pipeline):
                 schema_contract,
             )
 
-        execution_context = CONTEXT.get()
-        if execution_context.intercept_sources is not None:
-            extract_step = Extract(
-                self._schema_storage,
-                self._normalize_storage_config(),
-                self.collector,
-                original_data=data,
-            )
-            for source in sources:
-                execution_context.intercept_sources.add(source)
-            return self._get_step_info(extract_step)
+        runtime_context = CONTEXT.get()
 
         def _apply_filters(
             source: dlt.sources.DltSource, resource_patterns: t.List[str], invert: bool
@@ -151,26 +142,37 @@ class RuntimePipeline(Pipeline):
                 ]
             )
 
-        if execution_context.select:
+        if runtime_context.select:
             for i, source in enumerate(sources):
                 sources[i] = _apply_filters(
-                    source, execution_context.select, invert=False
+                    source, runtime_context.select, invert=False
                 )
         else:
             active_project = context.active_project.get()
             for i, source in enumerate(sources):
                 sources[i] = active_project.feature_flag_provider(source)
 
-        if execution_context.exclude:
+        if runtime_context.exclude:
             for i, source in enumerate(sources):
                 sources[i] = _apply_filters(
-                    source, execution_context.exclude, invert=True
+                    source, runtime_context.exclude, invert=True
                 )
 
-        for i, source in enumerate(sources):
-            sources[i] = execution_context.applicator(source)
+        if runtime_context.intercept_sources is not None:
+            extract_step = Extract(
+                self._schema_storage,
+                self._normalize_storage_config(),
+                self.collector,
+                original_data=data,
+            )
+            for source in sources:
+                runtime_context.intercept_sources.add(source)
+            return self._get_step_info(extract_step)
 
-        if execution_context.force_replace:
+        for i, source in enumerate(sources):
+            sources[i] = runtime_context.applicator(source)
+
+        if runtime_context.force_replace:
             write_disposition = "replace"
 
         return super().extract(
@@ -205,17 +207,15 @@ class RuntimePipeline(Pipeline):
                 " cdf will automatically manage the dataset name for you and relies on deterministic naming."
             )
 
-        execution_context = CONTEXT.get()
-        if execution_context.force_replace:
+        runtime_context = CONTEXT.get()
+        if runtime_context.force_replace:
             write_disposition = "replace"
 
         return super().run(
             data,
-            destination=execution_context.destination,
-            staging=(
-                execution_context.staging if execution_context.enable_stage else None
-            ),
-            dataset_name=dataset_name or execution_context.dataset_name,
+            destination=runtime_context.destination,
+            staging=(runtime_context.staging if runtime_context.enable_stage else None),
+            dataset_name=dataset_name or runtime_context.dataset_name,
             table_name=table_name,
             write_disposition=write_disposition,
             columns=columns,
@@ -246,7 +246,7 @@ class RuntimePipeline(Pipeline):
         )
 
 
-def pipeline_factory(**overrides: t.Any) -> RuntimePipeline:
+def pipeline_factory() -> RuntimePipeline:
     """Creates a cdf pipeline. This is used in lieu of dlt.pipeline. in user code.
 
     A cdf pipeline is a wrapper around a dlt pipeline that leverages injected information
@@ -259,7 +259,8 @@ def pipeline_factory(**overrides: t.Any) -> RuntimePipeline:
         staging=runtime.staging,
         dataset_name=runtime.dataset_name,
     )
-    options.update(overrides)
+    # TODO: contribute a PR to expose an _impl_cls argument in dlt.pipeline
+    # https://github.com/dlt-hub/dlt/pull/1176
     return RuntimePipeline.from_pipeline(
         pipeline=dlt.pipeline(**options),
     )
@@ -274,7 +275,8 @@ def execute_pipeline_specification(
     force_replace: bool = False,
     intercept_sources: bool = False,
     enable_stage: bool = True,
-) -> M.Result[t.Dict[str, t.Any], Exception]:
+    quiet: bool = True,
+) -> M.Result[t.Any, Exception]:
     """Executes a pipeline specification."""
     with runtime_context(
         pipeline_name=spec.name,
@@ -288,10 +290,22 @@ def execute_pipeline_specification(
         enable_stage=enable_stage and bool(staging),
         applicator=spec.apply,
     ):
-        try:
-            return M.ok(spec.main())
-        except Exception as e:
-            return M.error(e)
+        context_snapshot = copy_context()
+    null = open(os.devnull, "w")
+    maybe_redirect = redirect_stdout(null) if quiet else nullcontext()
+    if intercept_sources:
+        with maybe_redirect:
+            context_snapshot.run(spec.main)
+        null.close()
+        return M.ok(context_snapshot[CONTEXT].intercept_sources)
+    try:
+        with maybe_redirect:
+            exports = context_snapshot.run(spec.main)
+        return M.ok(exports)
+    except Exception as e:
+        return M.error(e)
+    finally:
+        null.close()
 
 
 __all__ = ["pipeline_factory", "execute_pipeline_specification"]

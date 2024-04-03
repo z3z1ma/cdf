@@ -1,2 +1,2 @@
 def foo():
-    print("foo")
+    _ = 1
