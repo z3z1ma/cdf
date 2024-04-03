@@ -1,5 +1,6 @@
 """CLI for cdf."""
 
+import itertools
 import typing as t
 from contextvars import Token
 from pathlib import Path
@@ -137,6 +138,58 @@ def discover(
                 console.print(
                     f"{i}.{j}: {resource.name} (enabled: {resource.selected})"
                 )
+    finally:
+        context.active_project.reset(token)
+
+
+@app.command(rich_help_panel="Inspect")
+def head(
+    ctx: typer.Context,
+    pipeline: t.Annotated[str, typer.Argument(help="The pipeline to inspect.")],
+    resource: t.Annotated[str, typer.Argument(help="The resource to inspect.")],
+    n: t.Annotated[int, typer.Option("-n", "--rows")] = 5,
+) -> None:
+    """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]pipeline[/b blue]. Defaults to [cyan]5[/cyan].
+
+    This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        pipeline: The pipeline to inspect.
+        resource: The resource to inspect.
+        n: The number of rows to print.
+
+    Raises:
+        typer.BadParameter: If the resource is not found in the pipeline.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        spec = workspace.get_pipeline(pipeline).unwrap()
+        target = next(
+            filter(
+                lambda r: r.name == resource,
+                (
+                    resource
+                    for src in execute_pipeline_specification(
+                        spec, "dummy", intercept_sources=True, quiet=True
+                    ).unwrap()
+                    for resource in src.resources.values()
+                ),
+            ),
+            None,
+        )
+        if target is None:
+            raise typer.BadParameter(
+                f"Resource {resource} not found in pipeline {pipeline}.",
+                param_hint="resource",
+            )
+        list(
+            map(
+                lambda it: console.print(it[1]),
+                itertools.takewhile(lambda it: it[0] < n, enumerate(target)),
+            )
+        )
     finally:
         context.active_project.reset(token)
 
