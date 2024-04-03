@@ -256,7 +256,7 @@ def pipeline_factory() -> RuntimePipeline:
     options = dict(
         pipeline_name=runtime.pipeline_name,
         destination=runtime.destination,
-        staging=runtime.staging,
+        staging=runtime.staging if runtime.enable_stage else None,
         dataset_name=runtime.dataset_name,
     )
     # TODO: contribute a PR to expose an _impl_cls argument in dlt.pipeline
