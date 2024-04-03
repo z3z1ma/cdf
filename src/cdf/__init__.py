@@ -1,10 +1,15 @@
 import pdb
 import sys
 import traceback
+import typing as t
 
 import cdf.core.constants as c
 import cdf.core.context as context
+from cdf.core.project import Project, get_project
 from cdf.core.runtime.pipeline import pipeline_factory as pipeline
+
+if t.TYPE_CHECKING:
+    from sqlmesh.core.config import GatewayConfig
 
 
 def execute() -> bool:
@@ -29,4 +34,14 @@ def execute() -> bool:
     return proceed
 
 
-__all__ = ["pipeline", "execute"]
+def get_gateway(project: Project, workspace: str, sink: str) -> "GatewayConfig":
+    """Get a sqlmesh gateway from a project sink."""
+    return (
+        project.get_workspace(workspace)
+        .bind(lambda w: w.get_sink(sink))
+        .map(lambda s: s.sink_transform())
+        .unwrap()
+    )
+
+
+__all__ = ["pipeline", "execute", "get_project", "get_gateway"]

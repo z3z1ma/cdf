@@ -62,11 +62,6 @@ class ContinuousDataFramework:
         options.setdefault("auto_mkdir", True)
         return load_filesystem_provider(fs.provider, options=options.to_dict())
 
-    # TODO: we just need to pass the filepath here?
-    # well previously we generated the Config object inside a user defined sink function...
-    @cached_property
-    def sqlmesh_context(self) -> t.Any: ...
-
     def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
         """Get a pipeline by name."""
         try:

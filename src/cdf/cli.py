@@ -5,7 +5,6 @@ import typing as t
 from contextvars import Token
 from pathlib import Path
 
-import dlt
 import rich
 import typer
 
