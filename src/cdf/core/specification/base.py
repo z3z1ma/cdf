@@ -264,7 +264,7 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
                 raise
 
     @property
-    def main(self) -> t.Callable[[], t.Any]:
+    def main(self) -> t.Callable[[], t.Dict[str, t.Any]]:
         """Get the entrypoint function."""
 
         def _run() -> t.Any:
@@ -297,7 +297,7 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
 
         return _run
 
-    def __call__(self) -> t.Any:
+    def __call__(self) -> t.Dict[str, t.Any]:
         """Run the script."""
         return self.main()
 

@@ -17,7 +17,7 @@ class SinkSpecification(PythonScript):
     """The variable which holds the transform configuration (a sqlmesh config)."""
 
     _exports: t.Optional[t.Dict[str, t.Any]] = None
-    """Contains the exports from the sink script."""
+    """Caches the exports from the sink script."""
 
     _folder: str = "sinks"
     """The folder where sink scripts are stored."""
