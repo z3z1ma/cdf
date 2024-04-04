@@ -63,10 +63,9 @@ def execute_notebook_specification(
                 timestamp=datetime.now().isoformat(),
                 epoch=time.time(),
                 params=merged_params,
+                ext=spec.path.suffix,
             )
-            logger.info(
-                f"Persisting output to {storage_path} with fs protocol {storage.protocol}"
-            )
+            logger.info(f"Persisting output to {storage_path} with {storage}")
             storage.put_file(output, storage_path)
         if not spec.keep_local_rendered:
             output.unlink()

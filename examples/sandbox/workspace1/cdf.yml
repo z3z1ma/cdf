@@ -28,4 +28,5 @@ default:
     hello: {}
     nested/hello: {}
   notebooks:
-    hello_world: {}
+    hello_world:
+      storage_path: reports/tests1/{name}/{timestamp}{ext}
