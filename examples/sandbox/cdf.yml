@@ -1,0 +1,21 @@
+default:
+  name: cdf-test
+  workspaces:
+  - workspace1
+  filesystem:
+    provider: file
+    root: _storage
+  feature_flags:
+    provider: file
+    options:
+      path: flags.json
+prod:
+  filesystem:
+    provider: gcs
+    root: harness_analytics_staging/cdf_test_1
+dev:
+  feature_flags:
+    provider: file
+    options:
+      path: dev_flags.json
+

@@ -1,4 +1,5 @@
 """Logger for CDF"""
+
 import contextlib
 import logging
 import typing as t
@@ -9,14 +10,14 @@ from rich.logging import RichHandler
 if t.TYPE_CHECKING:
 
     class Representable(t.Protocol):
-        def __str__(self) -> str:
-            ...
+        def __str__(self) -> str: ...
 
     class LogMethod(t.Protocol):
         """Protocol for logger methods."""
 
-        def __call__(self, msg: Representable, *args: t.Any, **kwargs: t.Any) -> None:
-            ...
+        def __call__(
+            self, msg: Representable, *args: t.Any, **kwargs: t.Any
+        ) -> None: ...
 
 
 __all__ = [
@@ -60,13 +61,11 @@ def configure(level: int | str = logging.INFO) -> None:
 
 
 @t.overload
-def create(name: t.Literal["cdf"] | None) -> CDFLoggerAdapter:
-    ...
+def create(name: t.Literal["cdf"] | None) -> CDFLoggerAdapter: ...
 
 
 @t.overload
-def create(name: str) -> logging.Logger:
-    ...
+def create(name: str) -> logging.Logger: ...
 
 
 def create(name: str | None = None) -> CDFLoggerAdapter | logging.Logger:

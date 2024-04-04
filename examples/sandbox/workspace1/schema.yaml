@@ -1,0 +1,12 @@
+- name: '"cdf"."us_cities_v0_1"."cities"'
+  columns:
+    zip_code: BIGINT
+    latitude: DOUBLE
+    longitude: DOUBLE
+    city: TEXT
+    state: TEXT
+    county: TEXT
+    _dlt_load_id: TEXT
+    _dlt_id: TEXT
+    latitude__v_text: TEXT
+    longitude__v_text: TEXT

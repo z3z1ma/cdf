@@ -1,0 +1,32 @@
+default:
+  name: workspace1
+  pipelines:
+    us_cities:
+      description: Get US city data
+      dataset_name: us_cities_v0_{version}
+      version: 1
+      metrics:
+        "*":
+          - entrypoint: cdf.builtin.metrics:count
+          - entrypoint: cdf.builtin.metrics:max_value
+            options:
+              key: zip_code
+      options:
+        progress: ~
+        full_refresh: false
+        loader_file_format: insert_values
+        runtime:
+          dlthub_telemetry: false
+  sinks:
+    local: {}
+    fs_sink.py: {}
+  publishers:
+    httpbin:
+      depends_on:
+        - mart.zips
+  scripts:
+    hello: {}
+    nested/hello: {}
+  notebooks:
+    hello_world:
+      storage_path: reports/tests1/{name}/{timestamp}{ext}

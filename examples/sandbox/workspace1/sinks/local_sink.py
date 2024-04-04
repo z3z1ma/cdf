@@ -1,9 +1,4 @@
-"""
-SINK (
-    name local,
-    description 'Local sink to DuckDB'
-);
-"""
+import atexit
 
 import dlt
 import duckdb
@@ -18,10 +13,14 @@ conn.load_extension("httpfs")
 
 ingest = dlt.destinations.duckdb(conn)
 
-staging = None
+stage = dlt.destinations.filesystem(
+    "file://_storage", layout="{table_name}/{load_id}.{file_id}.{ext}.gz"
+)
 
 transform = GatewayConfig(
     connection=parse_connection_config(
         {"type": "duckdb", "database": LOCALDB, "extensions": ["httpfs"]}
     )
 )
+
+atexit.register(conn.close)
