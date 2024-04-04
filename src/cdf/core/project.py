@@ -158,5 +158,4 @@ class Workspace(ContinuousDataFramework):
 def get_project(root: PathLike) -> Project:
     """Create a project from a root path."""
     config = load_config(root).unwrap()
-    config["root"]
     return Project(config["project"], workspaces=config["workspaces"])

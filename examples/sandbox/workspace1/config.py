@@ -1,14 +1,12 @@
 import getpass
-import os
 
 import sqlmesh
 
 import cdf
 
+project = cdf.find_nearest(__file__).unwrap()
 workspace = "workspace1"
-project = cdf.get_project(
-    os.path.dirname(__file__),
-).unwrap()
+
 config = sqlmesh.Config.model_validate(
     dict(
         gateways=cdf.get_gateways(project, workspace).unwrap(),

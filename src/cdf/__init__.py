@@ -3,6 +3,7 @@ import sys
 import traceback
 import typing as t
 from contextlib import suppress
+from pathlib import Path
 
 import cdf.core.constants as c
 import cdf.core.context as context
@@ -20,7 +21,15 @@ def find_nearest(path: PathLike) -> Project:
 
     Recursively searches for a project file in the parent directories.
     """
-    return get_project(path).unwrap()
+    project = None
+    path = Path(path)
+    while path != path.parent:
+        if p := get_project(path).unwrap_or(None):
+            project = p
+        path = path.parent
+    if project is None:
+        raise FileNotFoundError("No project found.")
+    return project
 
 
 def execute() -> bool:
