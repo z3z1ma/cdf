@@ -41,6 +41,17 @@ def init(ctx: typer.Context):
     typer.echo(ctx.obj)
 
 
+@app.command()
+def index(ctx: typer.Context):
+    """Print the project index."""
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        console.print(workspace.pipelines)
+        console.print(workspace.sinks)
+    finally:
+        context.active_project.reset(token)
+
+
 @app.command(rich_help_panel="Integrate")
 def pipeline(
     ctx: typer.Context,
