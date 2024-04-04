@@ -2,53 +2,77 @@
 
 It performs the following functions:
 - Executes the notebook.
-- Writes the output to a designated location in an fs provider.
+- Writes the output to a designated location in a storage provider.
+- Cleans up the rendered notebook if required.
 """
 
+import sys
 import time
 import typing as t
 from datetime import date, datetime
-from pathlib import Path
 
 import fsspec
+import papermill
 
 import cdf.core.logger as logger
 from cdf.core.specification import NotebookSpecification
 from cdf.types import M
 
+if t.TYPE_CHECKING:
+    from nbformat import NotebookNode
+
 
 def execute_notebook_specification(
     spec: NotebookSpecification,
-    fs: t.Optional[fsspec.AbstractFileSystem] = None,
+    storage: t.Optional[fsspec.AbstractFileSystem] = None,
     **params: t.Any,
-) -> M.Result[Path, Exception]:
+) -> M.Result["NotebookNode", Exception]:
     """Execute a notebook specification.
 
     Args:
         spec: The notebook specification to execute.
-        fs: The filesystem to use for persisting the output.
-        **params: The parameters to pass to the notebook.
+        storage: The filesystem to use for persisting the output.
+        **params: The parameters to pass to the notebook. Overrides the notebook spec parameters.
     """
+    origpath = sys.path[:]
+    sys.path = [
+        str(spec.workspace_path),
+        *sys.path,
+        str(spec.workspace_path.parent),
+    ]
     try:
-        path, resolved_params = spec._run(**params)
-        logger.info(
-            f"Successfully ran notebook {spec.path} with params {resolved_params} staged into {path}"
+        merged_params = {**spec.parameters, **params}
+        output = spec.path.parent.joinpath(
+            "_rendered", f"{spec.name}.{int(time.monotonic())}.ipynb"
         )
-        if fs and spec.write_path:
-            storage_path = spec.write_path.format(
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with spec._lock:
+            rv: "NotebookNode" = papermill.execute_notebook(
+                spec.path,
+                output,
+                merged_params,
+                cwd=spec.workspace_path,
+            )
+        logger.info(
+            f"Successfully ran notebook {spec.path} with params {merged_params} staged into {path}"
+        )
+        if storage and spec.storage_path:
+            storage_path = spec.storage_path.format(
                 name=spec.name,
                 date=date.today(),
                 timestamp=datetime.now().isoformat(),
                 epoch=time.time(),
-                params=resolved_params,
+                params=merged_params,
             )
             logger.info(
-                f"Persisting output to {storage_path} with fs protocol {fs.protocol}"
+                f"Persisting output to {storage_path} with fs protocol {storage.protocol}"
             )
-            fs.put_file(path, storage_path)
+            storage.put_file(output, storage_path)
         if not spec.keep_local_rendered:
-            path.unlink()
-        return M.ok(path)
+            output.unlink()
+        return M.ok(rv)
     except Exception as e:
-        logger.error(f"Error running script {spec.path}: {e}")
+        logger.error(f"Error running notebook {spec.path}: {e}")
         return M.error(e)
+    finally:
+        sys.path = origpath

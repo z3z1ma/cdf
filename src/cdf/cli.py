@@ -318,7 +318,7 @@ def execute_notebook(
             workspace.get_notebook(notebook)
             .bind(
                 lambda s: execute_notebook_specification(
-                    s, fs=workspace.filesystem, **json.loads(params)
+                    s, storage=workspace.filesystem, **json.loads(params)
                 )
             )
             .unwrap()
