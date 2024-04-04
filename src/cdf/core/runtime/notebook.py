@@ -54,7 +54,7 @@ def execute_notebook_specification(
                 cwd=spec.workspace_path,
             )
         logger.info(
-            f"Successfully ran notebook {spec.path} with params {merged_params} staged into {path}"
+            f"Successfully ran notebook {spec.path} with params {merged_params} rendered into {output}"
         )
         if storage and spec.storage_path:
             storage_path = spec.storage_path.format(
