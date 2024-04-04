@@ -24,3 +24,6 @@ default:
     httpbin:
       depends_on:
         - mart.zips
+  scripts:
+    hello: {}
+    nested/hello: {}

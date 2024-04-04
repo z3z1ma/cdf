@@ -147,21 +147,6 @@ class PipelineSpecification(PythonScript, Schedulable):
     _folder = "pipelines"
     """The folder where pipeline scripts are stored."""
 
-    @pydantic.model_validator(mode="before")
-    @classmethod
-    def _clean_path_and_name(cls, config: t.Any) -> t.Any:
-        if config["name"].endswith(".py"):
-            if "path" not in config:
-                config["path"] = config["name"]
-            config["name"] = config["name"][:-3]
-        else:
-            if "path" not in config:
-                if config["name"].endswith("_pipeline"):
-                    config["path"] = f"{config['name']}.py"
-                else:
-                    config["path"] = f"{config['name']}_pipeline.py"
-        return config
-
     @pydantic.model_validator(mode="after")
     def _setup(self: "PipelineSpecification") -> "PipelineSpecification":
         self.dataset_name = self.dataset_name.format(

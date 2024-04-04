@@ -13,6 +13,7 @@ from cdf.core.project import Workspace, load_project
 from cdf.core.runtime import (
     execute_pipeline_specification,
     execute_publisher_specification,
+    execute_script_specification,
 )
 
 app = typer.Typer(
@@ -38,15 +39,15 @@ def main(
         context.debug_mode.set(True)
 
 
-@app.command()
+@app.command(rich_help_panel="Project Management")
 def init(ctx: typer.Context):
-    """Initialize a new project."""
+    """:art: Initialize a new project."""
     typer.echo(ctx.obj)
 
 
-@app.command()
+@app.command(rich_help_panel="Project Management")
 def index(ctx: typer.Context):
-    """Print the project index."""
+    """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], [yellow]Publishers[/yellow][/b], and other components."""
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         console.print(workspace.pipelines)
@@ -56,7 +57,7 @@ def index(ctx: typer.Context):
         context.active_project.reset(token)
 
 
-@app.command(rich_help_panel="Integrate")
+@app.command(rich_help_panel="Data Management")
 def pipeline(
     ctx: typer.Context,
     pipeline_to_sink: t.Annotated[
@@ -109,32 +110,31 @@ def pipeline(
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         source, destination = pipeline_to_sink.split(":", 1)
-        pipe = workspace.get_pipeline(source).unwrap()
         sink, stage = (
             workspace.get_sink(destination)
             .map(lambda s: s.get_ingest_config())
             .unwrap_or((destination, None))
         )
-        exports = execute_pipeline_specification(
-            pipe,
-            sink,
-            stage,
-            select=select,
-            exclude=exclude,
-            force_replace=force_replace,
-            enable_stage=not no_stage,
-        )
-        console.print(
-            pipe.runtime_metrics if pipe.runtime_metrics else "No metrics captured"
-        )
         return (
-            exports.unwrap()
+            workspace.get_pipeline(source)
+            .bind(
+                lambda p: execute_pipeline_specification(
+                    p,
+                    sink,
+                    stage,
+                    select=select,
+                    exclude=exclude,
+                    force_replace=force_replace,
+                    enable_stage=not no_stage,
+                )
+            )
+            .unwrap()
         )  # maybe a function which searches for LoadInfo objects from the exports
     finally:
         context.active_project.reset(token)
 
 
-@app.command(rich_help_panel="Inspect")
+@app.command(rich_help_panel="Develop")
 def discover(
     ctx: typer.Context,
     pipeline: t.Annotated[
@@ -173,7 +173,7 @@ def discover(
         context.active_project.reset(token)
 
 
-@app.command(rich_help_panel="Inspect")
+@app.command(rich_help_panel="Develop")
 def head(
     ctx: typer.Context,
     pipeline: t.Annotated[str, typer.Argument(help="The pipeline to inspect.")],
@@ -225,7 +225,7 @@ def head(
         context.active_project.reset(token)
 
 
-@app.command(rich_help_panel="Integrate")
+@app.command(rich_help_panel="Data Management")
 def publish(
     ctx: typer.Context,
     sink_to_publisher: t.Annotated[
@@ -250,10 +250,40 @@ def publish(
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         source, publisher = sink_to_publisher.split(":", 1)
-        pub = workspace.get_publisher(publisher).unwrap()
-        return execute_publisher_specification(
-            pub, workspace.get_transform_context(source), skip_verification
-        ).unwrap()
+        return (
+            workspace.get_publisher(publisher)
+            .bind(
+                lambda p: execute_publisher_specification(
+                    p, workspace.get_transform_context(source), skip_verification
+                )
+            )
+            .unwrap()
+        )
+    finally:
+        context.active_project.reset(token)
+
+
+@app.command("execute-script", rich_help_panel="Utilities")
+def execute_script(
+    ctx: typer.Context,
+    script: t.Annotated[str, typer.Argument(help="The script to execute.")],
+    quiet: t.Annotated[bool, typer.Option(help="Suppress the script stdout.")] = False,
+) -> t.Any:
+    """:hammer: Execute a [b yellow]Script[/b yellow] within the context of the current workspace.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        script: The script to execute.
+        quiet: Whether to suppress the script stdout.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        return (
+            workspace.get_script(script)
+            .bind(lambda s: execute_script_specification(s, capture_stdout=quiet))
+            .unwrap()
+        )
     finally:
         context.active_project.reset(token)
 

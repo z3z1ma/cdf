@@ -39,21 +39,6 @@ class SinkSpecification(WorkspaceComponent, InstallableRequirements):
     _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
     """A lock to ensure the sink is thread safe."""
 
-    @pydantic.model_validator(mode="before")
-    @classmethod
-    def _clean_path_and_name(cls, config: t.Any) -> t.Any:
-        if config["name"].endswith(".py"):
-            if "path" not in config:
-                config["path"] = config["name"]
-            config["name"] = config["name"][:-3]
-        else:
-            if "path" not in config:
-                if config["name"].endswith("_sink"):
-                    config["path"] = f"{config['name']}.py"
-                else:
-                    config["path"] = f"{config['name']}_sink.py"
-        return config
-
     def _run(self) -> t.Dict[str, t.Any]:
         """Run the sink script."""
         if self._exports is not None:

@@ -7,12 +7,13 @@ It performs the following functions:
 """
 
 import datetime
+import typing as t
 
 import sqlmesh
 from sqlmesh.core.dialect import normalize_model_name
 
 import cdf.core.logger as logger
-from cdf.core.specification.publisher import PublisherSpecification
+from cdf.core.specification import PublisherSpecification
 from cdf.types import M
 
 
@@ -20,7 +21,7 @@ def execute_publisher_specification(
     spec: PublisherSpecification,
     transform_ctx: sqlmesh.Context,
     skip_verification: bool = False,
-):
+) -> M.Result[t.Dict[str, t.Any], Exception]:
     """Execute a publisher specification.
 
     Args:

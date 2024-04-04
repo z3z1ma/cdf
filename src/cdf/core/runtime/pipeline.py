@@ -292,6 +292,34 @@ def pipeline_factory() -> RuntimePipeline:
     )
 
 
+@t.overload
+def execute_pipeline_specification(
+    spec: PipelineSpecification,
+    destination: TDestinationReferenceArg,
+    staging: t.Optional[TDestinationReferenceArg] = None,
+    select: t.Optional[t.List[str]] = None,
+    exclude: t.Optional[t.List[str]] = None,
+    force_replace: bool = False,
+    intercept_sources: t.Literal[False] = False,
+    enable_stage: bool = True,
+    quiet: bool = False,
+) -> M.Result[t.Dict[str, t.Any], Exception]: ...
+
+
+@t.overload
+def execute_pipeline_specification(
+    spec: PipelineSpecification,
+    destination: TDestinationReferenceArg,
+    staging: t.Optional[TDestinationReferenceArg] = None,
+    select: t.Optional[t.List[str]] = None,
+    exclude: t.Optional[t.List[str]] = None,
+    force_replace: bool = False,
+    intercept_sources: t.Literal[True] = True,
+    enable_stage: bool = True,
+    quiet: bool = False,
+) -> M.Result[t.Set[dlt.sources.DltSource], Exception]: ...
+
+
 def execute_pipeline_specification(
     spec: PipelineSpecification,
     destination: TDestinationReferenceArg,
@@ -302,7 +330,10 @@ def execute_pipeline_specification(
     intercept_sources: bool = False,
     enable_stage: bool = True,
     quiet: bool = False,
-) -> M.Result[t.Any, Exception]:
+) -> t.Union[
+    M.Result[t.Dict[str, t.Any], Exception],
+    M.Result[t.Set[dlt.sources.DltSource], Exception],
+]:
     """Executes a pipeline specification."""
     with runtime_context(
         pipeline_name=spec.name,
@@ -324,7 +355,12 @@ def execute_pipeline_specification(
         with maybe_redirect:
             context_snapshot.run(spec.main)
         null.close()
-        return M.ok(context_snapshot[CONTEXT].intercept_sources)
+        return M.ok(
+            t.cast(
+                t.Set[dlt.sources.DltSource],
+                context_snapshot[CONTEXT].intercept_sources,
+            )
+        )
     try:
         with maybe_redirect:
             exports = context_snapshot.run(spec.main)

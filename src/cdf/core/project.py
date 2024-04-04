@@ -1,5 +1,6 @@
 """A wrapper around a CDF project."""
 
+import os
 import typing as t
 from collections import ChainMap
 from contextlib import suppress
@@ -17,6 +18,7 @@ from cdf.core.filesystem import load_filesystem_provider
 from cdf.core.specification import (
     PipelineSpecification,
     PublisherSpecification,
+    ScriptSpecification,
     SinkSpecification,
 )
 from cdf.types import M, PathLike
@@ -33,6 +35,26 @@ class ConfigurationOverlay(ChainMap[str, t.Any]):
             return self[name]
         except KeyError:
             raise AttributeError(f"No attribute {name}")
+
+    @staticmethod
+    def normalize_script(
+        config: t.MutableMapping[str, t.Any],
+        type_: str,
+    ) -> t.MutableMapping[str, t.Any]:
+        """Normalize a script based configuration."""
+        name = config["name"]
+        if name.endswith(".py"):
+            if "path" not in config:
+                config["path"] = name
+            name = name[:-3]
+        else:
+            if "path" not in config:
+                if name.endswith(f"_{type_}"):
+                    config["path"] = f"{name}.py"
+                else:
+                    config["path"] = f"{name}_{type_}.py"
+        config["name"] = name.replace(os.sep, "_")
+        return config
 
     if t.TYPE_CHECKING:
         maps: t.List[dynaconf.Dynaconf]
@@ -87,7 +109,8 @@ class ContinuousDataFramework:
             config.setdefault("name", key)
             config["workspace_path"] = self.root
             pipeline = PipelineSpecification.model_validate(
-                config, from_attributes=True
+                self.configuration.normalize_script(config, "pipeline"),
+                from_attributes=True,
             )
             pipelines[pipeline.name] = pipeline
         return pipelines
@@ -99,7 +122,10 @@ class ContinuousDataFramework:
         for key, config in self.configuration["sinks"].items():
             config.setdefault("name", key)
             config["workspace_path"] = self.root
-            sink = SinkSpecification.model_validate(config, from_attributes=True)
+            sink = SinkSpecification.model_validate(
+                self.configuration.normalize_script(config, "sink"),
+                from_attributes=True,
+            )
             sinks[sink.name] = sink
         return sinks
 
@@ -111,10 +137,25 @@ class ContinuousDataFramework:
             config.setdefault("name", key)
             config["workspace_path"] = self.root
             publisher = PublisherSpecification.model_validate(
-                config, from_attributes=True
+                self.configuration.normalize_script(config, "publisher"),
+                from_attributes=True,
             )
             publishers[publisher.name] = publisher
         return publishers
+
+    @cached_property
+    def scripts(self) -> t.Dict[str, ScriptSpecification]:
+        """Map of scripts by name."""
+        scripts = {}
+        for key, config in self.configuration["scripts"].items():
+            config.setdefault("name", key)
+            config["workspace_path"] = self.root
+            script = ScriptSpecification.model_validate(
+                self.configuration.normalize_script(config, "script"),
+                from_attributes=True,
+            )
+            scripts[script.name] = script
+        return scripts
 
     def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
         """Get a pipeline by name."""
@@ -134,6 +175,13 @@ class ContinuousDataFramework:
         """Get a publisher by name."""
         try:
             return M.ok(self.publishers[name])
+        except Exception as e:
+            return M.error(e)
+
+    def get_script(self, name: str) -> M.Result[ScriptSpecification, Exception]:
+        """Get a script by name."""
+        try:
+            return M.ok(self.scripts[name])
         except Exception as e:
             return M.error(e)
 
@@ -187,6 +235,12 @@ class Project(ContinuousDataFramework):
                 return self.get_workspace(name)
         return M.error(ValueError(f"No workspace found at {path}."))
 
+    @classmethod
+    def load(cls, root: PathLike) -> "Project":
+        """Create a project from a root path."""
+        config = load_config(root).unwrap()
+        return cls(config["project"], workspaces=config["workspaces"])
+
 
 class Workspace(ContinuousDataFramework):
     """A CDF workspace."""
@@ -205,8 +259,5 @@ class Workspace(ContinuousDataFramework):
         return self._project
 
 
-@M.result
-def load_project(root: PathLike) -> Project:
-    """Create a project from a root path."""
-    config = load_config(root).unwrap()
-    return Project(config["project"], workspaces=config["workspaces"])
+load_project = M.result(Project.load)
+"""Create a project from a root path."""
