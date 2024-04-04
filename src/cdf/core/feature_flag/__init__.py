@@ -34,19 +34,18 @@ class NoopProviderOptions(t.TypedDict): ...
 def load_feature_flag_provider(
     provider: t.Literal["noop"] = "noop",
     options: t.Optional[NoopProviderOptions] = None,
-    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
 class FileProviderOptions(t.TypedDict):
     path: str
+    fs: fsspec.AbstractFileSystem
 
 
 @t.overload
 def load_feature_flag_provider(
     provider: t.Literal["file"] = "file",
     options: t.Optional[FileProviderOptions] = None,
-    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
@@ -62,7 +61,6 @@ class HarnessProviderOptions(t.TypedDict):
 def load_feature_flag_provider(
     provider: t.Literal["harness"] = "harness",
     options: t.Optional[HarnessProviderOptions] = None,
-    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
@@ -74,7 +72,6 @@ class LaunchDarklyProviderOptions(t.TypedDict):
 def load_feature_flag_provider(
     provider: t.Literal["launchdarkly"] = "launchdarkly",
     options: t.Optional[LaunchDarklyProviderOptions] = None,
-    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs: ...
 
 
@@ -89,13 +86,11 @@ def load_feature_flag_provider(
             LaunchDarklyProviderOptions,
         ]
     ] = None,
-    fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
 ) -> SupportsFFs:
     opts = t.cast(dict, options or {})
     if provider == "file":
         logger.info("Using file-based feature flags")
-        assert fs, "File-based feature flags require a filesystem"
-        return create_file_provider(**opts, fs=fs)
+        return create_file_provider(**opts)
     if provider == "harness":
         logger.info("Using Harness feature flags")
         return create_harness_provider(**opts)

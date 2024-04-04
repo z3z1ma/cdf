@@ -6,10 +6,8 @@ import fnmatch
 import time
 import types
 import typing as t
-from pathlib import Path
 
 import dlt
-import dynaconf
 import pydantic
 from dlt.common.typing import TDataItem
 
@@ -193,14 +191,6 @@ class PipelineSpecification(PythonScript, Schedulable, arbitrary_types_allowed=T
                     for applicator in filter_:
                         applicator(resource)
         return source
-
-    @classmethod
-    def from_config(
-        cls, name: str, root: Path, config: dynaconf.Dynaconf
-    ) -> "PipelineSpecification":
-        config.setdefault("name", name)
-        config["workspace_path"] = root
-        return cls.model_validate(config, from_attributes=True)
 
 
 __all__ = ["PipelineSpecification"]

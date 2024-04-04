@@ -50,9 +50,8 @@ class ContinuousDataFramework:
         """The feature flag provider."""
         ff = self.configuration["feature_flags"]
         options = ff.setdefault("options", {})
-        return load_feature_flag_provider(
-            ff.provider, options=options.to_dict(), fs=self.filesystem
-        )
+        options.fs = self.filesystem
+        return load_feature_flag_provider(ff.provider, options=options.to_dict())
 
     @cached_property
     def filesystem(self) -> fsspec.AbstractFileSystem:
@@ -62,29 +61,41 @@ class ContinuousDataFramework:
         options.setdefault("auto_mkdir", True)
         return load_filesystem_provider(fs.provider, options=options.to_dict())
 
+    @cached_property
+    def pipelines(self) -> t.Dict[str, PipelineSpecification]:
+        """Map of pipelines by name."""
+        pipelines = {}
+        for key, config in self.configuration["pipelines"].items():
+            config.setdefault("name", key)
+            config["workspace_path"] = self.root
+            pipeline = PipelineSpecification.model_validate(
+                config, from_attributes=True
+            )
+            pipelines[pipeline.name] = pipeline
+        return pipelines
+
+    @cached_property
+    def sinks(self) -> t.Dict[str, SinkSpecification]:
+        """Map of pipelines by name."""
+        sinks = {}
+        for key, config in self.configuration["sinks"].items():
+            config.setdefault("name", key)
+            config["workspace_path"] = self.root
+            sink = SinkSpecification.model_validate(config, from_attributes=True)
+            sinks[sink.name] = sink
+        return sinks
+
     def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
         """Get a pipeline by name."""
         try:
-            return M.ok(
-                PipelineSpecification.from_config(
-                    name,
-                    root=self.root,
-                    config=self.configuration["pipelines"][name],
-                )
-            )
+            return M.ok(self.pipelines[name])
         except Exception as e:
             return M.error(e)
 
     def get_sink(self, name: str) -> M.Result[SinkSpecification, Exception]:
         """Get a sink by name."""
         try:
-            return M.ok(
-                SinkSpecification.from_config(
-                    name,
-                    root=self.root,
-                    config=self.configuration["sinks"][name],
-                )
-            )
+            return M.ok(self.sinks[name])
         except Exception as e:
             return M.error(e)
 

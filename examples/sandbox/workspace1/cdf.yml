@@ -19,4 +19,4 @@ default:
           dlthub_telemetry: false
   sinks:
     local: {}
-    fs: {}
+    fs_sink.py: {}

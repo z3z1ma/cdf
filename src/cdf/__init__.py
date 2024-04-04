@@ -2,6 +2,7 @@ import pdb
 import sys
 import traceback
 import typing as t
+from contextlib import suppress
 
 import cdf.core.constants as c
 import cdf.core.context as context
@@ -18,10 +19,9 @@ def execute() -> bool:
     Also injects a hook in debug mode to allow dropping into user code via pdb.
     """
     frame = sys._getframe(1)
-    name = frame.f_globals["__name__"]
 
     _main = frame.f_globals.get(c.CDF_MAIN)
-    proceed = name == "__main__" or name == _main
+    proceed = frame.f_globals["__name__"] in ("__main__", _main)
 
     if proceed and context.debug_mode.get():
 
@@ -34,14 +34,16 @@ def execute() -> bool:
     return proceed
 
 
-def get_gateway(project: Project, workspace: str, sink: str) -> "GatewayConfig":
-    """Get a sqlmesh gateway from a project sink."""
-    return (
-        project.get_workspace(workspace)
-        .bind(lambda w: w.get_sink(sink))
-        .map(lambda s: s.sink_transform())
-        .unwrap()
-    )
+def get_gateways(project: Project, workspace: str) -> t.Dict[str, "GatewayConfig"]:
+    """Convert the project's gateways to a dictionary."""
+    w = project.get_workspace(workspace).unwrap()
+    gateways = {}
+    for sink in w.sinks.values():
+        with suppress(KeyError):
+            gateways[sink.name] = sink.sink_transform()
+    if not gateways:
+        raise ValueError(f"No gateways in workspace {workspace}")
+    return gateways
 
 
-__all__ = ["pipeline", "execute", "get_project", "get_gateway"]
+__all__ = ["pipeline", "execute", "get_project", "get_gateways"]

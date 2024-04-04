@@ -8,5 +8,6 @@ ingest = dlt.destinations.filesystem(
 transform = GatewayConfig(
     connection=parse_connection_config(
         {"type": "duckdb", "database": "cdf.duckdb", "extensions": ["httpfs"]}
-    )
+    ),
+    state_schema="_cdf_state",
 )

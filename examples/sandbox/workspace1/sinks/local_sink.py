@@ -1,3 +1,5 @@
+import atexit
+
 import dlt
 import duckdb
 from sqlmesh.core.config import GatewayConfig, parse_connection_config
@@ -20,3 +22,5 @@ transform = GatewayConfig(
         {"type": "duckdb", "database": LOCALDB, "extensions": ["httpfs"]}
     )
 )
+
+atexit.register(conn.close)

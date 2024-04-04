@@ -5,6 +5,10 @@ default:
   filesystem:
     provider: file
     root: _storage
+  feature_flags:
+    provider: file
+    options:
+      path: flags.json
 prod:
   filesystem:
     provider: gcs
@@ -13,5 +17,5 @@ dev:
   feature_flags:
     provider: file
     options:
-      path: flags.json
+      path: dev_flags.json
 
