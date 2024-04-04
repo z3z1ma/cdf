@@ -31,3 +31,6 @@ def load_filesystem_provider(
         target_options=options or {},
         auto_mkdir=True,
     )
+
+
+__all__ = ["load_filesystem_provider"]

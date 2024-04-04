@@ -37,3 +37,6 @@ class SinkSpecification(PythonScript):
         if self._exports is None:
             self._exports = self()
         return self._exports[self.transform_config]
+
+
+__all__ = ["SinkSpecification"]

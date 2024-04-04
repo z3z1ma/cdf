@@ -76,3 +76,6 @@ def load_config(root: PathLike) -> ParsedConfiguration:
         config = _load(workspace)
         workspaces[config.name] = config
     return ParsedConfiguration(root=root_path, project=project, workspaces=workspaces)
+
+
+__all__ = ["load_config", "ParsedConfiguration"]

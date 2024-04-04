@@ -75,3 +75,6 @@ def execute_notebook_specification(
         return M.error(e)
     finally:
         sys.path = origpath
+
+
+__all__ = ["execute_notebook_specification"]

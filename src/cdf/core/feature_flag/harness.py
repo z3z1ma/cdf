@@ -145,3 +145,6 @@ def create_harness_provider(
         return source
 
     return _processor
+
+
+__all__ = ["create_harness_provider"]

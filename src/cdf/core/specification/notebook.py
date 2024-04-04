@@ -37,3 +37,6 @@ class NotebookSpecification(WorkspaceComponent, InstallableRequirements):
 
     _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
     """A lock to ensure the notebook is thread safe."""
+
+
+__all__ = ["NotebookSpecification"]

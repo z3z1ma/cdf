@@ -92,3 +92,10 @@ def inject_cdf_config_provider(cdf: "ContinuousDataFramework") -> None:
         config: The configuration to inject
     """
     Container()[ConfigProvidersContext].add_provider(CDFConfigProvider(cdf))
+
+
+__all__ = [
+    "active_project",
+    "debug_mode",
+    "inject_cdf_config_provider",
+]

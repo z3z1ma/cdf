@@ -39,3 +39,6 @@ def create_file_provider(
         return source
 
     return _processor
+
+
+__all__ = ["create_file_provider"]

@@ -47,3 +47,6 @@ def execute_script_specification(
     except Exception as e:
         logger.error(f"Error running script {spec.path}: {e}")
         return M.error(e)
+
+
+__all__ = ["execute_script_specification"]

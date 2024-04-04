@@ -61,3 +61,6 @@ def execute_publisher_specification(
     except Exception as e:
         logger.error(f"Error running publisher script {spec.path}: {e}")
         return M.error(e)
+
+
+__all__ = ["execute_publisher_specification"]
