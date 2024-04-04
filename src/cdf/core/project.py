@@ -16,6 +16,8 @@ from cdf.core.configuration import load_config
 from cdf.core.feature_flag import SupportsFFs, load_feature_flag_provider
 from cdf.core.filesystem import load_filesystem_provider
 from cdf.core.specification import (
+    CoreSpecification,
+    NotebookSpecification,
     PipelineSpecification,
     PublisherSpecification,
     ScriptSpecification,
@@ -25,6 +27,8 @@ from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
     import dynaconf
+
+TSpecification = t.TypeVar("TSpecification", bound=CoreSpecification)
 
 
 class ConfigurationOverlay(ChainMap[str, t.Any]):
@@ -40,19 +44,34 @@ class ConfigurationOverlay(ChainMap[str, t.Any]):
     def normalize_script(
         config: t.MutableMapping[str, t.Any],
         type_: str,
+        ext: t.Tuple[str, ...] = ("py",),
     ) -> t.MutableMapping[str, t.Any]:
-        """Normalize a script based configuration."""
+        """Normalize a script based configuration.
+
+        The name may be a relative path to the script such as sales/mrr.py in which case the
+        path is kept as-is and the name is normalized to sales_mrr.
+
+        Alternatively it could be a name such as mrr in which case the name will be kept as-is
+        and the component path will be set to mrr_{type_}.py
+
+        The final example is a name which is a pathlike without an extension such as sales/mrr in which
+        case the name will be set to sales_mrr and the path will be set to sales/mrr_{type_}.py
+
+        In the event of multiple extensions for a given script type, and the name ommitting the
+        extension, the first extension is used. Any special characters outside os.sep and a file extension
+        will cause a pydanitc validation error and prompt the user to update the name property.
+        """
         name = config["name"]
-        if name.endswith(".py"):
+        if name.endswith(ext):
             if "path" not in config:
                 config["path"] = name
-            name = name[:-3]
+            name = name.rsplit(".", 1)[0]
         else:
             if "path" not in config:
                 if name.endswith(f"_{type_}"):
-                    config["path"] = f"{name}.py"
+                    config["path"] = f"{name}.{ext[0]}"
                 else:
-                    config["path"] = f"{name}_{type_}.py"
+                    config["path"] = f"{name}_{type_}.{ext[0]}"
         config["name"] = name.replace(os.sep, "_")
         return config
 
@@ -101,61 +120,61 @@ class ContinuousDataFramework:
         options.setdefault("auto_mkdir", True)
         return load_filesystem_provider(fs.provider, options=options.to_dict())
 
+    def _get_components_for_spec(
+        self,
+        spec_cls: t.Type[TSpecification],
+        config_key: str,
+        script_suffix: t.Optional[str] = None,
+    ) -> t.Dict[str, TSpecification]:
+        """Get components for a specification.
+
+        Args:
+            spec_cls: The specification class.
+            config_key: The configuration key.
+            script_suffix: The default suffix for the scripts. If None, the config_key is used with
+                the last character removed.
+        """
+        components = {}
+        if config_key not in self.configuration:
+            return components
+        for key, config in self.configuration[config_key].items():
+            config.setdefault("name", key)
+            config["workspace_path"] = self.root
+            component = spec_cls.model_validate(
+                self.configuration.normalize_script(
+                    config,
+                    script_suffix or config_key[:-1],
+                    ("ipynb", "py") if spec_cls is NotebookSpecification else ("py",),
+                ),
+                from_attributes=True,
+            )
+            components[component.name] = component
+        return components
+
     @cached_property
     def pipelines(self) -> t.Dict[str, PipelineSpecification]:
         """Map of pipelines by name."""
-        pipelines = {}
-        for key, config in self.configuration["pipelines"].items():
-            config.setdefault("name", key)
-            config["workspace_path"] = self.root
-            pipeline = PipelineSpecification.model_validate(
-                self.configuration.normalize_script(config, "pipeline"),
-                from_attributes=True,
-            )
-            pipelines[pipeline.name] = pipeline
-        return pipelines
+        return self._get_components_for_spec(PipelineSpecification, "pipelines")
 
     @cached_property
     def sinks(self) -> t.Dict[str, SinkSpecification]:
         """Map of sinks by name."""
-        sinks = {}
-        for key, config in self.configuration["sinks"].items():
-            config.setdefault("name", key)
-            config["workspace_path"] = self.root
-            sink = SinkSpecification.model_validate(
-                self.configuration.normalize_script(config, "sink"),
-                from_attributes=True,
-            )
-            sinks[sink.name] = sink
-        return sinks
+        return self._get_components_for_spec(SinkSpecification, "sinks")
 
     @cached_property
     def publishers(self) -> t.Dict[str, PublisherSpecification]:
         """Map of publishers by name."""
-        publishers = {}
-        for key, config in self.configuration["publishers"].items():
-            config.setdefault("name", key)
-            config["workspace_path"] = self.root
-            publisher = PublisherSpecification.model_validate(
-                self.configuration.normalize_script(config, "publisher"),
-                from_attributes=True,
-            )
-            publishers[publisher.name] = publisher
-        return publishers
+        return self._get_components_for_spec(PublisherSpecification, "publishers")
 
     @cached_property
     def scripts(self) -> t.Dict[str, ScriptSpecification]:
         """Map of scripts by name."""
-        scripts = {}
-        for key, config in self.configuration["scripts"].items():
-            config.setdefault("name", key)
-            config["workspace_path"] = self.root
-            script = ScriptSpecification.model_validate(
-                self.configuration.normalize_script(config, "script"),
-                from_attributes=True,
-            )
-            scripts[script.name] = script
-        return scripts
+        return self._get_components_for_spec(ScriptSpecification, "scripts")
+
+    @cached_property
+    def notebooks(self) -> t.Dict[str, NotebookSpecification]:
+        """Map of notebooks by name."""
+        return self._get_components_for_spec(NotebookSpecification, "notebooks")
 
     def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
         """Get a pipeline by name."""
@@ -182,6 +201,13 @@ class ContinuousDataFramework:
         """Get a script by name."""
         try:
             return M.ok(self.scripts[name])
+        except Exception as e:
+            return M.error(e)
+
+    def get_notebook(self, name: str) -> M.Result[NotebookSpecification, Exception]:
+        """Get a notebook by name."""
+        try:
+            return M.ok(self.notebooks[name])
         except Exception as e:
             return M.error(e)
 
@@ -229,7 +255,7 @@ class Project(ContinuousDataFramework):
         self, path: PathLike
     ) -> M.Result["Workspace", Exception]:
         """Get a workspace by path."""
-        path = Path(path)
+        path = Path(path).resolve()
         for name, workspace in self._workspaces.items():
             if path.is_relative_to(workspace._root_path):
                 return self.get_workspace(name)

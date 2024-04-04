@@ -2,11 +2,9 @@ import inspect
 import runpy
 import sys
 import typing as t
-from pathlib import Path
 from threading import Lock
 
 import dlt
-import dynaconf
 import pydantic
 from sqlmesh.core.config import GatewayConfig
 

@@ -6,5 +6,9 @@ dist/
 logs/
 
 wip/
+
 _storage/
+_rendered/
+
 .cache/
+.ipynb_checkpoints/

@@ -27,3 +27,5 @@ default:
   scripts:
     hello: {}
     nested/hello: {}
+  notebooks:
+    hello_world: {}

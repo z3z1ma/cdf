@@ -1,6 +1,7 @@
 """CLI for cdf."""
 
 import itertools
+import json
 import typing as t
 from contextvars import Token
 from pathlib import Path
@@ -11,6 +12,7 @@ import typer
 import cdf.core.context as context
 from cdf.core.project import Workspace, load_project
 from cdf.core.runtime import (
+    execute_notebook_specification,
     execute_pipeline_specification,
     execute_publisher_specification,
     execute_script_specification,
@@ -53,6 +55,8 @@ def index(ctx: typer.Context):
         console.print(workspace.pipelines)
         console.print(workspace.sinks)
         console.print(workspace.publishers)
+        console.print(workspace.scripts)
+        console.print(workspace.notebooks)
     finally:
         context.active_project.reset(token)
 
@@ -282,6 +286,41 @@ def execute_script(
         return (
             workspace.get_script(script)
             .bind(lambda s: execute_script_specification(s, capture_stdout=quiet))
+            .unwrap()
+        )
+    finally:
+        context.active_project.reset(token)
+
+
+@app.command("execute-notebook", rich_help_panel="Utilities")
+def execute_notebook(
+    ctx: typer.Context,
+    notebook: t.Annotated[str, typer.Argument(help="The notebook to execute.")],
+    params: t.Annotated[
+        str,
+        typer.Option(
+            ...,
+            help="The parameters to pass to the notebook as a json formatted string.",
+        ),
+    ] = "{}",
+) -> t.Any:
+    """:notebook: Execute a [b yellow]Notebook[/b yellow] within the context of the current workspace.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        notebook: The notebook to execute.
+        params: The parameters to pass to the notebook as a json formatted string.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        return (
+            workspace.get_notebook(notebook)
+            .bind(
+                lambda s: execute_notebook_specification(
+                    s, fs=workspace.filesystem, **json.loads(params)
+                )
+            )
             .unwrap()
         )
     finally:

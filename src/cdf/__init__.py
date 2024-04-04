@@ -1,8 +1,6 @@
 import pdb
 import sys
 import traceback
-import typing as t
-from contextlib import suppress
 from pathlib import Path
 
 import cdf.core.constants as c
@@ -11,18 +9,15 @@ from cdf.core.project import Project, Workspace, load_project
 from cdf.core.runtime.pipeline import pipeline_factory as pipeline
 from cdf.types import M, PathLike
 
-if t.TYPE_CHECKING:
-    from sqlmesh.core.config import GatewayConfig
-
 
 @M.result
-def find_nearest(path: PathLike) -> Project:
+def find_nearest(path: PathLike = ".") -> Project:
     """Find the nearest project.
 
     Recursively searches for a project file in the parent directories.
     """
     project = None
-    path = Path(path)
+    path = Path(path).resolve()
     while path != path.parent:
         if p := load_project(path).unwrap_or(None):
             project = p
