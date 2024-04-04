@@ -54,6 +54,8 @@ class RuntimeContext(t.NamedTuple):
     """Whether to stage data if a staging location is provided."""
     applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident
     """The transformation to apply to the sources."""
+    metrics: t.Optional[t.Mapping[str, t.Any]] = None
+    """A container for captured metrics during extract."""
 
 
 CONTEXT: ContextVar[RuntimeContext] = ContextVar("runtime_context")
@@ -71,6 +73,7 @@ def runtime_context(
     intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None,
     enable_stage: bool = True,
     applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident,
+    metrics: t.Optional[t.Mapping[str, t.Any]] = None,
 ) -> t.Iterator[None]:
     """A context manager for setting the runtime context.
 
@@ -89,6 +92,7 @@ def runtime_context(
             intercept_sources,
             enable_stage,
             applicator,
+            metrics,
         )
     )
     try:
@@ -175,7 +179,7 @@ class RuntimePipeline(Pipeline):
         if runtime_context.force_replace:
             write_disposition = "replace"
 
-        return super().extract(
+        info = super().extract(
             sources,
             table_name=table_name,
             parent_table_name=parent_table_name,
@@ -187,6 +191,28 @@ class RuntimePipeline(Pipeline):
             workers=workers,
             schema_contract=schema_contract,
         )
+
+        if runtime_context.metrics:
+            super().extract(
+                dlt.resource(
+                    [
+                        {
+                            "load_id": load_id,
+                            "metrics": dict(runtime_context.metrics),
+                        }
+                        for load_id in info.loads_ids
+                    ],
+                    name="cdf_runtime_metrics",
+                    write_disposition="append",
+                    columns=[
+                        {"name": "load_id", "data_type": "text"},
+                        {"name": "metrics", "data_type": "complex"},
+                    ],
+                    table_name="_cdf_metrics",
+                )
+            )
+
+        return info
 
     def run(
         self,
@@ -289,6 +315,7 @@ def execute_pipeline_specification(
         intercept_sources=set() if intercept_sources else None,
         enable_stage=enable_stage and bool(staging),
         applicator=spec.apply,
+        metrics=spec.runtime_metrics,
     ):
         context_snapshot = copy_context()
     null = open(os.devnull, "w")
