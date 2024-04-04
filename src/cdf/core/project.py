@@ -2,11 +2,13 @@
 
 import typing as t
 from collections import ChainMap
+from contextlib import suppress
 from functools import cached_property
 from pathlib import Path
 
 import fsspec
 import sqlmesh
+from sqlmesh.core.config import GatewayConfig
 
 import cdf.core.logger as logger
 from cdf.core.configuration import load_config
@@ -135,6 +137,20 @@ class ContinuousDataFramework:
         except Exception as e:
             return M.error(e)
 
+    def get_gateways(self) -> M.Result[t.Dict[str, GatewayConfig], Exception]:
+        """Convert the project's gateways to a dictionary."""
+        gateways = {}
+        for sink in self.sinks.values():
+            with suppress(KeyError):
+                gateways[sink.name] = sink.get_transform_config()
+        if not gateways:
+            return M.error(ValueError(f"No gateways in workspace {self.name}"))
+        return M.ok(gateways)
+
+    def get_transform_context(self, sink: str) -> sqlmesh.Context:
+        """Get a transform context for a sink."""
+        return sqlmesh.Context(paths=self.root, gateway=sink)
+
     def __getitem__(self, key: str) -> t.Any:
         return self.configuration[key]
 
@@ -161,6 +177,16 @@ class Project(ContinuousDataFramework):
         except Exception as e:
             return M.error(e)
 
+    def get_workspace_from_path(
+        self, path: PathLike
+    ) -> M.Result["Workspace", Exception]:
+        """Get a workspace by path."""
+        path = Path(path)
+        for name, workspace in self._workspaces.items():
+            if path.is_relative_to(workspace._root_path):
+                return self.get_workspace(name)
+        return M.error(ValueError(f"No workspace found at {path}."))
+
 
 class Workspace(ContinuousDataFramework):
     """A CDF workspace."""
@@ -178,13 +204,9 @@ class Workspace(ContinuousDataFramework):
         """The parent project."""
         return self._project
 
-    def to_transform_context(self, sink: str) -> sqlmesh.Context:
-        """Convert a workspace to a transform context."""
-        return sqlmesh.Context(paths=self.root, gateway=sink)
-
 
 @M.result
-def get_project(root: PathLike) -> Project:
+def load_project(root: PathLike) -> Project:
     """Create a project from a root path."""
     config = load_config(root).unwrap()
     return Project(config["project"], workspaces=config["workspaces"])

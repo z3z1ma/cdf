@@ -7,7 +7,7 @@ from pathlib import Path
 
 import cdf.core.constants as c
 import cdf.core.context as context
-from cdf.core.project import Project, get_project
+from cdf.core.project import Project, Workspace, load_project
 from cdf.core.runtime.pipeline import pipeline_factory as pipeline
 from cdf.types import M, PathLike
 
@@ -24,7 +24,7 @@ def find_nearest(path: PathLike) -> Project:
     project = None
     path = Path(path)
     while path != path.parent:
-        if p := get_project(path).unwrap_or(None):
+        if p := load_project(path).unwrap_or(None):
             project = p
         path = path.parent
     if project is None:
@@ -53,18 +53,26 @@ def execute() -> bool:
     return proceed
 
 
-def get_gateways(
-    project: Project, workspace: str
-) -> M.Result[t.Dict[str, "GatewayConfig"], Exception]:
-    """Convert the project's gateways to a dictionary."""
-    w = project.get_workspace(workspace).unwrap()
-    gateways = {}
-    for sink in w.sinks.values():
-        with suppress(KeyError):
-            gateways[sink.name] = sink.get_transform_config()
-    if not gateways:
-        return M.error(ValueError(f"No gateways in workspace {workspace}"))
-    return M.ok(gateways)
+def get_active_project() -> Project:
+    """Get the active project."""
+    obj = context.active_project.get()
+    if isinstance(obj, Project):
+        return obj
+    if isinstance(obj, Workspace):
+        return obj.parent
+    raise ValueError("No valid project found in context.")
 
 
-__all__ = ["pipeline", "execute", "get_project", "get_gateways"]
+def get_workspace_from_path(path: PathLike) -> M.Result[Workspace, Exception]:
+    """Get a workspace from a path."""
+    return find_nearest(path).bind(lambda p: p.get_workspace_from_path(path))
+
+
+__all__ = [
+    "pipeline",
+    "execute",
+    "load_project",
+    "find_nearest",
+    "get_active_project",
+    "get_workspace_from_path",
+]

@@ -4,13 +4,12 @@ import sqlmesh
 
 import cdf
 
-project = cdf.find_nearest(__file__).unwrap()
-workspace = "workspace1"
+workspace = cdf.get_workspace_from_path(__file__).unwrap()
 
 config = sqlmesh.Config.model_validate(
     dict(
-        gateways=cdf.get_gateways(project, workspace).unwrap(),
-        project=workspace,
+        gateways=workspace.get_gateways().unwrap(),
+        project=workspace.name,
         default_gateway="local",
         model_defaults={
             "dialect": "duckdb",

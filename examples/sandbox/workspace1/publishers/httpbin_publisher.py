@@ -4,8 +4,7 @@ import requests
 
 import cdf
 
-project = cdf.find_nearest(__file__).unwrap()
-w = project.get_workspace("workspace1").unwrap()
+w = cdf.get_workspace_from_path(__file__).unwrap()
 context = w.to_transform_context("local")
 
 df = context.fetchdf("SELECT * FROM mart.zips")

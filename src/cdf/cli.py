@@ -9,7 +9,7 @@ import rich
 import typer
 
 import cdf.core.context as context
-from cdf.core.project import Workspace, get_project
+from cdf.core.project import Workspace, load_project
 from cdf.core.runtime import (
     execute_pipeline_specification,
     execute_publisher_specification,
@@ -51,6 +51,7 @@ def index(ctx: typer.Context):
     try:
         console.print(workspace.pipelines)
         console.print(workspace.sinks)
+        console.print(workspace.publishers)
     finally:
         context.active_project.reset(token)
 
@@ -251,7 +252,7 @@ def publish(
         source, publisher = sink_to_publisher.split(":", 1)
         pub = workspace.get_publisher(publisher).unwrap()
         return execute_publisher_specification(
-            pub, workspace.to_transform_context(source), skip_verification
+            pub, workspace.get_transform_context(source), skip_verification
         ).unwrap()
     finally:
         context.active_project.reset(token)
@@ -260,7 +261,7 @@ def publish(
 def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "Token"]:
     """Unwrap the workspace from the context."""
     workspace = (
-        get_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
+        load_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
     )
     context.inject_cdf_config_provider(workspace)
     token = context.active_project.set(workspace)
