@@ -118,7 +118,7 @@ class SchemaOptions(pydantic.BaseModel):
     detections: t.Optional[t.List[str]] = None
 
 
-class PipelineSpecification(PythonScript, Schedulable, arbitrary_types_allowed=True):
+class PipelineSpecification(PythonScript, Schedulable):
     """A pipeline specification."""
 
     metrics: InlineMetricSpecifications = {}

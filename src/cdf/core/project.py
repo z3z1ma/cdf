@@ -6,12 +6,17 @@ from functools import cached_property
 from pathlib import Path
 
 import fsspec
+import sqlmesh
 
 import cdf.core.logger as logger
 from cdf.core.configuration import load_config
 from cdf.core.feature_flag import SupportsFFs, load_feature_flag_provider
 from cdf.core.filesystem import load_filesystem_provider
-from cdf.core.specification import PipelineSpecification, SinkSpecification
+from cdf.core.specification import (
+    PipelineSpecification,
+    PublisherSpecification,
+    SinkSpecification,
+)
 from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
@@ -87,7 +92,7 @@ class ContinuousDataFramework:
 
     @cached_property
     def sinks(self) -> t.Dict[str, SinkSpecification]:
-        """Map of pipelines by name."""
+        """Map of sinks by name."""
         sinks = {}
         for key, config in self.configuration["sinks"].items():
             config.setdefault("name", key)
@@ -95,6 +100,19 @@ class ContinuousDataFramework:
             sink = SinkSpecification.model_validate(config, from_attributes=True)
             sinks[sink.name] = sink
         return sinks
+
+    @cached_property
+    def publishers(self) -> t.Dict[str, PublisherSpecification]:
+        """Map of publishers by name."""
+        publishers = {}
+        for key, config in self.configuration["publishers"].items():
+            config.setdefault("name", key)
+            config["workspace_path"] = self.root
+            publisher = PublisherSpecification.model_validate(
+                config, from_attributes=True
+            )
+            publishers[publisher.name] = publisher
+        return publishers
 
     def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
         """Get a pipeline by name."""
@@ -107,6 +125,13 @@ class ContinuousDataFramework:
         """Get a sink by name."""
         try:
             return M.ok(self.sinks[name])
+        except Exception as e:
+            return M.error(e)
+
+    def get_publisher(self, name: str) -> M.Result[PublisherSpecification, Exception]:
+        """Get a publisher by name."""
+        try:
+            return M.ok(self.publishers[name])
         except Exception as e:
             return M.error(e)
 
@@ -152,6 +177,10 @@ class Workspace(ContinuousDataFramework):
     def parent(self) -> Project:
         """The parent project."""
         return self._project
+
+    def to_transform_context(self, sink: str) -> sqlmesh.Context:
+        """Convert a workspace to a transform context."""
+        return sqlmesh.Context(paths=self.root, gateway=sink)
 
 
 @M.result

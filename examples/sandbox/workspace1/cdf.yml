@@ -20,3 +20,7 @@ default:
   sinks:
     local: {}
     fs_sink.py: {}
+  publishers:
+    httpbin:
+      depends_on:
+        - mart.zips

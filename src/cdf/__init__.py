@@ -61,7 +61,7 @@ def get_gateways(
     gateways = {}
     for sink in w.sinks.values():
         with suppress(KeyError):
-            gateways[sink.name] = sink.sink_transform()
+            gateways[sink.name] = sink.get_transform_config()
     if not gateways:
         return M.error(ValueError(f"No gateways in workspace {workspace}"))
     return M.ok(gateways)

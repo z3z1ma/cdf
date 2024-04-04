@@ -10,7 +10,10 @@ import typer
 
 import cdf.core.context as context
 from cdf.core.project import Workspace, get_project
-from cdf.core.runtime import execute_pipeline_specification
+from cdf.core.runtime import (
+    execute_pipeline_specification,
+    execute_publisher_specification,
+)
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -108,7 +111,7 @@ def pipeline(
         pipe = workspace.get_pipeline(source).unwrap()
         sink, stage = (
             workspace.get_sink(destination)
-            .map(lambda s: s.sink_ingest())
+            .map(lambda s: s.get_ingest_config())
             .unwrap_or((destination, None))
         )
         exports = execute_pipeline_specification(
@@ -120,7 +123,7 @@ def pipeline(
             force_replace=force_replace,
             enable_stage=not no_stage,
         )
-        typer.echo(
+        console.print(
             pipe.runtime_metrics if pipe.runtime_metrics else "No metrics captured"
         )
         return (
@@ -217,6 +220,39 @@ def head(
                 itertools.takewhile(lambda it: it[0] < n, enumerate(target)),
             )
         )
+    finally:
+        context.active_project.reset(token)
+
+
+@app.command(rich_help_panel="Integrate")
+def publish(
+    ctx: typer.Context,
+    sink_to_publisher: t.Annotated[
+        str,
+        typer.Argument(help="The sink and publisher separated by a colon."),
+    ],
+    skip_verification: t.Annotated[
+        bool,
+        typer.Option(
+            help="Skip the verification of the publisher dependencies.",
+        ),
+    ] = False,
+) -> t.Any:
+    """:outbox_tray: [b yellow]Publish[/b yellow] data from a data store to an [violet]External[/violet] system.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        sink_to_publisher: The sink and publisher separated by a colon.
+        skip_verification: Whether to skip the verification of the publisher dependencies.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        source, publisher = sink_to_publisher.split(":", 1)
+        pub = workspace.get_publisher(publisher).unwrap()
+        return execute_publisher_specification(
+            pub, workspace.to_transform_context(source), skip_verification
+        ).unwrap()
     finally:
         context.active_project.reset(token)
 

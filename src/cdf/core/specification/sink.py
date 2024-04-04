@@ -82,7 +82,7 @@ class SinkSpecification(WorkspaceComponent, InstallableRequirements):
         finally:
             sys.path = origpath
 
-    def sink_ingest(
+    def get_ingest_config(
         self,
     ) -> t.Tuple[
         dlt.destinations.destination, t.Optional[dlt.destinations.destination]
@@ -92,16 +92,8 @@ class SinkSpecification(WorkspaceComponent, InstallableRequirements):
             self._exports = self._run()
         return self._exports[self.ingest_config], self._exports.get(self.stage_config)
 
-    def sink_transform(self) -> GatewayConfig:
+    def get_transform_config(self) -> GatewayConfig:
         """Get the transform configuration."""
         if self._exports is None:
             self._exports = self._run()
         return self._exports[self.transform_config]
-
-    @classmethod
-    def from_config(
-        cls, name: str, root: Path, config: dynaconf.Dynaconf
-    ) -> "SinkSpecification":
-        config.setdefault("name", name)
-        config["workspace_path"] = root
-        return cls.model_validate(config, from_attributes=True)
