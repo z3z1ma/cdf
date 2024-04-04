@@ -8,9 +8,19 @@ import cdf.core.constants as c
 import cdf.core.context as context
 from cdf.core.project import Project, get_project
 from cdf.core.runtime.pipeline import pipeline_factory as pipeline
+from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
     from sqlmesh.core.config import GatewayConfig
+
+
+@M.result
+def find_nearest(path: PathLike) -> Project:
+    """Find the nearest project.
+
+    Recursively searches for a project file in the parent directories.
+    """
+    return get_project(path).unwrap()
 
 
 def execute() -> bool:
@@ -34,7 +44,9 @@ def execute() -> bool:
     return proceed
 
 
-def get_gateways(project: Project, workspace: str) -> t.Dict[str, "GatewayConfig"]:
+def get_gateways(
+    project: Project, workspace: str
+) -> M.Result[t.Dict[str, "GatewayConfig"], Exception]:
     """Convert the project's gateways to a dictionary."""
     w = project.get_workspace(workspace).unwrap()
     gateways = {}
@@ -42,8 +54,8 @@ def get_gateways(project: Project, workspace: str) -> t.Dict[str, "GatewayConfig
         with suppress(KeyError):
             gateways[sink.name] = sink.sink_transform()
     if not gateways:
-        raise ValueError(f"No gateways in workspace {workspace}")
-    return gateways
+        return M.error(ValueError(f"No gateways in workspace {workspace}"))
+    return M.ok(gateways)
 
 
 __all__ = ["pipeline", "execute", "get_project", "get_gateways"]

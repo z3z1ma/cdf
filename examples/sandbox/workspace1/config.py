@@ -11,7 +11,7 @@ project = cdf.get_project(
 ).unwrap()
 config = sqlmesh.Config.model_validate(
     dict(
-        gateways=cdf.get_gateways(project, workspace),
+        gateways=cdf.get_gateways(project, workspace).unwrap(),
         project=workspace,
         default_gateway="local",
         model_defaults={

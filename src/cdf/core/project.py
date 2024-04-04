@@ -7,6 +7,7 @@ from pathlib import Path
 
 import fsspec
 
+import cdf.core.logger as logger
 from cdf.core.configuration import load_config
 from cdf.core.feature_flag import SupportsFFs, load_feature_flag_provider
 from cdf.core.filesystem import load_filesystem_provider
@@ -48,7 +49,11 @@ class ContinuousDataFramework:
     @cached_property
     def feature_flag_provider(self) -> SupportsFFs:
         """The feature flag provider."""
-        ff = self.configuration["feature_flags"]
+        try:
+            ff = self.configuration["feature_flags"]
+        except KeyError:
+            logger.warning("No feature flag provider configured, defaulting to noop.")
+            return load_feature_flag_provider("noop")
         options = ff.setdefault("options", {})
         options.fs = self.filesystem
         return load_feature_flag_provider(ff.provider, options=options.to_dict())
@@ -56,7 +61,13 @@ class ContinuousDataFramework:
     @cached_property
     def filesystem(self) -> fsspec.AbstractFileSystem:
         """The filesystem provider."""
-        fs = self.configuration["filesystem"]
+        try:
+            fs = self.configuration["filesystem"]
+        except KeyError:
+            logger.warning(
+                "No filesystem provider configured, defaulting to local with files stored in `_storage`."
+            )
+            return load_filesystem_provider("file")
         options = fs.setdefault("options", {})
         options.setdefault("auto_mkdir", True)
         return load_filesystem_provider(fs.provider, options=options.to_dict())
