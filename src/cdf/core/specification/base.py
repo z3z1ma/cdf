@@ -290,6 +290,10 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
                             c.CDF_MAIN: run_name,
                         },
                     )
+            except SystemExit as e:
+                if e.code != 0:
+                    raise
+                return {}
             except Exception as e:
                 logger.exception(f"Error running script {self.name}: {e}")
                 raise
