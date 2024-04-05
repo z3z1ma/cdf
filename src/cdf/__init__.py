@@ -3,6 +3,10 @@ import sys
 import traceback
 from pathlib import Path
 
+import dlt
+from dlt.sources.helpers import requests
+from sqlmesh.core.config import ConnectionConfig, GatewayConfig, parse_connection_config
+
 import cdf.core.constants as c
 import cdf.core.context as context
 import cdf.core.logger as logger
@@ -64,6 +68,22 @@ def get_workspace_from_path(path: PathLike) -> M.Result[Workspace, Exception]:
     return find_nearest(path).bind(lambda p: p.get_workspace_from_path(path))
 
 
+with_config = dlt.sources.config.with_config
+
+inject_config = dlt.config.value
+inject_secret = dlt.secrets.value
+
+session = requests.Client
+
+transform_gateway = GatewayConfig
+"""Gateway configuration for transforms."""
+
+
+def transform_connection(type_: str, /, **kwargs) -> ConnectionConfig:
+    """Create a connection configuration for transforms."""
+    return parse_connection_config({"type": type_, **kwargs})
+
+
 __all__ = [
     "pipeline",
     "execute",
@@ -72,4 +92,9 @@ __all__ = [
     "get_active_project",
     "get_workspace_from_path",
     "logger",
+    "with_config",
+    "inject_config",
+    "inject_secret",
+    "requests",
+    "session",
 ]

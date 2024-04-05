@@ -41,9 +41,10 @@ def execute_script_specification(
     try:
         buf = io.StringIO()
         maybe_redirect = redirect_stdout(buf) if capture_stdout else nullcontext()
+        logger.info(f"Running script {spec.path}")
         with maybe_redirect:
             exports = spec()
-        return M.ok(buf.getvalue() if capture_stdout else exports)
+        return M.ok(buf.getvalue() if capture_stdout else exports)  # type: ignore
     except Exception as e:
         logger.error(f"Error running script {spec.path}: {e}")
         return M.error(e)
