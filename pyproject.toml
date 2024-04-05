@@ -19,7 +19,7 @@ dependencies = [
     "psutil",
     "typing-extensions",
     "immutabledict~=4.1.0",
-    "fsspec~=2024.3.1",
+    "fsspec",
 ]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
