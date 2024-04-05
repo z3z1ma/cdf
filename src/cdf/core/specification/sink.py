@@ -1,6 +1,6 @@
 import typing as t
 
-import dlt
+from dlt.common.destination.reference import Destination
 from sqlmesh.core.config import GatewayConfig
 
 from cdf.core.specification.base import PythonScript
@@ -24,9 +24,7 @@ class SinkSpecification(PythonScript):
 
     def get_ingest_config(
         self,
-    ) -> t.Tuple[
-        dlt.destinations.destination, t.Optional[dlt.destinations.destination]
-    ]:
+    ) -> t.Tuple[Destination, t.Optional[Destination]]:
         """Get the ingest configuration."""
         if self._exports is None:
             self._exports = self()
