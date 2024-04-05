@@ -2,6 +2,7 @@
 
 import itertools
 import json
+import os
 import typing as t
 from contextvars import Token
 from pathlib import Path
@@ -9,6 +10,7 @@ from pathlib import Path
 import rich
 import typer
 
+import cdf.core.constants as c
 import cdf.core.context as context
 from cdf.core.project import Workspace, load_project
 from cdf.core.runtime import (
@@ -36,21 +38,26 @@ def main(
         ".", "--path", "-p", help="Path to the project.", envvar="CDF_ROOT"
     ),
     debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug mode."),
-):
+    environment: t.Optional[str] = typer.Option(
+        None, "--env", "-e", help="Environment to use."
+    ),
+) -> None:
     """CDF (continuous data framework) is a framework for end to end data processing."""
     ctx.obj = workspace, path
     if debug:
         context.debug_mode.set(True)
+    if environment:
+        os.environ[c.CDF_ENVIRONMENT] = environment
 
 
 @app.command(rich_help_panel="Project Management")
-def init(ctx: typer.Context):
+def init(ctx: typer.Context) -> None:
     """:art: Initialize a new project."""
     typer.echo(ctx.obj)
 
 
 @app.command(rich_help_panel="Project Management")
-def index(ctx: typer.Context):
+def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], [yellow]Publishers[/yellow][/b], and other components."""
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
