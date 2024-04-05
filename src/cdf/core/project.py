@@ -103,7 +103,8 @@ class ContinuousDataFramework:
             logger.warning("No feature flag provider configured, defaulting to noop.")
             return load_feature_flag_provider("noop")
         options = ff.setdefault("options", {})
-        options.fs = self.filesystem
+        if ff.provider == "file":
+            options.fs = self.filesystem
         return load_feature_flag_provider(ff.provider, options=options.to_dict())
 
     @cached_property
