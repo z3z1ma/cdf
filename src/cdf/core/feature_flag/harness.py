@@ -76,25 +76,28 @@ def create_harness_provider(
 
     def create(ident: str, name: str) -> str:
         logger.info(f"Creating feature flag {ident}")
-        requests.post(
-            "https://app.harness.io/gateway/cf/admin/features",
-            params={"accountIdentifier": account, "orgIdentifier": organization},
-            headers={"Content-Type": "application/json", "x-api-key": api_key},
-            json={
-                "defaultOnVariation": "on-variation",
-                "defaultOffVariation": "off-variation",
-                "description": "Managed by CDF",
-                "identifier": ident,
-                "name": name,
-                "kind": FeatureConfigKind.BOOLEAN.value,
-                "permanent": True,
-                "project": project,
-                "variations": [
-                    {"identifier": "on-variation", "value": "true"},
-                    {"identifier": "off-variation", "value": "false"},
-                ],
-            },
-        )
+        try:
+            requests.post(
+                "https://app.harness.io/gateway/cf/admin/features",
+                params={"accountIdentifier": account, "orgIdentifier": organization},
+                headers={"Content-Type": "application/json", "x-api-key": api_key},
+                json={
+                    "defaultOnVariation": "on-variation",
+                    "defaultOffVariation": "off-variation",
+                    "description": "Managed by CDF",
+                    "identifier": ident,
+                    "name": name,
+                    "kind": FeatureConfigKind.BOOLEAN.value,
+                    "permanent": True,
+                    "project": project,
+                    "variations": [
+                        {"identifier": "on-variation", "value": "true"},
+                        {"identifier": "off-variation", "value": "false"},
+                    ],
+                },
+            )
+        except Exception:
+            logger.exception(f"Failed to create feature flag {ident}")
         return ident
 
     def _processor(source: "DltSource") -> "DltSource":
