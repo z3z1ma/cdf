@@ -32,7 +32,9 @@ console = rich.console.Console()
 def main(
     ctx: typer.Context,
     workspace: str,
-    path: Path = typer.Option(".", "--path", "-p", help="Path to the project."),
+    path: Path = typer.Option(
+        ".", "--path", "-p", help="Path to the project.", envvar="CDF_ROOT"
+    ),
     debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug mode."),
 ):
     """CDF (continuous data framework) is a framework for end to end data processing."""
