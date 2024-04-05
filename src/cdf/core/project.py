@@ -138,6 +138,10 @@ class ContinuousDataFramework:
         if config_key not in self.configuration:
             return components
         for key, config in self.configuration[config_key].items():
+            if not isinstance(config, dict):
+                raise TypeError(
+                    f"Expected dict for {config_key}.{key}, got {type(config)}"
+                )
             config.setdefault("name", key)
             config["workspace_path"] = self.root
             component = spec_cls.model_validate(
@@ -175,6 +179,11 @@ class ContinuousDataFramework:
     def notebooks(self) -> t.Dict[str, NotebookSpecification]:
         """Map of notebooks by name."""
         return self._get_components_for_spec(NotebookSpecification, "notebooks")
+
+    @cached_property
+    def models(self) -> t.Dict[str, sqlmesh.Model]:
+        """Map of models by name. Uses the default gateway."""
+        return dict(self.get_transform_context().models)
 
     def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
         """Get a pipeline by name."""
@@ -221,7 +230,7 @@ class ContinuousDataFramework:
             return M.error(ValueError(f"No gateways in workspace {self.name}"))
         return M.ok(gateways)
 
-    def get_transform_context(self, sink: str) -> sqlmesh.Context:
+    def get_transform_context(self, sink: t.Optional[str] = None) -> sqlmesh.Context:
         """Get a transform context for a sink."""
         return sqlmesh.Context(paths=self.root, gateway=sink)
 
