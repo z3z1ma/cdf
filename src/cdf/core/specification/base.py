@@ -111,7 +111,7 @@ class BaseComponent(pydantic.BaseModel):
         return data
 
     @pydantic.model_validator(mode="after")
-    def _setup(self):
+    def _setup_base(self):
         """Import the entrypoint and register the component."""
         if not self.enabled:
             logger.info(f"Skipping disabled component: {self.name}")
@@ -233,13 +233,14 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
     """A lock for ensuring thread safety."""
 
     @pydantic.model_validator(mode="after")
-    def _setup(self):
+    def _setup_script(self):
         """Import the entrypoint and register the component."""
         if self.name.startswith("anon_"):
             self.name = self.name.replace("anon_", self.path.stem)
         if self.description == _NO_DESCRIPTION:
             tree = ast.parse(self.path.read_text())
-            self.description = ast.get_docstring(tree) or _NO_DESCRIPTION
+            with suppress(TypeError):
+                self.description = ast.get_docstring(tree) or _NO_DESCRIPTION
         return self
 
     def package(self, outputdir: str) -> None:
@@ -312,7 +313,7 @@ class PythonEntrypoint(BaseComponent, InstallableRequirements):
     """The entrypoint of the component."""
 
     @pydantic.model_validator(mode="after")
-    def _setup(self):
+    def _setup_entrypoint(self):
         """Import the entrypoint and register the component."""
         if self.name.startswith("anon_"):
             mod, func = self.entrypoint.split(":", 1)

@@ -148,7 +148,7 @@ class PipelineSpecification(PythonScript, Schedulable):
     """The folder where pipeline scripts are stored."""
 
     @pydantic.model_validator(mode="after")
-    def _setup(self: "PipelineSpecification") -> "PipelineSpecification":
+    def _setup_pipeline(self: "PipelineSpecification") -> "PipelineSpecification":
         self.dataset_name = self.dataset_name.format(
             name=self.name,
             version=self.version,

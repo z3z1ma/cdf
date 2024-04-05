@@ -5,6 +5,7 @@ from pathlib import Path
 
 import cdf.core.constants as c
 import cdf.core.context as context
+import cdf.core.logger as logger
 from cdf.core.project import Project, Workspace, load_project
 from cdf.core.runtime.pipeline import pipeline_factory as pipeline
 from cdf.types import M, PathLike
@@ -70,4 +71,5 @@ __all__ = [
     "find_nearest",
     "get_active_project",
     "get_workspace_from_path",
+    "logger",
 ]
