@@ -61,11 +61,11 @@ def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], [yellow]Publishers[/yellow][/b], and other components."""
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
-        console.print(workspace.pipelines)
-        console.print(workspace.sinks)
-        console.print(workspace.publishers)
-        console.print(workspace.scripts)
-        console.print(workspace.notebooks)
+        console.print("Pipelines", workspace.pipelines)
+        console.print("Sinks", workspace.sinks)
+        console.print("Publishers", workspace.publishers)
+        console.print("Scripts", workspace.scripts)
+        console.print("Notebooks", workspace.notebooks)
     finally:
         context.active_project.reset(token)
 
