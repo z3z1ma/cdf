@@ -44,8 +44,8 @@ def _load(path: Path) -> dynaconf.LazySettings:
         env_switcher=c.CDF_ENVIRONMENT,
         env=c.DEFAULT_ENVIRONMENT,
         load_dotenv=True,
-        envvar=c.CDF_ROOT,
-        merge_enabled=False,
+        merge_enabled=True,
+        validators=[dynaconf.Validator("name", must_exist=True)],
     )
 
 

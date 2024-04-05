@@ -44,6 +44,7 @@ def create_harness_provider(
     account: str = os.getenv("HARNESS_ACCOUNT_ID", dlt.config.value),
     organization: str = os.getenv("HARNESS_ORG_ID", dlt.config.value),
     project: str = os.getenv("HARNESS_PROJECT_ID", dlt.config.value),
+    **_: t.Any,
 ) -> "SupportsFFs":
     _ff_logger.setLevel(logging.ERROR)
 

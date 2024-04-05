@@ -20,6 +20,7 @@ WLock = Lock()
 def create_file_provider(
     path: str = dlt.config.value,
     fs: fsspec.AbstractFileSystem = fsspec.filesystem("file"),
+    **_: t.Any,
 ) -> "SupportsFFs":
     def _processor(source: "DltSource") -> "DltSource":
         if not fs.exists(path):
