@@ -1,7 +1,5 @@
-from . import find_nearest, get_workspace_from_path
+from . import find_nearest, get_workspace
 
 settings = (
-    get_workspace_from_path(".")
-    .unwrap_or(find_nearest(".").unwrap())
-    .configuration.maps[0]
+    get_workspace(".").unwrap_or(find_nearest(".").unwrap()).configuration.maps[0]
 )

@@ -4,7 +4,7 @@ import sqlmesh
 
 import cdf
 
-workspace = cdf.get_workspace_from_path(__file__).unwrap()
+workspace = cdf.get_workspace(__file__).unwrap()
 
 config = sqlmesh.Config.model_validate(
     dict(

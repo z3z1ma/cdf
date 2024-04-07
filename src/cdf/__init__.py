@@ -21,6 +21,15 @@ def find_nearest(path: PathLike = ".") -> Project:
     """Find the nearest project.
 
     Recursively searches for a project file in the parent directories.
+
+    Args:
+        path (PathLike, optional): The path to start searching from. Defaults to ".".
+
+    Raises:
+        FileNotFoundError: If no project is found.
+
+    Returns:
+        Project: The nearest project.
     """
     project = None
     path = Path(path).resolve()
@@ -37,6 +46,13 @@ def is_main(name: t.Optional[str] = None) -> bool:
     """Check if the current module is being run as the main program in cdf context.
 
     Also injects a hook in debug mode to allow dropping into user code via pdb.
+
+    Args:
+        name (str, optional): The name of the module to check. If None, the calling module is
+            checked. The most idiomatic usage is to pass `__name__` to check the current module.
+
+    Returns:
+        bool: True if the current module is the main program in cdf context.
     """
     frame = sys._getframe(1)
 
@@ -56,7 +72,14 @@ def is_main(name: t.Optional[str] = None) -> bool:
 
 
 def get_active_project() -> Project:
-    """Get the active project."""
+    """Get the active project.
+
+    Raises:
+        ValueError: If no valid project is found in the context.
+
+    Returns:
+        Project: The active project.
+    """
     obj = context.active_project.get()
     if isinstance(obj, Project):
         return obj
@@ -65,8 +88,15 @@ def get_active_project() -> Project:
     raise ValueError("No valid project found in context.")
 
 
-def get_workspace_from_path(path: PathLike) -> M.Result[Workspace, Exception]:
-    """Get a workspace from a path."""
+def get_workspace(path: PathLike = ".") -> M.Result[Workspace, Exception]:
+    """Get a workspace from a path.
+
+    Args:
+        path (PathLike, optional): The path to get the workspace from. Defaults to ".".
+
+    Returns:
+        M.Result[Workspace, Exception]: The workspace or an error.
+    """
     return find_nearest(path).bind(lambda p: p.get_workspace_from_path(path))
 
 
@@ -92,7 +122,7 @@ __all__ = [
     "load_project",
     "find_nearest",
     "get_active_project",
-    "get_workspace_from_path",
+    "get_workspace",
     "logger",
     "with_config",
     "inject_config",
