@@ -1,13 +1,9 @@
-"""
--- Dota2 is a Massive Online Battle Arena game based on Warcraft
-PIPELINE (
-    name dota2,
-    cron '0 0 * * *',
-    owner 'alexb'
-);
-"""
+"""Dota2 is a Massive Online Battle Arena game based on Warcraft."""
+
 import dlt
 import dlt.sources.helpers.requests as requests
+
+import cdf
 
 
 @dlt.resource(write_disposition="merge", primary_key="account_id")
@@ -118,13 +114,19 @@ def dota2_stats():
     )
 
 
-pipe = dlt.pipeline("dota2")
+if cdf.is_main(__name__):
+    # Define a pipeline
+    pipe = cdf.pipeline()
 
-source = dota2_stats().with_resources(
-    "pro_players",
-    "pro_matches",
-    "teams",
-    "heroes",
-)
+    # Instantiate the source
+    source = dota2_stats()
 
-pipe.run(source, destination="duckdb")
+    # Run the pipeline
+    pipe.run(
+        source.with_resources(
+            "pro_players",
+            "pro_matches",
+            "teams",
+            "heroes",
+        )
+    )

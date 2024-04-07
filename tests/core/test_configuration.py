@@ -17,4 +17,4 @@ def test_load_config():
     project = project.unwrap()
 
     # Project config can be indexed directly, this gets the project name
-    assert project["project"]["name"] == "cdf-test"
+    assert project["project"]["name"] == "cdf-example"

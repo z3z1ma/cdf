@@ -1,6 +1,0 @@
-[runtime]
-log_level="INFO"
-# log_format="JSON"
-
-[test.ok]
-x=1

@@ -1,7 +1,0 @@
-__pycache__
-*.pyc
-.env
-.venv
-.cache
-logs
-cdf_secrets.toml

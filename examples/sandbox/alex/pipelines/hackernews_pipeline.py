@@ -5,6 +5,8 @@ from datetime import datetime
 import dlt
 from dlt.sources.helpers import requests
 
+import cdf
+
 URL = "https://hn.algolia.com/api/v1/search_by_date"
 
 
@@ -128,51 +130,12 @@ def keyword_hits(
             batch_end_date += time_delta
 
 
-if t.TYPE_CHECKING:
-    from cdf import CooperativePipelineInterface
-
-
-def get_rust_stuff() -> "CooperativePipelineInterface":
+if cdf.is_main(__name__):
+    # Create a source
     source = hn_search(keywords=["rust"])
-    pipeline = yield source
-    return pipeline.run(source)
 
+    # Create the externally managed pipeline
+    pipeline = cdf.pipeline()
 
-# This is the only addition required to an existing dlt source file to get the benefits of cdf
-__CDF_PIPELINES__ = [
-    {
-        "name": "hackernews",
-        "pipe": get_rust_stuff,
-        "version": 1,
-        "owner": "qa-team",
-        "description": "Extracts hackernews data from an API.",
-        "tags": ("live", "simple", "test"),
-        "metrics": {
-            "keyword_hits": {
-                "count": lambda _, metric=0: metric + 1,
-            }
-        },
-    }
-]
-
-# Also worth metioning, above is exactly the same as:
-from cdf import PipelineSpecification, export  # noqa
-
-export(
-    PipelineSpecification(
-        name="hackernews_2",
-        pipe=get_rust_stuff,
-        version=2,
-        owner="qa-team",
-        description="Extracts hackernews data from an API.",
-        tags=["live", "simple", "test"],
-        metrics={
-            "keyword_hits": {
-                "count": lambda _, metric=0: metric + 1,
-            }
-        },
-    )
-)
-
-# the difference being that the latter gives type hints and is more readable
-# while the former requires no imports of cdf and is thus valid independent of the cdf package
+    # Run the pipeline
+    pipeline.run(source)
