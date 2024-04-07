@@ -1,5 +1,7 @@
 """Base specification classes for continuous data framework components"""
 
+from __future__ import annotations
+
 import ast
 import importlib
 import inspect
