@@ -1,4 +1,17 @@
-"""The runtime pipeline module is responsible for executing pipelines from pipeline specifications."""
+"""The runtime pipeline module is responsible for executing pipelines from pipeline specifications.
+
+It performs the following functions:
+- Injects the runtime context into the pipeline.
+- Executes the pipeline.
+- Captures metrics during extract.
+- Intercepts sources during extract. (if specified, this makes the pipeline a no-op)
+- Applies transformations to sources during extract.
+- Stages data if a staging location is provided and enabled in the runtime context.
+- Forces replace disposition if specified in the runtime context.
+- Filters resources based on glob patterns.
+- Logs a warning if dataset_name is provided in the runtime context. (since we want to manage it)
+- Creates a cdf pipeline from a dlt pipeline.
+"""
 
 import fnmatch
 import os

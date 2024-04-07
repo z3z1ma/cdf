@@ -27,13 +27,13 @@ class SinkSpecification(PythonScript):
     ) -> t.Tuple[Destination, t.Optional[Destination]]:
         """Get the ingest configuration."""
         if self._exports is None:
-            self._exports = self()
+            self._exports = self.main()
         return self._exports[self.ingest_config], self._exports.get(self.stage_config)
 
     def get_transform_config(self) -> GatewayConfig:
         """Get the transform configuration."""
         if self._exports is None:
-            self._exports = self()
+            self._exports = self.main()
         return self._exports[self.transform_config]
 
 
