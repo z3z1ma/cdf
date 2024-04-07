@@ -1,6 +1,7 @@
 import pdb
 import sys
 import traceback
+import typing as t
 from pathlib import Path
 
 import dlt
@@ -32,7 +33,7 @@ def find_nearest(path: PathLike = ".") -> Project:
     return project
 
 
-def execute() -> bool:
+def is_main(name: t.Optional[str] = None) -> bool:
     """Check if the current module is being run as the main program in cdf context.
 
     Also injects a hook in debug mode to allow dropping into user code via pdb.
@@ -40,7 +41,8 @@ def execute() -> bool:
     frame = sys._getframe(1)
 
     _main = frame.f_globals.get(c.CDF_MAIN)
-    proceed = frame.f_globals["__name__"] in ("__main__", _main)
+    _name = name or frame.f_globals["__name__"]
+    proceed = _name in ("__main__", _main)
 
     if proceed and context.debug_mode.get():
 
@@ -86,7 +88,7 @@ def transform_connection(type_: str, /, **kwargs) -> ConnectionConfig:
 
 __all__ = [
     "pipeline",
-    "execute",
+    "is_main",
     "load_project",
     "find_nearest",
     "get_active_project",
