@@ -20,8 +20,9 @@ dependencies = [
     "typing-extensions",
     "immutabledict~=4.1.0",
     "fsspec",
+    "dynaconf"
 ]
-requires-python = ">=3.10,<3.13"
+requires-python = ">=3.9,<3.13"
 readme = "README.md"
 license.file = "LICENSE"
 
