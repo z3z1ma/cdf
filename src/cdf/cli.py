@@ -3,6 +3,8 @@
 import itertools
 import json
 import os
+import subprocess
+import sys
 import typing as t
 from contextvars import Token
 from pathlib import Path
@@ -331,6 +333,36 @@ def execute_notebook(
                 )
             )
             .unwrap()
+        )
+    finally:
+        context.active_project.reset(token)
+
+
+@app.command(
+    "jupyter-lab",
+    rich_help_panel="Utilities",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def jupyter_lab(
+    ctx: typer.Context,
+) -> None:
+    """:notebook: Start a Jupyter Lab server."""
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        subprocess.run(
+            ["jupyter", "lab", *ctx.args],
+            cwd=workspace.root,
+            check=False,
+            env={
+                **os.environ,
+                "PYTHONPATH": ":".join(
+                    (
+                        str(workspace.root.resolve()),
+                        *sys.path,
+                        str(workspace.root.parent.resolve()),
+                    )
+                ),
+            },
         )
     finally:
         context.active_project.reset(token)
