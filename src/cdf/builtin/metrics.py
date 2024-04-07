@@ -25,8 +25,8 @@ def unique(key: str) -> MetricFunc:
     seen = set()
 
     def _unique(item: t.Any, _: t.Optional[TNumber] = None) -> int:
-        k = item[key]
-        if k not in seen:
+        k = item.get(key)
+        if k is not None and k not in seen:
             seen.add(k)
         return len(seen)
 
@@ -35,11 +35,16 @@ def unique(key: str) -> MetricFunc:
 
 def max_value(key: str) -> MetricFunc:
     """Returns the maximum value of a key in a dataset"""
+    first = True
 
     def _max_value(item: t.Any, metric: t.Optional[TNumber] = None) -> TNumber:
-        k = item[key]
-        if metric is None:
+        nonlocal first
+        k = item.get(key)
+        if metric is None or first:
+            first = False
             return k
+        if k is None:
+            return metric
         return max(metric, k)
 
     return _max_value
@@ -47,11 +52,16 @@ def max_value(key: str) -> MetricFunc:
 
 def min_value(key: str) -> MetricFunc:
     """Returns the minimum value of a key in a dataset"""
+    first = True
 
     def _min_value(item: t.Any, metric: t.Optional[TNumber] = None) -> TNumber:
-        k = item[key]
-        if metric is None:
+        nonlocal first
+        k = item.get(key)
+        if metric is None or first:
+            first = False
             return k
+        if k is None:
+            return metric
         return min(metric, k)
 
     return _min_value
@@ -61,7 +71,7 @@ def sum_value(key: str) -> MetricFunc:
     """Returns the sum of a key in a dataset"""
 
     def _sum_value(item: t.Any, metric: TNumber = 0) -> TNumber:
-        k = item[key]
+        k = item.get(key, 0)
         return metric + k
 
     return _sum_value
@@ -71,9 +81,13 @@ def avg_value(key: str) -> MetricFunc:
     """Returns the average of a key in a dataset"""
     n_sum, n_count = 0, 0
 
-    def _avg_value(item: t.Any, _: t.Optional[TNumber] = None) -> TNumber:
+    def _avg_value(
+        item: t.Any, last_value: t.Optional[TNumber] = None
+    ) -> t.Optional[TNumber]:
         nonlocal n_sum, n_count
-        k = item[key]
+        k = item.get(key)
+        if k is None:
+            return last_value
         n_sum += k
         n_count += 1
         return n_sum / n_count
@@ -85,9 +99,13 @@ def median_value(key: str, window: int = 1000) -> MetricFunc:
     """Returns the median of a key in a dataset"""
     arr = []
 
-    def _median_value(item: t.Any, _: t.Optional[TNumber] = None) -> TNumber:
+    def _median_value(
+        item: t.Any, last_value: t.Optional[TNumber] = None
+    ) -> t.Optional[TNumber]:
         nonlocal arr
-        k = item[key]
+        k = item.get(key)
+        if k is None:
+            return last_value
         bisect.insort(arr, k)
         if len(arr) > window:
             del arr[0], arr[-1]
@@ -100,9 +118,13 @@ def stdev_value(key: str) -> MetricFunc:
     """Returns the standard deviation of a key in a dataset"""
     n_sum, n_squared_sum, n_count = 0, 0, 0
 
-    def _stdev_value(item: t.Any, _: t.Optional[TNumber] = None) -> float:
+    def _stdev_value(
+        item: t.Any, last_value: t.Optional[TNumber] = None
+    ) -> t.Optional[float]:
         nonlocal n_sum, n_squared_sum, n_count
-        k = item[key]
+        k = item.get(key)
+        if k is None:
+            return t.cast(t.Optional[float], last_value)
         n_sum += k
         n_squared_sum += k**2
         n_count += 1
@@ -116,9 +138,13 @@ def variance_value(key: str) -> MetricFunc:
     """Returns the variance of a key in a dataset"""
     n_sum, n_squared_sum, n_count = 0, 0, 0
 
-    def _variance_value(item: t.Any, _: t.Optional[TNumber] = None) -> float:
+    def _variance_value(
+        item: t.Any, last_value: t.Optional[TNumber] = None
+    ) -> t.Optional[float]:
         nonlocal n_sum, n_squared_sum, n_count
-        k = item[key]
+        k = item.get(key)
+        if k is None:
+            return t.cast(t.Optional[float], last_value)
         n_sum += k
         n_squared_sum += k**2
         n_count += 1
@@ -134,9 +160,11 @@ def mode_value(key: str) -> MetricFunc:
     """Returns the mode of a key in a dataset."""
     frequency = defaultdict(int)
 
-    def _mode_value(item: t.Any, _: t.Optional[TNumber] = None) -> TNumber:
+    def _mode_value(item: t.Any, last_value: t.Optional[t.Any] = None) -> t.Any:
         nonlocal frequency
-        k = item[key]
+        k = item.get(key)
+        if k is None:
+            return last_value
         frequency[k] += 1
         return max(frequency.items(), key=lambda x: x[1])[0]
 

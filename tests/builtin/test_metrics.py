@@ -26,11 +26,12 @@ def data():
         {"name": "Eve", "age": 45},
         {"name": "Frank", "age": 50},
         {"name": "Alice", "age": 25},
+        {"name": "Bob"},
     ]
 
 
 def test_count(data):
-    assert reduce(lambda metric, item: count(item, metric), data, 0) == 7
+    assert reduce(lambda metric, item: count(item, metric), data, 0) == 8
 
 
 def test_unique(data):
@@ -45,7 +46,7 @@ def test_max_value(data):
 
 def test_min_value(data):
     func = min_value("age")
-    assert reduce(lambda metric, item: func(item, metric), data, None) == 25
+    assert reduce(lambda metric, item: func(item, metric), data, 0) == 25
 
 
 def test_sum_value(data):
