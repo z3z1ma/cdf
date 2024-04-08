@@ -13,7 +13,7 @@ from sqlmesh.core.config import GatewayConfig
 
 import cdf.core.logger as logger
 from cdf.core.configuration import load_config
-from cdf.core.feature_flag import SupportsFFs, load_feature_flag_provider
+from cdf.core.feature_flag import FlagProvider, load_feature_flag_provider
 from cdf.core.filesystem import load_filesystem_provider
 from cdf.core.specification import (
     CoreSpecification,
@@ -95,7 +95,7 @@ class ContinuousDataFramework:
         return self.configuration.maps[0]._root_path
 
     @cached_property
-    def feature_flag_provider(self) -> SupportsFFs:
+    def feature_flag_provider(self) -> FlagProvider:
         """The feature flag provider."""
         try:
             ff = self.configuration["feature_flags"]
@@ -104,7 +104,7 @@ class ContinuousDataFramework:
             return load_feature_flag_provider("noop")
         options = ff.setdefault("options", {})
         if ff.provider == "file":
-            options.fs = self.filesystem
+            options.storage = self.filesystem
         return load_feature_flag_provider(ff.provider, options=options.to_dict())
 
     @cached_property

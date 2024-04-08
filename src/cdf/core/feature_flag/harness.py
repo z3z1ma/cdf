@@ -8,8 +8,8 @@ import os
 import typing as t
 from concurrent.futures import ThreadPoolExecutor
 
-import dlt
-from dlt.common.configuration import with_config
+import pydantic
+from dlt.sources import DltSource
 from dlt.sources.helpers import requests
 from featureflags.client import CfClient, Config, Target
 from featureflags.evaluations.feature import FeatureConfigKind
@@ -18,17 +18,15 @@ from featureflags.util import log as _ff_logger
 
 import cdf.core.context as context
 import cdf.core.logger as logger
+from cdf.core.feature_flag.base import BaseFlagProvider
 from cdf.types.monads import Promise
-
-if t.TYPE_CHECKING:
-    from dlt.sources import DltSource
-
-    from cdf.core.feature_flag import SupportsFFs
 
 
 # This exists because the default harness LRU implementation does not store >1000 flags
 # The interface is mostly satisfied by dict, so we subclass it and implement the missing methods
 class _HarnessCache(dict, Cache):
+    """A cache implementation for the harness feature flag provider."""
+
     def set(self, key: str, value: bool) -> None:
         self[key] = value
 
@@ -39,50 +37,99 @@ class _HarnessCache(dict, Cache):
             self.pop(k, None)
 
 
-@with_config(sections=("feature_flags", "options"))
-def create_harness_provider(
-    api_key: str = dlt.secrets.value,
-    sdk_key: str = dlt.secrets.value,
-    account: str = os.getenv("HARNESS_ACCOUNT_ID", dlt.config.value),
-    organization: str = os.getenv("HARNESS_ORG_ID", dlt.config.value),
-    project: str = os.getenv("HARNESS_PROJECT_ID", dlt.config.value),
-    **_: t.Any,
-) -> "SupportsFFs":
-    _ff_logger.setLevel(logging.ERROR)
+class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
+    """Harness feature flag provider."""
 
-    def _get_client() -> CfClient:
-        client = CfClient(
-            sdk_key=sdk_key,
+    api_key: str = pydantic.Field(
+        description="The harness API key. Get it from your user settings.",
+        pattern=r"^pat\.[a-zA-Z0-9_\-]+$",
+    )
+    sdk_key: pydantic.UUID4 = pydantic.Field(
+        description="The harness SDK key. Get it from the environment management page of the FF module.",
+    )
+    account: str = pydantic.Field(
+        description="The harness account ID.",
+        min_length=22,
+        max_length=22,
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+    )
+    organization: str = pydantic.Field(
+        description="The harness organization ID.",
+    )
+    project: str = pydantic.Field(
+        description="The harness project ID.",
+    )
+
+    provider: t.Literal["harness"] = "harness"
+
+    _client: t.Optional[CfClient] = None
+
+    @pydantic.field_validator("account", mode="before")
+    @classmethod
+    def _validate_account(cls, value: str) -> str:
+        if not value:
+            value = os.environ["HARNESS_ACCOUNT_ID"]
+        return value
+
+    @pydantic.field_validator("organization", mode="before")
+    @classmethod
+    def _validate_organization(cls, value: str) -> str:
+        if not value:
+            value = os.environ["HARNESS_ORG_ID"]
+        return value
+
+    @pydantic.field_validator("project", mode="before")
+    @classmethod
+    def _validate_project(cls, value: str) -> str:
+        if not value:
+            value = os.environ["HARNESS_PROJECT_ID"]
+        return value
+
+    @pydantic.model_validator(mode="after")
+    def _configure(self):
+        """Configure the harness FF logger to only show errors. Its too verbose otherwise."""
+        _ff_logger.setLevel(logging.ERROR)
+        return self
+
+    def _get_client(self) -> CfClient:
+        """Get the client and cache it in the instance."""
+        if self._client is not None:
+            return self._client
+        self._client = CfClient(
+            sdk_key=str(self.sdk_key),
             config=Config(
                 enable_stream=False, enable_analytics=False, cache=_HarnessCache()
             ),
         )
-        client.wait_for_initialization()
-        return client
+        self._client.wait_for_initialization()
+        return self._client
 
-    client = Promise(lambda: asyncio.to_thread(_get_client))
-
-    def drop(ident: str) -> str:
+    def drop(self, ident: str) -> str:
+        """Drop a feature flag."""
         logger.info(f"Deleting feature flag {ident}")
         requests.delete(
             f"https://app.harness.io/gateway/cf/admin/features/{ident}",
-            headers={"x-api-key": api_key},
+            headers={"x-api-key": self.api_key},
             params={
-                "accountIdentifier": account,
-                "orgIdentifier": organization,
-                "projectIdentifier": project,
+                "accountIdentifier": self.account,
+                "orgIdentifier": self.organization,
+                "projectIdentifier": self.project,
                 "forceDelete": True,
             },
         )
         return ident
 
-    def create(ident: str, name: str) -> str:
+    def create(self, ident: str, name: str) -> str:
+        """Create a feature flag."""
         logger.info(f"Creating feature flag {ident}")
         try:
             requests.post(
                 "https://app.harness.io/gateway/cf/admin/features",
-                params={"accountIdentifier": account, "orgIdentifier": organization},
-                headers={"Content-Type": "application/json", "x-api-key": api_key},
+                params={
+                    "accountIdentifier": self.account,
+                    "orgIdentifier": self.organization,
+                },
+                headers={"Content-Type": "application/json", "x-api-key": self.api_key},
                 json={
                     "defaultOnVariation": "on-variation",
                     "defaultOffVariation": "off-variation",
@@ -91,7 +138,7 @@ def create_harness_provider(
                     "name": name,
                     "kind": FeatureConfigKind.BOOLEAN.value,
                     "permanent": True,
-                    "project": project,
+                    "project": self.project,
                     "variations": [
                         {"identifier": "on-variation", "value": "true"},
                         {"identifier": "off-variation", "value": "false"},
@@ -102,8 +149,9 @@ def create_harness_provider(
             logger.exception(f"Failed to create feature flag {ident}")
         return ident
 
-    def _processor(source: "DltSource") -> "DltSource":
-        nonlocal client
+    def apply_source(self, source: DltSource) -> DltSource:
+        """Apply the feature flags to a dlt source."""
+        client = Promise(lambda: asyncio.to_thread(self._get_client))
         workspace = context.active_project.get()
         if isinstance(client, Promise):
             client = client.unwrap()
@@ -111,12 +159,11 @@ def create_harness_provider(
             client._repository.cache.clear()
             client._polling_processor.retrieve_flags_and_segments()
         cache = client._repository.cache
-        ns = f"pipeline__{workspace.name}__{source.name}"
-
         tpe = ThreadPoolExecutor(thread_name_prefix="harness-ff")
+        namespace = f"pipeline__{workspace.name}__{source.name}"
 
         def get_resource_id(r: str) -> str:
-            return f"{ns}__{r}"
+            return f"{namespace}__{r}"
 
         resource_lookup = {
             get_resource_id(key): resource for key, resource in source.resources.items()
@@ -126,7 +173,7 @@ def create_harness_provider(
 
         current_flags = set(
             filter(
-                lambda f: f.startswith(ns),
+                lambda f: f.startswith(namespace),
                 map(lambda f: f.split("/", 1)[1], cache.keys()),
             )
         )
@@ -135,9 +182,9 @@ def create_harness_provider(
         added = selected_resources.difference(current_flags)
 
         if os.getenv("HARNESS_FF_AUTORECONCILE", "0") == "1":
-            list(tpe.map(drop, removed))
+            list(tpe.map(self.drop, removed))
         for f in tpe.map(
-            create,
+            self.create,
             added,
             [
                 f"Extract {source.name.title()} {resource_lookup[f].name.title()}"
@@ -150,7 +197,5 @@ def create_harness_provider(
 
         return source
 
-    return _processor
 
-
-__all__ = ["create_harness_provider"]
+__all__ = ["HarnessFlagProvider"]

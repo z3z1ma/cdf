@@ -167,7 +167,7 @@ class RuntimePipeline(Pipeline):
         else:
             active_project = context.active_project.get()
             for i, source in enumerate(sources):
-                sources[i] = active_project.feature_flag_provider(source)
+                sources[i] = active_project.feature_flag_provider.apply_source(source)
 
         if runtime_context.exclude:
             for i, source in enumerate(sources):

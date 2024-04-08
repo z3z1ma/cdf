@@ -2,12 +2,20 @@
 
 import typing as t
 
-from dlt.common.configuration import with_config
+from dlt.sources import DltSource
+
+from cdf.core.feature_flag.base import BaseFlagProvider
 
 
-@with_config(sections=("feature_flags", "options"))
-def create_launchdarkly_provider(**_: t.Any):
-    raise NotImplementedError("LaunchDarkly feature flags are not yet supported")
+class LaunchDarklyFlagProvider(BaseFlagProvider, extra="allow"):
+    """LaunchDarkly feature flag provider."""
+
+    sdk_key: str
+
+    provider: t.Literal["launchdarkly"] = "launchdarkly"
+
+    def apply_source(self, source: DltSource) -> DltSource:
+        raise NotImplementedError("LaunchDarkly feature flags are not yet supported")
 
 
-__all__ = ["create_launchdarkly_provider"]
+__all__ = ["LaunchDarklyFlagProvider"]
