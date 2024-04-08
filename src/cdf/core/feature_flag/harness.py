@@ -49,18 +49,18 @@ class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
     )
     account: str = pydantic.Field(
         os.getenv("HARNESS_ACCOUNT_ID", ...),
-        description="The harness account ID.",
+        description="The harness account ID. We will attempt to read it from the environment if not provided.",
         min_length=22,
         max_length=22,
         pattern=r"^[a-zA-Z0-9_\-]+$",
     )
     organization: str = pydantic.Field(
         os.getenv("HARNESS_ORG_ID", ...),
-        description="The harness organization ID.",
+        description="The harness organization ID. We will attempt to read it from the environment if not provided.",
     )
     project: str = pydantic.Field(
         os.getenv("HARNESS_PROJECT_ID", ...),
-        description="The harness project ID.",
+        description="The harness project ID. We will attempt to read it from the environment if not provided.",
     )
 
     provider: t.Literal["harness"] = pydantic.Field(
