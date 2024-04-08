@@ -17,6 +17,8 @@ FlagProvider = t.Union[
     NoopFlagProvider,
 ]
 
+_FlagProvider: pydantic.TypeAdapter[FlagProvider] = pydantic.TypeAdapter(FlagProvider)
+
 
 def _ensure_dict(o: t.Any) -> t.Dict[str, t.Any]:
     """Unwraps dynaconf config objects to dict."""
@@ -32,9 +34,7 @@ def load_feature_flag_provider(
 ) -> FlagProvider:
     options = _ensure_dict(options or {})
     options["provider"] = provider
-    return t.cast(
-        FlagProvider, pydantic.TypeAdapter(FlagProvider).validate_python(options)
-    )
+    return _FlagProvider.validate_python(options)
 
 
 __all__ = [
