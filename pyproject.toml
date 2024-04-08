@@ -7,7 +7,7 @@ authors = [
 ]
 dependencies = [
     "sqlmesh",
-    "dlt",
+    "dlt[duckdb] @ git+https://github.com/dlt-hub/dlt.git@48cdfa1eb7d7b0fb37411d61cc0eb747fba814a7",
     "typer[all]>=0.8.0",
     "harness-featureflags>=1.2.0",
     "python-dotenv>=1.0.0",
