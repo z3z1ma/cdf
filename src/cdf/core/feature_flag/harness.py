@@ -42,7 +42,7 @@ class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
 
     api_key: str = pydantic.Field(
         description="The harness API key. Get it from your user settings.",
-        pattern=r"^pat\.[a-zA-Z0-9_\-]+$",
+        pattern=r"^pat\.[a-zA-Z0-9_\-]+\.[a-fA-F0-9]+\.[a-zA-Z0-9_\-]+$",
     )
     sdk_key: pydantic.UUID4 = pydantic.Field(
         description="The harness SDK key. Get it from the environment management page of the FF module.",
