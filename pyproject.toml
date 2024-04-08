@@ -31,6 +31,7 @@ license.file = "LICENSE"
 dev = [
     "pytest>=7.4.3",
     "pytest-mock>=3.12.0",
+    "pydoc-markdown>4",
 ]
 
 [project.scripts]

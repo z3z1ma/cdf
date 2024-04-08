@@ -8,6 +8,7 @@
 
 - API Reference
 
-  - [Python](reference.md)
+  - [Python](api_reference.md)
+  - [CLI](cli_reference.md)
 
 - [Changelog](changelog.md)
