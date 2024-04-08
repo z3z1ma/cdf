@@ -14,35 +14,36 @@ if t.TYPE_CHECKING:
     from dlt.sources import DltSource
 
 
-class FileFlagProvider(BaseFlagProvider, extra="allow", arbitrary_types_allowed=True):
+class FileFlagProvider(BaseFlagProvider, extra="allow"):
     path: str = pydantic.Field(
         description="The path to the file where the feature flags are stored in the configured filesystem."
-    )
-    storage: fsspec.AbstractFileSystem = pydantic.Field(
-        default=fsspec.filesystem("file"),
-        description="This leverages the configured filesystem and can be used to store the flags in S3, GCS, etc. It should not be set directly.",
-        exclude=True,
     )
 
     provider: t.Literal["file"] = pydantic.Field(
         "file", frozen=True, description="The feature flag provider."
     )
 
+    _storage: fsspec.AbstractFileSystem
+
     _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
+
+    def __init__(self, **data: t.Any) -> None:
+        super().__init__(**data)
+        self._storage = data.get("storage", fsspec.filesystem("file"))
 
     def apply_source(self, source: "DltSource") -> "DltSource":
         """Apply the feature flags to a dlt source."""
         logger.info("Reading feature flags from %s", self.path)
-        if not self.storage.exists(self.path):
+        if not self._storage.exists(self.path):
             flags = {}
         else:
-            with self.storage.open(self.path) as file:
+            with self._storage.open(self.path) as file:
                 flags = json.load(file)
         source_name = source.name
         for resource_name, resource in source.selected_resources.items():
             key = f"{source_name}.{resource_name}"
             resource.selected = flags.setdefault(key, False)
-        with self._lock, self.storage.open(self.path, "w") as file:
+        with self._lock, self._storage.open(self.path, "w") as file:
             json.dump(flags, file, indent=2)
         return source
 
