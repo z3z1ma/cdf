@@ -12,3 +12,5 @@ _rendered/
 
 .cache/
 .ipynb_checkpoints/
+
+*.duckdb
