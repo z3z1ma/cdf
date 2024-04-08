@@ -48,15 +48,18 @@ class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
         description="The harness SDK key. Get it from the environment management page of the FF module.",
     )
     account: str = pydantic.Field(
+        os.getenv("HARNESS_ACCOUNT_ID", ...),
         description="The harness account ID.",
         min_length=22,
         max_length=22,
         pattern=r"^[a-zA-Z0-9_\-]+$",
     )
     organization: str = pydantic.Field(
+        os.getenv("HARNESS_ORG_ID", ...),
         description="The harness organization ID.",
     )
     project: str = pydantic.Field(
+        os.getenv("HARNESS_PROJECT_ID", ...),
         description="The harness project ID.",
     )
 
@@ -64,29 +67,8 @@ class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
 
     _client: t.Optional[CfClient] = None
 
-    @pydantic.field_validator("account", mode="before")
-    @classmethod
-    def _validate_account(cls, value: str) -> str:
-        if not value:
-            value = os.environ["HARNESS_ACCOUNT_ID"]
-        return value
-
-    @pydantic.field_validator("organization", mode="before")
-    @classmethod
-    def _validate_organization(cls, value: str) -> str:
-        if not value:
-            value = os.environ["HARNESS_ORG_ID"]
-        return value
-
-    @pydantic.field_validator("project", mode="before")
-    @classmethod
-    def _validate_project(cls, value: str) -> str:
-        if not value:
-            value = os.environ["HARNESS_PROJECT_ID"]
-        return value
-
     @pydantic.model_validator(mode="after")
-    def _configure(self):
+    def _quiet_logger(self):
         """Configure the harness FF logger to only show errors. Its too verbose otherwise."""
         _ff_logger.setLevel(logging.ERROR)
         return self
