@@ -274,6 +274,11 @@ class InstallableRequirements(pydantic.BaseModel):
 class PythonScript(WorkspaceComponent, InstallableRequirements):
     """A python script component."""
 
+    auto_install: bool = pydantic.Field(
+        False,
+        description="Whether to automatically install the requirements for the script. Useful for leaner Docker images which defer certain component dep installs to runtime.",
+    )
+
     _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
     """A lock for ensuring thread safety."""
 
@@ -327,6 +332,8 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
             run_name = ".".join(parts)
             try:
                 with self._lock:
+                    if self.auto_install:
+                        self.install_requirements()
                     return runpy.run_path(
                         str(self.path),
                         run_name=run_name,
