@@ -29,7 +29,10 @@ class MetricInterface(t.Protocol):
 class PipelineMetricSpecification(PythonEntrypoint):
     """Defines metrics which can be captured during pipeline execution"""
 
-    options: t.Dict[str, t.Any] = {}
+    options: t.Dict[str, t.Any] = pydantic.Field(
+        default_factory=dict,
+        description="Kwargs to pass to the metric function if it is a callable that returns a metric interface. If the metric is already a metric interface, this should be left empty.",
+    )
     """
     Kwargs to pass to the metric function.
 
@@ -89,7 +92,10 @@ class FilterInterface(t.Protocol):
 class PipelineFilterSpecification(PythonEntrypoint):
     """Defines filters which can be applied to pipeline execution"""
 
-    options: t.Dict[str, t.Any] = {}
+    options: t.Dict[str, t.Any] = pydantic.Field(
+        default_factory=dict,
+        description="Kwargs to pass to the filter function if it is a callable that returns a filter interface. If the filter is already a filter interface, this should be left empty.",
+    )
     """
     Kwargs to pass to the filter function. 
 
@@ -121,7 +127,10 @@ class SchemaOptions(pydantic.BaseModel):
 class PipelineSpecification(PythonScript, Schedulable):
     """A pipeline specification."""
 
-    metrics: InlineMetricSpecifications = {}
+    metrics: InlineMetricSpecifications = pydantic.Field(
+        default_factory=dict,
+        description="A dict of resource name glob patterns to metric definitions.",
+    )
     """
     A dict of resource name glob patterns to metric definitions.
 
@@ -129,7 +138,10 @@ class PipelineSpecification(PythonScript, Schedulable):
     accumulated into the metric_state dict. The metric definitions are callables that
     take the current item and the current metric value and return the new metric value.
     """
-    filters: InlineFilterSpecifications = {}
+    filters: InlineFilterSpecifications = pydantic.Field(
+        default_factory=dict,
+        description="A dict of resource name glob patterns to filter definitions.",
+    )
     """
     A dict of resource name glob patterns to filter definitions.
 
@@ -138,7 +150,10 @@ class PipelineSpecification(PythonScript, Schedulable):
     whether the item should be filtered out.
     """
 
-    dataset_name: str = ""
+    dataset_name: str = pydantic.Field(
+        "{name}_v{version}",
+        description="The name of the dataset associated with the pipeline. Defaults to the versioned name. This string is formatted with the pipeline name, version, meta, and tags.",
+    )
     """The name of the dataset associated with the pipeline."""
 
     _metric_state: t.Dict[str, t.Dict[str, Metric]] = {}

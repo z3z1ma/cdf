@@ -19,10 +19,14 @@ class FileFlagProvider(BaseFlagProvider, extra="allow", arbitrary_types_allowed=
         description="The path to the file where the feature flags are stored in the configured filesystem."
     )
     storage: fsspec.AbstractFileSystem = pydantic.Field(
-        default=fsspec.filesystem("file")
+        default=fsspec.filesystem("file"),
+        description="This leverages the configured filesystem and can be used to store the flags in S3, GCS, etc. It should not be set directly.",
+        exclude=True,
     )
 
-    provider: t.Literal["file"] = "file"
+    provider: t.Literal["file"] = pydantic.Field(
+        "file", frozen=True, description="The feature flag provider."
+    )
 
     _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
 

@@ -52,20 +52,45 @@ class BaseComponent(pydantic.BaseModel):
             default_factory=_gen_anon_name,
             pattern=r"^[a-zA-Z0-9_-]+$",
             max_length=64,
+            description="The name of the component. Must be unique within the workspace.",
         ),
     ]
     """The name of the component."""
-    version: t.Annotated[int, pydantic.Field(1, ge=1, le=999, frozen=True)] = 1
+    version: t.Annotated[
+        int,
+        pydantic.Field(
+            1,
+            ge=1,
+            le=999,
+            frozen=True,
+            description="The version of the component. Used internally to version datasets and serves as an external signal to dependees that something has changed in a breaking way. All components are versioned.",
+        ),
+    ] = 1
     """The version of the component."""
-    owner: str | None = None
+    owner: str | None = pydantic.Field(
+        None,
+        description="The owners of the component.",
+    )
     """The owners of the component."""
-    description: str = _NO_DESCRIPTION
+    description: str = pydantic.Field(
+        _NO_DESCRIPTION,
+        description="The description of the component. This should help users understand the purpose of the component. For scripts and entrypoints, we will attempt to extract the relevant docstring.",
+    )
     """The description of the component."""
-    tags: t.List[str] = []
+    tags: t.List[str] = pydantic.Field(
+        default_factory=list,
+        description="Tags for the component. Used for queries and integrations.",
+    )
     """Tags for this component used for component queries and integrations."""
-    enabled: bool = True
+    enabled: bool = pydantic.Field(
+        True,
+        description="Whether this component is enabled. Respected in cdf operations.",
+    )
     """Whether this component is enabled."""
-    meta: t.Dict[str, t.Any] = {}
+    meta: t.Dict[str, t.Any] = pydantic.Field(
+        default_factory=dict,
+        description="Arbitrary user-defined metadata for this component. Used for user-specific integrations and automation.",
+    )
     """Arbitrary user-defined metadata for this component."""
 
     @property
@@ -124,9 +149,18 @@ class BaseComponent(pydantic.BaseModel):
 class WorkspaceComponent(BaseComponent):
     """A component within a workspace."""
 
-    workspace_path: Path = Path(".")
+    workspace_path: Path = pydantic.Field(
+        Path("."),
+        exclude=True,
+        description="The fully qualified path to the workspace containing the component. This changes from system to system and should not be set by the user or serialized.",
+    )
     """The path to the workspace containing the component."""
-    component_path: Path = pydantic.Field(Path("."), alias="path")
+    component_path: Path = pydantic.Field(
+        Path("."),
+        alias="path",
+        frozen=True,
+        description="The path to the component within the workspace folder.",
+    )
     """The path to the component within the workspace folder."""
 
     _folder: str = "."
@@ -159,7 +193,12 @@ class WorkspaceComponent(BaseComponent):
 class Schedulable(pydantic.BaseModel):
     """A mixin for schedulable components."""
 
-    cron_string: str = pydantic.Field("@daily", serialization_alias="cron")
+    cron_string: str = pydantic.Field(
+        "@daily",
+        serialization_alias="cron",
+        frozen=True,
+        description="A cron expression for scheduling the primary action associated with the component. This is intended to be leveraged by libraries like Airflow.",
+    )
     """A cron expression for scheduling the primary action associated with the component."""
 
     @property
@@ -202,7 +241,11 @@ class Schedulable(pydantic.BaseModel):
 class InstallableRequirements(pydantic.BaseModel):
     """A mixin for components that support installation of requirements."""
 
-    requirements: t.List[t.Annotated[str, pydantic.Field(..., frozen=True)]] = []
+    requirements: t.List[str] = pydantic.Field(
+        [],
+        frozen=True,
+        description="The full set of requirements needed to run this component independently. Used for packaging.",
+    )
     """The requirements for the component."""
 
     @pydantic.field_validator("requirements", mode="before")
@@ -314,7 +357,12 @@ class PythonEntrypoint(BaseComponent, InstallableRequirements):
 
     entrypoint: t.Annotated[
         str,
-        pydantic.Field(..., frozen=True, pattern=r"^[a-zA-Z0-9_\.]+:[a-zA-Z0-9_\.]+$"),
+        pydantic.Field(
+            ...,
+            frozen=True,
+            pattern=r"^[a-zA-Z0-9_\.]+:[a-zA-Z0-9_\.]+$",
+            description="The entrypoint function in the format module:func.",
+        ),
     ]
     """The entrypoint of the component."""
 

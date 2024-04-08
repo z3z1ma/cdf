@@ -63,7 +63,9 @@ class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
         description="The harness project ID.",
     )
 
-    provider: t.Literal["harness"] = "harness"
+    provider: t.Literal["harness"] = pydantic.Field(
+        "harness", frozen=True, description="The feature flag provider."
+    )
 
     _client: t.Optional[CfClient] = None
 

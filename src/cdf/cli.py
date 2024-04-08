@@ -7,19 +7,29 @@ import subprocess
 import sys
 import typing as t
 from contextvars import Token
+from enum import Enum
 from pathlib import Path
 
+import pydantic
 import rich
 import typer
 
 import cdf.core.constants as c
 import cdf.core.context as context
+from cdf.core.feature_flag import FlagProvider
 from cdf.core.project import Workspace, load_project
 from cdf.core.runtime import (
     execute_notebook_specification,
     execute_pipeline_specification,
     execute_publisher_specification,
     execute_script_specification,
+)
+from cdf.core.specification import (
+    NotebookSpecification,
+    PipelineSpecification,
+    PublisherSpecification,
+    ScriptSpecification,
+    SinkSpecification,
 )
 
 app = typer.Typer(
@@ -366,6 +376,54 @@ def jupyter_lab(
         )
     finally:
         context.active_project.reset(token)
+
+
+class _SpecType(str, Enum):
+    """An enum of specs which can be described via the `spec` command."""
+
+    pipeline = "pipeline"
+    publisher = "publisher"
+    script = "script"
+    notebook = "notebook"
+    sink = "sink"
+    feature_flags = "feature_flags"
+
+
+@app.command(rich_help_panel="Develop")
+def spec(name: _SpecType) -> None:
+    """:mag: Print the fields for a given spec type.
+
+    \f
+    Args:
+        name: The name of the spec to print.
+    """
+
+    def _print_spec(spec: t.Type[pydantic.BaseModel]) -> None:
+        console.print(f"[bold]{spec.__name__}:[/bold]")
+        for name, info in spec.model_fields.items():
+            typ = getattr(info.annotation, "__name__", info.annotation)
+            desc = info.description or "No description provided."
+            d = f"- [blue]{name}[/blue] ({typ!s}): {desc}"
+            if "Undefined" not in str(info.default):
+                d += f" Defaults to `{info.default}`)"
+            console.print(d)
+        console.print()
+
+    if name == _SpecType.pipeline:
+        _print_spec(PipelineSpecification)
+    elif name == _SpecType.publisher:
+        _print_spec(PublisherSpecification)
+    elif name == _SpecType.script:
+        _print_spec(ScriptSpecification)
+    elif name == _SpecType.notebook:
+        _print_spec(NotebookSpecification)
+    elif name == _SpecType.sink:
+        _print_spec(SinkSpecification)
+    elif name == _SpecType.feature_flags:
+        for spec in t.get_args(FlagProvider):
+            _print_spec(spec)
+    else:
+        raise ValueError(f"Invalid spec type {name}.")
 
 
 def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "Token"]:
