@@ -390,12 +390,16 @@ class _SpecType(str, Enum):
 
 
 @app.command(rich_help_panel="Develop")
-def spec(name: _SpecType) -> None:
+def spec(
+    name: _SpecType,
+    json_schema: bool = False,
+) -> None:
     """:mag: Print the fields for a given spec type.
 
     \f
     Args:
         name: The name of the spec to print.
+        json_schema: Whether to print the JSON schema for the spec.
     """
 
     def _print_spec(spec: t.Type[pydantic.BaseModel]) -> None:
@@ -409,19 +413,23 @@ def spec(name: _SpecType) -> None:
             console.print(d)
         console.print()
 
+    _print = lambda s: (  # noqa
+        console.print(s.model_json_schema()) if json_schema else _print_spec(s)
+    )
+
     if name == _SpecType.pipeline:
-        _print_spec(PipelineSpecification)
+        _print(PipelineSpecification)
     elif name == _SpecType.publisher:
-        _print_spec(PublisherSpecification)
+        _print(PublisherSpecification)
     elif name == _SpecType.script:
-        _print_spec(ScriptSpecification)
+        _print(ScriptSpecification)
     elif name == _SpecType.notebook:
-        _print_spec(NotebookSpecification)
+        _print(NotebookSpecification)
     elif name == _SpecType.sink:
-        _print_spec(SinkSpecification)
+        _print(SinkSpecification)
     elif name == _SpecType.feature_flags:
         for spec in t.get_args(FlagProvider):
-            _print_spec(spec)
+            _print(spec)
     else:
         raise ValueError(f"Invalid spec type {name}.")
 
