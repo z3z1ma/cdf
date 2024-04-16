@@ -16,7 +16,7 @@ It performs the following functions:
 import fnmatch
 import os
 import typing as t
-from contextlib import contextmanager, nullcontext, redirect_stdout
+from contextlib import contextmanager, nullcontext, redirect_stdout, suppress
 from contextvars import ContextVar, copy_context
 
 import dlt
@@ -340,6 +340,7 @@ def execute_pipeline_specification(
         metrics=spec.runtime_metrics,
     ):
         context_snapshot = copy_context()
+        pipe_ref = context_snapshot.run(pipeline_factory)
     null = open(os.devnull, "w")
     maybe_redirect = redirect_stdout(null) if quiet else nullcontext()
     if intercept_sources:
@@ -355,6 +356,17 @@ def execute_pipeline_specification(
     try:
         with maybe_redirect:
             exports = context_snapshot.run(spec.main)
+        with (
+            suppress(KeyError),
+            pipe_ref.sql_client() as client,
+            client.with_staging_dataset(staging=True) as staging_client,
+        ):
+            strategy = dlt.config["destination.replace_strategy"]
+            if strategy in ("insert-from-staging",) and staging_client.has_dataset():
+                logger.info(
+                    f"Cleaning up staging dataset {staging_client.dataset_name}"
+                )
+                staging_client.drop_dataset()
         return M.ok(exports)
     except Exception as e:
         return M.error(e)

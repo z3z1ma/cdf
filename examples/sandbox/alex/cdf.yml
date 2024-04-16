@@ -1,5 +1,7 @@
 default:
   name: alex
+  destination:
+    replace_strategy: insert-from-staging
   pipelines:
     # The pipeline name is based on the dict key by default, metadata follows in the body
     us_cities:
