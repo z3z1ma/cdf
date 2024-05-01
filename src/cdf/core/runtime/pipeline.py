@@ -265,20 +265,30 @@ class RuntimePipeline(Pipeline):
         )
 
 
-def pipeline_factory() -> RuntimePipeline:
+def pipeline_factory(**user_options: t.Any) -> RuntimePipeline:
     """Creates a cdf pipeline. This is used in lieu of dlt.pipeline. in user code.
 
     A cdf pipeline is a wrapper around a dlt pipeline that leverages injected information
-    from the runtime context. Raises a ValueError if the runtime context is not set.
+    from the runtime context.
+
+    Args:
+        **user_options: Kwargs which override the context options. All dlt.pipeline options can
+            be passed here except _impl_cls.
+
+    Raises:
+        ValueError if the runtime context is not set.
     """
     runtime = CONTEXT.get()
-    # TODO: contribute a PR to expose an _impl_cls argument in dlt.pipeline
-    # https://github.com/dlt-hub/dlt/pull/1176
+    context_options = {
+        "pipeline_name": runtime.pipeline_name,
+        "destination": runtime.destination,
+        "dataset_name": runtime.dataset_name,
+    }
+    if runtime.enable_stage:
+        context_options["staging"] = runtime.staging
+    context_options.update(user_options)
     return dlt.pipeline(
-        pipeline_name=runtime.pipeline_name,
-        destination=runtime.destination,
-        staging=runtime.staging if runtime.enable_stage else None,
-        dataset_name=runtime.dataset_name,
+        **context_options,
         _impl_cls=RuntimePipeline,
     )
 

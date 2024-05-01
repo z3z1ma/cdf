@@ -92,7 +92,7 @@ class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
         """Drop a feature flag."""
         logger.info(f"Deleting feature flag {ident}")
         requests.delete(
-            f"https://app.harness.io/gateway/cf/admin/features/{ident}",
+            f"https://app.harness.io/cf/admin/features/{ident}",
             headers={"x-api-key": self.api_key},
             params={
                 "accountIdentifier": self.account,
@@ -108,7 +108,7 @@ class HarnessFlagProvider(BaseFlagProvider, extra="allow"):
         logger.info(f"Creating feature flag {ident}")
         try:
             requests.post(
-                "https://app.harness.io/gateway/cf/admin/features",
+                "https://app.harness.io/cf/admin/features",
                 params={
                     "accountIdentifier": self.account,
                     "orgIdentifier": self.organization,
