@@ -273,11 +273,18 @@ def pipeline_factory(**user_options: t.Any) -> RuntimePipeline:
 
     Args:
         **user_options: Kwargs which override the context options. All dlt.pipeline options can
-            be passed here except _impl_cls.
+            be passed here except _impl_cls. Passing dataset_name here will raise a warning.
 
     Raises:
         ValueError if the runtime context is not set.
     """
+    # NOTE: consider Tracer class which tracks dataset_name + pipeline_name combinations in the factory
+    # and stored them in a set? Same in pipeline run/load methods
+    if "dataset_name" in user_options:
+        logger.warning(
+            "Using dataset_name in a cdf pipeline should only be done if you know what you are doing."
+            " cdf will automatically manage the dataset name for you and relies on deterministic naming."
+        )
     runtime = CONTEXT.get()
     context_options = {
         "pipeline_name": runtime.pipeline_name,

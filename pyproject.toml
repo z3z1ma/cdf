@@ -9,7 +9,7 @@ dependencies = [
     "sqlmesh",
     "dlt[duckdb]",
     "typer[all]>=0.8.0",
-    "harness-featureflags>=1.2.0",
+    "harness-featureflags>=1.2.0,<1.6.1",
     "python-dotenv>=1.0.0",
     "pex>=2.1.100,<2.2.0",
     "pydantic>=2.5.0,<3.0.0",
