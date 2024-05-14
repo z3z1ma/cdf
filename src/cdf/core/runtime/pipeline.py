@@ -15,9 +15,9 @@ It performs the following functions:
 
 import fnmatch
 import os
+import types
 import typing as t
-from contextlib import contextmanager, nullcontext, redirect_stdout, suppress
-from contextvars import ContextVar, copy_context
+from contextlib import nullcontext, redirect_stdout, suppress
 
 import dlt
 from dlt.common.destination import TDestinationReferenceArg, TLoaderFileFormat
@@ -37,85 +37,105 @@ from cdf.core.specification import PipelineSpecification
 from cdf.types import M
 
 T = t.TypeVar("T")
+P = t.ParamSpec("P")
+
+TPipeline = t.TypeVar("TPipeline", bound=dlt.Pipeline)
 
 
-def _ident(x: T) -> T:
-    """An identity function."""
-    return x
+def _wrap_pipeline(default_factory: t.Callable[P, TPipeline]):
+    """Wraps dlt.pipeline such that it sources the active pipeline from the context."""
+
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> TPipeline:
+        try:
+            pipe = context.active_pipeline.get()
+            pipe.activate()
+            if kwargs:
+                logger.warning("CDF runtime detected, ignoring pipeline arguments")
+            return t.cast(TPipeline, pipe)
+        except LookupError:
+            return default_factory(*args, **kwargs)
+
+    return wrapper
 
 
-class RuntimeContext(t.NamedTuple):
-    """The runtime context for a pipeline."""
-
-    pipeline_name: str
-    """The pipeline name."""
-    dataset_name: str
-    """The dataset name."""
-    destination: TDestinationReferenceArg
-    """The destination."""
-    staging: t.Optional[TDestinationReferenceArg] = None
-    """The staging location."""
-    select: t.Optional[t.List[str]] = None
-    """A list of glob patterns to select resources."""
-    exclude: t.Optional[t.List[str]] = None
-    """A list of glob patterns to exclude resources."""
-    force_replace: bool = False
-    """Whether to force replace disposition."""
-    intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None
-    """Stores the intercepted sources in itself if provided."""
-    enable_stage: bool = True
-    """Whether to stage data if a staging location is provided."""
-    applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident
-    """The transformation to apply to the sources."""
-    metrics: t.Optional[t.Mapping[str, t.Any]] = None
-    """A container for captured metrics during extract."""
+pipeline = _wrap_pipeline(dlt.pipeline)
+"""Gets the active pipeline or creates a new one with the given arguments."""
 
 
-CONTEXT: ContextVar[RuntimeContext] = ContextVar("runtime_context")
-
-
-@contextmanager
-def runtime_context(
-    pipeline_name: str,
-    dataset_name: str,
-    destination: TDestinationReferenceArg,
-    staging: t.Optional[TDestinationReferenceArg] = None,
-    select: t.Optional[t.List[str]] = None,
-    exclude: t.Optional[t.List[str]] = None,
-    force_replace: bool = False,
-    intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None,
-    enable_stage: bool = True,
-    applicator: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource] = _ident,
-    metrics: t.Optional[t.Mapping[str, t.Any]] = None,
-) -> t.Iterator[None]:
-    """A context manager for setting the runtime context.
-
-    This allows the cdf library to set the context prior to running the pipeline which is
-    ultimately evaluating user code.
-    """
-    token = CONTEXT.set(
-        RuntimeContext(
-            pipeline_name,
-            dataset_name,
-            destination,
-            staging,
-            select,
-            exclude,
-            force_replace,
-            intercept_sources,
-            enable_stage,
-            applicator,
-            metrics,
-        )
+def _apply_filters(
+    source: dlt.sources.DltSource, resource_patterns: t.List[str], invert: bool
+) -> dlt.sources.DltSource:
+    """Filters resources in a source based on a list of patterns."""
+    return source.with_resources(
+        *[
+            r
+            for r in source.selected_resources
+            if any(fnmatch.fnmatch(r, patt) for patt in resource_patterns) ^ invert
+        ]
     )
-    try:
-        yield
-    finally:
-        CONTEXT.reset(token)
 
 
 class RuntimePipeline(Pipeline):
     """Overrides certain methods of the dlt pipeline to allow for cdf specific behavior."""
+
+    def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
+        super().__init__(*args, **kwargs)
+        self._force_replace = False
+        self._dry_run = False
+        self._runtime_metrics = {}
+        self._tracked_sources = set()
+        self._source_hooks = []
+
+    def configure_force_replace(self, force_replace: bool) -> "RuntimePipeline":
+        """Sets the force replace disposition."""
+        self._force_replace = force_replace
+        return self
+
+    def configure_dry_run(self, dry_run: bool) -> "RuntimePipeline":
+        """Sets the dry run mode."""
+        self._dry_run = dry_run
+        return self
+
+    def attach_metric_container(
+        self, container: types.MappingProxyType[str, t.Any]
+    ) -> "RuntimePipeline":
+        """Attaches a container for sideloading captured metrics during extract."""
+        self._runtime_metrics = container
+        return self
+
+    def configure_source_hooks(
+        self,
+        *hooks: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource],
+        extend: bool = False,
+    ) -> "RuntimePipeline":
+        """Sets the source hooks for the pipeline."""
+        if extend:
+            self._source_hooks.extend(hooks)
+        else:
+            self._source_hooks = list(hooks)
+        return self
+
+    @property
+    def force_replace(self) -> bool:
+        """Whether to force replace disposition."""
+        return self._force_replace
+
+    @property
+    def dry_run(self) -> bool:
+        """Dry run mode."""
+        return self._dry_run
+
+    @property
+    def runtime_metrics(self) -> t.Mapping[str, t.Any]:
+        """A container for captured metrics during extract."""
+        return self._runtime_metrics
+
+    @property
+    def source_hooks(
+        self,
+    ) -> t.List[t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource]]:
+        """The source hooks for the pipeline."""
+        return self._source_hooks
 
     def extract(
         self,
@@ -144,52 +164,22 @@ class RuntimePipeline(Pipeline):
                 schema_contract,
             )
 
-        runtime_context = CONTEXT.get()
-
-        def _apply_filters(
-            source: dlt.sources.DltSource, resource_patterns: t.List[str], invert: bool
-        ) -> dlt.sources.DltSource:
-            """Filters resources in a source based on a list of patterns."""
-            return source.with_resources(
-                *[
-                    r
-                    for r in source.selected_resources
-                    if any(fnmatch.fnmatch(r, patt) for patt in resource_patterns)
-                    ^ invert
-                ]
-            )
-
-        if runtime_context.select:
-            for i, source in enumerate(sources):
-                sources[i] = _apply_filters(
-                    source, runtime_context.select, invert=False
-                )
-        else:
-            active_project = context.active_project.get()
-            for i, source in enumerate(sources):
-                sources[i] = active_project.feature_flag_provider.apply_source(source)
-
-        if runtime_context.exclude:
-            for i, source in enumerate(sources):
-                sources[i] = _apply_filters(
-                    source, runtime_context.exclude, invert=True
-                )
-
-        if runtime_context.intercept_sources is not None:
-            extract_step = Extract(
-                self._schema_storage,
-                self._normalize_storage_config(),
-                self.collector,
-                original_data=data,
-            )
-            for source in sources:
-                runtime_context.intercept_sources.add(source)
-            return self._get_step_info(extract_step)
-
         for i, source in enumerate(sources):
-            sources[i] = runtime_context.applicator(source)
+            for hook in self._source_hooks:
+                sources[i] = hook(source)
+            self._tracked_sources.add(source)
 
-        if runtime_context.force_replace:
+        if self.dry_run:
+            return self._get_step_info(
+                step=Extract(
+                    self._schema_storage,
+                    self._normalize_storage_config(),
+                    self.collector,
+                    original_data=data,
+                )
+            )
+
+        if self.force_replace:
             write_disposition = "replace"
 
         info = super().extract(
@@ -205,13 +195,17 @@ class RuntimePipeline(Pipeline):
             schema_contract=schema_contract,
         )
 
-        if runtime_context.metrics:
+        if self.runtime_metrics:
+            logger.info(
+                "Metrics captured during %s extract, sideloading to destination...",
+                info.pipeline.pipeline_name,
+            )
             super().extract(
                 dlt.resource(
                     [
                         {
                             "load_id": load_id,
-                            "metrics": dict(runtime_context.metrics),
+                            "metrics": dict(self.runtime_metrics),
                         }
                         for load_id in info.loads_ids
                     ],
@@ -231,7 +225,6 @@ class RuntimePipeline(Pipeline):
         self,
         data: t.Any = None,
         *,
-        dataset_name: str = None,  # type: ignore[arg-type]
         table_name: str = None,  # type: ignore[arg-type]
         write_disposition: TWriteDisposition = None,  # type: ignore[arg-type]
         columns: TAnySchemaColumns = None,  # type: ignore[arg-type]
@@ -240,21 +233,11 @@ class RuntimePipeline(Pipeline):
         loader_file_format: TLoaderFileFormat = None,  # type: ignore[arg-type]
         schema_contract: TSchemaContract = None,  # type: ignore[arg-type]
     ) -> LoadInfo:
-        if dataset_name is not None:
-            logger.warning(
-                "Using dataset_name is a cdf pipeline should only be done if you know what you are doing."
-                " cdf will automatically manage the dataset name for you and relies on deterministic naming."
-            )
-
-        runtime_context = CONTEXT.get()
-        if runtime_context.force_replace:
+        if self._force_replace:
             write_disposition = "replace"
 
         return super().run(
             data,
-            destination=runtime_context.destination,
-            staging=(runtime_context.staging if runtime_context.enable_stage else None),
-            dataset_name=dataset_name or runtime_context.dataset_name,
             table_name=table_name,
             write_disposition=write_disposition,
             columns=columns,
@@ -265,41 +248,6 @@ class RuntimePipeline(Pipeline):
         )
 
 
-def pipeline_factory(**user_options: t.Any) -> RuntimePipeline:
-    """Creates a cdf pipeline. This is used in lieu of dlt.pipeline. in user code.
-
-    A cdf pipeline is a wrapper around a dlt pipeline that leverages injected information
-    from the runtime context.
-
-    Args:
-        **user_options: Kwargs which override the context options. All dlt.pipeline options can
-            be passed here except _impl_cls. Passing dataset_name here will raise a warning.
-
-    Raises:
-        ValueError if the runtime context is not set.
-    """
-    # NOTE: consider Tracer class which tracks dataset_name + pipeline_name combinations in the factory
-    # and stored them in a set? Same in pipeline run/load methods
-    if "dataset_name" in user_options:
-        logger.warning(
-            "Using dataset_name in a cdf pipeline should only be done if you know what you are doing."
-            " cdf will automatically manage the dataset name for you and relies on deterministic naming."
-        )
-    runtime = CONTEXT.get()
-    context_options = {
-        "pipeline_name": runtime.pipeline_name,
-        "destination": runtime.destination,
-        "dataset_name": runtime.dataset_name,
-    }
-    if runtime.enable_stage:
-        context_options["staging"] = runtime.staging
-    context_options.update(user_options)
-    return dlt.pipeline(
-        **context_options,
-        _impl_cls=RuntimePipeline,
-    )
-
-
 @t.overload
 def execute_pipeline_specification(
     spec: PipelineSpecification,
@@ -308,9 +256,11 @@ def execute_pipeline_specification(
     select: t.Optional[t.List[str]] = None,
     exclude: t.Optional[t.List[str]] = None,
     force_replace: bool = False,
-    intercept_sources: t.Literal[False] = False,
+    dry_run: t.Literal[False] = False,
     enable_stage: bool = True,
     quiet: bool = False,
+    metric_container: t.Optional[t.Dict[str, t.Any]] = None,
+    **pipeline_options: t.Any,
 ) -> M.Result[t.Dict[str, t.Any], Exception]: ...
 
 
@@ -322,9 +272,11 @@ def execute_pipeline_specification(
     select: t.Optional[t.List[str]] = None,
     exclude: t.Optional[t.List[str]] = None,
     force_replace: bool = False,
-    intercept_sources: t.Literal[True] = True,
+    dry_run: t.Literal[True] = True,
     enable_stage: bool = True,
     quiet: bool = False,
+    metric_container: t.Optional[t.Dict[str, t.Any]] = None,
+    **pipeline_options: t.Any,
 ) -> M.Result[t.Set[dlt.sources.DltSource], Exception]: ...
 
 
@@ -335,60 +287,66 @@ def execute_pipeline_specification(
     select: t.Optional[t.List[str]] = None,
     exclude: t.Optional[t.List[str]] = None,
     force_replace: bool = False,
-    intercept_sources: bool = False,
+    dry_run: bool = False,
     enable_stage: bool = True,
     quiet: bool = False,
+    metric_container: t.Optional[t.MutableMapping[str, t.Any]] = None,
+    **pipeline_options: t.Any,
 ) -> t.Union[
     M.Result[t.Dict[str, t.Any], Exception],
     M.Result[t.Set[dlt.sources.DltSource], Exception],
 ]:
     """Executes a pipeline specification."""
-    with runtime_context(
-        pipeline_name=spec.name,
-        dataset_name=spec.dataset_name,
-        destination=destination,
-        staging=staging,
-        select=select,
-        exclude=exclude,
-        force_replace=force_replace,
-        intercept_sources=set() if intercept_sources else None,
-        enable_stage=enable_stage and bool(staging),
-        applicator=spec.apply,
-        metrics=spec.runtime_metrics,
-    ):
-        context_snapshot = copy_context()
-        pipe_ref = context_snapshot.run(pipeline_factory)
+
+    metric_container = metric_container or {}
+    pipeline_options.update(
+        {"destination": destination, "staging": staging if enable_stage else None}
+    )
+
+    hooks = [lambda source: spec.inject_metrics_and_filters(source, metric_container)]
+    if select:
+        hooks.append(lambda source: _apply_filters(source, select, invert=False))
+    else:
+        proj = context.active_project.get()
+        hooks.append(lambda source: proj.feature_flag_provider.apply_source(source))
+    if exclude:
+        hooks.append(lambda source: _apply_filters(source, exclude, invert=True))
+
+    pipe_reference = (
+        spec.create_pipeline(RuntimePipeline, **pipeline_options)
+        .attach_metric_container(types.MappingProxyType(metric_container))
+        .configure_dry_run(dry_run)
+        .configure_source_hooks(*hooks)
+        .configure_force_replace(force_replace)
+    )
+    token = context.active_pipeline.set(pipe_reference)
+
     null = open(os.devnull, "w")
     maybe_redirect = redirect_stdout(null) if quiet else nullcontext()
-    if intercept_sources:
-        with maybe_redirect:
-            context_snapshot.run(spec.main)
-        null.close()
-        return M.ok(
-            t.cast(
-                t.Set[dlt.sources.DltSource],
-                context_snapshot[CONTEXT].intercept_sources,
-            )
-        )
     try:
+        if dry_run:
+            with maybe_redirect:
+                _ = spec()
+            return M.ok(pipe_reference._tracked_sources)
         with maybe_redirect:
-            exports = context_snapshot.run(spec.main)
+            exports = spec()
         with (
             suppress(KeyError),
-            pipe_ref.sql_client() as client,
-            client.with_staging_dataset(staging=True) as staging_client,
+            pipe_reference.sql_client() as client,
+            client.with_staging_dataset(staging=True) as client_staging,
         ):
             strategy = dlt.config["destination.replace_strategy"]
-            if strategy in ("insert-from-staging",) and staging_client.has_dataset():
+            if strategy in ("insert-from-staging",) and client_staging.has_dataset():
                 logger.info(
-                    f"Cleaning up staging dataset {staging_client.dataset_name}"
+                    f"Cleaning up staging dataset {client_staging.dataset_name}"
                 )
-                staging_client.drop_dataset()
+                client_staging.drop_dataset()
         return M.ok(exports)
     except Exception as e:
         return M.error(e)
     finally:
+        context.active_pipeline.reset(token)
         null.close()
 
 
-__all__ = ["pipeline_factory", "execute_pipeline_specification"]
+__all__ = ["execute_pipeline_specification"]

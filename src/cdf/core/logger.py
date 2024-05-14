@@ -131,7 +131,7 @@ def __getattr__(name: str) -> "LogMethod":
 
 def monkeypatch_dlt() -> None:
     """Monkeypatch the dlt logging module."""
-    from dlt.common.runtime import logger
+    from dlt.common import logger
 
     patched = create("dlt")
     setattr(logger, "_init_logging", lambda *a, **kw: patched)

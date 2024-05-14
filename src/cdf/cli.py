@@ -186,7 +186,7 @@ def discover(
         spec = workspace.get_pipeline(pipeline).unwrap()
         for i, source in enumerate(
             execute_pipeline_specification(
-                spec, "dummy", intercept_sources=True, quiet=not no_quiet
+                spec, "dummy", dry_run=True, quiet=not no_quiet
             ).unwrap()
         ):
             console.print(f"{i}: {source.name}")
@@ -228,7 +228,7 @@ def head(
                 (
                     resource
                     for src in execute_pipeline_specification(
-                        spec, "dummy", intercept_sources=True, quiet=True
+                        spec, "dummy", dry_run=True, quiet=True
                     ).unwrap()
                     for resource in src.resources.values()
                 ),
@@ -413,9 +413,8 @@ def spec(
             console.print(d)
         console.print()
 
-    _print = lambda s: (  # noqa
+    def _print(s: t.Type[pydantic.BaseModel]) -> None:
         console.print(s.model_json_schema()) if json_schema else _print_spec(s)
-    )
 
     if name == _SpecType.pipeline:
         _print(PipelineSpecification)
@@ -432,6 +431,46 @@ def spec(
             _print(spec)
     else:
         raise ValueError(f"Invalid spec type {name}.")
+
+
+@app.command(rich_help_panel="Develop")
+def export_schema(
+    ctx: typer.Context,
+    pipeline_to_sink: t.Annotated[
+        str,
+        typer.Argument(
+            help="The pipeline:sink combination from which to fetch the schema."
+        ),
+    ],
+) -> None:
+    """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]pipeline[/b blue]. Defaults to [cyan]5[/cyan].
+
+    This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        pipeline_to_sink: The pipeline:sink combination from which to fetch the schema.
+
+    Raises:
+        typer.BadParameter: If the pipeline or sink are not found.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        source, destination = pipeline_to_sink.split(":", 1)
+        sink, _ = (
+            workspace.get_sink(destination)
+            .map(lambda s: s.get_ingest_config())
+            .unwrap_or((destination, None))
+        )
+        spec = workspace.get_pipeline(source).unwrap()
+
+        for src in execute_pipeline_specification(
+            spec, sink, dry_run=True, quiet=True
+        ).unwrap():
+            ...
+    finally:
+        context.active_project.reset(token)
 
 
 def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "Token"]:

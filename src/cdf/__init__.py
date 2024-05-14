@@ -12,7 +12,7 @@ import cdf.core.constants as c
 import cdf.core.context as context
 import cdf.core.logger as logger
 from cdf.core.project import Project, Workspace, load_project
-from cdf.core.runtime import pipeline_factory as pipeline
+from cdf.core.runtime import pipeline
 from cdf.types import M, PathLike
 
 

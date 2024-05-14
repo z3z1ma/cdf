@@ -6,6 +6,7 @@ It facilitates communication between specifications and runtime modules.
 import typing as t
 from contextvars import ContextVar
 
+import dlt
 from dlt.common.configuration.container import Container
 from dlt.common.configuration.providers import ConfigProvider
 from dlt.common.configuration.specs.config_providers_context import (
@@ -18,6 +19,9 @@ if t.TYPE_CHECKING:
 
 active_project: ContextVar["ContinuousDataFramework"] = ContextVar("active_project")
 """The active project context variable."""
+
+active_pipeline: ContextVar[dlt.Pipeline] = ContextVar("active_pipeline")
+"""Stores the active pipeline."""
 
 debug_mode: ContextVar[bool] = ContextVar("debug_mode", default=False)
 """The debug mode context variable."""
@@ -33,6 +37,7 @@ class CDFConfigProvider(ConfigProvider):
     def get_value(
         self, key: str, hint: t.Type[t.Any], pipeline_name: str, *sections: str
     ) -> t.Tuple[t.Optional[t.Any], str]:
+        _ = hint
         if pipeline_name:
             sections = ("pipelines", pipeline_name, "options", *sections)
         fqn = ".".join((*sections, key))

@@ -4,7 +4,6 @@ import atexit
 import decimal
 import fnmatch
 import time
-import types
 import typing as t
 
 import dlt
@@ -15,9 +14,10 @@ import cdf.core.logger as logger
 from cdf.core.specification.base import PythonEntrypoint, PythonScript, Schedulable
 
 T = t.TypeVar("T")
+TPipeline = t.TypeVar("TPipeline", bound=dlt.Pipeline)
 
 Metric = t.Union[float, int, decimal.Decimal]
-MetricState = t.Dict[str, t.Dict[str, Metric]]
+MetricStateContainer = t.MutableMapping[str, t.MutableMapping[str, Metric]]
 
 
 class MetricInterface(t.Protocol):
@@ -47,7 +47,9 @@ class PipelineMetricSpecification(PythonEntrypoint):
             return self.main(**self.options)
         return self.main
 
-    def __call__(self, resource: dlt.sources.DltResource, state: MetricState) -> None:
+    def __call__(
+        self, resource: dlt.sources.DltResource, state: MetricStateContainer
+    ) -> None:
         """Adds a metric aggregator to a resource"""
         func = self.func
         first = True
@@ -156,9 +158,6 @@ class PipelineSpecification(PythonScript, Schedulable):
     )
     """The name of the dataset associated with the pipeline."""
 
-    _metric_state: t.Dict[str, t.Dict[str, Metric]] = {}
-    """Container for runtime metrics."""
-
     _folder = "pipelines"
     """The folder where pipeline scripts are stored."""
 
@@ -174,23 +173,34 @@ class PipelineSpecification(PythonScript, Schedulable):
             self.dataset_name = self.versioned_name
         return self
 
-    @property
-    def runtime_metrics(self) -> types.MappingProxyType[str, t.Dict[str, Metric]]:
-        """Get a read only view of the runtime metrics."""
-        return types.MappingProxyType(self._metric_state)
-
-    def apply(self, source: dlt.sources.DltSource) -> dlt.sources.DltSource:
+    def inject_metrics_and_filters(
+        self, source: dlt.sources.DltSource, container: MetricStateContainer
+    ) -> dlt.sources.DltSource:
         """Apply metrics and filters to a source."""
         for resource in source.selected_resources.values():
             for patt, metric in self.metrics.items():
                 if fnmatch.fnmatch(resource.name, patt):
                     for applicator in metric:
-                        applicator(resource, self._metric_state)
+                        applicator(resource, container)
             for patt, filter_ in self.filters.items():
                 if fnmatch.fnmatch(resource.name, patt):
                     for applicator in filter_:
                         applicator(resource)
         return source
+
+    def create_pipeline(
+        self,
+        klass: t.Type[TPipeline] = dlt.Pipeline,
+        /,
+        **kwargs: t.Any,
+    ) -> TPipeline:
+        """Convert the pipeline specification to a dlt pipeline object."""
+        return dlt.pipeline(
+            pipeline_name=self.name,
+            dataset_name=self.dataset_name,
+            **kwargs,
+            _impl_cls=klass,
+        )
 
 
 __all__ = ["PipelineSpecification"]
