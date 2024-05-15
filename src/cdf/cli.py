@@ -375,7 +375,7 @@ def execute_notebook(
 def jupyter_lab(
     ctx: typer.Context,
 ) -> None:
-    """:notebook: Start a Jupyter Lab server."""
+    """:star2: Start a Jupyter Lab server."""
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         subprocess.run(
@@ -413,7 +413,7 @@ def spec(
     name: _SpecType,
     json_schema: bool = False,
 ) -> None:
-    """:mag: Print the fields for a given spec type.
+    """:blue_book: Print the fields for a given spec type.
 
     \f
     Args:
@@ -463,8 +463,17 @@ class _ExportFormat(str, Enum):
     dict = "dict"
 
 
-@app.command(rich_help_panel="Develop")
-def dump_schema(
+schema = typer.Typer(no_args_is_help=True)
+app.add_typer(
+    schema,
+    name="schema",
+    help=":construction: Schema management commands.",
+    rich_help_panel="Develop",
+)
+
+
+@schema.command("dump")
+def schema_dump(
     ctx: typer.Context,
     pipeline_to_sink: t.Annotated[
         str,
@@ -476,7 +485,7 @@ def dump_schema(
         _ExportFormat, typer.Option(help="The format to dump the schema in.")
     ] = _ExportFormat.json,
 ) -> None:
-    """:mag: Dump the schema of a pipeline:sink combination.
+    """:computer: Dump the schema of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination.
 
     \f
     Args:
@@ -513,8 +522,8 @@ def dump_schema(
         context.active_project.reset(token)
 
 
-@app.command(rich_help_panel="Develop")
-def edit_schema(
+@schema.command("edit")
+def schema_edit(
     ctx: typer.Context,
     pipeline_to_sink: t.Annotated[
         str,
@@ -523,7 +532,7 @@ def edit_schema(
         ),
     ],
 ) -> None:
-    """:mag: Edit the schema of a pipeline:sink combination using the system editor.
+    """:pencil: Edit the schema of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination using the system editor.
 
     \f
     Args:
@@ -566,7 +575,7 @@ def edit_schema(
                         f"Updating schema {schema.name} to version {schema_mut.version} in {destination}."
                     )
                     client.update_stored_schema()
-                    logger.info("Schema updated.")
+                logger.info("Schema updated.")
             else:
                 logger.info("Schema not updated.")
     finally:
