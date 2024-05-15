@@ -10,12 +10,14 @@ from contextvars import Token
 from enum import Enum
 from pathlib import Path
 
+import dlt
 import pydantic
 import rich
 import typer
 
 import cdf.core.constants as c
 import cdf.core.context as context
+import cdf.core.logger as logger
 from cdf.core.feature_flag import FlagProvider
 from cdf.core.project import Workspace, load_project
 from cdf.core.runtime import (
@@ -53,6 +55,13 @@ def main(
     environment: t.Optional[str] = typer.Option(
         None, "--env", "-e", help="Environment to use."
     ),
+    log_level: t.Optional[str] = typer.Option(
+        None,
+        "--log-level",
+        "-l",
+        help="The log level to use.",
+        envvar="LOG_LEVEL",
+    ),
 ) -> None:
     """CDF (continuous data framework) is a framework for end to end data processing."""
     ctx.obj = workspace, path
@@ -60,6 +69,11 @@ def main(
         context.debug_mode.set(True)
     if environment:
         os.environ[c.CDF_ENVIRONMENT] = environment
+    if log_level:
+        dlt.config["runtime.log_level"] = log_level.upper()
+    logger.configure(log_level.upper() if log_level else "INFO")
+    logger.monkeypatch_dlt()
+    logger.monkeypatch_sqlglot()
 
 
 @app.command(rich_help_panel="Project Management")
@@ -480,6 +494,9 @@ def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "
     )
     context.inject_cdf_config_provider(workspace)
     token = context.active_project.set(workspace)
+    maybe_log_level = dlt.config.get("runtime.log_level", str)
+    if maybe_log_level:
+        logger.set_level(maybe_log_level.upper())
     return workspace, token
 
 

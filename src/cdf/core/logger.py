@@ -117,6 +117,16 @@ def suppress_and_warn() -> t.Iterator[None]:
         LOGGER.warning("Suppressed exception", exc_info=True)
 
 
+@contextlib.contextmanager
+def mute() -> t.Iterator[None]:
+    """Mute the logger."""
+    LOGGER.logger.disabled = True
+    try:
+        yield
+    finally:
+        LOGGER.logger.disabled = False
+
+
 def __getattr__(name: str) -> "LogMethod":
     """Get a logger method from the package logger."""
     if not LOGGER.extra.get("configured"):

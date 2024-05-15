@@ -163,6 +163,7 @@ class PipelineSpecification(PythonScript, Schedulable):
 
     @pydantic.model_validator(mode="after")
     def _setup_pipeline(self: "PipelineSpecification") -> "PipelineSpecification":
+        """Set up the pipeline specification."""
         self.dataset_name = self.dataset_name.format(
             name=self.name,
             version=self.version,

@@ -324,12 +324,10 @@ def execute_pipeline_specification(
     null = open(os.devnull, "w")
     maybe_redirect = redirect_stdout(null) if quiet else nullcontext()
     try:
-        if dry_run:
-            with maybe_redirect:
-                _ = spec()
-            return M.ok(pipe_reference._tracked_sources)
         with maybe_redirect:
             exports = spec()
+        if dry_run:
+            return M.ok(pipe_reference._tracked_sources)
         with (
             suppress(KeyError),
             pipe_reference.sql_client() as client,
