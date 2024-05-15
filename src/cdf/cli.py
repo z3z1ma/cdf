@@ -451,8 +451,19 @@ def spec(
         raise ValueError(f"Invalid spec type {name}.")
 
 
+class _ExportFormat(str, Enum):
+    """An enum of export formats which can be used with the `export` command."""
+
+    json = "json"
+    yaml = "yaml"
+    yml = "yml"
+    py = "py"
+    python = "python"
+    dict = "dict"
+
+
 @app.command(rich_help_panel="Develop")
-def export_schema(
+def dump_schema(
     ctx: typer.Context,
     pipeline_to_sink: t.Annotated[
         str,
@@ -460,6 +471,9 @@ def export_schema(
             help="The pipeline:sink combination from which to fetch the schema."
         ),
     ],
+    format: t.Annotated[
+        _ExportFormat, typer.Option(help="The format to dump the schema in.")
+    ] = _ExportFormat.json,
 ) -> None:
     """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]pipeline[/b blue]. Defaults to [cyan]5[/cyan].
 
@@ -469,6 +483,7 @@ def export_schema(
     Args:
         ctx: The CLI context.
         pipeline_to_sink: The pipeline:sink combination from which to fetch the schema.
+        format: The format to dump the schema in.
 
     Raises:
         typer.BadParameter: If the pipeline or sink are not found.
@@ -482,10 +497,19 @@ def export_schema(
             .unwrap_or((destination, None))
         )
         spec = workspace.get_pipeline(source).unwrap()
-        for src in execute_pipeline_specification(
+        rv = execute_pipeline_specification(
             spec, sink, dry_run=True, quiet=True
-        ).unwrap():
-            ...
+        ).unwrap()
+        if format == _ExportFormat.json:
+            console.print(rv.pipeline.default_schema.to_pretty_json())
+        elif format in (_ExportFormat.py, _ExportFormat.python, _ExportFormat.dict):
+            console.print(rv.pipeline.default_schema.to_dict())
+        elif format in (_ExportFormat.yaml, _ExportFormat.yml):
+            console.print(rv.pipeline.default_schema.to_pretty_yaml())
+        else:
+            raise ValueError(
+                f"Invalid format {format}. Must be one of {list(_ExportFormat)}"
+            )
     finally:
         context.active_project.reset(token)
 
