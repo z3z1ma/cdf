@@ -137,6 +137,11 @@ class RuntimePipeline(Pipeline):
         """The source hooks for the pipeline."""
         return self._source_hooks
 
+    @property
+    def tracked_sources(self) -> t.Set[dlt.sources.DltSource]:
+        """The sources tracked by the pipeline."""
+        return self._tracked_sources
+
     def extract(
         self,
         data: t.Any,
@@ -248,36 +253,11 @@ class RuntimePipeline(Pipeline):
         )
 
 
-@t.overload
-def execute_pipeline_specification(
-    spec: PipelineSpecification,
-    destination: TDestinationReferenceArg,
-    staging: t.Optional[TDestinationReferenceArg] = None,
-    select: t.Optional[t.List[str]] = None,
-    exclude: t.Optional[t.List[str]] = None,
-    force_replace: bool = False,
-    dry_run: t.Literal[False] = False,
-    enable_stage: bool = True,
-    quiet: bool = False,
-    metric_container: t.Optional[t.Dict[str, t.Any]] = None,
-    **pipeline_options: t.Any,
-) -> M.Result[t.Dict[str, t.Any], Exception]: ...
+class PipelineResult(t.NamedTuple):
+    """The result of executing a pipeline specification."""
 
-
-@t.overload
-def execute_pipeline_specification(
-    spec: PipelineSpecification,
-    destination: TDestinationReferenceArg,
-    staging: t.Optional[TDestinationReferenceArg] = None,
-    select: t.Optional[t.List[str]] = None,
-    exclude: t.Optional[t.List[str]] = None,
-    force_replace: bool = False,
-    dry_run: t.Literal[True] = True,
-    enable_stage: bool = True,
-    quiet: bool = False,
-    metric_container: t.Optional[t.Dict[str, t.Any]] = None,
-    **pipeline_options: t.Any,
-) -> M.Result[t.Set[dlt.sources.DltSource], Exception]: ...
+    exports: t.Dict[str, t.Any]
+    pipeline: RuntimePipeline
 
 
 def execute_pipeline_specification(
@@ -292,10 +272,7 @@ def execute_pipeline_specification(
     quiet: bool = False,
     metric_container: t.Optional[t.MutableMapping[str, t.Any]] = None,
     **pipeline_options: t.Any,
-) -> t.Union[
-    M.Result[t.Dict[str, t.Any], Exception],
-    M.Result[t.Set[dlt.sources.DltSource], Exception],
-]:
+) -> M.Result[PipelineResult, Exception]:
     """Executes a pipeline specification."""
 
     metric_container = metric_container or {}
@@ -325,9 +302,9 @@ def execute_pipeline_specification(
     maybe_redirect = redirect_stdout(null) if quiet else nullcontext()
     try:
         with maybe_redirect:
-            exports = spec()
+            result = PipelineResult(exports=spec(), pipeline=pipe_reference)
         if dry_run:
-            return M.ok(pipe_reference._tracked_sources)
+            return M.ok(result)
         with (
             suppress(KeyError),
             pipe_reference.sql_client() as client,
@@ -339,7 +316,7 @@ def execute_pipeline_specification(
                     f"Cleaning up staging dataset {client_staging.dataset_name}"
                 )
                 client_staging.drop_dataset()
-        return M.ok(exports)
+        return M.ok(result)
     except Exception as e:
         return M.error(e)
     finally:

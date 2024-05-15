@@ -201,7 +201,9 @@ def discover(
         for i, source in enumerate(
             execute_pipeline_specification(
                 spec, "dummy", dry_run=True, quiet=not no_quiet
-            ).unwrap()
+            )
+            .map(lambda rv: rv.pipeline.tracked_sources)
+            .unwrap()
         ):
             console.print(f"{i}: {source.name}")
             for j, resource in enumerate(source.resources.values(), 1):
@@ -243,7 +245,9 @@ def head(
                     resource
                     for src in execute_pipeline_specification(
                         spec, "dummy", dry_run=True, quiet=True
-                    ).unwrap()
+                    )
+                    .map(lambda rv: rv.pipeline.tracked_sources)
+                    .unwrap()
                     for resource in src.resources.values()
                 ),
             ),
@@ -478,7 +482,6 @@ def export_schema(
             .unwrap_or((destination, None))
         )
         spec = workspace.get_pipeline(source).unwrap()
-
         for src in execute_pipeline_specification(
             spec, sink, dry_run=True, quiet=True
         ).unwrap():
