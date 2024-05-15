@@ -97,7 +97,7 @@ def index(ctx: typer.Context) -> None:
         context.active_project.reset(token)
 
 
-@app.command(rich_help_panel="Data Management")
+@app.command(rich_help_panel="Core")
 def pipeline(
     ctx: typer.Context,
     pipeline_to_sink: t.Annotated[
@@ -136,7 +136,7 @@ def pipeline(
         ),
     ] = False,
 ) -> t.Any:
-    """:inbox_tray: Ingest data from a [b blue]pipeline[/b blue] into a data store where it can be [b red]Transformed[/b red].
+    """:inbox_tray: Ingest data from a [b blue]Pipeline[/b blue] into a data store where it can be [b red]Transformed[/b red].
 
     \f
     Args:
@@ -188,7 +188,7 @@ def discover(
         ),
     ] = False,
 ) -> None:
-    """:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources.
+    """:mag: Dry run a [b blue]Pipeline[/b blue] and enumerates the discovered resources.
 
     \f
     Args:
@@ -269,7 +269,7 @@ def head(
         context.active_project.reset(token)
 
 
-@app.command(rich_help_panel="Data Management")
+@app.command(rich_help_panel="Core")
 def publish(
     ctx: typer.Context,
     sink_to_publisher: t.Annotated[
@@ -307,8 +307,8 @@ def publish(
         context.active_project.reset(token)
 
 
-@app.command("execute-script", rich_help_panel="Utilities")
-def execute_script(
+@app.command(rich_help_panel="Core")
+def script(
     ctx: typer.Context,
     script: t.Annotated[str, typer.Argument(help="The script to execute.")],
     quiet: t.Annotated[bool, typer.Option(help="Suppress the script stdout.")] = False,
@@ -332,8 +332,8 @@ def execute_script(
         context.active_project.reset(token)
 
 
-@app.command("execute-notebook", rich_help_panel="Utilities")
-def execute_notebook(
+@app.command(rich_help_panel="Core")
+def notebook(
     ctx: typer.Context,
     notebook: t.Annotated[str, typer.Argument(help="The notebook to execute.")],
     params: t.Annotated[
@@ -368,7 +368,6 @@ def execute_notebook(
 
 
 @app.command(
-    "jupyter-lab",
     rich_help_panel="Utilities",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
@@ -463,9 +462,13 @@ class _ExportFormat(str, Enum):
     dict = "dict"
 
 
-schema = typer.Typer(no_args_is_help=True)
 app.add_typer(
-    schema,
+    schema := typer.Typer(
+        rich_markup_mode="rich",
+        epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
+        add_completion=False,
+        no_args_is_help=True,
+    ),
     name="schema",
     help=":construction: Schema management commands.",
     rich_help_panel="Develop",
