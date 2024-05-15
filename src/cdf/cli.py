@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import typing as t
 from contextvars import Token
 from enum import Enum
@@ -475,9 +476,7 @@ def dump_schema(
         _ExportFormat, typer.Option(help="The format to dump the schema in.")
     ] = _ExportFormat.json,
 ) -> None:
-    """:wrench: Prints the first N rows of a [b green]Resource[/b green] within a [b blue]pipeline[/b blue]. Defaults to [cyan]5[/cyan].
-
-    This is useful for quickly inspecting data :detective: and verifying that it is coming over the wire correctly.
+    """:mag: Dump the schema of a pipeline:sink combination.
 
     \f
     Args:
@@ -510,6 +509,66 @@ def dump_schema(
             raise ValueError(
                 f"Invalid format {format}. Must be one of {list(_ExportFormat)}"
             )
+    finally:
+        context.active_project.reset(token)
+
+
+@app.command(rich_help_panel="Develop")
+def edit_schema(
+    ctx: typer.Context,
+    pipeline_to_sink: t.Annotated[
+        str,
+        typer.Argument(
+            help="The pipeline:sink combination from which to fetch the schema."
+        ),
+    ],
+) -> None:
+    """:mag: Edit the schema of a pipeline:sink combination using the system editor.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        pipeline_to_sink: The pipeline:sink combination from which to fetch the schema.
+
+    Raises:
+        typer.BadParameter: If the pipeline or sink are not found.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        source, destination = pipeline_to_sink.split(":", 1)
+        sink, _ = (
+            workspace.get_sink(destination)
+            .map(lambda s: s.get_ingest_config())
+            .unwrap_or((destination, None))
+        )
+        spec = workspace.get_pipeline(source).unwrap()
+        logger.info(f"Clearing local schema and state for {source}.")
+        pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
+        pipe.drop()
+        logger.info(f"Syncing schema for {source}:{destination}.")
+        rv = execute_pipeline_specification(
+            spec, sink, dry_run=True, quiet=True
+        ).unwrap()
+        schema = rv.pipeline.default_schema.clone()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fname = f"{schema.name}.schema.yaml"
+            with open(os.path.join(tmpdir, fname), "w") as f:
+                f.write(schema.to_pretty_yaml())
+            logger.info(f"Editing schema {schema.name}.")
+            subprocess.run([os.environ.get("EDITOR", "vi"), f.name], check=True)
+            pipe_mut = spec.create_pipeline(
+                dlt.Pipeline, import_schema_path=tmpdir, destination=sink, staging=None
+            )
+            schema_mut = pipe_mut.default_schema
+            if schema_mut.version > schema.version:
+                with pipe_mut.destination_client() as client:
+                    logger.info(
+                        f"Updating schema {schema.name} to version {schema_mut.version} in {destination}."
+                    )
+                    client.update_stored_schema()
+                    logger.info("Schema updated.")
+            else:
+                logger.info("Schema not updated.")
     finally:
         context.active_project.reset(token)
 
