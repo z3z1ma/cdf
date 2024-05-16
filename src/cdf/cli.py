@@ -374,7 +374,7 @@ def notebook(
 def jupyter_lab(
     ctx: typer.Context,
 ) -> None:
-    """:star2: Start a Jupyter Lab server."""
+    """:star2: Start a Jupyter Lab server in the context of a workspace."""
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         subprocess.run(
@@ -581,6 +581,180 @@ def schema_edit(
                 logger.info("Schema updated.")
             else:
                 logger.info("Schema not updated.")
+    finally:
+        context.active_project.reset(token)
+
+
+app.add_typer(
+    model := typer.Typer(
+        rich_markup_mode="rich",
+        epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
+        add_completion=False,
+        no_args_is_help=True,
+    ),
+    name="model",
+    help=":construction: Model management commands.",
+    rich_help_panel="Core",
+)
+
+
+@model.command("evaluate")
+def model_evaluate(
+    ctx: typer.Context,
+    model: t.Annotated[
+        str,
+        typer.Argument(help="The model to evaluate. Can be prefixed with the gateway."),
+    ],
+    start: str = typer.Option(
+        "1 month ago",
+        help="The start time to evaluate the model from. Defaults to 1 month ago.",
+    ),
+    end: str = typer.Option(
+        "now",
+        help="The end time to evaluate the model to. Defaults to now.",
+    ),
+    limit: t.Optional[int] = typer.Option(
+        None, help="The number of rows to limit the evaluation to."
+    ),
+) -> None:
+    """:bar_chart: Evaluate a [b red]Model[/b red] and print the results. A thin wrapper around `sqlmesh evaluate`
+
+    \f
+    Args:
+        ctx: The CLI context.
+        model: The model to evaluate. Can be prefixed with the gateway.
+        limit: The number of rows to limit the evaluation to.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        if ":" in model:
+            gateway, model = model.split(":", 1)
+        else:
+            gateway = None
+        sqlmesh_ctx = workspace.get_transform_context(gateway)
+        console.print(
+            sqlmesh_ctx.evaluate(
+                model,
+                limit=limit,
+                start=start,
+                end=end,
+                execution_time="now",
+            )
+        )
+    finally:
+        context.active_project.reset(token)
+
+
+@model.command("render")
+def model_render(
+    ctx: typer.Context,
+    model: t.Annotated[
+        str,
+        typer.Argument(help="The model to evaluate. Can be prefixed with the gateway."),
+    ],
+    start: str = typer.Option(
+        "1 month ago",
+        help="The start time to evaluate the model from. Defaults to 1 month ago.",
+    ),
+    end: str = typer.Option(
+        "now",
+        help="The end time to evaluate the model to. Defaults to now.",
+    ),
+    expand: t.List[str] = typer.Option([], help="The referenced models to expand."),
+    dialect: t.Optional[str] = typer.Option(
+        None, help="The SQL dialect to use for rendering."
+    ),
+) -> None:
+    """:bar_chart: Render a [b red]Model[/b red] and print the query. A thin wrapper around `sqlmesh render`
+
+    \f
+    Args:
+        ctx: The CLI context.
+        model: The model to evaluate. Can be prefixed with the gateway.
+        start: The start time to evaluate the model from. Defaults to 1 month ago.
+        end: The end time to evaluate the model to. Defaults to now.
+        expand: The referenced models to expand.
+        dialect: The SQL dialect to use for rendering.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        if ":" in model:
+            gateway, model = model.split(":", 1)
+        else:
+            gateway = None
+        sqlmesh_ctx = workspace.get_transform_context(gateway)
+        console.print(
+            sqlmesh_ctx.render(
+                model, start=start, end=end, execution_time="now", expand=expand
+            ).sql(dialect or sqlmesh_ctx.default_dialect, pretty=True)
+        )
+    finally:
+        context.active_project.reset(token)
+
+
+@model.command("name")
+def model_name(
+    ctx: typer.Context,
+    model: t.Annotated[
+        str,
+        typer.Argument(
+            help="The model to convert the physical name. Can be prefixed with the gateway."
+        ),
+    ],
+) -> None:
+    """:bar_chart: Get a [b red]Model[/b red]'s physical table name. A thin wrapper around `sqlmesh table_name`
+
+    \f
+    Args:
+        ctx: The CLI context.
+        model: The model to evaluate. Can be prefixed with the gateway.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        if ":" in model:
+            gateway, model = model.split(":", 1)
+        else:
+            gateway = None
+        sqlmesh_ctx = workspace.get_transform_context(gateway)
+        console.print(sqlmesh_ctx.table_name(model, False))
+    finally:
+        context.active_project.reset(token)
+
+
+@model.command("diff")
+def model_diff(
+    ctx: typer.Context,
+    model: t.Annotated[
+        str,
+        typer.Argument(help="The model to evaluate. Can be prefixed with the gateway."),
+    ],
+    source_target: t.Annotated[
+        str,
+        typer.Argument(help="The source and target environments separated by a colon."),
+    ],
+    show_sample: bool = typer.Option(
+        False, help="Whether to show a sample of the diff."
+    ),
+) -> None:
+    """:bar_chart: Compute the diff of a [b red]Model[/b red] across 2 environments. A thin wrapper around `sqlmesh table_diff`
+
+    \f
+    Args:
+        ctx: The CLI context.
+        model: The model to evaluate. Can be prefixed with the gateway.
+        source_target: The source and target environments separated by a colon.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        if ":" in model:
+            gateway, model = model.split(":", 1)
+        else:
+            gateway = None
+        sqlmesh_ctx = workspace.get_transform_context(gateway)
+        source, target = source_target.split(":", 1)
+        sqlmesh_ctx.table_diff(
+            source, target, model_or_snapshot=model, show_sample=show_sample
+        )
     finally:
         context.active_project.reset(token)
 
