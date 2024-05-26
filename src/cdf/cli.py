@@ -586,6 +586,56 @@ def schema_edit(
 
 
 app.add_typer(
+    state := typer.Typer(
+        rich_markup_mode="rich",
+        epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
+        add_completion=False,
+        no_args_is_help=True,
+    ),
+    name="state",
+    help=":construction: State management commands.",
+    rich_help_panel="Develop",
+)
+
+
+@state.command("dump")
+def state_dump(
+    ctx: typer.Context,
+    pipeline_to_sink: t.Annotated[
+        str,
+        typer.Argument(
+            help="The pipeline:sink combination from which to fetch the schema."
+        ),
+    ],
+) -> None:
+    """:computer: Dump the state of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        pipeline_to_sink: The pipeline:sink combination from which to fetch the state.
+
+    Raises:
+        typer.BadParameter: If the pipeline or sink are not found.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        source, destination = pipeline_to_sink.split(":", 1)
+        sink, _ = (
+            workspace.get_sink(destination)
+            .map(lambda s: s.get_ingest_config())
+            .unwrap_or((destination, None))
+        )
+        spec = workspace.get_pipeline(source).unwrap()
+        rv = execute_pipeline_specification(
+            spec, sink, dry_run=True, quiet=True
+        ).unwrap()
+        console.print(rv.pipeline.state)
+    finally:
+        context.active_project.reset(token)
+
+
+app.add_typer(
     model := typer.Typer(
         rich_markup_mode="rich",
         epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
@@ -755,6 +805,44 @@ def model_diff(
         sqlmesh_ctx.table_diff(
             source, target, model_or_snapshot=model, show_sample=show_sample
         )
+    finally:
+        context.active_project.reset(token)
+
+
+@model.command("prototype")
+def model_prototype(
+    ctx: typer.Context,
+    dependencies: t.List[str] = typer.Option(
+        [],
+        "-d",
+        "--dependencies",
+        help="The dependencies to include in the prototype.",
+    ),
+    start: str = typer.Option(
+        "1 month ago",
+        help="The start time to evaluate the model from. Defaults to 1 month ago.",
+    ),
+    end: str = typer.Option(
+        "now",
+        help="The end time to evaluate the model to. Defaults to now.",
+    ),
+    limit: int = typer.Option(
+        5_000_000,
+        help="The number of rows to limit the evaluation to.",
+    ),
+):
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        sqlmesh_ctx = workspace.get_transform_context()
+        for dep in dependencies:
+            df = sqlmesh_ctx.evaluate(
+                dep,
+                start=start,
+                end=end,
+                execution_time="now",
+                limit=limit,
+            )
+            df.to_parquet(f"{dep}.parquet", index=False)
     finally:
         context.active_project.reset(token)
 
