@@ -15,6 +15,12 @@ import dlt
 import pydantic
 import rich
 import typer
+from dlt.common.utils import update_dict_nested
+from dlt.common.versioned_state import (
+    generate_state_version_hash,
+    json_decode_state,
+    json_encode_state,
+)
 
 import cdf.core.constants as c
 import cdf.core.context as context
@@ -631,6 +637,67 @@ def state_dump(
             spec, sink, dry_run=True, quiet=True
         ).unwrap()
         console.print(rv.pipeline.state)
+    finally:
+        context.active_project.reset(token)
+
+
+@state.command("edit")
+def state_edit(
+    ctx: typer.Context,
+    pipeline_to_sink: t.Annotated[
+        str,
+        typer.Argument(
+            help="The pipeline:sink combination from which to fetch the state."
+        ),
+    ],
+) -> None:
+    """:pencil: Edit the state of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination using the system editor.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        pipeline_to_sink: The pipeline:sink combination from which to fetch the state.
+
+    Raises:
+        typer.BadParameter: If the pipeline or sink are not found.
+    """
+    workspace, token = _unwrap_workspace(*ctx.obj)
+    try:
+        source, destination = pipeline_to_sink.split(":", 1)
+        sink, _ = (
+            workspace.get_sink(destination)
+            .map(lambda s: s.get_ingest_config())
+            .unwrap_or((destination, None))
+        )
+        spec = workspace.get_pipeline(source).unwrap()
+        logger.info(f"Clearing local state and state for {source}.")
+        pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
+        pipe.drop()
+        logger.info(f"Syncing state for {source}:{destination}.")
+        rv = execute_pipeline_specification(
+            spec, sink, dry_run=True, quiet=True
+        ).unwrap()
+        with (
+            tempfile.NamedTemporaryFile(suffix=".json") as tmp,
+            rv.pipeline.managed_state(extract_state=True) as state,
+        ):
+            pre_hash = generate_state_version_hash(state, exclude_attrs=["_local"])
+            tmp.write(
+                json.dumps(json.loads(json_encode_state(state)), indent=2).encode()
+            )
+            tmp.flush()
+            logger.info(f"Editing state in {destination}.")
+            subprocess.run([os.environ.get("EDITOR", "vi"), tmp.name], check=True)
+            with open(tmp.name, "r") as f:
+                update_dict_nested(t.cast(dict, state), json_decode_state(f.read()))
+            post_hash = generate_state_version_hash(state, exclude_attrs=["_local"])
+        if pre_hash != post_hash:
+            execute_pipeline_specification(
+                spec, sink, select=[], exclude=["*"], quiet=True
+            ).unwrap()
+            logger.info("State updated.")
+        else:
+            logger.info("State not updated.")
     finally:
         context.active_project.reset(token)
 
