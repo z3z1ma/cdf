@@ -68,7 +68,10 @@ class _BaseSettings(pydantic.BaseModel):
     """A base model for CDF settings"""
 
     model_config = pydantic.ConfigDict(
-        frozen=True, use_attribute_docstrings=True, from_attributes=True
+        frozen=True,
+        use_attribute_docstrings=True,
+        from_attributes=True,
+        populate_by_name=True,
     )
 
 
@@ -435,7 +438,7 @@ class Project(_BaseSettings):
         if isinstance(value, str):
             value = list(map(lambda s: s.strip(), value.split(",")))
         elif isinstance(value, dict):
-            value = [v["path"] for v in value.values()]
+            value = [str(v["path"]) for v in value.values()]
         if isinstance(value, list):
             for i, maybe_path in enumerate(value):
                 if isinstance(maybe_path, str):
