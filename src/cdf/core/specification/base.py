@@ -40,7 +40,9 @@ def _getmodulename(name: str) -> str:
     return rv or name
 
 
-class BaseComponent(pydantic.BaseModel):
+class BaseComponent(
+    pydantic.BaseModel, use_attribute_docstrings=True, from_attributes=True
+):
     """
     A component specification.
 

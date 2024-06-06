@@ -67,17 +67,17 @@ if t.TYPE_CHECKING:
 
 T = t.TypeVar("T")
 
-model_config = pydantic.ConfigDict(
-    frozen=True,
-    from_attributes=True,
-    use_attribute_docstrings=True,
-)
+
+class _BaseSettings(pydantic.BaseModel):
+    """A base model for CDF settings"""
+
+    model_config = pydantic.ConfigDict(
+        frozen=True, use_attribute_docstrings=True, from_attributes=True
+    )
 
 
-class FilesystemSettings(pydantic.BaseModel):
+class FilesystemSettings(_BaseSettings):
     """Configuration for a filesystem provider"""
-
-    model_config = model_config
 
     uri: str = "_storage"
     """The filesystem URI
@@ -110,19 +110,8 @@ class FeatureFlagProviderType(str, Enum):
     NOOP = "noop"
 
 
-class FeatureFlagSettings(pydantic.BaseModel):
-    """Configuration for a feature flags provider"""
-
-    model_config = model_config
-
-    provider: FeatureFlagProviderType
-    """The feature flags provider"""
-
-
-class FilesystemFeatureFlagSettings(FeatureFlagSettings):
+class FilesystemFeatureFlagSettings(_BaseSettings):
     """Configuration for a feature flags provider that uses the configured filesystem"""
-
-    model_config = model_config
 
     provider: t.Literal[FeatureFlagProviderType.FILESYSTEM] = (
         FeatureFlagProviderType.FILESYSTEM
@@ -141,10 +130,8 @@ class FilesystemFeatureFlagSettings(FeatureFlagSettings):
     """
 
 
-class HarnessFeatureFlagSettings(FeatureFlagSettings):
+class HarnessFeatureFlagSettings(_BaseSettings):
     """Configuration for a feature flags provider that uses the Harness API"""
-
-    model_config = model_config
 
     provider: t.Literal[FeatureFlagProviderType.HARNESS] = (
         FeatureFlagProviderType.HARNESS
@@ -170,10 +157,8 @@ class HarnessFeatureFlagSettings(FeatureFlagSettings):
     """The harness project ID. We will attempt to read it from the environment if not provided."""
 
 
-class LaunchDarklyFeatureFlagSettings(FeatureFlagSettings):
+class LaunchDarklyFeatureFlagSettings(_BaseSettings):
     """Configuration for a feature flags provider that uses the LaunchDarkly API"""
-
-    model_config = model_config
 
     provider: t.Literal[FeatureFlagProviderType.LAUNCHDARKLY] = (
         FeatureFlagProviderType.LAUNCHDARKLY
@@ -186,10 +171,8 @@ class LaunchDarklyFeatureFlagSettings(FeatureFlagSettings):
     """The LaunchDarkly API key. Get it from your user settings"""
 
 
-class SplitFeatureFlagSettings(FeatureFlagSettings):
+class SplitFeatureFlagSettings(_BaseSettings):
     """Configuration for a feature flags provider that uses the Split API"""
-
-    model_config = model_config
 
     provider: t.Literal[FeatureFlagProviderType.SPLIT] = FeatureFlagProviderType.SPLIT
     """The feature flags provider"""
@@ -200,13 +183,20 @@ class SplitFeatureFlagSettings(FeatureFlagSettings):
     """The Split API key. Get it from your user settings"""
 
 
-class NoopFeatureFlagSettings(FeatureFlagSettings):
+class NoopFeatureFlagSettings(_BaseSettings):
     """Configuration for a feature flags provider that does nothing"""
-
-    model_config = model_config
 
     provider: t.Literal[FeatureFlagProviderType.NOOP] = FeatureFlagProviderType.NOOP
     """The feature flags provider"""
+
+
+FeatureFlagSettings = t.Union[
+    FilesystemFeatureFlagSettings,
+    HarnessFeatureFlagSettings,
+    LaunchDarklyFeatureFlagSettings,
+    SplitFeatureFlagSettings,
+    NoopFeatureFlagSettings,
+]
 
 
 class ScopedConfigProvider(ConfigProvider):
@@ -291,10 +281,8 @@ class ScopedConfigProvider(ConfigProvider):
         return True
 
 
-class Workspace(pydantic.BaseModel):
+class Workspace(_BaseSettings):
     """A workspace is a collection of pipelines, sinks, publishers, scripts, and notebooks in a subdirectory of the project"""
-
-    model_config = model_config
 
     path: Path = Path(".")
     """The path to the project"""
@@ -466,10 +454,8 @@ class Workspace(pydantic.BaseModel):
         return sqlmesh.Context(paths=self.path, gateway=name)
 
 
-class Project(pydantic.BaseModel):
+class Project(_BaseSettings):
     """A project is a collection of workspaces and configuration settings"""
-
-    model_config = model_config
 
     path: Path = Path(".")
     """The path to the project"""
@@ -491,12 +477,7 @@ class Project(pydantic.BaseModel):
     ] = FilesystemSettings()
     """The project filesystem settings"""
     feature_flag_settings: t.Annotated[
-        t.Union[
-            FilesystemFeatureFlagSettings,
-            HarnessFeatureFlagSettings,
-            LaunchDarklyFeatureFlagSettings,
-            SplitFeatureFlagSettings,
-        ],
+        FeatureFlagSettings,
         pydantic.Field(discriminator="provider", alias="feature_flags"),
     ] = FilesystemFeatureFlagSettings()
     """The project feature flags provider settings"""
@@ -511,10 +492,7 @@ class Project(pydantic.BaseModel):
     @classmethod
     def _inject_wrapped(cls, values: t.Any):
         """Inject the wrapped configuration"""
-        if isinstance(values, ConfigProxy):
-            values["wrapped"] = values.proxied
-        else:
-            values["wrapped"] = values
+        values["wrapped"] = values
         return values
 
     @pydantic.field_validator("path", mode="before")
@@ -711,7 +689,8 @@ def _load_config(
     extensions = extensions or ["toml", "yaml", "yml", "json", "py"]
     if not any(map(lambda ext: path.joinpath(f"cdf.{ext}").is_file(), extensions)):
         raise FileNotFoundError(f"No cdf configuration file found: {path}")
-    return dynaconf.LazySettings(
+
+    config = dynaconf.LazySettings(
         root_path=path,
         settings_files=[f"cdf.{ext}" for ext in extensions],
         environments=True,
@@ -723,32 +702,24 @@ def _load_config(
         validators=[dynaconf.Validator("name", must_exist=True)],
     )
 
+    def _eval_lazy(value: t.Any) -> t.Any:
+        """Evaluate lazy values in the configuration"""
+        if isinstance(value, dict):
+            for key, val in value.items():
+                value[key] = _eval_lazy(val)
+            return value
+        elif isinstance(value, list):
+            for i, val in enumerate(value):
+                value[i] = _eval_lazy(val)
+            return value
+        if getattr(value, "_dynaconf_lazy_format", None):
+            value = value(config)
+        return value
 
-# This is necesitated by the fact that Pydantic accesses attributes
-# in such a way that it bypasses Dynaconfs lazy loading mechanism.
-class ConfigProxy:
-    """A proxy object for accessing Lazy configuration values"""
+    for key, value in config.items():
+        config[key] = _eval_lazy(value)
 
-    def __init__(self, value: t.Any):
-        self.proxied = value
-
-    def __getattr__(self, name: str) -> t.Any:
-        try:
-            rv = self.proxied[name]
-            if isinstance(rv, dict):
-                return ConfigProxy(rv)
-            return rv
-        except KeyError:
-            raise AttributeError(name)
-
-    def __setitem__(self, key: str, value: t.Any) -> None:
-        self.proxied[key] = value
-
-    def __getitem__(self, key: str) -> t.Any:
-        rv = self.proxied[key]
-        if isinstance(rv, dict):
-            return ConfigProxy(rv)
-        return rv
+    return config
 
 
 @M.result
@@ -766,7 +737,7 @@ def load_project(root: PathLike) -> Project:
         raise FileNotFoundError(f"Project not found: {root_path}")
     config = _load_config(root_path)
     config["path"] = root_path
-    return Project.model_validate(ConfigProxy(config))
+    return Project.model_validate(config)
 
 
 __all__ = [

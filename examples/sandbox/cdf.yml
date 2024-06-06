@@ -15,4 +15,4 @@ prod:
 dev:
   feature_flags:
     provider: filesystem
-    filename: dev_flags.json
+    filename: "@jinja dev_flags_{{ 1 + 1}}.json"
