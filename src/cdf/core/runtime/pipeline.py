@@ -35,10 +35,9 @@ from dlt.pipeline.pipeline import Pipeline
 import cdf.core.context as context
 import cdf.core.logger as logger
 from cdf.core.specification import PipelineSpecification
-from cdf.types import M
+from cdf.types import M, P
 
 T = t.TypeVar("T")
-P = t.ParamSpec("P")
 
 TPipeline = t.TypeVar("TPipeline", bound=dlt.Pipeline)
 
