@@ -16,9 +16,6 @@ if t.TYPE_CHECKING:
     from cdf.core.project import FeatureFlagProviderType, FeatureFlagSettings
 
 
-TSettings = t.TypeVar("TSettings", bound="FeatureFlagSettings")
-
-
 class _AdapterProtocol(t.Protocol):
     """Feature flag provider adapter protocol."""
 
@@ -27,7 +24,7 @@ class _AdapterProtocol(t.Protocol):
         source: "DltSource",
         /,
         *,
-        settings: TSettings,  # type: ignore
+        settings: t.Any,
         **kwargs: t.Any,
     ) -> "DltSource": ...
 
