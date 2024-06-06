@@ -1,301 +1,778 @@
-"""A wrapper around a CDF project."""
+"""The project module provides a way to define a project and its workspaces.
+
+Everything in CDF is described via a simple configuration structure. We parse this configuration
+using dynaconf which provides a simple way to load configuration from various sources such as
+environment variables, YAML, TOML, JSON, and Python files. It also provides many other features
+such as loading .env files, env-specific configuration, templating via @ tokens, and more. The
+configuration is then validated with pydantic to ensure it is correct and to give us well defined
+types to work with. The underlying dynaconf settings object is stored in the `wrapped` attribute
+of the Project and Workspace settings objects. This allows us to access the raw configuration
+values if needed. ChainMaps are used to provide a scoped view of the configuration. This enables
+a powerful layering mechanism where we can override configuration values at different levels.
+Finally, we provide a context manager to inject the project configuration into the dlt context
+which allows us to access the configuration throughout the dlt codebase and in data pipelines.
+
+Example:
+
+```toml
+# cdf.toml
+[default]
+name = "cdf-example"
+workspaces = ["alex"]
+filesystem.uri = "file://_storage"
+feature_flags.provider = "filesystem"
+feature_flags.filename = "feature_flags.json"
+
+[prod]
+filesystem.uri = "gcs://bucket/path"
+```
+
+```toml
+# alex/cdf.toml
+[pipelines.us_cities] # alex/pipelines/us_cities_pipeline.py
+version = 1
+dataset_name = "us_cities_v0_{version}"
+description = "Get US city data"
+options.full_refresh = false
+options.runtime.dlthub_telemetry = false
+```
+"""
 
 import os
 import typing as t
 from collections import ChainMap
-from contextlib import suppress
+from contextlib import contextmanager, suppress
+from enum import Enum
 from functools import cached_property
 from pathlib import Path
 
-import fsspec
-import sqlmesh
-from sqlmesh.core.config import GatewayConfig
-
-import cdf.core.logger as logger
-from cdf.core.configuration import load_config
-from cdf.core.feature_flag import FlagProvider, load_feature_flag_provider
-from cdf.core.filesystem import load_filesystem_provider
-from cdf.core.specification import (
-    CoreSpecification,
-    NotebookSpecification,
-    PipelineSpecification,
-    PublisherSpecification,
-    ScriptSpecification,
-    SinkSpecification,
+import dynaconf
+import pydantic
+from dlt.common.configuration.container import Container
+from dlt.common.configuration.providers import ConfigProvider, EnvironProvider
+from dlt.common.configuration.specs.config_providers_context import (
+    ConfigProvidersContext,
 )
+from dlt.common.utils import update_dict_nested
+from dynaconf.vendor.box import Box
+
+import cdf.core.constants as c
+import cdf.core.specification as spec
+from cdf.core.feature_flag import FeatureFlagAdapter, get_feature_flag_adapter
+from cdf.core.filesystem import FilesystemAdapter, get_filesystem_adapter
 from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
-    import dynaconf
+    from sqlmesh.core.config import GatewayConfig
 
-TSpecification = t.TypeVar("TSpecification", bound=CoreSpecification)
+T = t.TypeVar("T")
+
+model_config = pydantic.ConfigDict(
+    frozen=True,
+    from_attributes=True,
+    use_attribute_docstrings=True,
+)
 
 
-class ConfigurationOverlay(ChainMap[str, t.Any]):
-    """A ChainMap with attribute access designed to wrap dynaconf settings."""
+class FilesystemSettings(pydantic.BaseModel):
+    """Configuration for a filesystem provider"""
 
-    def __getattr__(self, name: str) -> t.Any:
-        try:
-            return self[name]
-        except KeyError:
-            raise AttributeError(f"No attribute {name}")
+    model_config = model_config
 
-    @staticmethod
-    def normalize_script(
-        config: t.MutableMapping[str, t.Any],
-        type_: str,
-        ext: t.Tuple[str, ...] = ("py",),
-    ) -> t.MutableMapping[str, t.Any]:
-        """Normalize a script based configuration.
+    uri: str = "_storage"
+    """The filesystem URI
 
-        The name may be a relative path to the script such as sales/mrr.py in which case the
-        path is kept as-is and the name is normalized to sales_mrr.
+    This is based on fsspec. See https://filesystem-spec.readthedocs.io/en/latest/index.html
+    This supports all filesystems supported by fsspec as well as filesystem chaining.
+    """
+    options: t.Dict[str, t.Any] = {}
+    """The filesystem options
 
-        Alternatively it could be a name such as mrr in which case the name will be kept as-is
-        and the component path will be set to mrr_{type_}.py
+    Options are passed to the filesystem provider as keyword arguments.
+    """
 
-        The final example is a name which is a pathlike without an extension such as sales/mrr in which
-        case the name will be set to sales_mrr and the path will be set to sales/mrr_{type_}.py
+    @pydantic.field_validator("uri", mode="before")
+    @classmethod
+    def _validate_uri(cls, value: t.Any) -> t.Any:
+        """Convert the URI to a string if it is a Path object"""
+        if isinstance(value, Path):
+            return value.resolve().as_uri()
+        return value
 
-        In the event of multiple extensions for a given script type, and the name ommitting the
-        extension, the first extension is used. Any special characters outside os.sep and a file extension
-        will cause a pydanitc validation error and prompt the user to update the name property.
+
+class FeatureFlagProviderType(str, Enum):
+    """The feature flag provider"""
+
+    FILESYSTEM = "filesystem"
+    HARNESS = "harness"
+    LAUNCHDARKLY = "launchdarkly"
+    SPLIT = "split"
+    NOOP = "noop"
+
+
+class FeatureFlagSettings(pydantic.BaseModel):
+    """Configuration for a feature flags provider"""
+
+    model_config = model_config
+
+    provider: FeatureFlagProviderType
+    """The feature flags provider"""
+
+
+class FilesystemFeatureFlagSettings(FeatureFlagSettings):
+    """Configuration for a feature flags provider that uses the configured filesystem"""
+
+    model_config = model_config
+
+    provider: t.Literal[FeatureFlagProviderType.FILESYSTEM] = (
+        FeatureFlagProviderType.FILESYSTEM
+    )
+    """The feature flags provider"""
+    filename: str = "feature_flags.json"
+    """The feature flags filename.
+
+    This is a format string that can include the following variables:
+    - `name`: The project name
+    - `workspace`: The workspace name
+    - `environment`: The environment name
+    - `source`: The source name
+    - `resource`: The resource name
+    - `version`: The version number of the component
+    """
+
+
+class HarnessFeatureFlagSettings(FeatureFlagSettings):
+    """Configuration for a feature flags provider that uses the Harness API"""
+
+    model_config = model_config
+
+    provider: t.Literal[FeatureFlagProviderType.HARNESS] = (
+        FeatureFlagProviderType.HARNESS
+    )
+    """The feature flags provider"""
+    api_key: str = pydantic.Field(
+        os.getenv("HARNESS_API_KEY", ...),
+        pattern=r"^[ps]at\.[a-zA-Z0-9_\-]+\.[a-fA-F0-9]+\.[a-zA-Z0-9_\-]+$",
+    )
+    """The harness API key. Get it from your user settings"""
+    sdk_key: pydantic.UUID4 = pydantic.Field(os.getenv("HARNESS_SDK_KEY", ...))
+    """The harness SDK key. Get it from the environment management page of the FF module"""
+    account: str = pydantic.Field(
+        os.getenv("HARNESS_ACCOUNT_ID", ...),
+        min_length=22,
+        max_length=22,
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+    )
+    """The harness account ID. We will attempt to read it from the environment if not provided."""
+    organization: str = pydantic.Field(os.getenv("HARNESS_ORG_ID", "default"))
+    """The harness organization ID. We will attempt to read it from the environment if not provided."""
+    project: str = pydantic.Field(os.getenv("HARNESS_PROJECT_ID", ...))
+    """The harness project ID. We will attempt to read it from the environment if not provided."""
+
+
+class LaunchDarklyFeatureFlagSettings(FeatureFlagSettings):
+    """Configuration for a feature flags provider that uses the LaunchDarkly API"""
+
+    model_config = model_config
+
+    provider: t.Literal[FeatureFlagProviderType.LAUNCHDARKLY] = (
+        FeatureFlagProviderType.LAUNCHDARKLY
+    )
+    """The feature flags provider"""
+    api_key: str = pydantic.Field(
+        os.getenv("LAUNCHDARKLY_API_KEY", ...),
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+    )
+    """The LaunchDarkly API key. Get it from your user settings"""
+
+
+class SplitFeatureFlagSettings(FeatureFlagSettings):
+    """Configuration for a feature flags provider that uses the Split API"""
+
+    model_config = model_config
+
+    provider: t.Literal[FeatureFlagProviderType.SPLIT] = FeatureFlagProviderType.SPLIT
+    """The feature flags provider"""
+    api_key: str = pydantic.Field(
+        os.getenv("SPLIT_API_KEY", ...),
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+    )
+    """The Split API key. Get it from your user settings"""
+
+
+class NoopFeatureFlagSettings(FeatureFlagSettings):
+    """Configuration for a feature flags provider that does nothing"""
+
+    model_config = model_config
+
+    provider: t.Literal[FeatureFlagProviderType.NOOP] = FeatureFlagProviderType.NOOP
+    """The feature flags provider"""
+
+
+class ScopedConfigProvider(ConfigProvider):
+    """A configuration provider for CDF scoped settings."""
+
+    def __init__(self, config: ChainMap, secret: bool = False) -> None:
+        """Initialize the provider.
+
+        Args:
+            config: The configuration ChainMap.
         """
-        name = config["name"]
-        if name.endswith(ext):
-            if "path" not in config:
-                config["path"] = name
-            name = name.rsplit(".", 1)[0]
+        self._config = config
+        self._secret = secret
+
+    def get_value(
+        self, key: str, hint: t.Type[t.Any], pipeline_name: str, *sections: str
+    ) -> t.Tuple[t.Optional[t.Any], str]:
+        """Get a value from the configuration."""
+        _ = hint
+        if pipeline_name:
+            sections = ("pipelines", pipeline_name, "options", *sections)
+        parts = (*sections, key)
+        fqn = ".".join(parts)
+
+        try:
+            return self._config[fqn], fqn
+        except KeyError:
+            return None, fqn
+
+    def set_value(
+        self, key: str, value: t.Any, pipeline_name: str, *sections: str
+    ) -> None:
+        """Set a value in the configuration."""
+        if pipeline_name:
+            sections = ("pipelines", pipeline_name, "options", *sections)
+        parts = (*sections, key)
+        fqn = ".".join(parts)
+        if isinstance(value, dynaconf.Dynaconf):
+            if key is None:
+                self._config.maps[-1] = t.cast(dict, value)
+            else:
+                self._config.maps[-1][fqn].update(value)
+            return None
         else:
-            if "path" not in config:
-                if name.endswith(f"_{type_}"):
-                    config["path"] = f"{name}.{ext[0]}"
+            if key is None:
+                if isinstance(value, dict):
+                    self._config.update(value)
+                    return None
                 else:
-                    config["path"] = f"{name}_{type_}.{ext[0]}"
-        config["name"] = name.replace(os.sep, "_")
-        return config
-
-    if t.TYPE_CHECKING:
-        maps: t.List[dynaconf.Dynaconf]
-
-        def __init__(self, *maps: dynaconf.Dynaconf) -> None: ...
-
-
-class ContinuousDataFramework:
-    """Common properties shared by Project and Workspace."""
-
-    configuration: ConfigurationOverlay
+                    raise ValueError("Cannot set a value without a key")
+            this = self._config
+            for key in parts[:-1]:
+                if key not in this:
+                    this[key] = {}
+                this = this[key]
+            if isinstance(value, dict) and isinstance(this[parts[-1]], dict):
+                update_dict_nested(this[parts[-1]], value)
+            else:
+                this[parts[-1]] = value
 
     @property
     def name(self) -> str:
-        return self.configuration.name
+        """The name of the provider"""
+        return "CDF Configuration Provider"
 
     @property
-    def root(self) -> Path:
-        return self.configuration.maps[0]._root_path
+    def supports_sections(self) -> bool:
+        """This provider supports sections"""
+        return True
 
-    @cached_property
-    def feature_flag_provider(self) -> FlagProvider:
-        """The feature flag provider."""
-        try:
-            ff = self.configuration["feature_flags"]
-        except KeyError:
-            logger.warning("No feature flag provider configured, defaulting to noop.")
-            return load_feature_flag_provider("noop")
-        options = ff.setdefault("options", {})
-        if ff.provider == "file":
-            options.storage = self.filesystem
-        return load_feature_flag_provider(ff.provider, options=options.to_dict())
+    @property
+    def supports_secrets(self) -> bool:
+        """There is no differentiation between secrets and non-secrets for the cdf provider.
 
-    @cached_property
-    def filesystem(self) -> fsspec.AbstractFileSystem:
-        """The filesystem provider."""
-        try:
-            fs = self.configuration["filesystem"]
-        except KeyError:
-            logger.warning(
-                "No filesystem provider configured, defaulting to local with files stored in `_storage`."
-            )
-            return load_filesystem_provider("file")
-        options = fs.setdefault("options", {})
-        options.setdefault("auto_mkdir", True)
-        return load_filesystem_provider(fs.provider, options=options.to_dict())
-
-    def _get_components_for_spec(
-        self,
-        spec_cls: t.Type[TSpecification],
-        config_key: str,
-        script_suffix: t.Optional[str] = None,
-    ) -> t.Dict[str, TSpecification]:
-        """Get components for a specification.
-
-        Args:
-            spec_cls: The specification class.
-            config_key: The configuration key.
-            script_suffix: The default suffix for the scripts. If None, the config_key is used with
-                the last character removed.
+        Nothing is persisted. Data is available in memory and backed by the dynaconf settings object.
         """
-        components = {}
-        if config_key not in self.configuration:
-            return components
-        for key, config in self.configuration[config_key].items():
-            if not isinstance(config, dict):
-                raise TypeError(
-                    f"Expected dict for {config_key}.{key}, got {type(config)}"
-                )
-            config.setdefault("name", key)
-            config["workspace_path"] = self.root
-            component = spec_cls.model_validate(
-                self.configuration.normalize_script(
-                    config,
-                    script_suffix or config_key[:-1],
-                    ("ipynb", "py") if spec_cls is NotebookSpecification else ("py",),
-                ),
-                from_attributes=True,
-            )
-            components[component.name] = component
-        return components
+        return self._secret
 
-    @cached_property
-    def pipelines(self) -> t.Dict[str, PipelineSpecification]:
-        """Map of pipelines by name."""
-        return self._get_components_for_spec(PipelineSpecification, "pipelines")
-
-    @cached_property
-    def sinks(self) -> t.Dict[str, SinkSpecification]:
-        """Map of sinks by name."""
-        return self._get_components_for_spec(SinkSpecification, "sinks")
-
-    @cached_property
-    def publishers(self) -> t.Dict[str, PublisherSpecification]:
-        """Map of publishers by name."""
-        return self._get_components_for_spec(PublisherSpecification, "publishers")
-
-    @cached_property
-    def scripts(self) -> t.Dict[str, ScriptSpecification]:
-        """Map of scripts by name."""
-        return self._get_components_for_spec(ScriptSpecification, "scripts")
-
-    @cached_property
-    def notebooks(self) -> t.Dict[str, NotebookSpecification]:
-        """Map of notebooks by name."""
-        return self._get_components_for_spec(NotebookSpecification, "notebooks")
-
-    @cached_property
-    def models(self) -> t.Dict[str, sqlmesh.Model]:
-        """Map of models by name. Uses the default gateway."""
-        return dict(self.get_transform_context().models)
-
-    def get_pipeline(self, name: str) -> M.Result[PipelineSpecification, Exception]:
-        """Get a pipeline by name."""
-        try:
-            return M.ok(self.pipelines[name])
-        except Exception as e:
-            return M.error(e)
-
-    def get_sink(self, name: str) -> M.Result[SinkSpecification, Exception]:
-        """Get a sink by name."""
-        try:
-            return M.ok(self.sinks[name])
-        except Exception as e:
-            return M.error(e)
-
-    def get_publisher(self, name: str) -> M.Result[PublisherSpecification, Exception]:
-        """Get a publisher by name."""
-        try:
-            return M.ok(self.publishers[name])
-        except Exception as e:
-            return M.error(e)
-
-    def get_script(self, name: str) -> M.Result[ScriptSpecification, Exception]:
-        """Get a script by name."""
-        try:
-            return M.ok(self.scripts[name])
-        except Exception as e:
-            return M.error(e)
-
-    def get_notebook(self, name: str) -> M.Result[NotebookSpecification, Exception]:
-        """Get a notebook by name."""
-        try:
-            return M.ok(self.notebooks[name])
-        except Exception as e:
-            return M.error(e)
-
-    def get_gateways(self) -> M.Result[t.Dict[str, GatewayConfig], Exception]:
-        """Convert the project's gateways to a dictionary."""
-        gateways = {}
-        for sink in self.sinks.values():
-            with suppress(KeyError):
-                gateways[sink.name] = sink.get_transform_config()
-        if not gateways:
-            return M.error(ValueError(f"No gateways in workspace {self.name}"))
-        return M.ok(gateways)
-
-    def get_transform_context(self, sink: t.Optional[str] = None) -> sqlmesh.Context:
-        """Get a transform context for a sink."""
-        return sqlmesh.Context(paths=self.root, gateway=sink)
-
-    def __getitem__(self, key: str) -> t.Any:
-        return self.configuration[key]
-
-    def __setitem__(self, key: str, value: t.Any) -> None:
-        self.configuration[key] = value
+    @property
+    def is_writable(self) -> bool:
+        """Whether the provider is writable"""
+        return True
 
 
-class Project(ContinuousDataFramework):
-    """A CDF project."""
+class Workspace(pydantic.BaseModel):
+    """A workspace is a collection of pipelines, sinks, publishers, scripts, and notebooks in a subdirectory of the project"""
 
-    def __init__(
-        self,
-        configuration: "dynaconf.Dynaconf",
-        workspaces: t.Dict[str, "dynaconf.Dynaconf"],
-    ) -> None:
-        """Initialize a project."""
-        self.configuration = ConfigurationOverlay(configuration)
-        self._workspaces = workspaces
+    model_config = model_config
 
-    def get_workspace(self, name: str) -> M.Result["Workspace", Exception]:
-        """Get a workspace by name."""
-        try:
-            return M.ok(Workspace(name, project=self))
-        except Exception as e:
-            return M.error(e)
+    path: Path = Path(".")
+    """The path to the project"""
+    name: t.Annotated[
+        str, pydantic.Field(pattern=r"^[a-zA-Z0-9_\-]+$", min_length=3, max_length=32)
+    ] = "default"
+    """The name of the workspace"""
+    owner: t.Optional[str] = None
+    """The owner of the workspace"""
+    pipelines: t.List[spec.PipelineSpecification] = []
+    """Pipelines move data from sources to sinks"""
+    sinks: t.List[spec.SinkSpecification] = []
+    """A sink is a destination for data"""
+    publishers: t.List[spec.PublisherSpecification] = []
+    """Publishers send data to external systems"""
+    scripts: t.List[spec.ScriptSpecification] = []
+    """Scripts are used to automate tasks"""
+    notebooks: t.List[spec.NotebookSpecification] = []
+    """Notebooks are used for data analysis and reporting"""
 
-    def get_workspace_from_path(
-        self, path: PathLike
-    ) -> M.Result["Workspace", Exception]:
-        """Get a workspace by path."""
-        path = Path(path).resolve()
-        for name, workspace in self._workspaces.items():
-            if path.is_relative_to(workspace._root_path):
-                return self.get_workspace(name)
-        return M.error(ValueError(f"No workspace found at {path}."))
+    _project: t.Optional["Project"] = None
+    """The project this workspace belongs to. Set by the project model validator."""
 
+    @pydantic.field_validator(
+        "pipelines", "sinks", "publishers", "scripts", "notebooks", mode="before"
+    )
     @classmethod
-    def load(cls, root: PathLike) -> "Project":
-        """Create a project from a root path."""
-        config = load_config(root).unwrap()
-        return cls(config["project"], workspaces=config["workspaces"])
+    def _workspace_component_validator(
+        cls, value: t.Any, info: pydantic.ValidationInfo
+    ):
+        """Parse component dictionaries into an array of components inject the workspace path"""
+        if isinstance(value, dict):
+            buf = []
+            for key, cmp in value.items():
+                cmp.setdefault("name", key)
+                buf.append(cmp)
+            value = buf
+        elif hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
+            value = list(value)
+        else:
+            raise ValueError(
+                "Invalid workspace component configuration, must be either a dict or a list"
+            )
+        for cmp in value:
+            cmp["workspace_path"] = info.data["path"]
+        return value
 
+    @pydantic.model_validator(mode="after")
+    def _associate_components_with_workspace(self):
+        """Associate the components with the workspace"""
+        for cmp in (
+            self.pipelines
+            + self.sinks
+            + self.publishers
+            + self.scripts
+            + self.notebooks
+        ):
+            cmp._workspace = self
+        return self
 
-class Workspace(ContinuousDataFramework):
-    """A CDF workspace."""
+    # serialize componets back to dict
+    @pydantic.field_serializer(
+        "pipelines", "sinks", "publishers", "scripts", "notebooks"
+    )
+    @classmethod
+    def _workspace_component_serializer(cls, value: t.Any) -> t.Dict[str, t.Any]:
+        """Serialize component arrays back to dictionaries"""
+        return {cmp.name: cmp.model_dump() for cmp in value}
 
-    def __init__(self, name: str, /, *, project: Project) -> None:
-        """Initialize a workspace."""
-        self._project = project
-        self.configuration = ConfigurationOverlay(
-            project._workspaces[name],
-            project.configuration.maps[0],
+    def _get_spec(
+        self, name: str, kind: str
+    ) -> M.Result[spec.CoreSpecification, KeyError]:
+        """Get a component spec by name"""
+        for cmp in getattr(self, kind):
+            if cmp.name == name:
+                return M.ok(cmp)
+        return M.error(KeyError(f"{kind[:-1].title()} not found: {name}"))
+
+    def get_pipeline_spec(
+        self, name: str
+    ) -> M.Result[spec.PipelineSpecification, Exception]:
+        """Get a pipeline by name"""
+        return t.cast(
+            M.Result[spec.PipelineSpecification, Exception],
+            self._get_spec(name, "pipelines"),
+        )
+
+    def get_sink_spec(self, name: str) -> M.Result[spec.SinkSpecification, Exception]:
+        """Get a sink by name"""
+        return t.cast(
+            M.Result[spec.SinkSpecification, Exception],
+            self._get_spec(name, "sinks"),
+        )
+
+    def get_publisher_spec(
+        self, name: str
+    ) -> M.Result[spec.PublisherSpecification, Exception]:
+        """Get a publisher by name"""
+        return t.cast(
+            M.Result[spec.PublisherSpecification, Exception],
+            self._get_spec(name, "publishers"),
+        )
+
+    def get_script_spec(
+        self, name: str
+    ) -> M.Result[spec.ScriptSpecification, Exception]:
+        """Get a script by name"""
+        return t.cast(
+            M.Result[spec.ScriptSpecification, Exception],
+            self._get_spec(name, "scripts"),
+        )
+
+    def get_notebook_spec(
+        self, name: str
+    ) -> M.Result[spec.NotebookSpecification, Exception]:
+        """Get a notebook by name"""
+        return t.cast(
+            M.Result[spec.NotebookSpecification, Exception],
+            self._get_spec(name, "notebooks"),
         )
 
     @property
-    def parent(self) -> Project:
-        """The parent project."""
+    def project(self) -> "Project":
+        """Get the project this workspace belongs to"""
+        if self._project is None:
+            raise ValueError("Workspace not associated with a project")
         return self._project
 
+    @property
+    def has_project_association(self) -> bool:
+        """Check if the workspace is associated with a project"""
+        return self._project is not None
 
-load_project = M.result(Project.load)
-"""Create a project from a root path."""
+    @contextmanager
+    def inject_context(self) -> t.Iterator[None]:
+        with self.project.inject_context(self.name):
+            yield
 
-__all__ = ["load_project", "Project", "Workspace", "ContinuousDataFramework"]
+    @property
+    def filesystem(self) -> FilesystemAdapter:
+        """Get a handle to the project filesystem adapter"""
+        return self.project.filesystem
+
+    @property
+    def feature_flags(self) -> FeatureFlagAdapter:
+        """Get a handle to the project feature flag adapter"""
+        return self.project.feature_flags
+
+    def get_transform_gateways(self) -> t.Iterator[t.Tuple[str, "GatewayConfig"]]:
+        """Get the SQLMesh gateway configurations"""
+        for sink in self.sinks:
+            with suppress(KeyError):
+                yield sink.name, sink.get_transform_config()
+
+    def get_transform_context(self, name: t.Optional[str] = None):
+        """Get the SQLMesh context for the workspace
+
+        We expect a config.py file in the workspace directory that uses the
+        `get_transform_gateways` method to populate the SQLMesh Config.gateways key.
+
+        Args:
+            name: The name of the gateway to use.
+
+        Returns:
+            The SQLMesh context.
+        """
+        import sqlmesh
+
+        return sqlmesh.Context(paths=self.path, gateway=name)
+
+
+class Project(pydantic.BaseModel):
+    """A project is a collection of workspaces and configuration settings"""
+
+    model_config = model_config
+
+    path: Path = Path(".")
+    """The path to the project"""
+    name: str = pydantic.Field(
+        pattern=r"^[a-zA-Z0-9_\-]+$",
+        min_length=3,
+        max_length=32,
+        default_factory=lambda: "CDF-" + os.urandom(4).hex(sep="-", bytes_per_sep=2),
+    )
+    """The name of the project"""
+    owner: t.Optional[str] = None
+    """The owner of the project"""
+    documentation: t.Optional[str] = None
+    """The project documentation"""
+    workspaces: t.List[Workspace] = [Workspace()]
+    """The project workspaces"""
+    filesystem_settings: t.Annotated[
+        FilesystemSettings, pydantic.Field(alias="filesystem")
+    ] = FilesystemSettings()
+    """The project filesystem settings"""
+    feature_flag_settings: t.Annotated[
+        t.Union[
+            FilesystemFeatureFlagSettings,
+            HarnessFeatureFlagSettings,
+            LaunchDarklyFeatureFlagSettings,
+            SplitFeatureFlagSettings,
+        ],
+        pydantic.Field(discriminator="provider", alias="feature_flags"),
+    ] = FilesystemFeatureFlagSettings()
+    """The project feature flags provider settings"""
+
+    wrapped: t.Annotated[t.Any, pydantic.Field(exclude=True)] = {}
+    """Store a reference to the wrapped configuration"""
+
+    _extra: t.Dict[str, t.Any] = {}
+    """Stored information set via __setitem__ which is included in scoped dictionaries"""
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _inject_wrapped(cls, values: t.Any):
+        """Inject the wrapped configuration"""
+        if isinstance(values, ConfigProxy):
+            values["wrapped"] = values.proxied
+        else:
+            values["wrapped"] = values
+        return values
+
+    @pydantic.field_validator("path", mode="before")
+    @classmethod
+    def _validate_path(cls, value: t.Any):
+        """Resolve the project path
+
+        The project path must be a directory. If it is a string, it will be converted to a Path object.
+        """
+        if isinstance(value, str):
+            value = Path(value)
+        if not isinstance(value, Path):
+            raise ValueError("Path must be a string or a Path object")
+        elif not value.is_dir():
+            raise FileNotFoundError(f"Project not found: {value}")
+        return value.resolve()
+
+    @pydantic.field_validator("workspaces", mode="before")
+    @classmethod
+    def _hydrate_workspaces(cls, value: t.Any, info: pydantic.ValidationInfo):
+        """Hydrate the workspaces if they are paths
+
+        If the workspaces is a path, load the configuration from the path.
+        """
+        if isinstance(value, str):
+            value = list(map(lambda s: s.strip(), value.split(",")))
+        elif isinstance(value, dict):
+            value = [v["path"] for v in value.values()]
+        if isinstance(value, list):
+            for i, maybe_path in enumerate(value):
+                if isinstance(maybe_path, str):
+                    path = Path(info.data["path"]) / maybe_path
+                    config = _load_config(path)
+                    config["path"] = path
+                    value[i] = config
+        return value
+
+    @pydantic.model_validator(mode="after")
+    def _validate_workspaces(self):
+        """Validate the workspaces
+
+        Workspaces must have unique names and paths.
+        Workspaces must be subdirectories of the project path.
+        Workspaces must not be subdirectories of other workspaces.
+        """
+        workspace_names = [workspace.name for workspace in self.workspaces]
+        if len(workspace_names) != len(set(workspace_names)):
+            raise ValueError("Workspace names must be unique")
+        workspace_paths = [workspace.path for workspace in self.workspaces]
+        if len(workspace_paths) != len(set(workspace_paths)):
+            raise ValueError("Workspace paths must be unique")
+        if not all(map(lambda path: path.is_relative_to(self.path), workspace_paths)):
+            raise ValueError(
+                "Workspace paths must be subdirectories of the project path"
+            )
+        if not all(
+            map(
+                lambda path: all(
+                    not other_path.is_relative_to(path)
+                    for other_path in workspace_paths
+                    if other_path != path
+                ),
+                workspace_paths,
+            )
+        ):
+            raise ValueError(
+                "Workspace paths must not be subdirectories of other workspaces"
+            )
+        return self
+
+    @pydantic.model_validator(mode="after")
+    def _associate_workspaces_with_project(self):
+        """Associate the workspaces with the project"""
+        for workspace in self.workspaces:
+            workspace._project = self
+        return self
+
+    @pydantic.field_serializer("workspaces")
+    @classmethod
+    def _workspace_serializer(cls, value: t.Any) -> t.Dict[str, t.Any]:
+        """Serialize the workspaces"""
+        return {workspace.name: workspace.model_dump() for workspace in value}
+
+    def __getitem__(self, key: str) -> t.Any:
+        """Get an item from the configuration"""
+        return self.wrapped[key]
+
+    def __setitem__(self, key: str, value: t.Any) -> None:
+        """Set an item in the configuration"""
+        if key in self.model_fields:
+            raise KeyError(
+                f"Cannot set `{key}` via string accessor, set the attribute directly instead"
+            )
+        self._extra[key] = value
+
+    def get_workspace(self, name: str) -> M.Result[Workspace, Exception]:
+        """Get a workspace by name"""
+        for workspace in self.workspaces:
+            if workspace.name == name:
+                return M.ok(workspace)
+        return M.error(KeyError(f"Workspace not found: {name}"))
+
+    def get_workspace_from_path(self, path: PathLike) -> M.Result[Workspace, Exception]:
+        """Get a workspace by path."""
+        path = Path(path).resolve()
+        for workspace in self.workspaces:
+            if path.is_relative_to(workspace.path):
+                return M.ok(workspace)
+        return M.error(ValueError(f"No workspace found at {path}."))
+
+    def to_scoped_dict(self, workspace: t.Optional[str] = None) -> ChainMap[str, t.Any]:
+        """Convert the project settings to a scoped dictionary
+
+        Lookups are performed in the following order:
+        - The extra configuration, holding data set via __setitem__.
+        - The workspace configuration, if passed.
+        - The project configuration.
+        - The wrapped configuration, if available. Typically a dynaconf settings object.
+
+        Boxing allows us to access nested values using dot notation. This is doubly useful
+        since ChainMaps will move to the next map in the chain if the dotted key is not
+        fully resolved in the current map.
+        """
+
+        def to_box(obj: t.Any) -> Box:
+            return Box(obj, box_dots=True)
+
+        if workspace:
+            return (
+                self.get_workspace(workspace)
+                .map(
+                    lambda ws: ChainMap(
+                        to_box(self._extra),
+                        to_box(ws.model_dump()),
+                        to_box(self.model_dump()),
+                        self.wrapped,
+                    )
+                )
+                .unwrap()
+            )
+        return ChainMap(
+            to_box(self._extra),
+            to_box(self.model_dump()),
+            self.wrapped,
+        )
+
+    @contextmanager
+    def inject_context(
+        self, workspace: t.Optional[str] = None
+    ) -> t.Iterator[t.Mapping[str, t.Any]]:
+        """Inject the project configuration provider into the context
+
+        This allows dlt.config and dlt.secrets to access the project configuration. Furthermore
+        it makes the project configuration available throughout dlt where things such as extract,
+        normalize, and load settings can be specified.
+        """
+        ctx = Container()[ConfigProvidersContext]
+        prior = ctx.providers.copy()
+        data = self.to_scoped_dict(workspace)
+        ctx.providers = [
+            EnvironProvider(),
+            ScopedConfigProvider(data, secret=False),
+            ScopedConfigProvider(data, secret=True),
+        ]
+        yield data
+        ctx.providers = prior
+
+    @cached_property
+    def filesystem(self) -> FilesystemAdapter:
+        """Get a handle to the project's configured filesystem adapter"""
+        return get_filesystem_adapter(
+            self.filesystem_settings,
+        )
+
+    @cached_property
+    def feature_flags(self) -> FeatureFlagAdapter:
+        """Get a handle to the project's configured feature flag adapter"""
+        return get_feature_flag_adapter(
+            self.feature_flag_settings, filesystem=self.filesystem
+        )
+
+
+def _load_config(
+    path: Path, extensions: t.Optional[t.List[str]] = None
+) -> dynaconf.LazySettings:
+    """Load raw configuration data from a file path using dynaconf.
+
+    Args:
+        path: The path to the project or workspace directory
+
+    Returns:
+        A dynaconf.LazySettings object.
+    """
+    extensions = extensions or ["toml", "yaml", "yml", "json", "py"]
+    if not any(map(lambda ext: path.joinpath(f"cdf.{ext}").is_file(), extensions)):
+        raise FileNotFoundError(f"No cdf configuration file found: {path}")
+    return dynaconf.LazySettings(
+        root_path=path,
+        settings_files=[f"cdf.{ext}" for ext in extensions],
+        environments=True,
+        envvar_prefix="CDF",
+        env_switcher=c.CDF_ENVIRONMENT,
+        env=c.DEFAULT_ENVIRONMENT,
+        load_dotenv=True,
+        merge_enabled=True,
+        validators=[dynaconf.Validator("name", must_exist=True)],
+    )
+
+
+# This is necesitated by the fact that Pydantic accesses attributes
+# in such a way that it bypasses Dynaconfs lazy loading mechanism.
+class ConfigProxy:
+    """A proxy object for accessing Lazy configuration values"""
+
+    def __init__(self, value: t.Any):
+        self.proxied = value
+
+    def __getattr__(self, name: str) -> t.Any:
+        try:
+            rv = self.proxied[name]
+            if isinstance(rv, dict):
+                return ConfigProxy(rv)
+            return rv
+        except KeyError:
+            raise AttributeError(name)
+
+    def __setitem__(self, key: str, value: t.Any) -> None:
+        self.proxied[key] = value
+
+    def __getitem__(self, key: str) -> t.Any:
+        rv = self.proxied[key]
+        if isinstance(rv, dict):
+            return ConfigProxy(rv)
+        return rv
+
+
+@M.result
+def load_project(root: PathLike) -> Project:
+    """Load configuration data from a project root path using dynaconf.
+
+    Args:
+        root: The root path to the project.
+
+    Returns:
+        A Result monad with a Project object if successful. Otherwise, a Result monad with an error.
+    """
+    root_path = Path(root).resolve()
+    if not root_path.is_dir():
+        raise FileNotFoundError(f"Project not found: {root_path}")
+    config = _load_config(root_path)
+    config["path"] = root_path
+    return Project.model_validate(ConfigProxy(config))
+
+
+__all__ = [
+    "load_project",
+    "Project",
+    "Workspace",
+    "FeatureFlagSettings",
+    "FilesystemSettings",
+]

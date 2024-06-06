@@ -25,8 +25,12 @@ from dlt.common.versioned_state import (
 import cdf.core.constants as c
 import cdf.core.context as context
 import cdf.core.logger as logger
-from cdf.core.feature_flag import FlagProvider
-from cdf.core.project import Workspace, load_project
+from cdf.core.project import (
+    FeatureFlagSettings,
+    FilesystemSettings,
+    Workspace,
+    load_project,
+)
 from cdf.core.runtime import (
     execute_notebook_specification,
     execute_pipeline_specification,
@@ -100,7 +104,7 @@ def index(ctx: typer.Context) -> None:
         console.print("Scripts", workspace.scripts)
         console.print("Notebooks", workspace.notebooks)
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Core")
@@ -157,12 +161,12 @@ def pipeline(
     try:
         source, destination = pipeline_to_sink.split(":", 1)
         sink, stage = (
-            workspace.get_sink(destination)
+            workspace.get_sink_spec(destination)
             .map(lambda s: s.get_ingest_config())
             .unwrap_or((destination, None))
         )
         return (
-            workspace.get_pipeline(source)
+            workspace.get_pipeline_spec(source)
             .bind(
                 lambda p: execute_pipeline_specification(
                     p,
@@ -177,7 +181,7 @@ def pipeline(
             .unwrap()
         )  # maybe a function which searches for LoadInfo objects from the exports
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Develop")
@@ -204,7 +208,7 @@ def discover(
     """
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
-        spec = workspace.get_pipeline(pipeline).unwrap()
+        spec = workspace.get_pipeline_spec(pipeline).unwrap()
         for i, source in enumerate(
             execute_pipeline_specification(
                 spec, "dummy", dry_run=True, quiet=not no_quiet
@@ -218,7 +222,7 @@ def discover(
                     f"{i}.{j}: {resource.name} (enabled: {resource.selected})"
                 )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Develop")
@@ -244,7 +248,7 @@ def head(
     """
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
-        spec = workspace.get_pipeline(pipeline).unwrap()
+        spec = workspace.get_pipeline_spec(pipeline).unwrap()
         target = next(
             filter(
                 lambda r: r.name == resource,
@@ -272,7 +276,7 @@ def head(
             )
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Core")
@@ -301,7 +305,7 @@ def publish(
     try:
         source, publisher = sink_to_publisher.split(":", 1)
         return (
-            workspace.get_publisher(publisher)
+            workspace.get_publisher_spec(publisher)
             .bind(
                 lambda p: execute_publisher_specification(
                     p, workspace.get_transform_context(source), skip_verification
@@ -310,7 +314,7 @@ def publish(
             .unwrap()
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Core")
@@ -330,12 +334,12 @@ def script(
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         return (
-            workspace.get_script(script)
+            workspace.get_script_spec(script)
             .bind(lambda s: execute_script_specification(s, capture_stdout=quiet))
             .unwrap()
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @app.command(rich_help_panel="Core")
@@ -361,16 +365,18 @@ def notebook(
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
         return (
-            workspace.get_notebook(notebook)
+            workspace.get_notebook_spec(notebook)
             .bind(
                 lambda s: execute_notebook_specification(
-                    s, storage=workspace.filesystem, **json.loads(params)
+                    s,
+                    storage=workspace.project.filesystem.wrapped,
+                    **json.loads(params),
                 )
             )
             .unwrap()
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @app.command(
@@ -385,21 +391,21 @@ def jupyter_lab(
     try:
         subprocess.run(
             ["jupyter", "lab", *ctx.args],
-            cwd=workspace.root,
+            cwd=workspace.path,
             check=False,
             env={
                 **os.environ,
                 "PYTHONPATH": ":".join(
                     (
-                        str(workspace.root.resolve()),
+                        str(workspace.path.resolve()),
                         *sys.path,
-                        str(workspace.root.parent.resolve()),
+                        str(workspace.path.parent.resolve()),
                     )
                 ),
             },
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 class _SpecType(str, Enum):
@@ -411,6 +417,7 @@ class _SpecType(str, Enum):
     notebook = "notebook"
     sink = "sink"
     feature_flags = "feature_flags"
+    filesystem = "filesystem"
 
 
 @app.command(rich_help_panel="Develop")
@@ -451,8 +458,10 @@ def spec(
     elif name == _SpecType.sink:
         _print(SinkSpecification)
     elif name == _SpecType.feature_flags:
-        for spec in t.get_args(FlagProvider):
+        for spec in t.get_args(FeatureFlagSettings):
             _print(spec)
+    elif name == _SpecType.filesystem:
+        _print(FilesystemSettings)
     else:
         raise ValueError(f"Invalid spec type {name}.")
 
@@ -509,11 +518,11 @@ def schema_dump(
     try:
         source, destination = pipeline_to_sink.split(":", 1)
         sink, _ = (
-            workspace.get_sink(destination)
+            workspace.get_sink_spec(destination)
             .map(lambda s: s.get_ingest_config())
             .unwrap_or((destination, None))
         )
-        spec = workspace.get_pipeline(source).unwrap()
+        spec = workspace.get_pipeline_spec(source).unwrap()
         rv = execute_pipeline_specification(
             spec, sink, dry_run=True, quiet=True
         ).unwrap()
@@ -528,7 +537,7 @@ def schema_dump(
                 f"Invalid format {format}. Must be one of {list(_ExportFormat)}"
             )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @schema.command("edit")
@@ -555,11 +564,11 @@ def schema_edit(
     try:
         source, destination = pipeline_to_sink.split(":", 1)
         sink, _ = (
-            workspace.get_sink(destination)
+            workspace.get_sink_spec(destination)
             .map(lambda s: s.get_ingest_config())
             .unwrap_or((destination, None))
         )
-        spec = workspace.get_pipeline(source).unwrap()
+        spec = workspace.get_pipeline_spec(source).unwrap()
         logger.info(f"Clearing local schema and state for {source}.")
         pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
         pipe.drop()
@@ -588,7 +597,7 @@ def schema_edit(
             else:
                 logger.info("Schema not updated.")
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 app.add_typer(
@@ -628,17 +637,17 @@ def state_dump(
     try:
         source, destination = pipeline_to_sink.split(":", 1)
         sink, _ = (
-            workspace.get_sink(destination)
+            workspace.get_sink_spec(destination)
             .map(lambda s: s.get_ingest_config())
             .unwrap_or((destination, None))
         )
-        spec = workspace.get_pipeline(source).unwrap()
+        spec = workspace.get_pipeline_spec(source).unwrap()
         rv = execute_pipeline_specification(
             spec, sink, dry_run=True, quiet=True
         ).unwrap()
         console.print(rv.pipeline.state)
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @state.command("edit")
@@ -665,11 +674,11 @@ def state_edit(
     try:
         source, destination = pipeline_to_sink.split(":", 1)
         sink, _ = (
-            workspace.get_sink(destination)
+            workspace.get_sink_spec(destination)
             .map(lambda s: s.get_ingest_config())
             .unwrap_or((destination, None))
         )
-        spec = workspace.get_pipeline(source).unwrap()
+        spec = workspace.get_pipeline_spec(source).unwrap()
         logger.info(f"Clearing local state and state for {source}.")
         pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
         pipe.drop()
@@ -699,7 +708,7 @@ def state_edit(
         else:
             logger.info("State not updated.")
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 app.add_typer(
@@ -759,7 +768,7 @@ def model_evaluate(
             )
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @model.command("render")
@@ -806,7 +815,7 @@ def model_render(
             ).sql(dialect or sqlmesh_ctx.default_dialect, pretty=True)
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @model.command("name")
@@ -835,7 +844,7 @@ def model_name(
         sqlmesh_ctx = workspace.get_transform_context(gateway)
         console.print(sqlmesh_ctx.table_name(model, False))
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @model.command("diff")
@@ -873,7 +882,7 @@ def model_diff(
             source, target, model_or_snapshot=model, show_sample=show_sample
         )
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 @model.command("prototype")
@@ -911,7 +920,7 @@ def model_prototype(
             )
             df.to_parquet(f"{dep}.parquet", index=False)
     finally:
-        context.active_project.reset(token)
+        context.active_workspace.reset(token)
 
 
 def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "Token"]:
@@ -919,8 +928,8 @@ def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "
     workspace = (
         load_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
     )
-    context.inject_cdf_config_provider(workspace)
-    token = context.active_project.set(workspace)
+    workspace.inject_context().__enter__()
+    token = context.active_workspace.set(workspace)
     maybe_log_level = dlt.config.get("runtime.log_level", str)
     if maybe_log_level:
         logger.set_level(maybe_log_level.upper())

@@ -2,21 +2,18 @@
 
 import typing as t
 
-import pydantic
 from dlt.sources import DltSource
 
-from cdf.core.feature_flag.base import BaseFlagProvider
+if t.TYPE_CHECKING:
+    from cdf.core.project import NoopFeatureFlagSettings
 
 
-class NoopFlagProvider(BaseFlagProvider, extra="allow"):
-    """LaunchDarkly feature flag provider."""
-
-    provider: t.Literal["noop"] = pydantic.Field(
-        "noop", frozen=True, description="The feature flag provider."
-    )
-
-    def apply_source(self, source: DltSource) -> DltSource:
-        return source
+def apply_source(
+    source: DltSource, /, *, settings: "NoopFeatureFlagSettings", **kwargs: t.Any
+) -> DltSource:
+    """Apply the feature flags to a dlt source."""
+    _ = settings, kwargs
+    return source
 
 
-__all__ = ["NoopFlagProvider"]
+__all__ = ["apply_source"]

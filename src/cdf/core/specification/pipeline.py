@@ -29,15 +29,11 @@ class MetricInterface(t.Protocol):
 class PipelineMetricSpecification(PythonEntrypoint):
     """Defines metrics which can be captured during pipeline execution"""
 
-    options: t.Dict[str, t.Any] = pydantic.Field(
-        default_factory=dict,
-        description="Kwargs to pass to the metric function if it is a callable that returns a metric interface. If the metric is already a metric interface, this should be left empty.",
-    )
-    """
-    Kwargs to pass to the metric function.
+    options: t.Dict[str, t.Any] = {}
+    """Kwargs to pass to the metric function.
 
     This assumes the metric is a callable which accepts kwargs and returns a metric
-    interface. If the metric is already a metric interface, this should be left empty.
+    interface. If the metric is not parameterized, this should be left empty.
     """
 
     @property
@@ -76,7 +72,7 @@ class PipelineMetricSpecification(PythonEntrypoint):
         resource.add_map(_aggregator)
 
         def _timing_stats():
-            logger.info(
+            logger.debug(
                 f"Collecting metric {metric_name} for {resource_name} took {elapsed} seconds"
             )
 
@@ -94,12 +90,8 @@ class FilterInterface(t.Protocol):
 class PipelineFilterSpecification(PythonEntrypoint):
     """Defines filters which can be applied to pipeline execution"""
 
-    options: t.Dict[str, t.Any] = pydantic.Field(
-        default_factory=dict,
-        description="Kwargs to pass to the filter function if it is a callable that returns a filter interface. If the filter is already a filter interface, this should be left empty.",
-    )
-    """
-    Kwargs to pass to the filter function. 
+    options: t.Dict[str, t.Any] = {}
+    """Kwargs to pass to the filter function. 
 
     This assumes the filter is a callable which accepts kwargs and returns a filter
     interface. If the filter is already a filter interface, this should be left empty.
@@ -121,63 +113,60 @@ InlineFilterSpecifications = t.Dict[str, t.List[PipelineFilterSpecification]]
 """Mapping of resource name glob patterns to filter specs"""
 
 
-class SchemaOptions(pydantic.BaseModel):
-    preferred_types: t.Optional[t.Dict[str, t.List[str]]] = None
-    detections: t.Optional[t.List[str]] = None
-
-
 class PipelineSpecification(PythonScript, Schedulable):
     """A pipeline specification."""
 
-    metrics: InlineMetricSpecifications = pydantic.Field(
-        default_factory=dict,
-        description="A dict of resource name glob patterns to metric definitions.",
-    )
-    """
-    A dict of resource name glob patterns to metric definitions.
+    metrics: InlineMetricSpecifications = {}
+    """A dict of resource name glob patterns to metric definitions.
 
     Metrics are captured on a per resource basis during pipeline execution and are
     accumulated into the metric_state dict. The metric definitions are callables that
     take the current item and the current metric value and return the new metric value.
     """
-    filters: InlineFilterSpecifications = pydantic.Field(
-        default_factory=dict,
-        description="A dict of resource name glob patterns to filter definitions.",
-    )
-    """
-    A dict of resource name glob patterns to filter definitions.
+    filters: InlineFilterSpecifications = {}
+    """A dict of resource name glob patterns to filter definitions.
 
     Filters are applied on a per resource basis during pipeline execution. The filter
     definitions are callables that take the current item and return a boolean indicating
     whether the item should be filtered out.
     """
 
-    dataset_name: str = pydantic.Field(
-        "{name}_v{version}",
-        description="The name of the dataset associated with the pipeline. Defaults to the versioned name. This string is formatted with the pipeline name, version, meta, and tags.",
-    )
-    """The name of the dataset associated with the pipeline."""
+    dataset_name: str = "{name}_v{version}"
+    """The name of the dataset associated with the pipeline.
+
+    Defaults to the versioned name. This string is formatted with the pipeline name, version, meta, and tags.
+    """
+
+    options: t.Dict[str, t.Any] = {}
+    """Options available in pipeline scoped dlt config resolution."""
 
     _folder = "pipelines"
     """The folder where pipeline scripts are stored."""
 
     @pydantic.model_validator(mode="after")
-    def _setup_pipeline(self: "PipelineSpecification") -> "PipelineSpecification":
-        """Set up the pipeline specification."""
-        self.dataset_name = self.dataset_name.format(
-            name=self.name,
-            version=self.version,
-            meta=self.meta,
-            tags=self.tags,
+    def _validate_dataset(self: "PipelineSpecification") -> "PipelineSpecification":
+        """Validate the dataset name and apply formatting."""
+        name = self.dataset_name.format(
+            name=self.name, version=self.version, meta=self.meta, tags=self.tags
         ).strip()
-        if not self.dataset_name:
-            self.dataset_name = self.versioned_name
+        self.dataset_name = name or self.versioned_name
         return self
 
     def inject_metrics_and_filters(
         self, source: dlt.sources.DltSource, container: MetricStateContainer
     ) -> dlt.sources.DltSource:
-        """Apply metrics and filters to a source."""
+        """Apply metrics and filters defined by the specification to a source.
+
+        For a source to conform to the specification, it must have this method applied to it. You
+        can manipulate sources without this method, but the metrics and filters will not be applied.
+
+        Args:
+            source: The source to apply metrics and filters to.
+            container: The container to store metric state in. This is mutated during execution.
+
+        Returns:
+            dlt.sources.DltSource: The source with metrics and filters applied.
+        """
         for resource in source.selected_resources.values():
             for patt, metric in self.metrics.items():
                 if fnmatch.fnmatch(resource.name, patt):
@@ -195,7 +184,19 @@ class PipelineSpecification(PythonScript, Schedulable):
         /,
         **kwargs: t.Any,
     ) -> TPipeline:
-        """Convert the pipeline specification to a dlt pipeline object."""
+        """Convert the pipeline specification to a dlt pipeline object.
+
+        This is a convenience method to create a dlt pipeline object from the specification. The
+        dlt pipeline is expected to use the name and dataset name from the specification. This
+        is what allows declarative definitions to be associated with runtime artifacts.
+
+        Args:
+            klass (t.Type[TPipeline], optional): The pipeline class to use. Defaults to dlt.Pipeline.
+            **kwargs: Additional keyword arguments to pass to the pipeline constructor.
+
+        Returns:
+            TPipeline: The dlt pipeline object.
+        """
         return dlt.pipeline(
             pipeline_name=self.name,
             dataset_name=self.dataset_name,

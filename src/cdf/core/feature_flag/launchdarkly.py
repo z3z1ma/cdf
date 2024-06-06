@@ -2,25 +2,22 @@
 
 import typing as t
 
-import pydantic
 from dlt.sources import DltSource
 
-from cdf.core.feature_flag.base import BaseFlagProvider
+if t.TYPE_CHECKING:
+    from cdf.core.project import LaunchDarklyFeatureFlagSettings
 
 
-class LaunchDarklyFlagProvider(BaseFlagProvider, extra="allow"):
-    """LaunchDarkly feature flag provider."""
-
-    sdk_key: str = pydantic.Field(
-        description="The LaunchDarkly SDK key used to connect to the LaunchDarkly service."
-    )
-
-    provider: t.Literal["launchdarkly"] = pydantic.Field(
-        "launchdarkly", frozen=True, description="The feature flag provider."
-    )
-
-    def apply_source(self, source: DltSource) -> DltSource:
-        raise NotImplementedError("LaunchDarkly feature flags are not yet supported")
+def apply_source(
+    source: DltSource,
+    /,
+    *,
+    settings: "LaunchDarklyFeatureFlagSettings",
+    **kwargs: t.Any,
+) -> DltSource:
+    """Apply the feature flags to a dlt source."""
+    _ = source, settings, kwargs
+    raise NotImplementedError("LaunchDarkly feature flags are not yet supported")
 
 
-__all__ = ["LaunchDarklyFlagProvider"]
+__all__ = ["apply_source"]

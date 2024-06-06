@@ -29,6 +29,7 @@ from dlt.common.schema.typing import (
     TWriteDisposition,
 )
 from dlt.extract.extract import Extract, data_to_sources
+from dlt.pipeline.exceptions import SqlClientNotAvailable
 from dlt.pipeline.pipeline import Pipeline
 
 import cdf.core.context as context
@@ -284,8 +285,7 @@ def execute_pipeline_specification(
     if select:
         hooks.append(lambda source: _apply_filters(source, select, invert=False))
     else:
-        proj = context.active_project.get()
-        hooks.append(lambda source: proj.feature_flag_provider.apply_source(source))
+        hooks.append(lambda source: spec.workspace.feature_flags.apply_source(source))
     if exclude:
         hooks.append(lambda source: _apply_filters(source, exclude, invert=True))
 
@@ -306,7 +306,7 @@ def execute_pipeline_specification(
         if dry_run:
             return M.ok(result)
         with (
-            suppress(KeyError),
+            suppress(KeyError, SqlClientNotAvailable),
             pipe_reference.sql_client() as client,
             client.with_staging_dataset(staging=True) as client_staging,
         ):

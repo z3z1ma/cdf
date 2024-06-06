@@ -8,7 +8,7 @@ workspace = cdf.get_workspace(__file__).unwrap()
 
 config = sqlmesh.Config.model_validate(
     dict(
-        gateways=workspace.get_gateways().unwrap(),
+        gateways=dict(workspace.get_transform_gateways()),
         project=workspace.name,
         default_gateway="local",
         model_defaults={

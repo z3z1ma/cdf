@@ -20,7 +20,9 @@ T = t.TypeVar("T")  # The type of the value inside the Monad
 U = t.TypeVar("U")  # The transformed type of the value inside the Monad
 K = t.TypeVar("K")  # A known type that is not necessarily the same as T
 L = t.TypeVar("L")  # A known type that is not necessarily the same as U
-E = t.TypeVar("E", bound=BaseException, covariant=True)  # The type of the error inside the Result
+E = t.TypeVar(
+    "E", bound=BaseException, covariant=True
+)  # The type of the error inside the Result
 P = ParamSpec("P")
 
 TState = t.TypeVar("TState")  # The type of the state
@@ -246,7 +248,7 @@ class Nothing(Maybe[T]):
 
 class Result(Monad[T], t.Generic[T, E]):
     @classmethod
-    def pure(cls, value: K) -> "Result[K, Exception]":
+    def pure(cls, value: K) -> "Result[K, E]":
         """Creates an Ok with a value."""
         return Ok(value)
 
@@ -275,7 +277,9 @@ class Result(Monad[T], t.Generic[T, E]):
         pass
 
     @classmethod
-    def lift(cls, func: t.Callable[[U], K]) -> t.Callable[["U | Result[U, Exception]"], "Result[K, Exception]"]:
+    def lift(
+        cls, func: t.Callable[[U], K]
+    ) -> t.Callable[["U | Result[U, Exception]"], "Result[K, Exception]"]:
         """Transforms a function to work with arguments and output wrapped in Result monads.
 
         Args:
@@ -310,7 +314,9 @@ class Result(Monad[T], t.Generic[T, E]):
 
         def __call__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
 
-        def __rshift__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
+        def __rshift__(
+            self, func: t.Callable[[T], "Result[U, E]"]
+        ) -> "Result[U, E]": ...
 
     def __iter__(self) -> t.Iterator[T]:
         """Allows safely unwrapping the value of the Result using a for construct."""
@@ -662,7 +668,9 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
         return cls(_fut)
 
     @classmethod
-    def lift(cls, func: t.Callable[[U], T]) -> t.Callable[["U | Promise[U]"], "Promise[T]"]:
+    def lift(
+        cls, func: t.Callable[[U], T]
+    ) -> t.Callable[["U | Promise[U]"], "Promise[T]"]:
         """
         Lifts a synchronous function to work within the Promise context,
         making it return a Promise of the result and allowing it to be used
@@ -840,10 +848,14 @@ class State(t.Generic[S, A], Monad[A], abc.ABC):
         return State(new_run_state)
 
     def unwrap(self) -> A:
-        raise NotImplementedError("State cannot be directly unwrapped without providing an initial state.")
+        raise NotImplementedError(
+            "State cannot be directly unwrapped without providing an initial state."
+        )
 
     def unwrap_or(self, default: B) -> t.Union[A, B]:
-        raise NotImplementedError("State cannot directly return a value without an initial state.")
+        raise NotImplementedError(
+            "State cannot directly return a value without an initial state."
+        )
 
     def __hash__(self) -> int:
         return id(self.run_state)
@@ -859,7 +871,9 @@ class State(t.Generic[S, A], Monad[A], abc.ABC):
         return f"State({self.run_state})"
 
     @classmethod
-    def lift(cls, func: t.Callable[[U], A]) -> t.Callable[["U | State[S, U]"], "State[S, A]"]:
+    def lift(
+        cls, func: t.Callable[[U], A]
+    ) -> t.Callable[["U | State[S, U]"], "State[S, A]"]:
         """Lifts a function to work within the State monad.
         Args:
             func: A function to lift.

@@ -3,19 +3,16 @@ default:
   workspaces:
   - alex
   filesystem:
-    provider: file
-    root: _storage
+    uri: file://_storage
   feature_flags:
-    provider: file
-    options:
-      path: flags.json
+    provider: filesystem
+    filename: flags.json
+  something: ok
 prod:
   filesystem:
     provider: gcs
     root: harness_analytics_staging/cdf_test_1
 dev:
   feature_flags:
-    provider: file
-    options:
-      path: dev_flags.json
-
+    provider: filesystem
+    filename: dev_flags.json

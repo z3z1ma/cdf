@@ -34,6 +34,8 @@ class NotebookSpecification(WorkspaceComponent, InstallableRequirements):
 
     _folder: str = "notebooks"
     """The folder where notebooks are stored."""
+    _extension: str = "ipynb"
+    """The default extension for notebooks."""
 
     _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
     """A lock to ensure the notebook is thread safe."""

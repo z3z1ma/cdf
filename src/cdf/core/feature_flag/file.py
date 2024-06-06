@@ -2,50 +2,44 @@
 
 import json
 import typing as t
+from collections import defaultdict
 from threading import Lock
 
-import fsspec
-import pydantic
-
 import cdf.core.logger as logger
-from cdf.core.feature_flag.base import BaseFlagProvider
 
 if t.TYPE_CHECKING:
     from dlt.sources import DltSource
 
-
-class FileFlagProvider(BaseFlagProvider, extra="allow"):
-    path: str = pydantic.Field(
-        description="The path to the file where the feature flags are stored in the configured filesystem."
-    )
-
-    provider: t.Literal["file"] = pydantic.Field(
-        "file", frozen=True, description="The feature flag provider."
-    )
-
-    _storage: fsspec.AbstractFileSystem
-
-    _lock: Lock = pydantic.PrivateAttr(default_factory=Lock)
-
-    def __init__(self, **data: t.Any) -> None:
-        super().__init__(**data)
-        self._storage = data.get("storage", fsspec.filesystem("file"))
-
-    def apply_source(self, source: "DltSource") -> "DltSource":
-        """Apply the feature flags to a dlt source."""
-        logger.info("Reading feature flags from %s", self.path)
-        if not self._storage.exists(self.path):
-            flags = {}
-        else:
-            with self._storage.open(self.path) as file:
-                flags = json.load(file)
-        source_name = source.name
-        for resource_name, resource in source.selected_resources.items():
-            key = f"{source_name}.{resource_name}"
-            resource.selected = flags.setdefault(key, False)
-        with self._lock, self._storage.open(self.path, "w") as file:
-            json.dump(flags, file, indent=2)
-        return source
+    from cdf.core.filesystem import FilesystemAdapter
+    from cdf.core.project import FilesystemFeatureFlagSettings
 
 
-__all__ = ["FileFlagProvider"]
+LOCK = defaultdict(Lock)
+
+
+def apply_source(
+    source: "DltSource",
+    /,
+    *,
+    settings: "FilesystemFeatureFlagSettings",
+    filesystem: "FilesystemAdapter",
+    **kwargs: t.Any,
+) -> "DltSource":
+    """Apply the feature flags to a dlt source."""
+    _ = kwargs
+    logger.info("Reading feature flags from %s", settings.filename)
+    if not filesystem.exists(settings.filename):
+        flags = {}
+    else:
+        with filesystem.open(settings.filename) as file:
+            flags = json.load(file)
+    source_name = source.name
+    for resource_name, resource in source.selected_resources.items():
+        key = f"{source_name}.{resource_name}"
+        resource.selected = flags.setdefault(key, False)
+    with LOCK[settings], filesystem.open(settings.filename, "w") as file:
+        json.dump(flags, file, indent=2)
+    return source
+
+
+__all__ = ["apply_source"]

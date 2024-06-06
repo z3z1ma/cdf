@@ -83,11 +83,11 @@ def get_active_project() -> Project:
     Returns:
         Project: The active project.
     """
-    obj = context.active_project.get()
+    obj = context.active_workspace.get()
     if isinstance(obj, Project):
         return obj
     if isinstance(obj, Workspace):
-        return obj.parent
+        return obj.project
     raise ValueError("No valid project found in context.")
 
 
