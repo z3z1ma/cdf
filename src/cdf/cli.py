@@ -928,7 +928,7 @@ def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "
     workspace = (
         load_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
     )
-    workspace.inject_context().__enter__()
+    workspace.inject_configuration().__enter__()
     token = context.active_workspace.set(workspace)
     maybe_log_level = dlt.config.get("runtime.log_level", str)
     if maybe_log_level:

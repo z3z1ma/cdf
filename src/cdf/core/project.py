@@ -48,16 +48,12 @@ from pathlib import Path
 
 import dynaconf
 import pydantic
-from dlt.common.configuration.container import Container
-from dlt.common.configuration.providers import ConfigProvider, EnvironProvider
-from dlt.common.configuration.specs.config_providers_context import (
-    ConfigProvidersContext,
-)
-from dlt.common.utils import update_dict_nested
+from dynaconf.utils.boxing import DynaBox
 from dynaconf.vendor.box import Box
 
 import cdf.core.constants as c
 import cdf.core.specification as spec
+from cdf.core.config import inject_configuration
 from cdf.core.feature_flag import FeatureFlagAdapter, get_feature_flag_adapter
 from cdf.core.filesystem import FilesystemAdapter, get_filesystem_adapter
 from cdf.types import M, PathLike
@@ -199,88 +195,6 @@ FeatureFlagSettings = t.Union[
 ]
 
 
-class ScopedConfigProvider(ConfigProvider):
-    """A configuration provider for CDF scoped settings."""
-
-    def __init__(self, config: ChainMap, secret: bool = False) -> None:
-        """Initialize the provider.
-
-        Args:
-            config: The configuration ChainMap.
-        """
-        self._config = config
-        self._secret = secret
-
-    def get_value(
-        self, key: str, hint: t.Type[t.Any], pipeline_name: str, *sections: str
-    ) -> t.Tuple[t.Optional[t.Any], str]:
-        """Get a value from the configuration."""
-        _ = hint
-        if pipeline_name:
-            sections = ("pipelines", pipeline_name, "options", *sections)
-        parts = (*sections, key)
-        fqn = ".".join(parts)
-
-        try:
-            return self._config[fqn], fqn
-        except KeyError:
-            return None, fqn
-
-    def set_value(
-        self, key: str, value: t.Any, pipeline_name: str, *sections: str
-    ) -> None:
-        """Set a value in the configuration."""
-        if pipeline_name:
-            sections = ("pipelines", pipeline_name, "options", *sections)
-        parts = (*sections, key)
-        fqn = ".".join(parts)
-        if isinstance(value, dynaconf.Dynaconf):
-            if key is None:
-                self._config.maps[-1] = t.cast(dict, value)
-            else:
-                self._config.maps[-1][fqn].update(value)
-            return None
-        else:
-            if key is None:
-                if isinstance(value, dict):
-                    self._config.update(value)
-                    return None
-                else:
-                    raise ValueError("Cannot set a value without a key")
-            this = self._config
-            for key in parts[:-1]:
-                if key not in this:
-                    this[key] = {}
-                this = this[key]
-            if isinstance(value, dict) and isinstance(this[parts[-1]], dict):
-                update_dict_nested(this[parts[-1]], value)
-            else:
-                this[parts[-1]] = value
-
-    @property
-    def name(self) -> str:
-        """The name of the provider"""
-        return "CDF Configuration Provider"
-
-    @property
-    def supports_sections(self) -> bool:
-        """This provider supports sections"""
-        return True
-
-    @property
-    def supports_secrets(self) -> bool:
-        """There is no differentiation between secrets and non-secrets for the cdf provider.
-
-        Nothing is persisted. Data is available in memory and backed by the dynaconf settings object.
-        """
-        return self._secret
-
-    @property
-    def is_writable(self) -> bool:
-        """Whether the provider is writable"""
-        return True
-
-
 class Workspace(_BaseSettings):
     """A workspace is a collection of pipelines, sinks, publishers, scripts, and notebooks in a subdirectory of the project"""
 
@@ -417,8 +331,9 @@ class Workspace(_BaseSettings):
         return self._project is not None
 
     @contextmanager
-    def inject_context(self) -> t.Iterator[None]:
-        with self.project.inject_context(self.name):
+    def inject_configuration(self) -> t.Iterator[None]:
+        """Inject the workspace configuration into the context"""
+        with self.project.inject_configuration(self.name):
             yield
 
     @property
@@ -618,7 +533,7 @@ class Project(_BaseSettings):
         """
 
         def to_box(obj: t.Any) -> Box:
-            return Box(obj, box_dots=True)
+            return DynaBox(obj, box_dots=True)
 
         if workspace:
             return (
@@ -640,25 +555,12 @@ class Project(_BaseSettings):
         )
 
     @contextmanager
-    def inject_context(
+    def inject_configuration(
         self, workspace: t.Optional[str] = None
-    ) -> t.Iterator[t.Mapping[str, t.Any]]:
-        """Inject the project configuration provider into the context
-
-        This allows dlt.config and dlt.secrets to access the project configuration. Furthermore
-        it makes the project configuration available throughout dlt where things such as extract,
-        normalize, and load settings can be specified.
-        """
-        ctx = Container()[ConfigProvidersContext]
-        prior = ctx.providers.copy()
-        data = self.to_scoped_dict(workspace)
-        ctx.providers = [
-            EnvironProvider(),
-            ScopedConfigProvider(data, secret=False),
-            ScopedConfigProvider(data, secret=True),
-        ]
-        yield data
-        ctx.providers = prior
+    ) -> t.Iterator[None]:
+        """Inject the project configuration into the context"""
+        with inject_configuration(self.to_scoped_dict(workspace)):
+            yield
 
     @cached_property
     def filesystem(self) -> FilesystemAdapter:

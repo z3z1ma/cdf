@@ -28,7 +28,7 @@ def test_load_config():
 
     import dlt
 
-    with project.inject_context():
+    with project.inject_configuration():
         assert dlt.config["something"] == "ok"
         dlt.config["other"] = "cool"
         assert dlt.config["other"] == "cool"

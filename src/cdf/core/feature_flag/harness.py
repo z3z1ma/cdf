@@ -110,7 +110,9 @@ def apply_source(
 ) -> DltSource:
     """Apply the feature flags to a dlt source."""
     _ = kwargs
-    client = Promise(lambda: asyncio.to_thread(_get_client, settings))
+    client = Promise(
+        lambda: asyncio.to_thread(_get_client, t.cast(t.Hashable, settings))
+    )
     # TODO: can we get rid of this?
     workspace = context.active_workspace.get()
     if isinstance(client, Promise):
