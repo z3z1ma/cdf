@@ -81,7 +81,7 @@ def main(
     if environment:
         os.environ[c.CDF_ENVIRONMENT] = environment
     if log_level:
-        dlt.config["runtime.log_level"] = log_level.upper()
+        os.environ["RUNTIME__LOG_LEVEL"] = log_level.upper()
     logger.configure(log_level.upper() if log_level else "INFO")
     logger.monkeypatch_dlt()
     logger.monkeypatch_sqlglot()

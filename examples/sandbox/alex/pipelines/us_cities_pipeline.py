@@ -29,7 +29,7 @@ if cdf.is_main(__name__):
     pipeline = cdf.pipeline()
 
     # Run the pipeline
-    load_info = pipeline.run(us_cities(), table_name="cities")
+    load_info = pipeline.run(us_cities(), table_name="cities", destination="duckdb")
 
     # Print the load information
     print(load_info)
