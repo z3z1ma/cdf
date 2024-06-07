@@ -39,6 +39,11 @@ def test_project_get_spec(project: Project):
     )
     assert spec["name"] == "us_cities"
     assert callable(spec)
+    assert spec is (
+        project.get_workspace("alex")
+        .bind(lambda workspace: workspace.get_pipeline_spec("us_cities"))
+        .unwrap()
+    )
 
 
 def test_inject_configuration(project: Project):
@@ -54,5 +59,6 @@ def test_inject_configuration(project: Project):
 def test_round_trip_serialization(project: Project):
     """Test that the project can be serialized and deserialized."""
     obj = project.model_dump()
-    rt = Project.model_validate(obj)
-    assert rt.model_dump() == project.model_dump()
+    roundtrip = Project.model_validate(obj)
+    assert roundtrip == project
+    assert roundtrip.is_newer_than(project)

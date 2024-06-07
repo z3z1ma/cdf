@@ -39,6 +39,7 @@ options.runtime.dlthub_telemetry = false
 """
 
 import os
+import time
 import typing as t
 from collections import ChainMap
 from contextlib import contextmanager, suppress
@@ -74,6 +75,25 @@ class _BaseSettings(pydantic.BaseModel):
         populate_by_name=True,
     )
 
+    _generation: float = pydantic.PrivateAttr(default_factory=time.monotonic)
+    """A monotonic timestamp of when the model was generated"""
+
+    def __hash__(self) -> int:
+        return hash(self.model_dump_json())
+
+    def __eq__(self, other: t.Any) -> bool:
+        if not isinstance(other, type(self)):
+            return False
+        return self.model_dump() == other.model_dump()
+
+    def is_newer_than(self, other: "Project") -> bool:
+        """Check if the model is newer than another model"""
+        return self._generation > other._generation
+
+    def is_older_than(self, other: "Project") -> bool:
+        """Check if the model is older than another model"""
+        return self._generation < other._generation
+
 
 class FilesystemSettings(_BaseSettings):
     """Configuration for a filesystem provider"""
@@ -84,7 +104,7 @@ class FilesystemSettings(_BaseSettings):
     This is based on fsspec. See https://filesystem-spec.readthedocs.io/en/latest/index.html
     This supports all filesystems supported by fsspec as well as filesystem chaining.
     """
-    options: t.Dict[str, t.Any] = {}
+    options: t.Tuple[t.Tuple[str, t.Any], ...] = ()
     """The filesystem options
 
     Options are passed to the filesystem provider as keyword arguments.
@@ -96,6 +116,14 @@ class FilesystemSettings(_BaseSettings):
         """Convert the URI to a string if it is a Path object"""
         if isinstance(value, Path):
             return value.resolve().as_uri()
+        return value
+
+    @pydantic.field_validator("options", mode="before")
+    @classmethod
+    def _validate_options(cls, value: t.Any) -> t.Any:
+        """Convert the options to a tuple of tuples"""
+        if isinstance(value, dict):
+            value = tuple(value.items())
         return value
 
 
@@ -209,15 +237,15 @@ class Workspace(_BaseSettings):
     """The name of the workspace"""
     owner: t.Optional[str] = None
     """The owner of the workspace"""
-    pipelines: t.List[spec.PipelineSpecification] = []
+    pipelines: t.Tuple[spec.PipelineSpecification, ...] = ()
     """Pipelines move data from sources to sinks"""
-    sinks: t.List[spec.SinkSpecification] = []
+    sinks: t.Tuple[spec.SinkSpecification, ...] = ()
     """A sink is a destination for data"""
-    publishers: t.List[spec.PublisherSpecification] = []
+    publishers: t.Tuple[spec.PublisherSpecification, ...] = ()
     """Publishers send data to external systems"""
-    scripts: t.List[spec.ScriptSpecification] = []
+    scripts: t.Tuple[spec.ScriptSpecification, ...] = ()
     """Scripts are used to automate tasks"""
-    notebooks: t.List[spec.NotebookSpecification] = []
+    notebooks: t.Tuple[spec.NotebookSpecification, ...] = ()
     """Notebooks are used for data analysis and reporting"""
 
     _project: t.Optional["Project"] = None
@@ -387,7 +415,7 @@ class Project(_BaseSettings):
     """The owner of the project"""
     documentation: t.Optional[str] = None
     """The project documentation"""
-    workspaces: t.List[Workspace] = [Workspace()]
+    workspaces: t.Tuple[Workspace, ...] = (Workspace(),)
     """The project workspaces"""
     fs_settings: t.Annotated[
         FilesystemSettings,
@@ -400,18 +428,11 @@ class Project(_BaseSettings):
     ] = FilesystemFeatureFlagSettings()
     """The project feature flags provider settings"""
 
-    wrapped: t.Annotated[t.Any, pydantic.Field(exclude=True)] = {}
+    _wrapped_config: t.Any = {}
     """Store a reference to the wrapped configuration"""
 
     _extra: t.Dict[str, t.Any] = {}
     """Stored information set via __setitem__ which is included in scoped dictionaries"""
-
-    @pydantic.model_validator(mode="before")
-    @classmethod
-    def _inject_wrapped(cls, values: t.Any):
-        """Inject the wrapped configuration"""
-        values["wrapped"] = values
-        return values
 
     @pydantic.field_validator("path", mode="before")
     @classmethod
@@ -496,7 +517,7 @@ class Project(_BaseSettings):
 
     def __getitem__(self, key: str) -> t.Any:
         """Get an item from the configuration"""
-        return self.wrapped[key]
+        return self._wrapped_config[key]
 
     def __setitem__(self, key: str, value: t.Any) -> None:
         """Set an item in the configuration"""
@@ -546,7 +567,7 @@ class Project(_BaseSettings):
                         to_box(self._extra),
                         to_box(ws.model_dump()),
                         to_box(self.model_dump()),
-                        self.wrapped,
+                        self._wrapped_config,
                     )
                 )
                 .unwrap()
@@ -554,7 +575,7 @@ class Project(_BaseSettings):
         return ChainMap(
             to_box(self._extra),
             to_box(self.model_dump()),
-            self.wrapped,
+            self._wrapped_config,
         )
 
     @contextmanager
@@ -640,7 +661,9 @@ def load_project(root: PathLike) -> Project:
         raise FileNotFoundError(f"Project not found: {root_path}")
     config = _load_config(root_path)
     config["path"] = root_path
-    return Project.model_validate(config)
+    project = Project.model_validate(config)
+    project._wrapped_config = config
+    return project
 
 
 __all__ = [

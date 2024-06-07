@@ -9,6 +9,7 @@ import operator
 import os
 import runpy
 import sys
+import time
 import typing as t
 from contextlib import suppress
 from pathlib import Path
@@ -86,6 +87,44 @@ class BaseComponent(
 
     _workspace: t.Optional["Workspace"] = None
     """The workspace containing the component. Set by the workspace model validator."""
+
+    _generation: float = pydantic.PrivateAttr(default_factory=time.monotonic)
+    """The generation time of the component. Used for ordering components."""
+
+    def __eq__(self, other: t.Any) -> bool:
+        """Check if two components are equal."""
+        if not isinstance(other, BaseComponent):
+            return False
+        same_name_and_version = (
+            self.name == other.name and self.version == other.version
+        )
+        if self.has_workspace_association and other.has_workspace_association:
+            same_workspace = self.workspace.name == other.workspace.name
+            if (
+                self.workspace.has_project_association
+                and other.workspace.has_project_association
+            ):
+                same_project = (
+                    self.workspace.project.name == other.workspace.project.name
+                )
+                return same_name_and_version and same_workspace and same_project
+            return same_name_and_version and same_workspace
+        return same_name_and_version
+
+    def __hash__(self) -> int:
+        """Hash the component."""
+        if not self.has_workspace_association:
+            if self.workspace.has_project_association:
+                return hash(
+                    (
+                        self.workspace.project.name,
+                        self.workspace.name,
+                        self.name,
+                        self.version,
+                    )
+                )
+            return hash((self.workspace.name, self.name, self.version))
+        return hash((self.name, self.version))
 
     @property
     def workspace(self) -> "Workspace":
