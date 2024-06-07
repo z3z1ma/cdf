@@ -26,12 +26,33 @@ def project():
 
 
 def test_project_indexing(project: Project):
-    """Ensure the project can be indexed."""
+    """Ensure the project can be indexed.
+
+    The project is a dictionary-like object. It exposes its own configuration,
+    and it exposes workspaces through the `workspaces` key. Dot notation is also
+    supported. Dunder methods like `__contains__` and `__len__` apply to
+    the workspace collection. The project is read-only. Indexing into a Workspace
+    object will invoke the workspace's __getitem__ method which also supports dot
+    notation. Hence the project is a tree-like structure.
+    """
     assert project["name"] == "cdf-example"
+    assert project["version"] == "0.1.0"
+    assert project["feature_flags.provider"] == "filesystem"
+    assert project["workspaces.alex"] is project.get_workspace("alex").unwrap()
+    assert len(project) == 1
+    assert len(project["workspaces.alex.pipelines"]) == 3
+    assert "alex" in project
+    assert "jane" not in project
+    with pytest.raises(KeyError):
+        project["workspaces.jane"]
+    with pytest.raises(NotImplementedError):
+        del project["name"]
+    assert list(project)[0] is project["workspaces.alex"]
+    assert project["workspaces.alex.pipelines.us_cities.version"] == 1
 
 
 def test_project_get_spec(project: Project):
-    """Ensure the project can get a spec."""
+    """Ensure the project can get a spec and that we get the same spec each time."""
     spec = (
         project.get_workspace("alex")
         .bind(lambda workspace: workspace.get_pipeline_spec("us_cities"))

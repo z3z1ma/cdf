@@ -38,6 +38,7 @@ options.runtime.dlthub_telemetry = false
 ```
 """
 
+import itertools
 import os
 import time
 import typing as t
@@ -303,6 +304,89 @@ class Workspace(_BaseSettings):
         """Serialize component arrays back to dictionaries"""
         return {cmp.name: cmp.model_dump() for cmp in value}
 
+    def __getitem__(self, key: str) -> t.Any:
+        """Get a component by name"""
+        try:
+            if "." in key:
+                parts = key.split(".")
+                if (
+                    parts[0]
+                    in ("pipelines", "sinks", "publishers", "scripts", "notebooks")
+                    and len(parts) > 1
+                ):
+                    obj = getattr(self, parts[0])
+                    obj = next(filter(lambda cmp: cmp.name == parts[1], obj))
+                    parts = parts[2:]
+                else:
+                    obj = self
+                for part in parts:
+                    if hasattr(obj, "__getitem__"):
+                        obj = obj[part]
+                    else:
+                        obj = getattr(obj, part)
+                return obj
+            else:
+                return getattr(self, key)
+        except AttributeError:
+            pass
+        raise KeyError(f"Component not found: {key}")
+
+    def __setitem__(self, key: str, value: t.Any) -> None:
+        """Set a component by name"""
+        raise NotImplementedError("Cannot set components")
+
+    def __delitem__(self, key: str) -> None:
+        """Delete a component by name"""
+        raise NotImplementedError("Cannot delete components")
+
+    def __len__(self) -> int:
+        """Get the number of components"""
+        return (
+            len(self.pipelines)
+            + len(self.sinks)
+            + len(self.publishers)
+            + len(self.scripts)
+            + len(self.notebooks)
+        )
+
+    def __iter__(
+        self,
+    ) -> t.Iterator[spec.CoreSpecification]:
+        """Iterate over the components"""
+        return iter(
+            self.pipelines
+            + self.sinks
+            + self.publishers
+            + self.scripts
+            + self.notebooks
+        )
+
+    def __contains__(self, key: str) -> bool:
+        """Check if a component exists"""
+        return key in self.get_component_names()
+
+    def get_component_names(self) -> t.List[str]:
+        """Get the component names"""
+        return (
+            [cmp.name for cmp in self.pipelines]
+            + [cmp.name for cmp in self.sinks]
+            + [cmp.name for cmp in self.publishers]
+            + [cmp.name for cmp in self.scripts]
+            + [cmp.name for cmp in self.notebooks]
+        )
+
+    keys = get_component_names
+
+    def items(self) -> t.Iterator[t.Tuple[str, spec.CoreSpecification]]:
+        """Iterate over the components"""
+        return itertools.chain(
+            zip(self.get_component_names(), self.pipelines),
+            zip(self.get_component_names(), self.sinks),
+            zip(self.get_component_names(), self.publishers),
+            zip(self.get_component_names(), self.scripts),
+            zip(self.get_component_names(), self.notebooks),
+        )
+
     def _get_spec(
         self, name: str, kind: str
     ) -> M.Result[spec.CoreSpecification, KeyError]:
@@ -418,6 +502,8 @@ class Project(_BaseSettings):
         default_factory=lambda: "CDF-" + os.urandom(4).hex(sep="-", bytes_per_sep=2),
     )
     """The name of the project"""
+    version: str = "0.1.0"
+    """The version of the project"""
     owner: t.Optional[str] = None
     """The owner of the project"""
     documentation: t.Optional[str] = None
@@ -524,6 +610,26 @@ class Project(_BaseSettings):
 
     def __getitem__(self, key: str) -> t.Any:
         """Get an item from the configuration"""
+        try:
+            if "." in key:
+                parts = key.split(".")
+                if parts[0] == "workspaces" and len(parts) > 1:
+                    obj = self.get_workspace(parts[1]).unwrap()
+                    parts = parts[2:]
+                else:
+                    obj = self
+                for i, part in enumerate(parts):
+                    if isinstance(obj, Workspace):
+                        return obj[".".join(parts[i:])]
+                    if hasattr(obj, "__getitem__"):
+                        obj = obj[part]
+                    else:
+                        obj = getattr(obj, part)
+                return obj
+            if key in self.model_fields:
+                return getattr(self, key)
+        except AttributeError:
+            pass
         return self._wrapped_config[key]
 
     def __setitem__(self, key: str, value: t.Any) -> None:
@@ -533,6 +639,32 @@ class Project(_BaseSettings):
                 f"Cannot set `{key}` via string accessor, set the attribute directly instead"
             )
         self._extra[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        """Delete a workspace"""
+        raise NotImplementedError("Cannot delete workspaces")
+
+    def __len__(self) -> int:
+        """Get the number of workspaces"""
+        return len(self.workspaces)
+
+    def __iter__(self) -> t.Iterator[Workspace]:
+        """Iterate over the workspaces"""
+        return iter(self.workspaces)
+
+    def __contains__(self, key: str) -> bool:
+        """Check if a workspace exists"""
+        return key in self.get_workspace_names()
+
+    def get_workspace_names(self) -> t.List[str]:
+        """Get the workspace names"""
+        return [workspace.name for workspace in self.workspaces]
+
+    keys = get_workspace_names
+
+    def items(self) -> t.Iterator[t.Tuple[str, Workspace]]:
+        """Iterate over the workspaces"""
+        return zip(self.get_workspace_names(), self.workspaces)
 
     def get_workspace(self, name: str) -> M.Result[Workspace, Exception]:
         """Get a workspace by name"""
