@@ -11,7 +11,6 @@ import time
 import typing as t
 from datetime import date, datetime
 
-import fsspec
 import papermill
 
 import cdf.core.logger as logger
@@ -24,7 +23,6 @@ if t.TYPE_CHECKING:
 
 def execute_notebook_specification(
     spec: NotebookSpecification,
-    storage: t.Optional[fsspec.AbstractFileSystem] = None,
     **params: t.Any,
 ) -> M.Result["NotebookNode", Exception]:
     """Execute a notebook specification.
@@ -56,6 +54,7 @@ def execute_notebook_specification(
         logger.info(
             f"Successfully ran notebook {spec.path} with params {merged_params} rendered into {output}"
         )
+        storage = spec.workspace.filesystem
         if storage and spec.storage_path:
             storage_path = spec.storage_path.format(
                 name=spec.name,

@@ -366,13 +366,7 @@ def notebook(
     try:
         return (
             workspace.get_notebook_spec(notebook)
-            .bind(
-                lambda s: execute_notebook_specification(
-                    s,
-                    storage=workspace.project.filesystem.wrapped,
-                    **json.loads(params),
-                )
-            )
+            .bind(lambda s: execute_notebook_specification(s, **json.loads(params)))
             .unwrap()
         )
     finally:
