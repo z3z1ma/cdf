@@ -1,26 +1,30 @@
 [project]
 name = "cdf"
-version = "0.7.0"
+version = "0.8.0"
 description = "A framework to manage data continuously"
 authors = [
     { name = "z3z1ma", email = "butler.alex2010@gmail.com" },
 ]
 dependencies = [
+    # We will find a good version range for these eventually, but allowing them to float
+    # and be pinned by the user for now is far more useful.
     "sqlmesh",
     "dlt[duckdb]",
-    "typer[all]>=0.8.0",
+    "duckdb",
+    "jupyterlab", # we can make this optional later
+    # The following deps have well-defined version ranges
+    "typer[all]>=0.8.0,<1",
     "harness-featureflags>=1.2.0,<1.6.1",
-    "python-dotenv>=1.0.0",
+    "python-dotenv>=1,<2",
     "pex>=2.1.100,<2.2.0",
-    "pydantic>=2.5.0,<3.0.0",
-    "papermill>=2.5.0",
-    "jupyterlab",
-    "croniter>1",
+    "pydantic>=2.5.0,<3",
+    "papermill>=2.5.0,<3",
+    "croniter>=1",
     "psutil~=5.9.0",
-    "typing-extensions>4,<5",
+    "typing-extensions>=4,<5",
     "immutabledict~=4.1.0",
     "fsspec>=2022",
-    "dynaconf>3,<4",
+    "dynaconf>=3,<4",
     "eval_type_backport~=0.1.3; python_version<'3.10'",
 ]
 requires-python = ">=3.9,<3.13"
