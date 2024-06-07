@@ -36,3 +36,4 @@ default:
   notebooks:
     hello_world:
       storage_path: reports/tests1/{name}/{timestamp}{ext}
+      gc_duration: 0

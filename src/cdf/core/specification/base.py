@@ -182,14 +182,6 @@ class BaseComponent(
                 data["owner"] = ",".join(owners)
         return data
 
-    @pydantic.model_validator(mode="after")
-    def _setup_base(self):
-        """Import the entrypoint and register the component."""
-        if not self.enabled:
-            logger.info(f"Skipping disabled component: {self.name}")
-            return self
-        return self
-
     def __getitem__(self, key: str) -> t.Any:
         """Get a field from the component."""
         if key not in self.model_fields:

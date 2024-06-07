@@ -113,17 +113,9 @@ class FilesystemSettings(_BaseSettings):
     Options are passed to the filesystem provider as keyword arguments.
     """
 
-    @pydantic.field_validator("uri", mode="before")
-    @classmethod
-    def _validate_uri(cls, value: t.Any) -> t.Any:
-        """Convert the URI to a string if it is a Path object"""
-        if isinstance(value, Path):
-            return value.resolve().as_uri()
-        return value
-
     @pydantic.field_validator("options_", mode="before")
     @classmethod
-    def _validate_options(cls, value: t.Any) -> t.Any:
+    def _options_validator(cls, value: t.Any) -> t.Any:
         """Convert the options to an immutable tuple of tuples"""
         if isinstance(value, dict):
             value = tuple(value.items())
@@ -530,7 +522,7 @@ class Project(_BaseSettings):
 
     @pydantic.field_validator("path", mode="before")
     @classmethod
-    def _validate_path(cls, value: t.Any):
+    def _path_validator(cls, value: t.Any):
         """Resolve the project path
 
         The project path must be a directory. If it is a string, it will be converted to a Path object.
@@ -545,10 +537,10 @@ class Project(_BaseSettings):
 
     @pydantic.field_validator("workspaces", mode="before")
     @classmethod
-    def _hydrate_workspaces(cls, value: t.Any, info: pydantic.ValidationInfo):
-        """Hydrate the workspaces if they are paths
+    def _workspaces_validator(cls, value: t.Any, info: pydantic.ValidationInfo):
+        """Hydrate the workspaces if they are paths. Convert a dict to a list of workspaces.
 
-        If the workspaces is a path, load the configuration from the path.
+        If the workspace is a path, load the configuration from the path.
         """
         if isinstance(value, str):
             # ws1; ws2; ws3
@@ -586,7 +578,7 @@ class Project(_BaseSettings):
         return tuple(value)
 
     @pydantic.model_validator(mode="after")
-    def _validate_workspaces(self):
+    def _project_workspaces_validator(self):
         """Validate the workspaces
 
         Workspaces must have unique names and paths.
@@ -752,7 +744,7 @@ class Project(_BaseSettings):
     @cached_property
     def filesystem(self) -> FilesystemAdapter:
         """Get a handle to the project's configured filesystem adapter"""
-        return get_filesystem_adapter(self.fs_settings)
+        return get_filesystem_adapter(self.fs_settings, root=self.path)
 
     @cached_property
     def feature_flags(self) -> FeatureFlagAdapter:

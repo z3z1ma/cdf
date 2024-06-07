@@ -38,7 +38,7 @@ class FilesystemAdapter:
         if uri is None:
             raise ValueError("No filesystem URI provided")
         if isinstance(uri, Path):
-            uri = uri.as_uri()
+            uri = uri.resolve().as_uri()
         proto = get_protocol(uri)
 
         self.uri = uri
@@ -50,9 +50,12 @@ class FilesystemAdapter:
         """Lazy handle to the filesystem."""
         from fsspec.implementations.dirfs import DirFileSystem
 
+        options = self.options.copy()
+        options.setdefault("auto_mkdir", True)
         return DirFileSystem(
             path=posixpath.join(strip_protocol(self.uri), "x")[:-1],
-            fs=fsspec.filesystem(self.protocol, **self.options),
+            fs=fsspec.filesystem(self.protocol, **options),
+            auto_mkdir=True,
         )
 
     def __getattr__(self, name: str) -> t.Any:
@@ -73,16 +76,26 @@ class FilesystemAdapter:
         return self.wrapped.open(path, mode, **kwargs)
 
     @classmethod
-    def from_settings(cls, settings: "FilesystemSettings") -> "FilesystemAdapter":
+    def from_settings(
+        cls, settings: "FilesystemSettings", root: t.Optional[Path] = None
+    ) -> "FilesystemAdapter":
         """Create a filesystem from settings.
 
         Args:
             settings: The filesystem settings.
+            root: The root path to resolve the settings URI against. Usually the project root.
 
         Returns:
             The filesystem.
         """
-        return cls(settings.uri, settings.options)
+        uri = settings.uri
+        proto = get_protocol(uri)
+        root_proto = "file"
+        if root and proto == root_proto:
+            uri = uri.replace(f"{root_proto}://", "")
+            if not Path(uri).is_absolute():
+                uri = root.resolve().joinpath(uri).as_uri()
+        return cls(uri, settings.options)
 
 
 get_filesystem_adapter = FilesystemAdapter.from_settings

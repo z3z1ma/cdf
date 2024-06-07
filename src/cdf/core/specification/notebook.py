@@ -12,7 +12,7 @@ class NotebookSpecification(WorkspaceComponent, InstallableRequirements):
     storage_path: t.Optional[str] = None
     """The path to write the output notebook to for long term storage. 
 
-    Setting this implies the output should be stored. Storage uses the configured fs provider.
+    Uses the configured Project fs provider. This may be gcs, s3, etc.
 
     This is a format string which will be formatted with the following variables:
     - name: The name of the notebook.
@@ -24,12 +24,13 @@ class NotebookSpecification(WorkspaceComponent, InstallableRequirements):
 
     parameters: t.Dict[str, t.Any] = {}
     """Parameters to pass to the notebook when running."""
-    keep_local_rendered: bool = True
-    """Whether to keep the rendered notebook locally after running.
+    gc_duration: int = 86400 * 3
+    """The duration in seconds to keep the locally rendered notebook in the `_rendered` folder.
 
     Rendered notebooks are written to the `_rendered` folder of the notebook's parent directory.
-    Setting this to False will delete the rendered notebook after running. This is independent
-    of the long term storage offered by `storage_path` configuration.
+    That folder is not intended to be a permanent storage location. This setting controls how long
+    rendered notebooks are kept before being garbage collected. The default is 3 days. Set to 0 to
+    clean up immediately after execution. Set to -1 to never clean up.
     """
 
     _folder: str = "notebooks"

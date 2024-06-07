@@ -6,10 +6,12 @@ It performs the following functions:
 - Cleans up the rendered notebook if required.
 """
 
+import re
 import sys
 import time
 import typing as t
 from datetime import date, datetime
+from pathlib import Path
 
 import papermill
 
@@ -41,7 +43,7 @@ def execute_notebook_specification(
     try:
         merged_params = {**spec.parameters, **params}
         output = spec.path.parent.joinpath(
-            "_rendered", f"{spec.name}.{int(time.monotonic())}.ipynb"
+            "_rendered", f"{spec.name}.{int(time.time())}.ipynb"
         )
         output.parent.mkdir(parents=True, exist_ok=True)
         with spec._lock:
@@ -59,21 +61,32 @@ def execute_notebook_specification(
             storage_path = spec.storage_path.format(
                 name=spec.name,
                 date=date.today(),
-                timestamp=datetime.now().isoformat(),
+                timestamp=datetime.now().isoformat(timespec="seconds"),
                 epoch=time.time(),
                 params=merged_params,
                 ext=spec.path.suffix,
             )
             logger.info(f"Persisting output to {storage_path} with {storage}")
             storage.put_file(output, storage_path)
-        if not spec.keep_local_rendered:
-            output.unlink()
+        if spec.gc_duration >= 0:
+            _gc_rendered(output.parent, spec.name, spec.gc_duration)
         return M.ok(rv)
     except Exception as e:
         logger.error(f"Error running notebook {spec.path}: {e}")
         return M.error(e)
     finally:
         sys.path = origpath
+
+
+def _gc_rendered(path: Path, name: str, max_ttl: int) -> None:
+    """Garbage collect rendered notebooks."""
+    now = time.time()
+    for nb in path.glob(f"{name}.*.ipynb"):
+        ts_str = re.search(r"\d{10}", nb.stem)
+        if ts_str:
+            ts = int(ts_str.group())
+            if now - ts > max_ttl:
+                nb.unlink()
 
 
 __all__ = ["execute_notebook_specification"]
