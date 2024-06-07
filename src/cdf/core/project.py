@@ -260,7 +260,6 @@ class Workspace(_BaseSettings):
             cmp._workspace = self
         return self
 
-    # serialize componets back to dict
     @pydantic.field_serializer(
         "pipelines", "sinks", "publishers", "scripts", "notebooks"
     )
@@ -390,11 +389,12 @@ class Project(_BaseSettings):
     """The project documentation"""
     workspaces: t.List[Workspace] = [Workspace()]
     """The project workspaces"""
-    filesystem_settings: t.Annotated[
-        FilesystemSettings, pydantic.Field(alias="filesystem")
+    fs_settings: t.Annotated[
+        FilesystemSettings,
+        pydantic.Field(alias="filesystem"),
     ] = FilesystemSettings()
     """The project filesystem settings"""
-    feature_flag_settings: t.Annotated[
+    ff_settings: t.Annotated[
         FeatureFlagSettings,
         pydantic.Field(discriminator="provider", alias="feature_flags"),
     ] = FilesystemFeatureFlagSettings()
@@ -569,15 +569,13 @@ class Project(_BaseSettings):
     def filesystem(self) -> FilesystemAdapter:
         """Get a handle to the project's configured filesystem adapter"""
         return get_filesystem_adapter(
-            self.filesystem_settings,
+            self.fs_settings,
         )
 
     @cached_property
     def feature_flags(self) -> FeatureFlagAdapter:
         """Get a handle to the project's configured feature flag adapter"""
-        return get_feature_flag_adapter(
-            self.feature_flag_settings, filesystem=self.filesystem
-        )
+        return get_feature_flag_adapter(self.ff_settings, filesystem=self.filesystem)
 
 
 def _load_config(
