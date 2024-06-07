@@ -737,6 +737,25 @@ class Project(_BaseSettings):
         """Get a handle to the project's configured feature flag adapter"""
         return get_feature_flag_adapter(self.ff_settings, filesystem=self.filesystem)
 
+    @classmethod
+    def from_path(cls, root: PathLike):
+        """Load configuration data from a project root path using dynaconf.
+
+        Args:
+            root: The root path to the project.
+
+        Returns:
+            A Project object.
+        """
+        root_path = Path(root).resolve()
+        if not root_path.is_dir():
+            raise FileNotFoundError(f"Project not found: {root_path}")
+        config = _load_config(root_path)
+        config["path"] = root_path
+        project = cls.model_validate(config)
+        project._wrapped_config = config
+        return project
+
 
 def _load_config(
     path: Path, extensions: t.Optional[t.List[str]] = None
@@ -785,25 +804,15 @@ def _load_config(
     return config
 
 
-@M.result
-def load_project(root: PathLike) -> Project:
-    """Load configuration data from a project root path using dynaconf.
+load_project = M.result(Project.from_path)
+"""Load configuration data from a project root path using dynaconf.
 
-    Args:
-        root: The root path to the project.
+Args:
+    root: The root path to the project.
 
-    Returns:
-        A Result monad with a Project object if successful. Otherwise, a Result monad with an error.
-    """
-    root_path = Path(root).resolve()
-    if not root_path.is_dir():
-        raise FileNotFoundError(f"Project not found: {root_path}")
-    config = _load_config(root_path)
-    config["path"] = root_path
-    project = Project.model_validate(config)
-    project._wrapped_config = config
-    return project
-
+Returns:
+    A Result monad with a Project object if successful. Otherwise, a Result monad with an error.
+"""
 
 __all__ = [
     "load_project",
