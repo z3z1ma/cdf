@@ -15,7 +15,6 @@ It performs the following functions:
 
 import fnmatch
 import os
-import types
 import typing as t
 from contextlib import nullcontext, redirect_stdout, suppress
 
@@ -78,41 +77,73 @@ def _apply_filters(
 class RuntimePipeline(Pipeline):
     """Overrides certain methods of the dlt pipeline to allow for cdf specific behavior."""
 
+    specification: PipelineSpecification
+
     def __init__(self, *args: t.Any, **kwargs: t.Any) -> None:
         super().__init__(*args, **kwargs)
+
         self._force_replace = False
         self._dry_run = False
-        self._runtime_metrics = {}
+        self._metric_accumulator = {}
         self._tracked_sources = set()
         self._source_hooks = []
 
-    def configure_force_replace(self, force_replace: bool) -> "RuntimePipeline":
-        """Sets the force replace disposition."""
-        self._force_replace = force_replace
-        return self
-
-    def configure_dry_run(self, dry_run: bool) -> "RuntimePipeline":
-        """Sets the dry run mode."""
-        self._dry_run = dry_run
-        return self
-
-    def attach_metric_container(
-        self, container: types.MappingProxyType[str, t.Any]
-    ) -> "RuntimePipeline":
-        """Attaches a container for sideloading captured metrics during extract."""
-        self._runtime_metrics = container
-        return self
-
-    def configure_source_hooks(
+    def configure(
         self,
-        *hooks: t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource],
-        extend: bool = False,
+        dry_run: bool = False,
+        force_replace: bool = False,
+        select: t.Optional[t.List[str]] = None,
+        exclude: t.Optional[t.List[str]] = None,
     ) -> "RuntimePipeline":
-        """Sets the source hooks for the pipeline."""
-        if extend:
-            self._source_hooks.extend(hooks)
-        else:
-            self._source_hooks = list(hooks)
+        """Configures options which affect the behavior of the pipeline at runtime.
+
+        Args:
+            dry_run: Whether to run the pipeline in dry run mode.
+            force_replace: Whether to force replace disposition.
+            select: A list of glob patterns to select resources.
+            exclude: A list of glob patterns to exclude resources.
+
+        Returns:
+            RuntimePipeline: The pipeline with source hooks configured.
+        """
+        try:
+            S = self.specification
+        except RuntimeError as e:
+            raise RuntimeError("Called configure before attaching specification") from e
+
+        self._force_replace = force_replace
+        self._dry_run = dry_run
+
+        def inject_metrics_and_filters(
+            source: dlt.sources.DltSource,
+        ) -> dlt.sources.DltSource:
+            """Injects metrics and filters into the source."""
+            return S.inject_metrics_and_filters(source, self._metric_accumulator)
+
+        def apply_selection(source: dlt.sources.DltSource) -> dlt.sources.DltSource:
+            """Applies selection filters to the source."""
+            if not select:
+                return source
+            return _apply_filters(source, select, invert=False)
+
+        def apply_exclusion(source: dlt.sources.DltSource) -> dlt.sources.DltSource:
+            """Applies exclusion filters to the source."""
+            if not exclude:
+                return source
+            return _apply_filters(source, exclude, invert=True)
+
+        def apply_feature_flags(source: dlt.sources.DltSource) -> dlt.sources.DltSource:
+            """Applies feature flags to the source. User-defined selection takes precedence."""
+            if select:
+                return source
+            return S.workspace.feature_flags.apply_source(source)
+
+        self._source_hooks = [
+            inject_metrics_and_filters,
+            apply_selection,
+            apply_feature_flags,
+            apply_exclusion,
+        ]
         return self
 
     @property
@@ -126,9 +157,9 @@ class RuntimePipeline(Pipeline):
         return self._dry_run
 
     @property
-    def runtime_metrics(self) -> t.Mapping[str, t.Any]:
-        """A container for captured metrics during extract."""
-        return self._runtime_metrics
+    def metric_accumulator(self) -> t.Mapping[str, t.Any]:
+        """A container for accumulating metrics during extract."""
+        return self._metric_accumulator
 
     @property
     def source_hooks(
@@ -155,7 +186,9 @@ class RuntimePipeline(Pipeline):
         max_parallel_items: int = None,  # type: ignore[arg-type]
         workers: int = None,  # type: ignore[arg-type]
         schema_contract: TSchemaContract = None,  # type: ignore[arg-type]
+        **kwargs: t.Any,
     ) -> ExtractInfo:
+        _ = kwargs
         with self._maybe_destination_capabilities():
             sources = data_to_sources(
                 data,
@@ -200,7 +233,7 @@ class RuntimePipeline(Pipeline):
             schema_contract=schema_contract,
         )
 
-        if self.runtime_metrics:
+        if self.metric_accumulator:
             logger.info(
                 "Metrics captured during %s extract, sideloading to destination...",
                 info.pipeline.pipeline_name,
@@ -210,7 +243,7 @@ class RuntimePipeline(Pipeline):
                     [
                         {
                             "load_id": load_id,
-                            "metrics": dict(self.runtime_metrics),
+                            "metrics": dict(self.metric_accumulator),
                         }
                         for load_id in info.loads_ids
                     ],
@@ -237,7 +270,9 @@ class RuntimePipeline(Pipeline):
         schema: dlt.Schema = None,  # type: ignore[arg-type]
         loader_file_format: TLoaderFileFormat = None,  # type: ignore[arg-type]
         schema_contract: TSchemaContract = None,  # type: ignore[arg-type]
+        **kwargs: t.Any,
     ) -> LoadInfo:
+        _ = kwargs
         if self._force_replace:
             write_disposition = "replace"
 
@@ -270,31 +305,33 @@ def execute_pipeline_specification(
     dry_run: bool = False,
     enable_stage: bool = True,
     quiet: bool = False,
-    metric_container: t.Optional[t.MutableMapping[str, t.Any]] = None,
     **pipeline_options: t.Any,
 ) -> M.Result[PipelineResult, Exception]:
-    """Executes a pipeline specification."""
+    """Executes a pipeline specification.
 
-    metric_container = metric_container or {}
+    Args:
+        spec: The pipeline specification.
+        destination: The destination where the pipeline will write data.
+        staging: The staging for intermediate storage before loading to the primary destination.
+        select: A list of glob patterns to select resources.
+        exclude: A list of glob patterns to exclude resources.
+        force_replace: Whether to force replace disposition.
+        dry_run: Whether to run the pipeline in dry run mode.
+        enable_stage: Whether to enable staging. If disabled, staging will be ignored.
+        quiet: Whether to suppress output.
+        pipeline_options: Additional dlt.pipeline constructor arguments.
+
+    Returns:
+        M.Result[PipelineResult, Exception]: The result of executing the pipeline specification.
+    """
+
     pipeline_options.update(
         {"destination": destination, "staging": staging if enable_stage else None}
     )
 
-    hooks = [lambda source: spec.inject_metrics_and_filters(source, metric_container)]
-    if select:
-        hooks.append(lambda source: _apply_filters(source, select, invert=False))
-    else:
-        hooks.append(lambda source: spec.workspace.feature_flags.apply_source(source))
-    if exclude:
-        hooks.append(lambda source: _apply_filters(source, exclude, invert=True))
-
-    pipe_reference = (
-        spec.create_pipeline(RuntimePipeline, **pipeline_options)
-        .attach_metric_container(types.MappingProxyType(metric_container))
-        .configure_dry_run(dry_run)
-        .configure_source_hooks(*hooks)
-        .configure_force_replace(force_replace)
-    )
+    pipe_reference = spec.create_pipeline(
+        RuntimePipeline, **pipeline_options
+    ).configure(dry_run, force_replace, select, exclude)
     token = context.active_pipeline.set(pipe_reference)
 
     null = open(os.devnull, "w")

@@ -8,6 +8,7 @@ import typing as t
 
 import dlt
 import pydantic
+from dlt.common.destination.exceptions import DestinationLoadingViaStagingNotSupported
 from dlt.common.typing import TDataItem
 
 import cdf.core.logger as logger
@@ -130,15 +131,15 @@ class PipelineSpecification(PythonScript, Schedulable):
     definitions are callables that take the current item and return a boolean indicating
     whether the item should be filtered out.
     """
-
     dataset_name: str = "{name}_v{version}"
     """The name of the dataset associated with the pipeline.
 
     Defaults to the versioned name. This string is formatted with the pipeline name, version, meta, and tags.
     """
-
     options: t.Dict[str, t.Any] = {}
     """Options available in pipeline scoped dlt config resolution."""
+    persist_extract_package: bool = True
+    """Whether to persist the extract package in the project filesystem."""
 
     _folder = "pipelines"
     """The folder where pipeline scripts are stored."""
@@ -192,17 +193,31 @@ class PipelineSpecification(PythonScript, Schedulable):
 
         Args:
             klass (t.Type[TPipeline], optional): The pipeline class to use. Defaults to dlt.Pipeline.
-            **kwargs: Additional keyword arguments to pass to the pipeline constructor.
+            **kwargs: Additional keyword arguments to pass to the dlt.pipeline constructor.
 
         Returns:
             TPipeline: The dlt pipeline object.
         """
-        return dlt.pipeline(
-            pipeline_name=self.name,
-            dataset_name=self.dataset_name,
-            **kwargs,
-            _impl_cls=klass,
-        )
+        try:
+            pipe = dlt.pipeline(
+                pipeline_name=self.name,
+                dataset_name=self.dataset_name,
+                **kwargs,
+                _impl_cls=klass,
+            )
+        except DestinationLoadingViaStagingNotSupported:
+            logger.warning(
+                "Destination does not support loading via staging. Disabling staging."
+            )
+            kwargs.pop("staging", None)
+            pipe = dlt.pipeline(
+                pipeline_name=self.name,
+                dataset_name=self.dataset_name,
+                **kwargs,
+                _impl_cls=klass,
+            )
+        setattr(pipe, "specification", self)
+        return pipe
 
 
 __all__ = ["PipelineSpecification"]

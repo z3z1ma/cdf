@@ -36,5 +36,20 @@ class SinkSpecification(PythonScript):
             self._exports = self.main()
         return self._exports[self.transform_config]
 
+    @property
+    def ingest(self) -> Destination:
+        """The ingest destination."""
+        return self.get_ingest_config()[0]
+
+    @property
+    def stage(self) -> t.Optional[Destination]:
+        """The stage destination."""
+        return self.get_ingest_config()[1]
+
+    @property
+    def transform(self) -> GatewayConfig:
+        """The transform configuration."""
+        return self.get_transform_config()
+
 
 __all__ = ["SinkSpecification"]

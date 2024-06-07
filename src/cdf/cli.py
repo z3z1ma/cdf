@@ -155,7 +155,7 @@ def pipeline(
         select: The resources to ingest as a sequence of glob patterns.
         exclude: The resources to exclude as a sequence of glob patterns.
         force_replace: Whether to force replace the write disposition.
-        no_stage: Whether to disable staging the data in the sink.
+        no_stage: Allows selective disabling of intermediate staging even if configured in sink.
     """
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
@@ -175,7 +175,7 @@ def pipeline(
                     select=select,
                     exclude=exclude,
                     force_replace=force_replace,
-                    enable_stage=not no_stage,
+                    enable_stage=(not no_stage),
                 )
             )
             .unwrap()
@@ -377,9 +377,7 @@ def notebook(
     rich_help_panel="Utilities",
     context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
 )
-def jupyter_lab(
-    ctx: typer.Context,
-) -> None:
+def jupyter_lab(ctx: typer.Context) -> None:
     """:star2: Start a Jupyter Lab server in the context of a workspace."""
     workspace, token = _unwrap_workspace(*ctx.obj)
     try:
@@ -415,10 +413,7 @@ class _SpecType(str, Enum):
 
 
 @app.command(rich_help_panel="Develop")
-def spec(
-    name: _SpecType,
-    json_schema: bool = False,
-) -> None:
+def spec(name: _SpecType, json_schema: bool = False) -> None:
     """:blue_book: Print the fields for a given spec type.
 
     \f
