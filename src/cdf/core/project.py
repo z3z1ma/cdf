@@ -551,17 +551,39 @@ class Project(_BaseSettings):
         If the workspaces is a path, load the configuration from the path.
         """
         if isinstance(value, str):
-            value = list(map(lambda s: s.strip(), value.split(",")))
+            # ws1; ws2; ws3
+            value = list(map(lambda s: s.strip(), value.split(";")))
         elif isinstance(value, dict):
-            value = [str(v["path"]) for v in value.values()]
+            # ws name : {ws config}
+            _buf = []
+            for ws_name, ws_config in value.items():
+                ws_config.setdefault("name", ws_name)
+                _buf.append(ws_config)
+            value = _buf
         if isinstance(value, list):
-            for i, maybe_path in enumerate(value):
-                if isinstance(maybe_path, str):
-                    path = Path(info.data["path"]) / maybe_path
+            # [{ws1 config} | ws1 path, {ws2 config}]
+            for i, obj in enumerate(value):
+                if isinstance(obj, (str, Path)):
+                    # ws1 path
+                    # ensure ws path is absolute, if not, resolve it
+                    # relative to the project path
+                    obj_path = Path(obj)
+                    if obj_path.is_absolute():
+                        path = obj_path
+                    else:
+                        path = Path(info.data["path"]) / obj
+                    # load the configuration from the path
                     config = _load_config(path)
                     config["path"] = path
                     value[i] = config
-        return value
+                elif isinstance(obj, dict):
+                    # {ws1 config}
+                    obj_path = Path(obj["path"])
+                    if not obj_path.is_absolute():
+                        obj["path"] = Path(info.data["path"]) / obj["path"]
+        if not (hasattr(value, "__iter__") and not isinstance(value, (str, bytes))):
+            raise ValueError("Invalid workspaces configuration, must be an iterable")
+        return tuple(value)
 
     @pydantic.model_validator(mode="after")
     def _validate_workspaces(self):

@@ -1,5 +1,7 @@
 """Tests for the core.project module."""
 
+from pathlib import Path
+
 import dlt
 import pytest
 
@@ -83,3 +85,94 @@ def test_round_trip_serialization(project: Project):
     roundtrip = Project.model_validate(obj)
     assert roundtrip == project
     assert roundtrip.is_newer_than(project)
+    assert (
+        project["workspaces.alex.scripts.nested/hello"]
+        == roundtrip["workspaces.alex.scripts.nested/hello"]
+    )
+
+
+@pytest.fixture
+def python_project():
+    city_spec = {
+        "path": Path("pipelines/us_cities_pipeline.py"),
+        "cron_string": "@daily",
+        "description": "Get US city data",
+        "metrics": {
+            "*": [
+                {
+                    "name": "cdf_builtin_metrics_count",
+                    "description": "Counts the number of items in a dataset",
+                    "entrypoint": "cdf.builtin.metrics:count",
+                },
+                {
+                    "name": "cdf_builtin_metrics_max_value",
+                    "description": "Returns the maximum value of a key in a dataset",
+                    "entrypoint": "cdf.builtin.metrics:max_value",
+                    "options": {"key": "zip_code"},
+                },
+            ]
+        },
+        "filters": {},
+        "dataset_name": "test_city",
+        "options": {
+            "progress": None,
+            "full_refresh": False,
+            "loader_file_format": "insert_values",
+            "runtime": {"dlthub_telemetry": False},
+        },
+    }
+    dota_spec = {
+        "cron_string": "@daily",
+        "name": "dota2",
+        "description": "Dota2 is a Massive Online Battle Arena game based on Warcraft.",
+        "path": Path("pipelines/dota2_pipeline.py"),
+    }
+    local_spec = {
+        "name": "local",
+        "description": "No description provided.",
+        "path": Path("sinks/local_sink.py"),
+    }
+    httpbin_spec = {
+        "cron_string": "@daily",
+        "name": "httpbin",
+        "description": "A publisher that pushes data to httpbin.org",
+        "path": Path("publishers/httpbin_publisher.py"),
+        "depends_on": ["mart.zips"],
+    }
+    hello_spec = {
+        "cron_string": "@daily",
+        "name": "hello",
+        "description": "No description provided.",
+        "path": Path("scripts/hello_script.py"),
+    }
+    return Project.model_validate(
+        {
+            "path": Path("examples/sandbox").resolve(),
+            "name": "data-platform",
+            "version": "0.2.0",
+            "workspaces": {
+                "datateam": {
+                    "path": Path("examples/sandbox/alex").resolve(),
+                    "pipelines": {"cities": city_spec, "dota": dota_spec},
+                    "sinks": {"local": local_spec},
+                    "publishers": {"httpbin": httpbin_spec},
+                    "scripts": {"hello": hello_spec},
+                }
+            },
+            "filesystem": {"uri": "file://_storage", "options": {}},
+            "feature_flags": {
+                "provider": "filesystem",
+                "filename": "@jinja dev_flags_{{ 1 + 1}}.json",
+            },
+        }
+    )
+
+
+def test_custom_project(python_project: Project):
+    """Test creating a project programmatically.
+
+    This project has a custom structure and is not loaded from a file. Components
+    are still ultimately based on python files, however the configuration wrapping
+    these components is done in code which offers more flexibility.
+    """
+    assert python_project.name == "data-platform"

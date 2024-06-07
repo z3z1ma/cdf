@@ -56,7 +56,7 @@ class BaseComponent(
         pydantic.Field(
             ...,
             default_factory=_gen_anon_name,
-            pattern=r"^[a-zA-Z0-9_-]+$",
+            pattern=r"^[a-zA-Z0-9_\-\/]+$",
             max_length=64,
         ),
     ]
@@ -220,8 +220,8 @@ class WorkspaceComponent(BaseComponent):
 
     @pydantic.model_validator(mode="before")
     @classmethod
-    def _infer_leaf_path_validator(cls, values: t.Any) -> t.Any:
-        """Infer the leaf path from the name if component_path is not provided.
+    def _path_from_name_validator(cls, values: t.Any) -> t.Any:
+        """Infer the path from the name if component_path is not provided.
 
         Given a name, we apply certain heuristics to infer the path of the component if a
         path is not explicitly provided. The heuristics are as follows:
@@ -242,27 +242,24 @@ class WorkspaceComponent(BaseComponent):
             ext = getattr(cls._extension, "default")
             typ = getattr(cls._folder, "default")[:-1]
             if name.endswith(f"_{typ}"):
-                leaf_path = f"{name}.{ext}"
+                p = f"{name}.{ext}"
             else:
-                leaf_path = f"{name}_{typ}.{ext}"
-            values.setdefault("path", leaf_path)
+                p = f"{name}_{typ}.{ext}"
+            values.setdefault("path", p)
         return values
 
     @pydantic.field_validator("name", mode="before")
     @classmethod
-    def _physical_name_validator(cls, name: t.Any) -> t.Any:
-        """Canonicalizes names which are pathlike.
-
-        So a name like `some/path/to/file.py` would become `some_path_to_file`.
-        """
+    def _component_name_validator(cls, name: t.Any) -> t.Any:
+        """Strip the extension from the name."""
         if isinstance(name, str):
-            return name.rsplit(".", 1)[0].replace(os.sep, "_")
+            return name.rsplit(".", 1)[0]
         return name
 
     @pydantic.field_validator("component_path", mode="before")
     @classmethod
     def _component_path_validator(cls, component_path: t.Any) -> Path:
-        """Ensure the component path is a Path and that is a child of the expected folder."""
+        """Ensure the component path is a Path and that its a child of the expected folder."""
         path = Path(component_path)
         if path.is_absolute():
             raise ValueError("Component path must be a relative path.")
