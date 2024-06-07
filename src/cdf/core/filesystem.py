@@ -82,7 +82,7 @@ class FilesystemAdapter:
         Returns:
             The filesystem.
         """
-        return cls(settings.uri, dict(settings.options))
+        return cls(settings.uri, settings.options)
 
 
 get_filesystem_adapter = FilesystemAdapter.from_settings

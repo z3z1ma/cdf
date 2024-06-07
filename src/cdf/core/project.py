@@ -104,7 +104,9 @@ class FilesystemSettings(_BaseSettings):
     This is based on fsspec. See https://filesystem-spec.readthedocs.io/en/latest/index.html
     This supports all filesystems supported by fsspec as well as filesystem chaining.
     """
-    options: t.Tuple[t.Tuple[str, t.Any], ...] = ()
+    options_: t.Annotated[
+        t.Tuple[t.Tuple[str, t.Any], ...], pydantic.Field(alias="options")
+    ] = ()
     """The filesystem options
 
     Options are passed to the filesystem provider as keyword arguments.
@@ -118,13 +120,18 @@ class FilesystemSettings(_BaseSettings):
             return value.resolve().as_uri()
         return value
 
-    @pydantic.field_validator("options", mode="before")
+    @pydantic.field_validator("options_", mode="before")
     @classmethod
     def _validate_options(cls, value: t.Any) -> t.Any:
-        """Convert the options to a tuple of tuples"""
+        """Convert the options to an immutable tuple of tuples"""
         if isinstance(value, dict):
             value = tuple(value.items())
         return value
+
+    @property
+    def options(self) -> t.Dict[str, t.Any]:
+        """Get the filesystem options as a dictionary"""
+        return dict(self.options_)
 
 
 class FeatureFlagProviderType(str, Enum):
