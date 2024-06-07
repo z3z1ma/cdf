@@ -730,9 +730,7 @@ class Project(_BaseSettings):
     @cached_property
     def filesystem(self) -> FilesystemAdapter:
         """Get a handle to the project's configured filesystem adapter"""
-        return get_filesystem_adapter(
-            self.fs_settings,
-        )
+        return get_filesystem_adapter(self.fs_settings)
 
     @cached_property
     def feature_flags(self) -> FeatureFlagAdapter:
