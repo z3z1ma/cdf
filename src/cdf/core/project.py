@@ -376,6 +376,7 @@ class Workspace(_BaseSettings):
         )
 
     keys = get_component_names
+    values = __iter__
 
     def items(self) -> t.Iterator[t.Tuple[str, spec.CoreSpecification]]:
         """Iterate over the components"""
@@ -661,6 +662,7 @@ class Project(_BaseSettings):
         return [workspace.name for workspace in self.workspaces]
 
     keys = get_workspace_names
+    values = __iter__
 
     def items(self) -> t.Iterator[t.Tuple[str, Workspace]]:
         """Iterate over the workspaces"""
