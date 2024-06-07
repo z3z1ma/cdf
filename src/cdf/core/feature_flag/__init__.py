@@ -7,8 +7,11 @@ implement new feature flag providers in the future.
 
 import typing as t
 
+from dlt.common.configuration import with_config
+
 from cdf.core.feature_flag import file, harness, launchdarkly, noop
 from cdf.core.filesystem import FilesystemAdapter
+from cdf.types import M
 
 if t.TYPE_CHECKING:
     from dlt.sources import DltSource
@@ -41,6 +44,7 @@ ADAPTERS: t.Dict[str, _AdapterProtocol] = {
 class FeatureFlagAdapter:
     """An adapter for feature flag providers."""
 
+    @with_config(sections=("feature_flags",))
     def __init__(
         self, settings: "FeatureFlagSettings", /, filesystem: FilesystemAdapter
     ) -> None:
@@ -60,7 +64,22 @@ class FeatureFlagAdapter:
         )
 
 
-get_feature_flag_adapter = FeatureFlagAdapter
+def get_feature_flag_adapter(
+    settings: "FeatureFlagSettings", /, filesystem: FilesystemAdapter
+) -> M.Result[FeatureFlagAdapter, Exception]:
+    """Get a feature flag adapter from settings.
+
+    Args:
+        settings: The feature flag settings.
+        filesystem: The filesystem adapter.
+
+    Returns:
+        M.Result[FeatureFlagAdapter, Exception]: The feature flag adapter or an error.
+    """
+    try:
+        return M.ok(FeatureFlagAdapter(settings, filesystem))
+    except Exception as e:
+        return M.error(e)
 
 
 __all__ = ["get_feature_flag_adapter", "FeatureFlagAdapter"]

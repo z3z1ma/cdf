@@ -91,6 +91,17 @@ def test_round_trip_serialization(project: Project):
     )
 
 
+def test_init_ff(project: Project):
+    """Test that the feature flag adapter is initialized."""
+    assert project.feature_flags is not None
+
+
+def test_init_fs(project: Project):
+    """Test that the filesystem adapter is initialized."""
+    assert project.filesystem is not None
+    assert project.filesystem.protocol == "file"
+
+
 @pytest.fixture
 def python_project():
     city_spec = {

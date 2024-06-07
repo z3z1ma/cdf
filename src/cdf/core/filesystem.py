@@ -10,7 +10,7 @@ from dlt.common.configuration import with_config
 from fsspec.core import strip_protocol
 from fsspec.utils import get_protocol
 
-from cdf.types import PathLike
+from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
     from cdf.core.project import FilesystemSettings
@@ -75,19 +75,20 @@ class FilesystemAdapter:
         """
         return self.wrapped.open(path, mode, **kwargs)
 
-    @classmethod
-    def from_settings(
-        cls, settings: "FilesystemSettings", root: t.Optional[Path] = None
-    ) -> "FilesystemAdapter":
-        """Create a filesystem from settings.
 
-        Args:
-            settings: The filesystem settings.
-            root: The root path to resolve the settings URI against. Usually the project root.
+def get_filesystem_adapter(
+    settings: "FilesystemSettings", root: t.Optional[Path] = None
+) -> M.Result[FilesystemAdapter, Exception]:
+    """Create a filesystem adapter from settings.
 
-        Returns:
-            The filesystem.
-        """
+    Args:
+        settings: The filesystem settings.
+        root: The root path to resolve the settings URI against. Usually the project root.
+
+    Returns:
+        The filesystem.
+    """
+    try:
         uri = settings.uri
         proto = get_protocol(uri)
         root_proto = "file"
@@ -95,9 +96,9 @@ class FilesystemAdapter:
             uri = uri.replace(f"{root_proto}://", "")
             if not Path(uri).is_absolute():
                 uri = root.resolve().joinpath(uri).as_uri()
-        return cls(uri, settings.options)
+        return M.ok(FilesystemAdapter(uri, settings.options))
+    except Exception as e:
+        return M.error(e)
 
-
-get_filesystem_adapter = FilesystemAdapter.from_settings
 
 __all__ = ["get_filesystem_adapter", "FilesystemAdapter"]

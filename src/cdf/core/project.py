@@ -744,12 +744,14 @@ class Project(_BaseSettings):
     @cached_property
     def filesystem(self) -> FilesystemAdapter:
         """Get a handle to the project's configured filesystem adapter"""
-        return get_filesystem_adapter(self.fs_settings, root=self.path)
+        return get_filesystem_adapter(self.fs_settings, root=self.path).unwrap()
 
     @cached_property
     def feature_flags(self) -> FeatureFlagAdapter:
         """Get a handle to the project's configured feature flag adapter"""
-        return get_feature_flag_adapter(self.ff_settings, filesystem=self.filesystem)
+        return get_feature_flag_adapter(
+            self.ff_settings, filesystem=self.filesystem
+        ).unwrap()
 
     @classmethod
     def from_path(cls, root: PathLike):
