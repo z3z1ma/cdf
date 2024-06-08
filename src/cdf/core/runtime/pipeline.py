@@ -15,12 +15,14 @@ It performs the following functions:
 
 import fnmatch
 import os
+import shutil
 import typing as t
 from contextlib import nullcontext, redirect_stdout, suppress
+from pathlib import Path
 
 import dlt
 from dlt.common.destination import TDestinationReferenceArg, TLoaderFileFormat
-from dlt.common.pipeline import ExtractInfo, LoadInfo
+from dlt.common.pipeline import ExtractInfo, LoadInfo, NormalizeInfo
 from dlt.common.schema.typing import (
     TAnySchemaColumns,
     TColumnNames,
@@ -106,10 +108,7 @@ class RuntimePipeline(Pipeline):
         Returns:
             RuntimePipeline: The pipeline with source hooks configured.
         """
-        try:
-            S = self.specification
-        except RuntimeError as e:
-            raise RuntimeError("Called configure before attaching specification") from e
+        S = self.specification
 
         self._force_replace = force_replace
         self._dry_run = dry_run
@@ -257,7 +256,39 @@ class RuntimePipeline(Pipeline):
                 )
             )
 
+        if self.specification.persist_extract_package:
+            logger.info(
+                "Persisting extract package for %s...", info.pipeline.pipeline_name
+            )
+            for package in info.load_packages:
+                # TODO: move this to a top-level function
+                root = Path(self.pipelines_dir)
+                base = Path(package.package_path).relative_to(root)
+                path = shutil.make_archive(
+                    base_name=package.load_id,
+                    format="gztar",
+                    root_dir=root,
+                    base_dir=base,
+                    logger=logger,
+                )
+                logger.info("Extract package staged at %s", path)
+                target = f"extracted/{package.load_id}.tar.gz"
+                self.specification.workspace.filesystem.put(path, target)
+                logger.info("Package uploaded to %s using project fs", target)
+                Path(path).unlink()
+                logger.info("Cleaned up staged package")
+                # TODO: listing and manipulating these should be first-class
+                # this will enable us to "replay" a pipeline
+                # logger.info(self.specification.workspace.filesystem.ls("extracted"))
+
         return info
+
+    def normalize(
+        self,
+        workers: int = 1,
+        loader_file_format: TLoaderFileFormat = None,  # type: ignore[arg-type]
+    ) -> NormalizeInfo:
+        return super().normalize(workers, loader_file_format)
 
     def run(
         self,

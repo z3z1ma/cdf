@@ -18,6 +18,8 @@ default:
         progress: ~
         full_refresh: false
         loader_file_format: insert_values
+        load:
+          delete_completed_jobs: true
         runtime:
           dlthub_telemetry: false
     # Heuristics can populate enough information such that the below is the minimum definition
