@@ -52,7 +52,8 @@ class FilesystemAdapter:
 
         options = self.options.copy()
         options.setdefault("auto_mkdir", True)
-        return DirFileSystem(
+        CdfFs = type("CdfFs", (DirFileSystem,), {"protocol": "cdf"})
+        return CdfFs(
             path=posixpath.join(strip_protocol(self.uri), "x")[:-1],
             fs=fsspec.filesystem(self.protocol, **options),
             auto_mkdir=True,

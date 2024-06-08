@@ -48,6 +48,7 @@ from enum import Enum
 from functools import cached_property
 from pathlib import Path
 
+import duckdb
 import dynaconf
 import pydantic
 from dynaconf.utils.boxing import DynaBox
@@ -752,6 +753,25 @@ class Project(_BaseSettings):
         return get_feature_flag_adapter(
             self.ff_settings, filesystem=self.filesystem
         ).unwrap()
+
+    @cached_property
+    def duckdb(self) -> duckdb.DuckDBPyConnection:
+        """Get a handle to the project's DuckDB connection"""
+        conn = duckdb.connect(":memory:")
+        conn.install_extension("httpfs")
+        conn.install_extension("json")
+        conn.register_filesystem(self.filesystem.wrapped)
+        conn.execute("CREATE TABLE workspaces (name TEXT PRIMARY KEY, path TEXT)")
+        for workspace in self.workspaces:
+            conn.execute(
+                "INSERT INTO workspaces (name, path) VALUES (?, ?)",
+                (workspace.name, workspace.path.as_posix()),
+            )
+        return conn
+
+    def get_workspace_path(self, name: str) -> M.Result[Path, Exception]:
+        """Get the path to a workspace by name"""
+        return self.get_workspace(name).map(lambda ws: ws.path)
 
     @classmethod
     def from_path(cls, root: PathLike):
