@@ -7,6 +7,9 @@ default:
   feature_flags:
     provider: filesystem
     filename: flags.json
+  state:
+    type: duckdb
+    database: state.db
   something: ok
 prod:
   filesystem:

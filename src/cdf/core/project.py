@@ -57,8 +57,12 @@ from dynaconf.vendor.box import Box
 import cdf.core.constants as c
 import cdf.core.specification as spec
 from cdf.core.config import inject_configuration
-from cdf.core.feature_flag import FeatureFlagAdapter, get_feature_flag_adapter
-from cdf.core.filesystem import FilesystemAdapter, get_filesystem_adapter
+from cdf.core.feature_flag import (
+    AbstractFeatureFlagAdapter,
+    get_feature_flag_adapter_cls,
+)
+from cdf.core.filesystem import FilesystemAdapter
+from cdf.core.state import DEFAULT_STATE_CONN, StateConfig
 from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
@@ -96,8 +100,13 @@ class _BaseSettings(pydantic.BaseModel):
         """Check if the model is older than another model"""
         return self._generation < other._generation
 
+    def model_dump(self, **kwargs: t.Any) -> t.Dict[str, t.Any]:
+        """Dump the model to a dictionary"""
+        kwargs.setdefault("by_alias", True)
+        return super().model_dump(**kwargs)
 
-class FilesystemSettings(_BaseSettings):
+
+class FilesystemConfig(_BaseSettings):
     """Configuration for a filesystem provider"""
 
     uri: str = "_storage"
@@ -114,6 +123,8 @@ class FilesystemSettings(_BaseSettings):
     Options are passed to the filesystem provider as keyword arguments.
     """
 
+    _project: t.Optional["Project"] = None
+
     @pydantic.field_validator("options_", mode="before")
     @classmethod
     def _options_validator(cls, value: t.Any) -> t.Any:
@@ -127,6 +138,17 @@ class FilesystemSettings(_BaseSettings):
         """Get the filesystem options as a dictionary"""
         return dict(self.options_)
 
+    def get_adapter(self) -> M.Result[FilesystemAdapter, Exception]:
+        """Get a filesystem adapter"""
+        if self._project:
+            root = self._project.path
+        else:
+            root = None
+        try:
+            return M.ok(FilesystemAdapter(self.uri, root, self.options))
+        except Exception as e:
+            return M.error(e)
+
 
 class FeatureFlagProviderType(str, Enum):
     """The feature flag provider"""
@@ -138,7 +160,27 @@ class FeatureFlagProviderType(str, Enum):
     NOOP = "noop"
 
 
-class FilesystemFeatureFlagSettings(_BaseSettings):
+class BaseFeatureFlagConfig(_BaseSettings):
+    """Base configuration for a feature flags provider"""
+
+    provider: FeatureFlagProviderType
+    """The feature flags provider"""
+
+    _project: t.Optional["Project"] = None
+    """The project this configuration belongs to"""
+
+    def get_adapter(
+        self, **kwargs: t.Any
+    ) -> M.Result[AbstractFeatureFlagAdapter, Exception]:
+        """Get a handle to the feature flag adapter"""
+        options = self.model_dump()
+        provider = str(options.pop("provider").value)
+        options.update(kwargs)
+        # TODO: maybe we push down the Project here
+        return get_feature_flag_adapter_cls(provider).map(lambda cls: cls(**options))
+
+
+class FilesystemFeatureFlagConfig(BaseFeatureFlagConfig):
     """Configuration for a feature flags provider that uses the configured filesystem"""
 
     provider: t.Literal[FeatureFlagProviderType.FILESYSTEM] = (
@@ -158,7 +200,7 @@ class FilesystemFeatureFlagSettings(_BaseSettings):
     """
 
 
-class HarnessFeatureFlagSettings(_BaseSettings):
+class HarnessFeatureFlagConfig(BaseFeatureFlagConfig):
     """Configuration for a feature flags provider that uses the Harness API"""
 
     provider: t.Literal[FeatureFlagProviderType.HARNESS] = (
@@ -185,7 +227,7 @@ class HarnessFeatureFlagSettings(_BaseSettings):
     """The harness project ID. We will attempt to read it from the environment if not provided."""
 
 
-class LaunchDarklyFeatureFlagSettings(_BaseSettings):
+class LaunchDarklyFeatureFlagSettings(BaseFeatureFlagConfig):
     """Configuration for a feature flags provider that uses the LaunchDarkly API"""
 
     provider: t.Literal[FeatureFlagProviderType.LAUNCHDARKLY] = (
@@ -199,7 +241,7 @@ class LaunchDarklyFeatureFlagSettings(_BaseSettings):
     """The LaunchDarkly API key. Get it from your user settings"""
 
 
-class SplitFeatureFlagSettings(_BaseSettings):
+class SplitFeatureFlagSettings(BaseFeatureFlagConfig):
     """Configuration for a feature flags provider that uses the Split API"""
 
     provider: t.Literal[FeatureFlagProviderType.SPLIT] = FeatureFlagProviderType.SPLIT
@@ -211,16 +253,16 @@ class SplitFeatureFlagSettings(_BaseSettings):
     """The Split API key. Get it from your user settings"""
 
 
-class NoopFeatureFlagSettings(_BaseSettings):
+class NoopFeatureFlagSettings(BaseFeatureFlagConfig):
     """Configuration for a feature flags provider that does nothing"""
 
     provider: t.Literal[FeatureFlagProviderType.NOOP] = FeatureFlagProviderType.NOOP
     """The feature flags provider"""
 
 
-FeatureFlagSettings = t.Union[
-    FilesystemFeatureFlagSettings,
-    HarnessFeatureFlagSettings,
+FeatureFlagConfig = t.Union[
+    FilesystemFeatureFlagConfig,
+    HarnessFeatureFlagConfig,
     LaunchDarklyFeatureFlagSettings,
     SplitFeatureFlagSettings,
     NoopFeatureFlagSettings,
@@ -472,12 +514,12 @@ class Workspace(_BaseSettings):
     @property
     def filesystem(self) -> FilesystemAdapter:
         """Get a handle to the project filesystem adapter"""
-        return self.project.filesystem
+        return self.project.fs_adapter
 
     @property
-    def feature_flags(self) -> FeatureFlagAdapter:
+    def feature_flags(self) -> AbstractFeatureFlagAdapter:
         """Get a handle to the project feature flag adapter"""
-        return self.project.feature_flags
+        return self.project.ff_adapter
 
     def get_transform_gateways(self) -> t.Iterator[t.Tuple[str, "GatewayConfig"]]:
         """Get the SQLMesh gateway configurations"""
@@ -522,16 +564,18 @@ class Project(_BaseSettings):
     """The project documentation"""
     workspaces: t.Tuple[Workspace, ...] = (Workspace(),)
     """The project workspaces"""
-    fs_settings: t.Annotated[
-        FilesystemSettings,
+    fs: t.Annotated[
+        FilesystemConfig,
         pydantic.Field(alias="filesystem"),
-    ] = FilesystemSettings()
+    ] = FilesystemConfig()
     """The project filesystem settings"""
-    ff_settings: t.Annotated[
-        FeatureFlagSettings,
+    ff: t.Annotated[
+        FeatureFlagConfig,
         pydantic.Field(discriminator="provider", alias="feature_flags"),
-    ] = FilesystemFeatureFlagSettings()
+    ] = FilesystemFeatureFlagConfig()
     """The project feature flags provider settings"""
+    state: StateConfig = DEFAULT_STATE_CONN
+    """The project state connection settings"""
 
     _wrapped_config: t.Any = {}
     """Store a reference to the wrapped configuration"""
@@ -767,16 +811,14 @@ class Project(_BaseSettings):
             yield
 
     @cached_property
-    def filesystem(self) -> FilesystemAdapter:
-        """Get a handle to the project's configured filesystem adapter"""
-        return get_filesystem_adapter(self.fs_settings, root=self.path).unwrap()
+    def fs_adapter(self) -> FilesystemAdapter:
+        """Get a configured filesystem adapter"""
+        return self.fs.get_adapter().unwrap()
 
     @cached_property
-    def feature_flags(self) -> FeatureFlagAdapter:
+    def ff_adapter(self) -> AbstractFeatureFlagAdapter:
         """Get a handle to the project's configured feature flag adapter"""
-        return get_feature_flag_adapter(
-            self.ff_settings, filesystem=self.filesystem
-        ).unwrap()
+        return self.ff.get_adapter(filesystem=self.fs_adapter.wrapped).unwrap()
 
     @cached_property
     def duckdb(self) -> duckdb.DuckDBPyConnection:
@@ -784,7 +826,7 @@ class Project(_BaseSettings):
         conn = duckdb.connect(":memory:")
         conn.install_extension("httpfs")
         conn.install_extension("json")
-        conn.register_filesystem(self.filesystem.wrapped)
+        conn.register_filesystem(self.fs_adapter.wrapped)
         conn.execute("CREATE TABLE workspaces (name TEXT PRIMARY KEY, path TEXT)")
         for workspace in self.workspaces:
             conn.execute(
@@ -878,6 +920,6 @@ __all__ = [
     "load_project",
     "Project",
     "Workspace",
-    "FeatureFlagSettings",
-    "FilesystemSettings",
+    "FeatureFlagConfig",
+    "FilesystemConfig",
 ]

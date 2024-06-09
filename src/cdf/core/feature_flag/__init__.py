@@ -7,79 +7,60 @@ implement new feature flag providers in the future.
 
 import typing as t
 
+import dlt
 from dlt.common.configuration import with_config
 
-from cdf.core.feature_flag import file, harness, launchdarkly, noop
-from cdf.core.filesystem import FilesystemAdapter
+from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter
+from cdf.core.feature_flag.file import FilesystemFeatureFlagAdapter
+from cdf.core.feature_flag.harness import HarnessFeatureFlagAdapter
+from cdf.core.feature_flag.launchdarkly import LaunchDarklyFeatureFlagAdapter
+from cdf.core.feature_flag.noop import NoopFeatureFlagAdapter
+from cdf.core.feature_flag.split import SplitFeatureFlagAdapter
 from cdf.types import M
 
-if t.TYPE_CHECKING:
-    from dlt.sources import DltSource
-
-    from cdf.core.project import FeatureFlagProviderType, FeatureFlagSettings
-
-
-class _AdapterProtocol(t.Protocol):
-    """Feature flag provider adapter protocol."""
-
-    def apply_source(
-        self,
-        source: "DltSource",
-        /,
-        *,
-        settings: t.Any,
-        **kwargs: t.Any,
-    ) -> "DltSource": ...
-
-
-ADAPTERS: t.Dict[str, _AdapterProtocol] = {
-    "filesystem": file,
-    "harness": harness,
-    "launchdarkly": launchdarkly,
-    "noop": noop,
+ADAPTERS: t.Dict[str, t.Type[AbstractFeatureFlagAdapter]] = {
+    "filesystem": FilesystemFeatureFlagAdapter,
+    "harness": HarnessFeatureFlagAdapter,
+    "launchdarkly": LaunchDarklyFeatureFlagAdapter,
+    "split": SplitFeatureFlagAdapter,
+    "noop": NoopFeatureFlagAdapter,
 }
-"""Feature flag provider adapters."""
+"""Feature flag provider adapters classes by name."""
 
 
-class FeatureFlagAdapter:
-    """An adapter for feature flag providers."""
-
-    @with_config(sections=("feature_flags",))
-    def __init__(
-        self, settings: "FeatureFlagSettings", /, filesystem: FilesystemAdapter
-    ) -> None:
-        if settings.provider not in ADAPTERS:
-            raise ValueError(f"Unknown feature flag provider: {settings.provider}")
-        self.settings = settings
-        self._filesystem = filesystem
-
-    @property
-    def provider(self) -> "FeatureFlagProviderType":
-        return self.settings.provider
-
-    def apply_source(self, source: "DltSource", **kwargs: t.Any) -> "DltSource":
-        """Apply the feature flags to a dlt source."""
-        return ADAPTERS[self.provider].apply_source(
-            source, settings=self.settings, filesystem=self._filesystem, **kwargs
-        )
-
-
-def get_feature_flag_adapter(
-    settings: "FeatureFlagSettings", /, filesystem: FilesystemAdapter
-) -> M.Result[FeatureFlagAdapter, Exception]:
-    """Get a feature flag adapter from settings.
+@with_config(sections=("feature_flags",))
+def get_feature_flag_adapter_cls(
+    provider: str = dlt.config.value,
+) -> M.Result[t.Type[AbstractFeatureFlagAdapter], Exception]:
+    """Get a feature flag adapter by name.
 
     Args:
-        settings: The feature flag settings.
-        filesystem: The filesystem adapter.
+        provider: The name of the feature flag adapter.
+        options: The configuration for the feature flag adapter.
 
     Returns:
-        M.Result[FeatureFlagAdapter, Exception]: The feature flag adapter or an error.
+        The feature flag adapter.
     """
     try:
-        return M.ok(FeatureFlagAdapter(settings, filesystem))
+        if provider not in ADAPTERS:
+            raise KeyError(
+                f"Unknown provider: {provider}. Available providers: {', '.join(ADAPTERS.keys())}"
+            )
+        return M.ok(ADAPTERS[provider])
+    except KeyError as e:
+        # Notify available providers
+        return M.error(e)
     except Exception as e:
         return M.error(e)
 
 
-__all__ = ["get_feature_flag_adapter", "FeatureFlagAdapter"]
+__all__ = [
+    "ADAPTERS",
+    "AbstractFeatureFlagAdapter",
+    "FilesystemFeatureFlagAdapter",
+    "HarnessFeatureFlagAdapter",
+    "LaunchDarklyFeatureFlagAdapter",
+    "NoopFeatureFlagAdapter",
+    "SplitFeatureFlagAdapter",
+    "get_feature_flag_adapter_cls",
+]

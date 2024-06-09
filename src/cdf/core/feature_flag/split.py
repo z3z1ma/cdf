@@ -1,21 +1,18 @@
-"""LaunchDarkly feature flag provider."""
+"""Split feature flag provider."""
 
 import typing as t
-
-from dlt.common.configuration import with_config
 
 from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter
 
 
-class LaunchDarklyFeatureFlagAdapter(AbstractFeatureFlagAdapter):
-    """A feature flag adapter that uses LaunchDarkly."""
+class SplitFeatureFlagAdapter(AbstractFeatureFlagAdapter):
+    """A feature flag adapter that uses Split."""
 
-    @with_config(sections=("feature_flags",))
     def __init__(self, sdk_key: str) -> None:
-        """Initialize the LaunchDarkly feature flags.
+        """Initialize the Split feature flags.
 
         Args:
-            sdk_key: The SDK key to use for LaunchDarkly.
+            sdk_key: The SDK key to use for Split.
         """
         self.sdk_key = sdk_key
 
@@ -35,4 +32,4 @@ class LaunchDarklyFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         raise NotImplementedError("This provider is not yet implemented")
 
 
-__all__ = ["LaunchDarklyFeatureFlagAdapter"]
+__all__ = ["SplitFeatureFlagAdapter"]

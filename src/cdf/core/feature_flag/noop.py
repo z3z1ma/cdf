@@ -2,18 +2,20 @@
 
 import typing as t
 
-from dlt.sources import DltSource
-
-if t.TYPE_CHECKING:
-    from cdf.core.project import NoopFeatureFlagSettings
+from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter
 
 
-def apply_source(
-    source: DltSource, /, *, settings: "NoopFeatureFlagSettings", **kwargs: t.Any
-) -> DltSource:
-    """Apply the feature flags to a dlt source."""
-    _ = settings, kwargs
-    return source
+class NoopFeatureFlagAdapter(AbstractFeatureFlagAdapter):
+    """A feature flag adapter that does nothing."""
+
+    def get(self, feature_name: str) -> bool:
+        return True
+
+    def save(self, feature_name: str, flag: bool) -> None:
+        pass
+
+    def get_all_feature_names(self) -> t.List[str]:
+        return []
 
 
-__all__ = ["apply_source"]
+__all__ = ["NoopFeatureFlagAdapter"]

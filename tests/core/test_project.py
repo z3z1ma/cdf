@@ -93,14 +93,26 @@ def test_round_trip_serialization(project: Project):
 
 def test_init_ff(project: Project):
     """Test that the feature flag adapter is initialized."""
-    assert project.feature_flags is not None
-    assert project.feature_flags.provider == "filesystem"
+    assert project.ff_adapter is not None
+    assert project.ff.provider == "filesystem"
 
 
 def test_init_fs(project: Project):
     """Test that the filesystem adapter is initialized."""
-    assert project.filesystem is not None
-    assert project.filesystem.protocol == "file"
+    assert project.fs_adapter is not None
+    assert project.fs_adapter.protocol == "cdf"
+
+
+def test_init_state(project: Project):
+    """Test that the state adapter is initialized."""
+    from sqlglot import exp
+
+    adapter = project.state.create_engine_adapter()
+    assert adapter is not None
+    adapter.create_schema("test")
+    adapter.create_table("test1", {"name": exp.DataType.build("text")})
+    assert adapter.table_exists("test1")
+    adapter.close()
 
 
 @pytest.fixture

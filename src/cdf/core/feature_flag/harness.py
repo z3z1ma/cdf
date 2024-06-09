@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import typing as t
 from concurrent.futures import ThreadPoolExecutor
-from functools import lru_cache
 
+import dlt
+from dlt.common.configuration import with_config
 from dlt.sources import DltSource
 from dlt.sources.helpers import requests
 from featureflags.client import CfClient, Config, Target
@@ -18,10 +18,7 @@ from featureflags.util import log as _ff_logger
 
 import cdf.core.context as context
 import cdf.core.logger as logger
-from cdf.types.monads import Promise
-
-if t.TYPE_CHECKING:
-    from cdf.core.project import HarnessFeatureFlagSettings
+from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter, FlagAdapterResponse
 
 
 # This exists because the default harness LRU implementation does not store >1000 flags
@@ -44,121 +41,181 @@ def _quiet_logger():
     _ff_logger.setLevel(logging.ERROR)
 
 
-@lru_cache(maxsize=2)
-def _get_client(settings: "HarnessFeatureFlagSettings") -> CfClient:
-    """Get the client and cache it in the instance."""
-    _quiet_logger()
-    client = CfClient(
-        sdk_key=str(settings.sdk_key),
-        config=Config(
-            enable_stream=False, enable_analytics=False, cache=_HarnessCache()
-        ),
-    )
-    client.wait_for_initialization()
-    return client
+class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
+    _TARGET = Target("cdf")
 
+    @with_config(sections=("feature_flags",))
+    def __init__(
+        self,
+        sdk_key: str = dlt.secrets.value,
+        api_key: str = dlt.secrets.value,
+        account: str = dlt.secrets.value,
+        organization: str = dlt.secrets.value,
+        project: str = dlt.secrets.value,
+    ) -> None:
+        """Initialize the adapter."""
+        self.sdk_key = sdk_key
+        self.api_key = api_key
+        self.account = account
+        self.organization = organization
+        self.project = project
+        self._pool = None
+        self._client = None
+        _quiet_logger()
 
-def drop(identifier: str, settings: "HarnessFeatureFlagSettings") -> str:
-    """Drop a feature flag."""
-    logger.info(f"Deleting feature flag {identifier}")
-    requests.delete(
-        f"https://app.harness.io/cf/admin/features/{identifier}",
-        headers={"x-api-key": settings.api_key},
-        params={
-            "accountIdentifier": settings.account,
-            "orgIdentifier": settings.organization,
-            "projectIdentifier": settings.project,
-            "forceDelete": True,
-        },
-    )
-    return identifier
+    @property
+    def client(self) -> CfClient:
+        """Get the client and cache it in the instance."""
+        if self._client is None:
+            client = CfClient(
+                sdk_key=str(self.sdk_key),
+                config=Config(
+                    enable_stream=False, enable_analytics=False, cache=_HarnessCache()
+                ),
+            )
+            client.wait_for_initialization()
+            self._client = client
+        return self._client
 
+    @property
+    def pool(self) -> ThreadPoolExecutor:
+        """Get the thread pool."""
+        if self._pool is None:
+            self._pool = ThreadPoolExecutor(thread_name_prefix="cdf-ff-")
+        return self._pool
 
-def create(identifier: str, name: str, settings: "HarnessFeatureFlagSettings") -> str:
-    """Create a feature flag."""
-    logger.info(f"Creating feature flag {identifier}")
-    try:
-        requests.post(
-            "https://app.harness.io/cf/admin/features",
+    def get(self, feature_name: str) -> FlagAdapterResponse:
+        """Get a feature flag."""
+        if feature_name not in self.get_all_feature_names():
+            return FlagAdapterResponse.NOT_FOUND
+        return FlagAdapterResponse.from_bool(
+            self.client.bool_variation(feature_name, self._TARGET, False)
+        )
+
+    def get_all_feature_names(self) -> t.List[str]:
+        """Get all the feature flags."""
+        return list(
+            map(lambda f: f.split("/", 1)[1], self.client._repository.cache.keys())
+        )
+
+    def _toggle(self, feature_name: str, flag: bool) -> None:
+        """Toggle a feature flag."""
+        if flag is self.get(feature_name).to_bool():
+            return
+        logger.info(f"Toggling feature flag {feature_name} to {flag}")
+        requests.patch(
+            f"https://app.harness.io/cf/admin/features/{feature_name}",
+            headers={"x-api-key": self.api_key},
             params={
-                "accountIdentifier": settings.account,
-                "orgIdentifier": settings.organization,
+                "accountIdentifier": self.account,
+                "orgIdentifier": self.organization,
+                "projectIdentifier": self.project,
             },
-            headers={"Content-Type": "application/json", "x-api-key": settings.api_key},
             json={
-                "defaultOnVariation": "on-variation",
-                "defaultOffVariation": "off-variation",
-                "description": "Managed by CDF",
-                "identifier": identifier,
-                "name": name,
-                "kind": FeatureConfigKind.BOOLEAN.value,
-                "permanent": True,
-                "project": settings.project,
-                "variations": [
-                    {"identifier": "on-variation", "value": "true"},
-                    {"identifier": "off-variation", "value": "false"},
-                ],
+                "instructions": [
+                    {
+                        "kind": "setFeatureFlagState",
+                        "parameters": {"state": "on" if flag else "off"},
+                    }
+                ]
             },
         )
-    except Exception:
-        logger.exception(f"Failed to create feature flag {identifier}")
-    return identifier
 
+    def save(self, feature_name: str, flag: bool) -> None:
+        """Create a feature flag."""
+        if self.get(feature_name) is FlagAdapterResponse.NOT_FOUND:
+            logger.info(f"Creating feature flag {feature_name}")
+            try:
+                requests.post(
+                    "https://app.harness.io/cf/admin/features",
+                    params={
+                        "accountIdentifier": self.account,
+                        "orgIdentifier": self.organization,
+                    },
+                    headers={
+                        "Content-Type": "application/json",
+                        "x-api-key": self.api_key,
+                    },
+                    json={
+                        "defaultOnVariation": "on-variation",
+                        "defaultOffVariation": "off-variation",
+                        "description": "Managed by CDF",
+                        "identifier": feature_name,
+                        "name": feature_name.upper(),
+                        "kind": FeatureConfigKind.BOOLEAN.value,
+                        "permanent": True,
+                        "project": self.project,
+                        "variations": [
+                            {"identifier": "on-variation", "value": "true"},
+                            {"identifier": "off-variation", "value": "false"},
+                        ],
+                    },
+                )
+            except Exception:
+                logger.exception(f"Failed to create feature flag {feature_name}")
+        self._toggle(feature_name, flag)
 
-def apply_source(
-    source: DltSource, /, *, settings: "HarnessFeatureFlagSettings", **kwargs: t.Any
-) -> DltSource:
-    """Apply the feature flags to a dlt source."""
-    _ = kwargs
-    client = Promise(
-        lambda: asyncio.to_thread(_get_client, t.cast(t.Hashable, settings))
-    )
-    # TODO: can we get rid of this?
-    workspace = context.active_workspace.get()
-    if isinstance(client, Promise):
-        client = client.unwrap()
-    else:
-        client._repository.cache.clear()
-        client._polling_processor.retrieve_flags_and_segments()
-    cache = client._repository.cache
-    tpe = ThreadPoolExecutor(thread_name_prefix="harness-ff")
-    namespace = f"pipeline__{workspace.name}__{source.name}"
+    def save_many(self, flags: t.Dict[str, bool]) -> None:
+        """Create many feature flags."""
+        list(self.pool.map(lambda f: self.save(*f), flags.items()))
 
-    def get_resource_id(r: str) -> str:
-        return f"{namespace}__{r}"
-
-    resource_lookup = {
-        get_resource_id(key): resource for key, resource in source.resources.items()
-    }
-    every_resource = resource_lookup.keys()
-    selected_resources = set(map(get_resource_id, source.selected_resources.keys()))
-
-    current_flags = set(
-        filter(
-            lambda f: f.startswith(namespace),
-            map(lambda f: f.split("/", 1)[1], cache.keys()),
+    def delete(self, feature_name: str) -> None:
+        """Drop a feature flag."""
+        logger.info(f"Deleting feature flag {feature_name}")
+        requests.delete(
+            f"https://app.harness.io/cf/admin/features/{feature_name}",
+            headers={"x-api-key": self.api_key},
+            params={
+                "accountIdentifier": self.account,
+                "orgIdentifier": self.organization,
+                "projectIdentifier": self.project,
+                "forceDelete": True,
+            },
         )
-    )
 
-    removed = current_flags.difference(every_resource)
-    added = selected_resources.difference(current_flags)
+    def delete_many(self, feature_names: t.List[str]) -> None:
+        """Drop many feature flags."""
+        list(self.pool.map(self.delete, feature_names))
 
-    if os.getenv("HARNESS_FF_AUTORECONCILE", "0") == "1":
-        list(tpe.map(drop, removed, [settings] * len(removed)))
-    for f in tpe.map(
-        create,
-        added,
-        [
-            f"Extract {source.name.title()} {resource_lookup[f].name.title()}"
-            for f in added
-        ],
-        [settings] * len(added),
-    ):
-        resource_lookup[f].selected = False
-    for f in current_flags.intersection(selected_resources):
-        resource_lookup[f].selected = client.bool_variation(f, Target("cdf"), False)
+    def apply_source(self, source: DltSource) -> DltSource:
+        """Apply the feature flags to a dlt source."""
 
-    return source
+        # TODO: can we get rid of this context variable?
+        # this is mainly here to support Harness data team's naming convention
+        workspace = context.active_workspace.get()
+        namespace = f"pipeline__{workspace.name}__{source.name}"
+
+        # A closure to produce a resource id
+        def _get_resource_id(resource: str) -> str:
+            return f"{namespace}__{resource}"
+
+        resource_lookup = {
+            _get_resource_id(key): resource
+            for key, resource in source.resources.items()
+        }
+        every_resource = resource_lookup.keys()
+        selected_resources = set(
+            map(_get_resource_id, source.selected_resources.keys())
+        )
+
+        current_flags = set(
+            filter(lambda f: f.startswith(namespace), self.get_all_feature_names())
+        )
+
+        removed = current_flags.difference(every_resource)
+        added = selected_resources.difference(current_flags)
+
+        # TODO: reconciliation will be promoted to a top level context function
+        if os.getenv("HARNESS_FF_AUTORECONCILE", "0") == "1":
+            self.delete_many(list(removed))
+
+        self.save_many({f: False for f in added})
+        for f in added:
+            resource_lookup[f].selected = False
+        for f in current_flags.intersection(selected_resources):
+            resource_lookup[f].selected = self.get(f).to_bool()
+
+        return source
 
 
-__all__ = ["apply_source"]
+__all__ = ["HarnessFeatureFlagAdapter"]

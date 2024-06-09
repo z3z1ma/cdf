@@ -25,8 +25,8 @@ import cdf.core.constants as c
 import cdf.core.context as context
 import cdf.core.logger as logger
 from cdf.core.project import (
-    FeatureFlagSettings,
-    FilesystemSettings,
+    FeatureFlagConfig,
+    FilesystemConfig,
     Workspace,
     load_project,
 )
@@ -96,14 +96,17 @@ def init(ctx: typer.Context) -> None:
 
 
 @app.command(rich_help_panel="Project Management")
-def index(ctx: typer.Context) -> None:
+def index(ctx: typer.Context, hydrate: bool = False) -> None:
     """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], [yellow]Publishers[/yellow][/b], and other components."""
     W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
-    console.print("Pipelines", W.pipelines)
-    console.print("Sinks", W.sinks)
-    console.print("Publishers", W.publishers)
-    console.print("Scripts", W.scripts)
-    console.print("Notebooks", W.notebooks)
+    if not hydrate:
+        console.print("Pipelines", W.pipelines)
+        console.print("Sinks", W.sinks)
+        console.print("Publishers", W.publishers)
+        console.print("Scripts", W.scripts)
+        console.print("Notebooks", W.notebooks)
+    else:
+        ...
 
 
 @app.command(rich_help_panel="Core")
@@ -418,10 +421,10 @@ def spec(name: _SpecType, json_schema: bool = False) -> None:
     elif name == _SpecType.sink:
         _print(SinkSpecification)
     elif name == _SpecType.feature_flags:
-        for spec in t.get_args(FeatureFlagSettings):
+        for spec in t.get_args(FeatureFlagConfig):
             _print(spec)
     elif name == _SpecType.filesystem:
-        _print(FilesystemSettings)
+        _print(FilesystemConfig)
     else:
         raise ValueError(f"Invalid spec type {name}.")
 
