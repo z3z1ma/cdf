@@ -230,7 +230,9 @@ FeatureFlagSettings = t.Union[
 class Workspace(_BaseSettings):
     """A workspace is a collection of pipelines, sinks, publishers, scripts, and notebooks in a subdirectory of the project"""
 
-    path: Path = Path(".")
+    workspace_path: t.Annotated[Path, pydantic.Field(alias="path")] = Path(".")
+    """The path to the workspace within the project path"""
+    project_path: Path = Path(".")
     """The path to the project"""
     name: t.Annotated[
         str, pydantic.Field(pattern=r"^[a-zA-Z0-9_\-]+$", min_length=3, max_length=32)
@@ -261,19 +263,27 @@ class Workspace(_BaseSettings):
     ):
         """Parse component dictionaries into an array of components inject the workspace path"""
         if isinstance(value, dict):
-            buf = []
+            # name : {config}
+            cmps = []
             for key, cmp in value.items():
                 cmp.setdefault("name", key)
-                buf.append(cmp)
-            value = buf
+                cmps.append(cmp)
+            value = cmps
         elif hasattr(value, "__iter__") and not isinstance(value, (str, bytes)):
+            # [{configA}, ...]
             value = list(value)
         else:
             raise ValueError(
                 "Invalid workspace component configuration, must be either a dict or a list"
             )
         for cmp in value:
-            cmp["workspace_path"] = info.data["path"]
+            # TODO: gut check this, its interesting how the tree-like structure
+            # of project -> workspace -> component requires us to bubble down
+            # the accumulated path since each layer is a separate model validator
+            # and component validator ultimately relies on a fully resolvable path
+            cmp["root_path"] = Path(
+                info.data["project_path"], info.data["workspace_path"]
+            )
         return value
 
     @pydantic.model_validator(mode="after")
@@ -296,6 +306,11 @@ class Workspace(_BaseSettings):
     def _workspace_component_serializer(cls, value: t.Any) -> t.Dict[str, t.Any]:
         """Serialize component arrays back to dictionaries"""
         return {cmp.name: cmp.model_dump() for cmp in value}
+
+    @property
+    def path(self) -> Path:
+        """Get the path to the workspace"""
+        return self.project_path / self.workspace_path
 
     def __getitem__(self, key: str) -> t.Any:
         """Get a component by name"""
@@ -544,39 +559,45 @@ class Project(_BaseSettings):
         If the workspace is a path, load the configuration from the path.
         """
         if isinstance(value, str):
-            # ws1; ws2; ws3
+            # pathA; pathB; pathC
             value = list(map(lambda s: s.strip(), value.split(";")))
         elif isinstance(value, dict):
-            # ws name : {ws config}
-            _buf = []
-            for ws_name, ws_config in value.items():
-                ws_config.setdefault("name", ws_name)
-                _buf.append(ws_config)
-            value = _buf
-        if isinstance(value, list):
-            # [{ws1 config} | ws1 path, {ws2 config}]
-            for i, obj in enumerate(value):
+            # name : {config}
+            workspaces = []
+            for name, config in value.items():
+                config.setdefault("name", name)
+                workspaces.append(config)
+            value = workspaces
+        if isinstance(value, (list, tuple)):
+            # [{configA} | pathA, {configB}, ...]
+            workspaces = []
+            project_path = Path(info.data["path"])
+            for obj in value:
                 if isinstance(obj, (str, Path)):
-                    # ws1 path
-                    # ensure ws path is absolute, if not, resolve it
-                    # relative to the project path
-                    obj_path = Path(obj)
-                    if obj_path.is_absolute():
-                        path = obj_path
-                    else:
-                        path = Path(info.data["path"]) / obj
-                    # load the configuration from the path
-                    config = _load_config(path)
+                    # pathA
+                    path = Path(obj)
+                    if path.is_absolute():
+                        path = path.relative_to(project_path)
+                    config = _load_config(project_path / path)
                     config["path"] = path
-                    value[i] = config
+                    config["project_path"] = project_path
+                    workspaces.append(config)
                 elif isinstance(obj, dict):
-                    # {ws1 config}
-                    obj_path = Path(obj["path"])
-                    if not obj_path.is_absolute():
-                        obj["path"] = Path(info.data["path"]) / obj["path"]
+                    # {configA}
+                    # NOTE: in the component validator, we have heuristics for getting a path
+                    # from a name but we seem to demand a path here, we should be consistent
+                    path = Path(obj.pop("path", None) or obj.pop("workspace_path"))
+                    if path.is_absolute():
+                        path = path.relative_to(project_path)
+                    obj["path"] = path
+                    obj["project_path"] = project_path
+                    workspaces.append(obj)
+                else:
+                    raise ValueError("Invalid workspace configuration")
+            value = workspaces
         if not (hasattr(value, "__iter__") and not isinstance(value, (str, bytes))):
             raise ValueError("Invalid workspaces configuration, must be an iterable")
-        return tuple(value)
+        return value
 
     @pydantic.model_validator(mode="after")
     def _project_workspaces_validator(self):

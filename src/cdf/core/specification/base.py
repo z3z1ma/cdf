@@ -196,10 +196,16 @@ class BaseComponent(
 class WorkspaceComponent(BaseComponent):
     """A component within a workspace."""
 
-    workspace_path: t.Annotated[Path, pydantic.Field(frozen=True)] = Path(".")
-    """The path to the workspace within the project folder."""
     component_path: t.Annotated[Path, pydantic.Field(alias="path", frozen=True)]
     """The path to the component within the workspace folder."""
+    root_path: t.Annotated[Path, pydantic.Field(frozen=True)] = Path(".")
+    """The base path from which to resolve the component path.
+
+    This is typically the union of the project path and the workspace path but
+    for standalone components (components created programmatically outside the
+    context of the cdf taxonomy), it should be set to either the current working
+    directory (default) or the system root.
+    """
 
     _folder: str = "."
     """The folder within the workspace where components are stored."""
@@ -209,7 +215,7 @@ class WorkspaceComponent(BaseComponent):
     @property
     def path(self) -> Path:
         """Get the path to the component."""
-        return self.workspace_path / self.component_path
+        return self.root_path / self.component_path
 
     @pydantic.model_validator(mode="before")
     @classmethod
@@ -391,13 +397,13 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
             """Run the script"""
             origpath = sys.path[:]
             sys.path = [
-                str(self.workspace_path),
+                str(self.root_path),
                 *sys.path,
-                str(self.workspace_path.parent),
+                str(self.root_path.parent),
             ]
             parts = map(
                 _getmodulename,
-                self.path.relative_to(self.workspace_path).parts,
+                self.path.relative_to(self.root_path).parts,
             )
             run_name = ".".join(parts)
             if self.has_workspace_association:
@@ -444,11 +450,10 @@ class PythonEntrypoint(BaseComponent, InstallableRequirements):
         pydantic.Field(
             ...,
             frozen=True,
-            pattern=r"^[a-zA-Z0-9_\.]+:[a-zA-Z0-9_\.]+$",
-            description="The entrypoint function in the format module:func.",
+            pattern=r"^[a-zA-Z][a-zA-Z0-9_\.]*:[a-zA-Z][a-zA-Z0-9_\.]*$",
         ),
     ]
-    """The entrypoint of the component."""
+    """The entrypoint of the component in the format module:func."""
 
     @pydantic.model_validator(mode="after")
     def _setup_entrypoint(self):
@@ -457,7 +462,8 @@ class PythonEntrypoint(BaseComponent, InstallableRequirements):
             mod, func = self.entrypoint.split(":", 1)
             self.name = mod.replace(".", "_") + "_" + func.replace(".", "_")
         if self.description == _NO_DESCRIPTION:
-            self.description = self.main.__doc__ or _NO_DESCRIPTION
+            with logger.suppress_and_warn():
+                self.description = self.main(__return_func=1).__doc__ or _NO_DESCRIPTION
         return self
 
     @property
@@ -466,13 +472,17 @@ class PythonEntrypoint(BaseComponent, InstallableRequirements):
         module, func = self.entrypoint.split(":")
 
         def _run(*args: t.Any, **kwargs: t.Any) -> t.Any:
+            """Execute the entrypoint."""
             if self.has_workspace_association:
                 workspace_context = self.workspace.inject_configuration()
             else:
                 workspace_context = nullcontext()
             with workspace_context:
                 mod = importlib.import_module(module)
-                return operator.attrgetter(func)(mod)(*args, **kwargs)
+                fn = operator.attrgetter(func)(mod)
+                if kwargs.pop("__return_func", 0):
+                    return fn
+                return fn(*args, **kwargs)
 
         return _run
 

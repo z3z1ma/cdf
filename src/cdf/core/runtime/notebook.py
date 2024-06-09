@@ -10,6 +10,7 @@ import re
 import sys
 import time
 import typing as t
+from contextlib import nullcontext
 from datetime import date, datetime
 from pathlib import Path
 
@@ -36,9 +37,9 @@ def execute_notebook_specification(
     """
     origpath = sys.path[:]
     sys.path = [
-        str(spec.workspace_path),
+        str(spec.root_path),
         *sys.path,
-        str(spec.workspace_path.parent),
+        str(spec.root_path.parent),
     ]
     try:
         merged_params = {**spec.parameters, **params}
@@ -46,12 +47,16 @@ def execute_notebook_specification(
             "_rendered", f"{spec.name}.{int(time.time())}.ipynb"
         )
         output.parent.mkdir(parents=True, exist_ok=True)
-        with spec._lock:
+        if spec.has_workspace_association:
+            workspace_context = spec.workspace.inject_configuration()
+        else:
+            workspace_context = nullcontext()
+        with spec._lock, workspace_context:
             rv: "NotebookNode" = papermill.execute_notebook(
                 spec.path,
                 output,
                 merged_params,
-                cwd=spec.workspace_path,
+                cwd=spec.root_path,
             )
         logger.info(
             f"Successfully ran notebook {spec.path} with params {merged_params} rendered into {output}"

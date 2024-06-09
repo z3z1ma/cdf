@@ -94,6 +94,7 @@ def test_round_trip_serialization(project: Project):
 def test_init_ff(project: Project):
     """Test that the feature flag adapter is initialized."""
     assert project.feature_flags is not None
+    assert project.feature_flags.provider == "filesystem"
 
 
 def test_init_fs(project: Project):
@@ -163,7 +164,7 @@ def python_project():
             "version": "0.2.0",
             "workspaces": {
                 "datateam": {
-                    "path": Path("examples/sandbox/alex").resolve(),
+                    "path": "alex",
                     "pipelines": {"cities": city_spec, "dota": dota_spec},
                     "sinks": {"local": local_spec},
                     "publishers": {"httpbin": httpbin_spec},
@@ -187,3 +188,65 @@ def test_custom_project(python_project: Project):
     these components is done in code which offers more flexibility.
     """
     assert python_project.name == "data-platform"
+
+
+@pytest.fixture
+def barebones_project():
+    return Project.model_validate(
+        {
+            "path": "examples/sandbox",
+            "name": "data-platform",
+            "workspaces": {
+                "datateam": {
+                    "path": "alex",
+                    "pipelines": {
+                        "cities": {"path": "pipelines/us_cities_pipeline.py"},
+                        "dota": {"path": "pipelines/dota2_pipeline.py"},
+                    },
+                    "sinks": {"local": {"path": "sinks/local_sink.py"}},
+                    "publishers": {
+                        "httpbin": {
+                            "path": "publishers/httpbin_publisher.py",
+                            "depends_on": ["mart.zips"],
+                        }
+                    },
+                    "scripts": {"hello": {"path": "scripts/hello_script.py"}},
+                }
+            },
+        }
+    )
+
+
+def test_barebones_project(barebones_project: Project):
+    """Test creating a project programmatically with minimal configuration.
+
+    This asserts that certain heuristics are applied to the configuration to
+    make it more user-friendly.
+    """
+    assert barebones_project.name == "data-platform"
+    assert barebones_project["workspaces.datateam.pipelines.cities"] is not None
+    assert barebones_project["workspaces.datateam.publishers.httpbin.depends_on"] == [
+        "mart.zips"
+    ]
+    assert barebones_project["workspaces.datateam.sinks.local.component_path"] == Path(
+        "sinks/local_sink.py"
+    )
+    assert barebones_project[
+        "workspaces.datateam.scripts.hello.component_path"
+    ] == Path("scripts/hello_script.py")
+    assert barebones_project[
+        "workspaces.datateam.pipelines.cities.component_path"
+    ] == Path("pipelines/us_cities_pipeline.py")
+    assert len(barebones_project["workspaces.datateam.pipelines"]) == 2
+    assert len(barebones_project["workspaces.datateam.sinks"]) == 1
+    assert len(barebones_project["workspaces.datateam.publishers"]) == 1
+    assert len(barebones_project["workspaces.datateam.scripts"]) == 1
+    assert len(barebones_project["workspaces.datateam"]) == 5
+    assert len(barebones_project) == 1
+    assert "datateam" in barebones_project
+    assert "jane" not in barebones_project
+    with pytest.raises(KeyError):
+        barebones_project["workspaces.jane"]
+    with pytest.raises(NotImplementedError):
+        del barebones_project["name"]
+    assert list(barebones_project)[0] is barebones_project["workspaces.datateam"]
