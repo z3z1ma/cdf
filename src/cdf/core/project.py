@@ -266,6 +266,9 @@ class Workspace(_BaseSettings):
             # name : {config}
             cmps = []
             for key, cmp in value.items():
+                if isinstance(cmp, (str, Path)):
+                    # name : path
+                    cmp = {"path": cmp}
                 cmp.setdefault("name", key)
                 cmps.append(cmp)
             value = cmps

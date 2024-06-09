@@ -232,19 +232,22 @@ class WorkspaceComponent(BaseComponent):
         The _component_path_validator validator is uniformly responsible for prefixing the
         folder name to the path.
         """
-        name = values.get("name")
-        if not name:
-            return values
-        if name.endswith((".py", ".ipynb")):
-            values.setdefault("path", name)
-        else:
-            ext = getattr(cls._extension, "default")
-            typ = getattr(cls._folder, "default")[:-1]
-            if name.endswith(f"_{typ}"):
-                p = f"{name}.{ext}"
+        if isinstance(values, (str, Path)):
+            values = {"path": values}
+        elif isinstance(values, dict):
+            name = values.get("name")
+            if not name:
+                return values
+            if name.endswith((".py", ".ipynb")):
+                values.setdefault("path", name)
             else:
-                p = f"{name}_{typ}.{ext}"
-            values.setdefault("path", p)
+                ext = getattr(cls._extension, "default")
+                typ = getattr(cls._folder, "default")[:-1]
+                if name.endswith(f"_{typ}"):
+                    p = f"{name}.{ext}"
+                else:
+                    p = f"{name}_{typ}.{ext}"
+                values.setdefault("path", p)
         return values
 
     @pydantic.field_validator("name", mode="before")

@@ -200,17 +200,17 @@ def barebones_project():
                 "datateam": {
                     "path": "alex",
                     "pipelines": {
-                        "cities": {"path": "pipelines/us_cities_pipeline.py"},
+                        "cities": "pipelines/us_cities_pipeline.py",
                         "dota": {"path": "pipelines/dota2_pipeline.py"},
                     },
-                    "sinks": {"local": {"path": "sinks/local_sink.py"}},
+                    "sinks": {"local": "sinks/local_sink.py"},
                     "publishers": {
                         "httpbin": {
                             "path": "publishers/httpbin_publisher.py",
                             "depends_on": ["mart.zips"],
                         }
                     },
-                    "scripts": {"hello": {"path": "scripts/hello_script.py"}},
+                    "scripts": {"hello": "scripts/hello_script.py"},
                 }
             },
         }
