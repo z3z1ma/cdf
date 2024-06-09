@@ -7,7 +7,6 @@ import subprocess
 import sys
 import tempfile
 import typing as t
-from contextvars import Token
 from enum import Enum
 from pathlib import Path
 
@@ -44,6 +43,9 @@ from cdf.core.specification import (
     ScriptSpecification,
     SinkSpecification,
 )
+from cdf.types import M
+
+WorkspaceMonad = M.Result[Workspace, Exception]
 
 app = typer.Typer(
     rich_markup_mode="rich",
@@ -75,7 +77,7 @@ def main(
     ),
 ) -> None:
     """CDF (continuous data framework) is a framework for end to end data processing."""
-    ctx.obj = workspace, path
+    ctx.obj = load_project(path).bind(lambda p: p.get_workspace(workspace))
     if debug:
         context.debug_mode.set(True)
     if environment:
@@ -96,15 +98,12 @@ def init(ctx: typer.Context) -> None:
 @app.command(rich_help_panel="Project Management")
 def index(ctx: typer.Context) -> None:
     """:page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], [yellow]Publishers[/yellow][/b], and other components."""
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        console.print("Pipelines", workspace.pipelines)
-        console.print("Sinks", workspace.sinks)
-        console.print("Publishers", workspace.publishers)
-        console.print("Scripts", workspace.scripts)
-        console.print("Notebooks", workspace.notebooks)
-    finally:
-        context.active_workspace.reset(token)
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    console.print("Pipelines", W.pipelines)
+    console.print("Sinks", W.sinks)
+    console.print("Publishers", W.publishers)
+    console.print("Scripts", W.scripts)
+    console.print("Notebooks", W.notebooks)
 
 
 @app.command(rich_help_panel="Core")
@@ -157,31 +156,22 @@ def pipeline(
         force_replace: Whether to force replace the write disposition.
         no_stage: Allows selective disabling of intermediate staging even if configured in sink.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        source, destination = pipeline_to_sink.split(":", 1)
-        sink, stage = (
-            workspace.get_sink_spec(destination)
-            .map(lambda s: s.get_ingest_config())
-            .unwrap_or((destination, None))
-        )
-        return (
-            workspace.get_pipeline_spec(source)
-            .bind(
-                lambda p: execute_pipeline_specification(
-                    p,
-                    sink,
-                    stage,
-                    select=select,
-                    exclude=exclude,
-                    force_replace=force_replace,
-                    enable_stage=(not no_stage),
-                )
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    source, destination = pipeline_to_sink.split(":", 1)
+    return (
+        W.get_pipeline_spec(source)
+        .bind(
+            lambda pipe: execute_pipeline_specification(
+                pipe,
+                W.get_sink_spec(destination).unwrap_or((destination, None)),
+                select=select,
+                exclude=exclude,
+                force_replace=force_replace,
+                enable_stage=(not no_stage),
             )
-            .unwrap()
-        )  # maybe a function which searches for LoadInfo objects from the exports
-    finally:
-        context.active_workspace.reset(token)
+        )
+        .unwrap()
+    )
 
 
 @app.command(rich_help_panel="Develop")
@@ -206,23 +196,20 @@ def discover(
         pipeline: The pipeline in which to discover resources.
         no_quiet: Whether to suppress the pipeline stdout.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        spec = workspace.get_pipeline_spec(pipeline).unwrap()
-        for i, source in enumerate(
-            execute_pipeline_specification(
+    for i, source in enumerate(
+        t.cast(WorkspaceMonad, ctx.obj)
+        .bind(lambda w: w.get_pipeline_spec(pipeline))
+        .bind(
+            lambda spec: execute_pipeline_specification(
                 spec, "dummy", dry_run=True, quiet=not no_quiet
             )
-            .map(lambda rv: rv.pipeline.tracked_sources)
-            .unwrap()
-        ):
-            console.print(f"{i}: {source.name}")
-            for j, resource in enumerate(source.resources.values(), 1):
-                console.print(
-                    f"{i}.{j}: {resource.name} (enabled: {resource.selected})"
-                )
-    finally:
-        context.active_workspace.reset(token)
+        )
+        .map(lambda rv: rv.pipeline.tracked_sources)
+        .unwrap()
+    ):
+        console.print(f"{i}: {source.name}")
+        for j, resource in enumerate(source.resources.values(), 1):
+            console.print(f"{i}.{j}: {resource.name} (enabled: {resource.selected})")
 
 
 @app.command(rich_help_panel="Develop")
@@ -246,37 +233,36 @@ def head(
     Raises:
         typer.BadParameter: If the resource is not found in the pipeline.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        spec = workspace.get_pipeline_spec(pipeline).unwrap()
-        target = next(
-            filter(
-                lambda r: r.name == resource,
-                (
-                    resource
-                    for src in execute_pipeline_specification(
+    target = next(
+        filter(
+            lambda r: r.name == resource,
+            (
+                resource
+                for source in t.cast(WorkspaceMonad, ctx.obj)
+                .bind(lambda w: w.get_pipeline_spec(pipeline))
+                .bind(
+                    lambda spec: execute_pipeline_specification(
                         spec, "dummy", dry_run=True, quiet=True
                     )
-                    .map(lambda rv: rv.pipeline.tracked_sources)
-                    .unwrap()
-                    for resource in src.resources.values()
-                ),
+                )
+                .map(lambda rv: rv.pipeline.tracked_sources)
+                .unwrap()
+                for resource in source.resources.values()
             ),
-            None,
+        ),
+        None,
+    )
+    if target is None:
+        raise typer.BadParameter(
+            f"Resource {resource} not found in pipeline {pipeline}.",
+            param_hint="resource",
         )
-        if target is None:
-            raise typer.BadParameter(
-                f"Resource {resource} not found in pipeline {pipeline}.",
-                param_hint="resource",
-            )
-        list(
-            map(
-                lambda it: console.print(it[1]),
-                itertools.takewhile(lambda it: it[0] < n, enumerate(target)),
-            )
+    list(
+        map(
+            lambda row: console.print(row[1]),
+            itertools.takewhile(lambda row: row[0] < n, enumerate(target)),
         )
-    finally:
-        context.active_workspace.reset(token)
+    )
 
 
 @app.command(rich_help_panel="Core")
@@ -301,20 +287,17 @@ def publish(
         sink_to_publisher: The sink and publisher separated by a colon.
         skip_verification: Whether to skip the verification of the publisher dependencies.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        source, publisher = sink_to_publisher.split(":", 1)
-        return (
-            workspace.get_publisher_spec(publisher)
-            .bind(
-                lambda p: execute_publisher_specification(
-                    p, workspace.get_transform_context(source), skip_verification
-                )
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    source, publisher = sink_to_publisher.split(":", 1)
+    return (
+        W.get_publisher_spec(publisher)
+        .bind(
+            lambda p: execute_publisher_specification(
+                p, W.get_transform_context(source), skip_verification
             )
-            .unwrap()
         )
-    finally:
-        context.active_workspace.reset(token)
+        .unwrap()
+    )
 
 
 @app.command(rich_help_panel="Core")
@@ -331,15 +314,12 @@ def script(
         script: The script to execute.
         quiet: Whether to suppress the script stdout.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        return (
-            workspace.get_script_spec(script)
-            .bind(lambda s: execute_script_specification(s, capture_stdout=quiet))
-            .unwrap()
-        )
-    finally:
-        context.active_workspace.reset(token)
+    return (
+        t.cast(WorkspaceMonad, ctx.obj)
+        .bind(lambda w: w.get_script_spec(script))
+        .bind(lambda s: execute_script_specification(s, capture_stdout=quiet))
+        .unwrap()
+    )
 
 
 @app.command(rich_help_panel="Core")
@@ -362,15 +342,12 @@ def notebook(
         notebook: The notebook to execute.
         params: The parameters to pass to the notebook as a json formatted string.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        return (
-            workspace.get_notebook_spec(notebook)
-            .bind(lambda s: execute_notebook_specification(s, **json.loads(params)))
-            .unwrap()
-        )
-    finally:
-        context.active_workspace.reset(token)
+    return (
+        t.cast(WorkspaceMonad, ctx.obj)
+        .bind(lambda w: w.get_notebook_spec(notebook))
+        .bind(lambda s: execute_notebook_specification(s, **json.loads(params)))
+        .unwrap()
+    )
 
 
 @app.command(
@@ -379,25 +356,19 @@ def notebook(
 )
 def jupyter_lab(ctx: typer.Context) -> None:
     """:star2: Start a Jupyter Lab server in the context of a workspace."""
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        subprocess.run(
+    t.cast(WorkspaceMonad, ctx.obj).map(
+        lambda w: subprocess.run(
             ["jupyter", "lab", *ctx.args],
-            cwd=workspace.path,
+            cwd=w.path,
             check=False,
             env={
                 **os.environ,
                 "PYTHONPATH": ":".join(
-                    (
-                        str(workspace.path.resolve()),
-                        *sys.path,
-                        str(workspace.path.parent.resolve()),
-                    )
+                    (str(w.path.resolve()), *sys.path, str(w.path.parent.resolve()))
                 ),
             },
         )
-    finally:
-        context.active_workspace.reset(token)
+    )
 
 
 class _SpecType(str, Enum):
@@ -503,30 +474,25 @@ def schema_dump(
     Raises:
         typer.BadParameter: If the pipeline or sink are not found.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        source, destination = pipeline_to_sink.split(":", 1)
-        sink, _ = (
-            workspace.get_sink_spec(destination)
-            .map(lambda s: s.get_ingest_config())
-            .unwrap_or((destination, None))
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    source, destination = pipeline_to_sink.split(":", 1)
+    spec = W.get_pipeline_spec(source).unwrap()
+    rv = execute_pipeline_specification(
+        spec,
+        W.get_sink_spec(destination).unwrap_or((destination, None)),
+        dry_run=True,
+        quiet=True,
+    ).unwrap()
+    if format == _ExportFormat.json:
+        console.print(rv.pipeline.default_schema.to_pretty_json())
+    elif format in (_ExportFormat.py, _ExportFormat.python, _ExportFormat.dict):
+        console.print(rv.pipeline.default_schema.to_dict())
+    elif format in (_ExportFormat.yaml, _ExportFormat.yml):
+        console.print(rv.pipeline.default_schema.to_pretty_yaml())
+    else:
+        raise ValueError(
+            f"Invalid format {format}. Must be one of {list(_ExportFormat)}"
         )
-        spec = workspace.get_pipeline_spec(source).unwrap()
-        rv = execute_pipeline_specification(
-            spec, sink, dry_run=True, quiet=True
-        ).unwrap()
-        if format == _ExportFormat.json:
-            console.print(rv.pipeline.default_schema.to_pretty_json())
-        elif format in (_ExportFormat.py, _ExportFormat.python, _ExportFormat.dict):
-            console.print(rv.pipeline.default_schema.to_dict())
-        elif format in (_ExportFormat.yaml, _ExportFormat.yml):
-            console.print(rv.pipeline.default_schema.to_pretty_yaml())
-        else:
-            raise ValueError(
-                f"Invalid format {format}. Must be one of {list(_ExportFormat)}"
-            )
-    finally:
-        context.active_workspace.reset(token)
 
 
 @schema.command("edit")
@@ -549,44 +515,39 @@ def schema_edit(
     Raises:
         typer.BadParameter: If the pipeline or sink are not found.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        source, destination = pipeline_to_sink.split(":", 1)
-        sink, _ = (
-            workspace.get_sink_spec(destination)
-            .map(lambda s: s.get_ingest_config())
-            .unwrap_or((destination, None))
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    source, destination = pipeline_to_sink.split(":", 1)
+    sink, _ = (
+        W.get_sink_spec(destination)
+        .map(lambda s: s.get_ingest_config())
+        .unwrap_or((destination, None))
+    )
+    spec = W.get_pipeline_spec(source).unwrap()
+    logger.info(f"Clearing local schema and state for {source}.")
+    pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
+    pipe.drop()
+    logger.info(f"Syncing schema for {source}:{destination}.")
+    rv = execute_pipeline_specification(spec, sink, dry_run=True, quiet=True).unwrap()
+    schema = rv.pipeline.default_schema.clone()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        fname = f"{schema.name}.schema.yaml"
+        with open(os.path.join(tmpdir, fname), "w") as f:
+            f.write(schema.to_pretty_yaml())
+        logger.info(f"Editing schema {schema.name}.")
+        subprocess.run([os.environ.get("EDITOR", "vi"), f.name], check=True)
+        pipe_mut = spec.create_pipeline(
+            dlt.Pipeline, import_schema_path=tmpdir, destination=sink, staging=None
         )
-        spec = workspace.get_pipeline_spec(source).unwrap()
-        logger.info(f"Clearing local schema and state for {source}.")
-        pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
-        pipe.drop()
-        logger.info(f"Syncing schema for {source}:{destination}.")
-        rv = execute_pipeline_specification(
-            spec, sink, dry_run=True, quiet=True
-        ).unwrap()
-        schema = rv.pipeline.default_schema.clone()
-        with tempfile.TemporaryDirectory() as tmpdir:
-            fname = f"{schema.name}.schema.yaml"
-            with open(os.path.join(tmpdir, fname), "w") as f:
-                f.write(schema.to_pretty_yaml())
-            logger.info(f"Editing schema {schema.name}.")
-            subprocess.run([os.environ.get("EDITOR", "vi"), f.name], check=True)
-            pipe_mut = spec.create_pipeline(
-                dlt.Pipeline, import_schema_path=tmpdir, destination=sink, staging=None
-            )
-            schema_mut = pipe_mut.default_schema
-            if schema_mut.version > schema.version:
-                with pipe_mut.destination_client() as client:
-                    logger.info(
-                        f"Updating schema {schema.name} to version {schema_mut.version} in {destination}."
-                    )
-                    client.update_stored_schema()
-                logger.info("Schema updated.")
-            else:
-                logger.info("Schema not updated.")
-    finally:
-        context.active_workspace.reset(token)
+        schema_mut = pipe_mut.default_schema
+        if schema_mut.version > schema.version:
+            with pipe_mut.destination_client() as client:
+                logger.info(
+                    f"Updating schema {schema.name} to version {schema_mut.version} in {destination}."
+                )
+                client.update_stored_schema()
+            logger.info("Schema updated.")
+        else:
+            logger.info("Schema not updated.")
 
 
 app.add_typer(
@@ -622,21 +583,16 @@ def state_dump(
     Raises:
         typer.BadParameter: If the pipeline or sink are not found.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        source, destination = pipeline_to_sink.split(":", 1)
-        sink, _ = (
-            workspace.get_sink_spec(destination)
-            .map(lambda s: s.get_ingest_config())
-            .unwrap_or((destination, None))
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    source, destination = pipeline_to_sink.split(":", 1)
+    W.get_pipeline_spec(source).bind(
+        lambda spec: execute_pipeline_specification(
+            spec,
+            W.get_sink_spec(destination).unwrap_or((destination, None)),
+            dry_run=True,
+            quiet=True,
         )
-        spec = workspace.get_pipeline_spec(source).unwrap()
-        rv = execute_pipeline_specification(
-            spec, sink, dry_run=True, quiet=True
-        ).unwrap()
-        console.print(rv.pipeline.state)
-    finally:
-        context.active_workspace.reset(token)
+    ).map(lambda rv: console.print(rv.pipeline.state))
 
 
 @state.command("edit")
@@ -659,45 +615,38 @@ def state_edit(
     Raises:
         typer.BadParameter: If the pipeline or sink are not found.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        source, destination = pipeline_to_sink.split(":", 1)
-        sink, _ = (
-            workspace.get_sink_spec(destination)
-            .map(lambda s: s.get_ingest_config())
-            .unwrap_or((destination, None))
-        )
-        spec = workspace.get_pipeline_spec(source).unwrap()
-        logger.info(f"Clearing local state and state for {source}.")
-        pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
-        pipe.drop()
-        logger.info(f"Syncing state for {source}:{destination}.")
-        rv = execute_pipeline_specification(
-            spec, sink, dry_run=True, quiet=True
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    source, destination = pipeline_to_sink.split(":", 1)
+    sink, _ = (
+        W.get_sink_spec(destination)
+        .map(lambda s: s.get_ingest_config())
+        .unwrap_or((destination, None))
+    )
+    spec = W.get_pipeline_spec(source).unwrap()
+    logger.info(f"Clearing local state and state for {source}.")
+    pipe = spec.create_pipeline(dlt.Pipeline, destination=sink, staging=None)
+    pipe.drop()
+    logger.info(f"Syncing state for {source}:{destination}.")
+    rv = execute_pipeline_specification(spec, sink, dry_run=True, quiet=True).unwrap()
+    with (
+        tempfile.NamedTemporaryFile(suffix=".json") as tmp,
+        rv.pipeline.managed_state(extract_state=True) as state,
+    ):
+        pre_hash = generate_state_version_hash(state, exclude_attrs=["_local"])
+        tmp.write(json.dumps(json.loads(json_encode_state(state)), indent=2).encode())
+        tmp.flush()
+        logger.info(f"Editing state in {destination}.")
+        subprocess.run([os.environ.get("EDITOR", "vi"), tmp.name], check=True)
+        with open(tmp.name, "r") as f:
+            update_dict_nested(t.cast(dict, state), json_decode_state(f.read()))
+        post_hash = generate_state_version_hash(state, exclude_attrs=["_local"])
+    if pre_hash != post_hash:
+        execute_pipeline_specification(
+            spec, sink, select=[], exclude=["*"], quiet=True
         ).unwrap()
-        with (
-            tempfile.NamedTemporaryFile(suffix=".json") as tmp,
-            rv.pipeline.managed_state(extract_state=True) as state,
-        ):
-            pre_hash = generate_state_version_hash(state, exclude_attrs=["_local"])
-            tmp.write(
-                json.dumps(json.loads(json_encode_state(state)), indent=2).encode()
-            )
-            tmp.flush()
-            logger.info(f"Editing state in {destination}.")
-            subprocess.run([os.environ.get("EDITOR", "vi"), tmp.name], check=True)
-            with open(tmp.name, "r") as f:
-                update_dict_nested(t.cast(dict, state), json_decode_state(f.read()))
-            post_hash = generate_state_version_hash(state, exclude_attrs=["_local"])
-        if pre_hash != post_hash:
-            execute_pipeline_specification(
-                spec, sink, select=[], exclude=["*"], quiet=True
-            ).unwrap()
-            logger.info("State updated.")
-        else:
-            logger.info("State not updated.")
-    finally:
-        context.active_workspace.reset(token)
+        logger.info("State updated.")
+    else:
+        logger.info("State not updated.")
 
 
 app.add_typer(
@@ -740,24 +689,17 @@ def model_evaluate(
         model: The model to evaluate. Can be prefixed with the gateway.
         limit: The number of rows to limit the evaluation to.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        if ":" in model:
-            gateway, model = model.split(":", 1)
-        else:
-            gateway = None
-        sqlmesh_ctx = workspace.get_transform_context(gateway)
-        console.print(
-            sqlmesh_ctx.evaluate(
-                model,
-                limit=limit,
-                start=start,
-                end=end,
-                execution_time="now",
+    if ":" in model:
+        gateway, model = model.split(":", 1)
+    else:
+        gateway = None
+    t.cast(WorkspaceMonad, ctx.obj).map(
+        lambda w: console.print(
+            w.get_transform_context(gateway).evaluate(
+                model, limit=limit, start=start, end=end, execution_time="now"
             )
         )
-    finally:
-        context.active_workspace.reset(token)
+    )
 
 
 @model.command("render")
@@ -791,20 +733,19 @@ def model_render(
         expand: The referenced models to expand.
         dialect: The SQL dialect to use for rendering.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        if ":" in model:
-            gateway, model = model.split(":", 1)
-        else:
-            gateway = None
-        sqlmesh_ctx = workspace.get_transform_context(gateway)
-        console.print(
+    if ":" in model:
+        gateway, model = model.split(":", 1)
+    else:
+        gateway = None
+    t.cast(WorkspaceMonad, ctx.obj).map(
+        lambda w: w.get_transform_context(gateway),
+    ).map(
+        lambda sqlmesh_ctx: console.print(
             sqlmesh_ctx.render(
                 model, start=start, end=end, execution_time="now", expand=expand
             ).sql(dialect or sqlmesh_ctx.default_dialect, pretty=True)
         )
-    finally:
-        context.active_workspace.reset(token)
+    )
 
 
 @model.command("name")
@@ -824,16 +765,15 @@ def model_name(
         ctx: The CLI context.
         model: The model to evaluate. Can be prefixed with the gateway.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        if ":" in model:
-            gateway, model = model.split(":", 1)
-        else:
-            gateway = None
-        sqlmesh_ctx = workspace.get_transform_context(gateway)
-        console.print(sqlmesh_ctx.table_name(model, False))
-    finally:
-        context.active_workspace.reset(token)
+    if ":" in model:
+        gateway, model = model.split(":", 1)
+    else:
+        gateway = None
+    t.cast(WorkspaceMonad, ctx.obj).map(
+        lambda w: console.print(
+            w.get_transform_context(gateway).table_name(model, False)
+        )
+    )
 
 
 @model.command("diff")
@@ -859,19 +799,18 @@ def model_diff(
         model: The model to evaluate. Can be prefixed with the gateway.
         source_target: The source and target environments separated by a colon.
     """
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        if ":" in model:
-            gateway, model = model.split(":", 1)
-        else:
-            gateway = None
-        sqlmesh_ctx = workspace.get_transform_context(gateway)
-        source, target = source_target.split(":", 1)
-        sqlmesh_ctx.table_diff(
-            source, target, model_or_snapshot=model, show_sample=show_sample
+    if ":" in model:
+        gateway, model = model.split(":", 1)
+    else:
+        gateway = None
+    source, target = source_target.split(":", 1)
+    t.cast(WorkspaceMonad, ctx.obj).map(
+        lambda w: console.print(
+            w.get_transform_context(gateway).table_diff(
+                source, target, model_or_snapshot=model, show_sample=show_sample
+            )
         )
-    finally:
-        context.active_workspace.reset(token)
+    )
 
 
 @model.command("prototype")
@@ -896,33 +835,27 @@ def model_prototype(
         help="The number of rows to limit the evaluation to.",
     ),
 ):
-    workspace, token = _unwrap_workspace(*ctx.obj)
-    try:
-        sqlmesh_ctx = workspace.get_transform_context()
-        for dep in dependencies:
-            df = sqlmesh_ctx.evaluate(
-                dep,
-                start=start,
-                end=end,
-                execution_time="now",
-                limit=limit,
-            )
-            df.to_parquet(f"{dep}.parquet", index=False)
-    finally:
-        context.active_workspace.reset(token)
+    """:bar_chart: Prototype a model and save the results to disk.
 
-
-def _unwrap_workspace(workspace_name: str, path: Path) -> t.Tuple["Workspace", "Token"]:
-    """Unwrap the workspace from the context."""
-    workspace = (
-        load_project(path).bind(lambda p: p.get_workspace(workspace_name)).unwrap()
-    )
-    workspace.inject_configuration().__enter__()
-    token = context.active_workspace.set(workspace)
-    maybe_log_level = dlt.config.get("runtime.log_level", str)
-    if maybe_log_level:
-        logger.set_level(maybe_log_level.upper())
-    return workspace, token
+    \f
+    Args:
+        ctx: The CLI context.
+        dependencies: The dependencies to include in the prototype.
+        start: The start time to evaluate the model from. Defaults to 1 month ago.
+        end: The end time to evaluate the model to. Defaults to now.
+        limit: The number of rows to limit the evaluation to.
+    """
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    sqlmesh_ctx = W.get_transform_context()
+    for dep in dependencies:
+        df = sqlmesh_ctx.evaluate(
+            dep,
+            start=start,
+            end=end,
+            execution_time="now",
+            limit=limit,
+        )
+        df.to_parquet(f"{dep}.parquet", index=False)
 
 
 if __name__ == "__main__":

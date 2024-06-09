@@ -11,10 +11,11 @@ import runpy
 import sys
 import time
 import typing as t
-from contextlib import suppress
+from contextlib import nullcontext, suppress
 from pathlib import Path
 from threading import Lock
 
+import dlt
 import pydantic
 from croniter import croniter
 
@@ -395,11 +396,19 @@ class PythonScript(WorkspaceComponent, InstallableRequirements):
                 str(self.workspace_path.parent),
             ]
             parts = map(
-                _getmodulename, self.path.relative_to(self.workspace_path).parts
+                _getmodulename,
+                self.path.relative_to(self.workspace_path).parts,
             )
             run_name = ".".join(parts)
+            if self.has_workspace_association:
+                workspace_context = self.workspace.inject_configuration()
+            else:
+                workspace_context = nullcontext()
             try:
-                with self._lock:
+                with self._lock, workspace_context:
+                    maybe_log_level = dlt.config.get("runtime.log_level", str)
+                    if maybe_log_level:
+                        logger.set_level(maybe_log_level.upper())
                     if self.auto_install:
                         self.install_requirements()
                     return runpy.run_path(
@@ -455,8 +464,17 @@ class PythonEntrypoint(BaseComponent, InstallableRequirements):
     def main(self) -> t.Callable[..., t.Any]:
         """Get the entrypoint function."""
         module, func = self.entrypoint.split(":")
-        mod = importlib.import_module(module)
-        return operator.attrgetter(func)(mod)
+
+        def _run(*args: t.Any, **kwargs: t.Any) -> t.Any:
+            if self.has_workspace_association:
+                workspace_context = self.workspace.inject_configuration()
+            else:
+                workspace_context = nullcontext()
+            with workspace_context:
+                mod = importlib.import_module(module)
+                return operator.attrgetter(func)(mod)(*args, **kwargs)
+
+        return _run
 
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Any:
         """Run the entrypoint."""

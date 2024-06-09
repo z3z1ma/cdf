@@ -35,7 +35,7 @@ from dlt.pipeline.pipeline import Pipeline
 
 import cdf.core.context as context
 import cdf.core.logger as logger
-from cdf.core.specification import PipelineSpecification
+from cdf.core.specification import PipelineSpecification, SinkSpecification
 from cdf.types import M, P
 
 T = t.TypeVar("T")
@@ -327,9 +327,12 @@ class PipelineResult(t.NamedTuple):
 
 
 def execute_pipeline_specification(
-    spec: PipelineSpecification,
-    destination: TDestinationReferenceArg,
-    staging: t.Optional[TDestinationReferenceArg] = None,
+    pipe_spec: PipelineSpecification,
+    sink_spec: t.Union[
+        TDestinationReferenceArg,
+        t.Tuple[TDestinationReferenceArg, t.Optional[TDestinationReferenceArg]],
+        SinkSpecification,
+    ],
     select: t.Optional[t.List[str]] = None,
     exclude: t.Optional[t.List[str]] = None,
     force_replace: bool = False,
@@ -341,9 +344,8 @@ def execute_pipeline_specification(
     """Executes a pipeline specification.
 
     Args:
-        spec: The pipeline specification.
-        destination: The destination where the pipeline will write data.
-        staging: The staging for intermediate storage before loading to the primary destination.
+        pipe_spec: The pipeline specification.
+        sink_spec: The destination where the pipeline will write data.
         select: A list of glob patterns to select resources.
         exclude: A list of glob patterns to exclude resources.
         force_replace: Whether to force replace disposition.
@@ -355,12 +357,17 @@ def execute_pipeline_specification(
     Returns:
         M.Result[PipelineResult, Exception]: The result of executing the pipeline specification.
     """
+    if isinstance(sink_spec, SinkSpecification):
+        destination, staging = sink_spec.get_ingest_config()
+    elif isinstance(sink_spec, tuple):
+        destination, staging = sink_spec
+    else:
+        destination, staging = sink_spec, None
 
     pipeline_options.update(
         {"destination": destination, "staging": staging if enable_stage else None}
     )
-
-    pipe_reference = spec.create_pipeline(
+    pipe_reference = pipe_spec.create_pipeline(
         RuntimePipeline, **pipeline_options
     ).configure(dry_run, force_replace, select, exclude)
     token = context.active_pipeline.set(pipe_reference)
@@ -369,7 +376,7 @@ def execute_pipeline_specification(
     maybe_redirect = redirect_stdout(null) if quiet else nullcontext()
     try:
         with maybe_redirect:
-            result = PipelineResult(exports=spec(), pipeline=pipe_reference)
+            result = PipelineResult(exports=pipe_spec(), pipeline=pipe_reference)
         if dry_run:
             return M.ok(result)
         with (
