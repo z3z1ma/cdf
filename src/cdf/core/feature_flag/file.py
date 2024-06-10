@@ -53,6 +53,7 @@ class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter):
 
     def _commit(self) -> None:
         """Commit the feature flags to the filesystem."""
+        logger.info("Committing feature flags to %s", self.filename)
         with (
             self._LOCK[self.filename],
             self.filesystem.open(self.filename, "w") as file,

@@ -99,7 +99,7 @@ def _resolve_local_uri(uri: PathLike, root: t.Optional[PathLike] = None) -> Path
     if root and proto == root_proto:
         uri_str = uri_str.replace(f"{root_proto}://", "")
         if not Path(uri_str).is_absolute():
-            uri = Path(root).resolve().joinpath(uri).as_uri()
+            uri = Path(root, uri_str).resolve().as_uri()
     return uri
 
 
