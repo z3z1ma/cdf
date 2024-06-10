@@ -2,7 +2,7 @@ import json
 import sys
 import traceback
 import typing as t
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from textwrap import dedent, indent
 
@@ -250,7 +250,7 @@ def send_extract_start_slack_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Starting Extraction     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             *compacted_sections_blocks(
@@ -293,7 +293,7 @@ def send_extract_failure_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Extraction Failed     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             text_section_block(
@@ -327,7 +327,7 @@ def send_extract_success_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Extraction Succeeded     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             text_section_block(
@@ -362,7 +362,7 @@ def send_normalize_start_slack_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Starting Normalization     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             text_section_block(
@@ -399,7 +399,7 @@ def send_normalize_failure_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Normalization Failed     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             text_section_block(
@@ -432,7 +432,7 @@ def send_normalization_success_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Normalization Succeeded     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             text_section_block(
@@ -468,7 +468,7 @@ def send_load_start_slack_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Starting Load     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             *compacted_sections_blocks(
@@ -499,7 +499,7 @@ def send_load_failure_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Normalization Failed     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             text_section_block(
@@ -537,7 +537,7 @@ def send_load_success_message(
             context_block(
                 "*Source:* {source}     |".format(source=source),
                 "*Status:* Loading Succeeded     |",
-                "*{date}*".format(date=datetime.utcnow().strftime("%x %X")),
+                "*{date}*".format(date=datetime.now(timezone.utc).strftime("%x %X")),
             ),
             divider_block(),
             *compacted_sections_blocks(
