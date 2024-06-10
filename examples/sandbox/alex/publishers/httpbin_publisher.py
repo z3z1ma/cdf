@@ -5,7 +5,7 @@ import requests
 import cdf
 
 w = cdf.get_workspace(__file__).unwrap()
-context = w.to_transform_context("local")
+context = w.get_transform_context("local")
 
 df = context.fetchdf("SELECT * FROM mart.zips")
 

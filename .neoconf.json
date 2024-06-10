@@ -1,0 +1,11 @@
+{
+  "lspconfig": {
+    "pyright": {
+      "python": {
+        "analysis": {
+          "diagnosticMode": "workspace"
+        }
+      }
+    }
+  }
+}
