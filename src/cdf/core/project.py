@@ -62,7 +62,7 @@ from cdf.core.feature_flag import (
     get_feature_flag_adapter_cls,
 )
 from cdf.core.filesystem import FilesystemAdapter
-from cdf.core.state import DEFAULT_STATE_CONN, StateConfig
+from cdf.core.state import StateStore
 from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
@@ -603,7 +603,7 @@ class Project(_BaseSettings):
         pydantic.Field(discriminator="provider", alias="feature_flags"),
     ] = FilesystemFeatureFlagConfig()
     """The project feature flags provider settings"""
-    state: StateConfig = DEFAULT_STATE_CONN
+    state: StateStore = StateStore()
     """The project state connection settings"""
 
     _wrapped_config: t.Any = {}

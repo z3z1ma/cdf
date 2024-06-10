@@ -8,8 +8,9 @@ default:
     provider: filesystem
     filename: flags.json
   state:
-    type: duckdb
-    database: state.db
+    connection:
+      type: duckdb
+      database: cdf.duckdb
   something: ok
 prod:
   filesystem:

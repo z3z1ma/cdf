@@ -109,7 +109,7 @@ def test_init_state(project: Project):
     """Test that the state adapter is initialized."""
     from sqlglot import exp
 
-    adapter = project.state.create_engine_adapter()
+    adapter = project.state.adapter
     assert adapter is not None
     adapter.create_schema("test")
     adapter.create_table("test1", {"name": exp.DataType.build("text")})
