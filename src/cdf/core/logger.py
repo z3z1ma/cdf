@@ -139,7 +139,7 @@ def __getattr__(name: str) -> "LogMethod":
     return wrapper
 
 
-def monkeypatch_dlt() -> None:
+def _monkeypatch_dlt() -> None:
     """Monkeypatch the dlt logging module."""
     from dlt.common import logger
 
@@ -148,7 +148,8 @@ def monkeypatch_dlt() -> None:
     setattr(logger, "LOGGER", patched)
 
 
-def monkeypatch_sqlglot() -> None:
+def _monkeypatch_sqlglot() -> None:
+    """Monkeypatch the sqlglot logging module."""
     logger = logging.getLogger("sqlglot")
     patched = create("sqlglot")
     logger.handlers = patched.handlers
@@ -160,3 +161,9 @@ def monkeypatch_sqlglot() -> None:
         category=FutureWarning,
         module="sqlglot",
     )
+
+
+def apply_patches() -> None:
+    """Apply logger patches."""
+    _monkeypatch_dlt()
+    _monkeypatch_sqlglot()

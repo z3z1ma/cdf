@@ -109,7 +109,7 @@ class AbstractFeatureFlagAdapter(abc.ABC):
         """Delete many feature flags."""
         self.save_many({feature_name: False for feature_name in feature_names})
 
-    def apply_source(self, source: "DltSource") -> "DltSource":
+    def apply_source(self, source: "DltSource", *namespace: str) -> "DltSource":
         """Apply the feature flags to a dlt source.
 
         Args:
@@ -121,7 +121,8 @@ class AbstractFeatureFlagAdapter(abc.ABC):
         new = {}
         source_name = source.name
         for resource_name, resource in source.selected_resources.items():
-            resp = self.get(k := f"{source_name}.{resource_name}")
+            k = ".".join(filter(lambda s: s, [*namespace, source_name, resource_name]))
+            resp = self.get(k)
             resource.selected = bool(resp)
             if resp is FlagAdapterResponse.NOT_FOUND:
                 new[k] = False

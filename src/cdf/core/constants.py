@@ -8,3 +8,6 @@ DEFAULT_ENVIRONMENT = "dev"
 
 CDF_MAIN = "__cdf_main__"
 """A sentinel value that will match the __name__ attribute of a module being executed by CDF."""
+
+CDF_LOG_LEVEL = "RUNTIME__LOG_LEVEL"
+"""Environment variable to set the log level of the project."""

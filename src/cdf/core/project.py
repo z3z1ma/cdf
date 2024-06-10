@@ -140,7 +140,7 @@ class FilesystemConfig(_BaseSettings):
         return dict(self.options_)
 
     @property
-    def parent(self) -> "Project":
+    def project(self) -> "Project":
         """Get the project this configuration belongs to"""
         if self._project is None:
             raise ValueError("Filesystem configuration not associated with a project")
@@ -153,8 +153,8 @@ class FilesystemConfig(_BaseSettings):
 
     def get_adapter(self) -> M.Result[FilesystemAdapter, Exception]:
         """Get a filesystem adapter"""
-        if self._project:
-            root = self._project.path
+        if self.has_project_association:
+            root = self.project.path
         else:
             root = None
         try:
@@ -183,7 +183,7 @@ class BaseFeatureFlagConfig(_BaseSettings):
     """The project this configuration belongs to"""
 
     @property
-    def parent(self) -> "Project":
+    def project(self) -> "Project":
         """Get the project this configuration belongs to"""
         if self._project is None:
             raise ValueError("Feature flag configuration not associated with a project")
@@ -202,7 +202,7 @@ class BaseFeatureFlagConfig(_BaseSettings):
         provider = str(options.pop("provider").value)
         options.update(kwargs)
         return get_feature_flag_adapter_cls(provider).map(
-            lambda cls: cls(**options, filesystem=self.parent.fs_adapter.wrapped)
+            lambda cls: cls(**options, filesystem=self.project.fs_adapter.wrapped)
         )
 
 
@@ -249,7 +249,9 @@ class HarnessFeatureFlagConfig(BaseFeatureFlagConfig):
     """The harness account ID. We will attempt to read it from the environment if not provided."""
     organization: str = pydantic.Field(os.getenv("HARNESS_ORG_ID", "default"))
     """The harness organization ID. We will attempt to read it from the environment if not provided."""
-    project: str = pydantic.Field(os.getenv("HARNESS_PROJECT_ID", ...))
+    project_: str = pydantic.Field(
+        os.getenv("HARNESS_PROJECT_ID", ...), alias="project"
+    )
     """The harness project ID. We will attempt to read it from the environment if not provided."""
 
 
@@ -539,12 +541,12 @@ class Workspace(_BaseSettings):
             yield
 
     @property
-    def filesystem(self) -> FilesystemAdapter:
+    def fs_adapter(self) -> FilesystemAdapter:
         """Get a handle to the project filesystem adapter"""
         return self.project.fs_adapter
 
     @property
-    def feature_flags(self) -> AbstractFeatureFlagAdapter:
+    def ff_adapter(self) -> AbstractFeatureFlagAdapter:
         """Get a handle to the project feature flag adapter"""
         return self.project.ff_adapter
 

@@ -135,7 +135,11 @@ class RuntimePipeline(Pipeline):
             """Applies feature flags to the source. User-defined selection takes precedence."""
             if select:
                 return source
-            return S.workspace.feature_flags.apply_source(source)
+            return S.workspace.ff_adapter.apply_source(
+                source,
+                S.workspace.project.name,
+                S.workspace.name,
+            )
 
         self._source_hooks = [
             inject_metrics_and_filters,
@@ -273,7 +277,7 @@ class RuntimePipeline(Pipeline):
                 )
                 logger.info("Extract package staged at %s", path)
                 target = f"extracted/{package.load_id}.tar.gz"
-                self.specification.workspace.filesystem.put(path, target)
+                self.specification.workspace.fs_adapter.put(path, target)
                 logger.info("Package uploaded to %s using project fs", target)
                 Path(path).unlink()
                 logger.info("Cleaned up staged package")

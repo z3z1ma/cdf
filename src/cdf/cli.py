@@ -73,20 +73,19 @@ def main(
         "--log-level",
         "-l",
         help="The log level to use.",
-        envvar="LOG_LEVEL",
+        envvar="LOG_LEVEL",  # A common environment variable for log level
     ),
 ) -> None:
     """CDF (continuous data framework) is a framework for end to end data processing."""
-    ctx.obj = load_project(path).bind(lambda p: p.get_workspace(workspace))
-    if debug:
-        context.debug_mode.set(True)
     if environment:
         os.environ[c.CDF_ENVIRONMENT] = environment
     if log_level:
-        os.environ["RUNTIME__LOG_LEVEL"] = log_level.upper()
+        os.environ[c.CDF_LOG_LEVEL] = log_level.upper()
+    if debug:
+        context.debug_mode.set(True)
     logger.configure(log_level.upper() if log_level else "INFO")
-    logger.monkeypatch_dlt()
-    logger.monkeypatch_sqlglot()
+    logger.apply_patches()
+    ctx.obj = load_project(path).bind(lambda p: p.get_workspace(workspace))
 
 
 @app.command(rich_help_panel="Project Management")

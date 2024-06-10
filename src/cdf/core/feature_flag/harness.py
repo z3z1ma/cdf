@@ -16,7 +16,6 @@ from featureflags.evaluations.feature import FeatureConfigKind
 from featureflags.interface import Cache
 from featureflags.util import log as _ff_logger
 
-import cdf.core.context as context
 import cdf.core.logger as logger
 from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter, FlagAdapterResponse
 
@@ -178,17 +177,15 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         """Drop many feature flags."""
         list(self.pool.map(self.delete, feature_names))
 
-    def apply_source(self, source: DltSource) -> DltSource:
+    def apply_source(self, source: DltSource, *namespace: str) -> DltSource:
         """Apply the feature flags to a dlt source."""
-
-        # TODO: can we get rid of this context variable?
-        # this is mainly here to support Harness data team's naming convention
-        workspace = context.active_workspace.get()
-        namespace = f"pipeline__{workspace.name}__{source.name}"
+        # NOTE: we use just the last section due to legacy design decisions
+        # We will remove this when the Harness team cleans up the feature flag namespace
+        ns = f"pipeline__{namespace[-1]}__{source.name}"
 
         # A closure to produce a resource id
         def _get_resource_id(resource: str) -> str:
-            return f"{namespace}__{resource}"
+            return f"{ns}__{resource}"
 
         resource_lookup = {
             _get_resource_id(key): resource
@@ -200,7 +197,7 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         )
 
         current_flags = set(
-            filter(lambda f: f.startswith(namespace), self.get_all_feature_names())
+            filter(lambda f: f.startswith(ns), self.get_all_feature_names())
         )
 
         removed = current_flags.difference(every_resource)

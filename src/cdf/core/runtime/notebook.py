@@ -61,7 +61,7 @@ def execute_notebook_specification(
         logger.info(
             f"Successfully ran notebook {spec.path} with params {merged_params} rendered into {output}"
         )
-        storage = spec.workspace.filesystem
+        storage = spec.workspace.fs_adapter
         if storage and spec.storage_path:
             storage_path = spec.storage_path.format(
                 name=spec.name,
