@@ -26,6 +26,12 @@ class FlagAdapterResponse(Enum):
 
     to_bool = __bool__
 
+    def __eq__(self, value: object, /) -> bool:
+        """Compare the flag to a boolean."""
+        if isinstance(value, bool):
+            return self is FlagAdapterResponse.ENABLED and value
+        return super().__eq__(value)
+
     @classmethod
     def from_bool(cls, flag: bool) -> "FlagAdapterResponse":
         """Convert a boolean to a flag response."""

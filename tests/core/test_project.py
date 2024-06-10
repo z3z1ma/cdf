@@ -95,6 +95,8 @@ def test_init_ff(project: Project):
     """Test that the feature flag adapter is initialized."""
     assert project.ff_adapter is not None
     assert project.ff.provider == "filesystem"
+    # The example project _storage is not committed to git currently
+    # assert project.ff_adapter["cdf-example.alex.us_cities.us_cities"].to_bool() is True
 
 
 def test_init_fs(project: Project):
