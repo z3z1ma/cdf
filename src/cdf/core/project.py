@@ -124,6 +124,7 @@ class FilesystemConfig(_BaseSettings):
     """
 
     _project: t.Optional["Project"] = None
+    """The project this configuration belongs to"""
 
     @pydantic.field_validator("options_", mode="before")
     @classmethod
@@ -137,6 +138,18 @@ class FilesystemConfig(_BaseSettings):
     def options(self) -> t.Dict[str, t.Any]:
         """Get the filesystem options as a dictionary"""
         return dict(self.options_)
+
+    @property
+    def parent(self) -> "Project":
+        """Get the project this configuration belongs to"""
+        if self._project is None:
+            raise ValueError("Filesystem configuration not associated with a project")
+        return self._project
+
+    @property
+    def has_project_association(self) -> bool:
+        """Check if the configuration is associated with a project"""
+        return self._project is not None
 
     def get_adapter(self) -> M.Result[FilesystemAdapter, Exception]:
         """Get a filesystem adapter"""
@@ -170,7 +183,7 @@ class BaseFeatureFlagConfig(_BaseSettings):
     """The project this configuration belongs to"""
 
     @property
-    def project(self) -> "Project":
+    def parent(self) -> "Project":
         """Get the project this configuration belongs to"""
         if self._project is None:
             raise ValueError("Feature flag configuration not associated with a project")
@@ -189,7 +202,7 @@ class BaseFeatureFlagConfig(_BaseSettings):
         provider = str(options.pop("provider").value)
         options.update(kwargs)
         return get_feature_flag_adapter_cls(provider).map(
-            lambda cls: cls(**options, filesystem=self.project.fs_adapter.wrapped)
+            lambda cls: cls(**options, filesystem=self.parent.fs_adapter.wrapped)
         )
 
 
