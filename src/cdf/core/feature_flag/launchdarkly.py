@@ -11,7 +11,7 @@ class LaunchDarklyFeatureFlagAdapter(AbstractFeatureFlagAdapter):
     """A feature flag adapter that uses LaunchDarkly."""
 
     @with_config(sections=("feature_flags",))
-    def __init__(self, sdk_key: str) -> None:
+    def __init__(self, sdk_key: str, **kwargs: t.Any) -> None:
         """Initialize the LaunchDarkly feature flags.
 
         Args:

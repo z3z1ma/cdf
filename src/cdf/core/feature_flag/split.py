@@ -8,7 +8,7 @@ from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter
 class SplitFeatureFlagAdapter(AbstractFeatureFlagAdapter):
     """A feature flag adapter that uses Split."""
 
-    def __init__(self, sdk_key: str) -> None:
+    def __init__(self, sdk_key: str, **kwargs: t.Any) -> None:
         """Initialize the Split feature flags.
 
         Args:

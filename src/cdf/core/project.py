@@ -169,6 +169,18 @@ class BaseFeatureFlagConfig(_BaseSettings):
     _project: t.Optional["Project"] = None
     """The project this configuration belongs to"""
 
+    @property
+    def project(self) -> "Project":
+        """Get the project this configuration belongs to"""
+        if self._project is None:
+            raise ValueError("Feature flag configuration not associated with a project")
+        return self._project
+
+    @property
+    def has_project_association(self) -> bool:
+        """Check if the configuration is associated with a project"""
+        return self._project is not None
+
     def get_adapter(
         self, **kwargs: t.Any
     ) -> M.Result[AbstractFeatureFlagAdapter, Exception]:
@@ -176,8 +188,9 @@ class BaseFeatureFlagConfig(_BaseSettings):
         options = self.model_dump()
         provider = str(options.pop("provider").value)
         options.update(kwargs)
-        # TODO: maybe we push down the Project here
-        return get_feature_flag_adapter_cls(provider).map(lambda cls: cls(**options))
+        return get_feature_flag_adapter_cls(provider).map(
+            lambda cls: cls(**options, filesystem=self.project.fs_adapter.wrapped)
+        )
 
 
 class FilesystemFeatureFlagConfig(BaseFeatureFlagConfig):
@@ -267,6 +280,7 @@ FeatureFlagConfig = t.Union[
     SplitFeatureFlagSettings,
     NoopFeatureFlagSettings,
 ]
+"""A union of all feature flag provider configurations"""
 
 
 class Workspace(_BaseSettings):
@@ -680,10 +694,12 @@ class Project(_BaseSettings):
         return self
 
     @pydantic.model_validator(mode="after")
-    def _associate_workspaces_with_project(self):
-        """Associate the workspaces with the project"""
+    def _associate_project_with_children(self):
+        """Bind the project to the workspaces, filesystem, and feature flags"""
         for workspace in self.workspaces:
             workspace._project = self
+        self.ff._project = self
+        self.fs._project = self
         return self
 
     @pydantic.field_serializer("workspaces")
@@ -818,7 +834,7 @@ class Project(_BaseSettings):
     @cached_property
     def ff_adapter(self) -> AbstractFeatureFlagAdapter:
         """Get a handle to the project's configured feature flag adapter"""
-        return self.ff.get_adapter(filesystem=self.fs_adapter.wrapped).unwrap()
+        return self.ff.get_adapter().unwrap()
 
     @cached_property
     def duckdb(self) -> duckdb.DuckDBPyConnection:

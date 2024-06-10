@@ -8,6 +8,10 @@ from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter
 class NoopFeatureFlagAdapter(AbstractFeatureFlagAdapter):
     """A feature flag adapter that does nothing."""
 
+    def __init__(self, **kwargs: t.Any) -> None:
+        """Initialize the adapter."""
+        pass
+
     def get(self, feature_name: str) -> bool:
         return True
 

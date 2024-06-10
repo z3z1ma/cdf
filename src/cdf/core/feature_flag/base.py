@@ -35,6 +35,10 @@ class FlagAdapterResponse(Enum):
 class AbstractFeatureFlagAdapter(abc.ABC):
     """Abstract feature flag adapter."""
 
+    def __init__(self, **kwargs: t.Any) -> None:
+        """Initialize the adapter."""
+        pass
+
     @abc.abstractmethod
     def get(self, feature_name: str) -> FlagAdapterResponse:
         """Get the feature flag."""

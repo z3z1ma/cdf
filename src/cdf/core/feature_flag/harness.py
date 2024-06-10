@@ -52,6 +52,7 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         account: str = dlt.secrets.value,
         organization: str = dlt.secrets.value,
         project: str = dlt.secrets.value,
+        **kwargs: t.Any,
     ) -> None:
         """Initialize the adapter."""
         self.sdk_key = sdk_key

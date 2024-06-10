@@ -23,6 +23,7 @@ class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         self,
         filesystem: fsspec.AbstractFileSystem,
         filename: str = dlt.config.value,
+        **kwargs: t.Any,
     ) -> None:
         """Initialize the filesystem feature flags.
 
