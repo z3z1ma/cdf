@@ -1,7 +1,6 @@
 """The state module is responible for providing an adapter through which we can persist data"""
 
 import typing as t
-from functools import cached_property
 
 import pydantic
 from sqlmesh.core.config.connection import (
@@ -20,8 +19,19 @@ class StateStore(pydantic.BaseModel):
         MySQLConnectionConfig,
         PostgresConnectionConfig,
     ] = DuckDBConnectionConfig(database=".cdf_state.db")
+    """The connection configuration to the state store"""
 
-    @cached_property
+    _adapter: t.Optional[EngineAdapter] = None
+    """Lazy loaded adapter to the state store"""
+
+    @property
     def adapter(self) -> EngineAdapter:
-        """Check if the state store is available"""
-        return self.connection.create_engine_adapter()
+        """The adapter to the state store"""
+        if self._adapter is None:
+            self._adapter = self.connection.create_engine_adapter()
+        return self._adapter
+
+    def __del__(self) -> None:
+        """Close the connection to the state store"""
+        if self._adapter is not None:
+            self.adapter.close()

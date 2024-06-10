@@ -215,5 +215,12 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
 
         return source
 
+    def __del__(self) -> None:
+        """Close the client."""
+        if self._client is not None:
+            self._client.close()
+        if self._pool is not None:
+            self._pool.shutdown()
+
 
 __all__ = ["HarnessFeatureFlagAdapter"]
