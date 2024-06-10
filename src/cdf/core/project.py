@@ -890,6 +890,28 @@ class Project(_BaseSettings):
         project._wrapped_config = config
         return project
 
+    def activate(self) -> t.Callable[[], None]:
+        """Activate the project and return a deactivation function"""
+        from cdf.core.context import active_project
+
+        token = active_project.set(self)
+        ctx = self.inject_configuration()
+        ctx.__enter__()
+
+        def _deactivate() -> None:
+            """Deactivate the project"""
+            active_project.reset(token)
+            ctx.__exit__(None, None, None)
+
+        return _deactivate
+
+    @contextmanager
+    def activated(self) -> t.Iterator[None]:
+        """Activate the project for the duration of the context"""
+        deactivate = self.activate()
+        yield
+        deactivate()
+
 
 def _load_config(
     path: Path, extensions: t.Optional[t.List[str]] = None
