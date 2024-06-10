@@ -546,6 +546,11 @@ class Workspace(_BaseSettings):
         """Get a handle to the project feature flag adapter"""
         return self.project.ff_adapter
 
+    @property
+    def state(self) -> StateStore:
+        """Get a handle to the project state store"""
+        return self.project.state
+
     def get_transform_gateways(self) -> t.Iterator[t.Tuple[str, "GatewayConfig"]]:
         """Get the SQLMesh gateway configurations"""
         for sink in self.sinks:

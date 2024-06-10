@@ -9,10 +9,10 @@ from contextvars import ContextVar
 import dlt
 
 if t.TYPE_CHECKING:
-    from cdf.core.project import Workspace
+    from cdf.core.project import Project
 
 
-active_workspace: ContextVar["Workspace"] = ContextVar("active_workspace")
+active_project: ContextVar["Project"] = ContextVar("active_project")
 """The active workspace context variable.
 
 The allows the active workspace to be passed to user-defined scripts. The workspace
@@ -40,4 +40,4 @@ can be introspected by user-defined scripts to optimize for partial extraction.
 """
 
 
-__all__ = ["active_workspace", "active_pipeline", "debug_mode", "extract_limit"]
+__all__ = ["active_project", "active_pipeline", "debug_mode", "extract_limit"]

@@ -17,6 +17,7 @@ from pathlib import Path
 import papermill
 
 import cdf.core.logger as logger
+from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import NotebookSpecification
 from cdf.types import M
 
@@ -24,6 +25,7 @@ if t.TYPE_CHECKING:
     from nbformat import NotebookNode
 
 
+@with_activate_project
 def execute_notebook_specification(
     spec: NotebookSpecification,
     **params: t.Any,

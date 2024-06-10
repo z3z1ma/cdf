@@ -35,6 +35,7 @@ from dlt.pipeline.pipeline import Pipeline
 
 import cdf.core.context as context
 import cdf.core.logger as logger
+from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import PipelineSpecification, SinkSpecification
 from cdf.types import M, P
 
@@ -330,6 +331,7 @@ class PipelineResult(t.NamedTuple):
     pipeline: RuntimePipeline
 
 
+@with_activate_project
 def execute_pipeline_specification(
     pipe_spec: PipelineSpecification,
     sink_spec: t.Union[

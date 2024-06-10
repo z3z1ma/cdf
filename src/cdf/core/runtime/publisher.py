@@ -13,10 +13,12 @@ import sqlmesh
 from sqlmesh.core.dialect import normalize_model_name
 
 import cdf.core.logger as logger
+from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import PublisherSpecification
 from cdf.types import M
 
 
+@with_activate_project
 def execute_publisher_specification(
     spec: PublisherSpecification,
     transform_ctx: sqlmesh.Context,

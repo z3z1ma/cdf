@@ -10,6 +10,7 @@ import typing as t
 from contextlib import nullcontext, redirect_stdout
 
 import cdf.core.logger as logger
+from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import ScriptSpecification
 from cdf.types import M
 
@@ -28,6 +29,7 @@ def execute_script_specification(
 ) -> M.Result[str, Exception]: ...
 
 
+@with_activate_project
 def execute_script_specification(
     spec: ScriptSpecification,
     capture_stdout: bool = False,
