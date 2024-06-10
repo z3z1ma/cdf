@@ -435,12 +435,12 @@ class Workspace(_BaseSettings):
         self,
     ) -> t.Iterator[spec.CoreSpecification]:
         """Iterate over the components"""
-        return iter(
-            self.pipelines
-            + self.sinks
-            + self.publishers
-            + self.scripts
-            + self.notebooks
+        return itertools.chain(
+            self.pipelines,
+            self.sinks,
+            self.publishers,
+            self.scripts,
+            self.notebooks,
         )
 
     def __contains__(self, key: str) -> bool:
@@ -449,12 +449,14 @@ class Workspace(_BaseSettings):
 
     def get_component_names(self) -> t.List[str]:
         """Get the component names"""
-        return (
-            [cmp.name for cmp in self.pipelines]
-            + [cmp.name for cmp in self.sinks]
-            + [cmp.name for cmp in self.publishers]
-            + [cmp.name for cmp in self.scripts]
-            + [cmp.name for cmp in self.notebooks]
+        return list(
+            itertools.chain(
+                (f"pipelines.{cmp.name}" for cmp in self.pipelines),
+                (f"sinks.{cmp.name}" for cmp in self.sinks),
+                (f"publishers.{cmp.name}" for cmp in self.publishers),
+                (f"scripts.{cmp.name}" for cmp in self.scripts),
+                (f"notebooks.{cmp.name}" for cmp in self.notebooks),
+            )
         )
 
     keys = get_component_names
@@ -462,13 +464,7 @@ class Workspace(_BaseSettings):
 
     def items(self) -> t.Iterator[t.Tuple[str, spec.CoreSpecification]]:
         """Iterate over the components"""
-        return itertools.chain(
-            zip(self.get_component_names(), self.pipelines),
-            zip(self.get_component_names(), self.sinks),
-            zip(self.get_component_names(), self.publishers),
-            zip(self.get_component_names(), self.scripts),
-            zip(self.get_component_names(), self.notebooks),
-        )
+        return ((cmp, self[cmp]) for cmp in self.get_component_names())
 
     def _get_spec(
         self, name: str, kind: str
