@@ -35,15 +35,21 @@ def find_nearest(path: PathLike = ".") -> Project:
     path = Path(path).resolve()
     if path.is_file():
         path = path.parent
+    errors = []
     tree = [path, *list(path.parents)]
     while tree:
         node = tree.pop(0)
         logger.debug(f"Searching for project in {node}")
-        project = load_project(node).unwrap_or(None)
-        if project is not None:
+        p = load_project(node)
+        if p.is_err():
+            errors.append(p.unwrap_err())
+        else:
+            project = p.unwrap()
             break
     if project is None:
-        raise FileNotFoundError("No project found.")
+        for error in errors:
+            logger.error(error)
+        raise FileNotFoundError("No project found.") from errors[0]
     return project
 
 

@@ -885,8 +885,8 @@ class Project(_BaseSettings):
             A Project object.
         """
         root_path = Path(root).resolve()
-        if not root_path.is_dir():
-            raise FileNotFoundError(f"Project not found: {root_path}")
+        if root_path.is_file():
+            root_path = root_path.parent
         config = _load_config(root_path)
         config["path"] = root_path
         project = cls.model_validate(config)
