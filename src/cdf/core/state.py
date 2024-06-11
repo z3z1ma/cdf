@@ -19,7 +19,7 @@ class StateStore(pydantic.BaseModel):
 
     model_config = {"frozen": True, "from_attributes": True}
 
-    schema: str = "cdf"
+    schema_: t.Annotated[str, pydantic.Field(alias="schema")] = "cdf"
     """The schema in which to store data"""
     protected: bool = True
     """Whether the state store is protected, i.e. should never be torn down
@@ -47,12 +47,12 @@ class StateStore(pydantic.BaseModel):
 
     def setup(self) -> None:
         """Setup the state store"""
-        self.adapter.create_schema(self.schema)
+        self.adapter.create_schema(self.schema_)
 
     def teardown(self) -> None:
         """Teardown the state store"""
         if not self.protected:
-            self.adapter.drop_schema(self.schema)
+            self.adapter.drop_schema(self.schema_)
 
     def _execute(self, sql: str) -> None:
         """Execute a SQL statement"""
