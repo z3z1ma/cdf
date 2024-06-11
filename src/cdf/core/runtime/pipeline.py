@@ -206,10 +206,10 @@ class RuntimePipeline(Pipeline):
                 schema_contract,
             )
 
-        for i, source in enumerate(sources):
+        for i in range(len(sources)):
             for hook in self._source_hooks:
-                sources[i] = hook(source)
-            self._tracked_sources.add(source)
+                sources[i] = hook(sources[i])
+            self._tracked_sources.add(sources[i])
 
         if self.dry_run:
             return self._get_step_info(
