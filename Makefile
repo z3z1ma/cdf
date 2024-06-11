@@ -1,4 +1,4 @@
-.PHONY update-docs
+.PHONY: update-docs
 
 update-docs:
 	@echo "Updating docs..."

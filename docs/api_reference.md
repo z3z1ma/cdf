@@ -1,7 +1,3 @@
-<a id="local"></a>
-
-# local
-
 <a id="__init__"></a>
 
 # \_\_init\_\_
@@ -38,7 +34,7 @@ Recursively searches for a project file in the parent directories.
 #### is\_main
 
 ```python
-def is_main(name: t.Optional[str] = None) -> bool
+def is_main(module_name: t.Optional[str] = None) -> bool
 ```
 
 Check if the current module is being run as the main program in cdf context.
@@ -47,7 +43,7 @@ Also injects a hook in debug mode to allow dropping into user code via pdb.
 
 **Arguments**:
 
-- `name` _str, optional_ - The name of the module to check. If None, the calling module is
+- `module_name` _str, optional_ - The name of the module to check. If None, the calling module is
   checked. The most idiomatic usage is to pass `__name__` to check the current module.
   
 
@@ -109,6 +105,25 @@ def transform_connection(type_: str, **kwargs) -> ConnectionConfig
 
 Create a connection configuration for transforms.
 
+<a id="__init__.run_script"></a>
+
+#### run\_script
+
+```python
+def run_script(module_name: str,
+               source: t.Union[t.Callable[..., dlt.sources.DltSource],
+                               dlt.sources.DltSource],
+               *,
+               run_options: t.Optional[t.Dict[str, t.Any]] = None,
+               **kwargs: t.Any) -> None
+```
+
+A shorthand syntax for a cdf script with a single source which should run as a pipeline.
+
+The first argument should almost always be `__name__`. This function conditionally executes
+the source if the module is the main program in cdf context. This occurs either when invoked
+through cdf <workspace> pipeline command or when the script is run directly by python.
+
 <a id="cli"></a>
 
 # cli
@@ -136,7 +151,14 @@ def main(
     environment: t.Optional[str] = typer.Option(None,
                                                 "--env",
                                                 "-e",
-                                                help="Environment to use.")
+                                                help="Environment to use."),
+    log_level: t.Optional[str] = typer.Option(
+        None,
+        "--log-level",
+        "-l",
+        help="The log level to use.",
+        envvar="LOG_LEVEL",  # A common environment variable for log level
+    )
 ) -> None
 ```
 
@@ -159,7 +181,7 @@ def init(ctx: typer.Context) -> None
 
 ```python
 @app.command(rich_help_panel="Project Management")
-def index(ctx: typer.Context) -> None
+def index(ctx: typer.Context, hydrate: bool = False) -> None
 ```
 
 :page_with_curl: Print an index of [b][blue]Pipelines[/blue], [red]Models[/red], [yellow]Publishers[/yellow][/b], and other components.
@@ -169,7 +191,7 @@ def index(ctx: typer.Context) -> None
 #### pipeline
 
 ```python
-@app.command(rich_help_panel="Data Management")
+@app.command(rich_help_panel="Core")
 def pipeline(
     ctx: typer.Context,
     pipeline_to_sink: t.Annotated[
@@ -214,7 +236,7 @@ def pipeline(
 ) -> t.Any
 ```
 
-:inbox_tray: Ingest data from a [b blue]pipeline[/b blue] into a data store where it can be [b red]Transformed[/b red].
+:inbox_tray: Ingest data from a [b blue]Pipeline[/b blue] into a data store where it can be [b red]Transformed[/b red].
 
 
 **Arguments**:
@@ -224,7 +246,7 @@ def pipeline(
 - `select` - The resources to ingest as a sequence of glob patterns.
 - `exclude` - The resources to exclude as a sequence of glob patterns.
 - `force_replace` - Whether to force replace the write disposition.
-- `no_stage` - Whether to disable staging the data in the sink.
+- `no_stage` - Allows selective disabling of intermediate staging even if configured in sink.
 
 <a id="cli.discover"></a>
 
@@ -247,7 +269,7 @@ def discover(
 ) -> None
 ```
 
-:mag: Evaluates a :zzz: Lazy [b blue]pipeline[/b blue] and enumerates the discovered resources.
+:mag: Dry run a [b blue]Pipeline[/b blue] and enumerates the discovered resources.
 
 
 **Arguments**:
@@ -294,7 +316,7 @@ This is useful for quickly inspecting data :detective: and verifying that it is 
 #### publish
 
 ```python
-@app.command(rich_help_panel="Data Management")
+@app.command(rich_help_panel="Core")
 def publish(
     ctx: typer.Context,
     sink_to_publisher: t.Annotated[
@@ -318,13 +340,13 @@ def publish(
 - `sink_to_publisher` - The sink and publisher separated by a colon.
 - `skip_verification` - Whether to skip the verification of the publisher dependencies.
 
-<a id="cli.execute_script"></a>
+<a id="cli.script"></a>
 
-#### execute\_script
+#### script
 
 ```python
-@app.command("execute-script", rich_help_panel="Utilities")
-def execute_script(
+@app.command(rich_help_panel="Core")
+def script(
     ctx: typer.Context,
     script: t.Annotated[str,
                         typer.Argument(help="The script to execute.")],
@@ -343,13 +365,13 @@ def execute_script(
 - `script` - The script to execute.
 - `quiet` - Whether to suppress the script stdout.
 
-<a id="cli.execute_notebook"></a>
+<a id="cli.notebook"></a>
 
-#### execute\_notebook
+#### notebook
 
 ```python
-@app.command("execute-notebook", rich_help_panel="Utilities")
-def execute_notebook(
+@app.command(rich_help_panel="Core")
+def notebook(
     ctx: typer.Context,
     notebook: t.Annotated[str,
                           typer.Argument(help="The notebook to execute.")],
@@ -379,7 +401,6 @@ def execute_notebook(
 
 ```python
 @app.command(
-    "jupyter-lab",
     rich_help_panel="Utilities",
     context_settings={
         "allow_extra_args": True,
@@ -389,7 +410,7 @@ def execute_notebook(
 def jupyter_lab(ctx: typer.Context) -> None
 ```
 
-:notebook: Start a Jupyter Lab server.
+:star2: Start a Jupyter Lab server in the context of a workspace.
 
 <a id="cli.spec"></a>
 
@@ -400,7 +421,7 @@ def jupyter_lab(ctx: typer.Context) -> None
 def spec(name: _SpecType, json_schema: bool = False) -> None
 ```
 
-:mag: Print the fields for a given spec type.
+:blue_book: Print the fields for a given spec type.
 
 
 **Arguments**:
@@ -408,9 +429,295 @@ def spec(name: _SpecType, json_schema: bool = False) -> None
 - `name` - The name of the spec to print.
 - `json_schema` - Whether to print the JSON schema for the spec.
 
+<a id="cli.schema_dump"></a>
+
+#### schema\_dump
+
+```python
+@schema.command("dump")
+def schema_dump(
+    ctx: typer.Context,
+    pipeline_to_sink: t.Annotated[
+        str,
+        typer.Argument(
+            help="The pipeline:sink combination from which to fetch the schema."
+        ),
+    ],
+    format: t.Annotated[_ExportFormat,
+                        typer.Option(help="The format to dump the schema in."
+                                     )] = _ExportFormat.json
+) -> None
+```
+
+:computer: Dump the schema of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination.
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `pipeline_to_sink` - The pipeline:sink combination from which to fetch the schema.
+- `format` - The format to dump the schema in.
+  
+
+**Raises**:
+
+- `typer.BadParameter` - If the pipeline or sink are not found.
+
+<a id="cli.schema_edit"></a>
+
+#### schema\_edit
+
+```python
+@schema.command("edit")
+def schema_edit(ctx: typer.Context, pipeline_to_sink: t.Annotated[
+    str,
+    typer.Argument(
+        help="The pipeline:sink combination from which to fetch the schema."),
+]) -> None
+```
+
+:pencil: Edit the schema of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination using the system editor.
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `pipeline_to_sink` - The pipeline:sink combination from which to fetch the schema.
+  
+
+**Raises**:
+
+- `typer.BadParameter` - If the pipeline or sink are not found.
+
+<a id="cli.state_dump"></a>
+
+#### state\_dump
+
+```python
+@state.command("dump")
+def state_dump(ctx: typer.Context, pipeline_to_sink: t.Annotated[
+    str,
+    typer.Argument(
+        help="The pipeline:sink combination from which to fetch the schema."),
+]) -> None
+```
+
+:computer: Dump the state of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination.
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `pipeline_to_sink` - The pipeline:sink combination from which to fetch the state.
+  
+
+**Raises**:
+
+- `typer.BadParameter` - If the pipeline or sink are not found.
+
+<a id="cli.state_edit"></a>
+
+#### state\_edit
+
+```python
+@state.command("edit")
+def state_edit(ctx: typer.Context, pipeline_to_sink: t.Annotated[
+    str,
+    typer.Argument(
+        help="The pipeline:sink combination from which to fetch the state."),
+]) -> None
+```
+
+:pencil: Edit the state of a [b blue]pipeline[/b blue]:[violet]sink[/violet] combination using the system editor.
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `pipeline_to_sink` - The pipeline:sink combination from which to fetch the state.
+  
+
+**Raises**:
+
+- `typer.BadParameter` - If the pipeline or sink are not found.
+
+<a id="cli.model_evaluate"></a>
+
+#### model\_evaluate
+
+```python
+@model.command("evaluate")
+def model_evaluate(
+    ctx: typer.Context,
+    model: t.Annotated[
+        str,
+        typer.Argument(
+            help="The model to evaluate. Can be prefixed with the gateway."),
+    ],
+    start: str = typer.Option(
+        "1 month ago",
+        help=
+        "The start time to evaluate the model from. Defaults to 1 month ago.",
+    ),
+    end: str = typer.Option(
+        "now",
+        help="The end time to evaluate the model to. Defaults to now.",
+    ),
+    limit: t.Optional[int] = typer.Option(
+        None, help="The number of rows to limit the evaluation to.")
+) -> None
+```
+
+:bar_chart: Evaluate a [b red]Model[/b red] and print the results. A thin wrapper around `sqlmesh evaluate`
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `model` - The model to evaluate. Can be prefixed with the gateway.
+- `limit` - The number of rows to limit the evaluation to.
+
+<a id="cli.model_render"></a>
+
+#### model\_render
+
+```python
+@model.command("render")
+def model_render(
+    ctx: typer.Context,
+    model: t.Annotated[
+        str,
+        typer.Argument(
+            help="The model to evaluate. Can be prefixed with the gateway."),
+    ],
+    start: str = typer.Option(
+        "1 month ago",
+        help=
+        "The start time to evaluate the model from. Defaults to 1 month ago.",
+    ),
+    end: str = typer.Option(
+        "now",
+        help="The end time to evaluate the model to. Defaults to now.",
+    ),
+    expand: t.List[str] = typer.Option(
+        [], help="The referenced models to expand."),
+    dialect: t.Optional[str] = typer.Option(
+        None, help="The SQL dialect to use for rendering.")
+) -> None
+```
+
+:bar_chart: Render a [b red]Model[/b red] and print the query. A thin wrapper around `sqlmesh render`
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `model` - The model to evaluate. Can be prefixed with the gateway.
+- `start` - The start time to evaluate the model from. Defaults to 1 month ago.
+- `end` - The end time to evaluate the model to. Defaults to now.
+- `expand` - The referenced models to expand.
+- `dialect` - The SQL dialect to use for rendering.
+
+<a id="cli.model_name"></a>
+
+#### model\_name
+
+```python
+@model.command("name")
+def model_name(ctx: typer.Context, model: t.Annotated[
+    str,
+    typer.Argument(
+        help=
+        "The model to convert the physical name. Can be prefixed with the gateway."
+    ),
+]) -> None
+```
+
+:bar_chart: Get a [b red]Model[/b red]'s physical table name. A thin wrapper around `sqlmesh table_name`
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `model` - The model to evaluate. Can be prefixed with the gateway.
+
+<a id="cli.model_diff"></a>
+
+#### model\_diff
+
+```python
+@model.command("diff")
+def model_diff(
+    ctx: typer.Context,
+    model: t.Annotated[
+        str,
+        typer.Argument(
+            help="The model to evaluate. Can be prefixed with the gateway."),
+    ],
+    source_target: t.Annotated[
+        str,
+        typer.Argument(
+            help="The source and target environments separated by a colon."),
+    ],
+    show_sample: bool = typer.Option(
+        False, help="Whether to show a sample of the diff.")
+) -> None
+```
+
+:bar_chart: Compute the diff of a [b red]Model[/b red] across 2 environments. A thin wrapper around `sqlmesh table_diff`
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `model` - The model to evaluate. Can be prefixed with the gateway.
+- `source_target` - The source and target environments separated by a colon.
+
+<a id="cli.model_prototype"></a>
+
+#### model\_prototype
+
+```python
+@model.command("prototype")
+def model_prototype(
+    ctx: typer.Context,
+    dependencies: t.List[str] = typer.Option(
+        [],
+        "-d",
+        "--dependencies",
+        help="The dependencies to include in the prototype.",
+    ),
+    start: str = typer.Option(
+        "1 month ago",
+        help=
+        "The start time to evaluate the model from. Defaults to 1 month ago.",
+    ),
+    end: str = typer.Option(
+        "now",
+        help="The end time to evaluate the model to. Defaults to now.",
+    ),
+    limit: int = typer.Option(
+        5_000_000,
+        help="The number of rows to limit the evaluation to.",
+    ))
+```
+
+:bar_chart: Prototype a model and save the results to disk.
+
+
+**Arguments**:
+
+- `ctx` - The CLI context.
+- `dependencies` - The dependencies to include in the prototype.
+- `start` - The start time to evaluate the model from. Defaults to 1 month ago.
+- `end` - The end time to evaluate the model to. Defaults to now.
+- `limit` - The number of rows to limit the evaluation to.
+
 <a id="types"></a>
 
 # types
+
+A module for shared types.
 
 <a id="types.monads"></a>
 
@@ -727,7 +1034,7 @@ class Result(Monad[T], t.Generic[T, E])
 
 ```python
 @classmethod
-def pure(cls, value: K) -> "Result[K, Exception]"
+def pure(cls, value: K) -> "Result[K, E]"
 ```
 
 Creates an Ok with a value.
@@ -1507,77 +1814,228 @@ noqa: E731
 
 # core
 
-<a id="core.configuration"></a>
+<a id="core.config"></a>
 
-# core.configuration
+# core.config
 
-CDF configuration
+The config module provides a configuration provider for CDF scoped settings.
 
-Config can be defined as a dictionary or a file path. If a file path is given, then it must be
-either JSON, YAML or TOML format.
+This allows for the configuration to be accessed and modified in a consistent manner across
+the codebase leveraging dlt's configuration provider interface. It also makes all of dlt's
+semantics which depend on the configuration providers seamlessly work with CDF's configuration.
 
-<a id="core.configuration.ParsedConfiguration"></a>
+<a id="core.config.CdfConfigProvider"></a>
 
-## ParsedConfiguration Objects
-
-```python
-class ParsedConfiguration(t.TypedDict)
-```
-
-A container for configuration data
-
-<a id="core.configuration.load_config"></a>
-
-#### load\_config
+## CdfConfigProvider Objects
 
 ```python
-@M.result
-def load_config(root: PathLike) -> ParsedConfiguration
+class CdfConfigProvider(_ConfigProvider)
 ```
 
-Load configuration data from a project root path.
+A configuration provider for CDF scoped settings.
+
+<a id="core.config.CdfConfigProvider.__init__"></a>
+
+#### \_\_init\_\_
+
+```python
+def __init__(scope: t.ChainMap[str, t.Any], secret: bool = False) -> None
+```
+
+Initialize the provider.
 
 **Arguments**:
 
-- `root` - The root path to the project.
-  
+- `config` - The configuration ChainMap.
 
-**Returns**:
+<a id="core.config.CdfConfigProvider.get_value"></a>
 
-  A Result monad with the configuration data if successful. Otherwise, a Result monad with an
-  error.
+#### get\_value
+
+```python
+def get_value(key: str, hint: t.Type[t.Any], pipeline_name: str, *sections:
+              str) -> t.Tuple[t.Optional[t.Any], str]
+```
+
+Get a value from the configuration.
+
+<a id="core.config.CdfConfigProvider.set_value"></a>
+
+#### set\_value
+
+```python
+def set_value(key: str, value: t.Any, pipeline_name: str, *sections:
+              str) -> None
+```
+
+Set a value in the configuration.
+
+<a id="core.config.CdfConfigProvider.name"></a>
+
+#### name
+
+```python
+@property
+def name() -> str
+```
+
+The name of the provider
+
+<a id="core.config.CdfConfigProvider.supports_sections"></a>
+
+#### supports\_sections
+
+```python
+@property
+def supports_sections() -> bool
+```
+
+This provider supports sections
+
+<a id="core.config.CdfConfigProvider.supports_secrets"></a>
+
+#### supports\_secrets
+
+```python
+@property
+def supports_secrets() -> bool
+```
+
+There is no differentiation between secrets and non-secrets for the cdf provider.
+
+Nothing is persisted. Data is available in memory and backed by the dynaconf settings object.
+
+<a id="core.config.CdfConfigProvider.is_writable"></a>
+
+#### is\_writable
+
+```python
+@property
+def is_writable() -> bool
+```
+
+Whether the provider is writable
+
+<a id="core.config.get_config_providers"></a>
+
+#### get\_config\_providers
+
+```python
+def get_config_providers(
+    scope: t.ChainMap[str, t.Any],
+    include_env: bool = True
+) -> t.Union[
+        t.Tuple[CdfConfigProvider, CdfConfigProvider],
+        t.Tuple[EnvironProvider, CdfConfigProvider, CdfConfigProvider],
+]
+```
+
+Get the configuration providers for the given scope.
+
+<a id="core.config.inject_configuration"></a>
+
+#### inject\_configuration
+
+```python
+@contextmanager
+def inject_configuration(
+        scope: t.ChainMap[str, t.Any],
+        include_env: bool = True) -> t.Iterator[t.Mapping[str, t.Any]]
+```
+
+Inject the configuration provider into the context
+
+This allows dlt.config and dlt.secrets to access the scope configuration. Furthermore
+it makes the scope configuration available throughout dlt where things such as extract,
+normalize, and load settings can be specified.
 
 <a id="core.filesystem"></a>
 
 # core.filesystem
 
-An adapter interface for filesystems.
+A central interface for filesystems thinly wrapping fsspec.
 
-<a id="core.filesystem.load_filesystem_provider"></a>
+<a id="core.filesystem.FilesystemAdapter"></a>
 
-#### load\_filesystem\_provider
+## FilesystemAdapter Objects
+
+```python
+class FilesystemAdapter()
+```
+
+Wraps an fsspec filesystem.
+
+The filesystem is lazily loaded. Certain methods are intercepted to include cdf-specific logic. Helper
+methods are provided for specific operations.
+
+<a id="core.filesystem.FilesystemAdapter.__init__"></a>
+
+#### \_\_init\_\_
 
 ```python
 @with_config(sections=("filesystem", ))
-def load_filesystem_provider(
-    provider: t.Optional[str] = None,
-    root: t.Optional[PathLike] = None,
-    options: t.Optional[t.Dict[str,
-                               t.Any]] = None) -> fsspec.AbstractFileSystem
+def __init__(uri: PathLike = dlt.config.value,
+             root: t.Optional[PathLike] = None,
+             options: t.Optional[t.Dict[str, t.Any]] = None) -> None
 ```
 
 Load a filesystem from a provider and kwargs.
 
 **Arguments**:
 
-- `provider` - The filesystem provider.
-- `root` - The root path for the filesystem.
+- `uri` - The filesystem URI.
 - `options` - The filesystem provider kwargs.
+
+<a id="core.filesystem.FilesystemAdapter.__getattr__"></a>
+
+#### \_\_getattr\_\_
+
+```python
+def __getattr__(name: str) -> t.Any
+```
+
+Proxy attribute access to the wrapped filesystem.
+
+<a id="core.filesystem.FilesystemAdapter.__getitem__"></a>
+
+#### \_\_getitem\_\_
+
+```python
+def __getitem__(value: str) -> t.Any
+```
+
+Get a path from the filesystem.
+
+<a id="core.filesystem.FilesystemAdapter.__setitem__"></a>
+
+#### \_\_setitem\_\_
+
+```python
+def __setitem__(key: str, value: t.Any) -> None
+```
+
+Set a path in the filesystem.
+
+<a id="core.filesystem.FilesystemAdapter.open"></a>
+
+#### open
+
+```python
+def open(path: PathLike, mode: str = "r", **kwargs: t.Any) -> t.Any
+```
+
+Open a file from the filesystem.
+
+**Arguments**:
+
+- `path` - The path to the file.
+- `mode` - The file mode.
+- `kwargs` - Additional kwargs.
   
 
 **Returns**:
 
-  The filesystem.
+  The file handle.
 
 <a id="core.constants"></a>
 
@@ -1603,9 +2061,38 @@ Default environment for the project.
 
 A sentinel value that will match the __name__ attribute of a module being executed by CDF.
 
+<a id="core.constants.CDF_LOG_LEVEL"></a>
+
+#### CDF\_LOG\_LEVEL
+
+Environment variable to set the log level of the project.
+
 <a id="core.runtime"></a>
 
 # core.runtime
+
+<a id="core.runtime.common"></a>
+
+# core.runtime.common
+
+<a id="core.runtime.common.with_activate_project"></a>
+
+#### with\_activate\_project
+
+```python
+def with_activate_project(func: t.Callable[P, T]) -> t.Callable[P, T]
+```
+
+Attempt to inject the Project associated with the first argument into cdf.context.
+
+**Arguments**:
+
+- `func` - The function to decorate.
+  
+
+**Returns**:
+
+  The decorated function.
 
 <a id="core.runtime.pipeline"></a>
 
@@ -1625,107 +2112,11 @@ It performs the following functions:
 - Logs a warning if dataset_name is provided in the runtime context. (since we want to manage it)
 - Creates a cdf pipeline from a dlt pipeline.
 
-<a id="core.runtime.pipeline.RuntimeContext"></a>
+<a id="core.runtime.pipeline.pipeline"></a>
 
-## RuntimeContext Objects
+#### pipeline
 
-```python
-class RuntimeContext(t.NamedTuple)
-```
-
-The runtime context for a pipeline.
-
-<a id="core.runtime.pipeline.RuntimeContext.pipeline_name"></a>
-
-#### pipeline\_name
-
-The pipeline name.
-
-<a id="core.runtime.pipeline.RuntimeContext.dataset_name"></a>
-
-#### dataset\_name
-
-The dataset name.
-
-<a id="core.runtime.pipeline.RuntimeContext.destination"></a>
-
-#### destination
-
-The destination.
-
-<a id="core.runtime.pipeline.RuntimeContext.staging"></a>
-
-#### staging
-
-The staging location.
-
-<a id="core.runtime.pipeline.RuntimeContext.select"></a>
-
-#### select
-
-A list of glob patterns to select resources.
-
-<a id="core.runtime.pipeline.RuntimeContext.exclude"></a>
-
-#### exclude
-
-A list of glob patterns to exclude resources.
-
-<a id="core.runtime.pipeline.RuntimeContext.force_replace"></a>
-
-#### force\_replace
-
-Whether to force replace disposition.
-
-<a id="core.runtime.pipeline.RuntimeContext.intercept_sources"></a>
-
-#### intercept\_sources
-
-Stores the intercepted sources in itself if provided.
-
-<a id="core.runtime.pipeline.RuntimeContext.enable_stage"></a>
-
-#### enable\_stage
-
-Whether to stage data if a staging location is provided.
-
-<a id="core.runtime.pipeline.RuntimeContext.applicator"></a>
-
-#### applicator
-
-The transformation to apply to the sources.
-
-<a id="core.runtime.pipeline.RuntimeContext.metrics"></a>
-
-#### metrics
-
-A container for captured metrics during extract.
-
-<a id="core.runtime.pipeline.runtime_context"></a>
-
-#### runtime\_context
-
-```python
-@contextmanager
-def runtime_context(
-        pipeline_name: str,
-        dataset_name: str,
-        destination: TDestinationReferenceArg,
-        staging: t.Optional[TDestinationReferenceArg] = None,
-        select: t.Optional[t.List[str]] = None,
-        exclude: t.Optional[t.List[str]] = None,
-        force_replace: bool = False,
-        intercept_sources: t.Optional[t.Set[dlt.sources.DltSource]] = None,
-        enable_stage: bool = True,
-        applicator: t.Callable[[dlt.sources.DltSource],
-                               dlt.sources.DltSource] = _ident,
-        metrics: t.Optional[t.Mapping[str, t.Any]] = None) -> t.Iterator[None]
-```
-
-A context manager for setting the runtime context.
-
-This allows the cdf library to set the context prior to running the pipeline which is
-ultimately evaluating user code.
+Gets the active pipeline or creates a new one with the given arguments.
 
 <a id="core.runtime.pipeline.RuntimePipeline"></a>
 
@@ -1737,41 +2128,138 @@ class RuntimePipeline(Pipeline)
 
 Overrides certain methods of the dlt pipeline to allow for cdf specific behavior.
 
-<a id="core.runtime.pipeline.pipeline_factory"></a>
+<a id="core.runtime.pipeline.RuntimePipeline.configure"></a>
 
-#### pipeline\_factory
+#### configure
 
 ```python
-def pipeline_factory() -> RuntimePipeline
+def configure(dry_run: bool = False,
+              force_replace: bool = False,
+              select: t.Optional[t.List[str]] = None,
+              exclude: t.Optional[t.List[str]] = None) -> "RuntimePipeline"
 ```
 
-Creates a cdf pipeline. This is used in lieu of dlt.pipeline. in user code.
+Configures options which affect the behavior of the pipeline at runtime.
 
-A cdf pipeline is a wrapper around a dlt pipeline that leverages injected information
-from the runtime context. Raises a ValueError if the runtime context is not set.
+**Arguments**:
+
+- `dry_run` - Whether to run the pipeline in dry run mode.
+- `force_replace` - Whether to force replace disposition.
+- `select` - A list of glob patterns to select resources.
+- `exclude` - A list of glob patterns to exclude resources.
+  
+
+**Returns**:
+
+- `RuntimePipeline` - The pipeline with source hooks configured.
+
+<a id="core.runtime.pipeline.RuntimePipeline.force_replace"></a>
+
+#### force\_replace
+
+```python
+@property
+def force_replace() -> bool
+```
+
+Whether to force replace disposition.
+
+<a id="core.runtime.pipeline.RuntimePipeline.dry_run"></a>
+
+#### dry\_run
+
+```python
+@property
+def dry_run() -> bool
+```
+
+Dry run mode.
+
+<a id="core.runtime.pipeline.RuntimePipeline.metric_accumulator"></a>
+
+#### metric\_accumulator
+
+```python
+@property
+def metric_accumulator() -> t.Mapping[str, t.Any]
+```
+
+A container for accumulating metrics during extract.
+
+<a id="core.runtime.pipeline.RuntimePipeline.source_hooks"></a>
+
+#### source\_hooks
+
+```python
+@property
+def source_hooks(
+) -> t.List[t.Callable[[dlt.sources.DltSource], dlt.sources.DltSource]]
+```
+
+The source hooks for the pipeline.
+
+<a id="core.runtime.pipeline.RuntimePipeline.tracked_sources"></a>
+
+#### tracked\_sources
+
+```python
+@property
+def tracked_sources() -> t.Set[dlt.sources.DltSource]
+```
+
+The sources tracked by the pipeline.
+
+<a id="core.runtime.pipeline.PipelineResult"></a>
+
+## PipelineResult Objects
+
+```python
+class PipelineResult(t.NamedTuple)
+```
+
+The result of executing a pipeline specification.
 
 <a id="core.runtime.pipeline.execute_pipeline_specification"></a>
 
 #### execute\_pipeline\_specification
 
 ```python
+@with_activate_project
 def execute_pipeline_specification(
-    spec: PipelineSpecification,
-    destination: TDestinationReferenceArg,
-    staging: t.Optional[TDestinationReferenceArg] = None,
-    select: t.Optional[t.List[str]] = None,
-    exclude: t.Optional[t.List[str]] = None,
-    force_replace: bool = False,
-    intercept_sources: bool = False,
-    enable_stage: bool = True,
-    quiet: bool = False
-) -> t.Union[
-        M.Result[t.Dict[str, t.Any], Exception],
-        M.Result[t.Set[dlt.sources.DltSource], Exception],
-]
+        pipe_spec: PipelineSpecification,
+        sink_spec: t.Union[
+            TDestinationReferenceArg,
+            t.Tuple[TDestinationReferenceArg,
+                    t.Optional[TDestinationReferenceArg]],
+            SinkSpecification,
+        ],
+        select: t.Optional[t.List[str]] = None,
+        exclude: t.Optional[t.List[str]] = None,
+        force_replace: bool = False,
+        dry_run: bool = False,
+        enable_stage: bool = True,
+        quiet: bool = False,
+        **pipeline_options: t.Any) -> M.Result[PipelineResult, Exception]
 ```
 
 Executes a pipeline specification.
+
+**Arguments**:
+
+- `pipe_spec` - The pipeline specification.
+- `sink_spec` - The destination where the pipeline will write data.
+- `select` - A list of glob patterns to select resources.
+- `exclude` - A list of glob patterns to exclude resources.
+- `force_replace` - Whether to force replace disposition.
+- `dry_run` - Whether to run the pipeline in dry run mode.
+- `enable_stage` - Whether to enable staging. If disabled, staging will be ignored.
+- `quiet` - Whether to suppress output.
+- `pipeline_options` - Additional dlt.pipeline constructor arguments.
+  
+
+**Returns**:
+
+  M.Result[PipelineResult, Exception]: The result of executing the pipeline specification.
 
 <a id="core.runtime.publisher"></a>
 
@@ -1789,6 +2277,7 @@ It performs the following functions:
 #### execute\_publisher\_specification
 
 ```python
+@with_activate_project
 def execute_publisher_specification(
     spec: PublisherSpecification,
     transform_ctx: sqlmesh.Context,
@@ -1820,9 +2309,9 @@ It performs the following functions:
 #### execute\_notebook\_specification
 
 ```python
+@with_activate_project
 def execute_notebook_specification(
         spec: NotebookSpecification,
-        storage: t.Optional[fsspec.AbstractFileSystem] = None,
         **params: t.Any) -> M.Result["NotebookNode", Exception]
 ```
 
@@ -1849,6 +2338,7 @@ It performs the following functions:
 #### execute\_script\_specification
 
 ```python
+@with_activate_project
 def execute_script_specification(
     spec: ScriptSpecification,
     capture_stdout: bool = False
@@ -1956,6 +2446,17 @@ def suppress_and_warn() -> t.Iterator[None]
 
 Suppresses exception and logs it as warning
 
+<a id="core.logger.mute"></a>
+
+#### mute
+
+```python
+@contextlib.contextmanager
+def mute() -> t.Iterator[None]
+```
+
+Mute the logger.
+
 <a id="core.logger.__getattr__"></a>
 
 #### \_\_getattr\_\_
@@ -1966,15 +2467,15 @@ def __getattr__(name: str) -> "LogMethod"
 
 Get a logger method from the package logger.
 
-<a id="core.logger.monkeypatch_dlt"></a>
+<a id="core.logger.apply_patches"></a>
 
-#### monkeypatch\_dlt
+#### apply\_patches
 
 ```python
-def monkeypatch_dlt() -> None
+def apply_patches() -> None
 ```
 
-Monkeypatch the dlt logging module.
+Apply logger patches.
 
 <a id="core.specification.sink"></a>
 
@@ -2028,9 +2529,46 @@ def get_transform_config() -> GatewayConfig
 
 Get the transform configuration.
 
+<a id="core.specification.sink.SinkSpecification.ingest"></a>
+
+#### ingest
+
+```python
+@property
+def ingest() -> Destination
+```
+
+The ingest destination.
+
+<a id="core.specification.sink.SinkSpecification.stage"></a>
+
+#### stage
+
+```python
+@property
+def stage() -> t.Optional[Destination]
+```
+
+The stage destination.
+
+<a id="core.specification.sink.SinkSpecification.transform"></a>
+
+#### transform
+
+```python
+@property
+def transform() -> GatewayConfig
+```
+
+The transform configuration.
+
 <a id="core.specification"></a>
 
 # core.specification
+
+<a id="core.specification.model"></a>
+
+# core.specification.model
 
 <a id="core.specification.pipeline"></a>
 
@@ -2055,7 +2593,7 @@ Defines metrics which can be captured during pipeline execution
 Kwargs to pass to the metric function.
 
 This assumes the metric is a callable which accepts kwargs and returns a metric
-interface. If the metric is already a metric interface, this should be left empty.
+interface. If the metric is not parameterized, this should be left empty.
 
 <a id="core.specification.pipeline.PipelineMetricSpecification.func"></a>
 
@@ -2073,7 +2611,8 @@ A typed property to return the metric function
 #### \_\_call\_\_
 
 ```python
-def __call__(resource: dlt.sources.DltResource, state: MetricState) -> None
+def __call__(resource: dlt.sources.DltResource,
+             state: MetricStateContainer) -> None
 ```
 
 Adds a metric aggregator to a resource
@@ -2098,7 +2637,7 @@ Defines filters which can be applied to pipeline execution
 
 #### options
 
-Kwargs to pass to the filter function. 
+Kwargs to pass to the filter function.
 
 This assumes the filter is a callable which accepts kwargs and returns a filter
 interface. If the filter is already a filter interface, this should be left empty.
@@ -2166,26 +2705,69 @@ whether the item should be filtered out.
 
 The name of the dataset associated with the pipeline.
 
-<a id="core.specification.pipeline.PipelineSpecification.runtime_metrics"></a>
+Defaults to the versioned name. This string is formatted with the pipeline name, version, meta, and tags.
 
-#### runtime\_metrics
+<a id="core.specification.pipeline.PipelineSpecification.options"></a>
+
+#### options
+
+Options available in pipeline scoped dlt config resolution.
+
+<a id="core.specification.pipeline.PipelineSpecification.persist_extract_package"></a>
+
+#### persist\_extract\_package
+
+Whether to persist the extract package in the project filesystem.
+
+<a id="core.specification.pipeline.PipelineSpecification.inject_metrics_and_filters"></a>
+
+#### inject\_metrics\_and\_filters
 
 ```python
-@property
-def runtime_metrics() -> types.MappingProxyType[str, t.Dict[str, Metric]]
+def inject_metrics_and_filters(
+        source: dlt.sources.DltSource,
+        container: MetricStateContainer) -> dlt.sources.DltSource
 ```
 
-Get a read only view of the runtime metrics.
+Apply metrics and filters defined by the specification to a source.
 
-<a id="core.specification.pipeline.PipelineSpecification.apply"></a>
+For a source to conform to the specification, it must have this method applied to it. You
+can manipulate sources without this method, but the metrics and filters will not be applied.
 
-#### apply
+**Arguments**:
+
+- `source` - The source to apply metrics and filters to.
+- `container` - The container to store metric state in. This is mutated during execution.
+  
+
+**Returns**:
+
+- `dlt.sources.DltSource` - The source with metrics and filters applied.
+
+<a id="core.specification.pipeline.PipelineSpecification.create_pipeline"></a>
+
+#### create\_pipeline
 
 ```python
-def apply(source: dlt.sources.DltSource) -> dlt.sources.DltSource
+def create_pipeline(klass: t.Type[TPipeline] = dlt.Pipeline,
+                    **kwargs: t.Any) -> TPipeline
 ```
 
-Apply metrics and filters to a source.
+Convert the pipeline specification to a dlt pipeline object.
+
+This is a convenience method to create a dlt pipeline object from the specification. The
+dlt pipeline is expected to use the name and dataset name from the specification. This
+is what allows declarative definitions to be associated with runtime artifacts.
+
+**Arguments**:
+
+- `klass` _t.Type[TPipeline], optional_ - The pipeline class to use. Defaults to dlt.Pipeline.
+- `**kwargs` - Additional keyword arguments to pass to the dlt.pipeline constructor.
+  
+
+**Returns**:
+
+- `TPipeline` - The dlt pipeline object.
 
 <a id="core.specification.publisher"></a>
 
@@ -2227,7 +2809,7 @@ A sink specification.
 
 The path to write the output notebook to for long term storage.
 
-Setting this implies the output should be stored. Storage uses the configured fs provider.
+Uses the configured Project fs provider. This may be gcs, s3, etc.
 
 This is a format string which will be formatted with the following variables:
 - name: The name of the notebook.
@@ -2242,15 +2824,16 @@ This is a format string which will be formatted with the following variables:
 
 Parameters to pass to the notebook when running.
 
-<a id="core.specification.notebook.NotebookSpecification.keep_local_rendered"></a>
+<a id="core.specification.notebook.NotebookSpecification.gc_duration"></a>
 
-#### keep\_local\_rendered
+#### gc\_duration
 
-Whether to keep the rendered notebook locally after running.
+The duration in seconds to keep the locally rendered notebook in the `_rendered` folder.
 
 Rendered notebooks are written to the `_rendered` folder of the notebook's parent directory.
-Setting this to False will delete the rendered notebook after running. This is independent
-of the long term storage offered by `storage_path` configuration.
+That folder is not intended to be a permanent storage location. This setting controls how long
+rendered notebooks are kept before being garbage collected. The default is 3 days. Set to 0 to
+clean up immediately after execution. Set to -1 to never clean up.
 
 <a id="core.specification.script"></a>
 
@@ -2289,13 +2872,16 @@ the functions within a workspace which extract, load, transform, and publish dat
 
 #### name
 
-The name of the component.
+The name of the component. Must be unique within the workspace.
 
 <a id="core.specification.base.BaseComponent.version"></a>
 
 #### version
 
 The version of the component.
+
+Used internally to version datasets and serves as an external signal to dependees that something
+has changed in a breaking way. All components are versioned.
 
 <a id="core.specification.base.BaseComponent.owner"></a>
 
@@ -2309,6 +2895,9 @@ The owners of the component.
 
 The description of the component.
 
+This should help users understand the purpose of the component. For scripts and entrypoints, we
+will attempt to extract the relevant docstring.
+
 <a id="core.specification.base.BaseComponent.tags"></a>
 
 #### tags
@@ -2319,13 +2908,57 @@ Tags for this component used for component queries and integrations.
 
 #### enabled
 
-Whether this component is enabled.
+Whether this component is enabled. Respected in cdf operations.
 
 <a id="core.specification.base.BaseComponent.meta"></a>
 
 #### meta
 
 Arbitrary user-defined metadata for this component.
+
+Used for user-specific integrations and automation.
+
+<a id="core.specification.base.BaseComponent.__eq__"></a>
+
+#### \_\_eq\_\_
+
+```python
+def __eq__(other: t.Any) -> bool
+```
+
+Check if two components are equal.
+
+<a id="core.specification.base.BaseComponent.__hash__"></a>
+
+#### \_\_hash\_\_
+
+```python
+def __hash__() -> int
+```
+
+Hash the component.
+
+<a id="core.specification.base.BaseComponent.workspace"></a>
+
+#### workspace
+
+```python
+@property
+def workspace() -> "Workspace"
+```
+
+Get the workspace containing the component.
+
+<a id="core.specification.base.BaseComponent.has_workspace_association"></a>
+
+#### has\_workspace\_association
+
+```python
+@property
+def has_workspace_association() -> bool
+```
+
+Check if the component has a workspace association.
 
 <a id="core.specification.base.BaseComponent.versioned_name"></a>
 
@@ -2349,6 +2982,16 @@ def owners() -> t.List[str]
 
 Get the owners.
 
+<a id="core.specification.base.BaseComponent.__getitem__"></a>
+
+#### \_\_getitem\_\_
+
+```python
+def __getitem__(key: str) -> t.Any
+```
+
+Get a field from the component.
+
 <a id="core.specification.base.WorkspaceComponent"></a>
 
 ## WorkspaceComponent Objects
@@ -2359,17 +3002,22 @@ class WorkspaceComponent(BaseComponent)
 
 A component within a workspace.
 
-<a id="core.specification.base.WorkspaceComponent.workspace_path"></a>
-
-#### workspace\_path
-
-The path to the workspace containing the component.
-
 <a id="core.specification.base.WorkspaceComponent.component_path"></a>
 
 #### component\_path
 
 The path to the component within the workspace folder.
+
+<a id="core.specification.base.WorkspaceComponent.root_path"></a>
+
+#### root\_path
+
+The base path from which to resolve the component path.
+
+This is typically the union of the project path and the workspace path but
+for standalone components (components created programmatically outside the
+context of the cdf taxonomy), it should be set to either the current working
+directory (default) or the system root.
 
 <a id="core.specification.base.WorkspaceComponent.path"></a>
 
@@ -2398,13 +3046,15 @@ A mixin for schedulable components.
 
 A cron expression for scheduling the primary action associated with the component.
 
+This is intended to be leveraged by libraries like Airflow.
+
 <a id="core.specification.base.Schedulable.cron"></a>
 
 #### cron
 
 ```python
 @property
-def cron() -> croniter | None
+def cron() -> t.Optional[croniter]
 ```
 
 Get the croniter instance.
@@ -2465,6 +3115,14 @@ class PythonScript(WorkspaceComponent, InstallableRequirements)
 
 A python script component.
 
+<a id="core.specification.base.PythonScript.auto_install"></a>
+
+#### auto\_install
+
+Whether to automatically install the requirements for the script.
+
+Useful for leaner Docker images which defer certain component dep installs to runtime.
+
 <a id="core.specification.base.PythonScript.package"></a>
 
 #### package
@@ -2510,7 +3168,7 @@ A python entrypoint component.
 
 #### entrypoint
 
-The entrypoint of the component.
+The entrypoint of the component in the format module:func.
 
 <a id="core.specification.base.PythonEntrypoint.main"></a>
 
@@ -2555,7 +3213,18 @@ It facilitates communication between specifications and runtime modules.
 
 #### active\_project
 
-The active project context variable.
+The active workspace context variable.
+
+The allows the active workspace to be passed to user-defined scripts. The workspace
+has a reference to the project configuration and filesystem.
+
+<a id="core.context.active_pipeline"></a>
+
+#### active\_pipeline
+
+Stores the active pipeline.
+
+This is the primary mechanism to pass a configured pipeline to user-defined scripts.
 
 <a id="core.context.debug_mode"></a>
 
@@ -2563,336 +3232,1062 @@ The active project context variable.
 
 The debug mode context variable.
 
-<a id="core.context.CDFConfigProvider"></a>
+Allows us to mutate certain behaviors in the runtime based on the debug mode. User can
+optionally introspect this.
 
-## CDFConfigProvider Objects
+<a id="core.context.extract_limit"></a>
 
-```python
-class CDFConfigProvider(ConfigProvider)
-```
+#### extract\_limit
 
-A configuration provider for CDF settings.
+The extract limit context variable.
 
-<a id="core.context.inject_cdf_config_provider"></a>
-
-#### inject\_cdf\_config\_provider
-
-```python
-def inject_cdf_config_provider(cdf: "ContinuousDataFramework") -> None
-```
-
-Injects CDFConfigProvider into the ConfigProvidersContext.
-
-**Arguments**:
-
-- `config` - The configuration to inject
-
-<a id="core.packaging"></a>
-
-# core.packaging
-
-Packaging adapter with PEX implementation.
+Lets us set a limit on the number of items to extract from a source. This variable
+can be introspected by user-defined scripts to optimize for partial extraction.
 
 <a id="core.project"></a>
 
 # core.project
 
-A wrapper around a CDF project.
+The project module provides a way to define a project and its workspaces.
 
-<a id="core.project.ConfigurationOverlay"></a>
+Everything in CDF is described via a simple configuration structure. We parse this configuration
+using dynaconf which provides a simple way to load configuration from various sources such as
+environment variables, YAML, TOML, JSON, and Python files. It also provides many other features
+such as loading .env files, env-specific configuration, templating via @ tokens, and more. The
+configuration is then validated with pydantic to ensure it is correct and to give us well defined
+types to work with. The underlying dynaconf settings object is stored in the `wrapped` attribute
+of the Project and Workspace settings objects. This allows us to access the raw configuration
+values if needed. ChainMaps are used to provide a scoped view of the configuration. This enables
+a powerful layering mechanism where we can override configuration values at different levels.
+Finally, we provide a context manager to inject the project configuration into the dlt context
+which allows us to access the configuration throughout the dlt codebase and in data pipelines.
 
-## ConfigurationOverlay Objects
+**Example**:
 
-```python
-class ConfigurationOverlay(ChainMap[str, t.Any])
+  
+```toml
+# cdf.toml
+[default]
+name = "cdf-example"
+workspaces = ["alex"]
+filesystem.uri = "file://_storage"
+feature_flags.provider = "filesystem"
+feature_flags.filename = "feature_flags.json"
+
+[prod]
+filesystem.uri = "gcs://bucket/path"
+```
+  
+```toml
+# alex/cdf.toml
+[pipelines.us_cities] # alex/pipelines/us_cities_pipeline.py
+version = 1
+dataset_name = "us_cities_v0_{version}"
+description = "Get US city data"
+options.full_refresh = false
+options.runtime.dlthub_telemetry = false
 ```
 
-A ChainMap with attribute access designed to wrap dynaconf settings.
+<a id="core.project._BaseSettings"></a>
 
-<a id="core.project.ConfigurationOverlay.normalize_script"></a>
-
-#### normalize\_script
+## \_BaseSettings Objects
 
 ```python
-@staticmethod
-def normalize_script(
-    config: t.MutableMapping[str, t.Any],
-    type_: str,
-    ext: t.Tuple[str, ...] = ("py", )) -> t.MutableMapping[str, t.Any]
+class _BaseSettings(pydantic.BaseModel)
 ```
 
-Normalize a script based configuration.
+A base model for CDF settings
 
-The name may be a relative path to the script such as sales/mrr.py in which case the
-path is kept as-is and the name is normalized to sales_mrr.
+<a id="core.project._BaseSettings.is_newer_than"></a>
 
-Alternatively it could be a name such as mrr in which case the name will be kept as-is
-and the component path will be set to mrr_{type_}.py
-
-The final example is a name which is a pathlike without an extension such as sales/mrr in which
-case the name will be set to sales_mrr and the path will be set to sales/mrr_{type_}.py
-
-In the event of multiple extensions for a given script type, and the name ommitting the
-extension, the first extension is used. Any special characters outside os.sep and a file extension
-will cause a pydanitc validation error and prompt the user to update the name property.
-
-<a id="core.project.ContinuousDataFramework"></a>
-
-## ContinuousDataFramework Objects
+#### is\_newer\_than
 
 ```python
-class ContinuousDataFramework()
+def is_newer_than(other: "Project") -> bool
 ```
 
-Common properties shared by Project and Workspace.
+Check if the model is newer than another model
 
-<a id="core.project.ContinuousDataFramework.feature_flag_provider"></a>
+<a id="core.project._BaseSettings.is_older_than"></a>
 
-#### feature\_flag\_provider
+#### is\_older\_than
 
 ```python
-@cached_property
-def feature_flag_provider() -> FlagProvider
+def is_older_than(other: "Project") -> bool
 ```
 
-The feature flag provider.
+Check if the model is older than another model
 
-<a id="core.project.ContinuousDataFramework.filesystem"></a>
+<a id="core.project._BaseSettings.model_dump"></a>
 
-#### filesystem
+#### model\_dump
 
 ```python
-@cached_property
-def filesystem() -> fsspec.AbstractFileSystem
+def model_dump(**kwargs: t.Any) -> t.Dict[str, t.Any]
 ```
 
-The filesystem provider.
+Dump the model to a dictionary
 
-<a id="core.project.ContinuousDataFramework.pipelines"></a>
+<a id="core.project.FilesystemConfig"></a>
 
-#### pipelines
+## FilesystemConfig Objects
 
 ```python
-@cached_property
-def pipelines() -> t.Dict[str, PipelineSpecification]
+class FilesystemConfig(_BaseSettings)
 ```
 
-Map of pipelines by name.
+Configuration for a filesystem provider
 
-<a id="core.project.ContinuousDataFramework.sinks"></a>
+<a id="core.project.FilesystemConfig.uri"></a>
 
-#### sinks
+#### uri
+
+The filesystem URI
+
+This is based on fsspec. See https://filesystem-spec.readthedocs.io/en/latest/index.html
+This supports all filesystems supported by fsspec as well as filesystem chaining.
+
+<a id="core.project.FilesystemConfig.options_"></a>
+
+#### options\_
+
+The filesystem options
+
+Options are passed to the filesystem provider as keyword arguments.
+
+<a id="core.project.FilesystemConfig.options"></a>
+
+#### options
 
 ```python
-@cached_property
-def sinks() -> t.Dict[str, SinkSpecification]
+@property
+def options() -> t.Dict[str, t.Any]
 ```
 
-Map of sinks by name.
+Get the filesystem options as a dictionary
 
-<a id="core.project.ContinuousDataFramework.publishers"></a>
+<a id="core.project.FilesystemConfig.project"></a>
 
-#### publishers
+#### project
 
 ```python
-@cached_property
-def publishers() -> t.Dict[str, PublisherSpecification]
+@property
+def project() -> "Project"
 ```
 
-Map of publishers by name.
+Get the project this configuration belongs to
 
-<a id="core.project.ContinuousDataFramework.scripts"></a>
+<a id="core.project.FilesystemConfig.has_project_association"></a>
 
-#### scripts
+#### has\_project\_association
 
 ```python
-@cached_property
-def scripts() -> t.Dict[str, ScriptSpecification]
+@property
+def has_project_association() -> bool
 ```
 
-Map of scripts by name.
+Check if the configuration is associated with a project
 
-<a id="core.project.ContinuousDataFramework.notebooks"></a>
+<a id="core.project.FilesystemConfig.get_adapter"></a>
 
-#### notebooks
+#### get\_adapter
 
 ```python
-@cached_property
-def notebooks() -> t.Dict[str, NotebookSpecification]
+def get_adapter() -> M.Result[FilesystemAdapter, Exception]
 ```
 
-Map of notebooks by name.
+Get a filesystem adapter
 
-<a id="core.project.ContinuousDataFramework.models"></a>
+<a id="core.project.FeatureFlagProviderType"></a>
 
-#### models
+## FeatureFlagProviderType Objects
 
 ```python
-@cached_property
-def models() -> t.Dict[str, sqlmesh.Model]
+class FeatureFlagProviderType(str, Enum)
 ```
 
-Map of models by name. Uses the default gateway.
+The feature flag provider
 
-<a id="core.project.ContinuousDataFramework.get_pipeline"></a>
+<a id="core.project.BaseFeatureFlagConfig"></a>
 
-#### get\_pipeline
+## BaseFeatureFlagConfig Objects
 
 ```python
-def get_pipeline(name: str) -> M.Result[PipelineSpecification, Exception]
+class BaseFeatureFlagConfig(_BaseSettings)
 ```
 
-Get a pipeline by name.
+Base configuration for a feature flags provider
 
-<a id="core.project.ContinuousDataFramework.get_sink"></a>
+<a id="core.project.BaseFeatureFlagConfig.provider"></a>
 
-#### get\_sink
+#### provider
+
+The feature flags provider
+
+<a id="core.project.BaseFeatureFlagConfig.project"></a>
+
+#### project
 
 ```python
-def get_sink(name: str) -> M.Result[SinkSpecification, Exception]
+@property
+def project() -> "Project"
 ```
 
-Get a sink by name.
+Get the project this configuration belongs to
 
-<a id="core.project.ContinuousDataFramework.get_publisher"></a>
+<a id="core.project.BaseFeatureFlagConfig.has_project_association"></a>
 
-#### get\_publisher
+#### has\_project\_association
 
 ```python
-def get_publisher(name: str) -> M.Result[PublisherSpecification, Exception]
+@property
+def has_project_association() -> bool
 ```
 
-Get a publisher by name.
+Check if the configuration is associated with a project
 
-<a id="core.project.ContinuousDataFramework.get_script"></a>
+<a id="core.project.BaseFeatureFlagConfig.get_adapter"></a>
 
-#### get\_script
+#### get\_adapter
 
 ```python
-def get_script(name: str) -> M.Result[ScriptSpecification, Exception]
+def get_adapter(**kwargs: t.Any
+                ) -> M.Result[AbstractFeatureFlagAdapter, Exception]
 ```
 
-Get a script by name.
+Get a handle to the feature flag adapter
 
-<a id="core.project.ContinuousDataFramework.get_notebook"></a>
+<a id="core.project.FilesystemFeatureFlagConfig"></a>
 
-#### get\_notebook
+## FilesystemFeatureFlagConfig Objects
 
 ```python
-def get_notebook(name: str) -> M.Result[NotebookSpecification, Exception]
+class FilesystemFeatureFlagConfig(BaseFeatureFlagConfig)
 ```
 
-Get a notebook by name.
+Configuration for a feature flags provider that uses the configured filesystem
 
-<a id="core.project.ContinuousDataFramework.get_gateways"></a>
+<a id="core.project.FilesystemFeatureFlagConfig.provider"></a>
 
-#### get\_gateways
+#### provider
+
+The feature flags provider
+
+<a id="core.project.FilesystemFeatureFlagConfig.filename"></a>
+
+#### filename
+
+The feature flags filename.
+
+This is a format string that can include the following variables:
+- `name`: The project name
+- `workspace`: The workspace name
+- `environment`: The environment name
+- `source`: The source name
+- `resource`: The resource name
+- `version`: The version number of the component
+
+<a id="core.project.HarnessFeatureFlagConfig"></a>
+
+## HarnessFeatureFlagConfig Objects
 
 ```python
-def get_gateways() -> M.Result[t.Dict[str, GatewayConfig], Exception]
+class HarnessFeatureFlagConfig(BaseFeatureFlagConfig)
 ```
 
-Convert the project's gateways to a dictionary.
+Configuration for a feature flags provider that uses the Harness API
 
-<a id="core.project.ContinuousDataFramework.get_transform_context"></a>
+<a id="core.project.HarnessFeatureFlagConfig.provider"></a>
 
-#### get\_transform\_context
+#### provider
+
+The feature flags provider
+
+<a id="core.project.HarnessFeatureFlagConfig.api_key"></a>
+
+#### api\_key
+
+The harness API key. Get it from your user settings
+
+<a id="core.project.HarnessFeatureFlagConfig.sdk_key"></a>
+
+#### sdk\_key
+
+The harness SDK key. Get it from the environment management page of the FF module
+
+<a id="core.project.HarnessFeatureFlagConfig.account"></a>
+
+#### account
+
+The harness account ID. We will attempt to read it from the environment if not provided.
+
+<a id="core.project.HarnessFeatureFlagConfig.organization"></a>
+
+#### organization
+
+The harness organization ID. We will attempt to read it from the environment if not provided.
+
+<a id="core.project.HarnessFeatureFlagConfig.project_"></a>
+
+#### project\_
+
+The harness project ID. We will attempt to read it from the environment if not provided.
+
+<a id="core.project.LaunchDarklyFeatureFlagSettings"></a>
+
+## LaunchDarklyFeatureFlagSettings Objects
 
 ```python
-def get_transform_context(sink: t.Optional[str] = None) -> sqlmesh.Context
+class LaunchDarklyFeatureFlagSettings(BaseFeatureFlagConfig)
 ```
 
-Get a transform context for a sink.
+Configuration for a feature flags provider that uses the LaunchDarkly API
 
-<a id="core.project.Project"></a>
+<a id="core.project.LaunchDarklyFeatureFlagSettings.provider"></a>
 
-## Project Objects
+#### provider
+
+The feature flags provider
+
+<a id="core.project.LaunchDarklyFeatureFlagSettings.api_key"></a>
+
+#### api\_key
+
+The LaunchDarkly API key. Get it from your user settings
+
+<a id="core.project.SplitFeatureFlagSettings"></a>
+
+## SplitFeatureFlagSettings Objects
 
 ```python
-class Project(ContinuousDataFramework)
+class SplitFeatureFlagSettings(BaseFeatureFlagConfig)
 ```
 
-A CDF project.
+Configuration for a feature flags provider that uses the Split API
 
-<a id="core.project.Project.__init__"></a>
+<a id="core.project.SplitFeatureFlagSettings.provider"></a>
 
-#### \_\_init\_\_
+#### provider
+
+The feature flags provider
+
+<a id="core.project.SplitFeatureFlagSettings.api_key"></a>
+
+#### api\_key
+
+The Split API key. Get it from your user settings
+
+<a id="core.project.NoopFeatureFlagSettings"></a>
+
+## NoopFeatureFlagSettings Objects
 
 ```python
-def __init__(configuration: "dynaconf.Dynaconf",
-             workspaces: t.Dict[str, "dynaconf.Dynaconf"]) -> None
+class NoopFeatureFlagSettings(BaseFeatureFlagConfig)
 ```
 
-Initialize a project.
+Configuration for a feature flags provider that does nothing
 
-<a id="core.project.Project.get_workspace"></a>
+<a id="core.project.NoopFeatureFlagSettings.provider"></a>
 
-#### get\_workspace
+#### provider
 
-```python
-def get_workspace(name: str) -> M.Result["Workspace", Exception]
-```
+The feature flags provider
 
-Get a workspace by name.
+<a id="core.project.FeatureFlagConfig"></a>
 
-<a id="core.project.Project.get_workspace_from_path"></a>
+#### FeatureFlagConfig
 
-#### get\_workspace\_from\_path
-
-```python
-def get_workspace_from_path(
-        path: PathLike) -> M.Result["Workspace", Exception]
-```
-
-Get a workspace by path.
-
-<a id="core.project.Project.load"></a>
-
-#### load
-
-```python
-@classmethod
-def load(cls, root: PathLike) -> "Project"
-```
-
-Create a project from a root path.
+A union of all feature flag provider configurations
 
 <a id="core.project.Workspace"></a>
 
 ## Workspace Objects
 
 ```python
-class Workspace(ContinuousDataFramework)
+class Workspace(_BaseSettings)
 ```
 
-A CDF workspace.
+A workspace is a collection of pipelines, sinks, publishers, scripts, and notebooks in a subdirectory of the project
 
-<a id="core.project.Workspace.__init__"></a>
+<a id="core.project.Workspace.workspace_path"></a>
 
-#### \_\_init\_\_
+#### workspace\_path
 
-```python
-def __init__(name: str, *, project: Project) -> None
-```
+The path to the workspace within the project path
 
-Initialize a workspace.
+<a id="core.project.Workspace.project_path"></a>
 
-<a id="core.project.Workspace.parent"></a>
+#### project\_path
 
-#### parent
+The path to the project
+
+<a id="core.project.Workspace.name"></a>
+
+#### name
+
+The name of the workspace
+
+<a id="core.project.Workspace.owner"></a>
+
+#### owner
+
+The owner of the workspace
+
+<a id="core.project.Workspace.pipelines"></a>
+
+#### pipelines
+
+Pipelines move data from sources to sinks
+
+<a id="core.project.Workspace.sinks"></a>
+
+#### sinks
+
+A sink is a destination for data
+
+<a id="core.project.Workspace.publishers"></a>
+
+#### publishers
+
+Publishers send data to external systems
+
+<a id="core.project.Workspace.scripts"></a>
+
+#### scripts
+
+Scripts are used to automate tasks
+
+<a id="core.project.Workspace.notebooks"></a>
+
+#### notebooks
+
+Notebooks are used for data analysis and reporting
+
+<a id="core.project.Workspace.path"></a>
+
+#### path
 
 ```python
 @property
-def parent() -> Project
+def path() -> Path
 ```
 
-The parent project.
+Get the path to the workspace
+
+<a id="core.project.Workspace.__getitem__"></a>
+
+#### \_\_getitem\_\_
+
+```python
+def __getitem__(key: str) -> t.Any
+```
+
+Get a component by name
+
+<a id="core.project.Workspace.__setitem__"></a>
+
+#### \_\_setitem\_\_
+
+```python
+def __setitem__(key: str, value: t.Any) -> None
+```
+
+Set a component by name
+
+<a id="core.project.Workspace.__delitem__"></a>
+
+#### \_\_delitem\_\_
+
+```python
+def __delitem__(key: str) -> None
+```
+
+Delete a component by name
+
+<a id="core.project.Workspace.__len__"></a>
+
+#### \_\_len\_\_
+
+```python
+def __len__() -> int
+```
+
+Get the number of components
+
+<a id="core.project.Workspace.__iter__"></a>
+
+#### \_\_iter\_\_
+
+```python
+def __iter__() -> t.Iterator[spec.CoreSpecification]
+```
+
+Iterate over the components
+
+<a id="core.project.Workspace.__contains__"></a>
+
+#### \_\_contains\_\_
+
+```python
+def __contains__(key: str) -> bool
+```
+
+Check if a component exists
+
+<a id="core.project.Workspace.get_component_names"></a>
+
+#### get\_component\_names
+
+```python
+def get_component_names() -> t.List[str]
+```
+
+Get the component names
+
+<a id="core.project.Workspace.items"></a>
+
+#### items
+
+```python
+def items() -> t.Iterator[t.Tuple[str, spec.CoreSpecification]]
+```
+
+Iterate over the components
+
+<a id="core.project.Workspace.get_pipeline_spec"></a>
+
+#### get\_pipeline\_spec
+
+```python
+def get_pipeline_spec(
+        name: str) -> M.Result[spec.PipelineSpecification, Exception]
+```
+
+Get a pipeline by name
+
+<a id="core.project.Workspace.get_sink_spec"></a>
+
+#### get\_sink\_spec
+
+```python
+def get_sink_spec(name: str) -> M.Result[spec.SinkSpecification, Exception]
+```
+
+Get a sink by name
+
+<a id="core.project.Workspace.get_publisher_spec"></a>
+
+#### get\_publisher\_spec
+
+```python
+def get_publisher_spec(
+        name: str) -> M.Result[spec.PublisherSpecification, Exception]
+```
+
+Get a publisher by name
+
+<a id="core.project.Workspace.get_script_spec"></a>
+
+#### get\_script\_spec
+
+```python
+def get_script_spec(
+        name: str) -> M.Result[spec.ScriptSpecification, Exception]
+```
+
+Get a script by name
+
+<a id="core.project.Workspace.get_notebook_spec"></a>
+
+#### get\_notebook\_spec
+
+```python
+def get_notebook_spec(
+        name: str) -> M.Result[spec.NotebookSpecification, Exception]
+```
+
+Get a notebook by name
+
+<a id="core.project.Workspace.project"></a>
+
+#### project
+
+```python
+@property
+def project() -> "Project"
+```
+
+Get the project this workspace belongs to
+
+<a id="core.project.Workspace.has_project_association"></a>
+
+#### has\_project\_association
+
+```python
+@property
+def has_project_association() -> bool
+```
+
+Check if the workspace is associated with a project
+
+<a id="core.project.Workspace.inject_configuration"></a>
+
+#### inject\_configuration
+
+```python
+@contextmanager
+def inject_configuration() -> t.Iterator[None]
+```
+
+Inject the workspace configuration into the context
+
+<a id="core.project.Workspace.fs_adapter"></a>
+
+#### fs\_adapter
+
+```python
+@property
+def fs_adapter() -> FilesystemAdapter
+```
+
+Get a handle to the project filesystem adapter
+
+<a id="core.project.Workspace.ff_adapter"></a>
+
+#### ff\_adapter
+
+```python
+@property
+def ff_adapter() -> AbstractFeatureFlagAdapter
+```
+
+Get a handle to the project feature flag adapter
+
+<a id="core.project.Workspace.state"></a>
+
+#### state
+
+```python
+@property
+def state() -> StateStore
+```
+
+Get a handle to the project state store
+
+<a id="core.project.Workspace.get_transform_gateways"></a>
+
+#### get\_transform\_gateways
+
+```python
+def get_transform_gateways() -> t.Iterator[t.Tuple[str, "GatewayConfig"]]
+```
+
+Get the SQLMesh gateway configurations
+
+<a id="core.project.Workspace.get_transform_context"></a>
+
+#### get\_transform\_context
+
+```python
+def get_transform_context(name: t.Optional[str] = None)
+```
+
+Get the SQLMesh context for the workspace
+
+We expect a config.py file in the workspace directory that uses the
+`get_transform_gateways` method to populate the SQLMesh Config.gateways key.
+
+**Arguments**:
+
+- `name` - The name of the gateway to use.
+  
+
+**Returns**:
+
+  The SQLMesh context.
+
+<a id="core.project.Project"></a>
+
+## Project Objects
+
+```python
+class Project(_BaseSettings)
+```
+
+A project is a collection of workspaces and configuration settings
+
+<a id="core.project.Project.path"></a>
+
+#### path
+
+The path to the project
+
+<a id="core.project.Project.name"></a>
+
+#### name
+
+The name of the project
+
+<a id="core.project.Project.version"></a>
+
+#### version
+
+The version of the project
+
+<a id="core.project.Project.owner"></a>
+
+#### owner
+
+The owner of the project
+
+<a id="core.project.Project.documentation"></a>
+
+#### documentation
+
+The project documentation
+
+<a id="core.project.Project.workspaces"></a>
+
+#### workspaces
+
+The project workspaces
+
+<a id="core.project.Project.fs"></a>
+
+#### fs
+
+The project filesystem settings
+
+<a id="core.project.Project.ff"></a>
+
+#### ff
+
+The project feature flags provider settings
+
+<a id="core.project.Project.state"></a>
+
+#### state
+
+The project state connection settings
+
+<a id="core.project.Project.__getitem__"></a>
+
+#### \_\_getitem\_\_
+
+```python
+def __getitem__(key: str) -> t.Any
+```
+
+Get an item from the configuration
+
+<a id="core.project.Project.__setitem__"></a>
+
+#### \_\_setitem\_\_
+
+```python
+def __setitem__(key: str, value: t.Any) -> None
+```
+
+Set an item in the configuration
+
+<a id="core.project.Project.__delitem__"></a>
+
+#### \_\_delitem\_\_
+
+```python
+def __delitem__(key: str) -> None
+```
+
+Delete a workspace
+
+<a id="core.project.Project.__len__"></a>
+
+#### \_\_len\_\_
+
+```python
+def __len__() -> int
+```
+
+Get the number of workspaces
+
+<a id="core.project.Project.__iter__"></a>
+
+#### \_\_iter\_\_
+
+```python
+def __iter__() -> t.Iterator[Workspace]
+```
+
+Iterate over the workspaces
+
+<a id="core.project.Project.__contains__"></a>
+
+#### \_\_contains\_\_
+
+```python
+def __contains__(key: str) -> bool
+```
+
+Check if a workspace exists
+
+<a id="core.project.Project.get_workspace_names"></a>
+
+#### get\_workspace\_names
+
+```python
+def get_workspace_names() -> t.List[str]
+```
+
+Get the workspace names
+
+<a id="core.project.Project.items"></a>
+
+#### items
+
+```python
+def items() -> t.Iterator[t.Tuple[str, Workspace]]
+```
+
+Iterate over the workspaces
+
+<a id="core.project.Project.get_workspace"></a>
+
+#### get\_workspace
+
+```python
+def get_workspace(name: str) -> M.Result[Workspace, Exception]
+```
+
+Get a workspace by name
+
+<a id="core.project.Project.get_workspace_from_path"></a>
+
+#### get\_workspace\_from\_path
+
+```python
+def get_workspace_from_path(path: PathLike) -> M.Result[Workspace, Exception]
+```
+
+Get a workspace by path.
+
+<a id="core.project.Project.to_scoped_dict"></a>
+
+#### to\_scoped\_dict
+
+```python
+def to_scoped_dict(workspace: t.Optional[str] = None) -> ChainMap[str, t.Any]
+```
+
+Convert the project settings to a scoped dictionary
+
+Lookups are performed in the following order:
+- The extra configuration, holding data set via __setitem__.
+- The workspace configuration, if passed.
+- The project configuration.
+- The wrapped configuration, if available. Typically a dynaconf settings object.
+
+Boxing allows us to access nested values using dot notation. This is doubly useful
+since ChainMaps will move to the next map in the chain if the dotted key is not
+fully resolved in the current map.
+
+<a id="core.project.Project.inject_configuration"></a>
+
+#### inject\_configuration
+
+```python
+@contextmanager
+def inject_configuration(
+        workspace: t.Optional[str] = None) -> t.Iterator[None]
+```
+
+Inject the project configuration into the context
+
+<a id="core.project.Project.fs_adapter"></a>
+
+#### fs\_adapter
+
+```python
+@cached_property
+def fs_adapter() -> FilesystemAdapter
+```
+
+Get a configured filesystem adapter
+
+<a id="core.project.Project.ff_adapter"></a>
+
+#### ff\_adapter
+
+```python
+@cached_property
+def ff_adapter() -> AbstractFeatureFlagAdapter
+```
+
+Get a handle to the project's configured feature flag adapter
+
+<a id="core.project.Project.duckdb"></a>
+
+#### duckdb
+
+```python
+@cached_property
+def duckdb() -> duckdb.DuckDBPyConnection
+```
+
+Get a handle to the project's DuckDB connection
+
+<a id="core.project.Project.get_workspace_path"></a>
+
+#### get\_workspace\_path
+
+```python
+def get_workspace_path(name: str) -> M.Result[Path, Exception]
+```
+
+Get the path to a workspace by name
+
+<a id="core.project.Project.from_path"></a>
+
+#### from\_path
+
+```python
+@classmethod
+def from_path(cls, root: PathLike)
+```
+
+Load configuration data from a project root path using dynaconf.
+
+**Arguments**:
+
+- `root` - The root path to the project.
+  
+
+**Returns**:
+
+  A Project object.
+
+<a id="core.project.Project.activate"></a>
+
+#### activate
+
+```python
+def activate() -> t.Callable[[], None]
+```
+
+Activate the project and return a deactivation function
+
+<a id="core.project.Project.activated"></a>
+
+#### activated
+
+```python
+@contextmanager
+def activated() -> t.Iterator[None]
+```
+
+Activate the project for the duration of the context
 
 <a id="core.project.load_project"></a>
 
 #### load\_project
 
-Create a project from a root path.
+Load configuration data from a project root path using dynaconf.
+
+**Arguments**:
+
+- `root` - The root path to the project.
+  
+
+**Returns**:
+
+  A Result monad with a Project object if successful. Otherwise, a Result monad with an error.
+
+<a id="core.state"></a>
+
+# core.state
+
+The state module is responible for providing an adapter through which we can persist data
+
+<a id="core.state.StateStore"></a>
+
+## StateStore Objects
+
+```python
+class StateStore(pydantic.BaseModel)
+```
+
+The state store is responsible for persisting data
+
+<a id="core.state.StateStore.schema"></a>
+
+#### schema
+
+The schema in which to store data
+
+<a id="core.state.StateStore.protected"></a>
+
+#### protected
+
+Whether the state store is protected, i.e. should never be torn down
+
+A safety measure to prevent accidental data loss when users are consuming the cdf API
+directly. This should be set to False when running tests or you know what you're doing.
+
+<a id="core.state.StateStore.connection"></a>
+
+#### connection
+
+The connection configuration to the state store
+
+<a id="core.state.StateStore.adapter"></a>
+
+#### adapter
+
+```python
+@property
+def adapter() -> EngineAdapter
+```
+
+The adapter to the state store
+
+<a id="core.state.StateStore.setup"></a>
+
+#### setup
+
+```python
+def setup() -> None
+```
+
+Setup the state store
+
+<a id="core.state.StateStore.teardown"></a>
+
+#### teardown
+
+```python
+def teardown() -> None
+```
+
+Teardown the state store
+
+<a id="core.state.StateStore.store_json"></a>
+
+#### store\_json
+
+```python
+def store_json(key: str, value: t.Any) -> None
+```
+
+Store a JSON value
+
+<a id="core.state.StateStore.__del__"></a>
+
+#### \_\_del\_\_
+
+```python
+def __del__() -> None
+```
+
+Close the connection to the state store
 
 <a id="core.utility"></a>
 
@@ -2956,15 +4351,30 @@ Load a configuration from a file path.
 
 LaunchDarkly feature flag provider.
 
-<a id="core.feature_flag.launchdarkly.LaunchDarklyFlagProvider"></a>
+<a id="core.feature_flag.launchdarkly.LaunchDarklyFeatureFlagAdapter"></a>
 
-## LaunchDarklyFlagProvider Objects
+## LaunchDarklyFeatureFlagAdapter Objects
 
 ```python
-class LaunchDarklyFlagProvider(BaseFlagProvider)
+class LaunchDarklyFeatureFlagAdapter(AbstractFeatureFlagAdapter)
 ```
 
-LaunchDarkly feature flag provider.
+A feature flag adapter that uses LaunchDarkly.
+
+<a id="core.feature_flag.launchdarkly.LaunchDarklyFeatureFlagAdapter.__init__"></a>
+
+#### \_\_init\_\_
+
+```python
+@with_config(sections=("feature_flags", ))
+def __init__(sdk_key: str, **kwargs: t.Any) -> None
+```
+
+Initialize the LaunchDarkly feature flags.
+
+**Arguments**:
+
+- `sdk_key` - The SDK key to use for LaunchDarkly.
 
 <a id="core.feature_flag.harness"></a>
 
@@ -2972,51 +4382,170 @@ LaunchDarkly feature flag provider.
 
 Harness feature flag provider.
 
-<a id="core.feature_flag.harness.HarnessFlagProvider"></a>
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter"></a>
 
-## HarnessFlagProvider Objects
+## HarnessFeatureFlagAdapter Objects
 
 ```python
-class HarnessFlagProvider(BaseFlagProvider)
+class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter)
 ```
 
-Harness feature flag provider.
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.__init__"></a>
 
-<a id="core.feature_flag.harness.HarnessFlagProvider.drop"></a>
-
-#### drop
+#### \_\_init\_\_
 
 ```python
-def drop(ident: str) -> str
+@with_config(sections=("feature_flags", ))
+def __init__(sdk_key: str = dlt.secrets.value,
+             api_key: str = dlt.secrets.value,
+             account: str = dlt.secrets.value,
+             organization: str = dlt.secrets.value,
+             project: str = dlt.secrets.value,
+             **kwargs: t.Any) -> None
 ```
 
-Drop a feature flag.
+Initialize the adapter.
 
-<a id="core.feature_flag.harness.HarnessFlagProvider.create"></a>
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.client"></a>
 
-#### create
+#### client
 
 ```python
-def create(ident: str, name: str) -> str
+@property
+def client() -> CfClient
+```
+
+Get the client and cache it in the instance.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.pool"></a>
+
+#### pool
+
+```python
+@property
+def pool() -> ThreadPoolExecutor
+```
+
+Get the thread pool.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.get"></a>
+
+#### get
+
+```python
+def get(feature_name: str) -> FlagAdapterResponse
+```
+
+Get a feature flag.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.get_all_feature_names"></a>
+
+#### get\_all\_feature\_names
+
+```python
+def get_all_feature_names() -> t.List[str]
+```
+
+Get all the feature flags.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.save"></a>
+
+#### save
+
+```python
+def save(feature_name: str, flag: bool) -> None
 ```
 
 Create a feature flag.
 
-<a id="core.feature_flag.harness.HarnessFlagProvider.apply_source"></a>
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.save_many"></a>
+
+#### save\_many
+
+```python
+def save_many(flags: t.Dict[str, bool]) -> None
+```
+
+Create many feature flags.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.delete"></a>
+
+#### delete
+
+```python
+def delete(feature_name: str) -> None
+```
+
+Drop a feature flag.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.delete_many"></a>
+
+#### delete\_many
+
+```python
+def delete_many(feature_names: t.List[str]) -> None
+```
+
+Drop many feature flags.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.apply_source"></a>
 
 #### apply\_source
 
 ```python
-def apply_source(source: DltSource) -> DltSource
+def apply_source(source: DltSource, *namespace: str) -> DltSource
 ```
 
 Apply the feature flags to a dlt source.
+
+<a id="core.feature_flag.harness.HarnessFeatureFlagAdapter.__del__"></a>
+
+#### \_\_del\_\_
+
+```python
+def __del__() -> None
+```
+
+Close the client.
 
 <a id="core.feature_flag"></a>
 
 # core.feature\_flag
 
-Feature flag providers.
+Feature flag providers implement a uniform interface and are wrapped by an adapter.
+
+The adapter is responsible for loading the correct provider and applying the feature flags within
+various contexts in cdf. This allows for a clean separation of concerns and makes it easy to
+implement new feature flag providers in the future.
+
+<a id="core.feature_flag.ADAPTERS"></a>
+
+#### ADAPTERS
+
+Feature flag provider adapters classes by name.
+
+<a id="core.feature_flag.get_feature_flag_adapter_cls"></a>
+
+#### get\_feature\_flag\_adapter\_cls
+
+```python
+@with_config(sections=("feature_flags", ))
+def get_feature_flag_adapter_cls(
+    provider: str = dlt.config.value
+) -> M.Result[t.Type[AbstractFeatureFlagAdapter], Exception]
+```
+
+Get a feature flag adapter by name.
+
+**Arguments**:
+
+- `provider` - The name of the feature flag adapter.
+- `options` - The configuration for the feature flag adapter.
+  
+
+**Returns**:
+
+  The feature flag adapter.
 
 <a id="core.feature_flag.file"></a>
 
@@ -3024,23 +4553,125 @@ Feature flag providers.
 
 File-based feature flag provider.
 
-<a id="core.feature_flag.file.FileFlagProvider"></a>
+<a id="core.feature_flag.file.FilesystemFeatureFlagAdapter"></a>
 
-## FileFlagProvider Objects
-
-```python
-class FileFlagProvider(BaseFlagProvider)
-```
-
-<a id="core.feature_flag.file.FileFlagProvider.apply_source"></a>
-
-#### apply\_source
+## FilesystemFeatureFlagAdapter Objects
 
 ```python
-def apply_source(source: "DltSource") -> "DltSource"
+class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter)
 ```
 
-Apply the feature flags to a dlt source.
+A feature flag adapter that uses the filesystem.
+
+<a id="core.feature_flag.file.FilesystemFeatureFlagAdapter.__init__"></a>
+
+#### \_\_init\_\_
+
+```python
+@with_config(sections=("feature_flags", ))
+def __init__(filesystem: fsspec.AbstractFileSystem,
+             filename: str = dlt.config.value,
+             **kwargs: t.Any) -> None
+```
+
+Initialize the filesystem feature flags.
+
+**Arguments**:
+
+- `filesystem` - The filesystem to use.
+- `filename` - The filename to use for the feature flags.
+
+<a id="core.feature_flag.file.FilesystemFeatureFlagAdapter.get"></a>
+
+#### get
+
+```python
+def get(feature_name: str) -> FlagAdapterResponse
+```
+
+Get a feature flag.
+
+**Arguments**:
+
+- `feature_name` - The name of the feature flag.
+  
+
+**Returns**:
+
+  The feature flag.
+
+<a id="core.feature_flag.file.FilesystemFeatureFlagAdapter.get_all_feature_names"></a>
+
+#### get\_all\_feature\_names
+
+```python
+def get_all_feature_names() -> t.List[str]
+```
+
+Get all feature flag names.
+
+**Returns**:
+
+  The feature flag names.
+
+<a id="core.feature_flag.file.FilesystemFeatureFlagAdapter.save"></a>
+
+#### save
+
+```python
+def save(feature_name: str, flag: bool) -> None
+```
+
+Save a feature flag.
+
+**Arguments**:
+
+- `feature_name` - The name of the feature flag.
+- `flag` - The value of the feature flag.
+
+<a id="core.feature_flag.file.FilesystemFeatureFlagAdapter.save_many"></a>
+
+#### save\_many
+
+```python
+def save_many(flags: t.Dict[str, bool]) -> None
+```
+
+Save multiple feature flags.
+
+**Arguments**:
+
+- `flags` - The feature flags to save.
+
+<a id="core.feature_flag.split"></a>
+
+# core.feature\_flag.split
+
+Split feature flag provider.
+
+<a id="core.feature_flag.split.SplitFeatureFlagAdapter"></a>
+
+## SplitFeatureFlagAdapter Objects
+
+```python
+class SplitFeatureFlagAdapter(AbstractFeatureFlagAdapter)
+```
+
+A feature flag adapter that uses Split.
+
+<a id="core.feature_flag.split.SplitFeatureFlagAdapter.__init__"></a>
+
+#### \_\_init\_\_
+
+```python
+def __init__(sdk_key: str, **kwargs: t.Any) -> None
+```
+
+Initialize the Split feature flags.
+
+**Arguments**:
+
+- `sdk_key` - The SDK key to use for Split.
 
 <a id="core.feature_flag.noop"></a>
 
@@ -3048,38 +4679,272 @@ Apply the feature flags to a dlt source.
 
 No-op feature flag provider.
 
-<a id="core.feature_flag.noop.NoopFlagProvider"></a>
+<a id="core.feature_flag.noop.NoopFeatureFlagAdapter"></a>
 
-## NoopFlagProvider Objects
+## NoopFeatureFlagAdapter Objects
 
 ```python
-class NoopFlagProvider(BaseFlagProvider)
+class NoopFeatureFlagAdapter(AbstractFeatureFlagAdapter)
 ```
 
-LaunchDarkly feature flag provider.
+A feature flag adapter that does nothing.
+
+<a id="core.feature_flag.noop.NoopFeatureFlagAdapter.__init__"></a>
+
+#### \_\_init\_\_
+
+```python
+def __init__(**kwargs: t.Any) -> None
+```
+
+Initialize the adapter.
 
 <a id="core.feature_flag.base"></a>
 
 # core.feature\_flag.base
 
-<a id="core.feature_flag.base.BaseFlagProvider"></a>
+<a id="core.feature_flag.base.FlagAdapterResponse"></a>
 
-## BaseFlagProvider Objects
+## FlagAdapterResponse Objects
 
 ```python
-class BaseFlagProvider(pydantic.BaseModel, abc.ABC)
+class FlagAdapterResponse(Enum)
 ```
 
-<a id="core.feature_flag.base.BaseFlagProvider.apply_source"></a>
+Feature flag response.
+
+This enum is used to represent the state of a feature flag. It is similar
+to a boolean but with an extra state for when the flag is not found.
+
+<a id="core.feature_flag.base.FlagAdapterResponse.ENABLED"></a>
+
+#### ENABLED
+
+The feature flag is enabled.
+
+<a id="core.feature_flag.base.FlagAdapterResponse.DISABLED"></a>
+
+#### DISABLED
+
+The feature flag is disabled.
+
+<a id="core.feature_flag.base.FlagAdapterResponse.NOT_FOUND"></a>
+
+#### NOT\_FOUND
+
+The feature flag is not found.
+
+<a id="core.feature_flag.base.FlagAdapterResponse.__bool__"></a>
+
+#### \_\_bool\_\_
+
+```python
+def __bool__() -> bool
+```
+
+Return True if the flag is enabled and False otherwise.
+
+<a id="core.feature_flag.base.FlagAdapterResponse.__eq__"></a>
+
+#### \_\_eq\_\_
+
+```python
+def __eq__(value: object) -> bool
+```
+
+Compare the flag to a boolean.
+
+<a id="core.feature_flag.base.FlagAdapterResponse.from_bool"></a>
+
+#### from\_bool
+
+```python
+@classmethod
+def from_bool(cls, flag: bool) -> "FlagAdapterResponse"
+```
+
+Convert a boolean to a flag response.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter"></a>
+
+## AbstractFeatureFlagAdapter Objects
+
+```python
+class AbstractFeatureFlagAdapter(abc.ABC)
+```
+
+Abstract feature flag adapter.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.__init__"></a>
+
+#### \_\_init\_\_
+
+```python
+def __init__(**kwargs: t.Any) -> None
+```
+
+Initialize the adapter.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.get"></a>
+
+#### get
+
+```python
+@abc.abstractmethod
+def get(feature_name: str) -> FlagAdapterResponse
+```
+
+Get the feature flag.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.__getitem__"></a>
+
+#### \_\_getitem\_\_
+
+```python
+def __getitem__(feature_name: str) -> FlagAdapterResponse
+```
+
+Get the feature flag.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.get_many"></a>
+
+#### get\_many
+
+```python
+def get_many(feature_names: t.List[str]) -> t.Dict[str, FlagAdapterResponse]
+```
+
+Get many feature flags.
+
+Implementations should override this method if they can optimize it. The default
+will call get in a loop.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.save"></a>
+
+#### save
+
+```python
+@abc.abstractmethod
+def save(feature_name: str, flag: bool) -> None
+```
+
+Save the feature flag.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.__setitem__"></a>
+
+#### \_\_setitem\_\_
+
+```python
+def __setitem__(feature_name: str, flag: bool) -> None
+```
+
+Save the feature flag.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.save_many"></a>
+
+#### save\_many
+
+```python
+def save_many(flags: t.Dict[str, bool]) -> None
+```
+
+Save many feature flags.
+
+Implementations should override this method if they can optimize it. The default
+will call save in a loop.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.get_all_feature_names"></a>
+
+#### get\_all\_feature\_names
+
+```python
+@abc.abstractmethod
+def get_all_feature_names() -> t.List[str]
+```
+
+Get all feature names.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.keys"></a>
+
+#### keys
+
+```python
+def keys() -> t.List[str]
+```
+
+Get all feature names.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.__iter__"></a>
+
+#### \_\_iter\_\_
+
+```python
+def __iter__() -> t.Iterator[str]
+```
+
+Iterate over the feature names.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.__contains__"></a>
+
+#### \_\_contains\_\_
+
+```python
+def __contains__(feature_name: str) -> bool
+```
+
+Check if a feature flag exists.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.__len__"></a>
+
+#### \_\_len\_\_
+
+```python
+def __len__() -> int
+```
+
+Get the number of feature flags.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.delete"></a>
+
+#### delete
+
+```python
+def delete(feature_name: str) -> None
+```
+
+Delete a feature flag.
+
+By default, this will disable the flag but implementations can override this method
+to delete the flag.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.delete_many"></a>
+
+#### delete\_many
+
+```python
+def delete_many(feature_names: t.List[str]) -> None
+```
+
+Delete many feature flags.
+
+<a id="core.feature_flag.base.AbstractFeatureFlagAdapter.apply_source"></a>
 
 #### apply\_source
 
 ```python
-@abc.abstractmethod
-def apply_source(source: "DltSource") -> "DltSource"
+def apply_source(source: "DltSource", *namespace: str) -> "DltSource"
 ```
 
 Apply the feature flags to a dlt source.
+
+**Arguments**:
+
+- `source` - The source to apply the feature flags to.
+  
+
+**Returns**:
+
+  The source with the feature flags applied.
 
 <a id="integrations"></a>
 
