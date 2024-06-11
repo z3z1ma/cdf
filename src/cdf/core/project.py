@@ -18,6 +18,7 @@ Example:
 # cdf.toml
 [default]
 name = "cdf-example"
+version = "0.1.0"
 workspaces = ["alex"]
 filesystem.uri = "file://_storage"
 feature_flags.provider = "filesystem"
@@ -45,7 +46,7 @@ import typing as t
 from collections import ChainMap
 from contextlib import contextmanager, suppress
 from enum import Enum
-from functools import cached_property
+from functools import cached_property, lru_cache
 from pathlib import Path
 
 import duckdb
@@ -586,8 +587,8 @@ class Project(_BaseSettings):
         default_factory=lambda: "CDF-" + os.urandom(4).hex(sep="-", bytes_per_sep=2),
     )
     """The name of the project"""
-    version: str = "0.1.0"
-    """The version of the project"""
+    version: str
+    """The version of the project, this discriminates between project and workspace config"""
     owner: t.Optional[str] = None
     """The owner of the project"""
     documentation: t.Optional[str] = None
@@ -742,6 +743,8 @@ class Project(_BaseSettings):
                     else:
                         obj = getattr(obj, part)
                 return obj
+            if key == "name":
+                return self.name
             if key in self.model_fields:
                 return getattr(self, key)
         except AttributeError:
@@ -937,7 +940,6 @@ def _load_config(
         env=c.DEFAULT_ENVIRONMENT,
         load_dotenv=True,
         merge_enabled=True,
-        validators=[dynaconf.Validator("name", must_exist=True)],
     )
 
     def _eval_lazy(value: t.Any) -> t.Any:
@@ -969,6 +971,11 @@ Args:
 Returns:
     A Result monad with a Project object if successful. Otherwise, a Result monad with an error.
 """
+
+if not t.TYPE_CHECKING:
+    # type checker seems to not like the lru_cache decorator wrapping a monadic lift
+    # so we can safely hide this from the type checker
+    load_project = lru_cache(maxsize=25)(load_project)
 
 __all__ = [
     "load_project",

@@ -1,5 +1,6 @@
 default:
   name: cdf-example
+  version: 0.1.0
   workspaces:
   - alex
   filesystem:

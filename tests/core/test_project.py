@@ -114,6 +114,8 @@ def test_init_state(project: Project):
     adapter.create_schema("test")
     adapter.create_table("test1", {"name": exp.DataType.build("text")})
     assert adapter.table_exists("test1")
+    project.state.setup()
+    project.state.store_json("test", {"name": "alex"})
     adapter.close()
 
 
@@ -210,6 +212,7 @@ def barebones_project():
         {
             "path": "examples/sandbox",
             "name": "data-platform",
+            "version": "0.2.0",
             "workspaces": {
                 "datateam": {
                     "path": "alex",
