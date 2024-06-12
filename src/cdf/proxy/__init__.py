@@ -6,7 +6,8 @@ during interception, the server can rewrite queries expanding semantic reference
 making it an easy to use semantic layer for SQLMesh.
 """
 
-from cdf.proxy.mysql import run_server
+from cdf.proxy.mysql import run_mysql_proxy
+from cdf.proxy.planner import run_plan_server
 
 
-__all__ = ["run_server"]
+__all__ = ["run_mysql_proxy", "run_plan_server"]

@@ -48,7 +48,7 @@ class SQLMeshSession(Session):
         return schema
 
 
-async def run_server(context: sqlmesh.Context) -> None:
+async def run_mysql_proxy(context: sqlmesh.Context) -> None:
     """Run the MySQL proxy server."""
 
     logging.basicConfig(level=logging.DEBUG)
@@ -66,4 +66,4 @@ async def run_server(context: sqlmesh.Context) -> None:
         await server.wait_closed()
 
 
-__all__ = ["run_server"]
+__all__ = ["run_mysql_proxy"]

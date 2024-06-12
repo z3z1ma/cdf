@@ -45,7 +45,7 @@ from cdf.core.specification import (
     SinkSpecification,
 )
 from cdf.types import M
-from cdf.proxy import run_server
+from cdf.proxy import run_mysql_proxy, run_plan_server
 
 WorkspaceMonad = M.Result[Workspace, Exception]
 
@@ -881,8 +881,8 @@ app.add_typer(
 )
 
 
-@proxy.command("serve")
-def proxy_serve(
+@proxy.command("mysql")
+def proxy_mysql(
     ctx: typer.Context,
     gateway: t.Annotated[
         t.Optional[str],
@@ -899,8 +899,60 @@ def proxy_serve(
         gateway: The gateway to use for the server. Defaults to the default gateway.
     """
     t.cast(WorkspaceMonad, ctx.obj).map(
-        lambda w: asyncio.run(run_server(w.get_transform_context(gateway)))
+        lambda w: asyncio.run(run_mysql_proxy(w.get_transform_context(gateway)))
     ).unwrap()
+
+
+@proxy.command("planner")
+def proxy_planner(
+    ctx: typer.Context,
+    gateway: t.Annotated[
+        t.Optional[str],
+        typer.Argument(
+            help="The gateway to use for the server. Defaults to the default gateway."
+        ),
+    ] = None,
+) -> None:
+    """:satellite: Start a SQLMesh proxy server.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        gateway: The gateway to use for the server. Defaults to the default gateway.
+    """
+    t.cast(WorkspaceMonad, ctx.obj).map(
+        lambda w: run_plan_server(8000, w.get_transform_context(gateway))
+    ).unwrap()
+
+
+@proxy.command("plan")
+def proxy_plan(
+    ctx: typer.Context,
+    gateway: t.Annotated[
+        t.Optional[str],
+        typer.Argument(
+            help="The gateway to use for the server. Defaults to the default gateway."
+        ),
+    ] = None,
+):
+    """:satellite: Run a SQLMesh plan delegated to a running planner.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        gateway: The gateway to use for the server. Defaults to the default gateway.
+    """
+    import pickle
+    import requests
+
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    plan = W.get_transform_context(gateway).plan("dev", no_prompts=True)
+    res = requests.post(
+        "http://localhost:8000",
+        headers={"Content-Type": "application/octet-stream"},
+        data=pickle.dumps(plan),
+    )
+    console.print(res.json())
 
 
 if __name__ == "__main__":
