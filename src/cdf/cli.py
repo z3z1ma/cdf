@@ -1,5 +1,6 @@
 """CLI for cdf."""
 
+import asyncio
 import itertools
 import json
 import os
@@ -44,6 +45,7 @@ from cdf.core.specification import (
     SinkSpecification,
 )
 from cdf.types import M
+from cdf.proxy import run_server
 
 WorkspaceMonad = M.Result[Workspace, Exception]
 
@@ -864,6 +866,41 @@ def model_prototype(
             limit=limit,
         )
         df.to_parquet(f"{dep}.parquet", index=False)
+
+
+app.add_typer(
+    proxy := typer.Typer(
+        rich_markup_mode="rich",
+        epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
+        add_completion=False,
+        no_args_is_help=True,
+    ),
+    name="proxy",
+    help=":satellite: Proxy management commands.",
+    rich_help_panel="Core",
+)
+
+
+@proxy.command("serve")
+def proxy_serve(
+    ctx: typer.Context,
+    gateway: t.Annotated[
+        t.Optional[str],
+        typer.Argument(
+            help="The gateway to use for the server. Defaults to the default gateway."
+        ),
+    ] = None,
+) -> None:
+    """:satellite: Start a SQLMesh proxy server.
+
+    \f
+    Args:
+        ctx: The CLI context.
+        gateway: The gateway to use for the server. Defaults to the default gateway.
+    """
+    t.cast(WorkspaceMonad, ctx.obj).map(
+        lambda w: asyncio.run(run_server(w.get_transform_context(gateway)))
+    ).unwrap()
 
 
 if __name__ == "__main__":

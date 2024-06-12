@@ -47,6 +47,8 @@ class SQLMeshSession(Session):
 
 
 async def run_server(context: sqlmesh.Context) -> None:
+    """Run the MySQL proxy server."""
+
     logging.basicConfig(level=logging.DEBUG)
     server = MysqlServer(
         session_factory=type(
@@ -56,7 +58,10 @@ async def run_server(context: sqlmesh.Context) -> None:
         )
     )
     asyncio.create_task(file_watcher(context))
-    await server.serve_forever()
+    try:
+        await server.serve_forever()
+    except asyncio.CancelledError:
+        await server.wait_closed()
 
 
 __all__ = ["run_server"]
