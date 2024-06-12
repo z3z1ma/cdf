@@ -521,7 +521,7 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
         Returns:
             A new Promise that is already resolved with the value.
         """
-        return cls.from_value(value)
+        return cls.from_value(value)  # type: ignore
 
     def __hash__(self) -> int:
         return hash(self._future)

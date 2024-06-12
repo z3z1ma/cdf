@@ -49,3 +49,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.metadata]
 allow-direct-references = true
+
+[tool.pyright]
+include = ["src"]
+exclude = ["examples/", "docs/", "tests/"]
+ignore = ["src/builtin"]
+reportPrivateImportUsage = false
