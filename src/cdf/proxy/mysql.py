@@ -23,13 +23,15 @@ class SQLMeshSession(Session):
 
     context: sqlmesh.Context
 
-    async def query(self, expression, sql, attrs):
+    async def query(
+        self, expression: exp.Expression, sql: str, attrs: t.Dict[str, str]
+    ) -> t.Tuple[t.Tuple[t.Tuple[t.Any], ...], t.List[str]]:
         """Execute a query."""
         tables = list(expression.find_all(exp.Table))
         if any((table.db, table.name) == ("__semantic", "__table") for table in tables):
             expression = self.context.rewrite(sql)
             logger.info("Compiled semantic expression!")
-        logger.info(expression.sql("bigquery"))
+        logger.info(expression.sql(self.context.default_dialect))
         df = self.context.fetchdf(expression)
         logger.debug(df)
         return tuple(df.itertuples(index=False)), list(df.columns)
