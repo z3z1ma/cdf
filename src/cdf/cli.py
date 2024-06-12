@@ -108,6 +108,12 @@ def index(ctx: typer.Context, hydrate: bool = False) -> None:
         ...
 
 
+@app.command(rich_help_panel="Project Management")
+def path(ctx: typer.Context) -> None:
+    """:office: Print the current workspace path."""
+    typer.echo(ctx.obj.unwrap().path)
+
+
 @app.command(rich_help_panel="Core")
 def pipeline(
     ctx: typer.Context,

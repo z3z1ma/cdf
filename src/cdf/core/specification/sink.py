@@ -34,7 +34,7 @@ class SinkSpecification(PythonScript):
         """Get the transform configuration."""
         if self._exports is None:
             self._exports = self.main()
-        return self._exports[self.transform_config]
+        return GatewayConfig.model_validate(self._exports[self.transform_config])
 
     @property
     def ingest(self) -> Destination:

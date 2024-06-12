@@ -15,6 +15,7 @@ dependencies = [
     "jupyterlab", # we can make this optional later
     # The following deps have well-defined version ranges
     "typer[all]>=0.8.0,<1",
+    "mysql-mimic>=2,<3",
     "harness-featureflags>=1.2.0,<1.6.1",
     "python-dotenv>=1,<2",
     "pex>=2.1.100,<2.2.0",
