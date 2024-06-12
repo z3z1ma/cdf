@@ -5,6 +5,7 @@ import asyncio
 import logging
 from collections import defaultdict
 
+import numpy as np
 import sqlmesh
 from mysql_mimic import MysqlServer, Session
 from mysql_mimic.server import logger
@@ -34,6 +35,7 @@ class SQLMeshSession(Session):
         logger.info(expression.sql(self.context.default_dialect))
         df = self.context.fetchdf(expression)
         logger.debug(df)
+        df.replace({np.nan: None}, inplace=True)
         return tuple(df.itertuples(index=False)), list(df.columns)
 
     async def schema(self) -> t.Dict[str, t.Dict[str, t.Dict[str, str]]]:
