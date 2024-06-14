@@ -939,7 +939,6 @@ def _load_config(
         env_switcher=c.CDF_ENVIRONMENT,
         env=c.DEFAULT_ENVIRONMENT,
         load_dotenv=True,
-        merge_enabled=True,
     )
 
     def _eval_lazy(value: t.Any) -> t.Any:
