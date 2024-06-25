@@ -62,21 +62,38 @@ console = rich.console.Console()
 @app.callback()
 def main(
     ctx: typer.Context,
-    workspace: str,
-    path: Path = typer.Option(
-        ".", "--path", "-p", help="Path to the project.", envvar="CDF_ROOT"
-    ),
-    debug: bool = typer.Option(False, "--debug", "-d", help="Enable debug mode."),
-    environment: t.Optional[str] = typer.Option(
-        None, "--env", "-e", help="Environment to use."
-    ),
-    log_level: t.Optional[str] = typer.Option(
-        None,
-        "--log-level",
-        "-l",
-        help="The log level to use.",
-        envvar="LOG_LEVEL",  # A common environment variable for log level
-    ),
+    workspace: t.Annotated[
+        t.Optional[str],
+        typer.Option(
+            ...,
+            "--workspace",
+            "-w",
+            help="The workspace to use.",
+            envvar="CDF_WORKSPACE",
+        ),
+    ] = None,
+    path: t.Annotated[
+        Path,
+        typer.Option(
+            ..., "--path", "-p", help="Path to the project.", envvar="CDF_ROOT"
+        ),
+    ] = Path("."),
+    debug: t.Annotated[
+        bool, typer.Option(..., "--debug", "-d", help="Enable debug mode.")
+    ] = False,
+    environment: t.Annotated[
+        t.Optional[str], typer.Option(..., "--env", "-e", help="Environment to use.")
+    ] = None,
+    log_level: t.Annotated[
+        t.Optional[str],
+        typer.Option(
+            ...,
+            "--log-level",
+            "-l",
+            help="The log level to use.",
+            envvar="LOG_LEVEL",  # A common environment variable for log level
+        ),
+    ] = None,
 ) -> None:
     """CDF (continuous data framework) is a framework for end to end data processing."""
     if environment:
@@ -107,7 +124,7 @@ def index(ctx: typer.Context, hydrate: bool = False) -> None:
         console.print("Scripts", W.scripts)
         console.print("Notebooks", W.notebooks)
     else:
-        ...
+        console.print_json(W.model_dump_json())
 
 
 @app.command(rich_help_panel="Project Management")

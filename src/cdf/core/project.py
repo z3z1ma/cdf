@@ -786,8 +786,12 @@ class Project(_BaseSettings):
         """Iterate over the workspaces"""
         return zip(self.get_workspace_names(), self.workspaces)
 
-    def get_workspace(self, name: str) -> M.Result[Workspace, Exception]:
-        """Get a workspace by name"""
+    def get_workspace(
+        self, name: t.Optional[str] = None
+    ) -> M.Result[Workspace, Exception]:
+        """Get a workspace by name, if no name is provided, return the default workspace"""
+        if name is None:
+            return M.ok(self.workspaces[0])
         for workspace in self.workspaces:
             if workspace.name == name:
                 return M.ok(workspace)

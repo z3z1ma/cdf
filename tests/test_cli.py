@@ -6,7 +6,7 @@ runner = CliRunner()
 
 
 def test_index():
-    result = runner.invoke(app, ["-p", "examples/sandbox", "alex", "index"])
+    result = runner.invoke(app, ["-p", "examples/sandbox", "-w", "alex", "index"])
     assert result.exit_code == 0
     assert "Pipelines" in result.stdout
     assert "Sinks" in result.stdout

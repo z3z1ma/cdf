@@ -198,13 +198,13 @@ class WorkspaceComponent(BaseComponent):
 
     component_path: t.Annotated[Path, pydantic.Field(alias="path", frozen=True)]
     """The path to the component within the workspace folder."""
-    root_path: t.Annotated[Path, pydantic.Field(frozen=True)] = Path(".")
+    root_path: t.Annotated[Path, pydantic.Field(frozen=True, exclude=True)] = Path(".")
     """The base path from which to resolve the component path.
 
     This is typically the union of the project path and the workspace path but
     for standalone components (components created programmatically outside the
     context of the cdf taxonomy), it should be set to either the current working
-    directory (default) or the system root.
+    directory (default) or the system root. It is excluded from serialization.
     """
 
     _folder: str = "."
