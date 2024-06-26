@@ -19,6 +19,7 @@ import papermill
 import cdf.core.logger as logger
 from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import NotebookSpecification
+from cdf.core.state import with_audit
 from cdf.types import M
 
 if t.TYPE_CHECKING:
@@ -26,6 +27,10 @@ if t.TYPE_CHECKING:
 
 
 @with_activate_project
+@with_audit(
+    "execute_notebook",
+    lambda spec, **params: {"name": spec.name, "owner": spec.owner},
+)
 def execute_notebook_specification(
     spec: NotebookSpecification,
     **params: t.Any,

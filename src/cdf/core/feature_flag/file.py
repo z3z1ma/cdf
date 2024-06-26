@@ -11,6 +11,7 @@ from dlt.common.configuration import with_config
 
 import cdf.core.logger as logger
 from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter, FlagAdapterResponse
+from cdf.core.state import with_audit
 
 
 class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter):
@@ -41,6 +42,9 @@ class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter):
     def __str__(self) -> str:
         return self.filename
 
+    @with_audit(
+        "feature_flag_filesystem_read", lambda self: {"filename": self.filename}
+    )
     def _read(self) -> t.Dict[str, FlagAdapterResponse]:
         """Read the feature flags from the filesystem."""
         logger.info("Reading feature flags from %s", self.filename)

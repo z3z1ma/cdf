@@ -37,6 +37,7 @@ import cdf.core.context as context
 import cdf.core.logger as logger
 from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import PipelineSpecification, SinkSpecification
+from cdf.core.state import with_audit
 from cdf.types import M, P
 
 T = t.TypeVar("T")
@@ -286,6 +287,10 @@ class RuntimePipeline(Pipeline):
                 # this will enable us to "replay" a pipeline
                 # logger.info(self.specification.workspace.filesystem.ls("extracted"))
 
+        for package in info.load_packages:
+            data = {"load_id": package.load_id, "info": package.asdict()}
+            logger.info(data)
+
         return info
 
     def normalize(
@@ -331,7 +336,38 @@ class PipelineResult(t.NamedTuple):
     pipeline: RuntimePipeline
 
 
+def _audit(
+    pipe_spec: PipelineSpecification,
+    sink_spec: t.Union[
+        TDestinationReferenceArg,
+        t.Tuple[TDestinationReferenceArg, t.Optional[TDestinationReferenceArg]],
+        SinkSpecification,
+    ],
+    select: t.Optional[t.List[str]] = None,
+    exclude: t.Optional[t.List[str]] = None,
+    force_replace: bool = False,
+    dry_run: bool = False,
+    enable_stage: bool = True,
+    quiet: bool = False,
+    **pipeline_options: t.Any,
+) -> t.Dict[str, t.Any]:
+    """The audit function for executing a pipeline specification."""
+    return {
+        "name": pipe_spec.name,
+        "owner": pipe_spec.owner,
+        "sink": getattr(sink_spec, "name", sink_spec),
+        "select": select,
+        "exclude": exclude,
+        "force_replace": force_replace,
+        "dry_run": dry_run,
+        "enable_stage": enable_stage,
+        "quiet": quiet,
+        "pipeline_options": pipeline_options,
+    }
+
+
 @with_activate_project
+@with_audit("execute_pipeline", _audit)
 def execute_pipeline_specification(
     pipe_spec: PipelineSpecification,
     sink_spec: t.Union[

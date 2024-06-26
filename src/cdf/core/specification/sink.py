@@ -4,6 +4,7 @@ from dlt.common.destination.reference import Destination
 from sqlmesh.core.config import GatewayConfig
 
 from cdf.core.specification.base import PythonScript
+from cdf.core.state import with_audit
 
 
 class SinkSpecification(PythonScript):
@@ -21,6 +22,14 @@ class SinkSpecification(PythonScript):
 
     _folder: str = "sinks"
     """The folder where sink scripts are stored."""
+
+    @property
+    def main(self) -> t.Callable[..., t.Dict[str, t.Any]]:
+        """Run the sink script."""
+        loader = t.cast(t.Callable[..., t.Dict[str, t.Any]], super().main)
+        return with_audit(
+            "load_sink", lambda self=self: {"name": self.name, "owner": self.owner}
+        )(loader)
 
     def get_ingest_config(
         self,

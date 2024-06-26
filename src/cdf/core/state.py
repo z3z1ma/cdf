@@ -14,7 +14,7 @@ from sqlmesh.core.config.connection import (
 )
 from sqlmesh.core.engine_adapter import EngineAdapter
 
-from cdf.core.context import active_project
+from cdf.core.context import active_project, execution_id
 from cdf.types import M, P
 
 T = t.TypeVar("T")
@@ -29,6 +29,7 @@ _PIPELINE_SCHEMA = {
     "data": exp.DataType.build("TEXT"),
     "success": exp.DataType.build("BOOLEAN"),
     "elapsed": exp.DataType.build("FLOAT"),
+    "execution_id": exp.DataType.build("TEXT"),
 }
 
 EXTRACT_SCHEMA = _PIPELINE_SCHEMA.copy()
@@ -44,6 +45,7 @@ AUDIT_SCHEMA = {
     "elapsed": exp.DataType.build("FLOAT"),
     "success": exp.DataType.build("BOOLEAN"),
     "properties": exp.DataType.build("TEXT"),
+    "execution_id": exp.DataType.build("TEXT"),
 }
 """The schema for the audit store"""
 
@@ -155,7 +157,7 @@ class StateStore(pydantic.BaseModel):
         if self._adapter is not None:
             self.adapter.close()
 
-    def audit_func(
+    def with_audit(
         self,
         event: str,
         props: t.Union[t.Callable[P, JSON], t.Dict[str, JSON]] = _no_props,
@@ -172,6 +174,7 @@ class StateStore(pydantic.BaseModel):
                     "properties": json.dumps(
                         props(*args, **kwargs) if callable(props) else props
                     ),
+                    "execution_id": execution_id.get(),
                 }
                 start = time.perf_counter()
                 try:
@@ -207,6 +210,7 @@ class StateStore(pydantic.BaseModel):
             "elapsed": elapsed,
             "success": success,
             "properties": json.dumps(properties),
+            "execution_id": execution_id.get(),
         }
         with self.adapter.transaction():
             self.adapter.insert_append(
@@ -214,8 +218,19 @@ class StateStore(pydantic.BaseModel):
                 pd.DataFrame([payload]),
             )
 
+    def list_audits(self, limit: int = 100):
+        """List all audit events"""
+        assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
+        return self.adapter.fetchall(
+            exp.select("*").from_(self.audit_table).order_by("timestamp").limit(limit)
+        )
 
-def audit_func(
+    def clear_audits(self):
+        """Clear all audit events"""
+        self.adapter.delete_from(self.audit_table, "1 = 1")
+
+
+def with_audit(
     event: str, props: t.Union[t.Callable[P, JSON], t.Dict[str, JSON]] = _no_props
 ) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
     """Decorator to add audit logging to a function given an active project"""
@@ -225,7 +240,7 @@ def audit_func(
             project = active_project.get(None)
             if project is None:
                 return func(*args, **kwargs)
-            return project.state.audit_func(event, props)(func)(*args, **kwargs)
+            return project.state.with_audit(event, props)(func)(*args, **kwargs)
 
         return wrapper
 
@@ -236,6 +251,7 @@ def audit(
     event: str, success: bool = True, elapsed: float = 0.0, **properties: JSON
 ) -> None:
     """Audit an event given an active project"""
+    properties.setdefault("execution_id", execution_id.get())
     project = active_project.get(None)
     if project is not None:
         project.state.audit(event, success, elapsed, **properties)

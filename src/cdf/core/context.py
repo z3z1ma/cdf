@@ -4,6 +4,7 @@ It facilitates communication between specifications and runtime modules.
 """
 
 import typing as t
+import uuid
 from contextvars import ContextVar
 
 import dlt
@@ -38,6 +39,9 @@ extract_limit: ContextVar[int] = ContextVar("extract_limit", default=0)
 Lets us set a limit on the number of items to extract from a source. This variable
 can be introspected by user-defined scripts to optimize for partial extraction.
 """
+
+execution_id: ContextVar[str] = ContextVar("execution_id", default=str(uuid.uuid4()))
+"""The execution ID context variable."""
 
 
 __all__ = ["active_project", "active_pipeline", "debug_mode", "extract_limit"]

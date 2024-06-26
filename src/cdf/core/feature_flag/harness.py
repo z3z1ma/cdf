@@ -18,6 +18,7 @@ from featureflags.util import log as _ff_logger
 
 import cdf.core.logger as logger
 from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter, FlagAdapterResponse
+from cdf.core.state import with_audit
 
 
 # This exists because the default harness LRU implementation does not store >1000 flags
@@ -121,6 +122,16 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
             },
         )
 
+    @with_audit(
+        "feature_flag_harness_save",
+        lambda self, feature_name, flag: {
+            "account": self.account,
+            "organization": self.organization,
+            "project": self.project,
+            "feature_name": feature_name,
+            "flag_state": flag,
+        },
+    )
     def save(self, feature_name: str, flag: bool) -> None:
         """Create a feature flag."""
         if self.get(feature_name) is FlagAdapterResponse.NOT_FOUND:
@@ -159,6 +170,15 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         """Create many feature flags."""
         list(self.pool.map(lambda f: self.save(*f), flags.items()))
 
+    @with_audit(
+        "feature_flag_harness_delete",
+        lambda self, feature_name: {
+            "account": self.account,
+            "organization": self.organization,
+            "project": self.project,
+            "feature_name": feature_name,
+        },
+    )
     def delete(self, feature_name: str) -> None:
         """Drop a feature flag."""
         logger.info(f"Deleting feature flag {feature_name}")

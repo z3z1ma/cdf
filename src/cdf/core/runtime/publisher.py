@@ -15,12 +15,12 @@ from sqlmesh.core.dialect import normalize_model_name
 import cdf.core.logger as logger
 from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import PublisherSpecification
-from cdf.core.state import audit_func
+from cdf.core.state import with_audit
 from cdf.types import M
 
 
 @with_activate_project
-@audit_func(
+@with_audit(
     "execute_publisher",
     lambda spec, transform_ctx, skip_verification=False: {
         "name": spec.name,
