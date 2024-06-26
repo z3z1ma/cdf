@@ -28,6 +28,8 @@ from cdf.types import M
         "depends_on": spec.depends_on,
         "skipped_verification": skip_verification,
         "gateway": transform_ctx.gateway,
+        "workspace": spec.workspace.name,
+        "project": spec.project.name,
     },
 )
 def execute_publisher_specification(

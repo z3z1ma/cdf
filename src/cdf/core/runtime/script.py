@@ -33,7 +33,12 @@ def execute_script_specification(
 @with_activate_project
 @with_audit(
     "execute_script",
-    lambda spec, capture_stdout=False: {"name": spec.name, "owner": spec.owner},
+    lambda spec, capture_stdout=False: {
+        "name": spec.name,
+        "owner": spec.owner,
+        "workspace": spec.workspace.name,
+        "project": spec.project.name,
+    },
 )
 def execute_script_specification(
     spec: ScriptSpecification,

@@ -23,7 +23,7 @@ import cdf.core.constants as c
 import cdf.core.logger as logger
 
 if t.TYPE_CHECKING:
-    from cdf.core.project import Workspace
+    from cdf.core.project import Project, Workspace
 
 T = t.TypeVar("T")
 
@@ -138,6 +138,11 @@ class BaseComponent(
     def has_workspace_association(self) -> bool:
         """Check if the component has a workspace association."""
         return self._workspace is not None
+
+    @property
+    def project(self) -> "Project":
+        """Get the project containing the component."""
+        return self.workspace.project
 
     @property
     def versioned_name(self) -> str:

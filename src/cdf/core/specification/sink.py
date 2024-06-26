@@ -28,7 +28,13 @@ class SinkSpecification(PythonScript):
         """Run the sink script."""
         loader = t.cast(t.Callable[..., t.Dict[str, t.Any]], super().main)
         return with_audit(
-            "load_sink", lambda self=self: {"name": self.name, "owner": self.owner}
+            "load_sink",
+            lambda self=self: {
+                "name": self.name,
+                "owner": self.owner,
+                "workspace": self.workspace.name,
+                "project": self.project.name,
+            },
         )(loader)
 
     def get_ingest_config(

@@ -363,6 +363,8 @@ def _audit(
         "enable_stage": enable_stage,
         "quiet": quiet,
         "pipeline_options": pipeline_options,
+        "workspace": pipe_spec.workspace.name,
+        "project": pipe_spec.project.name,
     }
 
 

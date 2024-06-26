@@ -218,12 +218,17 @@ class StateStore(pydantic.BaseModel):
                 pd.DataFrame([payload]),
             )
 
-    def list_audits(self, limit: int = 100):
+    def list_audits(
+        self, *event_names: str, limit: int = 100, failed_only: bool = False
+    ):
         """List all audit events"""
         assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
-        return self.adapter.fetchall(
-            exp.select("*").from_(self.audit_table).order_by("timestamp").limit(limit)
-        )
+        q = exp.select("*").from_(self.audit_table).order_by("timestamp").limit(limit)
+        if failed_only:
+            q = q.where("success = false")
+        if event_names:
+            q = q.where(f"event IN {tuple(event_names)}")
+        return self.adapter.fetchall(q)
 
     def clear_audits(self):
         """Clear all audit events"""

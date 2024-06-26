@@ -29,7 +29,12 @@ if t.TYPE_CHECKING:
 @with_activate_project
 @with_audit(
     "execute_notebook",
-    lambda spec, **params: {"name": spec.name, "owner": spec.owner},
+    lambda spec, **params: {
+        "name": spec.name,
+        "owner": spec.owner,
+        "workspace": spec.workspace.name,
+        "project": spec.project.name,
+    },
 )
 def execute_notebook_specification(
     spec: NotebookSpecification,
