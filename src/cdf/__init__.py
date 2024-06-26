@@ -1,3 +1,4 @@
+import os
 import pdb
 import sys
 import traceback
@@ -17,7 +18,7 @@ from cdf.types import M, PathLike
 
 
 @M.result
-def find_nearest(path: PathLike = ".") -> Project:
+def find_nearest(path: t.Optional[PathLike] = None) -> Project:
     """Find the nearest project.
 
     Recursively searches for a project file in the parent directories.
@@ -31,6 +32,8 @@ def find_nearest(path: PathLike = ".") -> Project:
     Returns:
         Project: The nearest project.
     """
+    if path is None:
+        path = os.getenv("CDF_ROOT", ".")
     project = None
     path = Path(path).resolve()
     if path.is_file():
@@ -97,7 +100,7 @@ def get_active_project() -> Project:
     return context.active_project.get()
 
 
-def get_workspace(path: PathLike = ".") -> M.Result[Workspace, Exception]:
+def get_workspace(path: t.Optional[PathLike] = None) -> M.Result[Workspace, Exception]:
     """Get a workspace from a path.
 
     Args:
@@ -106,7 +109,13 @@ def get_workspace(path: PathLike = ".") -> M.Result[Workspace, Exception]:
     Returns:
         M.Result[Workspace, Exception]: The workspace or an error.
     """
-    return find_nearest(path).bind(lambda p: p.get_workspace_from_path(path))
+    return find_nearest(path).bind(
+        lambda p: (
+            p.get_workspace_from_path(path)
+            if path
+            else p.get_workspace(os.environ["CDF_WORKSPACE"])
+        )
+    )
 
 
 with_config = dlt.sources.config.with_config
