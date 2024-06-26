@@ -12,6 +12,7 @@ from contextlib import nullcontext, redirect_stdout
 import cdf.core.logger as logger
 from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import ScriptSpecification
+from cdf.core.state import audit_func
 from cdf.types import M
 
 
@@ -30,6 +31,10 @@ def execute_script_specification(
 
 
 @with_activate_project
+@audit_func(
+    "execute_script",
+    lambda spec, capture_stdout=False: {"name": spec.name, "owner": spec.owner},
+)
 def execute_script_specification(
     spec: ScriptSpecification,
     capture_stdout: bool = False,

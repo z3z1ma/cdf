@@ -15,10 +15,21 @@ from sqlmesh.core.dialect import normalize_model_name
 import cdf.core.logger as logger
 from cdf.core.runtime.common import with_activate_project
 from cdf.core.specification import PublisherSpecification
+from cdf.core.state import audit_func
 from cdf.types import M
 
 
 @with_activate_project
+@audit_func(
+    "execute_publisher",
+    lambda spec, transform_ctx, skip_verification=False: {
+        "name": spec.name,
+        "owner": spec.owner,
+        "depends_on": spec.depends_on,
+        "skipped_verification": skip_verification,
+        "gateway": transform_ctx.gateway,
+    },
+)
 def execute_publisher_specification(
     spec: PublisherSpecification,
     transform_ctx: sqlmesh.Context,
