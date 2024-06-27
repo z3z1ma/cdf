@@ -145,6 +145,11 @@ class BaseComponent(
         return self.workspace.project
 
     @property
+    def state_adapter(self) -> t.Any:
+        """Get the state adapter for the component."""
+        return self.workspace.state
+
+    @property
     def versioned_name(self) -> str:
         """Get the versioned name of the component."""
         return f"{self.name}_v{self.version}"

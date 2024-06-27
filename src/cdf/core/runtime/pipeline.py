@@ -225,7 +225,7 @@ class RuntimePipeline(Pipeline):
         if self.force_replace:
             write_disposition = "replace"
 
-        info = self.specification.project.state.with_audit(
+        info = self.specification.state_adapter.with_audit(
             "extract",
             {
                 "pipeline": self.pipeline_name,
@@ -249,7 +249,7 @@ class RuntimePipeline(Pipeline):
                 "Metrics captured during %s extract, sideloading to destination...",
                 info.pipeline.pipeline_name,
             )
-            self.specification.project.state.with_audit(
+            self.specification.state_adapter.with_audit(
                 "captured_metrics",
                 {
                     "load_ids": info.loads_ids,
@@ -300,7 +300,7 @@ class RuntimePipeline(Pipeline):
                 # this will enable us to "replay" a pipeline
                 # logger.info(self.specification.workspace.filesystem.ls("extracted"))
 
-        self.specification.project.state.capture_extract_info(info)
+        self.specification.state_adapter.capture_extract_info(info)
         return info
 
     def normalize(
@@ -308,14 +308,14 @@ class RuntimePipeline(Pipeline):
         workers: int = 1,
         loader_file_format: TLoaderFileFormat = None,  # type: ignore[arg-type]
     ) -> NormalizeInfo:
-        info = self.specification.project.state.with_audit(
+        info = self.specification.state_adapter.with_audit(
             "normalize",
             {
                 "pipeline": self.pipeline_name,
                 "destination": self.destination.destination_name,
             },
         )(super().normalize)(workers, loader_file_format)
-        self.specification.project.state.capture_normalize_info(info)
+        self.specification.state_adapter.capture_normalize_info(info)
         return info
 
     def load(
@@ -327,7 +327,7 @@ class RuntimePipeline(Pipeline):
         workers: int = 20,
         raise_on_failed_jobs: bool = False,
     ) -> LoadInfo:
-        info = self.specification.project.state.with_audit(
+        info = self.specification.state_adapter.with_audit(
             "load",
             {
                 "pipeline": self.pipeline_name,
@@ -340,7 +340,7 @@ class RuntimePipeline(Pipeline):
             workers=workers,
             raise_on_failed_jobs=raise_on_failed_jobs,
         )
-        self.specification.project.state.capture_load_info(info)
+        self.specification.state_adapter.capture_load_info(info)
         return info
 
     def run(
