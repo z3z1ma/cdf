@@ -297,7 +297,7 @@ class StateStore(pydantic.BaseModel):
                     "destination_name": info.pipeline.destination.destination_name,
                     "destination_type": info.pipeline.destination.destination_type,
                     "data": json.dumps(pkg.asdict(), default=str),
-                    "success": pkg.state == "loaded",
+                    "success": pkg.state != "aborted",
                     "elapsed": sum(
                         [j.elapsed for k in pkg.jobs.keys() for j in pkg.jobs[k]]
                     ),
@@ -306,19 +306,25 @@ class StateStore(pydantic.BaseModel):
             )
         return payload
 
-    def fetch_extracted(self, limit: int = 100, failed_only: bool = False):
+    def fetch_extracted(
+        self, *load_ids: str, limit: int = 100, failed_only: bool = False
+    ):
         """List all extracted data"""
         assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
         q = exp.select("*").from_(self.extract_table).order_by("timestamp").limit(limit)
         if failed_only:
             q = q.where("success = false")
+        if load_ids:
+            q = q.where(f"load_id IN {tuple(load_ids)}")
         df = self.adapter.fetchdf(q)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
         localtz = timezone(timedelta(seconds=-time.timezone))
         df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
         return df
 
-    def fetch_normalized(self, limit: int = 100, failed_only: bool = False):
+    def fetch_normalized(
+        self, *load_ids: str, limit: int = 100, failed_only: bool = False
+    ):
         """List all normalized data"""
         assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
         q = (
@@ -329,18 +335,22 @@ class StateStore(pydantic.BaseModel):
         )
         if failed_only:
             q = q.where("success = false")
+        if load_ids:
+            q = q.where(f"load_id IN {tuple(load_ids)}")
         df = self.adapter.fetchdf(q)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
         localtz = timezone(timedelta(seconds=-time.timezone))
         df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
         return df
 
-    def fetch_loaded(self, limit: int = 100, failed_only: bool = False):
+    def fetch_loaded(self, *load_ids: str, limit: int = 100, failed_only: bool = False):
         """List all loaded data"""
         assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
         q = exp.select("*").from_(self.load_table).order_by("timestamp").limit(limit)
         if failed_only:
             q = q.where("success = false")
+        if load_ids:
+            q = q.where(f"load_id IN {tuple(load_ids)}")
         df = self.adapter.fetchdf(q)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
         localtz = timezone(timedelta(seconds=-time.timezone))

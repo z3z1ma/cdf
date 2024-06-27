@@ -21,6 +21,7 @@ from dlt.common.versioned_state import (
     json_decode_state,
     json_encode_state,
 )
+from tomlkit import ws
 
 import cdf.core.constants as c
 import cdf.core.context as context
@@ -1078,6 +1079,12 @@ def inspect_events(
 @inspect.command("extracted")
 def inspect_extracted(
     ctx: typer.Context,
+    load_ids: t.Annotated[
+        str,
+        typer.Argument(
+            help="A comma-separated list of load ids to list. Use '*' to list all."
+        ),
+    ] = "*",
     limit: t.Annotated[
         int,
         typer.Option(
@@ -1089,13 +1096,38 @@ def inspect_extracted(
     W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
     import pandas as pd
 
-    with pd.option_context("display.max_rows", limit):
-        console.print(W.state.fetch_extracted(limit=limit))
+    if load_ids == "*":
+        requested_ids = []
+    else:
+        requested_ids = load_ids.split(",")
+    data = W.state.fetch_extracted(*requested_ids, limit=limit)
+    if data.empty:
+        console.print("\n[red]No data found.[/red]")
+        return
+    if requested_ids:
+        for load_id in requested_ids:
+            r = data.loc[data["load_id"] == load_id, "data"]
+            if r.empty:
+                console.print(
+                    f"\n[red]No data found for requested load id {load_id}.[/red]"
+                )
+                continue
+            console.print(f"\n[b]Data for load id {load_id}[/b]:")
+            console.print_json(r.iloc[0])
+    else:
+        with pd.option_context("display.max_rows", limit):
+            console.print(data)
 
 
 @inspect.command("normalized")
 def inspect_normalized(
     ctx: typer.Context,
+    load_ids: t.Annotated[
+        str,
+        typer.Argument(
+            help="A comma-separated list of load ids to list. Use '*' to list all."
+        ),
+    ] = "*",
     limit: t.Annotated[
         int,
         typer.Option(
@@ -1107,13 +1139,38 @@ def inspect_normalized(
     W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
     import pandas as pd
 
-    with pd.option_context("display.max_rows", limit):
-        console.print(W.state.fetch_normalized(limit=limit))
+    if load_ids == "*":
+        requested_ids = []
+    else:
+        requested_ids = load_ids.split(",")
+    data = W.state.fetch_normalized(*requested_ids, limit=limit)
+    if data.empty:
+        console.print("\n[red]No data found.[/red]")
+        return
+    if requested_ids:
+        for load_id in requested_ids:
+            r = data.loc[data["load_id"] == load_id, "data"]
+            if r.empty:
+                console.print(
+                    f"\n[red]No data found for requested load id {load_id}.[/red]"
+                )
+                continue
+            console.print(f"\n[b]Data for load id {load_id}[/b]:")
+            console.print_json(r.iloc[0])
+    else:
+        with pd.option_context("display.max_rows", limit):
+            console.print(data)
 
 
 @inspect.command("loaded")
 def inspect_loaded(
     ctx: typer.Context,
+    load_ids: t.Annotated[
+        str,
+        typer.Argument(
+            help="A comma-separated list of load ids to list. Use '*' to list all."
+        ),
+    ] = "*",
     limit: t.Annotated[
         int,
         typer.Option(
@@ -1125,8 +1182,27 @@ def inspect_loaded(
     W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
     import pandas as pd
 
-    with pd.option_context("display.max_rows", limit):
-        console.print(W.state.fetch_loaded(limit=limit))
+    if load_ids == "*":
+        requested_ids = []
+    else:
+        requested_ids = load_ids.split(",")
+    data = W.state.fetch_loaded(*requested_ids, limit=limit)
+    if data.empty:
+        console.print("\n[red]No data found.[/red]")
+        return
+    if requested_ids:
+        for load_id in requested_ids:
+            r = data.loc[data["load_id"] == load_id, "data"]
+            if r.empty:
+                console.print(
+                    f"\n[red]No data found for requested load id {load_id}.[/red]"
+                )
+                continue
+            console.print(f"\n[b]Data for load id {load_id}[/b]:")
+            console.print_json(r.iloc[0])
+    else:
+        with pd.option_context("display.max_rows", limit):
+            console.print(data)
 
 
 if __name__ == "__main__":
