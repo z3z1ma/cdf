@@ -3,6 +3,7 @@
 import json
 import time
 import typing as t
+from datetime import timedelta, timezone
 
 import pandas as pd
 import pydantic
@@ -50,7 +51,7 @@ AUDIT_SCHEMA = {
 """The schema for the audit store"""
 
 
-def _no_props(*args: t.Any, **kwargs: t.Any) -> JSON:
+def _no_props(*args: t.Any, **kwargs: t.Any) -> t.Dict[str, JSON]:
     """Empty properties"""
     return {}
 
@@ -73,7 +74,7 @@ class StateStore(pydantic.BaseModel):
         DuckDBConnectionConfig,
         MySQLConnectionConfig,
         PostgresConnectionConfig,
-    ] = DuckDBConnectionConfig(database=".cdf_state.db")
+    ] = DuckDBConnectionConfig(database=".cdf.db")
     """The connection configuration to the state store"""
 
     _adapter: t.Optional[EngineAdapter] = None
@@ -160,9 +161,18 @@ class StateStore(pydantic.BaseModel):
     def with_audit(
         self,
         event: str,
-        props: t.Union[t.Callable[P, JSON], t.Dict[str, JSON]] = _no_props,
+        input_props: t.Union[t.Callable[P, JSON], t.Dict[str, JSON]] = _no_props,
+        output_props: t.Callable[[T], t.Dict[str, JSON]] = _no_props,
     ) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
-        """Decorator to add audit logging to a function"""
+        """Decorator to add audit logging to a function
+
+        Args:
+            event (str): The event name
+            input_props (Union[Callable[[P], JSON], Dict[str, JSON], optional): A callable that takes the function arguments
+                and returns a dictionary of properties to log. Alternatively, static props are accepted as a dictionary.
+            output_props (Callable[[T], Dict[str, JSON], optional): A callable that takes the function return value
+                and returns a dictionary of properties to log.
+        """
 
         def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
             def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -171,8 +181,10 @@ class StateStore(pydantic.BaseModel):
                     "timestamp": time.time(),
                     "elapsed": 0,
                     "success": False,
-                    "properties": json.dumps(
-                        props(*args, **kwargs) if callable(props) else props
+                    "properties": (
+                        input_props(*args, **kwargs)
+                        if callable(input_props)
+                        else input_props
                     ),
                     "execution_id": execution_id.get(),
                 }
@@ -189,6 +201,8 @@ class StateStore(pydantic.BaseModel):
                         raise e
                 audit_event["elapsed"] = time.perf_counter() - start
                 audit_event["success"] = not isinstance(rv, M.Err)
+                audit_event["properties"].update(output_props(rv))
+                audit_event["properties"] = json.dumps(audit_event["properties"])
                 with self.adapter.transaction():
                     self.adapter.insert_append(
                         self.audit_table,
@@ -218,7 +232,7 @@ class StateStore(pydantic.BaseModel):
                 pd.DataFrame([payload]),
             )
 
-    def list_audits(
+    def fetch_audits(
         self, *event_names: str, limit: int = 100, failed_only: bool = False
     ):
         """List all audit events"""
@@ -228,7 +242,11 @@ class StateStore(pydantic.BaseModel):
             q = q.where("success = false")
         if event_names:
             q = q.where(f"event IN {tuple(event_names)}")
-        return self.adapter.fetchall(q)
+        df = self.adapter.fetchdf(q)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        localtz = timezone(timedelta(seconds=-time.timezone))
+        df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
+        return df
 
     def clear_audits(self):
         """Clear all audit events"""
@@ -236,7 +254,9 @@ class StateStore(pydantic.BaseModel):
 
 
 def with_audit(
-    event: str, props: t.Union[t.Callable[P, JSON], t.Dict[str, JSON]] = _no_props
+    event: str,
+    input_props: t.Union[t.Callable[P, JSON], t.Dict[str, JSON]] = _no_props,
+    output_props: t.Callable[[T], t.Dict[str, JSON]] = _no_props,
 ) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
     """Decorator to add audit logging to a function given an active project"""
 
@@ -245,7 +265,13 @@ def with_audit(
             project = active_project.get(None)
             if project is None:
                 return func(*args, **kwargs)
-            return project.state.with_audit(event, props)(func)(*args, **kwargs)
+            return project.state.with_audit(
+                event,
+                input_props,
+                output_props,
+            )(
+                func
+            )(*args, **kwargs)
 
         return wrapper
 

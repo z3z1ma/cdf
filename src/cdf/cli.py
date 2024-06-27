@@ -1040,5 +1040,27 @@ def proxy_plan(
     console.print(res.json())
 
 
+@app.command(rich_help_panel="Utilities")
+def fetch_events(
+    ctx: typer.Context,
+    limit: t.Annotated[
+        int,
+        typer.Option(..., help="The number of audit logs to list. Defaults to 10."),
+    ] = 10,
+    failed_only: t.Annotated[
+        bool,
+        typer.Option(
+            help="List only the audit logs with errors.",
+        ),
+    ] = False,
+) -> None:
+    """:mag: List the audit logs for the current workspace."""
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    import pandas as pd
+
+    with pd.option_context("display.max_rows", limit):
+        console.print(W.state.fetch_audits(limit=limit, failed_only=failed_only))
+
+
 if __name__ == "__main__":
     app()

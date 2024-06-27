@@ -225,7 +225,13 @@ class RuntimePipeline(Pipeline):
         if self.force_replace:
             write_disposition = "replace"
 
-        info = super().extract(
+        info = self.specification.project.state.with_audit(
+            "extract",
+            {
+                "pipeline": self.pipeline_name,
+                "destination": self.destination.destination_name,
+            },
+        )(super().extract)(
             sources,
             table_name=table_name,
             parent_table_name=parent_table_name,
@@ -243,7 +249,14 @@ class RuntimePipeline(Pipeline):
                 "Metrics captured during %s extract, sideloading to destination...",
                 info.pipeline.pipeline_name,
             )
-            super().extract(
+            self.specification.project.state.with_audit(
+                "captured_metrics",
+                {
+                    "load_ids": info.loads_ids,
+                    "pipeline": self.pipeline_name,
+                    "destination": self.destination.destination_name,
+                },  # type: ignore[arg-type]
+            )(super().extract)(
                 dlt.resource(
                     [
                         {
@@ -298,7 +311,36 @@ class RuntimePipeline(Pipeline):
         workers: int = 1,
         loader_file_format: TLoaderFileFormat = None,  # type: ignore[arg-type]
     ) -> NormalizeInfo:
-        return super().normalize(workers, loader_file_format)
+        return self.specification.project.state.with_audit(
+            "normalize",
+            {
+                "pipeline": self.pipeline_name,
+                "destination": self.destination.destination_name,
+            },
+        )(super().normalize)(workers, loader_file_format)
+
+    def load(
+        self,
+        destination: TDestinationReferenceArg = None,  # type: ignore[arg-type]
+        dataset_name: str = None,  # type: ignore[arg-type]
+        credentials: t.Any = None,  # type: ignore[arg-type]
+        *,
+        workers: int = 20,
+        raise_on_failed_jobs: bool = False,
+    ) -> LoadInfo:
+        return self.specification.project.state.with_audit(
+            "load",
+            {
+                "pipeline": self.pipeline_name,
+                "destination": self.destination.destination_name,
+            },
+        )(super().load)(
+            destination,
+            dataset_name,
+            credentials,
+            workers=workers,
+            raise_on_failed_jobs=raise_on_failed_jobs,
+        )
 
     def run(
         self,
@@ -336,7 +378,7 @@ class PipelineResult(t.NamedTuple):
     pipeline: RuntimePipeline
 
 
-def _audit(
+def _audit_props(
     pipe_spec: PipelineSpecification,
     sink_spec: t.Union[
         TDestinationReferenceArg,
@@ -369,7 +411,7 @@ def _audit(
 
 
 @with_activate_project
-@with_audit("execute_pipeline", _audit)
+@with_audit("execute_pipeline", _audit_props)
 def execute_pipeline_specification(
     pipe_spec: PipelineSpecification,
     sink_spec: t.Union[
