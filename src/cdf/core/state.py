@@ -259,27 +259,27 @@ class StateStore(pydantic.BaseModel):
 
     def capture_extract_info(self, info: ExtractInfo) -> None:
         """Capture extract information"""
+        d = self._info_to_payload(info)
+        if not d:
+            return
         with self.adapter.transaction():
-            self.adapter.insert_append(
-                self.extract_table,
-                pd.DataFrame(self._info_to_payload(info)),
-            )
+            self.adapter.insert_append(self.extract_table, pd.DataFrame(d))
 
     def capture_normalize_info(self, info: NormalizeInfo) -> None:
         """Capture normalize information"""
+        d = self._info_to_payload(info)
+        if not d:
+            return
         with self.adapter.transaction():
-            self.adapter.insert_append(
-                self.normalize_table,
-                pd.DataFrame(self._info_to_payload(info)),
-            )
+            self.adapter.insert_append(self.normalize_table, pd.DataFrame(d))
 
     def capture_load_info(self, info: LoadInfo) -> None:
         """Capture load information"""
+        d = self._info_to_payload(info)
+        if not d:
+            return
         with self.adapter.transaction():
-            self.adapter.insert_append(
-                self.load_table,
-                pd.DataFrame(self._info_to_payload(info)),
-            )
+            self.adapter.insert_append(self.load_table, pd.DataFrame(d))
 
     @staticmethod
     def _info_to_payload(
