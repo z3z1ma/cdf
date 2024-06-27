@@ -300,10 +300,7 @@ class RuntimePipeline(Pipeline):
                 # this will enable us to "replay" a pipeline
                 # logger.info(self.specification.workspace.filesystem.ls("extracted"))
 
-        for package in info.load_packages:
-            data = {"load_id": package.load_id, "info": package.asdict()}
-            logger.info(data)
-
+        self.specification.project.state.capture_extract_info(info)
         return info
 
     def normalize(
@@ -311,13 +308,15 @@ class RuntimePipeline(Pipeline):
         workers: int = 1,
         loader_file_format: TLoaderFileFormat = None,  # type: ignore[arg-type]
     ) -> NormalizeInfo:
-        return self.specification.project.state.with_audit(
+        info = self.specification.project.state.with_audit(
             "normalize",
             {
                 "pipeline": self.pipeline_name,
                 "destination": self.destination.destination_name,
             },
         )(super().normalize)(workers, loader_file_format)
+        self.specification.project.state.capture_normalize_info(info)
+        return info
 
     def load(
         self,
@@ -328,7 +327,7 @@ class RuntimePipeline(Pipeline):
         workers: int = 20,
         raise_on_failed_jobs: bool = False,
     ) -> LoadInfo:
-        return self.specification.project.state.with_audit(
+        info = self.specification.project.state.with_audit(
             "load",
             {
                 "pipeline": self.pipeline_name,
@@ -341,6 +340,8 @@ class RuntimePipeline(Pipeline):
             workers=workers,
             raise_on_failed_jobs=raise_on_failed_jobs,
         )
+        self.specification.project.state.capture_load_info(info)
+        return info
 
     def run(
         self,

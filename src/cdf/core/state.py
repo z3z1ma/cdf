@@ -7,6 +7,7 @@ from datetime import timedelta, timezone
 
 import pandas as pd
 import pydantic
+from dlt.common.pipeline import ExtractInfo, LoadInfo, NormalizeInfo
 from sqlglot import exp
 from sqlmesh.core.config.connection import (
     DuckDBConnectionConfig,
@@ -27,6 +28,10 @@ KV_SCHEMA = {"key": exp.DataType.build("TEXT"), "value": exp.DataType.build("TEX
 _PIPELINE_SCHEMA = {
     "load_id": exp.DataType.build("TEXT"),
     "timestamp": exp.DataType.build("INT64"),
+    "pipeline": exp.DataType.build("TEXT"),
+    "dataset": exp.DataType.build("TEXT"),
+    "destination_name": exp.DataType.build("TEXT"),
+    "destination_type": exp.DataType.build("TEXT"),
     "data": exp.DataType.build("TEXT"),
     "success": exp.DataType.build("BOOLEAN"),
     "elapsed": exp.DataType.build("FLOAT"),
@@ -251,6 +256,96 @@ class StateStore(pydantic.BaseModel):
     def clear_audits(self):
         """Clear all audit events"""
         self.adapter.delete_from(self.audit_table, "1 = 1")
+
+    def capture_extract_info(self, info: ExtractInfo) -> None:
+        """Capture extract information"""
+        with self.adapter.transaction():
+            self.adapter.insert_append(
+                self.extract_table,
+                pd.DataFrame(self._info_to_payload(info)),
+            )
+
+    def capture_normalize_info(self, info: NormalizeInfo) -> None:
+        """Capture normalize information"""
+        with self.adapter.transaction():
+            self.adapter.insert_append(
+                self.normalize_table,
+                pd.DataFrame(self._info_to_payload(info)),
+            )
+
+    def capture_load_info(self, info: LoadInfo) -> None:
+        """Capture load information"""
+        with self.adapter.transaction():
+            self.adapter.insert_append(
+                self.load_table,
+                pd.DataFrame(self._info_to_payload(info)),
+            )
+
+    @staticmethod
+    def _info_to_payload(
+        info: t.Union[ExtractInfo, NormalizeInfo, LoadInfo],
+    ) -> t.List[t.Dict[str, t.Any]]:
+        """Convert an info object to a payload"""
+        payload = []
+        for pkg in info.load_packages:
+            payload.append(
+                {
+                    "load_id": pkg.load_id,
+                    "timestamp": int(time.time()),
+                    "pipeline": info.pipeline.pipeline_name,
+                    "dataset": info.pipeline.dataset_name,
+                    "destination_name": info.pipeline.destination.destination_name,
+                    "destination_type": info.pipeline.destination.destination_type,
+                    "data": json.dumps(pkg.asdict(), default=str),
+                    "success": pkg.state == "loaded",
+                    "elapsed": sum(
+                        [j.elapsed for k in pkg.jobs.keys() for j in pkg.jobs[k]]
+                    ),
+                    "execution_id": execution_id.get(),
+                }
+            )
+        return payload
+
+    def fetch_extracted(self, limit: int = 100, failed_only: bool = False):
+        """List all extracted data"""
+        assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
+        q = exp.select("*").from_(self.extract_table).order_by("timestamp").limit(limit)
+        if failed_only:
+            q = q.where("success = false")
+        df = self.adapter.fetchdf(q)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        localtz = timezone(timedelta(seconds=-time.timezone))
+        df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
+        return df
+
+    def fetch_normalized(self, limit: int = 100, failed_only: bool = False):
+        """List all normalized data"""
+        assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
+        q = (
+            exp.select("*")
+            .from_(self.normalize_table)
+            .order_by("timestamp")
+            .limit(limit)
+        )
+        if failed_only:
+            q = q.where("success = false")
+        df = self.adapter.fetchdf(q)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        localtz = timezone(timedelta(seconds=-time.timezone))
+        df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
+        return df
+
+    def fetch_loaded(self, limit: int = 100, failed_only: bool = False):
+        """List all loaded data"""
+        assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
+        q = exp.select("*").from_(self.load_table).order_by("timestamp").limit(limit)
+        if failed_only:
+            q = q.where("success = false")
+        df = self.adapter.fetchdf(q)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
+        localtz = timezone(timedelta(seconds=-time.timezone))
+        df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
+        return df
 
 
 def with_audit(

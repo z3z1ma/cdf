@@ -1040,8 +1040,21 @@ def proxy_plan(
     console.print(res.json())
 
 
-@app.command(rich_help_panel="Utilities")
-def fetch_events(
+app.add_typer(
+    inspect := typer.Typer(
+        rich_markup_mode="rich",
+        epilog="Made with [red]♥[/red] by [bold]z3z1ma[/bold].",
+        add_completion=False,
+        no_args_is_help=True,
+    ),
+    name="inspect",
+    help=":mag: State store inspection commands.",
+    rich_help_panel="Utilities",
+)
+
+
+@inspect.command("events")
+def inspect_events(
     ctx: typer.Context,
     limit: t.Annotated[
         int,
@@ -1060,6 +1073,60 @@ def fetch_events(
 
     with pd.option_context("display.max_rows", limit):
         console.print(W.state.fetch_audits(limit=limit, failed_only=failed_only))
+
+
+@inspect.command("extracted")
+def inspect_extracted(
+    ctx: typer.Context,
+    limit: t.Annotated[
+        int,
+        typer.Option(
+            ..., help="The number of extracted resources to list. Defaults to 10."
+        ),
+    ] = 10,
+) -> None:
+    """:mag: List the extracted resources for the current workspace."""
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    import pandas as pd
+
+    with pd.option_context("display.max_rows", limit):
+        console.print(W.state.fetch_extracted(limit=limit))
+
+
+@inspect.command("normalized")
+def inspect_normalized(
+    ctx: typer.Context,
+    limit: t.Annotated[
+        int,
+        typer.Option(
+            ..., help="The number of normalized resources to list. Defaults to 10."
+        ),
+    ] = 10,
+) -> None:
+    """:mag: List the normalized resources for the current workspace."""
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    import pandas as pd
+
+    with pd.option_context("display.max_rows", limit):
+        console.print(W.state.fetch_normalized(limit=limit))
+
+
+@inspect.command("loaded")
+def inspect_loaded(
+    ctx: typer.Context,
+    limit: t.Annotated[
+        int,
+        typer.Option(
+            ..., help="The number of loaded resources to list. Defaults to 10."
+        ),
+    ] = 10,
+) -> None:
+    """:mag: List the loaded resources for the current workspace."""
+    W = t.cast(WorkspaceMonad, ctx.obj).unwrap()
+    import pandas as pd
+
+    with pd.option_context("display.max_rows", limit):
+        console.print(W.state.fetch_loaded(limit=limit))
 
 
 if __name__ == "__main__":
