@@ -1,8 +1,6 @@
-import getpass
-
-import sqlmesh
-
 import cdf
+import sqlmesh
+from cdf.integrations.sqlmesh import CDFNotificationTarget
 
 workspace = cdf.get_workspace(__file__).unwrap()
 
@@ -22,9 +20,8 @@ config = sqlmesh.Config.model_validate(
                 "external": "semi",
             }
         },
-        username=getpass.getuser(),
+        # username=getpass.getuser(),
         physical_schema_override={},
-        notification_targets=[],
         format={
             "normalize": True,
             "pad": 4,
@@ -37,3 +34,5 @@ config = sqlmesh.Config.model_validate(
         ui={"format_on_save": True},
     )
 )
+
+config.notification_targets = [CDFNotificationTarget(workspace=workspace)]
