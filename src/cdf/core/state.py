@@ -242,12 +242,17 @@ class StateStore(pydantic.BaseModel):
     ):
         """List all audit events"""
         assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
-        q = exp.select("*").from_(self.audit_table).order_by("timestamp").limit(limit)
+        q = (
+            exp.select("*")
+            .from_(self.audit_table)
+            .order_by("timestamp DESC")
+            .limit(limit)
+        )
         if failed_only:
             q = q.where("success = false")
         if event_names:
             q = q.where(f"event IN {tuple(event_names)}")
-        df = self.adapter.fetchdf(q)
+        df = self.adapter.fetchdf(q).sort_values("timestamp", ascending=True)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
         localtz = timezone(timedelta(seconds=-time.timezone))
         df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
@@ -311,12 +316,17 @@ class StateStore(pydantic.BaseModel):
     ):
         """List all extracted data"""
         assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
-        q = exp.select("*").from_(self.extract_table).order_by("timestamp").limit(limit)
+        q = (
+            exp.select("*")
+            .from_(self.extract_table)
+            .order_by("timestamp DESC")
+            .limit(limit)
+        )
         if failed_only:
             q = q.where("success = false")
         if load_ids:
             q = q.where(f"load_id IN {tuple(load_ids)}")
-        df = self.adapter.fetchdf(q)
+        df = self.adapter.fetchdf(q).sort_values("timestamp", ascending=True)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
         localtz = timezone(timedelta(seconds=-time.timezone))
         df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
@@ -330,14 +340,14 @@ class StateStore(pydantic.BaseModel):
         q = (
             exp.select("*")
             .from_(self.normalize_table)
-            .order_by("timestamp")
+            .order_by("timestamp DESC")
             .limit(limit)
         )
         if failed_only:
             q = q.where("success = false")
         if load_ids:
             q = q.where(f"load_id IN {tuple(load_ids)}")
-        df = self.adapter.fetchdf(q)
+        df = self.adapter.fetchdf(q).sort_values("timestamp", ascending=True)
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="s", utc=True)
         localtz = timezone(timedelta(seconds=-time.timezone))
         df["timestamp"] = df["timestamp"].dt.tz_convert(localtz)
@@ -346,7 +356,12 @@ class StateStore(pydantic.BaseModel):
     def fetch_loaded(self, *load_ids: str, limit: int = 100, failed_only: bool = False):
         """List all loaded data"""
         assert limit > 0 and limit < 1000, "Limit must be between 1 and 1000"
-        q = exp.select("*").from_(self.load_table).order_by("timestamp").limit(limit)
+        q = (
+            exp.select("*")
+            .from_(self.load_table)
+            .order_by("timestamp DESC")
+            .limit(limit)
+        )
         if failed_only:
             q = q.where("success = false")
         if load_ids:
