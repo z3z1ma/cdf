@@ -16,6 +16,7 @@ from sqlmesh.core.config.connection import (
 )
 from sqlmesh.core.engine_adapter import EngineAdapter
 
+import cdf.core.logger as logger
 from cdf.core.context import active_project, execution_id
 from cdf.types import M, P
 
@@ -130,7 +131,7 @@ class StateStore(pydantic.BaseModel):
 
     def store_json(self, key: str, value: JSON) -> None:
         """Store a JSON value"""
-        with self.adapter.transaction(value is not None):
+        with self.adapter.transaction(value is not None), logger.suppress_and_warn():
             self.adapter.delete_from(self.kv_table, f"key = '{key}'")
             if value is not None:
                 self.adapter.insert_append(
@@ -208,7 +209,7 @@ class StateStore(pydantic.BaseModel):
                 audit_event["success"] = not isinstance(rv, M.Err)
                 audit_event["properties"].update(output_props(rv))
                 audit_event["properties"] = json.dumps(audit_event["properties"])
-                with self.adapter.transaction():
+                with self.adapter.transaction(), logger.suppress_and_warn():
                     self.adapter.insert_append(
                         self.audit_table,
                         pd.DataFrame([audit_event]),
@@ -231,7 +232,7 @@ class StateStore(pydantic.BaseModel):
             "properties": json.dumps(properties),
             "execution_id": execution_id.get(),
         }
-        with self.adapter.transaction():
+        with self.adapter.transaction(), logger.suppress_and_warn():
             self.adapter.insert_append(
                 self.audit_table,
                 pd.DataFrame([payload]),
@@ -267,7 +268,7 @@ class StateStore(pydantic.BaseModel):
         d = self._info_to_payload(info)
         if not d:
             return
-        with self.adapter.transaction():
+        with self.adapter.transaction(), logger.suppress_and_warn():
             self.adapter.insert_append(self.extract_table, pd.DataFrame(d))
 
     def capture_normalize_info(self, info: NormalizeInfo) -> None:
@@ -275,7 +276,7 @@ class StateStore(pydantic.BaseModel):
         d = self._info_to_payload(info)
         if not d:
             return
-        with self.adapter.transaction():
+        with self.adapter.transaction(), logger.suppress_and_warn():
             self.adapter.insert_append(self.normalize_table, pd.DataFrame(d))
 
     def capture_load_info(self, info: LoadInfo) -> None:
@@ -283,7 +284,7 @@ class StateStore(pydantic.BaseModel):
         d = self._info_to_payload(info)
         if not d:
             return
-        with self.adapter.transaction():
+        with self.adapter.transaction(), logger.suppress_and_warn():
             self.adapter.insert_append(self.load_table, pd.DataFrame(d))
 
     @staticmethod
