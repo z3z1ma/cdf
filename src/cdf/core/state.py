@@ -199,7 +199,7 @@ class StateStore(pydantic.BaseModel):
                     rv = func(*args, **kwargs)
                 except Exception as e:
                     audit_event["elapsed"] = time.perf_counter() - start
-                    with self.adapter.transaction():
+                    with self.adapter.transaction(), logger.suppress_and_warn():
                         self.adapter.insert_append(
                             self.audit_table,
                             pd.DataFrame([audit_event]),
@@ -390,9 +390,7 @@ def with_audit(
                 event,
                 input_props,
                 output_props,
-            )(
-                func
-            )(*args, **kwargs)
+            )(func)(*args, **kwargs)
 
         return wrapper
 
