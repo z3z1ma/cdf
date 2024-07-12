@@ -69,7 +69,7 @@ class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         """Get the feature flags."""
         if self.__flags is None:
             self.__flags = self._read()
-        return self.__flags
+        return t.cast(t.Dict[str, FlagAdapterResponse], self.__flags)
 
     def get(self, feature_name: str) -> FlagAdapterResponse:
         """Get a feature flag.

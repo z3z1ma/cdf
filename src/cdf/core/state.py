@@ -204,7 +204,7 @@ class StateStore(pydantic.BaseModel):
                             self.audit_table,
                             pd.DataFrame([audit_event]),
                         )
-                        raise e
+                    raise e
                 audit_event["elapsed"] = time.perf_counter() - start
                 audit_event["success"] = not isinstance(rv, M.Err)
                 audit_event["properties"].update(output_props(rv))
