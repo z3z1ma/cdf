@@ -122,7 +122,7 @@ def test_perturb_nested(more_type_safe: bool) -> None:
 
 class MoreComplexPerturbConfig0(cdf.injector.Config):
     x: int = cdf.injector.GlobalInput(type_=int)
-    y: int = cdf.injector.Object(2)
+    y: int = cdf.injector.Instance(2)
 
     foo = cdf.injector.Singleton(test_config.ValueWrapper, 100)
 

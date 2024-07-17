@@ -35,9 +35,9 @@ def add_ints(x: int, y: int) -> int:
 
 
 def test_typing() -> None:
-    spec0: int = cdf.injector.Object(1)
-    spec1: int = cdf.injector.Object(2)
-    spec2: str = cdf.injector.Object("abc")
+    spec0: int = cdf.injector.Instance(1)
+    spec1: int = cdf.injector.Instance(2)
+    spec2: str = cdf.injector.Instance("abc")
 
     _3: int = cdf.injector.GlobalInput(type_=int)  # noqa: F841
     _4: str = cdf.injector.LocalInput(type_=str)  # noqa: F841

@@ -41,7 +41,7 @@ class PrototypeValueWrapper(cdf.injector.PrototypeMixin, ValueWrapper):
 
 
 class BasicConfig(cdf.injector.Config):
-    x = cdf.injector.Object(1)
+    x = cdf.injector.Instance(1)
     y: int = cdf.injector.Prototype(lambda x, offset: x + offset, x, offset=1)
 
     foo = SingletonValueWrapper(value=x)
@@ -77,7 +77,7 @@ def test_perturb_basic(more_type_safe: bool) -> None:
 
     config0.x = 2
     spec_x = config0._get_spec("x")
-    assert isinstance(spec_x, cdf.injector.specs._Object)
+    assert isinstance(spec_x, cdf.injector.specs._Instance)
     assert spec_x.obj == 2
 
     # Note that there are no class-level interactions, so if we
@@ -114,7 +114,7 @@ class ParentConfig1(cdf.injector.Config):
     basic_config = BasicConfig()
 
     baz1 = SingletonValueWrapper(basic_config.x)
-    some_str1 = cdf.injector.Object("abc")
+    some_str1 = cdf.injector.Instance("abc")
 
 
 class GrandParentConfig(cdf.injector.Config):
@@ -122,7 +122,7 @@ class GrandParentConfig(cdf.injector.Config):
     parent_config1 = ParentConfig1()
 
     foobar = SingletonValueWrapper(parent_config0.basic_config.x)
-    some_str0 = cdf.injector.Object("hi")
+    some_str0 = cdf.injector.Instance("hi")
 
 
 class ErrorGrandParentConfig(cdf.injector.Config):
@@ -225,9 +225,9 @@ def test_input_config(more_type_safe: bool) -> None:
 
 
 class CollectionConfig(cdf.injector.Config):
-    x = cdf.injector.Object(1)
-    y = cdf.injector.Object(2)
-    z = cdf.injector.Object(3)
+    x = cdf.injector.Instance(1)
+    y = cdf.injector.Instance(2)
+    z = cdf.injector.Instance(3)
 
     foo_tuple: tuple[int] = cdf.injector.SingletonTuple(x, y)
     foo_list: list[int] = cdf.injector.SingletonList(x, y)
@@ -265,8 +265,8 @@ class ForwardConfig(cdf.injector.Config):
 
 
 class PartialKwargsConfig(cdf.injector.Config):
-    x = cdf.injector.Object(1)
-    y = cdf.injector.Object(2)
+    x = cdf.injector.Instance(1)
+    y = cdf.injector.Instance(2)
 
     partial_kwargs = cdf.injector.SingletonDict(x=x, y=y)
 
@@ -280,7 +280,7 @@ class PartialKwargsConfig(cdf.injector.Config):
 class PartialKwargsOtherConfig(cdf.injector.Config):
     partial_kwargs_config = PartialKwargsConfig()
 
-    z = cdf.injector.Object(3)
+    z = cdf.injector.Instance(3)
     values = cdf.injector.Singleton(  # type: ignore[call-arg]
         ValuesWrapper,
         z=z,

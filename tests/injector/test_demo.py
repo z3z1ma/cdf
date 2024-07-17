@@ -73,7 +73,7 @@ class EngineConfig(cdf.injector.Config):
 class CarConfig(cdf.injector.Config):
     engine_config = EngineConfig()
 
-    seat_cls = cdf.injector.Object(Seat)
+    seat_cls = cdf.injector.Instance(Seat)
     seats = cdf.injector.Prototype(
         lambda cls, n: [cls() for _ in range(n)], seat_cls, 2
     )
