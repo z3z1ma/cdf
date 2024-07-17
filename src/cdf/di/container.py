@@ -19,7 +19,6 @@ class ConfigProxy(t.Generic[TC]):
         self.config = config
 
     def __getattr__(self, key: str) -> t.Any:
-        # noinspection PyProtectedMember
         return self.container._get(self.config, key)
 
     def __getitem__(self, key: str) -> t.Any:
@@ -57,7 +56,6 @@ class Container(t.Generic[TC]):
         # Cast because ConfigProxy[TC] will act like TC
         return t.cast(TC, ConfigProxy(self, self._config))
 
-    # noinspection PyProtectedMember
     def _process_arg_spec(self, config: di_config.Config, arg: di_specs.Spec) -> t.Any:
         if arg.spec_id in config._keys:
             config_key = config._keys[arg.spec_id]
@@ -76,7 +74,6 @@ class Container(t.Generic[TC]):
 
         return result
 
-    # noinspection PyProtectedMember
     def _process_arg(self, config: di_config.Config, arg: t.Any) -> t.Any:
         if isinstance(arg, di_specs.Spec):
             return self._process_arg_spec(config, arg)
@@ -95,7 +92,6 @@ class Container(t.Generic[TC]):
 
         return result
 
-    # noinspection PyProtectedMember
     def _materialize_callable_spec(
         self, config: di_config.Config, spec: di_specs._Callable
     ) -> di_specs._Callable:
@@ -115,7 +111,6 @@ class Container(t.Generic[TC]):
 
         return spec.copy_with(*materialized_args, **materialized_kwargs)
 
-    # noinspection PyProtectedMember
     def _get(self, config: di_config.Config, key: str) -> t.Any:
         """Get instance represented by key in given config."""
         spec = getattr(config, key)

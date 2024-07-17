@@ -30,7 +30,6 @@ class ConfigSpec(di_specs.Spec[TC]):
         config_locator = ConfigLocator(**global_inputs)
         config = config_locator.get(self)
 
-        # noinspection PyProtectedMember
         global_input_keys = config._get_all_global_input_keys()
         extra_global_input_keys = set(global_inputs.keys()) - global_input_keys
         if extra_global_input_keys:
@@ -135,12 +134,10 @@ class Config:
             all_global_input_keys[key] = spec_id
 
         for _, child_config in self._child_configs.items():
-            # noinspection PyProtectedMember
             child_config._get_all_global_input_keys(all_global_input_keys)
 
         return set(all_global_input_keys.keys())
 
-    # noinspection PyProtectedMember
     def _process_input(
         self,
         key: str,
@@ -187,14 +184,12 @@ class Config:
             self._keys[spec.spec_id] = key
 
             # Handle inputs
-            # noinspection PyProtectedMember
             if isinstance(spec, di_specs._GlobalInput):
                 self._global_inputs[key] = spec.spec_id
 
                 spec = self._process_input(
                     key, spec, self._config_locator.global_inputs, "Global"
                 )
-            # noinspection PyProtectedMember
             elif isinstance(spec, di_specs._LocalInput):
                 spec = self._process_input(key, spec, local_inputs, "Local")
 

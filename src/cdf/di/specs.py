@@ -103,7 +103,6 @@ class _Object(Spec[T]):
         self.obj = obj
 
 
-# noinspection PyPep8Naming
 def Object(obj: T) -> T:  # noqa: N802
     """Spec to pass through a fully-instantiated object.
 
@@ -131,7 +130,6 @@ class _GlobalInput(_Input[T]):
     pass
 
 
-# noinspection PyPep8Naming
 def GlobalInput(  # noqa: N802
     type_: type[T] | None = None, default: t.Any = MISSING
 ) -> T:
@@ -151,10 +149,9 @@ class _LocalInput(_Input[T]):
     pass
 
 
-# noinspection PyPep8Naming
-def LocalInput(
+def LocalInput(  # noqa: N802
     type_: type[T] | None = None, default: t.Any = MISSING
-) -> T:  # noqa: N802
+) -> T:
     """Spec to use user input passed in at config declaration.
 
     Args:
@@ -190,7 +187,6 @@ class _Callable(Spec[T]):
     def instantiate(self) -> t.Any:
         """Instantiate spec into object."""
         if isinstance(self.func_or_type, type):
-            # noinspection PyTypeChecker
             return instantiate(self.func_or_type, *self.args, **self.kwargs)
         else:
             # Non-type callable (e.g., function, functor)
@@ -208,7 +204,6 @@ class _Prototype(_Callable[T]):
     pass
 
 
-# noinspection PyPep8Naming
 def Prototype(  # noqa: N802
     func_or_type: t.Callable[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> T:
@@ -227,7 +222,6 @@ def _union_dict_and_kwargs(values: dict, **kwargs: t.Any) -> dict:
     return new_values
 
 
-# noinspection PyPep8Naming
 def Forward(obj: T) -> T:  # noqa: N802
     """Spec to simply forward to other spec."""
     # Cast because the return type will act like a T
@@ -238,7 +232,6 @@ class _Singleton(_Callable[T]):
     pass
 
 
-# noinspection PyPep8Naming
 def Singleton(  # noqa: N802
     func_or_type: t.Callable[P, T], *args: P.args, **kwargs: P.kwargs
 ) -> T:
@@ -247,21 +240,18 @@ def Singleton(  # noqa: N802
     return t.cast(T, _Singleton(func_or_type, *args, **kwargs))
 
 
-# noinspection PyPep8Naming
 def SingletonTuple(*args: T) -> tuple[T]:  # noqa: N802
     """Spec to create tuple with args and caching per config field."""
     # Cast because the return type will act like a tuple of T
     return t.cast("tuple[T]", _Singleton(tuple, args))
 
 
-# noinspection PyPep8Naming
 def SingletonList(*args: T) -> list[T]:  # noqa: N802
     """Spec to create list with args and caching per config field."""
     # Cast because the return type will act like a list of T
     return t.cast("list[T]", _Singleton(list, args))
 
 
-# noinspection PyPep8Naming
 def SingletonDict(  # noqa: N802
     values: dict[t.Any, T] = MISSING_DICT,  # noqa
     /,
@@ -303,7 +293,6 @@ class PrototypeMixin:
         cls: type, *args: t.Any, _materialize: bool = False, **kwargs: t.Any
     ) -> t.Any:
         if _materialize:
-            # noinspection PyTypeChecker
             return super().__new__(cls)  # type: ignore[misc]
         else:
             return Prototype(cls, *args, **kwargs)
@@ -319,7 +308,6 @@ class SingletonMixin:
         cls: type, *args: t.Any, _materialize: bool = False, **kwargs: t.Any
     ) -> t.Any:
         if _materialize:
-            # noinspection PyTypeChecker
             return super().__new__(cls)  # type: ignore[misc]
         else:
             return Singleton(cls, *args, **kwargs)
