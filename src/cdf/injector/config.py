@@ -20,7 +20,7 @@ class ConfigSpec(injector_specs.Spec[TC]):
         "local_inputs",
     ]
 
-    def __init__(self, cls: type[TC], **local_inputs: t.Any) -> None:
+    def __init__(self, cls: t.Type[TC], **local_inputs: t.Any) -> None:
         super().__init__()
         self.cls = cls
         self.local_inputs = local_inputs
@@ -144,7 +144,7 @@ class Config:
         spec: injector_specs._Input,
         inputs: dict[str, t.Any],
         desc: str,
-    ) -> injector_specs._Object:
+    ) -> injector_specs._Instance:
         """Convert Input spec to Object spec."""
         try:
             value = inputs[key]
@@ -159,7 +159,7 @@ class Config:
         injector_utils.check_type(value, spec.type_, desc=desc)
 
         # Preserve old spec id
-        return injector_specs._Object(value, spec_id=spec.spec_id)
+        return injector_specs._Instance(value, spec_id=spec.spec_id)
 
     def _load(self, **local_inputs: t.Any) -> None:
         """Transfer class variables to instance."""
@@ -276,7 +276,7 @@ class Config:
 
         # Automatically wrap input if user hasn't done so
         if not isinstance(value, injector_specs.Spec):
-            value = injector_specs.Object(value)
+            value = injector_specs.Instance(value)
 
         self._specs[key] = value
 
@@ -316,6 +316,6 @@ class ConfigLocator:
         return t.cast(Config, config)
 
 
-def get_config(config_cls: type[TC], **global_inputs: t.Any) -> TC:
+def get_config(config_cls: t.Type[TC], **global_inputs: t.Any) -> TC:
     """More type-safe alternative to getting config objs."""
     return config_cls().get(**global_inputs)  # type: ignore[no-any-return]

@@ -5,7 +5,7 @@ import typing as t
 
 from . import errors as injector_errors
 
-PRIMITIVE_TYPES: t.Final[tuple[type, ...]] = (
+PRIMITIVE_TYPES: t.Final[t.Tuple[t.Type, ...]] = (
     type(None),
     bool,
     int,
@@ -27,9 +27,9 @@ def check_type(
         type_: Type to check against.
         desc: Description for error.
 
-    >>> import pytest; import cdf.di
+    >>> import pytest; import cdf.injector
     >>> check_type("abc", str)
-    >>> with pytest.raises(cdf.di.InputConfigError):
+    >>> with pytest.raises(cdf.injector.InputConfigError):
     ...    check_type("abc", int)
     """
     if type_ is None:

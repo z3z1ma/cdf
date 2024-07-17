@@ -11,8 +11,8 @@ from cdf.injector.errors import PerturbSpecError as PerturbSpecError
 from cdf.injector.errors import SetChildConfigError as SetChildConfigError
 from cdf.injector.specs import Forward as Forward
 from cdf.injector.specs import GlobalInput as GlobalInput
+from cdf.injector.specs import Instance as Instance
 from cdf.injector.specs import LocalInput as LocalInput
-from cdf.injector.specs import Object as Object
 from cdf.injector.specs import Prototype as Prototype
 from cdf.injector.specs import PrototypeMixin as PrototypeMixin
 from cdf.injector.specs import Singleton as Singleton
@@ -38,7 +38,7 @@ __all__ = [
     "Forward",
     "GlobalInput",
     "LocalInput",
-    "Object",
+    "Instance",
     "Prototype",
     "PrototypeMixin",
     "Singleton",

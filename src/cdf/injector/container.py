@@ -67,7 +67,7 @@ class Container(t.Generic[TC]):
         elif isinstance(arg, injector_specs._Callable):
             # Anonymous prototype or singleton
             result = self._materialize_callable_spec(config, arg).instantiate()
-        elif isinstance(arg, injector_specs._Object):
+        elif isinstance(arg, injector_specs._Instance):
             return arg.obj
         else:
             for child_config in config._child_configs.values():
@@ -118,7 +118,7 @@ class Container(t.Generic[TC]):
     def _get(self, config: injector_config.Config, key: str) -> t.Any:
         """Get instance represented by key in given config."""
         spec = getattr(config, key)
-        if isinstance(spec, injector_specs._Object):
+        if isinstance(spec, injector_specs._Instance):
             return spec.obj
         elif isinstance(spec, injector_specs._Singleton):
             try:

@@ -1,6 +1,6 @@
-"""cdf.di specs.
+"""cdf.injector specs.
 
-NB: The cdf.di.{Object,Singleton,...} functions follow the same
+NB: The cdf.injector.{Object,Singleton,...} functions follow the same
 pattern as dataclasses.field() vs dataclasses.Field:
 in order for typing to work for the user, we have dummy functions
 that mimic expected typing behavior.
@@ -41,7 +41,7 @@ def instantiate(cls: type[T], *args: t.Any, **kwargs: t.Any) -> T:
 class AttrFuture:
     """Future representing attr access on a Spec by its spec id."""
 
-    def __init__(self, root_spec_id: SpecID, attrs: list[str]) -> None:
+    def __init__(self, root_spec_id: SpecID, attrs: t.List[str]) -> None:
         self.root_spec_id = root_spec_id
         self.attrs = attrs
 
@@ -93,7 +93,7 @@ class Spec(t.Generic[T]):
         return result
 
 
-class _Object(Spec[T]):
+class _Instance(Spec[T]):
     """Represents fully-instantiated object to pass through."""
 
     _INTERNAL_FIELDS = Spec._INTERNAL_FIELDS + ["obj"]
@@ -103,14 +103,14 @@ class _Object(Spec[T]):
         self.obj = obj
 
 
-def Object(obj: T) -> T:  # noqa: N802
+def Instance(obj: T) -> T:  # noqa: N802
     """Spec to pass through a fully-instantiated object.
 
     Args:
         obj: Fully-instantiated object to pass through.
     """
     # Cast because the return type will act like a T
-    return t.cast(T, _Object(obj))
+    return t.cast(T, _Instance(obj))
 
 
 class _Input(Spec[T]):
@@ -135,6 +135,9 @@ def GlobalInput(  # noqa: N802
 ) -> T:
     """Spec to use user input passed in at config instantiation.
 
+    This is to say, when the config is instantiated via get_config or through
+    the type contructor, you may pass in a value to override the default.
+
     Args:
         type_: Expected type of input, for both static and runtime check.
         default: Default value if no input is provided.
@@ -153,6 +156,9 @@ def LocalInput(  # noqa: N802
     type_: type[T] | None = None, default: t.Any = MISSING
 ) -> T:
     """Spec to use user input passed in at config declaration.
+
+    This is to say, whenever the config is declared as a class field,
+    you may pass in a value to override the default.
 
     Args:
         type_: Expected type of input, for both static and runtime check.
@@ -240,45 +246,45 @@ def Singleton(  # noqa: N802
     return t.cast(T, _Singleton(func_or_type, *args, **kwargs))
 
 
-def SingletonTuple(*args: T) -> tuple[T]:  # noqa: N802
+def SingletonTuple(*args: T) -> t.Tuple[T]:  # noqa: N802
     """Spec to create tuple with args and caching per config field."""
     # Cast because the return type will act like a tuple of T
-    return t.cast("tuple[T]", _Singleton(tuple, args))
+    return t.cast("t.Tuple[T]", _Singleton(tuple, args))
 
 
-def SingletonList(*args: T) -> list[T]:  # noqa: N802
+def SingletonList(*args: T) -> t.List[T]:  # noqa: N802
     """Spec to create list with args and caching per config field."""
     # Cast because the return type will act like a list of T
-    return t.cast("list[T]", _Singleton(list, args))
+    return t.cast("t.List[T]", _Singleton(list, args))
 
 
 def SingletonDict(  # noqa: N802
-    values: dict[t.Any, T] = MISSING_DICT,  # noqa
+    values: t.Dict[t.Any, T] = MISSING_DICT,  # noqa
     /,
     **kwargs: T,
-) -> dict[t.Any, T]:
+) -> t.Dict[t.Any, T]:
     """Spec to create dict with args and caching per config field.
 
     Can specify either by pointing to a dict, passing in kwargs,
     or unioning both.
 
-    >>> import cdf.di
-    >>> spec0 = cdf.di.Object(1); spec1 = cdf.di.Object(2)
-    >>> cdf.di.SingletonDict({"x": spec0, "y": spec1}) is not None
+    >>> import cdf.injector
+    >>> spec0 = cdf.injector.Object(1); spec1 = cdf.injector.Object(2)
+    >>> cdf.injector.SingletonDict({"x": spec0, "y": spec1}) is not None
     True
 
     Or, alternatively:
 
-    >>> cdf.di.SingletonDict(x=spec0, y=spec1) is not None
+    >>> cdf.injector.SingletonDict(x=spec0, y=spec1) is not None
     True
     """
     if values is MISSING_DICT:
         # Cast because the return type will act like a dict of T
-        return t.cast("dict[t.Any, T]", _Singleton(dict, **kwargs))
+        return t.cast("t.Dict[t.Any, T]", _Singleton(dict, **kwargs))
     else:
         # Cast because the return type will act like a dict of T
         return t.cast(
-            "dict[t.Any, T]",
+            "t.Dict[t.Any, T]",
             _Singleton(_union_dict_and_kwargs, values, **kwargs),
         )
 
@@ -286,7 +292,7 @@ def SingletonDict(  # noqa: N802
 class PrototypeMixin:
     """Helper class for Prototype to ease syntax in Config.
 
-    Equivalent to cdf.di.Prototype(cls, ...).
+    Equivalent to cdf.injector.Prototype(cls, ...).
     """
 
     def __new__(
@@ -301,7 +307,7 @@ class PrototypeMixin:
 class SingletonMixin:
     """Helper class for Singleton to ease syntax in Config.
 
-    Equivalent to cdf.di.Singleton(cls, ...).
+    Equivalent to cdf.injector.Singleton(cls, ...).
     """
 
     def __new__(
