@@ -1,4 +1,3 @@
-# flake8: noqa
 from cdf.injector.config import Config as Config
 from cdf.injector.config import get_config as get_config
 from cdf.injector.container import ConfigProxy as ConfigProxy
@@ -23,3 +22,30 @@ from cdf.injector.specs import SingletonMixin as SingletonMixin
 from cdf.injector.specs import SingletonTuple as SingletonTuple
 from cdf.injector.specs import Spec as Spec
 from cdf.injector.specs import SpecID as SpecID
+
+__all__ = [
+    "Config",
+    "get_config",
+    "ConfigProxy",
+    "Container",
+    "get_container",
+    "ConfigError",
+    "FrozenConfigError",
+    "InputConfigError",
+    "NewKeyConfigError",
+    "PerturbSpecError",
+    "SetChildConfigError",
+    "Forward",
+    "GlobalInput",
+    "LocalInput",
+    "Object",
+    "Prototype",
+    "PrototypeMixin",
+    "Singleton",
+    "SingletonDict",
+    "SingletonList",
+    "SingletonMixin",
+    "SingletonTuple",
+    "Spec",
+    "SpecID",
+]
