@@ -4,17 +4,19 @@ import typing as t
 
 from typing_extensions import override
 
-from . import config as di_config
-from . import specs as di_specs
-from . import utils as di_utils
+from . import config as injector_config
+from . import specs as injector_specs
+from . import utils as injector_utils
 
-TC = t.TypeVar("TC", bound=di_config.Config)
+TC = t.TypeVar("TC", bound=injector_config.Config)
 
 
 class ConfigProxy(t.Generic[TC]):
     """Read-only helper to marshal config values."""
 
-    def __init__(self, container: Container[TC], config: di_config.Config) -> None:
+    def __init__(
+        self, container: Container[TC], config: injector_config.Config
+    ) -> None:
         self.container = container
         self.config = config
 
@@ -22,7 +24,7 @@ class ConfigProxy(t.Generic[TC]):
         return self.container._get(self.config, key)
 
     def __getitem__(self, key: str) -> t.Any:
-        return di_utils.nested_getattr(self, key)
+        return injector_utils.nested_getattr(self, key)
 
     def __contains__(self, key: str) -> bool:
         return key in self.config
@@ -36,7 +38,7 @@ class Container(t.Generic[TC]):
     """Materializes and caches (if necessary) objects based on given config."""
 
     def __init__(self, config: TC) -> None:
-        if isinstance(config, di_config.ConfigSpec):
+        if isinstance(config, injector_config.ConfigSpec):
             raise ValueError(
                 "Expected Config type, got ConfigSpec. "
                 "Please call .get() on the config."
@@ -56,14 +58,16 @@ class Container(t.Generic[TC]):
         # Cast because ConfigProxy[TC] will act like TC
         return t.cast(TC, ConfigProxy(self, self._config))
 
-    def _process_arg_spec(self, config: di_config.Config, arg: di_specs.Spec) -> t.Any:
+    def _process_arg_spec(
+        self, config: injector_config.Config, arg: injector_specs.Spec
+    ) -> t.Any:
         if arg.spec_id in config._keys:
             config_key = config._keys[arg.spec_id]
             result = self._get(config, config_key)
-        elif isinstance(arg, di_specs._Callable):
+        elif isinstance(arg, injector_specs._Callable):
             # Anonymous prototype or singleton
             result = self._materialize_callable_spec(config, arg).instantiate()
-        elif isinstance(arg, di_specs._Object):
+        elif isinstance(arg, injector_specs._Object):
             return arg.obj
         else:
             for child_config in config._child_configs.values():
@@ -74,10 +78,10 @@ class Container(t.Generic[TC]):
 
         return result
 
-    def _process_arg(self, config: di_config.Config, arg: t.Any) -> t.Any:
-        if isinstance(arg, di_specs.Spec):
+    def _process_arg(self, config: injector_config.Config, arg: t.Any) -> t.Any:
+        if isinstance(arg, injector_specs.Spec):
             return self._process_arg_spec(config, arg)
-        elif isinstance(arg, di_specs.AttrFuture):
+        elif isinstance(arg, injector_specs.AttrFuture):
             config_key = config._keys[arg.root_spec_id]
             result = self._get(config, config_key)
 
@@ -93,8 +97,8 @@ class Container(t.Generic[TC]):
         return result
 
     def _materialize_callable_spec(
-        self, config: di_config.Config, spec: di_specs._Callable
-    ) -> di_specs._Callable:
+        self, config: injector_config.Config, spec: injector_specs._Callable
+    ) -> injector_specs._Callable:
         """Return Spec copy with materialized args/kwargs."""
         materialized_args = [self._process_arg(config, arg) for arg in spec.args]
         materialized_kwargs = {
@@ -111,12 +115,12 @@ class Container(t.Generic[TC]):
 
         return spec.copy_with(*materialized_args, **materialized_kwargs)
 
-    def _get(self, config: di_config.Config, key: str) -> t.Any:
+    def _get(self, config: injector_config.Config, key: str) -> t.Any:
         """Get instance represented by key in given config."""
         spec = getattr(config, key)
-        if isinstance(spec, di_specs._Object):
+        if isinstance(spec, injector_specs._Object):
             return spec.obj
-        elif isinstance(spec, di_specs._Singleton):
+        elif isinstance(spec, injector_specs._Singleton):
             try:
                 return self._instance_cache[spec.spec_id]
             except KeyError:
@@ -125,11 +129,11 @@ class Container(t.Generic[TC]):
             instance = self._materialize_callable_spec(config, spec).instantiate()
             self._instance_cache[spec.spec_id] = instance
             return instance
-        elif isinstance(spec, di_specs._Prototype):
+        elif isinstance(spec, injector_specs._Prototype):
             return self._materialize_callable_spec(config, spec).instantiate()
-        elif isinstance(spec, di_config.Config):
+        elif isinstance(spec, injector_config.Config):
             return ConfigProxy(self, spec)
-        elif isinstance(spec, di_specs.AttrFuture):
+        elif isinstance(spec, injector_specs.AttrFuture):
             key = config._keys[spec.root_spec_id]
             obj = self._get(config, key)
 
@@ -162,10 +166,10 @@ class Container(t.Generic[TC]):
         return self._get(self._config, key)
 
     def __getitem__(self, key: str) -> t.Any:
-        return di_utils.nested_getattr(self, key)
+        return injector_utils.nested_getattr(self, key)
 
     def __contains__(self, key: str) -> bool:
-        return di_utils.nested_contains(self._config, key)
+        return injector_utils.nested_contains(self._config, key)
 
     @override
     def __dir__(self) -> t.Iterable[str]:

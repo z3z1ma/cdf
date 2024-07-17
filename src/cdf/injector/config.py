@@ -4,18 +4,18 @@ import typing as t
 
 from typing_extensions import override
 
-from . import errors as di_errors
-from . import specs as di_specs
-from . import utils as di_utils
+from . import errors as injector_errors
+from . import specs as injector_specs
+from . import utils as injector_utils
 
 T = t.TypeVar("T")
 TC = t.TypeVar("TC", bound="Config")
 
 
-class ConfigSpec(di_specs.Spec[TC]):
+class ConfigSpec(injector_specs.Spec[TC]):
     """Represents nestable bag of types and values."""
 
-    _INTERNAL_FIELDS = di_specs.Spec._INTERNAL_FIELDS + [
+    _INTERNAL_FIELDS = injector_specs.Spec._INTERNAL_FIELDS + [
         "cls",
         "local_inputs",
     ]
@@ -33,7 +33,7 @@ class ConfigSpec(di_specs.Spec[TC]):
         global_input_keys = config._get_all_global_input_keys()
         extra_global_input_keys = set(global_inputs.keys()) - global_input_keys
         if extra_global_input_keys:
-            raise di_errors.InputConfigError(
+            raise injector_errors.InputConfigError(
                 f"Provided extra global inputs "
                 f"not specified in configs: {extra_global_input_keys}"
             )
@@ -59,7 +59,7 @@ class ConfigSpec(di_specs.Spec[TC]):
 
 
 class Config:
-    """Description of how di_specs depend on each other."""
+    """Description of how injector_specs depend on each other."""
 
     _INTERNAL_FIELDS = [
         "_config_locator",
@@ -98,13 +98,13 @@ class Config:
         self._config_locator = config_locator
 
         # spec id -> spec key
-        self._keys: dict[di_specs.SpecID, str] = {}
+        self._keys: dict[injector_specs.SpecID, str] = {}
         # key -> spec
-        self._specs: dict[str, di_specs.Spec] = {}
+        self._specs: dict[str, injector_specs.Spec] = {}
         # child config key -> child config
         self._child_configs: dict[str, Config] = {}
         # global input key -> spec id
-        self._global_inputs: dict[str, di_specs.SpecID] = {}
+        self._global_inputs: dict[str, injector_specs.SpecID] = {}
 
         self._loaded = False
         self._frozen = False
@@ -117,7 +117,7 @@ class Config:
 
     def _get_all_global_input_keys(
         self,
-        all_global_input_keys: dict[str, di_specs.SpecID] | None = None,
+        all_global_input_keys: dict[str, injector_specs.SpecID] | None = None,
     ) -> set[str]:
         """Recursively get all global input keys of self and its children."""
         all_global_input_keys = (
@@ -127,7 +127,7 @@ class Config:
         for key, spec_id in self._global_inputs.items():
             if key in all_global_input_keys:
                 if all_global_input_keys[key] != spec_id:
-                    raise di_errors.InputConfigError(
+                    raise injector_errors.InputConfigError(
                         f"Found global input collision: {key!r}"
                     )
 
@@ -141,25 +141,25 @@ class Config:
     def _process_input(
         self,
         key: str,
-        spec: di_specs._Input,
+        spec: injector_specs._Input,
         inputs: dict[str, t.Any],
         desc: str,
-    ) -> di_specs._Object:
+    ) -> injector_specs._Object:
         """Convert Input spec to Object spec."""
         try:
             value = inputs[key]
         except KeyError:
-            if spec.default != di_specs.MISSING:
+            if spec.default != injector_specs.MISSING:
                 value = spec.default
             else:
-                raise di_errors.InputConfigError(
+                raise injector_errors.InputConfigError(
                     f"{desc} input not set: {key!r}"
                 ) from None
 
-        di_utils.check_type(value, spec.type_, desc=desc)
+        injector_utils.check_type(value, spec.type_, desc=desc)
 
         # Preserve old spec id
-        return di_specs._Object(value, spec_id=spec.spec_id)
+        return injector_specs._Object(value, spec_id=spec.spec_id)
 
     def _load(self, **local_inputs: t.Any) -> None:
         """Transfer class variables to instance."""
@@ -177,20 +177,20 @@ class Config:
             if isinstance(spec, dict):
                 continue
 
-            if not isinstance(spec, di_specs.Spec):
+            if not isinstance(spec, injector_specs.Spec):
                 raise ValueError(f"Expected Spec type, got {type(spec)} with {key!r}")
 
             # Register key
             self._keys[spec.spec_id] = key
 
             # Handle inputs
-            if isinstance(spec, di_specs._GlobalInput):
+            if isinstance(spec, injector_specs._GlobalInput):
                 self._global_inputs[key] = spec.spec_id
 
                 spec = self._process_input(
                     key, spec, self._config_locator.global_inputs, "Global"
                 )
-            elif isinstance(spec, di_specs._LocalInput):
+            elif isinstance(spec, injector_specs._LocalInput):
                 spec = self._process_input(key, spec, local_inputs, "Local")
 
             # Handle child configs
@@ -206,10 +206,10 @@ class Config:
         """Freeze to prevent any more perturbations to this Config instance."""
         self._frozen = True
 
-    def _get_spec(self, key: str) -> di_specs.Spec:
+    def _get_spec(self, key: str) -> injector_specs.Spec:
         """More type-safe alternative to get spec than attr access."""
         spec = self[key]
-        if not isinstance(spec, di_specs.Spec):
+        if not isinstance(spec, injector_specs.Spec):
             raise TypeError(type(spec))
         return spec
 
@@ -223,7 +223,7 @@ class Config:
     # NB: Have to override getattribute instead of getattr to
     # prevent initial, class-level values from being used.
     @override
-    def __getattribute__(self, key: str) -> di_specs.Spec | Config:
+    def __getattribute__(self, key: str) -> injector_specs.Spec | Config:
         if (
             key.startswith("__")
             or key == "_INTERNAL_FIELDS"
@@ -240,11 +240,11 @@ class Config:
             raise KeyError(f"{self.__class__}: {key!r}") from None
 
     def __getitem__(self, key: str) -> t.Any:
-        return di_utils.nested_getattr(self, key)
+        return injector_utils.nested_getattr(self, key)
 
     def __contains__(self, key: str) -> t.Any:
         if "." in key:
-            return di_utils.nested_contains(self, key)
+            return injector_utils.nested_contains(self, key)
         else:
             return key in dir(self)
 
@@ -258,25 +258,25 @@ class Config:
             return super().__setattr__(key, value)
 
         if self._frozen:
-            raise di_errors.FrozenConfigError(
+            raise injector_errors.FrozenConfigError(
                 f"Cannot perturb frozen config: key={key!r}"
             )
 
         if key not in self._specs and self._loaded:
             if key in self._child_configs:
-                raise di_errors.SetChildConfigError(
+                raise injector_errors.SetChildConfigError(
                     f"Cannot set child config: key={key!r}"
                 )
             else:
-                raise di_errors.NewKeyConfigError(
+                raise injector_errors.NewKeyConfigError(
                     f"Cannot add new keys to a loaded config: key={key!r}"
                 )
 
         old_spec = self._specs[key]
 
         # Automatically wrap input if user hasn't done so
-        if not isinstance(value, di_specs.Spec):
-            value = di_specs.Object(value)
+        if not isinstance(value, injector_specs.Spec):
+            value = injector_specs.Object(value)
 
         self._specs[key] = value
 
@@ -284,7 +284,7 @@ class Config:
         value.spec_id = old_spec.spec_id
 
     def __setitem__(self, key: str, value: t.Any) -> None:
-        di_utils.nested_setattr(self, key, value)
+        injector_utils.nested_setattr(self, key, value)
 
     @override
     def __dir__(self) -> t.Iterable[str]:
@@ -306,7 +306,7 @@ class ConfigLocator:
         except KeyError:
             pass
 
-        config = di_specs.instantiate(
+        config = injector_specs.instantiate(
             config_spec.cls,
             self,
             _materialize=True,

@@ -3,7 +3,7 @@ from __future__ import annotations
 import datetime
 import typing as t
 
-from . import errors as di_errors
+from . import errors as injector_errors
 
 PRIMITIVE_TYPES: t.Final[tuple[type, ...]] = (
     type(None),
@@ -42,7 +42,7 @@ def check_type(
         types = (type_,)
 
     if not isinstance(value, types):
-        raise di_errors.InputConfigError(
+        raise injector_errors.InputConfigError(
             f"{desc} input mismatch types: {type(value)} is not {type_}"
         )
 

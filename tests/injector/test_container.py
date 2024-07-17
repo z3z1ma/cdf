@@ -3,39 +3,39 @@ from __future__ import annotations
 
 from typing import Any, TypeVar, cast
 
-import cdf.di
+import cdf.injector
 import pytest
 
 from . import test_config
 
-TC = TypeVar("TC", bound=cdf.di.Config)
+TC = TypeVar("TC", bound=cdf.injector.Config)
 
 
 def get_container_objs(
     config: TC | type[TC], more_type_safe: bool, **global_inputs: Any
-) -> tuple[cdf.di.Container[TC], TC]:
+) -> tuple[cdf.injector.Container[TC], TC]:
     if more_type_safe:
-        if not isinstance(config, cdf.di.Config):
-            config = cdf.di.get_config(config, **global_inputs)
+        if not isinstance(config, cdf.injector.Config):
+            config = cdf.injector.get_config(config, **global_inputs)
         elif global_inputs:
             raise ValueError("Cannot set config obj and global inputs")
 
-        container = cdf.di.get_container(config)
+        container = cdf.injector.get_container(config)
 
         config_proxy = container.config
     else:
-        if not isinstance(config, cdf.di.Config):
+        if not isinstance(config, cdf.injector.Config):
             config = config().get(**global_inputs)
         elif global_inputs:
             raise ValueError("Cannot set config obj and global inputs")
 
-        assert isinstance(config, cdf.di.Config)
-        container = cdf.di.Container(config)
+        assert isinstance(config, cdf.injector.Config)
+        container = cdf.injector.Container(config)
 
         config_proxy = container  # type: ignore
 
     # Cast because container will act like TC
-    return cast(cdf.di.Container[TC], container), cast(TC, config_proxy)
+    return cast(cdf.injector.Container[TC], container), cast(TC, config_proxy)
 
 
 @pytest.mark.parametrize("more_type_safe", [True, False])
@@ -121,23 +121,25 @@ def test_perturb_nested(more_type_safe: bool) -> None:
     assert config_proxy.foobar.value == 10
 
 
-class MoreComplexPerturbConfig0(cdf.di.Config):
-    x: int = cdf.di.GlobalInput(type_=int)
-    y: int = cdf.di.Object(2)
+class MoreComplexPerturbConfig0(cdf.injector.Config):
+    x: int = cdf.injector.GlobalInput(type_=int)
+    y: int = cdf.injector.Object(2)
 
-    foo = cdf.di.Singleton(test_config.ValueWrapper, 100)
+    foo = cdf.injector.Singleton(test_config.ValueWrapper, 100)
 
 
-class MoreComplexPerturbConfig1(cdf.di.Config):
+class MoreComplexPerturbConfig1(cdf.injector.Config):
     other_config = MoreComplexPerturbConfig0()
 
-    value_obj = cdf.di.Singleton(test_config.ValueWrapper, other_config.x)
+    value_obj = cdf.injector.Singleton(test_config.ValueWrapper, other_config.x)
 
 
-class MoreComplexPerturbConfig2(cdf.di.Config):
+class MoreComplexPerturbConfig2(cdf.injector.Config):
     other_config = MoreComplexPerturbConfig1()
 
-    value_obj = cdf.di.Singleton(test_config.ValueWrapper, other_config.other_config.x)
+    value_obj = cdf.injector.Singleton(
+        test_config.ValueWrapper, other_config.other_config.x
+    )
 
 
 class Doubler:
@@ -151,7 +153,7 @@ def test_perturb_nested_more_complex_input(more_type_safe: bool) -> None:
         MoreComplexPerturbConfig1, more_type_safe=more_type_safe, x=100
     )
 
-    config.value_obj = cdf.di.Singleton(  # type: ignore
+    config.value_obj = cdf.injector.Singleton(  # type: ignore
         Doubler,
         config.other_config.x,
     )
@@ -167,7 +169,7 @@ def test_perturb_nested_more_complex_object0(more_type_safe: bool) -> None:
         MoreComplexPerturbConfig1, more_type_safe=more_type_safe, x=100
     )
 
-    config.value_obj = cdf.di.Singleton(  # type: ignore
+    config.value_obj = cdf.injector.Singleton(  # type: ignore
         Doubler,
         config.other_config.y,
     )
@@ -183,7 +185,7 @@ def test_perturb_nested_more_complex_object1(more_type_safe: bool) -> None:
         MoreComplexPerturbConfig2, more_type_safe=more_type_safe, x=100
     )
 
-    config.value_obj = cdf.di.Singleton(  # type: ignore
+    config.value_obj = cdf.injector.Singleton(  # type: ignore
         Doubler, config.other_config.other_config.y
     )
 
@@ -203,7 +205,7 @@ def test_nested_keyerror(more_type_safe: bool) -> None:
             _ = config_proxy.foobar
         except KeyError as exc:
             assert str(exc) == (
-                "\"<class 'tests.di.test_config.ParentConfig0'>: "
+                "\"<class 'tests.injector.test_config.ParentConfig0'>: "
                 "'non_existent_field'\""
             )
             raise
@@ -335,16 +337,16 @@ class ObjWithAttr:
         return 1
 
 
-class ObjAttrConfig(cdf.di.Config):
-    test_obj = cdf.di.Singleton(ObjWithAttr)
-    test_obj_attr = cdf.di.Forward(test_obj._test_attr)
+class ObjAttrConfig(cdf.injector.Config):
+    test_obj = cdf.injector.Singleton(ObjWithAttr)
+    test_obj_attr = cdf.injector.Forward(test_obj._test_attr)
 
 
-class NestedConfigObjAttrConfig(cdf.di.Config):
+class NestedConfigObjAttrConfig(cdf.injector.Config):
     cfg = ObjAttrConfig()
 
-    test_obj = cdf.di.Forward(cfg.test_obj)
-    test_obj_attr = cdf.di.Forward(cfg.test_obj_attr)
+    test_obj = cdf.injector.Forward(cfg.test_obj)
+    test_obj_attr = cdf.injector.Forward(cfg.test_obj_attr)
 
 
 @pytest.mark.parametrize("more_type_safe", [True, False])
@@ -367,15 +369,15 @@ def test_nested_config_obj_attr(more_type_safe: bool) -> None:
 
 
 def test_typing() -> None:
-    config = cdf.di.get_config(test_config.ParentConfig1)
+    config = cdf.injector.get_config(test_config.ParentConfig1)
 
     # Would trigger mypy (and PyCharm, since we're using get_container) error:
-    # container: cdf.di.Container[
+    # container: cdf.injector.Container[
     #     test_config.BasicConfig,
-    # ] = cdf.di.get_container(config)
+    # ] = cdf.injector.get_container(config)
 
-    container: cdf.di.Container[test_config.ParentConfig1] = cdf.di.get_container(
-        config
+    container: cdf.injector.Container[test_config.ParentConfig1] = (
+        cdf.injector.get_container(config)
     )
 
     # Would trigger mypy error:
@@ -404,11 +406,11 @@ def test_contains(more_type_safe: bool) -> None:
         assert missing_key not in container._config
 
 
-class PerturbSpecConfig(cdf.di.Config):
-    foo = cdf.di.Singleton(test_config.ValuesWrapper, 1, 2, z=3)
+class PerturbSpecConfig(cdf.injector.Config):
+    foo = cdf.injector.Singleton(test_config.ValuesWrapper, 1, 2, z=3)
 
 
 def test_perturb_spec() -> None:
-    config = cdf.di.get_config(PerturbSpecConfig)
-    with pytest.raises(cdf.di.PerturbSpecError):
+    config = cdf.injector.get_config(PerturbSpecConfig)
+    with pytest.raises(cdf.injector.PerturbSpecError):
         config.foo.x = 100  # type: ignore[misc]

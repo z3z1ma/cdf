@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 from typing import Any
 
-import cdf.di
+import cdf.injector
 from typing_extensions import override
 
 
@@ -24,7 +24,7 @@ class Engine(abc.ABC):
     def start(self) -> None: ...
 
 
-class DBEngine(Engine, cdf.di.SingletonMixin):
+class DBEngine(Engine, cdf.injector.SingletonMixin):
     def __init__(self, db_address: str) -> None:
         self.db_address = db_address
 
@@ -38,7 +38,7 @@ class DBEngine(Engine, cdf.di.SingletonMixin):
         pass
 
 
-class MockEngine(Engine, cdf.di.SingletonMixin):
+class MockEngine(Engine, cdf.injector.SingletonMixin):
     @property
     @override
     def started(self) -> bool:
@@ -49,7 +49,7 @@ class MockEngine(Engine, cdf.di.SingletonMixin):
         pass
 
 
-class Car(cdf.di.SingletonMixin):
+class Car(cdf.injector.SingletonMixin):
     def __init__(self, seats: list[Seat], engine: Engine) -> None:
         self.seats = seats
         self.engine = engine
@@ -65,23 +65,25 @@ class Car(cdf.di.SingletonMixin):
         self.state = 0
 
 
-class EngineConfig(cdf.di.Config):
-    db_address = cdf.di.GlobalInput(type_=str, default="ava-db")
+class EngineConfig(cdf.injector.Config):
+    db_address = cdf.injector.GlobalInput(type_=str, default="ava-db")
     engine = DBEngine(db_address)
 
 
-class CarConfig(cdf.di.Config):
+class CarConfig(cdf.injector.Config):
     engine_config = EngineConfig()
 
-    seat_cls = cdf.di.Object(Seat)
-    seats = cdf.di.Prototype(lambda cls, n: [cls() for _ in range(n)], seat_cls, 2)
+    seat_cls = cdf.injector.Object(Seat)
+    seats = cdf.injector.Prototype(
+        lambda cls, n: [cls() for _ in range(n)], seat_cls, 2
+    )
 
     car = Car(seats, engine=engine_config.engine)
 
 
 def test_basic_demo() -> None:
-    config = cdf.di.get_config(CarConfig, db_address="ava-db")
-    container = cdf.di.get_container(config)
+    config = cdf.injector.get_config(CarConfig, db_address="ava-db")
+    container = cdf.injector.get_container(config)
 
     car: Car = container.config.car
     assert isinstance(car, Car)
@@ -90,8 +92,8 @@ def test_basic_demo() -> None:
 
 
 def test_perturb_demo() -> None:
-    config = cdf.di.get_config(CarConfig, db_address="ava-db")
+    config = cdf.injector.get_config(CarConfig, db_address="ava-db")
     config.engine_config.engine = MockEngine()  # type: ignore
-    container = cdf.di.get_container(config)
+    container = cdf.injector.get_container(config)
 
     assert isinstance(container.config.car.engine, MockEngine)

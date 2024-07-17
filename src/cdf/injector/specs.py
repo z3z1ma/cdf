@@ -12,7 +12,7 @@ import typing as t
 
 from typing_extensions import ParamSpec, TypeAlias, override
 
-from . import errors as di_errors
+from . import errors as injector_errors
 
 MISSING = object()
 MISSING_DICT: dict = dict()  # Need a special typed sentinel for mypy
@@ -74,7 +74,7 @@ class Spec(t.Generic[T]):
         # but the issue is that we don't know whether the config
         # this spec is attached to has been frozen. For sake of safety
         # and simplicity, we raise an error here instead.
-        raise di_errors.PerturbSpecError(
+        raise injector_errors.PerturbSpecError(
             "Cannot set on a spec. "
             "If you'd like to perturb a value used by a spec, "
             "promote it to be a config field and perturb the config instead."
