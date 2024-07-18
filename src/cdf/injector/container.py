@@ -177,5 +177,5 @@ class Container(t.Generic[TC]):
 
 
 def get_container(config: TC) -> Container[TC]:
-    """More type-safe alternative to creating container (for PyCharm)."""
+    """More type-safe alternative to creating container."""
     return Container(config)
