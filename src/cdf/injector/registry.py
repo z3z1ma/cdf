@@ -3,7 +3,7 @@ import types
 import typing as t
 from collections import ChainMap
 from enum import Enum, auto
-from functools import wraps
+from functools import partialmethod, wraps
 
 from typing_extensions import ParamSpec
 
@@ -96,8 +96,8 @@ def _is_union(hint: t.Type) -> bool:
 
 
 def _is_typed(hint: t.Type) -> bool:
-    """Check if a type hint constitutes a type"""
-    return hint in (
+    """Check if a type hint constitutes a type we can use as a key."""
+    return hint not in (
         object,
         t.Any,
         None,
@@ -153,12 +153,21 @@ def _normalize_key(
 class Dependency(t.NamedTuple):
     """A dependency with lifecycle and initialization arguments."""
 
-    dependency: t.Any
-    lifecycle: Lifecycle
-    init_args: t.Tuple[t.Tuple[t.Any, ...], t.Dict[str, t.Any]]
+    factory: t.Any
+    lifecycle: Lifecycle = Lifecycle.SINGLETON
+    init_args: t.Tuple[t.Tuple[t.Any, ...], t.Dict[str, t.Any]] = ((), {})
 
 
 class DependencyRegistry:
+    """A registry for dependencies with lifecycle management.
+
+    Dependencies can be registered with a name or a typed key. Typed keys are tuples
+    of a name and a type hint. Dependencies can be added with a lifecycle, which can be
+    one of prototype, singleton, or instance. Dependencies can be retrieved by name or
+    typed key. Dependencies can be injected into functions or classes. Dependencies can
+    be wired into callables to resolve a dependency graph.
+    """
+
     lifecycle = Lifecycle
 
     def __init__(self) -> None:
@@ -176,7 +185,7 @@ class DependencyRegistry:
     def add(
         self,
         name_or_key: StringOrKey,
-        dependency: t.Any,
+        factory: t.Any,
         lifecycle: t.Optional[Lifecycle] = None,
         override: bool = False,
         *init_args: t.Any,
@@ -186,10 +195,10 @@ class DependencyRegistry:
         if isinstance(name_or_key, str):
             # Heuristic to infer the type of the dependency for more precise resolution
             # Classes are registered with their base type, functions with their return type
-            if inspect.isclass(dependency):
-                key = TypedKey(name_or_key, _get_effective_type(dependency))
-            elif callable(dependency):
-                if hint := t.get_type_hints(dependency).get("return"):
+            if inspect.isclass(factory):
+                key = TypedKey(name_or_key, _get_effective_type(factory))
+            elif callable(factory):
+                if hint := t.get_type_hints(factory).get("return"):
                     key = TypedKey(name_or_key, _get_effective_type(hint))
                 else:
                     # In this case, the dependency is considered untyped
@@ -197,24 +206,42 @@ class DependencyRegistry:
             else:
                 # If the dependency is not a class or function
                 # it is assumed to be an instance of a class
-                key = TypedKey(name_or_key, _get_effective_type(type(dependency)))
+                key = TypedKey(name_or_key, _get_effective_type(type(factory)))
         key = _normalize_key(name_or_key)
         if self.has(key) and not override:
             raise ValueError(
                 f'Dependency "{key}" is already registered, use a different name to avoid conflicts'
             )
         if lifecycle is None:
-            lifecycle = (
-                Lifecycle.SINGLETON if callable(dependency) else Lifecycle.INSTANCE
-            )
-        if lifecycle.is_deferred and not callable(dependency):
-            raise ValueError("Prototype and singleton dependencies must be callable")
-        dep = Dependency(dependency, lifecycle, (init_args, init_kwargs))
+            lifecycle = Lifecycle.SINGLETON if callable(factory) else Lifecycle.INSTANCE
+        if lifecycle.is_deferred and not callable(factory):
+            # TODO: warn or raise here
+            lifecycle = Lifecycle.INSTANCE
+        dep = Dependency(factory, lifecycle, (init_args, init_kwargs))
         if isinstance(key, TypedKey):
             self._typed_dependencies[key] = dep
             key = key.name
-        # Store a reference to the dependency by name for untyped injection
         self._untyped_dependencies[key] = dep
+
+    add_prototype = partialmethod(add, lifecycle=Lifecycle.PROTOTYPE)
+    add_singleton = partialmethod(add, lifecycle=Lifecycle.SINGLETON)
+    add_instance = partialmethod(add, lifecycle=Lifecycle.INSTANCE)
+
+    def add_definition(
+        self,
+        name_or_key: StringOrKey,
+        definition: Dependency,
+        override: bool = False,
+    ) -> None:
+        """Add a dependency from a Dependency object."""
+        self.add(
+            name_or_key,
+            definition.factory,
+            definition.lifecycle,
+            override=override,
+            *definition.init_args[0],
+            **definition.init_args[1],
+        )
 
     def remove(self, name_or_key: StringOrKey) -> None:
         """Remove a dependency by name or key from the container."""
@@ -249,7 +276,8 @@ class DependencyRegistry:
                     raise KeyError(f'Dependency "{key}" is not registered')
                 return
             # TODO: we should warn on untyped access since it's not a best practice, though it's supported
-            dependency, lifecycle, (args, kwargs) = self.dependencies[key]
+            # useful for lambdas and other cases where type hints are not available
+            factory, lifecycle, (args, kwargs) = self.dependencies[key]
         else:
             if _is_union(key.type_):
                 types = map(_get_effective_type, t.get_args(key.type_))
@@ -263,29 +291,35 @@ class DependencyRegistry:
                 if must_exist:
                     raise KeyError(f'Dependency "{key}" is not registered')
                 return
-            dependency, lifecycle, (args, kwargs) = self.dependencies[key]
+            factory, lifecycle, (args, kwargs) = self.dependencies[key]
 
         if key in self._resolving:
-            raise DependencyCycleError(f"Dependency cycle detected: {key}")
+            raise DependencyCycleError(
+                f"Dependency cycle detected while resolving {key} for {factory!r}"
+            )
 
         if lifecycle.is_prototype:
             self._resolving.add(key)
             try:
-                return dependency(*args, **kwargs)
+                return self.inject_defaults(factory)(*args, **kwargs)
             finally:
                 self._resolving.remove(key)
         elif lifecycle.is_singleton:
             if key not in self._singletons:
                 self._resolving.add(key)
                 try:
-                    self._singletons[key] = dependency(*args, **kwargs)
+                    self._singletons[key] = self.inject_defaults(
+                        factory,
+                    )(*args, **kwargs)
                 finally:
                     self._resolving.remove(key)
             return self._singletons[key]
         elif lifecycle.is_instance:
-            return dependency
+            return factory
         else:
             raise ValueError(f"Unknown lifecycle: {lifecycle}")
+
+    get_or_raise = partialmethod(get, must_exist=True)
 
     def __contains__(self, key: t.Union[str, t.Tuple[str, t.Type]]) -> bool:
         """Check if a dependency is registered."""
@@ -295,9 +329,9 @@ class DependencyRegistry:
         """Get a dependency. Raises KeyError if not found."""
         return self.get(name, must_exist=True)
 
-    def __setitem__(self, name: str, dependency: t.Any) -> None:
+    def __setitem__(self, name: str, factory: t.Any) -> None:
         """Add a dependency. Defaults to singleton lifecycle if callable, else instance."""
-        self.add(name, dependency)
+        self.add(name, factory)
 
     def __delitem__(self, name: str) -> None:
         """Remove a dependency."""
@@ -351,12 +385,18 @@ class DependencyRegistry:
                     candidate = name
                 if not self.has(candidate):
                     continue
-                dependency, lifecycle, (args, kwargs) = self.dependencies[candidate]
-                if callable(dependency):
-                    dependency = recursive_inject(dependency)
-                self.add(
-                    candidate, dependency, lifecycle, override=True, *args, **kwargs
-                )
+                factory, lifecycle, (args, kwargs) = self.dependencies[candidate]
+                if callable(factory):
+                    if candidate in self._resolving:
+                        raise DependencyCycleError(
+                            f"Dependency cycle detected wiring param {param} in {func_or_cls}"
+                        )
+                    self._resolving.add(candidate)
+                    try:
+                        factory = recursive_inject(factory)
+                    finally:
+                        self._resolving.remove(candidate)
+                self.add(candidate, factory, lifecycle, override=True, *args, **kwargs)
             return self.inject_defaults(func)
 
         return recursive_inject(func_or_cls)
@@ -380,6 +420,38 @@ class DependencyRegistry:
 
     def __str__(self) -> str:
         return repr(self)
+
+    def __bool__(self) -> bool:
+        return bool(self.dependencies)
+
+    def __add__(self, other: "DependencyRegistry") -> "DependencyRegistry":
+        self._untyped_dependencies = {
+            **self._untyped_dependencies,
+            **other._untyped_dependencies,
+        }
+        self._typed_dependencies = {
+            **self._typed_dependencies,
+            **other._typed_dependencies,
+        }
+        self._singletons = {
+            **self._singletons,
+            **other._singletons,
+        }
+        return self
+
+    def __getstate__(self) -> t.Dict[str, t.Any]:
+        return {
+            "_typed_dependencies": self._typed_dependencies,
+            "_untyped_dependencies": self._untyped_dependencies,
+            "_singletons": self._singletons,
+            "_resolving": self._resolving,
+        }
+
+    def __setstate__(self, state: t.Dict[str, t.Any]) -> None:
+        self._typed_dependencies = state["_typed_dependencies"]
+        self._untyped_dependencies = state["_untyped_dependencies"]
+        self._singletons = state["_singletons"]
+        self._resolving = state["_resolving"]
 
 
 GLOBAL_REGISTRY = DependencyRegistry()

@@ -1,24 +1,53 @@
-from cdf.injector.registry import DependencyRegistry
+import typing as t
 
-r = DependencyRegistry()
-r.add("a", lambda: 1, r.lc.SINGLETON)
-r.add("b", lambda a: a + 1, r.lc.SINGLETON)
-r.add("obj_proto", object, r.lc.PROTOTYPE)
-r.add("obj_singleton", object, r.lc.SINGLETON)
+from cdf.injector.registry import Dependency, DependencyRegistry, StringOrKey
 
 
-def foo(a: int, b: int, c: int = 0) -> int:
-    return a + b
+class Workspace:
+    """A CDF workspace that allows for dependency injection."""
+
+    name: str
+    version: str = "0.1.0"
+
+    def __init__(self) -> None:
+        """Initialize the workspace."""
+        self.injector = DependencyRegistry()
+        for name, definition in self.get_services().items():
+            self.add_dependency(name, definition)
+
+    def get_services(self) -> t.Dict[StringOrKey, Dependency]:
+        """Return a dictionary of services that the workspace provides."""
+        return {}
+
+    def add_dependency(self, name: StringOrKey, definition: Dependency) -> None:
+        """Add a dependency to the workspace."""
+        self.injector.add_definition(name, definition)
 
 
-foo_wired = r.wire(foo)
+class DataTeamWorkspace(Workspace):
+    name = "data-team"
 
-assert foo_wired() == 3
-assert foo_wired(1) == 3
-assert foo_wired(2) == 4
-assert foo_wired(3, 3) == 6
+    def get_services(self):
+        return {
+            "a": Dependency(1),
+            "b": Dependency(lambda a: a + 1),
+            "prod_bigquery": Dependency("dwh-123"),
+        }
 
-assert r.get("obj_proto") is not r.get("obj_proto")
-assert r.get("obj_singleton") is r.get("obj_singleton")
 
-assert r(foo) == 3
+datateam = DataTeamWorkspace()
+
+
+def c(b: int) -> int:
+    return b * 10
+
+
+datateam.add_dependency("c", Dependency(c))
+
+
+def source_a(a: int, prod_bigquery: str):
+    print(f"Source A: {a=}, {prod_bigquery=}")
+
+
+print(datateam.injector(source_a))
+print(datateam.name)
