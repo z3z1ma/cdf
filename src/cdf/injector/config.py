@@ -365,6 +365,9 @@ class ConfigResolver(t.MutableMapping):
 
         sections = getattr(func, "_sections", ())
         explicit_lookups = getattr(func, "_lookups", {})
+        if not sections and not explicit_lookups:
+            # No config injection requested
+            return func
 
         @functools.wraps(func)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -372,9 +375,17 @@ class ConfigResolver(t.MutableMapping):
             for name, param in sig.parameters.items():
                 if param.default not in (param.empty, None):
                     continue
-                lookup = explicit_lookups.get(name, ".".join((*sections, name)))
-                value = self.get(lookup, _MISSING)
+                value = _MISSING
+                if explicit_lookups:
+                    # Use explicit lookups if provided
+                    if name not in explicit_lookups:
+                        continue
+                    value = self.get(explicit_lookups[name], _MISSING)
+                elif sections:
+                    # Use section-based lookups if provided
+                    value = self.get(".".join((*sections, name)), _MISSING)
                 if value is not _MISSING:
+                    # Inject the value into the function
                     bound.arguments[name] = self.apply_converters(value, **self.config)
             return func(*bound.args, **bound.kwargs)
 
