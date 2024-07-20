@@ -7,6 +7,8 @@ from functools import partialmethod, wraps
 
 from typing_extensions import ParamSpec
 
+from cdf.injector.errors import DependencyCycleError
+
 T = t.TypeVar("T")
 P = ParamSpec("P")
 
@@ -40,12 +42,6 @@ class Lifecycle(Enum):
 
     def __str__(self) -> str:
         return self.name.lower()
-
-
-class DependencyCycleError(Exception):
-    """Raised when a dependency cycle is detected."""
-
-    pass
 
 
 class TypedKey(t.NamedTuple):
@@ -156,9 +152,16 @@ class Dependency(t.NamedTuple):
     factory: t.Any
     lifecycle: Lifecycle = Lifecycle.SINGLETON
     init_args: t.Tuple[t.Tuple[t.Any, ...], t.Dict[str, t.Any]] = ((), {})
+    map_section: t.Optional[t.Tuple[str, ...]] = None
+    map_values: t.Optional[t.Dict[str, str]] = None
+
+    @classmethod
+    def from_instance(cls, instance: t.Any) -> "Dependency":
+        """Create a dependency from an instance."""
+        return cls(instance, Lifecycle.INSTANCE)
 
 
-class DependencyRegistry:
+class DependencyRegistry(t.MutableMapping):
     """A registry for dependencies with lifecycle management.
 
     Dependencies can be registered with a name or a typed key. Typed keys are tuples
@@ -277,7 +280,7 @@ class DependencyRegistry:
                 return
             # TODO: we should warn on untyped access since it's not a best practice, though it's supported
             # useful for lambdas and other cases where type hints are not available
-            factory, lifecycle, (args, kwargs) = self.dependencies[key]
+            factory, lifecycle, (args, kwargs), *rest = self.dependencies[key]
         else:
             if _is_union(key.type_):
                 types = map(_get_effective_type, t.get_args(key.type_))
@@ -291,7 +294,7 @@ class DependencyRegistry:
                 if must_exist:
                     raise KeyError(f'Dependency "{key}" is not registered')
                 return
-            factory, lifecycle, (args, kwargs) = self.dependencies[key]
+            factory, lifecycle, (args, kwargs), *rest = self.dependencies[key]
 
         if key in self._resolving:
             raise DependencyCycleError(
@@ -421,4 +424,10 @@ class DependencyRegistry:
 
 GLOBAL_REGISTRY = DependencyRegistry()
 
-__all__ = ["DependencyRegistry", "Lifecycle", "DependencyCycleError", "GLOBAL_REGISTRY"]
+__all__ = [
+    "DependencyRegistry",
+    "Dependency",
+    "Lifecycle",
+    "StringOrKey",
+    "GLOBAL_REGISTRY",
+]

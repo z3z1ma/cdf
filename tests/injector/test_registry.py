@@ -1,4 +1,4 @@
-from cdf.injector.registry import DependencyRegistry
+from cdf.injector import DependencyRegistry
 
 
 def test_registry():

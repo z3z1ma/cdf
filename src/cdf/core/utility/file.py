@@ -70,6 +70,6 @@ def _load_toml(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
         Result monad with an error.
     """
     try:
-        return M.ok(tomlkit.loads(path.read_text()))
+        return M.ok(tomlkit.loads(path.read_text()).unwrap())
     except Exception as e:
         return M.error(e)

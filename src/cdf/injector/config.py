@@ -1,321 +1,396 @@
-from __future__ import annotations
-
+import ast
+import functools
+import inspect
+import json
+import os
+import re
+import string
 import typing as t
+from collections import ChainMap
+from contextlib import suppress
+from pathlib import Path
 
-from typing_extensions import override
+import ruamel.yaml as yaml
+import tomlkit
+from dynaconf.vendor.box import Box
+from typing_extensions import ParamSpec
 
-from . import errors as injector_errors
-from . import specs as injector_specs
-from . import utils as injector_utils
+import cdf.core.logger as logger
+from cdf.types import M
 
 T = t.TypeVar("T")
-TC = t.TypeVar("TC", bound="Config")
+P = ParamSpec("P")
 
 
-class ConfigSpec(injector_specs.Spec[TC]):
-    """Represents nestable bag of types and values."""
+def load_file(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
+    """Load a configuration from a file path.
 
-    _INTERNAL_FIELDS = injector_specs.Spec._INTERNAL_FIELDS + [
-        "cls",
-        "local_inputs",
-    ]
+    Args:
+        path: The file path.
 
-    def __init__(self, cls: t.Type[TC], **local_inputs: t.Any) -> None:
-        super().__init__()
-        self.cls = cls
-        self.local_inputs = local_inputs
-
-    def get(self, **global_inputs: t.Any) -> Config:
-        """Instantiate with given global inputs."""
-        config_locator = ConfigLocator(**global_inputs)
-        config = config_locator.get(self)
-
-        global_input_keys = config._get_all_global_input_keys()
-        extra_global_input_keys = set(global_inputs.keys()) - global_input_keys
-        if extra_global_input_keys:
-            raise injector_errors.InputConfigError(
-                f"Provided extra global inputs "
-                f"not specified in configs: {extra_global_input_keys}"
-            )
-
-        return config
-
-    @override
-    def __eq__(self, other: t.Any) -> bool:
-        return (
-            type(other) is ConfigSpec
-            and self.cls is other.cls
-            and self.local_inputs == other.local_inputs
-        )
-
-    @override
-    def __hash__(self) -> int:
-        return hash(
-            (
-                self.__class__.__name__,
-                frozenset(self.local_inputs.items()),
-            )
-        )
+    Returns:
+        A Result monad with the configuration dictionary if the file format is JSON, YAML or TOML.
+        Otherwise, a Result monad with an error.
+    """
+    if path.suffix == ".json":
+        return _load_json(path)
+    if path.suffix in (".yaml", ".yml"):
+        return _load_yaml(path)
+    if path.suffix == ".toml":
+        return _load_toml(path)
+    return M.error(ValueError("Invalid file format, must be JSON, YAML or TOML"))
 
 
-class Config:
-    """Description of how injector_specs depend on each other."""
+def _load_json(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
+    """Load a configuration from a JSON file.
 
-    _INTERNAL_FIELDS = [
-        "_config_locator",
-        "_keys",
-        "_specs",
-        "_child_configs",
-        "_global_inputs",
-        "_loaded",
-        "_frozen",
-        "_get_all_global_input_keys",
-        "_process_input",
-        "_load",
-        "freeze",
-        "_get_spec",
-        "_get_child_class",
-    ]
+    Args:
+        path: The file path to a valid JSON document.
 
-    def __new__(
-        cls, *args: t.Any, _materialize: bool = False, **kwargs: t.Any
-    ) -> t.Any:
-        if _materialize:
-            return super().__new__(cls)
-        else:
-            if args:
-                raise ValueError("args must be empty")
+    Returns:
+        A Result monad with the configuration dictionary if the file format is JSON. Otherwise, a
+        Result monad with an error.
+    """
+    try:
+        return M.ok(json.loads(path.read_text()))
+    except Exception as e:
+        return M.error(e)
 
-            return ConfigSpec(cls, **kwargs)
+
+def _load_yaml(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
+    """Load a configuration from a YAML file.
+
+    Args:
+        path: The file path to a valid YAML document.
+
+    Returns:
+        A Result monad with the configuration dictionary if the file format is YAML. Otherwise, a
+        Result monad with an error.
+    """
+    try:
+        yaml_ = yaml.YAML()
+        return M.ok(yaml_.load(path))
+    except Exception as e:
+        return M.error(e)
+
+
+def _load_toml(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
+    """Load a configuration from a TOML file.
+
+        Args:
+    path: The file path to a valid TOML document.
+
+        Returns:
+            A Result monad with the configuration dictionary if the file format is TOML. Otherwise, a
+            Result monad with an error.
+    """
+    try:
+        return M.ok(tomlkit.loads(path.read_text()).unwrap())
+    except Exception as e:
+        return M.error(e)
+
+
+def _to_bool(value: str) -> bool:
+    """Convert a string to a boolean."""
+    return value.lower() in ["true", "1", "yes"]
+
+
+def _resolve_template(template: str, **overrides: t.Any) -> str:
+    """Resolve a template string using environment variables."""
+    return string.Template(template).substitute(overrides, **os.environ)
+
+
+_CONVERTERS = {
+    "json": json.loads,
+    "int": int,
+    "float": float,
+    "str": str,
+    "bool": _to_bool,
+    "path": os.path.abspath,
+    "dict": ast.literal_eval,
+    "list": ast.literal_eval,
+    "tuple": ast.literal_eval,
+    "set": ast.literal_eval,
+    "path": os.path.abspath,
+}
+"""Converters for configuration values."""
+
+_CONVERTER_PATTERN = re.compile(r"@(\w+) ", re.IGNORECASE)
+"""Pattern to match converters in a string."""
+
+
+def add_custom_converter(name: str, converter: t.Callable[[str], t.Any]) -> None:
+    """Add a custom converter to the configuration system."""
+    if name in _CONVERTERS:
+        raise ValueError(f"Converter {name} already exists.")
+    _CONVERTERS[name] = converter
+
+
+def get_converter(name: str) -> t.Callable[[str], t.Any]:
+    """Get a custom converter from the configuration system."""
+    return _CONVERTERS[name]
+
+
+def remove_converter(name: str) -> None:
+    """Remove a custom converter from the configuration system."""
+    if name not in _CONVERTERS:
+        raise ValueError(f"Converter {name} does not exist.")
+    del _CONVERTERS[name]
+
+
+def apply_converters(input_value: t.Any, **overrides: t.Any) -> t.Any:
+    """Apply converters to a string."""
+    if not isinstance(input_value, str):
+        return input_value
+    expanded_value = _resolve_template(input_value, **overrides)
+    converters = _CONVERTER_PATTERN.findall(expanded_value)
+    if len(converters) == 0:
+        return expanded_value
+    base_value = _CONVERTER_PATTERN.sub("", expanded_value).lstrip()
+    if not base_value:
+        return None
+    transformed_value = base_value
+    for converter in reversed(converters):
+        try:
+            transformed_value = _CONVERTERS[converter.lower()](transformed_value)
+        except KeyError as e:
+            raise ValueError(f"Unknown converter: {converter}") from e
+        except Exception as e:
+            raise ValueError(f"Failed to convert value: {e}") from e
+    return transformed_value
+
+
+def _to_box(mapping: t.Mapping[str, t.Any]) -> Box:
+    """Convert a mapping to a standardized Box."""
+    return Box(mapping, box_dots=True)
+
+
+class _ConfigScopes(t.NamedTuple):
+    """A struct to store named configuration scopes by precedence."""
+
+    explicit: Box
+    """User-provided configuration passed as a dictionary."""
+    environment: Box
+    """Environment-specific configuration loaded from a file."""
+    baseline: Box
+    """Configuration loaded from a base config file."""
+
+    def resolve(self) -> Box:
+        """Resolve the configuration scopes."""
+        output = self.baseline
+        output.merge_update(self.environment)
+        output.merge_update(self.explicit)
+        return output
+
+
+ConfigSource = t.Union[str, Path, t.Mapping[str, t.Any]]
+
+
+class ConfigLoader:
+    """Load configuration from multiple sources."""
 
     def __init__(
         self,
-        config_locator: ConfigLocator | None = None,
-        **local_inputs: t.Any,
+        *sources: ConfigSource,
+        environment: str = "dev",
+        deferred: bool = False,
     ) -> None:
-        if config_locator is None:
-            raise ValueError("Use config.get() to get instance of config")
-        self._config_locator = config_locator
+        """Initialize the configuration loader."""
+        self.environment = environment
+        self.sources = list(sources)
+        self._writable_dict = {}
+        if not deferred:
+            self._config = self._load()
 
-        # spec id -> spec key
-        self._keys: dict[injector_specs.SpecID, str] = {}
-        # key -> spec
-        self._specs: dict[str, injector_specs.Spec] = {}
-        # child config key -> child config
-        self._child_configs: dict[str, Config] = {}
-        # global input key -> spec id
-        self._global_inputs: dict[str, injector_specs.SpecID] = {}
-
-        self._loaded = False
-        self._frozen = False
-
-        self._load(**local_inputs)
-
-    # For mypy
-    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Any:
-        return None
-
-    def _get_all_global_input_keys(
-        self,
-        all_global_input_keys: dict[str, injector_specs.SpecID] | None = None,
-    ) -> set[str]:
-        """Recursively get all global input keys of self and its children."""
-        all_global_input_keys = (
-            all_global_input_keys if all_global_input_keys is not None else {}
+    def _load(self) -> t.MutableMapping[str, t.Any]:
+        """Load configuration from sources."""
+        scopes = _ConfigScopes(
+            explicit=_to_box({}), environment=_to_box({}), baseline=_to_box({})
         )
-
-        for key, spec_id in self._global_inputs.items():
-            if key in all_global_input_keys:
-                if all_global_input_keys[key] != spec_id:
-                    raise injector_errors.InputConfigError(
-                        f"Found global input collision: {key!r}"
-                    )
-
-            all_global_input_keys[key] = spec_id
-
-        for _, child_config in self._child_configs.items():
-            child_config._get_all_global_input_keys(all_global_input_keys)
-
-        return set(all_global_input_keys.keys())
-
-    def _process_input(
-        self,
-        key: str,
-        spec: injector_specs._Input,
-        inputs: dict[str, t.Any],
-        desc: str,
-    ) -> injector_specs._Instance:
-        """Convert Input spec to Object spec."""
-        try:
-            value = inputs[key]
-        except KeyError:
-            if spec.default != injector_specs.MISSING:
-                value = spec.default
-            else:
-                raise injector_errors.InputConfigError(
-                    f"{desc} input not set: {key!r}"
-                ) from None
-
-        injector_utils.check_type(value, spec.type_, desc=desc)
-
-        # Preserve old spec id
-        return injector_specs._Instance(value, spec_id=spec.spec_id)
-
-    def _load(self, **local_inputs: t.Any) -> None:
-        """Transfer class variables to instance."""
-        for key in self.__class__.__dict__:
-            if (
-                key.startswith("__")
-                or key == "_INTERNAL_FIELDS"
-                or key in self._INTERNAL_FIELDS
-            ):
-                continue
-
-            spec = getattr(self.__class__, key)
-
-            # Skip partial kwargs (no registration needed)
-            if isinstance(spec, dict):
-                continue
-
-            if not isinstance(spec, injector_specs.Spec):
-                raise ValueError(f"Expected Spec type, got {type(spec)} with {key!r}")
-
-            # Register key
-            self._keys[spec.spec_id] = key
-
-            # Handle inputs
-            if isinstance(spec, injector_specs._GlobalInput):
-                self._global_inputs[key] = spec.spec_id
-
-                spec = self._process_input(
-                    key, spec, self._config_locator.global_inputs, "Global"
+        for source in self.sources:
+            if isinstance(source, dict):
+                # User may provide configuration as a dictionary directly
+                # in which case it takes precedence over other sources
+                scopes.explicit.merge_update(source)
+            elif isinstance(source, (str, Path)):
+                # Load configuration from file
+                path = Path(source)
+                result = load_file(path)
+                if result.is_ok():
+                    scopes.baseline.merge_update(result.unwrap())
+                else:
+                    err = result.unwrap_err()
+                    if not isinstance(err, FileNotFoundError):
+                        logger.warning(
+                            f"Failed to load configuration from {path}: {result.unwrap_err()}"
+                        )
+                    else:
+                        logger.debug(f"Configuration file not found: {path}")
+                # Load environment-specific configuration from corresponding file
+                # e.g. config.dev.json, config.dev.yaml, config.dev.toml
+                env_path = path.with_name(
+                    f"{path.stem}.{self.environment}{path.suffix}"
                 )
-            elif isinstance(spec, injector_specs._LocalInput):
-                spec = self._process_input(key, spec, local_inputs, "Local")
+                result = load_file(env_path)
+                if result.is_ok():
+                    scopes.environment.merge_update(result.unwrap())
+                else:
+                    err = result.unwrap_err()
+                    if not isinstance(err, FileNotFoundError):
+                        logger.warning(
+                            f"Failed to load configuration from {path}: {err}"
+                        )
+                    else:
+                        logger.debug(f"Configuration file not found: {env_path}")
+        return ChainMap(self._writable_dict, scopes.resolve())
 
-            # Handle child configs
-            if isinstance(spec, ConfigSpec):
-                child_config = self._config_locator.get(spec)
-                self._child_configs[key] = child_config
-            else:
-                self._specs[key] = spec
+    @property
+    def config(self) -> t.Mapping[str, t.Any]:
+        """Get the configuration dictionary."""
+        if not hasattr(self, "_config"):
+            self._config = self._load()
+        return self._config
 
-        self._loaded = True
+    def import_(self, source: ConfigSource, append: bool = True) -> None:
+        """Include a new source of configuration."""
+        if append:
+            # Takes priority within the same scope
+            self.sources.append(source)
+        else:
+            self.sources.insert(0, source)
+        self._config = self._load()
 
-    def freeze(self) -> None:
-        """Freeze to prevent any more perturbations to this Config instance."""
-        self._frozen = True
 
-    def _get_spec(self, key: str) -> injector_specs.Spec:
-        """More type-safe alternative to get spec than attr access."""
-        spec = self[key]
-        if not isinstance(spec, injector_specs.Spec):
-            raise TypeError(type(spec))
-        return spec
+_MISSING: t.Any = object()
+"""A sentinel value for a missing configuration value."""
 
-    def _get_child_config(self, key: str) -> Config:
-        """More type-safe alternative to get child config than attr access."""
-        child_config = self[key]
-        if not isinstance(child_config, Config):
-            raise TypeError(type(child_config))
-        return child_config
 
-    # NB: Have to override getattribute instead of getattr to
-    # prevent initial, class-level values from being used.
-    @override
-    def __getattribute__(self, key: str) -> injector_specs.Spec | Config:
-        if (
-            key.startswith("__")
-            or key == "_INTERNAL_FIELDS"
-            or key in self._INTERNAL_FIELDS
-        ):
-            return super().__getattribute__(key)  # type: ignore[no-any-return]
+def map_section(*sections: str) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
+    """Mark a function to inject configuration values from a specific section."""
 
-        try:
-            if key in self._child_configs:
-                return self._child_configs[key]
-            else:
-                return self._specs[key]
-        except KeyError:
-            raise KeyError(f"{self.__class__}: {key!r}") from None
+    def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
+        setattr(func, "_sections", sections)
+        return func
+
+    return decorator
+
+
+def map_values(**mapping: t.Any) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
+    """Mark a function to inject configuration values from a specific mapping of param names to keys."""
+
+    def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
+        setattr(func, "_lookups", mapping)
+        return func
+
+    return decorator
+
+
+class ConfigResolver(t.MutableMapping):
+    """Resolve configuration values."""
+
+    map_section = staticmethod(map_section)
+    """Mark a function to inject configuration values from a specific section."""
+    map_values = staticmethod(map_values)
+    """Mark a function to inject configuration values from a specific mapping of param names to keys."""
+
+    def __init__(
+        self,
+        *sources: ConfigSource,
+        environment: str = "dev",
+        loader: ConfigLoader = ConfigLoader("config.json"),
+    ) -> None:
+        """Initialize the configuration resolver."""
+        for source in sources:
+            loader.import_(source)
+        self._loader = loader
+        self._frozen_environment = os.environ.copy()
+
+    @property
+    def config(self) -> t.Mapping[str, t.Any]:
+        """Get the configuration dictionary."""
+        return self._loader.config
 
     def __getitem__(self, key: str) -> t.Any:
-        return injector_utils.nested_getattr(self, key)
-
-    def __contains__(self, key: str) -> t.Any:
-        if "." in key:
-            return injector_utils.nested_contains(self, key)
-        else:
-            return key in dir(self)
-
-    @override
-    def __setattr__(self, key: str, value: t.Any) -> None:
-        if (
-            key.startswith("__")
-            or key == "_INTERNAL_FIELDS"
-            or key in self._INTERNAL_FIELDS
-        ):
-            return super().__setattr__(key, value)
-
-        if self._frozen:
-            raise injector_errors.FrozenConfigError(
-                f"Cannot perturb frozen config: key={key!r}"
-            )
-
-        if key not in self._specs and self._loaded:
-            if key in self._child_configs:
-                raise injector_errors.SetChildConfigError(
-                    f"Cannot set child config: key={key!r}"
-                )
-            else:
-                raise injector_errors.NewKeyConfigError(
-                    f"Cannot add new keys to a loaded config: key={key!r}"
-                )
-
-        old_spec = self._specs[key]
-
-        # Automatically wrap input if user hasn't done so
-        if not isinstance(value, injector_specs.Spec):
-            value = injector_specs.Instance(value)
-
-        self._specs[key] = value
-
-        # Transfer old spec id
-        value.spec_id = old_spec.spec_id
+        """Get a configuration value."""
+        v = self.config[key]
+        return self.apply_converters(v, **self.config)
 
     def __setitem__(self, key: str, value: t.Any) -> None:
-        injector_utils.nested_setattr(self, key, value)
+        """Set a configuration value."""
+        self._loader._writable_dict[key] = value
 
-    @override
-    def __dir__(self) -> t.Iterable[str]:
-        return sorted(list(self._specs.keys()) + list(self._child_configs.keys()))
+    def __delitem__(self, key: str) -> None:
+        self._loader._writable_dict.pop(key, None)
 
+    def __iter__(self) -> t.Iterator[str]:
+        return iter(self.config)
 
-class ConfigLocator:
-    """Service locator to get instances of Configs by type."""
+    def __len__(self) -> int:
+        return len(self.config)
 
-    def __init__(self, **global_inputs: t.Any) -> None:
-        self.global_inputs: dict[str, t.Any] = global_inputs
-
-        self._config_cache: dict[ConfigSpec, Config] = {}
-
-    def get(self, config_spec: ConfigSpec) -> Config:
-        """Get Config instance by type."""
+    def __getattr__(self, key: str) -> t.Any:
+        """Get a configuration value."""
         try:
-            return self._config_cache[config_spec]
-        except KeyError:
-            pass
+            return self[key]
+        except KeyError as e:
+            raise AttributeError from e
 
-        config = injector_specs.instantiate(
-            config_spec.cls,
-            self,
-            _materialize=True,
-            **config_spec.local_inputs,
-        )
-        self._config_cache[config_spec] = config
-        return t.cast(Config, config)
+    def __enter__(self) -> "ConfigResolver":
+        """Enter a context."""
+        return self
+
+    def __exit__(self, *args) -> None:
+        """Exit a context."""
+        os.environ.clear()
+        os.environ.update(self._frozen_environment)
+
+    def __repr__(self) -> str:
+        """Get a string representation of the configuration resolver."""
+        return f"{self.__class__.__name__}(<{len(self._loader.sources)} sources>)"
+
+    def set_environment(self, environment: str) -> None:
+        """Set the environment of the configuration resolver."""
+        self._loader.environment = environment
+
+    def import_(self, source: ConfigSource, append: bool = True) -> None:
+        """Include a new source of configuration."""
+        self._loader.import_(source, append)
+
+    add_custom_converter = staticmethod(add_custom_converter)
+    apply_converters = staticmethod(apply_converters)
+
+    def inject_defaults(self, func: t.Callable[P, T]) -> t.Callable[..., T]:
+        """Inject configuration values into a function."""
+        sig = inspect.signature(func)
+
+        sections = getattr(func, "_sections", ())
+        explicit_lookups = getattr(func, "_lookups", {})
+
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
+            bound = sig.bind_partial(*args, **kwargs)
+            for name, param in sig.parameters.items():
+                if param.default not in (param.empty, None):
+                    continue
+                lookup = explicit_lookups.get(name, ".".join((*sections, name)))
+                value = self.get(lookup, _MISSING)
+                if value is not _MISSING:
+                    bound.arguments[name] = self.apply_converters(value, **self.config)
+            return func(*bound.args, **bound.kwargs)
+
+        return wrapper
+
+    def __call__(
+        self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any
+    ) -> T:
+        """Invoke a callable with injected configuration values."""
+        return self.inject_defaults(func_or_cls)(*args, **kwargs)
 
 
-def get_config(config_cls: t.Type[TC], **global_inputs: t.Any) -> TC:
-    """More type-safe alternative to getting config objs."""
-    return config_cls().get(**global_inputs)  # type: ignore[no-any-return]
+__all__ = [
+    "ConfigLoader",
+    "ConfigResolver",
+    "ConfigSource",
+    "add_custom_converter",
+    "remove_converter",
+]
