@@ -11,9 +11,9 @@ from cdf.injector.config import (
 from cdf.injector.registry import (
     GLOBAL_REGISTRY,
     Dependency,
+    DependencyKey,
     DependencyRegistry,
     Lifecycle,
-    StringOrKey,
 )
 
 __all__ = [
@@ -22,11 +22,10 @@ __all__ = [
     "ConfigSource",
     "Dependency",
     "DependencyRegistry",
-    "StringOrKey",
+    "DependencyKey",
     "add_custom_converter",
     "remove_converter",
     "Lifecycle",
-    "StringOrKey",
     "GLOBAL_REGISTRY",
     "load_file",
     "map_section",

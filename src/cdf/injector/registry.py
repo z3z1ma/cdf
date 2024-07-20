@@ -59,7 +59,7 @@ class TypedKey(t.NamedTuple):
         return f"{self.name}: {self.type_name}"
 
     def __repr__(self) -> str:
-        return f"<DependencyKey {self}>"
+        return f"<TypedKey {self}>"
 
     def __eq__(self, other: t.Any) -> bool:
         """Two keys are equal if their names and base types match.
@@ -74,7 +74,7 @@ class TypedKey(t.NamedTuple):
         return hash((self.name, _get_effective_type(self.type_)))
 
 
-StringOrKey = t.Union[str, t.Tuple[str, t.Type[t.Any]], TypedKey]
+DependencyKey = t.Union[str, t.Tuple[str, t.Type[t.Any]], TypedKey]
 """A string or a typed key."""
 
 
@@ -187,7 +187,7 @@ class DependencyRegistry(t.MutableMapping):
 
     def add(
         self,
-        name_or_key: StringOrKey,
+        name_or_key: DependencyKey,
         factory: t.Any,
         lifecycle: t.Optional[Lifecycle] = None,
         override: bool = False,
@@ -232,7 +232,7 @@ class DependencyRegistry(t.MutableMapping):
 
     def add_definition(
         self,
-        name_or_key: StringOrKey,
+        name_or_key: DependencyKey,
         definition: Dependency,
         override: bool = False,
     ) -> None:
@@ -246,7 +246,7 @@ class DependencyRegistry(t.MutableMapping):
             **definition.init_args[1],
         )
 
-    def remove(self, name_or_key: StringOrKey) -> None:
+    def remove(self, name_or_key: DependencyKey) -> None:
         """Remove a dependency by name or key from the container."""
         key = _normalize_key(name_or_key)
         if isinstance(key, str):
@@ -266,11 +266,11 @@ class DependencyRegistry(t.MutableMapping):
         self._untyped_dependencies.clear()
         self._singletons.clear()
 
-    def has(self, name_or_key: StringOrKey) -> bool:
+    def has(self, name_or_key: DependencyKey) -> bool:
         """Check if a dependency is registered."""
         return name_or_key in self.dependencies
 
-    def get(self, name_or_key: StringOrKey, must_exist: bool = False) -> t.Any:
+    def get(self, name_or_key: DependencyKey, must_exist: bool = False) -> t.Any:
         """Get a dependency"""
         key = _normalize_key(name_or_key)
         if isinstance(key, str):
@@ -428,6 +428,6 @@ __all__ = [
     "DependencyRegistry",
     "Dependency",
     "Lifecycle",
-    "StringOrKey",
+    "DependencyKey",
     "GLOBAL_REGISTRY",
 ]

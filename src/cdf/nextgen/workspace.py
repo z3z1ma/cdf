@@ -1,3 +1,4 @@
+import abc
 import os
 import string
 import typing as t
@@ -10,12 +11,39 @@ from cdf.injector import (
     ConfigResolver,
     ConfigSource,
     Dependency,
+    DependencyKey,
     DependencyRegistry,
-    StringOrKey,
 )
 
 
-class Workspace:
+class AbstractWorkspace(abc.ABC):
+    name: str
+    version: str = "0.1.0"
+
+    @abc.abstractmethod
+    def get_environment(self) -> str:
+        pass
+
+    @abc.abstractmethod
+    def get_config_sources(self) -> t.Iterable[ConfigSource]:
+        pass
+
+    @abc.abstractmethod
+    def get_services(self) -> t.Dict[DependencyKey, Dependency]:
+        pass
+
+    @property
+    def cli(self) -> t.Callable:
+        import click
+
+        @click.command()
+        def entrypoint():
+            click.echo(f"Hello, {self.name} {self.version}!")
+
+        return entrypoint
+
+
+class Workspace(AbstractWorkspace):
     """A CDF workspace that allows for dependency injection."""
 
     name: str
@@ -50,11 +78,11 @@ class Workspace:
         """Return a sequence of configuration sources."""
         return ["cdf.toml", "cdf.yaml", "cdf.json", "~/.cdf.toml"]
 
-    def get_services(self) -> t.Dict[StringOrKey, Dependency]:
+    def get_services(self) -> t.Dict[DependencyKey, Dependency]:
         """Return a dictionary of services that the workspace provides."""
         return {}
 
-    def add_dependency(self, name: StringOrKey, definition: Dependency) -> None:
+    def add_dependency(self, name: DependencyKey, definition: Dependency) -> None:
         """Add a dependency to the workspace DI container."""
         self.injector.add_definition(name, definition)
 
@@ -105,3 +133,5 @@ print(datateam.name)
 print(datateam.config_resolver["sfdc.username"])
 
 print(datateam.injector.get_or_raise("sfdc"))
+
+datateam.cli()
