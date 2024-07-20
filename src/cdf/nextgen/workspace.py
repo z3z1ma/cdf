@@ -4,13 +4,7 @@ import string
 import typing as t
 from collections import ChainMap
 
-from cdf.injector import (
-    ConfigResolver,
-    ConfigSource,
-    Dependency,
-    DependencyKey,
-    DependencyRegistry,
-)
+import cdf.injector as injector
 
 
 class AbstractWorkspace(abc.ABC):
@@ -22,11 +16,11 @@ class AbstractWorkspace(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def get_config_sources(self) -> t.Iterable[ConfigSource]:
+    def get_config_sources(self) -> t.Iterable[injector.ConfigSource]:
         pass
 
     @abc.abstractmethod
-    def get_services(self) -> t.Dict[DependencyKey, Dependency]:
+    def get_services(self) -> t.Dict[injector.DependencyKey, injector.Dependency]:
         pass
 
     @property
@@ -48,8 +42,8 @@ class Workspace(AbstractWorkspace):
 
     def __init__(
         self,
-        dependency_registry: DependencyRegistry = DependencyRegistry(),
-        config_resolver: ConfigResolver = ConfigResolver(),
+        dependency_registry: injector.DependencyRegistry = injector.DependencyRegistry(),
+        config_resolver: injector.ConfigResolver = injector.ConfigResolver(),
     ) -> None:
         """Initialize the workspace."""
         self.injector = dependency_registry
@@ -57,12 +51,14 @@ class Workspace(AbstractWorkspace):
         for source in self.get_config_sources():
             config_resolver.import_(source)
         config_resolver.set_environment(self.get_environment())
-        self.add_dependency("cdf_config", Dependency.from_instance(config_resolver))
+        self.add_dependency(
+            "cdf_config", injector.Dependency.from_instance(config_resolver)
+        )
         self.config_resolver = config_resolver
 
         for name, definition in self.get_services().items():
             if callable(definition.factory):
-                definition = Dependency(
+                definition = injector.Dependency(
                     config_resolver.inject_defaults(definition.factory), *definition[1:]
                 )
             self.add_dependency(name, definition)
@@ -71,15 +67,17 @@ class Workspace(AbstractWorkspace):
         """Return the environment of the workspace."""
         return os.getenv("CDF_ENVIRONMENT", "dev")
 
-    def get_config_sources(self) -> t.Iterable[ConfigSource]:
+    def get_config_sources(self) -> t.Iterable[injector.ConfigSource]:
         """Return a sequence of configuration sources."""
         return ["cdf.toml", "cdf.yaml", "cdf.json", "~/.cdf.toml"]
 
-    def get_services(self) -> t.Dict[DependencyKey, Dependency]:
+    def get_services(self) -> t.Dict[injector.DependencyKey, injector.Dependency]:
         """Return a dictionary of services that the workspace provides."""
         return {}
 
-    def add_dependency(self, name: DependencyKey, definition: Dependency) -> None:
+    def add_dependency(
+        self, name: injector.DependencyKey, definition: injector.Dependency
+    ) -> None:
         """Add a dependency to the workspace DI container."""
         self.injector.add_definition(name, definition)
 
@@ -94,11 +92,11 @@ if __name__ == "__main__":
 
         def get_services(self):
             return {
-                "a": Dependency(1),
-                "b": Dependency(lambda a: a + 1),
-                "prod_bigquery": Dependency("dwh-123"),
-                "sfdc": Dependency(
-                    ConfigResolver.map_section("sfdc")(
+                "a": injector.Dependency(1),
+                "b": injector.Dependency(lambda a: a + 1),
+                "prod_bigquery": injector.Dependency("dwh-123"),
+                "sfdc": injector.Dependency(
+                    injector.map_section("sfdc")(
                         lambda username: f"https://sfdc.com/{username}"
                     )
                 ),
@@ -116,12 +114,12 @@ if __name__ == "__main__":
     # Create an instance of the workspace
     datateam = DataTeamWorkspace()
 
-    @ConfigResolver.map_values(b="a.b.c")
+    @injector.map_values(b="a.b.c")
     def c(b: int) -> int:
         return b * 10
 
     # Imperatively add dependencies
-    datateam.add_dependency("c", Dependency(c))
+    datateam.add_dependency("c", injector.Dependency(c))
 
     def source_a(a: int, prod_bigquery: str):
         print(f"Source A: {a=}, {prod_bigquery=}")
