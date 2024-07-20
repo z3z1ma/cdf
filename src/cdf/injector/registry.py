@@ -146,10 +146,10 @@ def _normalize_key(
     return TypedKey(k, _get_effective_type(t_))
 
 
-class Dependency(t.NamedTuple):
+class Dependency(t.NamedTuple, t.Generic[T]):
     """A dependency with lifecycle and initialization arguments."""
 
-    factory: t.Any
+    factory: t.Union[t.Callable[..., T], T]
     lifecycle: Lifecycle = Lifecycle.SINGLETON
     init_args: t.Tuple[t.Tuple[t.Any, ...], t.Dict[str, t.Any]] = ((), {})
     map_section: t.Optional[t.Tuple[str, ...]] = None
