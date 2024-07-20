@@ -39,6 +39,15 @@ class AbstractWorkspace(abc.ABC):
         return entrypoint
 
 
+class Service(t.TypedDict):
+    """A service that the workspace provides."""
+
+    name: injector.DependencyKey
+    dependency: injector.Dependency
+    description: str
+    owner: str
+
+
 class Workspace(AbstractWorkspace):
     """A CDF workspace that allows for dependency injection."""
 
@@ -61,30 +70,38 @@ class Workspace(AbstractWorkspace):
         )
         self.configuration = configuration
 
-        for name, definition in self.get_services().items():
-            if callable(definition.factory):
-                definition = injector.Dependency(
-                    configuration.inject_defaults(definition.factory), *definition[1:]
+        self._services = self.get_services()
+        for service in self._services:
+            if callable(service["dependency"].factory):
+                service["dependency"] = injector.Dependency(
+                    configuration.inject_defaults(service["dependency"].factory),
+                    *service["dependency"][1:],
                 )
-            self.add_dependency(name, definition)
+            self.add_dependency(service["name"], service["dependency"])
+
+        # TODO: Now we add sources which depend on services
 
     def get_environment(self) -> str:
         """Return the environment of the workspace."""
         return os.getenv("CDF_ENVIRONMENT", "dev")
 
     def get_config_sources(self) -> t.Iterable[injector.ConfigSource]:
-        """Return a sequence of configuration sources."""
+        """Return an iterable of configuration sources."""
         return ["cdf.toml", "cdf.yaml", "cdf.json", "~/.cdf.toml"]
 
-    def get_services(self) -> t.Dict[injector.DependencyKey, injector.Dependency]:
-        """Return a dictionary of services that the workspace provides."""
-        return {}
+    def get_services(self) -> t.Iterable[Service]:
+        """Return a iterable of services that the workspace provides."""
+        return []
 
     def add_dependency(
         self, name: injector.DependencyKey, definition: injector.Dependency
     ) -> None:
         """Add a dependency to the workspace DI container."""
         self.injector.add_definition(name, definition)
+
+    def import_config(self, config: t.Dict[str, t.Any]) -> None:
+        """Import a configuration dictionary into the workspace."""
+        self.configuration.import_(config)
 
     def __call__(
         self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any
@@ -97,24 +114,51 @@ class Workspace(AbstractWorkspace):
 if __name__ == "__main__":
     # Example usage
 
+    # Modularity is acheived through regular Python modules
+
+    # from workspaces.datateam.services import SFDC, Asana, BigQuery, Snowflake
+    # from workspaces.datateam.config import CONFIG
+    # from workspaces.datateam.sources import salesforce_source
+
     # Define a workspace
     class DataTeamWorkspace(Workspace):
         name = "data-team"
         version = "0.1.1"
 
-        def get_services(self):
-            return {
-                "a": injector.Dependency(1),
-                "b": injector.Dependency(lambda a: a + 1),
-                "prod_bigquery": injector.Dependency("dwh-123"),
-                "sfdc": injector.Dependency(
-                    injector.map_section("sfdc")(
-                        lambda username: f"https://sfdc.com/{username}"
-                    )
-                ),
-            }
+        def get_services(self) -> t.List[Service]:
+            # These can be used by simply using the name of the service in a function argument
+            return [
+                {
+                    "name": "a",
+                    "dependency": injector.Dependency(1),
+                    "description": "A secret number",
+                    "owner": "Alex",
+                },
+                {
+                    "name": "b",
+                    "dependency": injector.Dependency(lambda a: a + 1),
+                    "description": "Add one to the secret number",
+                    "owner": "Alex",
+                },
+                {
+                    "name": "prod_bigquery",
+                    "dependency": injector.Dependency("dwh-123"),
+                    "description": "The production BigQuery project",
+                    "owner": "DataTeam",
+                },
+                {
+                    "name": "sfdc",
+                    "dependency": injector.Dependency(
+                        injector.map_section("sfdc")(
+                            lambda username: f"https://sfdc.com/{username}"
+                        )
+                    ),
+                    "description": "The primary Salesforce instance",
+                    "owner": "RevOps",
+                },
+            ]
 
-        def get_config_sources(self):
+        def get_config_sources(self) -> t.List[injector.ConfigSource]:
             return [
                 {
                     "sfdc": {"username": "abc"},
@@ -131,7 +175,7 @@ if __name__ == "__main__":
         print(f"SFDC: {sfdc=}")
         return secret_number * 10
 
-    # Imperatively add dependencies
+    # Imperatively add dependencies or config if needed
     datateam.add_dependency("c", injector.Dependency(c))
     datateam.configuration.import_({"a.b.c": 10})
 
