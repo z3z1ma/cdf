@@ -3,6 +3,8 @@ import os
 import string
 import typing as t
 from collections import ChainMap
+from dataclasses import dataclass
+from enum import Enum
 
 from typing_extensions import ParamSpec
 
@@ -39,13 +41,25 @@ class AbstractWorkspace(abc.ABC):
         return entrypoint
 
 
-class Service(t.TypedDict):
+class ServiceLevelAgreement(Enum):
+    """The SLA of a workspace component"""
+
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+    CRITICAL = 4
+
+
+# TODO: this must move to avoid circular imports
+@dataclass
+class Service:
     """A service that the workspace provides."""
 
     name: injector.DependencyKey
     dependency: injector.Dependency
-    description: str
     owner: str
+    description: str = "No description provided"
+    sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM
 
 
 class Workspace(AbstractWorkspace):
@@ -72,12 +86,12 @@ class Workspace(AbstractWorkspace):
 
         self._services = self.get_services()
         for service in self._services:
-            if callable(service["dependency"].factory):
-                service["dependency"] = injector.Dependency(
-                    configuration.inject_defaults(service["dependency"].factory),
-                    *service["dependency"][1:],
+            if callable(service.dependency.factory):
+                service.dependency = injector.Dependency(
+                    configuration.inject_defaults(service.dependency.factory),
+                    *service.dependency[1:],
                 )
-            self.add_dependency(service["name"], service["dependency"])
+            self.add_dependency(service.name, service.dependency)
 
         # TODO: Now we add sources which depend on services
 
@@ -128,34 +142,28 @@ if __name__ == "__main__":
         def get_services(self) -> t.List[Service]:
             # These can be used by simply using the name of the service in a function argument
             return [
-                {
-                    "name": "a",
-                    "dependency": injector.Dependency(1),
-                    "description": "A secret number",
-                    "owner": "Alex",
-                },
-                {
-                    "name": "b",
-                    "dependency": injector.Dependency(lambda a: a + 1),
-                    "description": "Add one to the secret number",
-                    "owner": "Alex",
-                },
-                {
-                    "name": "prod_bigquery",
-                    "dependency": injector.Dependency("dwh-123"),
-                    "description": "The production BigQuery project",
-                    "owner": "DataTeam",
-                },
-                {
-                    "name": "sfdc",
-                    "dependency": injector.Dependency(
+                Service(
+                    "a",
+                    injector.Dependency(1),
+                    owner="Alex",
+                    description="A secret number",
+                    sla=ServiceLevelAgreement.CRITICAL,
+                ),
+                Service(
+                    "b", injector.Dependency(lambda a: a + 1 * 5 / 10), owner="Alex"
+                ),
+                Service(
+                    "prod_bigquery", injector.Dependency("dwh-123"), owner="DataTeam"
+                ),
+                Service(
+                    "sfdc",
+                    injector.Dependency(
                         injector.map_section("sfdc")(
                             lambda username: f"https://sfdc.com/{username}"
                         )
                     ),
-                    "description": "The primary Salesforce instance",
-                    "owner": "RevOps",
-                },
+                    owner="RevOps",
+                ),
             ]
 
         def get_config_sources(self) -> t.List[injector.ConfigSource]:
