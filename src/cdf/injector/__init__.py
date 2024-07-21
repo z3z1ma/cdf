@@ -5,8 +5,8 @@ from cdf.injector.config import (
     Request,
     add_custom_converter,
     load_file,
-    map_section,
-    map_values,
+    map_config_section,
+    map_config_values,
     remove_converter,
 )
 from cdf.injector.registry import (
@@ -30,6 +30,6 @@ __all__ = [
     "Lifecycle",
     "GLOBAL_REGISTRY",
     "load_file",
-    "map_section",
-    "map_values",
+    "map_config_section",
+    "map_config_values",
 ]

@@ -146,7 +146,7 @@ def _normalize_key(
     return TypedKey(k, _get_effective_type(t_))
 
 
-class Dependency(t.NamedTuple, t.Generic[T]):
+class Dependency(t.Generic[T], t.NamedTuple):
     """A dependency with lifecycle and initialization arguments."""
 
     factory: t.Union[t.Callable[..., T], T]

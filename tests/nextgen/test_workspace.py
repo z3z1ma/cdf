@@ -44,7 +44,7 @@ def test_workspace():
             model.Service(
                 "sfdc",
                 injector.Dependency(
-                    injector.map_section("sfdc")(
+                    injector.map_config_section("sfdc")(
                         lambda username: f"https://sfdc.com/{username}"
                     )
                 ),
@@ -61,7 +61,7 @@ def test_workspace():
         ],
     )
 
-    @injector.map_values(secret_number="a.b.c")
+    @injector.map_config_values(secret_number="a.b.c")
     def c(secret_number: int, sfdc: str) -> int:
         print(f"SFDC: {sfdc=}")
         return secret_number * 10

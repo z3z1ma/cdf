@@ -319,7 +319,9 @@ RESOLVER_HINT = "__cdf_resolve__"
 """A hint to engage the configuration resolver."""
 
 
-def map_section(*sections: str) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
+def map_config_section(
+    *sections: str,
+) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
     """Mark a function to inject configuration values from a specific section."""
 
     def decorator(func_or_cls: t.Callable[P, T]) -> t.Callable[P, T]:
@@ -329,7 +331,9 @@ def map_section(*sections: str) -> t.Callable[[t.Callable[P, T]], t.Callable[P, 
     return decorator
 
 
-def map_values(**mapping: t.Any) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
+def map_config_values(
+    **mapping: t.Any,
+) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
     """Mark a function to inject configuration values from a specific mapping of param names to keys."""
 
     def decorator(func_or_cls: t.Callable[P, T]) -> t.Callable[P, T]:
@@ -354,9 +358,9 @@ class Request:
 class ConfigResolver(t.MutableMapping):
     """Resolve configuration values."""
 
-    map_section = staticmethod(map_section)
+    map_section = staticmethod(map_config_section)
     """Mark a function to inject configuration values from a specific section."""
-    map_values = staticmethod(map_values)
+    map_values = staticmethod(map_config_values)
     """Mark a function to inject configuration values from a specific mapping of param names to keys."""
 
     def __init__(
@@ -505,4 +509,7 @@ __all__ = [
     "Request",
     "add_custom_converter",
     "remove_converter",
+    "load_file",
+    "map_config_section",
+    "map_config_values",
 ]
