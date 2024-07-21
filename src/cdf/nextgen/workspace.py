@@ -57,7 +57,7 @@ class Workspace:
         self.configuration.set_environment(self.environment)
         self.container.add_definition(
             "cdf_config",
-            injector.Dependency.from_instance(self.configuration),
+            injector.Dependency.instance(self.configuration),
             override=True,
         )
         for service in self.services:

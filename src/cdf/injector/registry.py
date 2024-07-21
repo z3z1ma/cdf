@@ -154,9 +154,23 @@ class Dependency(t.NamedTuple, t.Generic[T]):
     init_args: t.Tuple[t.Tuple[t.Any, ...], t.Dict[str, t.Any]] = ((), {})
 
     @classmethod
-    def from_instance(cls, instance: t.Any) -> "Dependency":
+    def instance(cls, instance: t.Any) -> "Dependency":
         """Create a dependency from an instance."""
         return cls(instance, Lifecycle.INSTANCE)
+
+    @classmethod
+    def singleton(
+        cls, factory: t.Callable[..., T], *args: t.Any, **kwargs: t.Any
+    ) -> "Dependency":
+        """Create a singleton dependency."""
+        return cls(factory, Lifecycle.SINGLETON, (args, kwargs))
+
+    @classmethod
+    def prototype(
+        cls, factory: t.Callable[..., T], *args: t.Any, **kwargs: t.Any
+    ) -> "Dependency":
+        """Create a prototype dependency."""
+        return cls(factory, Lifecycle.PROTOTYPE, (args, kwargs))
 
     def apply_decorators(
         self, *decorators: t.Callable[[t.Callable[..., T]], t.Callable[..., T]]
