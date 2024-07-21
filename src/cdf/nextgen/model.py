@@ -1,5 +1,6 @@
 """Definitions for services, sources, and destinations in the workspace."""
 
+import sys
 import typing as t
 from dataclasses import dataclass, field
 from enum import Enum
@@ -43,14 +44,30 @@ class Component(t.Generic[T]):
         return self.dependency()
 
 
-class _ComponentProperties(t.TypedDict, t.Generic[T], total=False):
-    """A dictionary of properties for component metadata."""
+if sys.version_info >= (3, 11):
 
-    name: str
-    dependency: injector.Dependency[T]
-    owner: str
-    description: str
-    sla: ServiceLevelAgreement
+    class _ComponentProperties(t.TypedDict, t.Generic[T], total=False):
+        """A dictionary of properties for component metadata."""
+
+        name: str
+        dependency: injector.Dependency[T]
+        owner: str
+        description: str
+        sla: ServiceLevelAgreement
+
+else:
+
+    class _ComponentProperties(t.TypedDict, total=False):
+        """A dictionary of properties for component metadata."""
+
+        name: str
+        dependency: injector.Dependency[t.Any]
+        owner: str
+        description: str
+        sla: ServiceLevelAgreement
+
+        def __class_getitem__(cls, _):
+            return cls
 
 
 Service = Component[t.Any]
