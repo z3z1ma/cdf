@@ -1,3 +1,5 @@
+import typing as t
+
 from cdf.injector import DependencyRegistry
 
 
@@ -27,7 +29,7 @@ def test_registry():
 
     assert container(foo) == 3
 
-    def bar(a: int, b: int, c: int | None = None) -> int:
+    def bar(a: int, b: int, c: t.Optional[int] = None) -> int:
         if c is None:
             raise ValueError("c is required")
         return a + b + c

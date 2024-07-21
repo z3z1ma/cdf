@@ -1,6 +1,7 @@
 """Dependency registry with lifecycle management."""
 
 import inspect
+import sys
 import types
 import typing as t
 from collections import ChainMap
@@ -91,7 +92,7 @@ def _unwrap_optional(hint: t.Type) -> t.Type:
 
 def _is_union(hint: t.Type) -> bool:
     """Check if a type hint is a Union."""
-    return hint is t.Union or type(hint) is types.UnionType
+    return hint is t.Union or (sys.version_info >= (3, 10) and hint is types.UnionType)
 
 
 def _is_typed(hint: t.Type) -> bool:
@@ -147,6 +148,14 @@ def _normalize_key(
         return key
     k, t_ = key
     return TypedKey(k, _get_effective_type(t_))
+
+
+def _safe_get_type_hints(obj: t.Any) -> t.Dict[str, t.Type]:
+    """Get type hints for an object, ignoring errors."""
+    try:
+        return t.get_type_hints(obj)
+    except Exception:
+        return {}
 
 
 class DeferredArgs(t.NamedTuple):
@@ -244,7 +253,7 @@ class DependencyRegistry(t.MutableMapping):
             if inspect.isclass(factory):
                 key = TypedKey(name_or_key, _get_effective_type(factory))
             elif callable(factory):
-                if hint := t.get_type_hints(factory).get("return"):
+                if hint := _safe_get_type_hints(factory).get("return"):
                     key = TypedKey(name_or_key, _get_effective_type(hint))
                 else:
                     # In this case, the dependency is considered untyped
