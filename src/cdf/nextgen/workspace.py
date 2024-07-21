@@ -91,14 +91,14 @@ class Workspace:
         self,
         defs: t.Iterable[model.TComponentDef],
         into: t.Type[model.TComponent],
+        *additional_decorators: t.Callable,
     ) -> t.Dict[str, model.TComponent]:
         """Parse a list of component definitions into a lookup."""
         objs = {}
         for obj in defs:
             if isinstance(obj, dict):
                 obj = into(**obj)
-            obj.dependency.apply_decorators(self.apply)
-            objs[obj.name] = obj
+            objs[obj.name] = obj.apply_decorators(self.apply, *additional_decorators)
         return objs
 
     @cached_property
@@ -196,6 +196,10 @@ if __name__ == "__main__":
         return [test_resource]
 
     memory_duckdb = dlt.destinations.duckdb(duckdb.connect(":memory:"))
+
+    # Switch statement on environment
+    # to scaffold a FF provider, which is hereforward dictated by the user
+    # instead of implicit?
 
     # Define a workspace
     datateam = Workspace(

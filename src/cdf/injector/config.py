@@ -448,6 +448,9 @@ class ConfigResolver(t.MutableMapping):
 
     def resolve_defaults(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
         """Resolve configuration values into a function or class."""
+        if not callable(func_or_cls):
+            return func_or_cls
+
         sig = inspect.signature(func_or_cls)
 
         resolver_hint = getattr(

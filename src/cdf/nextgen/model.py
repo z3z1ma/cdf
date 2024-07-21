@@ -5,6 +5,8 @@ import typing as t
 from dataclasses import dataclass, field
 from enum import Enum
 
+from typing_extensions import Self
+
 import cdf.injector as injector
 
 if t.TYPE_CHECKING:
@@ -35,6 +37,7 @@ class Component(t.Generic[T]):
     owner: t.Optional[str] = None
     description: str = "No description provided"
     sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM
+    enabled: bool = True
 
     def __post_init__(self):
         if self.sla not in ServiceLevelAgreement:
@@ -45,6 +48,23 @@ class Component(t.Generic[T]):
 
     def __call__(self) -> T:
         return self.dependency()
+
+    def apply(self, func: t.Callable[[T], T]) -> Self:
+        """Apply a function to the dependency."""
+        kwargs = self.__dict__.copy()
+        kwargs["dependency"] = injector.Dependency(lambda: func(self.dependency()))
+        return self.__class__(**kwargs)
+
+    def apply_decorators(
+        self,
+        *decorators: t.Callable[
+            [t.Union[t.Callable[..., T], T]], t.Union[t.Callable[..., T], T]
+        ],
+    ) -> Self:
+        """Apply decorators to the dependency."""
+        kwargs = self.__dict__.copy()
+        kwargs["dependency"] = self.dependency.apply_decorators(*decorators)
+        return self.__class__(**kwargs)
 
 
 if sys.version_info >= (3, 11):

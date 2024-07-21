@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partialmethod, wraps
 
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec, Self
 
 from cdf.injector.errors import DependencyCycleError
 
@@ -165,7 +165,7 @@ class DeferredArgs(t.NamedTuple):
     kwargs: t.Dict[str, t.Any] = {}
 
 
-@dataclass
+@dataclass(frozen=True)
 class Dependency(t.Generic[T]):
     """A dependency with lifecycle and initialization arguments."""
 
@@ -193,12 +193,16 @@ class Dependency(t.Generic[T]):
         return cls(factory, Lifecycle.PROTOTYPE, DeferredArgs(args, kwargs))
 
     def apply_decorators(
-        self, *decorators: t.Callable[[t.Callable[..., T]], t.Callable[..., T]]
-    ) -> None:
+        self,
+        *decorators: t.Callable[
+            [t.Union[t.Callable[..., T], T]], t.Union[t.Callable[..., T], T]
+        ],
+    ) -> Self:
         """Apply decorators to the factory."""
-        if callable(self.factory):
-            for decorator in decorators:
-                self.factory = decorator(self.factory)
+        factory = self.factory
+        for decorator in decorators:
+            factory = decorator(factory)
+        return self.__class__(factory, self.lifecycle, self.deferred_args)
 
     def __str__(self) -> str:
         return f"{self.factory} ({self.lifecycle})"
