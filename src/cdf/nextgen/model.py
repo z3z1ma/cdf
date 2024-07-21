@@ -74,21 +74,29 @@ else:
 
 
 Service = Component[t.Any]
-"""A service that the workspace provides."""
+"""A service that the workspace provides. IE an API, database, requests client, etc."""
 
 Source = Component["DltSource"]
-"""A dlt source that the workspace provides."""
+"""A dlt source which we can extract data from."""
 
 Destination = Component["DltDestination"]
-"""A dlt destination that the workspace provides."""
+"""A dlt destination which we can load data into."""
 
 DataPipeline = Component[t.Optional["LoadInfo"]]
-"""A data pipeline that the workspace provides."""
+"""A data pipeline which loads data from a source to a destination."""
+
+DataPublisher = Component[t.Any]  # TODO: track intervals
+"""A data publisher which pushes data to an operational system."""
+
+Operation = Component[int]
+"""A generic callable that returns an exit code."""
 
 ServiceDef = t.Union[Service, _ComponentProperties[t.Any]]
 SourceDef = t.Union[Source, _ComponentProperties["DltSource"]]
 DestinationDef = t.Union[Destination, _ComponentProperties["DltDestination"]]
 DataPipelineDef = t.Union[DataPipeline, _ComponentProperties[t.Optional["LoadInfo"]]]
+DataPublisherDef = t.Union[DataPublisher, _ComponentProperties[t.Any]]
+OperationDef = t.Union[Operation, _ComponentProperties[int]]
 
 
 TComponent = t.TypeVar("TComponent", bound=Component)
@@ -103,4 +111,13 @@ __all__ = [
     "ServiceDef",
     "SourceDef",
     "DestinationDef",
+    "DataPipeline",
+    "DataPipelineDef",
+    "DataPublisher",
+    "DataPublisherDef",
+    "Operation",
+    "OperationDef",
+    "ServiceLevelAgreement",
+    "Component",
+    "TComponent",
 ]

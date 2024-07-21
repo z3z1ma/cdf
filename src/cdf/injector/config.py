@@ -456,7 +456,7 @@ class ConfigResolver(t.MutableMapping):
 
         @functools.wraps(func_or_cls)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
-            bound = sig.bind_partial(*args, **kwargs)
+            bound_args = sig.bind_partial(*args, **kwargs)
             for name, param in sig.parameters.items():
                 value = _MISSING
                 if not self.is_resolvable(param):
@@ -478,9 +478,12 @@ class ConfigResolver(t.MutableMapping):
 
                 # Inject the value into the function
                 if value is not _MISSING:
-                    bound.arguments[name] = self.apply_converters(value, **self.config)
+                    bound_args.arguments[name] = self.apply_converters(
+                        value, **self.config
+                    )
 
-            return func_or_cls(*bound.args, **bound.kwargs)
+            bound_args.apply_defaults()
+            return func_or_cls(*bound_args.args, **bound_args.kwargs)
 
         return wrapper
 

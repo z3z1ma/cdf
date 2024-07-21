@@ -55,12 +55,26 @@ class Workspace:
     """An iterable of destination definitions that the workspace provides."""
     data_pipelines: t.Iterable[model.DataPipelineDef] = field(default_factory=tuple)
     """An iterable of data pipelines that the workspace provides."""
+    data_publishers: t.Iterable[model.DataPublisherDef] = field(default_factory=tuple)
+    """An iterable of data publishers that the workspace provides."""
+    operation_definitions: t.Iterable[model.OperationDef] = field(default_factory=tuple)
+    """An iterable of generic operations that the workspace provides."""
 
     def __post_init__(self) -> None:
         """Initialize the workspace."""
         for source in self.configuration_sources:
             self.conf_resolver.import_(source)
         self.conf_resolver.set_environment(self.environment)
+        self.container.add_definition(
+            "cdf_workspace",
+            injector.Dependency.instance(self),
+            override=True,
+        )
+        self.container.add_definition(
+            "cdf_environment",
+            injector.Dependency.instance(self.environment),
+            override=True,
+        )
         self.container.add_definition(
             "cdf_config",
             injector.Dependency.instance(self.conf_resolver),
@@ -107,6 +121,16 @@ class Workspace:
         """Return the data pipelines of the workspace."""
         return self._parse_definitions(self.data_pipelines, model.DataPipeline)
 
+    @cached_property
+    def publishers(self) -> t.Dict[str, model.DataPublisher]:
+        """Return the data publishers of the workspace."""
+        return self._parse_definitions(self.data_publishers, model.DataPublisher)
+
+    @cached_property
+    def operations(self) -> t.Dict[str, model.Operation]:
+        """Return the operations of the workspace."""
+        return self._parse_definitions(self.operation_definitions, model.Operation)
+
     # TODO: this is a stub
     def run_pipeline(self, pipeline: str) -> None:
         """Run a data pipeline by name."""
@@ -147,10 +171,18 @@ class Workspace:
 
 if __name__ == "__main__":
     import dlt
+    import duckdb
 
-    def some_pipeline(source_a, temp_duckdb):
+    def some_pipeline(source_a, temp_duckdb, cdf_environment):
         pipeline = dlt.pipeline("some_pipeline", destination=memory_duckdb)
+        print("Running pipeline")
         load_info = pipeline.run(source_a)
+        print("Pipeline finished")
+        with pipeline.sql_client() as client:
+            print("Querying DuckDB in " + cdf_environment)
+            print(
+                client.execute_sql("SELECT * FROM some_pipeline_dataset.test_resource")
+            )
         return load_info
 
     @dlt.source
@@ -158,11 +190,12 @@ if __name__ == "__main__":
 
         @dlt.resource
         def test_resource():
+            print("Reading from API")
             yield from [{"a": a, "prod_bigquery": prod_bigquery}]
 
         return [test_resource]
 
-    memory_duckdb = dlt.destinations.duckdb(":memory:")
+    memory_duckdb = dlt.destinations.duckdb(duckdb.connect(":memory:"))
 
     # Define a workspace
     datateam = Workspace(

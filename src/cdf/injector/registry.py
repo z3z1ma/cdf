@@ -420,6 +420,7 @@ class DependencyRegistry(t.MutableMapping):
                     # If a dependency is found, inject it
                     if obj is not None:
                         bound_args.arguments[name] = obj
+            bound_args.apply_defaults()
             return func_or_cls(*bound_args.args, **bound_args.kwargs)
 
         return wrapper
