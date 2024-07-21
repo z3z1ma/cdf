@@ -9,6 +9,7 @@ import cdf.injector as injector
 
 if t.TYPE_CHECKING:
     from dlt.common.destination import Destination as DltDestination
+    from dlt.common.pipeline import LoadInfo
     from dlt.sources import DltSource
 
 T = t.TypeVar("T")
@@ -27,9 +28,11 @@ class ServiceLevelAgreement(Enum):
 class Component(t.Generic[T]):
     """Metadata for a component in the workspace."""
 
-    name: str
+    name: t.Annotated[
+        str, "Used for dependency injection, should be a valid python identifier"
+    ]
     dependency: injector.Dependency[T]
-    owner: str
+    owner: t.Optional[str] = None
     description: str = "No description provided"
     sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM
 
@@ -79,10 +82,19 @@ Source = Component["DltSource"]
 Destination = Component["DltDestination"]
 """A dlt destination that the workspace provides."""
 
+DataPipeline = Component[t.Optional["LoadInfo"]]
+"""A data pipeline that the workspace provides."""
 
 ServiceDef = t.Union[Service, _ComponentProperties[t.Any]]
 SourceDef = t.Union[Source, _ComponentProperties["DltSource"]]
 DestinationDef = t.Union[Destination, _ComponentProperties["DltDestination"]]
+DataPipelineDef = t.Union[DataPipeline, _ComponentProperties[t.Optional["LoadInfo"]]]
+
+
+TComponent = t.TypeVar("TComponent", bound=Component)
+TComponentDef = t.TypeVar(
+    "TComponentDef", bound=t.Union[Component, _ComponentProperties]
+)
 
 __all__ = [
     "Service",

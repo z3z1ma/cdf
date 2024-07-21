@@ -79,5 +79,5 @@ def test_workspace():
     assert datateam.conf_resolver["sfdc.username"] == "abc"
     assert datateam.container.get_or_raise("sfdc") == "https://sfdc.com/abc"
     assert datateam.invoke(c) == 100
-    source = next(iter(datateam.sources))()
+    source = datateam.sources["source_a"]()
     assert list(source) == [{"a": 1, "prod_bigquery": "dwh-123"}]
