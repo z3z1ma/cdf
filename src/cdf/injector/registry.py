@@ -152,13 +152,34 @@ class Dependency(t.NamedTuple, t.Generic[T]):
     factory: t.Union[t.Callable[..., T], T]
     lifecycle: Lifecycle = Lifecycle.SINGLETON
     init_args: t.Tuple[t.Tuple[t.Any, ...], t.Dict[str, t.Any]] = ((), {})
-    map_section: t.Optional[t.Tuple[str, ...]] = None
-    map_values: t.Optional[t.Dict[str, str]] = None
 
     @classmethod
     def from_instance(cls, instance: t.Any) -> "Dependency":
         """Create a dependency from an instance."""
         return cls(instance, Lifecycle.INSTANCE)
+
+    def apply_decorators(
+        self, *decorators: t.Callable[[t.Callable[..., T]], t.Callable[..., T]]
+    ) -> "Dependency":
+        """Apply decorators to the factory."""
+        if not callable(self.factory):
+            return self
+        factory = self.factory
+        for decorator in decorators:
+            factory = decorator(factory)
+        return self._replace(factory=factory)
+
+    def __str__(self) -> str:
+        return f"{self.factory} ({self.lifecycle})"
+
+    def __repr__(self) -> str:
+        return f"<Dependency {self}>"
+
+    def __call__(self) -> T:
+        """Invoke the factory with initialization arguments."""
+        if not callable(self.factory):
+            return self.factory
+        return self.factory(*self.init_args[0], **self.init_args[1])
 
 
 class DependencyRegistry(t.MutableMapping):
@@ -340,7 +361,6 @@ class DependencyRegistry(t.MutableMapping):
 
     def wire(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
         """Inject dependencies into a function."""
-        _instance = inspect.unwrap(func_or_cls)
         if not callable(func_or_cls):
             return func_or_cls
 

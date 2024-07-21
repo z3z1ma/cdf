@@ -68,7 +68,7 @@ def test_config_resolver():
     def foo(db_1: int, db_2: dict):
         return db_1, db_2
 
-    foo_configured = resolver.inject_defaults(foo)
+    foo_configured = resolver.resolve_defaults(foo)
     assert foo_configured() == (
         2,
         {"user": "someone", "password": "secret", "database": "test"},
@@ -80,5 +80,5 @@ def test_config_resolver():
     def bar(user: str, password: str, database: str):
         return user, password, database
 
-    bar_configured = resolver.inject_defaults(bar)
+    bar_configured = resolver.resolve_defaults(bar)
     assert bar_configured() == ("someone", "secret", "test")

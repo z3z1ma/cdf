@@ -1,9 +1,11 @@
+"""A workspace is a container for services, sources, and configuration that can be used to wire up a data pipeline."""
+
 import abc
 import os
 import string
 import typing as t
 from collections import ChainMap
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from functools import cached_property
 
@@ -16,96 +18,84 @@ T = t.TypeVar("T")
 P = ParamSpec("P")
 
 
-class AbstractWorkspace(abc.ABC):
-    """An abstract CDF workspace that allows for dependency injection and configuration resolution."""
+@dataclass(frozen=True)
+class Workspace:
+    """A CDF workspace that allows for dependency injection and configuration resolution."""
 
     name: str = "default"
+    """A human-readable name for the workspace."""
     version: str = "0.1.0"
+    """A semver version string for the workspace."""
+    environment: str = field(
+        default_factory=lambda: os.getenv("CDF_ENVIRONMENT", "dev")
+    )
+    """The runtime environment used to resolve configuration."""
+    configuration: injector.ConfigResolver = field(
+        default_factory=injector.ConfigResolver
+    )
+    """The configuration resolver for the workspace."""
+    container: injector.DependencyRegistry = field(
+        default_factory=injector.DependencyRegistry
+    )
+    """The dependency injection container for the workspace."""
+    configuration_sources: t.Iterable[injector.ConfigSource] = (
+        "cdf.toml",
+        "cdf.yaml",
+        "cdf.json",
+        "~/.cdf.toml",
+    )
+    """A list of configuration sources resolved and merged by the workspace."""
+    service_definitons: t.List[model.ServiceDef] = field(default_factory=list)
+    """A list of service definitions that the workspace provides."""
+    source_definitons: t.List[model.SourceDef] = field(default_factory=list)
+    """A list of source definitions that the workspace provides."""
 
-    _configuration: injector.ConfigResolver
-    _container: injector.DependencyRegistry
-
-    @abc.abstractmethod
-    def get_environment(self) -> str:
-        """Return the environment name associated with workspace runtime."""
-        pass
-
-    @abc.abstractmethod
-    def get_config_sources(self) -> t.Iterable[injector.ConfigSource]:
-        """Return an iterable of configuration sources."""
-        pass
-
-    @cached_property
-    def configuration(self) -> injector.ConfigResolver:
-        """Return the configuration resolver for the workspace."""
-        for source in self.get_config_sources():
-            self._configuration.import_(source)
-        self._configuration.set_environment(self.get_environment())
-        return self._configuration
-
-    @abc.abstractmethod
-    def get_services(self) -> t.Iterable[model.ServiceDef]:
-        """Produces a list of service definitions that the workspace provides."""
-        pass
+    def __post_init__(self) -> None:
+        """Initialize the workspace."""
+        for source in self.configuration_sources:
+            self.configuration.import_(source)
+        self.configuration.set_environment(self.environment)
+        self.container.add_definition(
+            "cdf_config",
+            injector.Dependency.from_instance(self.configuration),
+            override=True,
+        )
+        for service in self.services:
+            self.container.add_definition(service.name, service.dependency)
+        for source in self.sources:
+            self.container.add_definition(source.name, source.dependency)
 
     @cached_property
     def services(self) -> t.Tuple[model.Service, ...]:
         """Return the services of the workspace."""
-        service_definitons = self.get_services()
         services = []
-        for service in service_definitons:
+        for service in self.service_definitons:
             if isinstance(service, dict):
                 service = model.Service(**service)
-            if callable(service.dependency.factory):
-                service.dependency = injector.Dependency(
-                    self.configuration.resolve_defaults(service.dependency.factory),
-                    *service.dependency[1:],
-                )
+            service.dependency = service.dependency.apply_decorators(self.apply)
             services.append(service)
         return tuple(services)
-
-    @abc.abstractmethod
-    def get_sources(self) -> t.Iterable[model.SourceDef]:
-        """Produces a list of source definitions that the workspace provides."""
-        pass
 
     @cached_property
     def sources(self) -> t.Tuple[model.Source, ...]:
         """Return the sources of the workspace."""
-        source_definitons = self.get_sources()
         sources = []
-        for source in source_definitons:
+        for source in self.source_definitons:
             if isinstance(source, dict):
                 source = model.Source(**source)
-            if callable(source.dependency.factory):
-                source.dependency = injector.Dependency(
-                    self.configuration.resolve_defaults(source.dependency.factory),
-                    *source.dependency[1:],
-                )
+            source.dependency = source.dependency.apply_decorators(self.apply)
             sources.append(source)
         return tuple(sources)
-
-    @cached_property
-    def container(self) -> injector.DependencyRegistry:
-        """Return the populated DI container for the workspace."""
-        self._container.add_definition(
-            "cdf_config", injector.Dependency.from_instance(self._configuration)
-        )
-        for service in self.services:
-            self._container.add_definition(service.name, service.dependency)
-        for source in self.sources:
-            self._container.add_definition(source.name, source.dependency)
-        return self._container
 
     def add_dependency(
         self, name: injector.DependencyKey, definition: injector.Dependency
     ) -> None:
         """Add a dependency to the workspace DI container."""
-        self._container.add_definition(name, definition)
+        self.container.add_definition(name, definition)
 
     def import_config(self, config: injector.ConfigSource) -> None:
         """Import a new configuration source into the workspace configuration resolver."""
-        self._configuration.import_(config)
+        self.configuration.import_(config)
 
     @property
     def cli(self) -> t.Callable:
@@ -118,45 +108,13 @@ class AbstractWorkspace(abc.ABC):
 
         return entrypoint
 
+    def apply(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
+        """Wrap a function with configuration and dependencies defined in the workspace."""
+        return self.container.wire(self.configuration.resolve_defaults(func_or_cls))
+
     def invoke(self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any) -> T:
         """Invoke a function with configuration and dependencies defined in the workspace."""
-        configured = self.configuration.resolve_defaults(func_or_cls)
-        return self.container.wire(configured)(*args, **kwargs)
-
-
-class Workspace(AbstractWorkspace):
-    """Base workspace implementation that provides a default configuration and DI container.
-
-    This class can be extended to provide a custom workspace implementation with some common heuristics.
-    """
-
-    name: str = "default"
-    version: str = "0.1.0"
-
-    def __init__(
-        self,
-        dependency_registry: injector.DependencyRegistry = injector.DependencyRegistry(),
-        configuration: injector.ConfigResolver = injector.ConfigResolver(),
-    ) -> None:
-        """Initialize the workspace."""
-        self._container = dependency_registry
-        self._configuration = configuration
-
-    def get_environment(self) -> str:
-        """Return the environment of the workspace."""
-        return os.getenv("CDF_ENVIRONMENT", "dev")
-
-    def get_config_sources(self) -> t.Iterable[injector.ConfigSource]:
-        """Return an iterable of configuration sources."""
-        return ["cdf.toml", "cdf.yaml", "cdf.json", "~/.cdf.toml"]
-
-    def get_services(self) -> t.Iterable[model.ServiceDef]:
-        """Return a iterable of services that the workspace provides."""
-        return []
-
-    def get_sources(self) -> t.Iterable[model.SourceDef]:
-        """Return an iterable of sources that the workspace provides."""
-        return []
+        return self.apply(func_or_cls)(*args, **kwargs)
 
 
 if __name__ == "__main__":
@@ -168,71 +126,62 @@ if __name__ == "__main__":
     # from workspaces.datateam.config import CONFIG
     # from workspaces.datateam.sources import salesforce_source
 
+    import dlt
+
+    @dlt.source
+    def test_source(a: int, prod_bigquery: str):
+
+        @dlt.resource
+        def test_resource():
+            yield from [{"a": a, "prod_bigquery": prod_bigquery}]
+
+        return [test_resource]
+
     # Define a workspace
-    class DataTeamWorkspace(Workspace):
-        name = "data-team"
-        version = "0.1.1"
-
-        def get_services(self) -> t.Iterable[model.ServiceDef]:
-            # These can be used by simply using the name of the service in a function argument
-            return [
-                model.Service(
-                    "a",
-                    injector.Dependency(1),
-                    owner="Alex",
-                    description="A secret number",
-                    sla=model.ServiceLevelAgreement.CRITICAL,
+    datateam = Workspace(
+        name="data-team",
+        version="0.1.1",
+        configuration_sources=[
+            # DATATEAM_CONFIG,
+            {
+                "sfdc": {"username": "abc"},
+                "bigquery": {"project_id": ...},
+            },
+            *Workspace.configuration_sources,
+        ],
+        service_definitons=[
+            model.Service(
+                "a",
+                injector.Dependency(1),
+                owner="Alex",
+                description="A secret number",
+                sla=model.ServiceLevelAgreement.CRITICAL,
+            ),
+            model.Service(
+                "b", injector.Dependency(lambda a: a + 1 * 5 / 10), owner="Alex"
+            ),
+            model.Service(
+                "prod_bigquery", injector.Dependency("dwh-123"), owner="DataTeam"
+            ),
+            model.Service(
+                "sfdc",
+                injector.Dependency(
+                    injector.map_section("sfdc")(
+                        lambda username: f"https://sfdc.com/{username}"
+                    )
                 ),
-                model.Service(
-                    "b", injector.Dependency(lambda a: a + 1 * 5 / 10), owner="Alex"
-                ),
-                model.Service(
-                    "prod_bigquery", injector.Dependency("dwh-123"), owner="DataTeam"
-                ),
-                model.Service(
-                    "sfdc",
-                    injector.Dependency(
-                        injector.map_section("sfdc")(
-                            lambda username: f"https://sfdc.com/{username}"
-                        )
-                    ),
-                    owner="RevOps",
-                ),
-            ]
-
-        def get_config_sources(self) -> t.Iterable[injector.ConfigSource]:
-            return [
-                # STATIC_CONFIG,
-                {
-                    "sfdc": {"username": "abc"},
-                    "bigquery": {"project_id": ...},
-                },
-                *super().get_config_sources(),
-            ]
-
-        def get_sources(self) -> t.Iterable[model.SourceDef]:
-            import dlt
-
-            @dlt.source
-            def test_source(a: int, prod_bigquery: str):
-
-                @dlt.resource
-                def test_resource():
-                    yield from [{"a": a, "prod_bigquery": prod_bigquery}]
-
-                return [test_resource]
-
-            return [
-                model.Source(
-                    "source_a",
-                    injector.Dependency(test_source),
-                    owner="Alex",
-                    description="Source A",
-                )
-            ]
-
-    # Create an instance of the workspace
-    datateam = DataTeamWorkspace()
+                owner="RevOps",
+            ),
+        ],
+        source_definitons=[
+            model.Source(
+                "source_a",
+                injector.Dependency(test_source),
+                owner="Alex",
+                description="Source A",
+            )
+        ],
+    )
 
     @injector.map_values(secret_number="a.b.c")
     def c(secret_number: int, sfdc: str) -> int:
@@ -241,18 +190,18 @@ if __name__ == "__main__":
 
     # Imperatively add dependencies or config if needed
     datateam.add_dependency("c", injector.Dependency(c))
-    datateam.configuration.import_({"a.b.c": 10})
+    datateam.import_config({"a.b.c": 10})
 
     def source_a(a: int, prod_bigquery: str):
         print(f"Source A: {a=}, {prod_bigquery=}")
 
     # Some interface examples
     print(datateam.name)
-    print(datateam.invoke(source_a))
     print(datateam.configuration["sfdc.username"])
     print(datateam.container.get_or_raise("sfdc"))
+    print(datateam.invoke(source_a))
     print(datateam.invoke(c))
-    source = datateam.invoke(datateam.sources[0].dependency.factory)
+    source = next(iter(datateam.sources))()
     print(list(source))
 
     # Run the autogenerated CLI

@@ -34,6 +34,9 @@ class Service:
     def __str__(self):
         return f"{self.name} ({self.sla.name})"
 
+    def __call__(self) -> t.Any:
+        return self.dependency()
+
 
 class _Service(t.TypedDict, total=False):
     """A service type hint."""
@@ -53,9 +56,7 @@ class Source:
     """A dlt source that the workspace provides."""
 
     name: str
-    dependency: injector.Dependency[
-        "t.Union[t.Callable[..., dlt.sources.DltSource], dlt.sources.DltSource]"
-    ]
+    dependency: injector.Dependency["dlt.sources.DltSource"]
     owner: str
     description: str = "No description provided"
     sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM
@@ -67,14 +68,15 @@ class Source:
     def __str__(self):
         return f"{self.name} ({self.sla.name})"
 
+    def __call__(self) -> "dlt.sources.DltSource":
+        return self.dependency()
+
 
 class _Source(t.TypedDict, total=False):
     """A source type hint."""
 
     name: str
-    dependency: injector.Dependency[
-        "t.Union[t.Callable[..., dlt.sources.DltSource], dlt.sources.DltSource]"
-    ]
+    dependency: injector.Dependency["dlt.sources.DltSource"]
     owner: str
     description: str
     sla: ServiceLevelAgreement
