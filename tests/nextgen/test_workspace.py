@@ -76,7 +76,7 @@ def test_workspace():
     # Some interface examples
     assert datateam.name == "data-team"
     datateam.invoke(source_a)
-    assert datateam.configuration["sfdc.username"] == "abc"
+    assert datateam.conf_resolver["sfdc.username"] == "abc"
     assert datateam.container.get_or_raise("sfdc") == "https://sfdc.com/abc"
     assert datateam.invoke(c) == 100
     source = next(iter(datateam.sources))()

@@ -30,7 +30,7 @@ class Workspace:
         default_factory=lambda: os.getenv("CDF_ENVIRONMENT", "dev")
     )
     """The runtime environment used to resolve configuration."""
-    configuration: injector.ConfigResolver = field(
+    conf_resolver: injector.ConfigResolver = field(
         default_factory=injector.ConfigResolver
     )
     """The configuration resolver for the workspace."""
@@ -53,11 +53,11 @@ class Workspace:
     def __post_init__(self) -> None:
         """Initialize the workspace."""
         for source in self.configuration_sources:
-            self.configuration.import_(source)
-        self.configuration.set_environment(self.environment)
+            self.conf_resolver.import_(source)
+        self.conf_resolver.set_environment(self.environment)
         self.container.add_definition(
             "cdf_config",
-            injector.Dependency.instance(self.configuration),
+            injector.Dependency.instance(self.conf_resolver),
             override=True,
         )
         for service in self.services:
@@ -95,7 +95,7 @@ class Workspace:
 
     def import_config(self, config: injector.ConfigSource) -> None:
         """Import a new configuration source into the workspace configuration resolver."""
-        self.configuration.import_(config)
+        self.conf_resolver.import_(config)
 
     @property
     def cli(self) -> t.Callable:
@@ -110,7 +110,7 @@ class Workspace:
 
     def apply(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
         """Wrap a function with configuration and dependencies defined in the workspace."""
-        return self.container.wire(self.configuration.resolve_defaults(func_or_cls))
+        return self.container.wire(self.conf_resolver.resolve_defaults(func_or_cls))
 
     def invoke(self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any) -> T:
         """Invoke a function with configuration and dependencies defined in the workspace."""
