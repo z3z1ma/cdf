@@ -12,7 +12,7 @@ from functools import cached_property
 from typing_extensions import ParamSpec
 
 import cdf.injector as injector
-import cdf.nextgen.models as model
+import cdf.nextgen.model as model
 
 T = t.TypeVar("T")
 P = ParamSpec("P")
@@ -72,7 +72,7 @@ class Workspace:
         for service in self.service_definitons:
             if isinstance(service, dict):
                 service = model.Service(**service)
-            service.dependency = service.dependency.apply_decorators(self.apply)
+            service.dependency.apply_decorators(self.apply)
             services.append(service)
         return tuple(services)
 
@@ -83,7 +83,7 @@ class Workspace:
         for source in self.source_definitons:
             if isinstance(source, dict):
                 source = model.Source(**source)
-            source.dependency = source.dependency.apply_decorators(self.apply)
+            source.dependency.apply_decorators(self.apply)
             sources.append(source)
         return tuple(sources)
 

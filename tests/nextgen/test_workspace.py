@@ -1,5 +1,5 @@
 import cdf.injector as injector
-import cdf.nextgen.models as model
+import cdf.nextgen.model as model
 from cdf.nextgen.workspace import Workspace
 
 

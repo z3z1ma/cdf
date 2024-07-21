@@ -1,7 +1,10 @@
+"""Dependency registry with lifecycle management."""
+
 import inspect
 import types
 import typing as t
 from collections import ChainMap
+from dataclasses import dataclass
 from enum import Enum, auto
 from functools import partialmethod, wraps
 
@@ -146,12 +149,20 @@ def _normalize_key(
     return TypedKey(k, _get_effective_type(t_))
 
 
-class Dependency(t.Generic[T], t.NamedTuple):
+class DeferredArgs(t.NamedTuple):
+    """Initialization arguments for a dependency."""
+
+    args: t.Tuple[t.Any, ...] = ()
+    kwargs: t.Dict[str, t.Any] = {}
+
+
+@dataclass
+class Dependency(t.Generic[T]):
     """A dependency with lifecycle and initialization arguments."""
 
     factory: t.Union[t.Callable[..., T], T]
     lifecycle: Lifecycle = Lifecycle.SINGLETON
-    init_args: t.Tuple[t.Tuple[t.Any, ...], t.Dict[str, t.Any]] = ((), {})
+    deferred_args: DeferredArgs = DeferredArgs()
 
     @classmethod
     def instance(cls, instance: t.Any) -> "Dependency":
@@ -163,25 +174,22 @@ class Dependency(t.Generic[T], t.NamedTuple):
         cls, factory: t.Callable[..., T], *args: t.Any, **kwargs: t.Any
     ) -> "Dependency":
         """Create a singleton dependency."""
-        return cls(factory, Lifecycle.SINGLETON, (args, kwargs))
+        return cls(factory, Lifecycle.SINGLETON, DeferredArgs(args, kwargs))
 
     @classmethod
     def prototype(
         cls, factory: t.Callable[..., T], *args: t.Any, **kwargs: t.Any
     ) -> "Dependency":
         """Create a prototype dependency."""
-        return cls(factory, Lifecycle.PROTOTYPE, (args, kwargs))
+        return cls(factory, Lifecycle.PROTOTYPE, DeferredArgs(args, kwargs))
 
     def apply_decorators(
         self, *decorators: t.Callable[[t.Callable[..., T]], t.Callable[..., T]]
-    ) -> "Dependency":
+    ) -> None:
         """Apply decorators to the factory."""
-        if not callable(self.factory):
-            return self
-        factory = self.factory
-        for decorator in decorators:
-            factory = decorator(factory)
-        return self._replace(factory=factory)
+        if callable(self.factory):
+            for decorator in decorators:
+                self.factory = decorator(self.factory)
 
     def __str__(self) -> str:
         return f"{self.factory} ({self.lifecycle})"
@@ -193,7 +201,7 @@ class Dependency(t.Generic[T], t.NamedTuple):
         """Invoke the factory with initialization arguments."""
         if not callable(self.factory):
             return self.factory
-        return self.factory(*self.init_args[0], **self.init_args[1])
+        return self.factory(*self.deferred_args.args, **self.deferred_args.kwargs)
 
 
 class DependencyRegistry(t.MutableMapping):
@@ -255,7 +263,7 @@ class DependencyRegistry(t.MutableMapping):
         if lifecycle.is_deferred and not callable(factory):
             # TODO: warn or raise here
             lifecycle = Lifecycle.INSTANCE
-        dep = Dependency(factory, lifecycle, (init_args, init_kwargs))
+        dep = Dependency(factory, lifecycle, DeferredArgs(init_args, init_kwargs))
         if isinstance(key, TypedKey):
             self._typed_dependencies[key] = dep
             key = key.name
@@ -277,8 +285,8 @@ class DependencyRegistry(t.MutableMapping):
             definition.factory,
             definition.lifecycle,
             override=override,
-            *definition.init_args[0],
-            **definition.init_args[1],
+            *definition.deferred_args.args,
+            **definition.deferred_args.kwargs,
         )
 
     def remove(self, name_or_key: DependencyKey) -> None:
@@ -315,7 +323,7 @@ class DependencyRegistry(t.MutableMapping):
                 return
             # TODO: we should warn on untyped access since it's not a best practice, though it's supported
             # useful for lambdas and other cases where type hints are not available
-            factory, lifecycle, (args, kwargs), *rest = self.dependencies[key]
+            dep = self.dependencies[key]
         else:
             if _is_union(key.type_):
                 types = map(_get_effective_type, t.get_args(key.type_))
@@ -329,31 +337,35 @@ class DependencyRegistry(t.MutableMapping):
                 if must_exist:
                     raise KeyError(f'Dependency "{key}" is not registered')
                 return
-            factory, lifecycle, (args, kwargs), *rest = self.dependencies[key]
+            dep = self.dependencies[key]
 
         if key in self._resolving:
             raise DependencyCycleError(
-                f"Dependency cycle detected while resolving {key} for {factory!r}"
+                f"Dependency cycle detected while resolving {key} for {dep.factory!r}"
             )
 
-        if lifecycle.is_prototype:
+        if dep.lifecycle.is_prototype:
             self._resolving.add(key)
             try:
-                return self.wire(factory)(*args, **kwargs)
+                return self.wire(dep.factory)(
+                    *dep.deferred_args.args, **dep.deferred_args.kwargs
+                )
             finally:
                 self._resolving.remove(key)
-        elif lifecycle.is_singleton:
+        elif dep.lifecycle.is_singleton:
             if key not in self._singletons:
                 self._resolving.add(key)
                 try:
-                    self._singletons[key] = self.wire(factory)(*args, **kwargs)
+                    self._singletons[key] = self.wire(dep.factory)(
+                        *dep.deferred_args.args, **dep.deferred_args.kwargs
+                    )
                 finally:
                     self._resolving.remove(key)
             return self._singletons[key]
-        elif lifecycle.is_instance:
-            return factory
+        elif dep.lifecycle.is_instance:
+            return dep.factory
         else:
-            raise ValueError(f"Unknown lifecycle: {lifecycle}")
+            raise ValueError(f"Unknown lifecycle: {dep.lifecycle}")
 
     get_or_raise = partialmethod(get, must_exist=True)
 
