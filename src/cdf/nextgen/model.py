@@ -85,8 +85,12 @@ Destination = Component["DltDestination"]
 DataPipeline = Component[t.Optional["LoadInfo"]]
 """A data pipeline which loads data from a source to a destination."""
 
-DataPublisher = Component[t.Any]  # TODO: track intervals
-"""A data publisher which pushes data to an operational system."""
+
+class DataPublisher(Component[t.Any]):
+    """A data publisher which pushes data to an operational system."""
+
+    pre_check: t.Optional[injector.Dependency[bool]] = None
+
 
 Operation = Component[int]
 """A generic callable that returns an exit code."""
