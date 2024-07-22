@@ -1,6 +1,8 @@
 """A workspace is a container for services, sources, and configuration that can be used to wire up a data pipeline."""
 
 import abc
+import inspect
+import itertools
 import os
 import string
 import typing as t
@@ -131,12 +133,6 @@ class Workspace:
         """Return the operations of the workspace."""
         return self._parse_definitions(self.operation_definitions, model.Operation)
 
-    # TODO: this is a stub
-    def run_pipeline(self, pipeline: str) -> None:
-        """Run a data pipeline by name."""
-        load_info = self.invoke(self.pipelines[pipeline])
-        print(load_info)  # ...
-
     def add_dependency(
         self, name: injector.DependencyKey, definition: injector.Dependency
     ) -> None:
@@ -152,13 +148,205 @@ class Workspace:
         """Dynamically generate a CLI entrypoint for the workspace."""
         import click
 
-        @click.command()
-        @click.argument("pipeline", type=click.Choice(list(self.pipelines.keys())))
-        def run(pipeline: str) -> None:
-            """Run a data pipeline."""
-            self.run_pipeline(pipeline)
+        pipeline_names = list(self.pipelines.keys())
+        destination_names = list(self.destinations.keys())
 
-        return run
+        @click.group()
+        def cli() -> None:
+            """A dynamically generated CLI for the workspace."""
+            pass
+
+        @cli.command("run-pipeline")
+        @click.argument("pipeline", required=False, type=click.Choice(pipeline_names))
+        @click.option(
+            "-d",
+            "--destination",
+            type=click.Choice(destination_names),
+            help="Specify a destination for the pipeline. Requires a `destination` parameter in the pipeline factory.",
+        )
+        @click.option(
+            "-s",
+            "--select",
+            multiple=True,
+            help="Specify resources to include. Requires a `select` parameter in the pipeline factory.",
+        )
+        @click.option(
+            "-e",
+            "--exclude",
+            multiple=True,
+            help="Specify resources to exclude. Requires an `exclude` parameter in the pipeline factory.",
+        )
+        @click.option(
+            "--replace",
+            is_flag=True,
+            help="Replace the destination data if it already exists. Requires a `replace` parameter in the pipeline factory.",
+        )
+        @click.option(
+            "--no-stage",
+            is_flag=True,
+            help="Ignore staging, load directly. Requires a `no_stage` parameter in the pipeline factory.",
+        )
+        @click.option(
+            "--non-interactive",
+            is_flag=True,
+            help="Run the pipeline non-interactively.",
+        )
+        def run_pipeline(
+            pipeline: t.Optional[str] = None,
+            destination: t.Optional[str] = None,
+            select: t.Optional[t.List[str]] = None,
+            exclude: t.Optional[t.List[str]] = None,
+            replace: bool = False,
+            no_stage: bool = False,
+            non_interactive: bool = False,
+        ) -> None:
+            """Run a data pipeline.
+
+            Options are forwarded to empty params (or default None) of the same name in pipeline function. It is up to the
+            pipeline function to choose how to handle these options. We can think of them as an operational contract.
+
+            More complex configuration should be handled within the pipeline function itself. It can request a handle
+            to the configuration resolver via `cdf_config` to resolve context-specific workspace configuration.
+            """
+            if pipeline is None:
+                if non_interactive:
+                    raise ValueError(
+                        "Pipeline must be specified if running non-interactively."
+                    )
+                pipeline = click.prompt(
+                    "Enter a pipeline",
+                    type=click.Choice(pipeline_names),
+                    show_choices=True,
+                )
+                assert pipeline is not None
+            pipe_def = self.pipelines[pipeline]
+            if not callable(pipe_def.dependency.factory):
+                raise ValueError("Pipeline factory must be callable.")
+            sig = inspect.signature(pipe_def.dependency.factory)
+            params = sig.parameters
+            if "destination" in params:
+                if destination is None:
+                    if non_interactive:
+                        raise click.BadParameter(
+                            "Destination must be specified if running non-interactively.",
+                            param_hint="-d, --destination",
+                        )
+                    destination = click.prompt(
+                        "Enter a destination",
+                        type=click.Choice(destination_names),
+                        show_choices=True,
+                    )
+                assert destination is not None
+                self.container["destination"] = self.destinations[destination]
+            elif destination:
+                raise click.BadParameter(
+                    "Pipeline does not support externally specified destination.",
+                    param_hint="-d, --destination",
+                )
+            if "select" in params:
+                self.container["select"] = select or []
+            elif select:
+                raise click.BadParameter(
+                    "Pipeline does not support externally specified selection.",
+                    param_hint="-s, --select",
+                )
+            if "exclude" in params:
+                self.container["exclude"] = exclude or []
+            elif exclude:
+                raise click.BadParameter(
+                    "Pipeline does not support externally specified exclusion.",
+                    param_hint="-e, --exclude",
+                )
+            if "replace" in params:
+                self.container["replace"] = replace
+            elif replace:
+                raise click.BadParameter(
+                    "Pipeline does not support externally specified replace write disposition.",
+                    param_hint="--replace",
+                )
+            if "no_stage" in params:
+                self.container["no_stage"] = no_stage
+            elif no_stage:
+                raise click.BadParameter(
+                    "Pipeline does not support externally specified no staging.",
+                    param_hint="--no-stage",
+                )
+            load_info = pipe_def()
+            click.echo(load_info)
+
+        @cli.command("list-pipelines")
+        def list_pipelines() -> None:
+            """List the available data pipelines."""
+            click.echo("Available pipelines:")
+            for name in pipeline_names:
+                click.echo(f"  - {name}")
+
+        @cli.command("list-destinations")
+        def list_destinations() -> None:
+            """List the available destinations."""
+            click.echo("Available destinations:")
+            for name in destination_names:
+                click.echo(f"  - {name}")
+
+        @cli.command("run-publisher")
+        @click.argument(
+            "publisher", required=False, type=click.Choice(list(self.publishers.keys()))
+        )
+        @click.option(
+            "--non-interactive",
+            is_flag=True,
+            help="Run the publisher non-interactively.",
+        )
+        def run_publisher(
+            publisher: t.Optional[str] = None, non_interactive: bool = False
+        ) -> None:
+            """Run a data publisher."""
+            if publisher is None:
+                if non_interactive:
+                    raise ValueError(
+                        "Publisher must be specified if running non-interactively."
+                    )
+                publisher = click.prompt(
+                    "Enter a publisher",
+                    type=click.Choice(list(self.publishers.keys())),
+                    show_choices=True,
+                )
+                assert publisher is not None
+            pub_def = self.publishers[publisher]
+            if not callable(pub_def.dependency.factory):
+                raise ValueError("Publisher factory must be callable.")
+            pub_def()
+
+        @cli.command("run-operation")
+        @click.argument(
+            "operation", required=False, type=click.Choice(list(self.operations.keys()))
+        )
+        @click.option(
+            "--non-interactive",
+            is_flag=True,
+            help="Run the operation non-interactively.",
+        )
+        def run_operation(
+            operation: t.Optional[str] = None, non_interactive: bool = False
+        ) -> int:
+            """Run an operation."""
+            if operation is None:
+                if non_interactive:
+                    raise ValueError(
+                        "Operation must be specified if running non-interactively."
+                    )
+                operation = click.prompt(
+                    "Enter an operation",
+                    type=click.Choice(list(self.operations.keys())),
+                    show_choices=True,
+                )
+                assert operation is not None
+            op_def = self.operations[operation]
+            if not callable(op_def.dependency.factory):
+                raise ValueError("Operation factory must be callable.")
+            return op_def()
+
+        return cli
 
     def apply(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
         """Wrap a function with configuration and dependencies defined in the workspace."""
@@ -172,9 +360,13 @@ class Workspace:
 if __name__ == "__main__":
     import dlt
     import duckdb
+    from dlt.common.destination import Destination
+    from dlt.sources import DltSource
 
-    def some_pipeline(source_a, temp_duckdb, cdf_environment):
-        pipeline = dlt.pipeline("some_pipeline", destination=memory_duckdb)
+    def test_pipeline(
+        source_a: DltSource, destination: Destination, cdf_environment: str
+    ):
+        pipeline = dlt.pipeline("some_pipeline", destination=destination)
         print("Running pipeline")
         load_info = pipeline.run(source_a)
         print("Pipeline finished")
@@ -250,12 +442,18 @@ if __name__ == "__main__":
                 injector.Dependency.instance(memory_duckdb),
                 owner="Alex",
                 description="In-memory DuckDB",
-            )
+            ),
+            model.Destination(
+                "dev_sandbox",
+                injector.Dependency.instance(memory_duckdb),
+                owner="Alex",
+                description="In-memory DuckDB",
+            ),
         ],
         data_pipelines=[
             model.DataPipeline(
-                "some_pipeline",
-                injector.Dependency.prototype(some_pipeline),
+                "exchangerate_pipeline",
+                injector.Dependency.prototype(test_pipeline),
                 owner="Alex",
                 description="A test pipeline",
             )

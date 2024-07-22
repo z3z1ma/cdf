@@ -19,6 +19,8 @@ class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter):
 
     _LOCK = defaultdict(Lock)
 
+    __cdf_resolve__ = ("feature_flags",)
+
     @with_config(sections=("feature_flags",))
     def __init__(
         self,

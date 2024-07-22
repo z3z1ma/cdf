@@ -192,6 +192,12 @@ class Dependency(t.Generic[T]):
         """Create a prototype dependency."""
         return cls(factory, Lifecycle.PROTOTYPE, DeferredArgs(args, kwargs))
 
+    def apply(self, func: t.Callable[[T], T]) -> Self:
+        """Apply a function to the factory."""
+        deferred = self.lifecycle.is_deferred
+        transformed = (lambda: func(self())) if deferred else func(self())
+        return self.__class__(transformed, self.lifecycle, self.deferred_args)
+
     def apply_decorators(
         self,
         *decorators: t.Callable[
@@ -392,7 +398,7 @@ class DependencyRegistry(t.MutableMapping):
 
     def __setitem__(self, name: str, factory: t.Any) -> None:
         """Add a dependency. Defaults to singleton lifecycle if callable, else instance."""
-        self.add(name, factory)
+        self.add(name, factory, override=True)
 
     def __delitem__(self, name: str) -> None:
         """Remove a dependency."""

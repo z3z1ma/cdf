@@ -52,7 +52,7 @@ class Component(t.Generic[T]):
     def apply(self, func: t.Callable[[T], T]) -> Self:
         """Apply a function to the dependency."""
         kwargs = self.__dict__.copy()
-        kwargs["dependency"] = injector.Dependency(lambda: func(self.dependency()))
+        kwargs["dependency"] = self.dependency.apply(func)
         return self.__class__(**kwargs)
 
     def apply_decorators(
