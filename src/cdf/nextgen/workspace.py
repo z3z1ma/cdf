@@ -1,14 +1,10 @@
 """A workspace is a container for services, sources, and configuration that can be used to wire up a data pipeline."""
 
-import abc
 import inspect
-import itertools
 import os
-import string
+import sys
 import typing as t
-from collections import ChainMap
 from dataclasses import dataclass, field
-from enum import Enum
 from functools import cached_property
 
 from typing_extensions import ParamSpec
@@ -100,7 +96,7 @@ class Workspace:
         for obj in defs:
             if isinstance(obj, dict):
                 obj = into(**obj)
-            objs[obj.name] = obj.apply_decorators(self.apply, *additional_decorators)
+            objs[obj.name] = obj.apply_wrappers(self.apply, *additional_decorators)
         return objs
 
     @cached_property
@@ -182,9 +178,9 @@ class Workspace:
             help="Replace the destination data if it already exists. Requires a `replace` parameter in the pipeline factory.",
         )
         @click.option(
-            "--no-stage",
+            "--test",
             is_flag=True,
-            help="Ignore staging, load directly. Requires a `no_stage` parameter in the pipeline factory.",
+            help="Run the pipelines integration test if defined.",
         )
         @click.option(
             "--non-interactive",
@@ -197,7 +193,7 @@ class Workspace:
             select: t.Optional[t.List[str]] = None,
             exclude: t.Optional[t.List[str]] = None,
             replace: bool = False,
-            no_stage: bool = False,
+            test: bool = False,
             non_interactive: bool = False,
         ) -> None:
             """Run a data pipeline.
@@ -224,6 +220,18 @@ class Workspace:
                 raise ValueError("Pipeline factory must be callable.")
             sig = inspect.signature(pipe_def.dependency.factory)
             params = sig.parameters
+            if test:
+                if pipe_def.integration_test:
+                    click.echo("Running integration test.")
+                    result = pipe_def.integration_test()
+                    if result is True:
+                        click.echo("Integration test passed.")
+                    else:
+                        click.echo("Integration test failed.")
+                        sys.exit(1)
+                else:
+                    click.echo("Pipeline does not have an integration test.")
+                return
             if "destination" in params:
                 if destination is None:
                     if non_interactive:
@@ -263,13 +271,6 @@ class Workspace:
                 raise click.BadParameter(
                     "Pipeline does not support externally specified replace write disposition.",
                     param_hint="--replace",
-                )
-            if "no_stage" in params:
-                self.container["no_stage"] = no_stage
-            elif no_stage:
-                raise click.BadParameter(
-                    "Pipeline does not support externally specified no staging.",
-                    param_hint="--no-stage",
                 )
             load_info = pipe_def()
             click.echo(load_info)
@@ -379,7 +380,6 @@ if __name__ == "__main__":
 
     @dlt.source
     def test_source(a: int, prod_bigquery: str):
-
         @dlt.resource
         def test_resource():
             print("Reading from API")

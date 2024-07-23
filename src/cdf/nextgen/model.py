@@ -2,7 +2,7 @@
 
 import sys
 import typing as t
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 
 from typing_extensions import Self
@@ -40,6 +40,8 @@ class Component(t.Generic[T]):
     enabled: bool = True
     version: str = "0.1.0"
 
+    __wrappable__ = ("dependency",)
+
     def __post_init__(self):
         if self.sla not in ServiceLevelAgreement:
             raise ValueError(f"Invalid SLA: {self.sla}")
@@ -55,6 +57,7 @@ class Component(t.Generic[T]):
         sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM,
         enabled: bool = True,
         version: str = "0.1.0",
+        **kwargs: t.Any,
     ):
         """Create a component with an inferred name and description from the dependency."""
         name = getattr(dependency.factory, "__name__", None)
@@ -76,21 +79,16 @@ class Component(t.Generic[T]):
             sla=sla,
             enabled=enabled,
             version=version,
+            **kwargs,
         )
 
     def __str__(self):
         return f"{self.name} ({self.sla.name})"
 
-    def __call__(self) -> T:
-        return self.dependency()
+    def __call__(self, *args: t.Any, **kwargs: t.Any) -> T:
+        return self.dependency(*args, **kwargs)
 
-    def apply(self, func: t.Callable[[T], T]) -> Self:
-        """Apply a function to the dependency."""
-        kwargs = self.__dict__.copy()
-        kwargs["dependency"] = self.dependency.apply(func)
-        return self.__class__(**kwargs)
-
-    def apply_decorators(
+    def apply_wrappers(
         self,
         *decorators: t.Callable[
             [t.Union[t.Callable[..., T], T]], t.Union[t.Callable[..., T], T]
@@ -98,7 +96,13 @@ class Component(t.Generic[T]):
     ) -> Self:
         """Apply decorators to the dependency."""
         kwargs = self.__dict__.copy()
-        kwargs["dependency"] = self.dependency.apply_decorators(*decorators)
+        for field in self.__wrappable__:
+            if field in kwargs:
+                if isinstance(kwargs[field], injector.Dependency):
+                    kwargs[field] = kwargs[field].apply_wrappers(*decorators)
+                elif callable(kwargs[field]):
+                    for decorator in decorators:
+                        kwargs[field] = decorator(kwargs[field])
         return self.__class__(**kwargs)
 
 
@@ -139,14 +143,23 @@ Source = Component["DltSource"]
 Destination = Component["DltDestination"]
 """A dlt destination which we can load data into."""
 
-DataPipeline = Component[t.Optional["LoadInfo"]]
-"""A data pipeline which loads data from a source to a destination."""
+
+@dataclass(frozen=True)
+class DataPipeline(Component[t.Optional["LoadInfo"]]):
+    """A data pipeline which loads data from a source to a destination."""
+
+    integration_test: t.Optional[t.Callable[[], bool]] = None
+
+    __wrappable__ = ("dependency", "integration_test")
 
 
+@dataclass(frozen=True)
 class DataPublisher(Component[t.Any]):
     """A data publisher which pushes data to an operational system."""
 
-    pre_check: t.Optional[injector.Dependency[bool]] = None
+    pre_check: t.Optional[t.Callable[[], bool]] = None
+
+    __wrappable__ = ("dependency", "pre_check")
 
 
 Operation = Component[int]

@@ -198,7 +198,7 @@ class Dependency(t.Generic[T]):
         transformed = (lambda: func(self())) if deferred else func(self())
         return self.__class__(transformed, self.lifecycle, self.deferred_args)
 
-    def apply_decorators(
+    def apply_wrappers(
         self,
         *decorators: t.Callable[
             [t.Union[t.Callable[..., T], T]], t.Union[t.Callable[..., T], T]
@@ -216,10 +216,19 @@ class Dependency(t.Generic[T]):
     def __repr__(self) -> str:
         return f"<Dependency {self}>"
 
-    def __call__(self) -> T:
-        """Invoke the factory with initialization arguments."""
+    def __call__(self, *args: t.Any, **kwargs: t.Any) -> T:
+        """Invoke the factory with its initialization arguments, optionally merging in overrides."""
         if not callable(self.factory):
             return self.factory
+        if args or kwargs:
+            sig = inspect.signature(self.factory)
+            bound_args = sig.bind_partial(*args, **kwargs)
+            bound_base_args = sig.bind_partial(
+                *self.deferred_args.args, **self.deferred_args.kwargs
+            )
+            bound_base_args.apply_defaults()
+            bound_base_args.arguments.update(bound_args.arguments)
+            return self.factory(*bound_base_args.args, **bound_base_args.kwargs)
         return self.factory(*self.deferred_args.args, **self.deferred_args.kwargs)
 
 
