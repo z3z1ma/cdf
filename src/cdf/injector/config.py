@@ -10,7 +10,7 @@ Pro: It's explicit and re-usable. An annotation can be used in multiple places.
 import typing as t
 import cdf.injector as injector
 
-def foo(bar: t.Annotated[str, injector.Request("api.key")]) -> None:
+def foo(bar: t.Annotated[str, injector.Request["api.key"]]) -> None:
     print(bar)
 ```
 
@@ -58,7 +58,6 @@ import re
 import string
 import typing as t
 from collections import ChainMap
-from contextlib import suppress
 from pathlib import Path
 
 import ruamel.yaml as yaml
@@ -162,7 +161,7 @@ _CONVERTERS = {
     "list": ast.literal_eval,
     "tuple": ast.literal_eval,
     "set": ast.literal_eval,
-    "path": os.path.abspath,
+    "resolve": None,
 }
 """Converters for configuration values."""
 
@@ -189,11 +188,13 @@ def remove_converter(name: str) -> None:
     del _CONVERTERS[name]
 
 
-def apply_converters(input_value: t.Any, **overrides: t.Any) -> t.Any:
+def apply_converters(
+    input_value: t.Any, resolver: t.Optional["ConfigResolver"] = None
+) -> t.Any:
     """Apply converters to a string."""
     if not isinstance(input_value, str):
         return input_value
-    expanded_value = _resolve_template(input_value, **overrides)
+    expanded_value = _resolve_template(input_value)
     converters = _CONVERTER_PATTERN.findall(expanded_value)
     if len(converters) == 0:
         return expanded_value
@@ -203,6 +204,13 @@ def apply_converters(input_value: t.Any, **overrides: t.Any) -> t.Any:
     transformed_value = base_value
     for converter in reversed(converters):
         try:
+            if converter.lower() == "resolve":
+                if resolver is None:
+                    raise ValueError(
+                        "Resolver instance not provided but found @resolve converter"
+                    )
+                transformed_value = resolver[transformed_value]
+                continue
             transformed_value = _CONVERTERS[converter.lower()](transformed_value)
         except KeyError as e:
             raise ValueError(f"Unknown converter: {converter}") from e
@@ -344,15 +352,11 @@ def map_config_values(
 
 
 class Request:
-    """A request for a configuration value.
+    def __init__(self, item: str):
+        self.item = item
 
-    This should be used with Annotations to specify a key to be provided by the
-    configuration resolver. IE t.Annotated[str, Request("foo.bar")]
-    """
-
-    def __init__(self, config_path: str, /) -> None:
-        """Initialize the request."""
-        self.config_path = config_path
+    def __class_getitem__(cls, item: str) -> "Request":
+        return cls(item)
 
 
 class ConfigResolver(t.MutableMapping):
@@ -383,7 +387,7 @@ class ConfigResolver(t.MutableMapping):
     def __getitem__(self, key: str) -> t.Any:
         """Get a configuration value."""
         v = self.config[key]
-        return self.apply_converters(v, **self.config)
+        return self.apply_converters(v, self)
 
     def __setitem__(self, key: str, value: t.Any) -> None:
         """Set a configuration value."""
@@ -460,6 +464,11 @@ class ConfigResolver(t.MutableMapping):
         @functools.wraps(func_or_cls)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             bound_args = sig.bind_partial(*args, **kwargs)
+            for arg_name, arg_value in bound_args.arguments.items():
+                if isinstance(arg_value, str):
+                    bound_args.arguments[arg_name] = self.apply_converters(
+                        arg_value, self
+                    )
             for name, param in sig.parameters.items():
                 value = _MISSING
                 if not self.is_resolvable(param):
@@ -481,9 +490,7 @@ class ConfigResolver(t.MutableMapping):
 
                 # Inject the value into the function
                 if value is not _MISSING:
-                    bound_args.arguments[name] = self.apply_converters(
-                        value, **self.config
-                    )
+                    bound_args.arguments[name] = self.apply_converters(value, self)
 
             bound_args.apply_defaults()
             return func_or_cls(*bound_args.args, **bound_args.kwargs)
@@ -499,7 +506,7 @@ class ConfigResolver(t.MutableMapping):
         """Extract a request annotation from a parameter."""
         for hint in getattr(param.annotation, "__metadata__", ()):
             if isinstance(hint, Request):
-                return hint.config_path
+                return hint.item
 
     def __call__(
         self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any
