@@ -38,10 +38,45 @@ class Component(t.Generic[T]):
     description: str = "No description provided"
     sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM
     enabled: bool = True
+    version: str = "0.1.0"
 
     def __post_init__(self):
         if self.sla not in ServiceLevelAgreement:
             raise ValueError(f"Invalid SLA: {self.sla}")
+        if not self.name.isidentifier():
+            raise ValueError(f"Invalid name: {self.name}")
+
+    @classmethod
+    def with_inferred_name(
+        cls,
+        dependency: injector.Dependency[T],
+        owner: t.Optional[str] = None,
+        description: str = "No description provided",
+        sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM,
+        enabled: bool = True,
+        version: str = "0.1.0",
+    ):
+        """Create a component with an inferred name and description from the dependency."""
+        name = getattr(dependency.factory, "__name__", None)
+        if name is None:
+            name = getattr(dependency.factory, "__qualname__", None)
+        if name is None:
+            klass = getattr(dependency.factory, "__class__", None)
+            if klass is not None:
+                name = getattr(klass, "__name__", None)
+        if name is None:
+            raise ValueError("Could not infer name from dependency")
+        if description == "No description provided":
+            description = getattr(dependency.factory, "__doc__", description)
+        return cls(
+            name=name,
+            dependency=dependency,
+            owner=owner,
+            description=description,
+            sla=sla,
+            enabled=enabled,
+            version=version,
+        )
 
     def __str__(self):
         return f"{self.name} ({self.sla.name})"
@@ -77,6 +112,7 @@ if sys.version_info >= (3, 11):
         owner: str
         description: str
         sla: ServiceLevelAgreement
+        version: str
 
 else:
 
@@ -88,6 +124,7 @@ else:
         owner: str
         description: str
         sla: ServiceLevelAgreement
+        version: str
 
         def __class_getitem__(cls, _):
             return cls
@@ -121,7 +158,6 @@ DestinationDef = t.Union[Destination, _ComponentProperties["DltDestination"]]
 DataPipelineDef = t.Union[DataPipeline, _ComponentProperties[t.Optional["LoadInfo"]]]
 DataPublisherDef = t.Union[DataPublisher, _ComponentProperties[t.Any]]
 OperationDef = t.Union[Operation, _ComponentProperties[int]]
-
 
 TComponent = t.TypeVar("TComponent", bound=Component)
 TComponentDef = t.TypeVar(
