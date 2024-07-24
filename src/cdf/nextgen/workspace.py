@@ -219,7 +219,7 @@ class Workspace:
             if not callable(pipe_def.dependency.factory):
                 raise ValueError("Pipeline factory must be callable.")
             sig = inspect.signature(pipe_def.dependency.factory)
-            params = sig.parameters
+            kwargs = {}
             if test:
                 if pipe_def.integration_test:
                     click.echo("Running integration test.")
@@ -232,7 +232,7 @@ class Workspace:
                 else:
                     click.echo("Pipeline does not have an integration test.")
                 return
-            if "destination" in params:
+            if "destination" in sig.parameters:
                 if destination is None:
                     if non_interactive:
                         raise click.BadParameter(
@@ -245,34 +245,34 @@ class Workspace:
                         show_choices=True,
                     )
                 assert destination is not None
-                self.container["destination"] = self.destinations[destination]
+                kwargs["destination"] = self.destinations[destination]
             elif destination:
                 raise click.BadParameter(
                     "Pipeline does not support externally specified destination.",
                     param_hint="-d, --destination",
                 )
-            if "select" in params:
-                self.container["select"] = select or []
+            if "select" in sig.parameters:
+                kwargs["select"] = select or []
             elif select:
                 raise click.BadParameter(
                     "Pipeline does not support externally specified selection.",
                     param_hint="-s, --select",
                 )
-            if "exclude" in params:
-                self.container["exclude"] = exclude or []
+            if "exclude" in sig.parameters:
+                kwargs["exclude"] = exclude or []
             elif exclude:
                 raise click.BadParameter(
                     "Pipeline does not support externally specified exclusion.",
                     param_hint="-e, --exclude",
                 )
-            if "replace" in params:
-                self.container["replace"] = replace
+            if "replace" in sig.parameters:
+                kwargs["replace"] = replace
             elif replace:
                 raise click.BadParameter(
                     "Pipeline does not support externally specified replace write disposition.",
                     param_hint="--replace",
                 )
-            load_info = pipe_def()
+            load_info = pipe_def(**kwargs)
             click.echo(load_info)
 
         @cli.command("list-pipelines")

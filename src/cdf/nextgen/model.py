@@ -18,8 +18,10 @@ T = t.TypeVar("T")
 
 
 class ServiceLevelAgreement(Enum):
-    """An SLA to assign to a service or pipeline"""
+    """An SLA to assign to a component. Users can define the meaning of each level."""
 
+    DEPRECATING = -1
+    NONE = 0
     LOW = 1
     MEDIUM = 2
     HIGH = 3
