@@ -75,7 +75,10 @@ class TypedKey(t.NamedTuple):
         return self.name == other[0] and _same_effective_type(self.type_, other[1])
 
     def __hash__(self) -> int:
-        return hash((self.name, _get_effective_type(self.type_)))
+        try:
+            return hash((self.name, _get_effective_type(self.type_)))
+        except TypeError:
+            return hash((self.name, self.type_))
 
 
 DependencyKey = t.Union[str, t.Tuple[str, t.Type[t.Any]], TypedKey]
@@ -262,8 +265,8 @@ class DependencyRegistry(t.MutableMapping):
         factory: t.Any,
         lifecycle: t.Optional[Lifecycle] = None,
         override: bool = False,
-        *init_args: t.Any,
-        **init_kwargs: t.Any,
+        init_args: t.Tuple[t.Any, ...] = (),
+        init_kwargs: t.Optional[t.Dict[str, t.Any]] = None,
     ) -> None:
         """Register a dependency with the container."""
         if isinstance(name_or_key, str):
@@ -291,7 +294,7 @@ class DependencyRegistry(t.MutableMapping):
         if lifecycle.is_deferred and not callable(factory):
             # TODO: warn or raise here
             lifecycle = Lifecycle.INSTANCE
-        dep = Dependency(factory, lifecycle, DeferredArgs(init_args, init_kwargs))
+        dep = Dependency(factory, lifecycle, DeferredArgs(init_args, init_kwargs or {}))
         if isinstance(key, TypedKey):
             self._typed_dependencies[key] = dep
             key = key.name
@@ -310,11 +313,11 @@ class DependencyRegistry(t.MutableMapping):
         """Add a dependency from a Dependency object."""
         self.add(
             name_or_key,
-            definition.factory,
-            definition.lifecycle,
+            factory=definition.factory,
+            lifecycle=definition.lifecycle,
             override=override,
-            *definition.deferred_args.args,
-            **definition.deferred_args.kwargs,
+            init_args=definition.deferred_args.args,
+            init_kwargs=definition.deferred_args.kwargs,
         )
 
     def remove(self, name_or_key: DependencyKey) -> None:
@@ -391,6 +394,8 @@ class DependencyRegistry(t.MutableMapping):
                     self._resolving.remove(key)
             return self._singletons[key]
         elif dep.lifecycle.is_instance:
+            if callable(dep.factory):
+                return self.wire(dep.factory)
             return dep.factory
         else:
             raise ValueError(f"Unknown lifecycle: {dep.lifecycle}")
