@@ -190,10 +190,13 @@ class DataPipeline(Component[t.Optional["LoadInfo"]]):
         This is useful for executing GRANT and REVOKE statements in the database
         based on pipeline metadata.
         """
-        module = getattr(self.dependency.factory, "__module__", None)
-        if module is None:
-            return None
-        return getattr(sys.modules[module], "__dataset__", None)
+        dataset = getattr(self.dependency.factory, "__dataset__", None)
+        if dataset is not None:
+            return dataset
+        module = inspect.getmodule(self.dependency.factory)
+        if module is not None:
+            return getattr(module, "__dataset__", None)
+        return None
 
 
 @dataclass(frozen=True)
