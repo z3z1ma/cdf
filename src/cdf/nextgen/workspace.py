@@ -1,8 +1,8 @@
 """A workspace is a container for services, sources, and configuration that can be used to wire up a data pipeline."""
 
-import inspect
 import os
 import sys
+import time
 import typing as t
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -95,7 +95,7 @@ class Workspace:
         objs = {}
         for obj in defs:
             if isinstance(obj, dict):
-                obj = into(**obj)
+                obj = into.wrap(**obj)
             objs[obj.name] = obj.apply_wrappers(self.apply, *additional_decorators)
         return objs
 
@@ -144,208 +144,143 @@ class Workspace:
         """Dynamically generate a CLI entrypoint for the workspace."""
         import click
 
-        pipeline_names = list(self.pipelines.keys())
-        destination_names = list(self.destinations.keys())
-
         @click.group()
         def cli() -> None:
             """A dynamically generated CLI for the workspace."""
             pass
 
+        def _list(d: t.Dict[str, model.TComponent]) -> int:
+            for name in d.keys():
+                click.echo(name)
+            return 1
+
+        cli.command("list-services")(lambda: _list(self.services))
+        cli.command("list-sources")(lambda: _list(self.sources))
+        cli.command("list-destinations")(lambda: _list(self.destinations))
+        cli.command("list-pipelines")(lambda: _list(self.pipelines))
+        cli.command("list-publishers")(lambda: _list(self.publishers))
+        cli.command("list-operations")(lambda: _list(self.operations))
+
         @cli.command("run-pipeline")
-        @click.argument("pipeline", required=False, type=click.Choice(pipeline_names))
-        @click.option(
-            "-d",
-            "--destination",
-            type=click.Choice(destination_names),
-            help="Specify a destination for the pipeline. Requires a `destination` parameter in the pipeline factory.",
-        )
-        @click.option(
-            "-s",
-            "--select",
-            multiple=True,
-            help="Specify resources to include. Requires a `select` parameter in the pipeline factory.",
-        )
-        @click.option(
-            "-e",
-            "--exclude",
-            multiple=True,
-            help="Specify resources to exclude. Requires an `exclude` parameter in the pipeline factory.",
-        )
-        @click.option(
-            "--replace",
-            is_flag=True,
-            help="Replace the destination data if it already exists. Requires a `replace` parameter in the pipeline factory.",
+        @click.argument(
+            "pipeline",
+            required=False,
+            type=click.Choice(list(self.pipelines.keys())),
         )
         @click.option(
             "--test",
             is_flag=True,
             help="Run the pipelines integration test if defined.",
         )
-        @click.option(
-            "--non-interactive",
-            is_flag=True,
-            help="Run the pipeline non-interactively.",
-        )
+        @click.option("-a", "--arg", nargs=2, multiple=True)
+        @click.pass_context
         def run_pipeline(
+            ctx: click.Context,
             pipeline: t.Optional[str] = None,
-            destination: t.Optional[str] = None,
-            select: t.Optional[t.List[str]] = None,
-            exclude: t.Optional[t.List[str]] = None,
-            replace: bool = False,
             test: bool = False,
-            non_interactive: bool = False,
+            arg: t.List[t.Tuple[str, str]] = [],
         ) -> None:
-            """Run a data pipeline.
-
-            Options are forwarded to empty params (or default None) of the same name in pipeline function. It is up to the
-            pipeline function to choose how to handle these options. We can think of them as an operational contract.
-
-            More complex configuration should be handled within the pipeline function itself. It can request a handle
-            to the configuration resolver via `cdf_config` to resolve context-specific workspace configuration.
-            """
+            """Run a data pipeline."""
+            # Prompt for a pipeline if not specified
             if pipeline is None:
-                if non_interactive:
-                    raise ValueError(
-                        "Pipeline must be specified if running non-interactively."
-                    )
                 pipeline = click.prompt(
                     "Enter a pipeline",
-                    type=click.Choice(pipeline_names),
+                    type=click.Choice(list(self.pipelines.keys())),
                     show_choices=True,
                 )
-                assert pipeline is not None
-            pipe_def = self.pipelines[pipeline]
-            if not callable(pipe_def.dependency.factory):
-                raise ValueError("Pipeline factory must be callable.")
-            sig = inspect.signature(pipe_def.dependency.factory)
-            kwargs = {}
+                if pipeline is None:
+                    ctx.fail("Pipeline must be specified.")
+
+            # Get the pipeline definition
+            pipeline_definition = self.pipelines[pipeline]
+
+            # Run the integration test if specified
             if test:
-                if pipe_def.integration_test:
-                    click.echo("Running integration test.")
-                    result = pipe_def.integration_test()
-                    if result is True:
-                        click.echo("Integration test passed.")
-                    else:
-                        click.echo("Integration test failed.")
-                        sys.exit(1)
+                if not pipeline_definition.integration_test:
+                    ctx.fail("Pipeline does not have an integration test.")
+                click.echo("Running integration test.")
+                if pipeline_definition.integration_test():
+                    click.echo("Integration test passed.")
+                    ctx.exit(0)
                 else:
-                    click.echo("Pipeline does not have an integration test.")
-                return
-            if "destination" in sig.parameters:
-                if destination is None:
-                    if non_interactive:
-                        raise click.BadParameter(
-                            "Destination must be specified if running non-interactively.",
-                            param_hint="-d, --destination",
-                        )
-                    destination = click.prompt(
-                        "Enter a destination",
-                        type=click.Choice(destination_names),
-                        show_choices=True,
-                    )
-                assert destination is not None
-                kwargs["destination"] = self.destinations[destination]
-            elif destination:
-                raise click.BadParameter(
-                    "Pipeline does not support externally specified destination.",
-                    param_hint="-d, --destination",
-                )
-            if "select" in sig.parameters:
-                kwargs["select"] = select or []
-            elif select:
-                raise click.BadParameter(
-                    "Pipeline does not support externally specified selection.",
-                    param_hint="-s, --select",
-                )
-            if "exclude" in sig.parameters:
-                kwargs["exclude"] = exclude or []
-            elif exclude:
-                raise click.BadParameter(
-                    "Pipeline does not support externally specified exclusion.",
-                    param_hint="-e, --exclude",
-                )
-            if "replace" in sig.parameters:
-                kwargs["replace"] = replace
-            elif replace:
-                raise click.BadParameter(
-                    "Pipeline does not support externally specified replace write disposition.",
-                    param_hint="--replace",
-                )
-            load_info = pipe_def(**kwargs)
-            click.echo(load_info)
+                    ctx.fail("Integration test failed.")
 
-        @cli.command("list-pipelines")
-        def list_pipelines() -> None:
-            """List the available data pipelines."""
-            click.echo("Available pipelines:")
-            for name in pipeline_names:
-                click.echo(f"  - {name}")
+            # Run the pipeline
+            start = time.time()
+            click.echo((info := pipeline_definition()) or "No load info returned.")
+            click.echo(
+                f"Pipeline process finished in {time.time() - start:.2f} seconds."
+            )
 
-        @cli.command("list-destinations")
-        def list_destinations() -> None:
-            """List the available destinations."""
-            click.echo("Available destinations:")
-            for name in destination_names:
-                click.echo(f"  - {name}")
+            # Check for failed jobs
+            if info and info.has_failed_jobs:
+                ctx.fail("Pipeline failed.")
+            ctx.exit(0)
 
         @cli.command("run-publisher")
         @click.argument(
             "publisher", required=False, type=click.Choice(list(self.publishers.keys()))
         )
         @click.option(
-            "--non-interactive",
+            "--skip-preflight-check",
             is_flag=True,
-            help="Run the publisher non-interactively.",
+            help="Skip the pre-check for the publisher.",
         )
+        @click.pass_context
         def run_publisher(
-            publisher: t.Optional[str] = None, non_interactive: bool = False
+            ctx: click.Context,
+            publisher: t.Optional[str] = None,
+            skip_preflight_check: bool = False,
         ) -> None:
             """Run a data publisher."""
+            # Prompt for a publisher if not specified
             if publisher is None:
-                if non_interactive:
-                    raise ValueError(
-                        "Publisher must be specified if running non-interactively."
-                    )
                 publisher = click.prompt(
                     "Enter a publisher",
                     type=click.Choice(list(self.publishers.keys())),
                     show_choices=True,
                 )
-                assert publisher is not None
-            pub_def = self.publishers[publisher]
-            if not callable(pub_def.dependency.factory):
-                raise ValueError("Publisher factory must be callable.")
-            pub_def()
+                if publisher is None:
+                    ctx.fail("Publisher must be specified.")
+
+            # Get the publisher definition
+            publisher_definition = self.publishers[publisher]
+
+            # Optionally run the preflight check
+            if not skip_preflight_check:
+                if not publisher_definition.preflight_check():
+                    ctx.fail("Preflight-check failed.")
+
+            # Run the publisher
+            start = time.time()
+            click.echo(publisher_definition())
+            click.echo(
+                f"Publisher process finished in {time.time() - start:.2f} seconds."
+            )
+            ctx.exit(0)
 
         @cli.command("run-operation")
         @click.argument(
             "operation", required=False, type=click.Choice(list(self.operations.keys()))
         )
-        @click.option(
-            "--non-interactive",
-            is_flag=True,
-            help="Run the operation non-interactively.",
-        )
-        def run_operation(
-            operation: t.Optional[str] = None, non_interactive: bool = False
-        ) -> int:
+        @click.pass_context
+        def run_operation(ctx: click.Context, operation: t.Optional[str] = None) -> int:
             """Run an operation."""
+            # Prompt for an operation if not specified
             if operation is None:
-                if non_interactive:
-                    raise ValueError(
-                        "Operation must be specified if running non-interactively."
-                    )
                 operation = click.prompt(
                     "Enter an operation",
                     type=click.Choice(list(self.operations.keys())),
                     show_choices=True,
                 )
-                assert operation is not None
-            op_def = self.operations[operation]
-            if not callable(op_def.dependency.factory):
-                raise ValueError("Operation factory must be callable.")
-            return op_def()
+                if operation is None:
+                    ctx.fail("Operation must be specified.")
+
+            # Get the operation definition
+            operation_definition = self.operations[operation]
+
+            # Run the operation
+            ctx.exit(operation_definition())
 
         return cli
 

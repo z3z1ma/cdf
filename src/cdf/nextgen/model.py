@@ -182,6 +182,14 @@ class DataPipeline(Component[t.Optional["LoadInfo"]]):
     __wrappable__ = ("dependency", "integration_test")
 
     integration_test: t.Optional[t.Callable[[], bool]] = None
+    """A function to test the pipeline in an integration environment"""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.dependency.lifecycle.is_instance:
+            raise ValueError("DataPipeline dependency must be an instance")
+        if not callable(self.dependency.factory):
+            raise ValueError("DataPipeline dependency must be a callable")
 
     @property
     def known_dataset(self) -> t.Optional[str]:
@@ -199,17 +207,38 @@ class DataPipeline(Component[t.Optional["LoadInfo"]]):
         return None
 
 
+def _continue() -> bool:
+    """A default preflight check which always returns True."""
+    return True
+
+
 @dataclass(frozen=True)
 class DataPublisher(Component[t.Any]):
     """A data publisher which pushes data to an operational system."""
 
-    pre_check: t.Optional[t.Callable[[], bool]] = None
-
     __wrappable__ = ("dependency", "pre_check")
 
+    preflight_check: t.Callable[[], bool] = _continue
+    """A function to check if the data publisher is able to publish data"""
 
-Operation = Component[int]
-"""A generic callable that returns an exit code."""
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.dependency.lifecycle.is_instance:
+            raise ValueError("DataPublisher dependency must be an instance")
+        if not callable(self.dependency.factory):
+            raise ValueError("DataPublisher dependency must be a callable")
+
+
+class Operation(Component[int]):
+    """A generic callable that returns an exit code."""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if not self.dependency.lifecycle.is_instance:
+            raise ValueError("DataPublisher dependency must be an instance")
+        if not callable(self.dependency.factory):
+            raise ValueError("DataPublisher dependency must be a callable")
+
 
 ServiceDef = t.Union[Service, _ComponentProperties[t.Any]]
 SourceDef = t.Union[Source, _ComponentProperties["DltSource"]]
