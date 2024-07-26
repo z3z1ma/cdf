@@ -1,9 +1,12 @@
 """Definitions for services, sources, and destinations in the workspace."""
 
+import inspect
 import sys
 import typing as t
-from dataclasses import dataclass
+from contextlib import suppress
+from dataclasses import dataclass, field
 from enum import Enum
+from operator import attrgetter
 
 from typing_extensions import Self
 
@@ -41,6 +44,8 @@ class Component(t.Generic[T]):
     sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM
     enabled: bool = True
     version: str = "0.1.0"
+    tags: t.List[str] = field(default_factory=list)
+    metadata: t.Dict[str, t.Any] = field(default_factory=dict)
 
     __wrappable__ = ("dependency",)
 
@@ -51,36 +56,58 @@ class Component(t.Generic[T]):
             raise ValueError(f"Invalid name: {self.name}")
 
     @classmethod
-    def with_inferred_name(
+    def wrap(
         cls,
         dependency: injector.Dependency[T],
+        name: t.Optional[str] = None,
         owner: t.Optional[str] = None,
-        description: str = "No description provided",
+        description: t.Optional[str] = None,
         sla: ServiceLevelAgreement = ServiceLevelAgreement.MEDIUM,
         enabled: bool = True,
-        version: str = "0.1.0",
+        version: t.Optional[str] = None,
+        tags: t.Optional[t.List[str]] = None,
+        metadata: t.Optional[t.Dict[str, t.Any]] = None,
         **kwargs: t.Any,
     ):
-        """Create a component with an inferred name and description from the dependency."""
-        name = getattr(dependency.factory, "__name__", None)
+        """Create a component with some simple heuristics to parse kwargs from the wrapped dependency."""
+        tags = tags or []
+        metadata = metadata or {}
+
         if name is None:
-            name = getattr(dependency.factory, "__qualname__", None)
-        if name is None:
-            klass = getattr(dependency.factory, "__class__", None)
-            if klass is not None:
-                name = getattr(klass, "__name__", None)
-        if name is None:
-            raise ValueError("Could not infer name from dependency")
-        if description == "No description provided":
-            description = getattr(dependency.factory, "__doc__", description)
+            for attr in ("__name__", "__qualname__", "__class__.__name__"):
+                with suppress(AttributeError):
+                    name = attrgetter(attr)(dependency.factory)
+                    if name is not None:
+                        break
+            else:
+                raise ValueError("Could not infer name from dependency")
+
+        if description is None:
+            description = inspect.getdoc(dependency.factory)
+
+        if version is None and hasattr(dependency.factory, "__version__"):
+            version = getattr(dependency.factory, "__version__")
+
+        metadata.update(getattr(dependency.factory, "__metadata__", {}))
+        tags.extend(getattr(dependency.factory, "__tags__", []))
+
+        module = inspect.getmodule(dependency.factory)
+        if module is not None:
+            if version is None and hasattr(module, "__version__"):
+                version = getattr(module, "__version__")
+            metadata.update(getattr(module, "__metadata__", {}))
+            tags.extend(getattr(module, "__tags__", []))
+
         return cls(
             name=name,
             dependency=dependency,
             owner=owner,
-            description=description,
+            description=description or "No description provided",
             sla=sla,
             enabled=enabled,
-            version=version,
+            version=version or "0.1.0",
+            tags=tags,
+            metadata=metadata,
             **kwargs,
         )
 
@@ -98,13 +125,13 @@ class Component(t.Generic[T]):
     ) -> Self:
         """Apply decorators to the dependency."""
         kwargs = self.__dict__.copy()
-        for field in self.__wrappable__:
-            if field in kwargs:
-                if isinstance(kwargs[field], injector.Dependency):
-                    kwargs[field] = kwargs[field].apply_wrappers(*decorators)
-                elif callable(kwargs[field]):
+        for fname in self.__wrappable__:
+            if fname in kwargs:
+                if isinstance(kwargs[fname], injector.Dependency):
+                    kwargs[fname] = kwargs[fname].apply_wrappers(*decorators)
+                elif callable(kwargs[fname]):
                     for decorator in decorators:
-                        kwargs[field] = decorator(kwargs[field])
+                        kwargs[fname] = decorator(kwargs[fname])
         return self.__class__(**kwargs)
 
 
@@ -119,6 +146,7 @@ if sys.version_info >= (3, 11):
         description: str
         sla: ServiceLevelAgreement
         version: str
+        metadata: t.Dict[str, t.Any]
 
 else:
 
@@ -131,6 +159,7 @@ else:
         description: str
         sla: ServiceLevelAgreement
         version: str
+        metadata: t.Dict[str, t.Any]
 
         def __class_getitem__(cls, _):
             return cls
@@ -150,9 +179,21 @@ Destination = Component["DltDestination"]
 class DataPipeline(Component[t.Optional["LoadInfo"]]):
     """A data pipeline which loads data from a source to a destination."""
 
+    __wrappable__ = ("dependency", "integration_test")
+
     integration_test: t.Optional[t.Callable[[], bool]] = None
 
-    __wrappable__ = ("dependency", "integration_test")
+    @property
+    def known_dataset(self) -> t.Optional[str]:
+        """Return the dataset that the pipeline is known to load to.
+
+        This is useful for executing GRANT and REVOKE statements in the database
+        based on pipeline metadata.
+        """
+        module = getattr(self.dependency.factory, "__module__", None)
+        if module is None:
+            return None
+        return getattr(sys.modules[module], "__dataset__", None)
 
 
 @dataclass(frozen=True)
