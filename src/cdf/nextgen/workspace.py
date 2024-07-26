@@ -4,12 +4,16 @@ import os
 import time
 import typing as t
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, partialmethod
+from pathlib import Path
 
 from typing_extensions import ParamSpec
 
 import cdf.injector as injector
 import cdf.nextgen.model as model
+
+if t.TYPE_CHECKING:
+    import sqlmesh
 
 T = t.TypeVar("T")
 P = ParamSpec("P")
@@ -56,6 +60,10 @@ class Workspace:
     """An iterable of data publishers that the workspace provides."""
     operation_definitions: t.Iterable[model.OperationDef] = field(default_factory=tuple)
     """An iterable of generic operations that the workspace provides."""
+    transform_path: t.Optional[t.Union[str, Path]] = None
+    """The path to the transformation provider for the workspace. Currently we only integrate with SQLMesh."""
+    transform_provider_kwargs: t.Dict[str, t.Any] = field(default_factory=dict)
+    """Keyword arguments to pass to the transformation provider."""
 
     def __post_init__(self) -> None:
         """Initialize the workspace."""
@@ -75,6 +83,11 @@ class Workspace:
         self.container.add_definition(
             "cdf_config",
             injector.Dependency.instance(self.conf_resolver),
+            override=True,
+        )
+        self.container.add_definition(
+            "cdf_transform",
+            injector.Dependency.singleton(self.get_transform_context_or_raise),
             override=True,
         )
         for service in self.services.values():
@@ -129,6 +142,39 @@ class Workspace:
     def operations(self) -> t.Dict[str, model.Operation]:
         """Return the operations of the workspace."""
         return self._parse_definitions(self.operation_definitions, model.Operation)
+
+    @t.overload
+    def get_transform_context(
+        self, must_exist: bool = False
+    ) -> t.Optional["sqlmesh.Context"]: ...
+
+    @t.overload
+    def get_transform_context(self, must_exist: bool = True) -> "sqlmesh.Context": ...
+
+    # TODO: eventually this can be an adapter for other transformation providers if desired
+    def get_transform_context(
+        self, must_exist: bool = False
+    ) -> t.Optional["sqlmesh.Context"]:
+        """Return the transform context or raise an error if not defined."""
+        import sqlmesh
+
+        if self.transform_path is None:
+            if must_exist:
+                raise ValueError("Transformation provider not defined.")
+            return None
+
+        return sqlmesh.Context(
+            paths=[self.transform_path], **self.transform_provider_kwargs
+        )
+
+    if t.TYPE_CHECKING:
+
+        def get_transform_context_or_raise(self) -> "sqlmesh.Context": ...
+
+    else:
+        get_transform_context_or_raise = partialmethod(
+            get_transform_context, must_exist=True
+        )
 
     def add_dependency(
         self, name: injector.DependencyKey, definition: injector.Dependency
