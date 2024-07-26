@@ -2,6 +2,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+
 from cdf.injector import ConfigResolver
 
 
@@ -50,7 +51,7 @@ def test_config_resolver():
                 "database": "test",
             },
             "db_1": "@int ${CDF_TEST}",
-            "db_2": "@dict ${main_api}",
+            "db_2": "@resolve main_api",
         }
     )
 

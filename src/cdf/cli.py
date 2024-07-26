@@ -21,7 +21,6 @@ from dlt.common.versioned_state import (
     json_decode_state,
     json_encode_state,
 )
-from tomlkit import ws
 
 import cdf.core.constants as c
 import cdf.core.context as context

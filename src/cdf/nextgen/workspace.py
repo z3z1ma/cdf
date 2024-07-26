@@ -1,7 +1,6 @@
 """A workspace is a container for services, sources, and configuration that can be used to wire up a data pipeline."""
 
 import os
-import sys
 import time
 import typing as t
 from dataclasses import dataclass, field
@@ -96,6 +95,8 @@ class Workspace:
         for obj in defs:
             if isinstance(obj, dict):
                 obj = into.wrap(**obj)
+            elif not isinstance(obj, model.Component):
+                obj = into.wrap(dependency=obj)
             objs[obj.name] = obj.apply_wrappers(self.apply, *additional_decorators)
         return objs
 
@@ -189,7 +190,9 @@ class Workspace:
                     show_choices=True,
                 )
                 if pipeline is None:
-                    ctx.fail("Pipeline must be specified.")
+                    raise click.BadParameter(
+                        "Pipeline must be specified.", ctx=ctx, param_hint="pipeline"
+                    )
 
             # Get the pipeline definition
             pipeline_definition = self.pipelines[pipeline]
@@ -197,10 +200,12 @@ class Workspace:
             # Run the integration test if specified
             if test:
                 if not pipeline_definition.integration_test:
-                    ctx.fail("Pipeline does not have an integration test.")
-                click.echo("Running integration test.")
+                    raise click.UsageError(
+                        f"Pipeline `{pipeline}` does not define an integration test."
+                    )
+                click.echo("Running integration test.", err=True)
                 if pipeline_definition.integration_test():
-                    click.echo("Integration test passed.")
+                    click.echo("Integration test passed.", err=True)
                     ctx.exit(0)
                 else:
                     ctx.fail("Integration test failed.")
@@ -209,7 +214,8 @@ class Workspace:
             start = time.time()
             click.echo((info := pipeline_definition()) or "No load info returned.")
             click.echo(
-                f"Pipeline process finished in {time.time() - start:.2f} seconds."
+                f"Pipeline process finished in {time.time() - start:.2f} seconds.",
+                err=True,
             )
 
             # Check for failed jobs
@@ -241,7 +247,9 @@ class Workspace:
                     show_choices=True,
                 )
                 if publisher is None:
-                    ctx.fail("Publisher must be specified.")
+                    raise click.BadParameter(
+                        "Publisher must be specified.", ctx=ctx, param_hint="publisher"
+                    )
 
             # Get the publisher definition
             publisher_definition = self.publishers[publisher]
@@ -255,7 +263,8 @@ class Workspace:
             start = time.time()
             click.echo(publisher_definition())
             click.echo(
-                f"Publisher process finished in {time.time() - start:.2f} seconds."
+                f"Publisher process finished in {time.time() - start:.2f} seconds.",
+                err=True,
             )
             ctx.exit(0)
 
@@ -274,7 +283,9 @@ class Workspace:
                     show_choices=True,
                 )
                 if operation is None:
-                    ctx.fail("Operation must be specified.")
+                    raise click.BadParameter(
+                        "Operation must be specified.", ctx=ctx, param_hint="operation"
+                    )
 
             # Get the operation definition
             operation_definition = self.operations[operation]
