@@ -1,6 +1,6 @@
 import typing as t
 
-from cdf.injector import DependencyRegistry
+from cdf.core.injector import DependencyRegistry
 
 
 def test_registry():

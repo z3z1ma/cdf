@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from cdf.injector import ConfigResolver
+from cdf.core.configuration import ConfigResolver
 
 
 def test_apply_converters():

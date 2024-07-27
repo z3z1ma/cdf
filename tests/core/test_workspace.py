@@ -1,6 +1,7 @@
-import cdf.injector as injector
-import cdf.nextgen.model as model
-from cdf.nextgen.workspace import Workspace
+import cdf.core.component as cmp
+import cdf.core.configuration as conf
+import cdf.core.injector as injector
+from cdf.core.workspace import Workspace
 
 
 def test_workspace():
@@ -27,32 +28,32 @@ def test_workspace():
             },
             *Workspace.configuration_sources,
         ],
-        service_definitons=[
-            model.Service(
+        service_definitions=[
+            cmp.Service(
                 "a",
                 injector.Dependency(1),
                 owner="Alex",
                 description="A secret number",
-                sla=model.ServiceLevelAgreement.CRITICAL,
+                sla=cmp.ServiceLevelAgreement.CRITICAL,
             ),
-            model.Service(
+            cmp.Service(
                 "b", injector.Dependency(lambda a: a + 1 * 5 / 10), owner="Alex"
             ),
-            model.Service(
+            cmp.Service(
                 "prod_bigquery", injector.Dependency("dwh-123"), owner="DataTeam"
             ),
-            model.Service(
+            cmp.Service(
                 "sfdc",
                 injector.Dependency(
-                    injector.map_config_section("sfdc")(
+                    conf.map_config_section("sfdc")(
                         lambda username: f"https://sfdc.com/{username}"
                     )
                 ),
                 owner="RevOps",
             ),
         ],
-        source_definitons=[
-            model.Source(
+        source_definitions=[
+            cmp.Source(
                 "source_a",
                 injector.Dependency(test_source),
                 owner="Alex",
@@ -61,7 +62,7 @@ def test_workspace():
         ],
     )
 
-    @injector.map_config_values(secret_number="a.b.c")
+    @conf.map_config_values(secret_number="a.b.c")
     def c(secret_number: int, sfdc: str) -> int:
         print(f"SFDC: {sfdc=}")
         return secret_number * 10

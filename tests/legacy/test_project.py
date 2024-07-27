@@ -5,7 +5,7 @@ from pathlib import Path
 import dlt
 import pytest
 
-from cdf.core.project import Project, load_project
+from cdf.legacy.project import Project, load_project
 
 
 def test_load_project():
