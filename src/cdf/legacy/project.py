@@ -57,8 +57,10 @@ from dynaconf.vendor.box import Box
 
 import cdf.legacy.constants as c
 import cdf.legacy.specification as spec
-from cdf.integrations.feature_flag import (AbstractFeatureFlagAdapter,
-                                           get_feature_flag_adapter_cls)
+from cdf.integrations.feature_flag import (
+    AbstractFeatureFlagAdapter,
+    get_feature_flag_adapter_cls,
+)
 from cdf.legacy.config import inject_configuration
 from cdf.legacy.filesystem import FilesystemAdapter
 from cdf.legacy.state import StateStore

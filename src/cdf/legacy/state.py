@@ -9,9 +9,11 @@ import pandas as pd
 import pydantic
 from dlt.common.pipeline import ExtractInfo, LoadInfo, NormalizeInfo
 from sqlglot import exp
-from sqlmesh.core.config.connection import (DuckDBConnectionConfig,
-                                            MySQLConnectionConfig,
-                                            PostgresConnectionConfig)
+from sqlmesh.core.config.connection import (
+    DuckDBConnectionConfig,
+    MySQLConnectionConfig,
+    PostgresConnectionConfig,
+)
 from sqlmesh.core.engine_adapter import EngineAdapter
 
 import cdf.legacy.logger as logger
@@ -388,9 +390,7 @@ def with_audit(
                 event,
                 input_props,
                 output_props,
-            )(
-                func
-            )(*args, **kwargs)
+            )(func)(*args, **kwargs)
 
         return wrapper
 

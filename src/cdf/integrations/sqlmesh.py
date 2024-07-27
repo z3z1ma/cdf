@@ -2,9 +2,11 @@ import logging
 import time
 import typing as t
 
-from sqlmesh.core.notification_target import (ConsoleNotificationTarget,
-                                              NotificationEvent,
-                                              NotificationStatus)
+from sqlmesh.core.notification_target import (
+    ConsoleNotificationTarget,
+    NotificationEvent,
+    NotificationStatus,
+)
 from sqlmesh.utils.errors import AuditError
 
 from cdf.legacy.project import Workspace

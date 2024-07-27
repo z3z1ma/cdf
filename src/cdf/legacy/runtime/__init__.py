@@ -1,6 +1,5 @@
 from cdf.legacy.runtime.notebook import execute_notebook_specification
-from cdf.legacy.runtime.pipeline import (execute_pipeline_specification,
-                                         pipeline)
+from cdf.legacy.runtime.pipeline import execute_pipeline_specification, pipeline
 from cdf.legacy.runtime.publisher import execute_publisher_specification
 from cdf.legacy.runtime.script import execute_script_specification
 

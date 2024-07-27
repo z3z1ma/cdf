@@ -23,8 +23,12 @@ from pathlib import Path
 import dlt
 from dlt.common.destination import TDestinationReferenceArg, TLoaderFileFormat
 from dlt.common.pipeline import ExtractInfo, LoadInfo, NormalizeInfo
-from dlt.common.schema.typing import (TAnySchemaColumns, TColumnNames,
-                                      TSchemaContract, TWriteDisposition)
+from dlt.common.schema.typing import (
+    TAnySchemaColumns,
+    TColumnNames,
+    TSchemaContract,
+    TWriteDisposition,
+)
 from dlt.extract.extract import Extract, data_to_sources
 from dlt.pipeline.exceptions import SqlClientNotAvailable
 from dlt.pipeline.pipeline import Pipeline
