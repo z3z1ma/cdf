@@ -3,8 +3,8 @@ import typing as t
 from dlt.common.destination.reference import Destination
 from sqlmesh.core.config import GatewayConfig
 
-from cdf.core.specification.base import PythonScript
-from cdf.core.state import with_audit
+from cdf.legacy.specification.base import PythonScript
+from cdf.legacy.state import with_audit
 
 
 class SinkSpecification(PythonScript):

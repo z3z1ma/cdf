@@ -3,7 +3,8 @@ from threading import Lock
 
 import pydantic
 
-from cdf.core.specification.base import InstallableRequirements, WorkspaceComponent
+from cdf.legacy.specification.base import (InstallableRequirements,
+                                           WorkspaceComponent)
 
 
 class NotebookSpecification(WorkspaceComponent, InstallableRequirements):

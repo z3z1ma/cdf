@@ -23,21 +23,17 @@ from pathlib import Path
 import dlt
 from dlt.common.destination import TDestinationReferenceArg, TLoaderFileFormat
 from dlt.common.pipeline import ExtractInfo, LoadInfo, NormalizeInfo
-from dlt.common.schema.typing import (
-    TAnySchemaColumns,
-    TColumnNames,
-    TSchemaContract,
-    TWriteDisposition,
-)
+from dlt.common.schema.typing import (TAnySchemaColumns, TColumnNames,
+                                      TSchemaContract, TWriteDisposition)
 from dlt.extract.extract import Extract, data_to_sources
 from dlt.pipeline.exceptions import SqlClientNotAvailable
 from dlt.pipeline.pipeline import Pipeline
 
-import cdf.core.context as context
-import cdf.core.logger as logger
-from cdf.core.runtime.common import with_activate_project
-from cdf.core.specification import PipelineSpecification, SinkSpecification
-from cdf.core.state import with_audit
+import cdf.legacy.context as context
+import cdf.legacy.logger as logger
+from cdf.legacy.runtime.common import with_activate_project
+from cdf.legacy.specification import PipelineSpecification, SinkSpecification
+from cdf.legacy.state import with_audit
 from cdf.types import M, P
 
 T = t.TypeVar("T")

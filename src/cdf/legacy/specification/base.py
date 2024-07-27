@@ -19,11 +19,11 @@ import dlt
 import pydantic
 from croniter import croniter
 
-import cdf.core.constants as c
-import cdf.core.logger as logger
+import cdf.legacy.constants as c
+import cdf.legacy.logger as logger
 
 if t.TYPE_CHECKING:
-    from cdf.core.project import Project, Workspace
+    from cdf.legacy.project import Project, Workspace
 
 T = t.TypeVar("T")
 

@@ -1,9 +1,9 @@
 import functools
 import typing as t
 
-import cdf.core.logger as logger
-from cdf.core.project import Project, Workspace
-from cdf.core.specification.base import BaseComponent
+import cdf.legacy.logger as logger
+from cdf.legacy.project import Project, Workspace
+from cdf.legacy.specification.base import BaseComponent
 from cdf.types import P
 
 T = t.TypeVar("T")

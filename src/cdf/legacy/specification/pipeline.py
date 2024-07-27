@@ -8,11 +8,13 @@ import typing as t
 
 import dlt
 import pydantic
-from dlt.common.destination.exceptions import DestinationLoadingViaStagingNotSupported
+from dlt.common.destination.exceptions import \
+    DestinationLoadingViaStagingNotSupported
 from dlt.common.typing import TDataItem
 
-import cdf.core.logger as logger
-from cdf.core.specification.base import PythonEntrypoint, PythonScript, Schedulable
+import cdf.legacy.logger as logger
+from cdf.legacy.specification.base import (PythonEntrypoint, PythonScript,
+                                           Schedulable)
 
 T = t.TypeVar("T")
 TPipeline = t.TypeVar("TPipeline", bound=dlt.Pipeline)

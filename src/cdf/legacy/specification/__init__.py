@@ -1,10 +1,10 @@
 import typing as t
 
-from cdf.core.specification.notebook import NotebookSpecification
-from cdf.core.specification.pipeline import PipelineSpecification
-from cdf.core.specification.publisher import PublisherSpecification
-from cdf.core.specification.script import ScriptSpecification
-from cdf.core.specification.sink import SinkSpecification
+from cdf.legacy.specification.notebook import NotebookSpecification
+from cdf.legacy.specification.pipeline import PipelineSpecification
+from cdf.legacy.specification.publisher import PublisherSpecification
+from cdf.legacy.specification.script import ScriptSpecification
+from cdf.legacy.specification.sink import SinkSpecification
 
 CoreSpecification = t.Union[
     NotebookSpecification,

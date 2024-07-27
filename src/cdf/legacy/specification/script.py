@@ -1,4 +1,4 @@
-from cdf.core.specification.base import PythonScript, Schedulable
+from cdf.legacy.specification.base import PythonScript, Schedulable
 
 
 class ScriptSpecification(PythonScript, Schedulable):

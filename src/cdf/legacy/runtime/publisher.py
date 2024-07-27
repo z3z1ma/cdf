@@ -7,16 +7,18 @@ It performs the following functions:
 """
 
 import datetime
+import logging
 import typing as t
 
 import sqlmesh
 from sqlmesh.core.dialect import normalize_model_name
 
-import cdf.core.logger as logger
-from cdf.core.runtime.common import with_activate_project
-from cdf.core.specification import PublisherSpecification
-from cdf.core.state import with_audit
+from cdf.legacy.runtime.common import with_activate_project
+from cdf.legacy.specification import PublisherSpecification
+from cdf.legacy.state import with_audit
 from cdf.types import M
+
+logger = logging.getLogger(__name__)
 
 
 @with_activate_project

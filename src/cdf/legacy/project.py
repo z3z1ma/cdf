@@ -55,15 +55,13 @@ import pydantic
 from dynaconf.utils.boxing import DynaBox
 from dynaconf.vendor.box import Box
 
-import cdf.core.constants as c
-import cdf.core.specification as spec
-from cdf.core.config import inject_configuration
-from cdf.core.feature_flag import (
-    AbstractFeatureFlagAdapter,
-    get_feature_flag_adapter_cls,
-)
-from cdf.core.filesystem import FilesystemAdapter
-from cdf.core.state import StateStore
+import cdf.legacy.constants as c
+import cdf.legacy.specification as spec
+from cdf.integrations.feature_flag import (AbstractFeatureFlagAdapter,
+                                           get_feature_flag_adapter_cls)
+from cdf.legacy.config import inject_configuration
+from cdf.legacy.filesystem import FilesystemAdapter
+from cdf.legacy.state import StateStore
 from cdf.types import M, PathLike
 
 if t.TYPE_CHECKING:
@@ -899,7 +897,7 @@ class Project(_BaseSettings):
 
     def activate(self) -> t.Callable[[], None]:
         """Activate the project and return a deactivation function"""
-        from cdf.core.context import active_project
+        from cdf.legacy.context import active_project
 
         token = active_project.set(self)
         ctx = self.inject_configuration()

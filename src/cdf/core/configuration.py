@@ -1,4 +1,4 @@
-"""Configuration utilities for the CDF injector.
+"""Configuration utilities for the CDF configuration resolver system.
 
 There are 3 ways to request configuration values:
 
@@ -8,9 +8,9 @@ Pro: It's explicit and re-usable. An annotation can be used in multiple places.
 
 ```python
 import typing as t
-import cdf.injector as injector
+import cdf.core.configuration as conf
 
-def foo(bar: t.Annotated[str, injector.Request["api.key"]]) -> None:
+def foo(bar: t.Annotated[str, conf.Request["api.key"]]) -> None:
     print(bar)
 ```
 
@@ -20,13 +20,13 @@ directly or by using the `map_section` or `map_values` decorators:
 Pro: It's concise and can be used in a decorator. It also works with classes.
 
 ```python
-import cdf.injector as injector
+import cdf.core.configuration as conf
 
-@injector.map_section("api")
+@conf.map_section("api")
 def foo(key: str) -> None:
     print(key)
 
-@injector.map_values(key="api.key")
+@conf.map_values(key="api.key")
 def bar(key: str) -> None:
     print(key)
 
@@ -53,6 +53,7 @@ import ast
 import functools
 import inspect
 import json
+import logging
 import os
 import re
 import string
@@ -65,11 +66,24 @@ import tomlkit
 from dynaconf.vendor.box import Box
 from typing_extensions import ParamSpec
 
-import cdf.core.logger as logger
 from cdf.types import M
+
+logger = logging.getLogger(__name__)
 
 T = t.TypeVar("T")
 P = ParamSpec("P")
+
+__all__ = [
+    "ConfigLoader",
+    "ConfigResolver",
+    "ConfigSource",
+    "Request",
+    "add_custom_converter",
+    "remove_converter",
+    "load_file",
+    "map_config_section",
+    "map_config_values",
+]
 
 
 def load_file(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
@@ -513,16 +527,3 @@ class ConfigResolver(t.MutableMapping):
     ) -> T:
         """Invoke a callable with injected configuration values."""
         return self.resolve_defaults(func_or_cls)(*args, **kwargs)
-
-
-__all__ = [
-    "ConfigLoader",
-    "ConfigResolver",
-    "ConfigSource",
-    "Request",
-    "add_custom_converter",
-    "remove_converter",
-    "load_file",
-    "map_config_section",
-    "map_config_values",
-]

@@ -9,11 +9,11 @@ import dlt
 from dlt.sources.helpers import requests
 from sqlmesh.core.config import ConnectionConfig, GatewayConfig, parse_connection_config
 
-import cdf.core.constants as c
-import cdf.core.context as context
-import cdf.core.logger as logger
-from cdf.core.project import Project, Workspace, load_project
-from cdf.core.runtime import pipeline
+import cdf.legacy.constants as c
+import cdf.legacy.context as context
+import cdf.legacy.logger as logger
+from cdf.legacy.project import Project, Workspace, load_project
+from cdf.legacy.runtime import pipeline
 from cdf.types import M, PathLike
 
 

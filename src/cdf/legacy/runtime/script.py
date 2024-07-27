@@ -9,10 +9,10 @@ import io
 import typing as t
 from contextlib import nullcontext, redirect_stdout
 
-import cdf.core.logger as logger
-from cdf.core.runtime.common import with_activate_project
-from cdf.core.specification import ScriptSpecification
-from cdf.core.state import with_audit
+import cdf.legacy.logger as logger
+from cdf.legacy.runtime.common import with_activate_project
+from cdf.legacy.specification import ScriptSpecification
+from cdf.legacy.state import with_audit
 from cdf.types import M
 
 

@@ -1,6 +1,6 @@
 import typing as t
 
-from cdf.core.specification.base import PythonScript, Schedulable
+from cdf.legacy.specification.base import PythonScript, Schedulable
 
 
 class PublisherSpecification(PythonScript, Schedulable):

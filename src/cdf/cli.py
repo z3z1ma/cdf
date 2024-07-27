@@ -22,22 +22,22 @@ from dlt.common.versioned_state import (
     json_encode_state,
 )
 
-import cdf.core.constants as c
-import cdf.core.context as context
-import cdf.core.logger as logger
-from cdf.core.project import (
+import cdf.legacy.constants as c
+import cdf.legacy.context as context
+import cdf.legacy.logger as logger
+from cdf.legacy.project import (
     FeatureFlagConfig,
     FilesystemConfig,
     Workspace,
     load_project,
 )
-from cdf.core.runtime import (
+from cdf.legacy.runtime import (
     execute_notebook_specification,
     execute_pipeline_specification,
     execute_publisher_specification,
     execute_script_specification,
 )
-from cdf.core.specification import (
+from cdf.legacy.specification import (
     CoreSpecification,
     NotebookSpecification,
     PipelineSpecification,

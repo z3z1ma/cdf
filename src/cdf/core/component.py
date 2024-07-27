@@ -10,7 +10,7 @@ from operator import attrgetter
 
 from typing_extensions import Self
 
-import cdf.injector as injector
+import cdf.core.injector as injector
 
 if t.TYPE_CHECKING:
     from dlt.common.destination import Destination as DltDestination
@@ -18,6 +18,24 @@ if t.TYPE_CHECKING:
     from dlt.sources import DltSource
 
 T = t.TypeVar("T")
+
+__all__ = [
+    "Service",
+    "Source",
+    "Destination",
+    "ServiceDef",
+    "SourceDef",
+    "DestinationDef",
+    "DataPipeline",
+    "DataPipelineDef",
+    "DataPublisher",
+    "DataPublisherDef",
+    "Operation",
+    "OperationDef",
+    "ServiceLevelAgreement",
+    "Component",
+    "TComponent",
+]
 
 
 class ServiceLevelAgreement(Enum):
@@ -359,21 +377,3 @@ TComponentDef = t.TypeVar(
     "TComponentDef",
     bound=t.Union[Component, _ComponentProperties, t.Callable[..., t.Any]],
 )
-
-__all__ = [
-    "Service",
-    "Source",
-    "Destination",
-    "ServiceDef",
-    "SourceDef",
-    "DestinationDef",
-    "DataPipeline",
-    "DataPipelineDef",
-    "DataPublisher",
-    "DataPublisherDef",
-    "Operation",
-    "OperationDef",
-    "ServiceLevelAgreement",
-    "Component",
-    "TComponent",
-]

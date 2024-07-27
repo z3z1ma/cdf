@@ -11,10 +11,18 @@ from functools import partialmethod, wraps
 
 from typing_extensions import ParamSpec, Self
 
-from cdf.injector.errors import DependencyCycleError
+from cdf.core.injector.errors import DependencyCycleError
 
 T = t.TypeVar("T")
 P = ParamSpec("P")
+
+__all__ = [
+    "DependencyRegistry",
+    "Dependency",
+    "Lifecycle",
+    "DependencyKey",
+    "GLOBAL_REGISTRY",
+]
 
 
 class Lifecycle(Enum):
@@ -503,11 +511,3 @@ class DependencyRegistry(t.MutableMapping):
 
 
 GLOBAL_REGISTRY = DependencyRegistry()
-
-__all__ = [
-    "DependencyRegistry",
-    "Dependency",
-    "Lifecycle",
-    "DependencyKey",
-    "GLOBAL_REGISTRY",
-]

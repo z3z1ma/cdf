@@ -4,7 +4,7 @@ import typing as t
 
 from dlt.common.configuration import with_config
 
-from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter
+from cdf.integrations.feature_flag.base import AbstractFeatureFlagAdapter
 
 
 class LaunchDarklyFeatureFlagAdapter(AbstractFeatureFlagAdapter):

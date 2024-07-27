@@ -10,8 +10,10 @@ import dlt
 import fsspec
 from dlt.common.configuration import with_config
 
-from cdf.core.feature_flag.base import (AbstractFeatureFlagAdapter,
-                                        FlagAdapterResponse)
+from cdf.integrations.feature_flag.base import (
+    AbstractFeatureFlagAdapter,
+    FlagAdapterResponse,
+)
 
 logger = logging.getLogger(__name__)
 

@@ -10,7 +10,7 @@ from contextvars import ContextVar
 import dlt
 
 if t.TYPE_CHECKING:
-    from cdf.core.project import Project
+    from cdf.legacy.project import Project
 
 
 active_project: ContextVar["Project"] = ContextVar("active_project")

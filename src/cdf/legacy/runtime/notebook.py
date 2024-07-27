@@ -16,10 +16,10 @@ from pathlib import Path
 
 import papermill
 
-import cdf.core.logger as logger
-from cdf.core.runtime.common import with_activate_project
-from cdf.core.specification import NotebookSpecification
-from cdf.core.state import with_audit
+import cdf.legacy.logger as logger
+from cdf.legacy.runtime.common import with_activate_project
+from cdf.legacy.specification import NotebookSpecification
+from cdf.legacy.state import with_audit
 from cdf.types import M
 
 if t.TYPE_CHECKING:

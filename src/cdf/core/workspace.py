@@ -1,4 +1,4 @@
-"""A workspace is a container for services, sources, and configuration that can be used to wire up a data pipeline."""
+"""A workspace is a container for components and configurations."""
 
 import os
 import time
@@ -9,8 +9,9 @@ from pathlib import Path
 
 from typing_extensions import ParamSpec
 
-import cdf.injector as injector
-import cdf.nextgen.model as model
+import cdf.core.component as cmp
+import cdf.core.configuration as conf
+import cdf.core.injector as injector
 
 if t.TYPE_CHECKING:
     import click
@@ -18,6 +19,8 @@ if t.TYPE_CHECKING:
 
 T = t.TypeVar("T")
 P = ParamSpec("P")
+
+__all__ = ["Workspace"]
 
 
 @dataclass(frozen=True)
@@ -32,34 +35,32 @@ class Workspace:
         default_factory=lambda: os.getenv("CDF_ENVIRONMENT", "dev")
     )
     """The runtime environment used to resolve configuration."""
-    conf_resolver: injector.ConfigResolver = field(
-        default_factory=injector.ConfigResolver
-    )
+    conf_resolver: conf.ConfigResolver = field(default_factory=conf.ConfigResolver)
     """The configuration resolver for the workspace."""
     container: injector.DependencyRegistry = field(
         default_factory=injector.DependencyRegistry
     )
     """The dependency injection container for the workspace."""
-    configuration_sources: t.Iterable[injector.ConfigSource] = (
+    configuration_sources: t.Iterable[conf.ConfigSource] = (
         "cdf.toml",
         "cdf.yaml",
         "cdf.json",
         "~/.cdf.toml",
     )
     """A list of configuration sources resolved and merged by the workspace."""
-    service_definitions: t.Iterable[model.ServiceDef] = field(default_factory=tuple)
+    service_definitions: t.Iterable[cmp.ServiceDef] = field(default_factory=tuple)
     """An iterable of service definitions that the workspace provides."""
-    source_definitions: t.Iterable[model.SourceDef] = field(default_factory=tuple)
+    source_definitions: t.Iterable[cmp.SourceDef] = field(default_factory=tuple)
     """An iterable of source definitions that the workspace provides."""
-    destination_definitions: t.Iterable[model.DestinationDef] = field(
+    destination_definitions: t.Iterable[cmp.DestinationDef] = field(
         default_factory=tuple
     )
     """An iterable of destination definitions that the workspace provides."""
-    data_pipelines: t.Iterable[model.DataPipelineDef] = field(default_factory=tuple)
+    data_pipelines: t.Iterable[cmp.DataPipelineDef] = field(default_factory=tuple)
     """An iterable of data pipelines that the workspace provides."""
-    data_publishers: t.Iterable[model.DataPublisherDef] = field(default_factory=tuple)
+    data_publishers: t.Iterable[cmp.DataPublisherDef] = field(default_factory=tuple)
     """An iterable of data publishers that the workspace provides."""
-    operation_definitions: t.Iterable[model.OperationDef] = field(default_factory=tuple)
+    operation_definitions: t.Iterable[cmp.OperationDef] = field(default_factory=tuple)
     """An iterable of generic operations that the workspace provides."""
     transform_path: t.Optional[t.Union[str, Path]] = None
     """The path to the transformation provider for the workspace. Currently we only integrate with SQLMesh."""
@@ -100,49 +101,49 @@ class Workspace:
 
     def _parse_definitions(
         self,
-        defs: t.Iterable[model.TComponentDef],
-        into: t.Type[model.TComponent],
+        defs: t.Iterable[cmp.TComponentDef],
+        into: t.Type[cmp.TComponent],
         *additional_decorators: t.Callable,
-    ) -> t.Dict[str, model.TComponent]:
+    ) -> t.Dict[str, cmp.TComponent]:
         """Parse a list of component definitions into a lookup."""
         objs = {}
         for obj in defs:
             if isinstance(obj, dict):
                 obj = into.wrap(**obj)
-            elif not isinstance(obj, model.Component):
+            elif not isinstance(obj, cmp.Component):
                 obj = into.wrap(dependency=obj)
             objs[obj.name] = obj.apply_wrappers(self.apply, *additional_decorators)
         return objs
 
     @cached_property
-    def services(self) -> t.Dict[str, model.Service]:
+    def services(self) -> t.Dict[str, cmp.Service]:
         """Return the services of the workspace."""
-        return self._parse_definitions(self.service_definitions, model.Service)
+        return self._parse_definitions(self.service_definitions, cmp.Service)
 
     @cached_property
-    def sources(self) -> t.Dict[str, model.Source]:
+    def sources(self) -> t.Dict[str, cmp.Source]:
         """Return the sources of the workspace."""
-        return self._parse_definitions(self.source_definitions, model.Source)
+        return self._parse_definitions(self.source_definitions, cmp.Source)
 
     @cached_property
-    def destinations(self) -> t.Dict[str, model.Destination]:
+    def destinations(self) -> t.Dict[str, cmp.Destination]:
         """Return the destinations of the workspace."""
-        return self._parse_definitions(self.destination_definitions, model.Destination)
+        return self._parse_definitions(self.destination_definitions, cmp.Destination)
 
     @cached_property
-    def pipelines(self) -> t.Dict[str, model.DataPipeline]:
+    def pipelines(self) -> t.Dict[str, cmp.DataPipeline]:
         """Return the data pipelines of the workspace."""
-        return self._parse_definitions(self.data_pipelines, model.DataPipeline)
+        return self._parse_definitions(self.data_pipelines, cmp.DataPipeline)
 
     @cached_property
-    def publishers(self) -> t.Dict[str, model.DataPublisher]:
+    def publishers(self) -> t.Dict[str, cmp.DataPublisher]:
         """Return the data publishers of the workspace."""
-        return self._parse_definitions(self.data_publishers, model.DataPublisher)
+        return self._parse_definitions(self.data_publishers, cmp.DataPublisher)
 
     @cached_property
-    def operations(self) -> t.Dict[str, model.Operation]:
+    def operations(self) -> t.Dict[str, cmp.Operation]:
         """Return the operations of the workspace."""
-        return self._parse_definitions(self.operation_definitions, model.Operation)
+        return self._parse_definitions(self.operation_definitions, cmp.Operation)
 
     @t.overload
     def get_transform_context(
@@ -188,7 +189,7 @@ class Workspace:
         """Add a dependency to the workspace DI container."""
         self.container.add_definition(name, definition)
 
-    def import_config(self, config: injector.ConfigSource) -> None:
+    def import_config(self, config: conf.ConfigSource) -> None:
         """Import a new configuration source into the workspace configuration resolver."""
         self.conf_resolver.import_(config)
 
@@ -202,7 +203,7 @@ class Workspace:
             """A dynamically generated CLI for the workspace."""
             pass
 
-        def _list(d: t.Dict[str, model.TComponent]) -> int:
+        def _list(d: t.Dict[str, cmp.TComponent]) -> int:
             for name in d.keys():
                 click.echo(name)
             return 1
@@ -403,23 +404,23 @@ if __name__ == "__main__":
             *Workspace.configuration_sources,
         ],
         service_definitions=[
-            model.Service(
+            cmp.Service(
                 "a",
                 injector.Dependency(1),
                 owner="Alex",
                 description="A secret number",
-                sla=model.ServiceLevelAgreement.CRITICAL,
+                sla=cmp.ServiceLevelAgreement.CRITICAL,
             ),
-            model.Service(
+            cmp.Service(
                 "b", injector.Dependency(lambda a: a + 1 * 5 / 10), owner="Alex"
             ),
-            model.Service(
+            cmp.Service(
                 "prod_bigquery", injector.Dependency("dwh-123"), owner="DataTeam"
             ),
-            model.Service(
+            cmp.Service(
                 "sfdc",
                 injector.Dependency(
-                    injector.map_config_section("sfdc")(
+                    conf.map_config_section("sfdc")(
                         lambda username: f"https://sfdc.com/{username}"
                     )
                 ),
@@ -427,7 +428,7 @@ if __name__ == "__main__":
             ),
         ],
         source_definitions=[
-            model.Source(
+            cmp.Source(
                 "source_a",
                 injector.Dependency.prototype(test_source),
                 owner="Alex",
@@ -435,13 +436,13 @@ if __name__ == "__main__":
             )
         ],
         destination_definitions=[
-            model.Destination(
+            cmp.Destination(
                 "temp_duckdb",
                 injector.Dependency.instance(memory_duckdb),
                 owner="Alex",
                 description="In-memory DuckDB",
             ),
-            model.Destination(
+            cmp.Destination(
                 "dev_sandbox",
                 injector.Dependency.instance(memory_duckdb),
                 owner="Alex",
@@ -449,7 +450,7 @@ if __name__ == "__main__":
             ),
         ],
         data_pipelines=[
-            model.DataPipeline.wrap(
+            cmp.DataPipeline.wrap(
                 test_pipeline,
                 name="exchangerate_pipeline",
                 owner="Alex",

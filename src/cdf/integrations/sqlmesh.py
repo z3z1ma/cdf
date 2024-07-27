@@ -1,15 +1,15 @@
+import logging
 import time
 import typing as t
 
-from sqlmesh.core.notification_target import (
-    ConsoleNotificationTarget,
-    NotificationEvent,
-    NotificationStatus,
-)
+from sqlmesh.core.notification_target import (ConsoleNotificationTarget,
+                                              NotificationEvent,
+                                              NotificationStatus)
 from sqlmesh.utils.errors import AuditError
 
-import cdf.core.logger as logger
-from cdf.core.project import Workspace
+from cdf.legacy.project import Workspace
+
+logger = logging.getLogger(__name__)
 
 
 class CDFNotificationTarget(ConsoleNotificationTarget):

@@ -2,7 +2,7 @@
 
 import typing as t
 
-from cdf.core.feature_flag.base import AbstractFeatureFlagAdapter
+from cdf.integrations.feature_flag.base import AbstractFeatureFlagAdapter
 
 
 class NoopFeatureFlagAdapter(AbstractFeatureFlagAdapter):

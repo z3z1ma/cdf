@@ -16,8 +16,10 @@ from featureflags.evaluations.feature import FeatureConfigKind
 from featureflags.interface import Cache
 from featureflags.util import log as _ff_logger
 
-from cdf.core.feature_flag.base import (AbstractFeatureFlagAdapter,
-                                        FlagAdapterResponse)
+from cdf.integrations.feature_flag.base import (
+    AbstractFeatureFlagAdapter,
+    FlagAdapterResponse,
+)
 
 logger = logging.getLogger(__name__)
 
