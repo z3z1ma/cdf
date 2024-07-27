@@ -13,6 +13,7 @@ import cdf.injector as injector
 import cdf.nextgen.model as model
 
 if t.TYPE_CHECKING:
+    import click
     import sqlmesh
 
 T = t.TypeVar("T")
@@ -46,11 +47,11 @@ class Workspace:
         "~/.cdf.toml",
     )
     """A list of configuration sources resolved and merged by the workspace."""
-    service_definitons: t.Iterable[model.ServiceDef] = field(default_factory=tuple)
+    service_definitions: t.Iterable[model.ServiceDef] = field(default_factory=tuple)
     """An iterable of service definitions that the workspace provides."""
-    source_definitons: t.Iterable[model.SourceDef] = field(default_factory=tuple)
+    source_definitions: t.Iterable[model.SourceDef] = field(default_factory=tuple)
     """An iterable of source definitions that the workspace provides."""
-    destination_definitons: t.Iterable[model.DestinationDef] = field(
+    destination_definitions: t.Iterable[model.DestinationDef] = field(
         default_factory=tuple
     )
     """An iterable of destination definitions that the workspace provides."""
@@ -116,17 +117,17 @@ class Workspace:
     @cached_property
     def services(self) -> t.Dict[str, model.Service]:
         """Return the services of the workspace."""
-        return self._parse_definitions(self.service_definitons, model.Service)
+        return self._parse_definitions(self.service_definitions, model.Service)
 
     @cached_property
     def sources(self) -> t.Dict[str, model.Source]:
         """Return the sources of the workspace."""
-        return self._parse_definitions(self.source_definitons, model.Source)
+        return self._parse_definitions(self.source_definitions, model.Source)
 
     @cached_property
     def destinations(self) -> t.Dict[str, model.Destination]:
         """Return the destinations of the workspace."""
-        return self._parse_definitions(self.destination_definitons, model.Destination)
+        return self._parse_definitions(self.destination_definitions, model.Destination)
 
     @cached_property
     def pipelines(self) -> t.Dict[str, model.DataPipeline]:
@@ -145,15 +146,17 @@ class Workspace:
 
     @t.overload
     def get_transform_context(
-        self, must_exist: bool = False
+        self, gateway: t.Optional[str] = None, must_exist: bool = False
     ) -> t.Optional["sqlmesh.Context"]: ...
 
     @t.overload
-    def get_transform_context(self, must_exist: bool = True) -> "sqlmesh.Context": ...
+    def get_transform_context(
+        self, gateway: t.Optional[str] = None, must_exist: bool = True
+    ) -> "sqlmesh.Context": ...
 
     # TODO: eventually this can be an adapter for other transformation providers if desired
     def get_transform_context(
-        self, must_exist: bool = False
+        self, gateway: t.Optional[str] = None, must_exist: bool = False
     ) -> t.Optional["sqlmesh.Context"]:
         """Return the transform context or raise an error if not defined."""
         import sqlmesh
@@ -163,13 +166,16 @@ class Workspace:
                 raise ValueError("Transformation provider not defined.")
             return None
 
-        return sqlmesh.Context(
-            paths=[self.transform_path], **self.transform_provider_kwargs
-        )
+        kwargs = self.transform_provider_kwargs.copy()
+        kwargs["gateway"] = gateway
+
+        return sqlmesh.Context(paths=[self.transform_path], **kwargs)
 
     if t.TYPE_CHECKING:
 
-        def get_transform_context_or_raise(self) -> "sqlmesh.Context": ...
+        def get_transform_context_or_raise(
+            self, gateway: t.Optional[str] = None
+        ) -> "sqlmesh.Context": ...
 
     else:
         get_transform_context_or_raise = partialmethod(
@@ -187,7 +193,7 @@ class Workspace:
         self.conf_resolver.import_(config)
 
     @property
-    def cli(self) -> t.Callable:
+    def cli(self) -> "click.Group":
         """Dynamically generate a CLI entrypoint for the workspace."""
         import click
 
@@ -396,7 +402,7 @@ if __name__ == "__main__":
             },
             *Workspace.configuration_sources,
         ],
-        service_definitons=[
+        service_definitions=[
             model.Service(
                 "a",
                 injector.Dependency(1),
@@ -420,7 +426,7 @@ if __name__ == "__main__":
                 owner="RevOps",
             ),
         ],
-        source_definitons=[
+        source_definitions=[
             model.Source(
                 "source_a",
                 injector.Dependency.prototype(test_source),
@@ -428,7 +434,7 @@ if __name__ == "__main__":
                 description="Source A",
             )
         ],
-        destination_definitons=[
+        destination_definitions=[
             model.Destination(
                 "temp_duckdb",
                 injector.Dependency.instance(memory_duckdb),
@@ -443,9 +449,9 @@ if __name__ == "__main__":
             ),
         ],
         data_pipelines=[
-            model.DataPipeline(
-                "exchangerate_pipeline",
-                injector.Dependency.prototype(test_pipeline),
+            model.DataPipeline.wrap(
+                test_pipeline,
+                name="exchangerate_pipeline",
                 owner="Alex",
                 description="A test pipeline",
             )
