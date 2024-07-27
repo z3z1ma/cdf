@@ -105,6 +105,9 @@ def main(
         context.debug_mode.set(True)
     logger.configure(log_level.upper() if log_level else "INFO")
     logger.apply_patches()
+    logger.warning(
+        "The CDF CLI command is DEPRECATED and will be removed in a future release. A local python file which imports cdf and exposes the Workspace.cli method is the way to interact with CDF"
+    )
     ctx.obj = load_project(path).bind(lambda p: p.get_workspace(workspace))
 
 
