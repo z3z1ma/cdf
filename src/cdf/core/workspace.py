@@ -204,7 +204,7 @@ class Workspace:
             pass
 
         def _list(d: t.Dict[str, cmp.TComponent]) -> int:
-            for name in d.keys():
+            for name in sorted(d.keys()):
                 click.echo(name)
             return 1
 
