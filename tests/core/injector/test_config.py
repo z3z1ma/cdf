@@ -83,3 +83,5 @@ def test_config_resolver():
 
     bar_configured = resolver.resolve_defaults(bar)
     assert bar_configured() == ("someone", "secret", "test")
+
+    assert "main_api" in resolver

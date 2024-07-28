@@ -223,6 +223,8 @@ def apply_converters(
                     raise ValueError(
                         "Resolver instance not provided but found @resolve converter"
                     )
+                if transformed_value not in resolver:
+                    raise ValueError(f"Key not found in resolver: {transformed_value}")
                 transformed_value = resolver[transformed_value]
                 continue
             transformed_value = _CONVERTERS[converter.lower()](transformed_value)
