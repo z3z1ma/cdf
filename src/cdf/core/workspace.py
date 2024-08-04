@@ -11,6 +11,7 @@ from typing_extensions import ParamSpec
 
 import cdf.core.component as cmp
 import cdf.core.configuration as conf
+import cdf.core.context as ctx
 import cdf.core.injector as injector
 
 if t.TYPE_CHECKING:
@@ -98,6 +99,12 @@ class Workspace:
             self.container.add_definition(source.name, source.dependency)
         for destination in self.destinations.values():
             self.container.add_definition(destination.name, destination.dependency)
+        self.activate()
+
+    def activate(self) -> "Workspace":
+        """Activate the workspace for the current context."""
+        ctx.set_active_workspace(self)
+        return self
 
     def _parse_definitions(
         self,
@@ -201,7 +208,7 @@ class Workspace:
         @click.group()
         def cli() -> None:
             """A dynamically generated CLI for the workspace."""
-            pass
+            self.activate()
 
         def _list(d: t.Dict[str, cmp.TComponent]) -> int:
             for name in sorted(d.keys()):
@@ -354,6 +361,7 @@ class Workspace:
 
     def invoke(self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any) -> T:
         """Invoke a function with configuration and dependencies defined in the workspace."""
+        self.activate()
         return self.apply(func_or_cls)(*args, **kwargs)
 
 

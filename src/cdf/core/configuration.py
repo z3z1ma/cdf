@@ -481,6 +481,7 @@ class ConfigResolver(t.MutableMapping):
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             bound_args = sig.bind_partial(*args, **kwargs)
             for arg_name, arg_value in bound_args.arguments.items():
+                # The simplest case: a string argument
                 if isinstance(arg_value, str):
                     bound_args.arguments[arg_name] = self.apply_converters(
                         arg_value, self

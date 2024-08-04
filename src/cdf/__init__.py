@@ -13,6 +13,12 @@ from cdf.core.configuration import (
     map_config_section,
     map_config_values,
 )
+from cdf.core.context import (
+    get_active_workspace,
+    resolve_args,
+    set_active_workspace,
+    use_workspace,
+)
 from cdf.core.injector import Dependency, DependencyRegistry
 from cdf.core.workspace import Workspace
 
@@ -31,4 +37,8 @@ __all__ = [
     "Workspace",
     "Dependency",
     "DependencyRegistry",
+    "get_active_workspace",
+    "set_active_workspace",
+    "resolve_args",
+    "use_workspace",
 ]
