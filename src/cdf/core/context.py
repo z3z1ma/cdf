@@ -38,20 +38,20 @@ T = t.TypeVar("T")
 
 
 @t.overload
-def resolve_args(
+def resolve(
     dependencies: t.Callable[..., T],
     configuration: bool = ...,
 ) -> t.Callable[..., T]: ...
 
 
 @t.overload
-def resolve_args(
+def resolve(
     dependencies: bool = ...,
     configuration: bool = ...,
 ) -> t.Callable[[t.Callable[..., T]], t.Callable[..., T]]: ...
 
 
-def resolve_args(
+def resolve(
     dependencies: t.Union[t.Callable[..., T], bool] = True,
     configuration: bool = True,
 ) -> t.Callable[..., t.Union[T, t.Callable[..., T]]]:

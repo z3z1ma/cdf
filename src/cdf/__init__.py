@@ -15,7 +15,7 @@ from cdf.core.configuration import (
 )
 from cdf.core.context import (
     get_active_workspace,
-    resolve_args,
+    resolve,
     set_active_workspace,
     use_workspace,
 )
@@ -39,6 +39,6 @@ __all__ = [
     "DependencyRegistry",
     "get_active_workspace",
     "set_active_workspace",
-    "resolve_args",
+    "resolve",
     "use_workspace",
 ]
