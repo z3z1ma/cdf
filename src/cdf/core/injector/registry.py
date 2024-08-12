@@ -442,16 +442,16 @@ class DependencyRegistry(t.MutableMapping):
                 if param.default not in (param.empty, None):
                     continue
                 if name not in bound_args.arguments:
-                    obj = None
+                    dep = None
                     # Try to resolve a typed dependency
                     if _is_typed(param.annotation):
-                        obj = self.get((name, param.annotation))
+                        dep = self.get((name, param.annotation))
                     # Fallback to untyped injection
-                    if obj is None:
-                        obj = self.get(name)
+                    if dep is None:
+                        dep = self.get(name)
                     # If a dependency is found, inject it
-                    if obj is not None:
-                        bound_args.arguments[name] = obj
+                    if dep is not None:
+                        bound_args.arguments[name] = dep
             bound_args.apply_defaults()
             return func_or_cls(*bound_args.args, **bound_args.kwargs)
 
