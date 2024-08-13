@@ -73,32 +73,32 @@ class Workspace:
         for source in self.configuration_sources:
             self.conf_resolver.import_(source)
         self.conf_resolver.set_environment(self.environment)
-        self.container.add_definition(
+        self.container.add_from_dependency(
             "cdf_workspace",
             injector.Dependency.instance(self),
             override=True,
         )
-        self.container.add_definition(
+        self.container.add_from_dependency(
             "cdf_environment",
             injector.Dependency.instance(self.environment),
             override=True,
         )
-        self.container.add_definition(
+        self.container.add_from_dependency(
             "cdf_config",
             injector.Dependency.instance(self.conf_resolver),
             override=True,
         )
-        self.container.add_definition(
+        self.container.add_from_dependency(
             "cdf_transform",
             injector.Dependency.singleton(self.get_transform_context_or_raise),
             override=True,
         )
         for service in self.services.values():
-            self.container.add_definition(service.name, service.dependency)
+            self.container.add_from_dependency(service.name, service.dependency)
         for source in self.sources.values():
-            self.container.add_definition(source.name, source.dependency)
+            self.container.add_from_dependency(source.name, source.dependency)
         for destination in self.destinations.values():
-            self.container.add_definition(destination.name, destination.dependency)
+            self.container.add_from_dependency(destination.name, destination.dependency)
         self.activate()
 
     def activate(self) -> "Workspace":
@@ -194,7 +194,7 @@ class Workspace:
         self, name: injector.DependencyKey, definition: injector.Dependency
     ) -> None:
         """Add a dependency to the workspace DI container."""
-        self.container.add_definition(name, definition)
+        self.container.add_from_dependency(name, definition)
 
     def import_config(self, config: conf.ConfigSource) -> None:
         """Import a new configuration source into the workspace configuration resolver."""
