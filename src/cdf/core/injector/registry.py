@@ -463,7 +463,8 @@ class DependencyRegistry(t.MutableMapping):
         if isinstance(key, str):
             if key in self._untyped_dependencies:
                 del self._untyped_dependencies[key]
-            raise KeyError(f'Dependency "{key}" is not registered')
+            else:
+                raise KeyError(f'Dependency "{key}" is not registered')
         elif key in self._typed_dependencies:
             del self._typed_dependencies[key]
         else:
