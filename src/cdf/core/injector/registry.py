@@ -85,12 +85,12 @@ class TypedKey(t.NamedTuple):
         """Two keys are equal if their names and base types match."""
         if not isinstance(other, (TypedKey, tuple)):
             return False
-        return self.name == other[0] and _same_eff_type(self.type_, other[1])
+        return self.name == other[0] and _same_type(self.type_, other[1])
 
     def __hash__(self) -> int:
         """Hash the key with the effective type if possible."""
         try:
-            return hash((self.name, _get_eff_type(self.type_)))
+            return hash((self.name, _unwrap_type(self.type_)))
         except TypeError as e:
             logger.warning(f"Failed to hash key {self!r}: {e}")
             return hash((self.name, self.type_))
@@ -127,16 +127,16 @@ def _is_union(hint: t.Type) -> bool:
     return hint is t.Union or (sys.version_info >= (3, 10) and hint is types.UnionType)
 
 
-def _is_annotation_typed(hint: t.Optional[t.Type]) -> bool:
-    """Check if a type hint constitutes a type we can use to resolve a dependency key.
+def _is_ambiguous_type(hint: t.Optional[t.Type]) -> bool:
+    """Check if a type hint or Signature annotation is ambiguous.
 
     Args:
         hint: The type hint.
 
     Returns:
-        True if the type hint is not a built-in type.
+        True if the type hint is ambiguous.
     """
-    return hint not in (
+    return hint in (
         object,
         t.Any,
         None,
@@ -147,44 +147,42 @@ def _is_annotation_typed(hint: t.Optional[t.Type]) -> bool:
     )
 
 
-def _get_eff_type(hint: t.Type) -> t.Type:
-    """Get the effective type of a hint. This is the base type if it exists.
+def _unwrap_type(hint: t.Type) -> t.Type:
+    """Unwrap a type hint.
+
+    For a Union, this is the base type if all types are the same base type.
+    Otherwise, it is the hint itself with Optional unwrapped.
 
     Args:
         hint: The type hint.
 
     Returns:
-        The effective type.
+        The unwrapped type hint.
     """
     hint = _unwrap_optional(hint)
     if _is_union(hint):
-        args = t.get_args(hint)
+        args = list(map(_unwrap_optional, t.get_args(hint)))
         if not args:
             return hint
-        hint0 = _get_eff_type(args[0])
-        if all(hint0 is _get_eff_type(arg) for arg in args[1:]):
+        f_base = getattr(args[0], "__base__", None)
+        if f_base and all(f_base is getattr(arg, "__base__", None) for arg in args[1:]):
             # Ex. Union[HarnessFFProvider, SplitFFProvider, LaunchDarklyFFProvider]
             # == BaseFFProvider
-            return hint0
-        return hint
-    if not hasattr(hint, "__base__"):
-        return hint
-    if hint.__base__ in (None, object):
-        return hint
-    return hint.__base__
+            return f_base
+    return hint
 
 
-def _same_eff_type(hint1: t.Type, hint2: t.Type) -> bool:
-    """Check if two type hints are of the same effective type.
+def _same_type(hint1: t.Type, hint2: t.Type) -> bool:
+    """Check if two type hints are of the same unwrapped type.
 
     Args:
         hint1: The first type hint.
         hint2: The second type hint.
 
     Returns:
-        True if the effective types are the same.
+        True if the unwrapped types are the same.
     """
-    return _get_eff_type(hint1) is _get_eff_type(hint2)
+    return _unwrap_type(hint1) is _unwrap_type(hint2)
 
 
 @t.overload
@@ -209,7 +207,7 @@ def _normalize_key(
     if isinstance(key, str):
         return key
     k, t_ = key
-    return TypedKey(k, _get_eff_type(t_))
+    return TypedKey(k, _unwrap_type(t_))
 
 
 def _safe_get_type_hints(obj: t.Any) -> t.Dict[str, t.Type]:
@@ -422,12 +420,12 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
     def try_infer_type(self) -> t.Optional[t.Type[T]]:
         """Get the effective type of the dependency."""
         if inspect.isclass(self.factory):
-            return _get_eff_type(self.factory)
+            return _unwrap_type(self.factory)
         if callable(self.factory):
             if hint := _safe_get_type_hints(inspect.unwrap(self.factory)).get("return"):
-                return _get_eff_type(hint)
+                return _unwrap_type(hint)
         if self._is_resolved:
-            return _get_eff_type(type(self._instance))
+            return _unwrap_type(type(self._instance))
 
     def generate_key(self, name: str) -> t.Union[str, TypedKey]:
         """Generate a typed key for the dependency.
@@ -439,7 +437,7 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
             A typed key if the type can be inferred, else the name.
         """
         hint = self.try_infer_type()
-        return TypedKey(name, hint) if hint and _is_annotation_typed(hint) else name
+        return TypedKey(name, hint) if hint and not _is_ambiguous_type(hint) else name
 
 
 class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
@@ -513,7 +511,7 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
             self._typed_dependencies[dependency_key] = dependency
             # Allow untyped access to typed dependencies for convenience if not strict
             # or if the hint is not a distinct type
-            if not (self.strict and _is_annotation_typed(dependency_key.type_)):
+            if not self.strict or _is_ambiguous_type(dependency_key.type_):
                 self._untyped_dependencies[dependency_key.name] = dependency
         else:
             self._untyped_dependencies[dependency_key] = dependency
@@ -539,7 +537,7 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
             )
         if isinstance(dependency_key, TypedKey):
             self._typed_dependencies[dependency_key] = dependency
-            if not (self.strict and _is_annotation_typed(dependency_key.type_)):
+            if not self.strict or _is_ambiguous_type(dependency_key.type_):
                 self._untyped_dependencies[dependency_key.name] = dependency
         else:
             self._untyped_dependencies[dependency_key] = dependency
@@ -595,7 +593,7 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
             dep = self.dependencies[key]
         else:
             if _is_union(key.type_):
-                types = map(_get_eff_type, t.get_args(key.type_))
+                types = map(_unwrap_type, t.get_args(key.type_))
             else:
                 types = [key.type_]
             for type_ in types:
@@ -666,7 +664,7 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
                 if name not in bound_args.arguments:
                     dep = None
                     # Try to resolve a typed dependency
-                    if _is_annotation_typed(param.annotation):
+                    if not _is_ambiguous_type(param.annotation):
                         dep = self.resolve((name, param.annotation))
                     # Fallback to untyped injection
                     if dep is None:
