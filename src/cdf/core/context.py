@@ -14,10 +14,10 @@ _ACTIVE_WORKSPACE: ContextVar[t.Optional["Workspace"]] = ContextVar(
 )
 """The active workspace for resolving injected dependencies."""
 
-_DEFAULT_LIFECYCLE: ContextVar[t.Optional["Lifecycle"]] = ContextVar(
-    "default_lifecycle", default=None
+_DEFAULT_CALLABLE_LIFECYCLE: ContextVar[t.Optional["Lifecycle"]] = ContextVar(
+    "default_callable_lifecycle", default=None
 )
-"""The default lifecycle when wrapping functions with `Dependency.wrap`."""
+"""The default lifecycle for callables when otherwise unspecified."""
 
 
 def get_active_workspace() -> t.Optional["Workspace"]:
@@ -84,21 +84,25 @@ def resolve(
     return resolve
 
 
-def get_default_lifecycle() -> t.Optional["Lifecycle"]:
-    """Get the default lifecycle when wrapping functions with `Dependency.wrap`."""
-    return _DEFAULT_LIFECYCLE.get()
+def get_default_callable_lifecycle() -> t.Optional["Lifecycle"]:
+    """Get the default lifecycle for callables when otherwise unspecified."""
+    return _DEFAULT_CALLABLE_LIFECYCLE.get()
 
 
-def set_default_lifecycle(lifecycle: t.Optional["Lifecycle"]) -> Token:
-    """Set the default lifecycle when wrapping functions with `Dependency.wrap`."""
-    return _DEFAULT_LIFECYCLE.set(lifecycle)
+def set_default_callable_lifecycle(lifecycle: t.Optional["Lifecycle"]) -> Token:
+    """Set the default lifecycle for callables when otherwise unspecified."""
+    if lifecycle and lifecycle.is_instance:
+        raise ValueError("Default callable lifecycle cannot be set to INSTANCE")
+    return _DEFAULT_CALLABLE_LIFECYCLE.set(lifecycle)
 
 
 @contextlib.contextmanager
-def use_default_lifecycle(lifecycle: t.Optional["Lifecycle"]) -> t.Iterator[None]:
-    """Context manager for temporarily setting the default lifecycle."""
-    token = set_default_lifecycle(lifecycle)
+def use_default_callable_lifecycle(
+    lifecycle: t.Optional["Lifecycle"],
+) -> t.Iterator[None]:
+    """Context manager for temporarily setting the default callable lifecycle."""
+    token = set_default_callable_lifecycle(lifecycle)
     try:
         yield
     finally:
-        set_default_lifecycle(token.old_value)
+        set_default_callable_lifecycle(token.old_value)
