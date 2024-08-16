@@ -15,8 +15,12 @@ from cdf.core.injector.registry import (
 def test_registry():
     # A generic test to show some of the API together
     container = DependencyRegistry()
-    container.add(("a", int), lambda: 1)
-    container.add(("b", int), lambda a: a + 1)
+    container.add("a", lambda: 1)
+
+    def b(a: int) -> int:
+        return a + 1
+
+    container.add("b", b)
     container.add("obj_proto", object, container.lifecycle.PROTOTYPE)
     container.add("obj_singleton", object)
 
@@ -53,6 +57,7 @@ def test_registry():
 
     assert baz() == 3
 
+
 @pytest.fixture
 def registry():
     return DependencyRegistry()
@@ -83,7 +88,7 @@ def test_typed_key_string_representation():
 
 def test_instance_dependency():
     instance = Dependency.instance(42)
-    assert instance.factory == 42
+    assert instance() == 42
     assert instance.lifecycle.is_instance
 
 
@@ -101,15 +106,15 @@ def test_prototype_dependency():
 
 def test_apply_function_to_instance():
     dep = Dependency.instance(42)
-    new_dep = dep.apply(lambda x: x + 1)
-    assert new_dep.factory == 43
+    new_dep = dep.map_value(lambda x: x + 1)
+    assert new_dep() == 43
 
 
 def test_apply_wrappers_to_factory():
     factory = MagicMock(return_value=42)
     dep = Dependency.singleton(factory)
     wrapper = MagicMock(side_effect=lambda f: lambda: f() + 1)
-    dep_wrapped = dep.apply_wrappers(wrapper)
+    dep_wrapped = dep.map(wrapper)
     assert dep_wrapped.unwrap() == 43
 
 

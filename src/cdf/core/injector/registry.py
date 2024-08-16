@@ -12,7 +12,7 @@ from functools import partial, partialmethod, wraps
 import pydantic
 from typing_extensions import ParamSpec, Self
 
-from cdf.core.injector.errors import DependencyCycleError
+from cdf.core.injector.errors import DependencyCycleError, DependencyMutationError
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class Lifecycle(enum.Enum):
     """A singleton dependency is created once and shared."""
 
     INSTANCE = enum.auto()
-    """An instance dependency is a singleton that is already created."""
+    """An instance dependency is a global object which is not created by the container."""
 
     @property
     def is_prototype(self) -> bool:
@@ -127,7 +127,7 @@ def _is_union(hint: t.Type) -> bool:
     return hint is t.Union or (sys.version_info >= (3, 10) and hint is types.UnionType)
 
 
-def _is_annotation_typed(hint: t.Type) -> bool:
+def _is_annotation_typed(hint: t.Optional[t.Type]) -> bool:
     """Check if a type hint constitutes a type we can use to resolve a dependency key.
 
     Args:
@@ -143,6 +143,7 @@ def _is_annotation_typed(hint: t.Type) -> bool:
         type(None),
         t.NoReturn,
         inspect.Parameter.empty,
+        type(lambda: None),
     )
 
 
@@ -227,14 +228,52 @@ def _safe_get_type_hints(obj: t.Any) -> t.Dict[str, t.Type]:
         return {}
 
 
-class Dependency(pydantic.BaseModel, t.Generic[T], frozen=True):
-    """An immutable dependency wrapper with lifecycle and initialization arguments."""
+class Dependency(pydantic.BaseModel, t.Generic[T]):
+    """A Monadic type which wraps a value with lifecycle and allows simple transformations."""
 
-    factory: t.Union[t.Callable[..., T], T]
+    factory: t.Callable[..., T]
     """The factory or instance of the dependency."""
-
     lifecycle: Lifecycle = Lifecycle.SINGLETON
     """The lifecycle of the dependency."""
+
+    _instance: t.Optional[T] = None
+    """The instance of the dependency once resolved."""
+    _is_resolved: bool = False
+    """Flag to indicate if the dependency has been unwrapped."""
+
+    @pydantic.model_validator(mode="before")
+    @classmethod
+    def _ensure_lifecycle(cls, data: t.Any) -> t.Any:
+        """Ensure a valid lifecycle is set for the dependency."""
+        from cdf.core.context import get_default_lifecycle
+
+        if isinstance(data, dict):
+            factory = data["factory"]
+            default_lc = get_default_lifecycle() or Lifecycle.SINGLETON
+            lc = data.get(
+                "lifecycle",
+                default_lc if callable(factory) else Lifecycle.INSTANCE,
+            )
+            if isinstance(lc, str):
+                lc = Lifecycle[lc.upper()]
+            if not isinstance(lc, Lifecycle):
+                raise ValueError(f"Invalid lifecycle {lc=}")
+            if not (lc.is_instance or callable(factory)):
+                raise ValueError(f"Value must be callable for {lc=}")
+            data["lifecycle"] = lc
+        return data
+
+    @pydantic.field_validator("factory", mode="before")
+    @classmethod
+    def _ensure_callable(cls, factory: t.Any) -> t.Any:
+        """Ensure the factory is callable."""
+        if not callable(factory):
+
+            def defer() -> T:
+                return factory
+
+            return defer
+        return factory
 
     @classmethod
     def instance(cls, instance: t.Any) -> "Dependency":
@@ -246,7 +285,10 @@ class Dependency(pydantic.BaseModel, t.Generic[T], frozen=True):
         Returns:
             A new Dependency object with the instance lifecycle.
         """
-        return cls(factory=instance, lifecycle=Lifecycle.INSTANCE)
+        obj = cls(factory=instance, lifecycle=Lifecycle.INSTANCE)
+        obj._instance = instance
+        obj._is_resolved = True
+        return obj
 
     @classmethod
     def singleton(
@@ -284,42 +326,84 @@ class Dependency(pydantic.BaseModel, t.Generic[T], frozen=True):
             factory = partial(factory, *args, **kwargs)
         return cls(factory=factory, lifecycle=Lifecycle.PROTOTYPE)
 
-    def apply(self, func: t.Callable[[T], T]) -> Self:
-        """Apply a function to the unwrapped dependency.
+    @classmethod
+    def wrap(cls, obj: t.Any, *args: t.Any, **kwargs: t.Any) -> Self:
+        """Wrap an object as a dependency.
+
+        Assumes singleton lifecycle for callables unless a default lifecycle context is set.
 
         Args:
-            func: The function to apply to the dependency.
+            obj: The object to wrap.
+
+        Returns:
+            A new Dependency object with the object as the factory.
+        """
+        if callable(obj):
+            from cdf.core.context import get_default_lifecycle
+
+            if args or kwargs:
+                obj = partial(obj, *args, **kwargs)
+            default_lc = get_default_lifecycle() or Lifecycle.SINGLETON
+            return cls(factory=obj, lifecycle=default_lc)
+        return cls(factory=obj, lifecycle=Lifecycle.INSTANCE)
+
+    def map_value(self, func: t.Callable[[T], T]) -> Self:
+        """Apply a function to the unwrapped value.
+
+        Args:
+            func: The function to apply to the unwrapped value.
 
         Returns:
             A new Dependency object with the function applied.
         """
-        if self.lifecycle.is_instance:
-            return self.__class__(factory=func(self.unwrap()), lifecycle=self.lifecycle)
+        if self._is_resolved:
+            self._instance = func(self._instance)  # type: ignore
+            return self
 
-        @wraps(func)
-        def wrapper(*args: t.Any, **kwargs: t.Any) -> T:
-            return func(self.unwrap(*args, **kwargs))
+        factory = self.factory
 
-        return self.__class__(factory=wrapper, lifecycle=self.lifecycle)
+        @wraps(factory)
+        def wrapper() -> T:
+            return func(factory())
 
-    def apply_wrappers(
+        self.factory = wrapper
+        return self
+
+    def map(
         self,
-        *decorators: t.Callable[
-            [t.Union[t.Callable[..., T], T]], t.Union[t.Callable[..., T], T]
-        ],
+        *funcs: t.Callable[[t.Callable[..., T]], t.Callable[..., T]],
     ) -> Self:
-        """Apply decorators to the wrapped dependency factory.
+        """Apply a sequence of transformations to the wrapped value.
+
+        The transformations are applied in order. This is a no-op if the dependency is
+        already resolved.
 
         Args:
-            decorators: The decorators to apply to the factory.
+            funcs: The functions to apply to the wrapped value.
 
         Returns:
-            A new Dependency object with the decorators applied.
+             The Dependency object with the transformations applied.
         """
+        if self._is_resolved:
+            raise DependencyMutationError(
+                f"Dependency {self!r} is already resolved, cannot apply transformations to factory"
+            )
         factory = self.factory
-        for decorator in decorators:
-            factory = decorator(factory)
-        return self.__class__(factory=factory, lifecycle=self.lifecycle)
+        for func in funcs:
+            factory = func(factory)
+        self.factory = factory
+        return self
+
+    def unwrap(self) -> T:
+        """Unwrap the value from the factory."""
+        if self.lifecycle.is_prototype:
+            return self.factory()
+        if self._instance is not None:
+            return self._instance
+        self._instance = self.factory()
+        if self.lifecycle.is_singleton:
+            self._is_resolved = True
+        return self._instance
 
     def __str__(self) -> str:
         return f"{self.factory} ({self.lifecycle})"
@@ -327,16 +411,34 @@ class Dependency(pydantic.BaseModel, t.Generic[T], frozen=True):
     def __repr__(self) -> str:
         return f"<Dependency {self!s}>"
 
-    def unwrap(self, *args: t.Any, **kwargs: t.Any) -> T:
-        """Unwrap the dependency."""
-        if not callable(self.factory):
-            return self.factory
-        return self.factory(*args, **kwargs)
+    def __call__(self) -> T:
+        """Alias for unwrap."""
+        return self.unwrap()
 
-    __call__ = unwrap
+    def try_infer_type(self) -> t.Optional[t.Type[T]]:
+        """Get the effective type of the dependency."""
+        if inspect.isclass(self.factory):
+            return _get_eff_type(self.factory)
+        if callable(self.factory):
+            if hint := _safe_get_type_hints(inspect.unwrap(self.factory)).get("return"):
+                return _get_eff_type(hint)
+        if self._is_resolved:
+            return _get_eff_type(type(self._instance))
+
+    def generate_key(self, name: str) -> t.Union[str, TypedKey]:
+        """Generate a typed key for the dependency.
+
+        Args:
+            name: The name of the dependency.
+
+        Returns:
+            A typed key if the type can be inferred, else the name.
+        """
+        hint = self.try_infer_type()
+        return TypedKey(name, hint) if hint and _is_annotation_typed(hint) else name
 
 
-class DependencyRegistry(t.MutableMapping):
+class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
     """A registry for dependencies with lifecycle management.
 
     Dependencies can be registered with a name or a typed key. Typed keys are tuples
@@ -357,7 +459,6 @@ class DependencyRegistry(t.MutableMapping):
         self.strict = strict
         self._typed_dependencies: t.Dict[TypedKey, Dependency] = {}
         self._untyped_dependencies: t.Dict[str, Dependency] = {}
-        self._singletons: t.Dict[t.Union[str, TypedKey], t.Any] = {}
         self._resolving: t.Set[t.Union[str, TypedKey]] = set()
 
     @property
@@ -367,8 +468,8 @@ class DependencyRegistry(t.MutableMapping):
 
     def add(
         self,
-        name_or_key: DependencyKey,
-        factory: t.Any,
+        key: str,
+        value: t.Any,
         lifecycle: t.Optional[Lifecycle] = None,
         override: bool = False,
         init_args: t.Tuple[t.Any, ...] = (),
@@ -377,81 +478,65 @@ class DependencyRegistry(t.MutableMapping):
         """Register a dependency with the container.
 
         Args:
-            name_or_key: The name or typed key of the dependency.
-            factory: The factory or instance of the dependency.
+            key: The name of the dependency.
+            value: The factory or instance of the dependency.
             lifecycle: The lifecycle of the dependency.
             override: If True, override an existing dependency.
             init_args: Arguments to initialize the factory with.
             init_kwargs: Keyword arguments to initialize the factory with.
         """
-        if isinstance(name_or_key, str):
-            # Heuristic to infer the type of the dependency for more precise resolution
-            # Classes are registered with their base type, functions with their return type
-            if inspect.isclass(factory):
-                key = TypedKey(name_or_key, _get_eff_type(factory))
-            elif callable(factory):
-                if hint := _safe_get_type_hints(factory).get("return"):
-                    key = TypedKey(name_or_key, _get_eff_type(hint))
-                else:
-                    # In this case, the dependency is considered untyped
-                    key = name_or_key
-            else:
-                # If the dependency is not a class or function
-                # it is assumed to be an instance of a class
-                key = TypedKey(name_or_key, _get_eff_type(type(factory)))
 
-        key = _normalize_key(name_or_key)
-        if self.has(key) and not override:
-            raise ValueError(
-                f'Dependency "{key}" is already registered, use a different name to avoid conflicts'
-            )
-
-        # Assume singleton lifecycle if the factory is callable
+        # Assume singleton lifecycle if the value is callable unless set in context
         if lifecycle is None:
-            lifecycle = Lifecycle.SINGLETON if callable(factory) else Lifecycle.INSTANCE
+            from cdf.core.context import get_default_lifecycle
 
-        # If the factory lifecycle is deferred, it must be callable -- warn if not the case
-        if lifecycle.is_deferred and not callable(factory):
-            logger.warning(
-                "Lifecycle is deferred but factory %s is not callable", factory
-            )
-            lifecycle = Lifecycle.INSTANCE
+            default_lc = get_default_lifecycle() or Lifecycle.SINGLETON
+            lifecycle = default_lc if callable(value) else Lifecycle.INSTANCE
 
-        # If the factory is callable and has initialization args, bind them early so
+        # If the value is callable and has initialization args, bind them early so
         # we don't need to schlepp them around
-        if callable(factory) and (init_args or init_kwargs):
-            factory = partial(factory, *init_args, **(init_kwargs or {}))
+        if callable(value) and (init_args or init_kwargs):
+            value = partial(value, *init_args, **(init_kwargs or {}))
 
         # Register the dependency
-        dep = Dependency(factory=factory, lifecycle=lifecycle)
-        if isinstance(key, TypedKey):
-            self._typed_dependencies[key] = dep
+        dependency = Dependency(factory=value, lifecycle=lifecycle)
+        dependency_key = dependency.generate_key(key)
+        if self.has(dependency_key) and not override:
+            raise ValueError(f'Dependency "{dependency_key}" is already registered')
+        if isinstance(dependency_key, TypedKey):
+            self._typed_dependencies[dependency_key] = dependency
             # Allow untyped access to typed dependencies for convenience if not strict
-            if not self.strict:
-                self._untyped_dependencies[key.name] = dep
+            # or if the hint is not a distinct type
+            if not (self.strict and _is_annotation_typed(dependency_key.type_)):
+                self._untyped_dependencies[dependency_key.name] = dependency
         else:
-            self._untyped_dependencies[key] = dep
+            self._untyped_dependencies[dependency_key] = dependency
 
     add_prototype = partialmethod(add, lifecycle=Lifecycle.PROTOTYPE)
     add_singleton = partialmethod(add, lifecycle=Lifecycle.SINGLETON)
     add_instance = partialmethod(add, lifecycle=Lifecycle.INSTANCE)
 
     def add_from_dependency(
-        self, name_or_key: DependencyKey, dependency: Dependency, override: bool = False
+        self, key: str, dependency: Dependency, override: bool = False
     ) -> None:
         """Add a Dependency object to the container.
 
         Args:
-            name_or_key: The name or typed key of the dependency.
+            key: The name or typed key of the dependency.
             dependency: The dependency object.
             override: If True, override an existing dependency
         """
-        self.add(
-            name_or_key,
-            factory=dependency.factory,
-            lifecycle=dependency.lifecycle,
-            override=override,
-        )
+        dependency_key = dependency.generate_key(key)
+        if self.has(dependency_key) and not override:
+            raise ValueError(
+                f'Dependency "{dependency_key}" is already registered, use a different name to avoid conflicts'
+            )
+        if isinstance(dependency_key, TypedKey):
+            self._typed_dependencies[dependency_key] = dependency
+            if not (self.strict and _is_annotation_typed(dependency_key.type_)):
+                self._untyped_dependencies[dependency_key.name] = dependency
+        else:
+            self._untyped_dependencies[dependency_key] = dependency
 
     def remove(self, name_or_key: DependencyKey) -> None:
         """Remove a dependency by name or key from the container.
@@ -469,14 +554,11 @@ class DependencyRegistry(t.MutableMapping):
             del self._typed_dependencies[key]
         else:
             raise KeyError(f'Dependency "{key}" is not registered')
-        if key in self._singletons:
-            del self._singletons[key]
 
     def clear(self) -> None:
         """Clear all dependencies and singletons."""
         self._typed_dependencies.clear()
         self._untyped_dependencies.clear()
-        self._singletons.clear()
 
     def has(self, name_or_key: DependencyKey) -> bool:
         """Check if a dependency is registered.
@@ -486,7 +568,7 @@ class DependencyRegistry(t.MutableMapping):
         """
         return name_or_key in self.dependencies
 
-    def get(self, name_or_key: DependencyKey, must_exist: bool = False) -> t.Any:
+    def resolve(self, name_or_key: DependencyKey, must_exist: bool = False) -> t.Any:
         """Get a dependency.
 
         Args:
@@ -527,26 +609,15 @@ class DependencyRegistry(t.MutableMapping):
             )
 
         # Handle the lifecycle of the dependency, recursively resolving dependencies
-        if dep.lifecycle.is_prototype:
-            self._resolving.add(key)
-            try:
-                return self.wire(dep.factory)()
-            finally:
-                self._resolving.remove(key)
-        elif dep.lifecycle.is_singleton:
-            if key not in self._singletons:
-                self._resolving.add(key)
-                try:
-                    self._singletons[key] = self.wire(dep.factory)()
-                finally:
-                    self._resolving.remove(key)
-            return self._singletons[key]
-        elif dep.lifecycle.is_instance:
-            if callable(dep.factory):
-                return self.wire(dep.factory)
-            return dep.factory
+        self._resolving.add(key)
+        try:
+            return dep.map(self.wire).unwrap()
+        except DependencyMutationError:
+            return dep.unwrap()
+        finally:
+            self._resolving.remove(key)
 
-    get_or_raise = partialmethod(get, must_exist=True)
+    resolve_or_raise = partialmethod(resolve, must_exist=True)
 
     def __contains__(self, key: t.Union[str, t.Tuple[str, t.Type]]) -> bool:
         """Check if a dependency is registered."""
@@ -554,11 +625,11 @@ class DependencyRegistry(t.MutableMapping):
 
     def __getitem__(self, name: t.Union[str, t.Tuple[str, t.Type]]) -> t.Any:
         """Get a dependency. Raises KeyError if not found."""
-        return self.get(name, must_exist=True)
+        return self.resolve(name, must_exist=True)
 
-    def __setitem__(self, name: str, factory: t.Any) -> None:
+    def __setitem__(self, name: str, value: t.Any) -> None:
         """Add a dependency. Defaults to singleton lifecycle if callable, else instance."""
-        self.add(name, factory, override=True)
+        self.add(name, value, override=True)
 
     def __delitem__(self, name: str) -> None:
         """Remove a dependency."""
@@ -590,14 +661,13 @@ class DependencyRegistry(t.MutableMapping):
                     dep = None
                     # Try to resolve a typed dependency
                     if _is_annotation_typed(param.annotation):
-                        dep = self.get((name, param.annotation))
+                        dep = self.resolve((name, param.annotation))
                     # Fallback to untyped injection
                     if dep is None:
-                        dep = self.get(name)
+                        dep = self.resolve(name)
                     # If a dependency is found, inject it
                     if dep is not None:
                         bound_args.arguments[name] = dep
-            bound_args.apply_defaults()
             return func_or_cls(*bound_args.args, **bound_args.kwargs)
 
         return wrapper
@@ -635,8 +705,8 @@ class DependencyRegistry(t.MutableMapping):
         """True if the registry has dependencies."""
         return bool(self.dependencies)
 
-    def __add__(self, other: "DependencyRegistry") -> "DependencyRegistry":
-        """Merge two registries."""
+    def __or__(self, other: "DependencyRegistry") -> "DependencyRegistry":
+        """Merge two registries like pythons dict union overload."""
         self._untyped_dependencies = {
             **self._untyped_dependencies,
             **other._untyped_dependencies,
@@ -645,10 +715,6 @@ class DependencyRegistry(t.MutableMapping):
             **self._typed_dependencies,
             **other._typed_dependencies,
         }
-        self._singletons = {
-            **self._singletons,
-            **other._singletons,
-        }
         return self
 
     def __getstate__(self) -> t.Dict[str, t.Any]:
@@ -656,7 +722,6 @@ class DependencyRegistry(t.MutableMapping):
         return {
             "_typed_dependencies": self._typed_dependencies,
             "_untyped_dependencies": self._untyped_dependencies,
-            "_singletons": self._singletons,
             "_resolving": self._resolving,
         }
 
@@ -664,7 +729,6 @@ class DependencyRegistry(t.MutableMapping):
         """Deserialize the state."""
         self._typed_dependencies = state["_typed_dependencies"]
         self._untyped_dependencies = state["_untyped_dependencies"]
-        self._singletons = state["_singletons"]
         self._resolving = state["_resolving"]
 
 
