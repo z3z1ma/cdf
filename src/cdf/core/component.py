@@ -155,7 +155,7 @@ class Component(_Node, t.Generic[T], frozen=True):
     """A component with a binding to a dependency."""
 
     main: injector.Dependency[T]
-    """The dependency for the component. This is what is injected into the workspace or exposed as a entrypoint."""
+    """The dependency for the component. This is what is injected into the workspace."""
 
     name: t.Annotated[str, pydantic.Field(..., pattern=r"^[a-zA-Z_][a-zA-Z0-9_]*$")]
     """The key to register the component in the container. 
@@ -240,6 +240,9 @@ class Entrypoint(_Node, t.Generic[T], frozen=True):
         return self.main(*args, **kwargs)
 
 
+# The following classes are injected into the workspace DI container
+
+
 class Service(Component[t.Any], frozen=True):
     """A service that the workspace provides. IE an API, database, requests client, etc."""
 
@@ -250,6 +253,9 @@ class Source(Component[DltSource], frozen=True):
 
 class Destination(Component[DltDestination], frozen=True):
     """A dlt destination which we can load data into."""
+
+
+# The following classes are entrypoints exposed to the user via CLI
 
 
 class DataPipeline(Entrypoint[t.Optional[LoadInfo]], frozen=True):
@@ -306,6 +312,8 @@ class DataPublisher(Entrypoint[None], frozen=True):
 class Operation(Entrypoint[int], frozen=True):
     """A generic callable that returns an exit code."""
 
+
+# Type definitions for the components
 
 ServiceDef = t.Union[Service, t.Callable[["Workspace"], Service]]
 SourceDef = t.Union[Source, t.Callable[["Workspace"], Source]]
