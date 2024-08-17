@@ -1,13 +1,12 @@
 """A workspace is a container for components and configurations."""
 
-import inspect
 import os
 import time
 import typing as t
-from dataclasses import dataclass, field
 from functools import cached_property, partialmethod
 from pathlib import Path
 
+import pydantic
 from typing_extensions import ParamSpec
 
 import cdf.core.component as cmp
@@ -25,21 +24,22 @@ P = ParamSpec("P")
 __all__ = ["Workspace"]
 
 
-@dataclass(frozen=True)
-class Workspace:
+class Workspace(pydantic.BaseModel, frozen=True):
     """A CDF workspace that allows for dependency injection and configuration resolution."""
 
     name: str = "default"
     """A human-readable name for the workspace."""
     version: str = "0.1.0"
     """A semver version string for the workspace."""
-    environment: str = field(
+    environment: str = pydantic.Field(
         default_factory=lambda: os.getenv("CDF_ENVIRONMENT", "dev")
     )
     """The runtime environment used to resolve configuration."""
-    conf_resolver: conf.ConfigResolver = field(default_factory=conf.ConfigResolver)
+    conf_resolver: conf.ConfigResolver = pydantic.Field(
+        default_factory=conf.ConfigResolver
+    )
     """The configuration resolver for the workspace."""
-    container: injector.DependencyRegistry = field(
+    container: injector.DependencyRegistry = pydantic.Field(
         default_factory=injector.DependencyRegistry
     )
     """The dependency injection container for the workspace."""
@@ -50,20 +50,21 @@ class Workspace:
         "~/.cdf.toml",
     )
     """A list of configuration sources resolved and merged by the workspace."""
-    service_definitions: t.Iterable[cmp.ServiceDef] = field(default_factory=tuple)
+    service_definitions: t.Iterable[cmp.ServiceDef] = ()
     """An iterable of service definitions that the workspace provides."""
-    data_pipelines: t.Iterable[cmp.DataPipelineDef] = field(default_factory=tuple)
+    data_pipelines: t.Iterable[cmp.DataPipelineDef] = ()
     """An iterable of data pipelines that the workspace provides."""
-    data_publishers: t.Iterable[cmp.DataPublisherDef] = field(default_factory=tuple)
+    data_publishers: t.Iterable[cmp.DataPublisherDef] = ()
     """An iterable of data publishers that the workspace provides."""
-    operation_definitions: t.Iterable[cmp.OperationDef] = field(default_factory=tuple)
+    operation_definitions: t.Iterable[cmp.OperationDef] = ()
     """An iterable of generic operations that the workspace provides."""
     transform_path: t.Optional[t.Union[str, Path]] = None
     """The path to the transformation provider for the workspace. Currently we only integrate with SQLMesh."""
-    transform_provider_kwargs: t.Dict[str, t.Any] = field(default_factory=dict)
+    transform_provider_kwargs: t.Dict[str, t.Any] = {}
     """Keyword arguments to pass to the transformation provider."""
 
-    def __post_init__(self) -> None:
+    @pydantic.model_validator(mode="after")
+    def _setup(self):
         """Initialize the workspace."""
         for source in self.configuration_sources:
             self.conf_resolver.import_source(source)
@@ -91,6 +92,7 @@ class Workspace:
         for service in self.services.values():
             self.container.add_from_dependency(service.name, service.main)
         self.activate()
+        return self
 
     def activate(self) -> "Workspace":
         """Activate the workspace for the current context."""
@@ -104,25 +106,8 @@ class Workspace:
         components = {}
         with ctx.use_workspace(self):
             for definition in defs:
-                # Resolve the definition if it is a callable
-                if inspect.isfunction(definition):
-                    definition = definition(self)
-
-                # Validate the component definition
-                component = into.model_validate(definition)
-
-                # Apply configuration specs if defined in dependency
-                for f, info in component.model_fields.items():
-                    f_v = getattr(component, f, None)
-                    if isinstance(f_v, injector.Dependency):
-                        spec = f_v.config_spec
-                        if isinstance(spec, dict):
-                            f_v.map(conf.map_config_values(**spec))
-                        elif isinstance(spec, tuple):
-                            f_v.map(conf.map_config_section(*spec))
-
+                component = into.model_validate(definition, context={"parent": self})
                 components[component.name] = component
-
         return components
 
     @cached_property
@@ -347,7 +332,7 @@ class Workspace:
 
         return cli
 
-    def apply(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
+    def bind(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
         """Wrap a function with configuration and dependencies defined in the workspace."""
         configured_f = self.conf_resolver.resolve_defaults(func_or_cls)
         return self.container.wire(configured_f)
@@ -355,7 +340,7 @@ class Workspace:
     def invoke(self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any) -> T:
         """Invoke a function with configuration and dependencies defined in the workspace."""
         with ctx.use_workspace(self):
-            return self.apply(func_or_cls)(*args, **kwargs)
+            return self.bind(func_or_cls)(*args, **kwargs)
 
 
 if __name__ == "__main__":
@@ -404,7 +389,6 @@ if __name__ == "__main__":
                 "sfdc": {"username": "abc"},
                 "bigquery": {"project_id": "project-123"},
             },
-            *Workspace.configuration_sources,
         ],
         service_definitions=[
             cmp.Service(
@@ -433,7 +417,7 @@ if __name__ == "__main__":
                 name="sfdc",
                 main=injector.Dependency(
                     factory=lambda username: f"https://sfdc.com/{username}",
-                    config_spec=("sfdc",),
+                    conf_spec=("sfdc",),
                 ),
                 owner="RevOps",
             ),

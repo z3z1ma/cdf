@@ -52,6 +52,6 @@ allow-direct-references = true
 
 [tool.pyright]
 include = ["src"]
-exclude = ["examples/", "docs/", "tests/"]
+exclude = ["examples/", "docs/"]
 ignore = ["src/builtin"]
 reportPrivateImportUsage = false

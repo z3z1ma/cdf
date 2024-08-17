@@ -11,8 +11,10 @@ from collections import ChainMap
 from functools import partial, partialmethod, wraps
 
 import pydantic
+import pydantic_core
 from typing_extensions import ParamSpec, Self
 
+import cdf.core.configuration as conf
 from cdf.core.injector.errors import DependencyCycleError, DependencyMutationError
 
 logger = logging.getLogger(__name__)
@@ -234,13 +236,24 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
     """The factory or instance of the dependency."""
     lifecycle: Lifecycle = Lifecycle.SINGLETON
     """The lifecycle of the dependency."""
-    config_spec: t.Optional[t.Union[t.Tuple[str, ...], t.Dict[str, str]]] = None
-    """A source/hint for configuration values."""
+
+    conf_spec: t.Optional[t.Union[t.Tuple[str, ...], t.Dict[str, str]]] = None
+    """A hint for configuration values."""
 
     _instance: t.Optional[T] = None
     """The instance of the dependency once resolved."""
     _is_resolved: bool = False
     """Flag to indicate if the dependency has been unwrapped."""
+
+    @pydantic.model_validator(mode="after")
+    def _apply_spec(self) -> Self:
+        """Apply the configuration spec to the dependency."""
+        spec = self.conf_spec
+        if isinstance(spec, dict):
+            self.map(conf.map_config_values(**spec))
+        elif isinstance(spec, tuple):
+            self.map(conf.map_config_section(*spec))
+        return self
 
     @pydantic.model_validator(mode="before")
     @classmethod
@@ -749,6 +762,26 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
         self._typed_dependencies = state["_typed_dependencies"]
         self._untyped_dependencies = state["_untyped_dependencies"]
         self._resolving = state["_resolving"]
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: t.Any, handler: pydantic.GetCoreSchemaHandler
+    ) -> pydantic_core.CoreSchema:
+        return pydantic_core.core_schema.dict_schema(
+            keys_schema=pydantic_core.core_schema.union_schema(
+                [
+                    pydantic_core.core_schema.str_schema(),
+                    pydantic_core.core_schema.tuple_schema(
+                        [
+                            pydantic_core.core_schema.str_schema(),
+                            pydantic_core.core_schema.any_schema(),
+                        ]
+                    ),
+                    pydantic_core.core_schema.is_instance_schema(TypedKey),
+                ]
+            ),
+            values_schema=pydantic_core.core_schema.any_schema(),
+        )
 
 
 GLOBAL_REGISTRY = DependencyRegistry()

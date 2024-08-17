@@ -141,10 +141,50 @@ def _parse_metadata_from_callable(func: t.Callable) -> t.Dict[str, t.Any]:
 
 
 def _bind_active_workspace(func: t.Any) -> t.Any:
-    """Bind the active workspace to a function or class."""
+    """Bind the active workspace to a function or class.
+
+    Args:
+        func: The function or class to bind the workspace to.
+
+    Returns:
+        The bound function or class.
+    """
     if callable(func):
         return ctx.resolve(eagerly_bind_workspace=True)(func)
     return func
+
+
+def _get_bind_func(info: pydantic.ValidationInfo) -> t.Callable:
+    """Get the bind function from the pydantic context or use the active workspace.
+
+    Args:
+        info: The pydantic validation info.
+
+    Returns:
+        The bind function to use for the component.
+    """
+    context = info.context
+    if context:
+        bind = t.cast("Workspace", context["parent"]).bind
+    else:
+        bind = _bind_active_workspace
+    return bind
+
+
+def _unwrap_entrypoint(value: t.Any) -> t.Any:
+    """Import an entrypoint if it is a string.
+
+    Args:
+        value: The value to import.
+
+    Returns:
+        The imported value if it is a string, otherwise the original value.
+    """
+    if isinstance(value, str):
+        mod, func = value.split(":", 1)
+        mod = importlib.import_module(mod)
+        value = getattr(mod, func)
+    return value
 
 
 class Component(_Node, t.Generic[T], frozen=True):
@@ -183,10 +223,7 @@ class Component(_Node, t.Generic[T], frozen=True):
     @classmethod
     def _ensure_dependency(cls, value: t.Any) -> t.Any:
         """Ensure the main function is a dependency."""
-        if isinstance(value, str):
-            mod, func = value.split(":", 1)
-            mod = importlib.import_module(mod)
-            value = getattr(mod, func)
+        value = _unwrap_entrypoint(value)
         if isinstance(value, (dict, injector.Dependency)):
             parsed_dep = injector.Dependency.model_validate(value)
         else:
@@ -195,9 +232,9 @@ class Component(_Node, t.Generic[T], frozen=True):
         return parsed_dep.model_dump()
 
     @pydantic.model_validator(mode="after")
-    def _bind_main(self) -> t.Any:
+    def _bind_main(self, info: pydantic.ValidationInfo) -> t.Any:
         """Bind the active workspace to the main function."""
-        self.main.map(_bind_active_workspace, idempotent=True)
+        self.main.map(_get_bind_func(info), idempotent=True)
         return self
 
     def __str__(self):
@@ -222,19 +259,15 @@ class Entrypoint(_Node, t.Generic[T], frozen=True):
     def _parse_metadata(cls, data: t.Any) -> t.Any:
         """Parse node metadata."""
         if isinstance(data, dict):
-            func = data["main"]
+            func = _unwrap_entrypoint(data["main"])
             return {**_parse_metadata_from_callable(func), **data}
         return data
 
     @pydantic.field_validator("main", mode="before")
     @classmethod
-    def _bind_main(cls, value: t.Any) -> t.Any:
+    def _bind_main(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
         """Bind the active workspace to the main function."""
-        if isinstance(value, str):
-            mod, func = value.split(":", 1)
-            mod = importlib.import_module(mod)
-            value = getattr(mod, func)
-        return _bind_active_workspace(value)
+        return _get_bind_func(info)(_unwrap_entrypoint(value))
 
     def __str__(self):
         return f"<Entrypoint {self.name} ({self.sla.name})>"
@@ -264,13 +297,9 @@ class DataPipeline(Entrypoint[t.Optional[LoadInfo]], frozen=True):
 
     @pydantic.field_validator("pipeline_factory", "integration_test", mode="before")
     @classmethod
-    def _bind_ancillary(cls, value: t.Any) -> t.Any:
+    def _bind_ancillary(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
         """Bind the active workspace to the ancillary functions."""
-        if isinstance(value, str):
-            mod, func = value.split(":", 1)
-            mod = importlib.import_module(mod)
-            value = getattr(mod, func)
-        return _bind_active_workspace(value)
+        return _get_bind_func(info)(_unwrap_entrypoint(value))
 
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Optional[LoadInfo]:
         """Run the data pipeline"""
@@ -298,13 +327,9 @@ class DataPublisher(Entrypoint[None], frozen=True):
 
     @pydantic.field_validator("preflight_check", "integration_test", mode="before")
     @classmethod
-    def _bind_ancillary(cls, value: t.Any) -> t.Any:
+    def _bind_ancillary(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
         """Bind the active workspace to the ancillary functions."""
-        if isinstance(value, str):
-            mod, func = value.split(":", 1)
-            mod = importlib.import_module(mod)
-            value = getattr(mod, func)
-        return _bind_active_workspace(value)
+        return _get_bind_func(info)(_unwrap_entrypoint(value))
 
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> None:
         """Publish the data"""

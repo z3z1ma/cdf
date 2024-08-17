@@ -61,6 +61,8 @@ import typing as t
 from collections import ChainMap
 from pathlib import Path
 
+import pydantic
+import pydantic_core
 import ruamel.yaml as yaml
 import tomlkit
 from dynaconf.vendor.box import Box
@@ -535,3 +537,12 @@ class ConfigResolver(t.MutableMapping):
         if not callable(configured_f):
             return configured_f
         return configured_f(*args, **kwargs)
+
+    @classmethod
+    def __get_pydantic_core_schema__(
+        cls, source_type: t.Any, handler: pydantic.GetCoreSchemaHandler
+    ) -> pydantic_core.CoreSchema:
+        return pydantic_core.core_schema.dict_schema(
+            keys_schema=pydantic_core.core_schema.str_schema(),
+            values_schema=pydantic_core.core_schema.any_schema(),
+        )

@@ -25,7 +25,6 @@ def test_workspace():
                 "sfdc": {"username": "abc"},
                 "bigquery": {"project_id": ...},
             },
-            *Workspace.configuration_sources,
         ],
         service_definitions=[
             cmp.Service(
@@ -49,7 +48,7 @@ def test_workspace():
                 name="sfdc",
                 main=injector.Dependency(
                     factory=lambda username: f"https://sfdc.com/{username}",
-                    config_spec=("sfdc",),
+                    conf_spec=("sfdc",),
                 ),
                 owner="RevOps",
             ),
