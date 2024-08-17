@@ -270,6 +270,12 @@ class DataPipeline(Entrypoint[t.Optional[LoadInfo]], frozen=True):
         """Run the data pipeline"""
         return self.main(self.pipeline_factory(), *args, **kwargs)
 
+    def get_schemas(self, destination: t.Optional[Destination] = None):
+        """Get the schemas for the pipeline."""
+        pipeline = self.pipeline_factory()
+        pipeline.sync_destination(destination=destination)
+        return pipeline.schemas
+
 
 def _ping() -> bool:
     """A default preflight check which always returns True."""
