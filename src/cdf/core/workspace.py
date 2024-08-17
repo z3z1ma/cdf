@@ -177,7 +177,7 @@ class Workspace:
 
     # TODO: eventually this can be an adapter for other transformation providers if desired
     def get_transform_context(
-        self, gateway: t.Optional[str] = None, must_exist: bool = False
+        self, gateway: t.Optional[str] = None, must_exist: bool = False, **kwargs: t.Any
     ) -> t.Optional["sqlmesh.Context"]:
         """Return the transform context or raise an error if not defined."""
         import sqlmesh
@@ -187,7 +187,7 @@ class Workspace:
                 raise ValueError("Transformation provider not defined.")
             return None
 
-        kwargs = self.transform_provider_kwargs.copy()
+        kwargs = {**self.transform_provider_kwargs, **kwargs}
         kwargs["gateway"] = gateway
 
         with ctx.use_workspace(self):
@@ -481,8 +481,8 @@ if __name__ == "__main__":
         data_pipelines=[
             cmp.DataPipeline(
                 main=test_pipeline,
-                pipeline_factory=lambda: dlt.pipeline(
-                    "some_pipeline", destination=memory_duckdb
+                pipeline_factory=lambda temp_duckdb: dlt.pipeline(
+                    "some_pipeline", destination=temp_duckdb
                 ),
                 integration_test=lambda: True,
                 name="exchangerate_pipeline",
@@ -492,4 +492,4 @@ if __name__ == "__main__":
         ],
     )
 
-    # datateam.cli()
+    datateam.cli()
