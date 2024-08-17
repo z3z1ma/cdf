@@ -349,7 +349,7 @@ def map_config_section(
     """Mark a function to inject configuration values from a specific section."""
 
     def decorator(func_or_cls: t.Callable[P, T]) -> t.Callable[P, T]:
-        setattr(func_or_cls, RESOLVER_HINT, sections)
+        setattr(inspect.unwrap(func_or_cls), RESOLVER_HINT, sections)
         return func_or_cls
 
     return decorator
@@ -361,7 +361,7 @@ def map_config_values(
     """Mark a function to inject configuration values from a specific mapping of param names to keys."""
 
     def decorator(func_or_cls: t.Callable[P, T]) -> t.Callable[P, T]:
-        setattr(func_or_cls, RESOLVER_HINT, mapping)
+        setattr(inspect.unwrap(func_or_cls), RESOLVER_HINT, mapping)
         return func_or_cls
 
     return decorator
@@ -442,7 +442,7 @@ class ConfigResolver(t.MutableMapping):
         """Set the environment of the configuration resolver."""
         self._loader.environment = environment
 
-    def import_(self, source: ConfigSource, append: bool = True) -> None:
+    def import_source(self, source: ConfigSource, append: bool = True) -> None:
         """Include a new source of configuration."""
         self._loader.import_(source, append)
 
@@ -474,12 +474,15 @@ class ConfigResolver(t.MutableMapping):
         sig = inspect.signature(func_or_cls)
 
         resolver_hint = getattr(
-            func_or_cls, RESOLVER_HINT, self._parse_hint_from_params(func_or_cls, sig)
+            inspect.unwrap(func_or_cls),
+            RESOLVER_HINT,
+            self._parse_hint_from_params(func_or_cls, sig),
         )
 
         @functools.wraps(func_or_cls)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             bound_args = sig.bind_partial(*args, **kwargs)
+            bound_args.apply_defaults()
             for arg_name, arg_value in bound_args.arguments.items():
                 # The simplest case: a string argument
                 if isinstance(arg_value, str):
@@ -509,7 +512,6 @@ class ConfigResolver(t.MutableMapping):
                 if value is not _MISSING:
                     bound_args.arguments[name] = self.apply_converters(value, self)
 
-            bound_args.apply_defaults()
             return func_or_cls(*bound_args.args, **bound_args.kwargs)
 
         return wrapper
@@ -529,4 +531,7 @@ class ConfigResolver(t.MutableMapping):
         self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any
     ) -> T:
         """Invoke a callable with injected configuration values."""
-        return self.resolve_defaults(func_or_cls)(*args, **kwargs)
+        configured_f = self.resolve_defaults(func_or_cls)
+        if not callable(configured_f):
+            return configured_f
+        return configured_f(*args, **kwargs)

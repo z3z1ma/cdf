@@ -1,5 +1,6 @@
 """A workspace is a container for components and configurations."""
 
+import inspect
 import os
 import time
 import typing as t
@@ -71,7 +72,7 @@ class Workspace:
     def __post_init__(self) -> None:
         """Initialize the workspace."""
         for source in self.configuration_sources:
-            self.conf_resolver.import_(source)
+            self.conf_resolver.import_source(source)
         self.conf_resolver.set_environment(self.environment)
         self.container.add_from_dependency(
             "cdf_workspace",
@@ -94,11 +95,11 @@ class Workspace:
             override=True,
         )
         for service in self.services.values():
-            self.container.add_from_dependency(service.name, service.dependency)
+            self.container.add_from_dependency(service.name, service.main)
         for source in self.sources.values():
-            self.container.add_from_dependency(source.name, source.dependency)
+            self.container.add_from_dependency(source.name, source.main)
         for destination in self.destinations.values():
-            self.container.add_from_dependency(destination.name, destination.dependency)
+            self.container.add_from_dependency(destination.name, destination.main)
         self.activate()
 
     def activate(self) -> "Workspace":
@@ -107,20 +108,32 @@ class Workspace:
         return self
 
     def _parse_definitions(
-        self,
-        defs: t.Iterable[cmp.TComponentDef],
-        into: t.Type[cmp.TComponent],
-        *additional_decorators: t.Callable,
+        self, defs: t.Iterable[cmp.TComponentDef], into: t.Type[cmp.TComponent]
     ) -> t.Dict[str, cmp.TComponent]:
         """Parse a list of component definitions into a lookup."""
-        objs = {}
-        for obj in defs:
-            if isinstance(obj, dict):
-                obj = into.wrap(**obj)
-            elif not isinstance(obj, cmp.Component):
-                obj = into.wrap(dependency=obj)
-            objs[obj.name] = obj.apply_wrappers(self.apply, *additional_decorators)
-        return objs
+        components = {}
+        with ctx.use_workspace(self):
+            for definition in defs:
+                # Resolve the definition if it is a callable
+                if inspect.isfunction(definition):
+                    definition = definition(self)
+
+                # Validate the component definition
+                component = into.model_validate(definition)
+
+                # Apply configuration specs if defined in dependency
+                for f, info in component.model_fields.items():
+                    f_v = getattr(component, f, None)
+                    if isinstance(f_v, injector.Dependency):
+                        spec = f_v.config_spec
+                        if isinstance(spec, dict):
+                            f_v.map(conf.map_config_values(**spec))
+                        elif isinstance(spec, tuple):
+                            f_v.map(conf.map_config_section(*spec))
+
+                components[component.name] = component
+
+        return components
 
     @cached_property
     def services(self) -> t.Dict[str, cmp.Service]:
@@ -154,12 +167,12 @@ class Workspace:
 
     @t.overload
     def get_transform_context(
-        self, gateway: t.Optional[str] = None, must_exist: bool = False
+        self, gateway: t.Optional[str] = ..., must_exist: t.Literal[False] = False
     ) -> t.Optional["sqlmesh.Context"]: ...
 
     @t.overload
     def get_transform_context(
-        self, gateway: t.Optional[str] = None, must_exist: bool = True
+        self, gateway: t.Optional[str] = ..., must_exist: t.Literal[True] = True
     ) -> "sqlmesh.Context": ...
 
     # TODO: eventually this can be an adapter for other transformation providers if desired
@@ -177,7 +190,8 @@ class Workspace:
         kwargs = self.transform_provider_kwargs.copy()
         kwargs["gateway"] = gateway
 
-        return sqlmesh.Context(paths=[self.transform_path], **kwargs)
+        with ctx.use_workspace(self):
+            return sqlmesh.Context(paths=[self.transform_path], **kwargs)
 
     if t.TYPE_CHECKING:
 
@@ -198,7 +212,7 @@ class Workspace:
 
     def import_config(self, config: conf.ConfigSource) -> None:
         """Import a new configuration source into the workspace configuration resolver."""
-        self.conf_resolver.import_(config)
+        self.conf_resolver.import_source(config)
 
     @property
     def cli(self) -> "click.Group":
@@ -357,24 +371,28 @@ class Workspace:
 
     def apply(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
         """Wrap a function with configuration and dependencies defined in the workspace."""
-        return self.container.wire(self.conf_resolver.resolve_defaults(func_or_cls))
+        configured_f = self.conf_resolver.resolve_defaults(func_or_cls)
+        return self.container.wire(configured_f)
 
     def invoke(self, func_or_cls: t.Callable[P, T], *args: t.Any, **kwargs: t.Any) -> T:
         """Invoke a function with configuration and dependencies defined in the workspace."""
-        self.activate()
-        return self.apply(func_or_cls)(*args, **kwargs)
+        with ctx.use_workspace(self):
+            return self.apply(func_or_cls)(*args, **kwargs)
 
 
 if __name__ == "__main__":
     import dlt
     import duckdb
     from dlt.common.destination import Destination
+    from dlt.pipeline.pipeline import Pipeline
     from dlt.sources import DltSource
 
     def test_pipeline(
-        source_a: DltSource, destination: Destination, cdf_environment: str
+        pipeline: Pipeline,
+        source_a: DltSource,
+        temp_duckdb: Destination,
+        cdf_environment: str,
     ):
-        pipeline = dlt.pipeline("some_pipeline", destination=destination)
         print("Running pipeline")
         load_info = pipeline.run(source_a)
         print("Pipeline finished")
@@ -413,53 +431,60 @@ if __name__ == "__main__":
         ],
         service_definitions=[
             cmp.Service(
-                "a",
-                injector.Dependency(1),
+                name="a",
+                main=injector.Dependency(factory=lambda: 1),
                 owner="Alex",
                 description="A secret number",
                 sla=cmp.ServiceLevelAgreement.CRITICAL,
             ),
             cmp.Service(
-                "b", injector.Dependency(lambda a: a + 1 * 5 / 10), owner="Alex"
+                name="b",
+                main=injector.Dependency(factory=lambda a: a + 1 * 5 / 10),
+                owner="Alex",
             ),
             cmp.Service(
-                "prod_bigquery", injector.Dependency("dwh-123"), owner="DataTeam"
+                name="prod_bigquery",
+                main=injector.Dependency(factory=lambda: "dwh-123"),
+                owner="DataTeam",
             ),
             cmp.Service(
-                "sfdc",
-                injector.Dependency(
-                    conf.map_config_section("sfdc")(
-                        lambda username: f"https://sfdc.com/{username}"
-                    )
+                name="sfdc",
+                main=injector.Dependency(
+                    factory=lambda username: f"https://sfdc.com/{username}",
+                    config_spec=("sfdc",),
                 ),
                 owner="RevOps",
             ),
         ],
         source_definitions=[
             cmp.Source(
-                "source_a",
-                injector.Dependency.prototype(test_source),
+                name="source_a",
+                main=injector.Dependency.prototype(test_source),
                 owner="Alex",
                 description="Source A",
             )
         ],
         destination_definitions=[
             cmp.Destination(
-                "temp_duckdb",
-                injector.Dependency.instance(memory_duckdb),
+                name="temp_duckdb",
+                main=injector.Dependency.instance(memory_duckdb),
                 owner="Alex",
                 description="In-memory DuckDB",
             ),
             cmp.Destination(
-                "dev_sandbox",
-                injector.Dependency.instance(memory_duckdb),
+                name="dev_sandbox",
+                main=injector.Dependency.instance(memory_duckdb),
                 owner="Alex",
                 description="In-memory DuckDB",
             ),
         ],
         data_pipelines=[
-            cmp.DataPipeline.wrap(
-                test_pipeline,
+            cmp.DataPipeline(
+                main=test_pipeline,
+                pipeline_factory=lambda: dlt.pipeline(
+                    "some_pipeline", destination=memory_duckdb
+                ),
+                integration_test=lambda: True,
                 name="exchangerate_pipeline",
                 owner="Alex",
                 description="A test pipeline",
@@ -467,4 +492,4 @@ if __name__ == "__main__":
         ],
     )
 
-    datateam.cli()
+    # datateam.cli()

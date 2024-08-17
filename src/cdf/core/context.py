@@ -47,6 +47,7 @@ T = t.TypeVar("T")
 def resolve(
     dependencies: t.Callable[..., T],
     configuration: bool = ...,
+    eagerly_bind_workspace: bool = ...,
 ) -> t.Callable[..., T]: ...
 
 
@@ -54,20 +55,28 @@ def resolve(
 def resolve(
     dependencies: bool = ...,
     configuration: bool = ...,
+    eagerly_bind_workspace: bool = ...,
 ) -> t.Callable[[t.Callable[..., T]], t.Callable[..., T]]: ...
 
 
 def resolve(
     dependencies: t.Union[t.Callable[..., T], bool] = True,
     configuration: bool = True,
+    eagerly_bind_workspace: bool = False,
 ) -> t.Callable[..., t.Union[T, t.Callable[..., T]]]:
     """Decorator for injecting dependencies and resolving configuration for a function."""
 
-    def resolve(func: t.Callable[..., T]) -> t.Callable[..., T]:
+    if eagerly_bind_workspace:
+        # Get the active workspace before the function is resolved
+        workspace = get_active_workspace()
+    else:
+        workspace = None
+
+    def _resolve(func: t.Callable[..., T]) -> t.Callable[..., T]:
         @functools.wraps(func)
         def wrapper(*args: t.Any, **kwargs: t.Any) -> T:
-            nonlocal func
-            workspace = get_active_workspace()
+            nonlocal func, workspace
+            workspace = workspace or get_active_workspace()
             if workspace is None:
                 return func(*args, **kwargs)
             if configuration:
@@ -79,9 +88,9 @@ def resolve(
         return wrapper
 
     if callable(dependencies):
-        return resolve(dependencies)
+        return _resolve(dependencies)
 
-    return resolve
+    return _resolve
 
 
 def get_default_callable_lifecycle() -> t.Optional["Lifecycle"]:

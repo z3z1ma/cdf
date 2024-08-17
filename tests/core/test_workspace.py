@@ -9,7 +9,6 @@ def test_workspace():
 
     @dlt.source
     def test_source(a: int, prod_bigquery: str):
-
         @dlt.resource
         def test_resource():
             yield from [{"a": a, "prod_bigquery": prod_bigquery}]
@@ -30,32 +29,35 @@ def test_workspace():
         ],
         service_definitions=[
             cmp.Service(
-                "a",
-                injector.Dependency(1),
+                name="a",
+                main=injector.Dependency.instance(1),
                 owner="Alex",
                 description="A secret number",
                 sla=cmp.ServiceLevelAgreement.CRITICAL,
             ),
             cmp.Service(
-                "b", injector.Dependency(lambda a: a + 1 * 5 / 10), owner="Alex"
+                name="b",
+                main=injector.Dependency.prototype(lambda a: a + 1 * 5 / 10),
+                owner="Alex",
             ),
             cmp.Service(
-                "prod_bigquery", injector.Dependency("dwh-123"), owner="DataTeam"
+                name="prod_bigquery",
+                main=injector.Dependency.instance("dwh-123"),
+                owner="DataTeam",
             ),
             cmp.Service(
-                "sfdc",
-                injector.Dependency(
-                    conf.map_config_section("sfdc")(
-                        lambda username: f"https://sfdc.com/{username}"
-                    )
+                name="sfdc",
+                main=injector.Dependency(
+                    factory=lambda username: f"https://sfdc.com/{username}",
+                    config_spec=("sfdc",),
                 ),
                 owner="RevOps",
             ),
         ],
         source_definitions=[
             cmp.Source(
-                "source_a",
-                injector.Dependency(test_source),
+                name="source_a",
+                main=injector.Dependency.prototype(test_source),
                 owner="Alex",
                 description="Source A",
             )
@@ -68,7 +70,7 @@ def test_workspace():
         return secret_number * 10
 
     # Imperatively add dependencies or config if needed
-    datateam.add_dependency("c", injector.Dependency(c))
+    datateam.add_dependency("c", injector.Dependency.prototype(c))
     datateam.import_config({"a.b.c": 10})
 
     def source_a(a: int, prod_bigquery: str):
@@ -78,7 +80,7 @@ def test_workspace():
     assert datateam.name == "data-team"
     datateam.invoke(source_a)
     assert datateam.conf_resolver["sfdc.username"] == "abc"
-    assert datateam.container.get_or_raise("sfdc") == "https://sfdc.com/abc"
+    assert datateam.container.resolve_or_raise("sfdc") == "https://sfdc.com/abc"
     assert datateam.invoke(c) == 100
     source = datateam.sources["source_a"]()
     assert list(source) == [{"a": 1, "prod_bigquery": "dwh-123"}]
