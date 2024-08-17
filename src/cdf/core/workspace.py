@@ -7,7 +7,7 @@ from functools import cached_property, partialmethod
 from pathlib import Path
 
 import pydantic
-from typing_extensions import ParamSpec
+from typing_extensions import ParamSpec, Self
 
 import cdf.core.component as cmp
 import cdf.core.configuration as conf
@@ -51,20 +51,22 @@ class Workspace(pydantic.BaseModel, frozen=True):
     )
     """A list of configuration sources resolved and merged by the workspace."""
     service_definitions: t.Iterable[cmp.ServiceDef] = ()
-    """An iterable of service definitions that the workspace provides."""
-    data_pipelines: t.Iterable[cmp.DataPipelineDef] = ()
-    """An iterable of data pipelines that the workspace provides."""
-    data_publishers: t.Iterable[cmp.DataPublisherDef] = ()
-    """An iterable of data publishers that the workspace provides."""
+    """An iterable of raw service definitions that the workspace provides."""
+    pipeline_definitions: t.Iterable[cmp.DataPipelineDef] = ()
+    """An iterable of raw pipeline definitions that the workspace provides."""
+    publishers_definitions: t.Iterable[cmp.DataPublisherDef] = ()
+    """An iterable of raw publisher definitions that the workspace provides."""
     operation_definitions: t.Iterable[cmp.OperationDef] = ()
-    """An iterable of generic operations that the workspace provides."""
+    """An iterable of raw generic operation definitions that the workspace provides."""
+
+    # TODO: define an adapter for transformation providers
     transform_path: t.Optional[t.Union[str, Path]] = None
     """The path to the transformation provider for the workspace. Currently we only integrate with SQLMesh."""
     transform_provider_kwargs: t.Dict[str, t.Any] = {}
     """Keyword arguments to pass to the transformation provider."""
 
     @pydantic.model_validator(mode="after")
-    def _setup(self):
+    def _setup(self) -> Self:
         """Initialize the workspace."""
         for source in self.configuration_sources:
             self.conf_resolver.import_source(source)
@@ -94,7 +96,7 @@ class Workspace(pydantic.BaseModel, frozen=True):
         self.activate()
         return self
 
-    def activate(self) -> "Workspace":
+    def activate(self) -> Self:
         """Activate the workspace for the current context."""
         ctx.set_active_workspace(self)
         return self
@@ -118,12 +120,12 @@ class Workspace(pydantic.BaseModel, frozen=True):
     @cached_property
     def pipelines(self) -> t.Dict[str, cmp.DataPipeline]:
         """Return the data pipelines of the workspace."""
-        return self._parse_definitions(self.data_pipelines, cmp.DataPipeline)
+        return self._parse_definitions(self.pipeline_definitions, cmp.DataPipeline)
 
     @cached_property
     def publishers(self) -> t.Dict[str, cmp.DataPublisher]:
         """Return the data publishers of the workspace."""
-        return self._parse_definitions(self.data_publishers, cmp.DataPublisher)
+        return self._parse_definitions(self.publishers_definitions, cmp.DataPublisher)
 
     @cached_property
     def operations(self) -> t.Dict[str, cmp.Operation]:
@@ -132,15 +134,20 @@ class Workspace(pydantic.BaseModel, frozen=True):
 
     @t.overload
     def get_transform_context(
-        self, gateway: t.Optional[str] = ..., must_exist: t.Literal[False] = False
+        self,
+        gateway: t.Optional[str] = ...,
+        must_exist: t.Literal[False] = False,
+        **kwargs: t.Any,
     ) -> t.Optional["sqlmesh.Context"]: ...
 
     @t.overload
     def get_transform_context(
-        self, gateway: t.Optional[str] = ..., must_exist: t.Literal[True] = True
+        self,
+        gateway: t.Optional[str] = ...,
+        must_exist: t.Literal[True] = True,
+        **kwargs: t.Any,
     ) -> "sqlmesh.Context": ...
 
-    # TODO: eventually this can be an adapter for other transformation providers if desired
     def get_transform_context(
         self, gateway: t.Optional[str] = None, must_exist: bool = False, **kwargs: t.Any
     ) -> t.Optional["sqlmesh.Context"]:
@@ -210,13 +217,9 @@ class Workspace(pydantic.BaseModel, frozen=True):
             is_flag=True,
             help="Run the pipelines integration test if defined.",
         )
-        @click.option("-a", "--arg", nargs=2, multiple=True)
         @click.pass_context
         def run_pipeline(
-            ctx: click.Context,
-            pipeline: t.Optional[str] = None,
-            test: bool = False,
-            arg: t.List[t.Tuple[str, str]] = [],
+            ctx: click.Context, pipeline: t.Optional[str] = None, test: bool = False
         ) -> None:
             """Run a data pipeline."""
             # Prompt for a pipeline if not specified
@@ -265,6 +268,11 @@ class Workspace(pydantic.BaseModel, frozen=True):
             "publisher", required=False, type=click.Choice(list(self.publishers.keys()))
         )
         @click.option(
+            "--test",
+            is_flag=True,
+            help="Run the publishers integration test if defined.",
+        )
+        @click.option(
             "--skip-preflight-check",
             is_flag=True,
             help="Skip the pre-check for the publisher.",
@@ -273,6 +281,7 @@ class Workspace(pydantic.BaseModel, frozen=True):
         def run_publisher(
             ctx: click.Context,
             publisher: t.Optional[str] = None,
+            test: bool = False,
             skip_preflight_check: bool = False,
         ) -> None:
             """Run a data publisher."""
@@ -290,6 +299,19 @@ class Workspace(pydantic.BaseModel, frozen=True):
 
             # Get the publisher definition
             publisher_definition = self.publishers[publisher]
+
+            # Run the integration test if specified
+            if test:
+                if not publisher_definition.integration_test:
+                    raise click.UsageError(
+                        f"Publisher `{publisher}` does not define an integration test."
+                    )
+                click.echo("Running integration test.", err=True)
+                if publisher_definition.integration_test():
+                    click.echo("Integration test passed.", err=True)
+                    ctx.exit(0)
+                else:
+                    ctx.fail("Integration test failed.")
 
             # Optionally run the preflight check
             if not skip_preflight_check:
@@ -422,7 +444,7 @@ if __name__ == "__main__":
                 owner="RevOps",
             ),
         ],
-        data_pipelines=[
+        pipeline_definitions=[
             cmp.DataPipeline(
                 main=test_pipeline,
                 pipeline_factory=lambda: dlt.pipeline(
