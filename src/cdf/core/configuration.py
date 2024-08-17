@@ -63,10 +63,10 @@ from pathlib import Path
 
 import pydantic
 import pydantic_core
-import ruamel.yaml as yaml
-import tomlkit
-from dynaconf.vendor.box import Box
 from typing_extensions import ParamSpec
+
+if t.TYPE_CHECKING:
+    from dynaconf.vendor.box import Box
 
 from cdf.types import M
 
@@ -134,6 +134,8 @@ def _load_yaml(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
         Result monad with an error.
     """
     try:
+        import ruamel.yaml as yaml
+
         yaml_ = yaml.YAML()
         return M.ok(yaml_.load(path))
     except Exception as e:
@@ -151,6 +153,8 @@ def _load_toml(path: Path) -> M.Result[t.Dict[str, t.Any], Exception]:
             Result monad with an error.
     """
     try:
+        import tomlkit
+
         return M.ok(tomlkit.loads(path.read_text()).unwrap())
     except Exception as e:
         return M.error(e)
@@ -237,22 +241,24 @@ def apply_converters(
     return transformed_value
 
 
-def _to_box(mapping: t.Mapping[str, t.Any]) -> Box:
+def _to_box(mapping: t.Mapping[str, t.Any]) -> "Box":
     """Convert a mapping to a standardized Box."""
+    from dynaconf.vendor.box import Box
+
     return Box(mapping, box_dots=True)
 
 
 class _ConfigScopes(t.NamedTuple):
     """A struct to store named configuration scopes by precedence."""
 
-    explicit: Box
+    explicit: "Box"
     """User-provided configuration passed as a dictionary."""
-    environment: Box
+    environment: "Box"
     """Environment-specific configuration loaded from a file."""
-    baseline: Box
+    baseline: "Box"
     """Configuration loaded from a base config file."""
 
-    def resolve(self) -> Box:
+    def resolve(self) -> "Box":
         """Resolve the configuration scopes."""
         output = self.baseline
         output.merge_update(self.environment)

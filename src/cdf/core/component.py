@@ -8,14 +8,15 @@ from dataclasses import field
 from enum import Enum
 
 import pydantic
-from dlt.common.destination import Destination as DltDestination
-from dlt.common.pipeline import LoadInfo
-from dlt.pipeline.pipeline import Pipeline as DltPipeline
 
 import cdf.core.context as ctx
 import cdf.core.injector as injector
 
 if t.TYPE_CHECKING:
+    from dlt.common.destination import Destination as DltDestination
+    from dlt.common.pipeline import LoadInfo
+    from dlt.pipeline.pipeline import Pipeline as DltPipeline
+
     from cdf.core.workspace import Workspace
 
 T = t.TypeVar("T")
@@ -287,10 +288,10 @@ class Service(Component[t.Any], frozen=True):
 # The following classes are entrypoints exposed to the user via CLI
 
 
-class DataPipeline(Entrypoint[t.Optional[LoadInfo]], frozen=True):
+class DataPipeline(Entrypoint[t.Optional["LoadInfo"]], frozen=True):
     """A data pipeline which loads data from a source to a destination."""
 
-    pipeline_factory: t.Callable[..., DltPipeline]
+    pipeline_factory: t.Callable[..., "DltPipeline"]
     """A factory function to create the dlt pipeline object"""
     integration_test: t.Optional[t.Callable[..., bool]] = None
     """A function to test the pipeline in an integration environment"""
@@ -301,11 +302,11 @@ class DataPipeline(Entrypoint[t.Optional[LoadInfo]], frozen=True):
         """Bind the active workspace to the ancillary functions."""
         return _get_bind_func(info)(_unwrap_entrypoint(value))
 
-    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Optional[LoadInfo]:
+    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Optional["LoadInfo"]:
         """Run the data pipeline"""
         return self.main(self.pipeline_factory(), *args, **kwargs)
 
-    def get_schemas(self, destination: t.Optional[DltDestination] = None):
+    def get_schemas(self, destination: t.Optional["DltDestination"] = None):
         """Get the schemas for the pipeline."""
         pipeline = self.pipeline_factory()
         pipeline.sync_destination(destination=destination)

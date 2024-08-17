@@ -18,6 +18,7 @@ if t.TYPE_CHECKING:
     import click
     import sqlmesh
 
+
 T = t.TypeVar("T")
 P = ParamSpec("P")
 
@@ -60,10 +61,14 @@ class Workspace(pydantic.BaseModel, frozen=True):
     """An iterable of raw generic operation definitions that the workspace provides."""
 
     # TODO: define an adapter for transformation providers
-    transform_path: t.Optional[t.Union[str, Path]] = None
-    """The path to the transformation provider for the workspace. Currently we only integrate with SQLMesh."""
-    transform_provider_kwargs: t.Dict[str, t.Any] = {}
-    """Keyword arguments to pass to the transformation provider."""
+    sqlmesh_path: t.Optional[t.Union[str, Path]] = None
+    """The path to the sqlmesh root for the workspace."""
+    sqlmesh_context_kwargs: t.Dict[str, t.Any] = {}
+    """Keyword arguments to pass to the sqlmesh context."""
+    sqlmesh_context_class: t.Optional[t.Type[t.Any]] = (
+        None  # PERF: in order to defer the sqlmesh import -- we cannot type this
+    )
+    """A custom context class to use for sqlmesh."""
 
     @pydantic.model_validator(mode="after")
     def _setup(self) -> Self:
@@ -88,7 +93,7 @@ class Workspace(pydantic.BaseModel, frozen=True):
         )
         self.container.add_from_dependency(
             "cdf_transform",
-            injector.Dependency.singleton(self.get_transform_context_or_raise),
+            injector.Dependency.singleton(self.get_sqlmesh_context_or_raise),
             override=True,
         )
         for service in self.services.values():
@@ -114,26 +119,26 @@ class Workspace(pydantic.BaseModel, frozen=True):
 
     @cached_property
     def services(self) -> t.Dict[str, cmp.Service]:
-        """Return the services of the workspace."""
+        """Return the resolved services of the workspace."""
         return self._parse_definitions(self.service_definitions, cmp.Service)
 
     @cached_property
     def pipelines(self) -> t.Dict[str, cmp.DataPipeline]:
-        """Return the data pipelines of the workspace."""
+        """Return the resolved data pipelines of the workspace."""
         return self._parse_definitions(self.pipeline_definitions, cmp.DataPipeline)
 
     @cached_property
     def publishers(self) -> t.Dict[str, cmp.DataPublisher]:
-        """Return the data publishers of the workspace."""
+        """Return the resolved data publishers of the workspace."""
         return self._parse_definitions(self.publishers_definitions, cmp.DataPublisher)
 
     @cached_property
     def operations(self) -> t.Dict[str, cmp.Operation]:
-        """Return the operations of the workspace."""
+        """Return the resolved operations of the workspace."""
         return self._parse_definitions(self.operation_definitions, cmp.Operation)
 
     @t.overload
-    def get_transform_context(
+    def get_sqlmesh_context(
         self,
         gateway: t.Optional[str] = ...,
         must_exist: t.Literal[False] = False,
@@ -141,50 +146,39 @@ class Workspace(pydantic.BaseModel, frozen=True):
     ) -> t.Optional["sqlmesh.Context"]: ...
 
     @t.overload
-    def get_transform_context(
+    def get_sqlmesh_context(
         self,
         gateway: t.Optional[str] = ...,
         must_exist: t.Literal[True] = True,
         **kwargs: t.Any,
     ) -> "sqlmesh.Context": ...
 
-    def get_transform_context(
+    def get_sqlmesh_context(
         self, gateway: t.Optional[str] = None, must_exist: bool = False, **kwargs: t.Any
     ) -> t.Optional["sqlmesh.Context"]:
         """Return the transform context or raise an error if not defined."""
         import sqlmesh
 
-        if self.transform_path is None:
+        if self.sqlmesh_path is None:
             if must_exist:
                 raise ValueError("Transformation provider not defined.")
             return None
 
-        kwargs = {**self.transform_provider_kwargs, **kwargs}
-        kwargs["gateway"] = gateway
-
+        kwargs = {**self.sqlmesh_context_kwargs, **kwargs}
         with ctx.use_workspace(self):
-            return sqlmesh.Context(paths=[self.transform_path], **kwargs)
+            klass = self.sqlmesh_context_class or sqlmesh.Context
+            return klass(paths=[self.sqlmesh_path], gateway=gateway, **kwargs)
 
     if t.TYPE_CHECKING:
 
-        def get_transform_context_or_raise(
-            self, gateway: t.Optional[str] = None
+        def get_sqlmesh_context_or_raise(
+            self, gateway: t.Optional[str] = None, **kwargs: t.Any
         ) -> "sqlmesh.Context": ...
 
     else:
-        get_transform_context_or_raise = partialmethod(
-            get_transform_context, must_exist=True
+        get_sqlmesh_context_or_raise = partialmethod(
+            get_sqlmesh_context, must_exist=True
         )
-
-    def add_dependency(
-        self, name: injector.DependencyKey, definition: injector.Dependency
-    ) -> None:
-        """Add a dependency to the workspace DI container."""
-        self.container.add_from_dependency(name, definition)
-
-    def import_config(self, config: conf.ConfigSource) -> None:
-        """Import a new configuration source into the workspace configuration resolver."""
-        self.conf_resolver.import_source(config)
 
     @property
     def cli(self) -> "click.Group":
@@ -431,7 +425,7 @@ if __name__ == "__main__":
                 "main": {
                     "factory": lambda b, project_id: f"dwh-1{b+1:.0f}3?{project_id=}",
                     "lifecycle": "prototype",
-                    "config_spec": ("bigquery",),
+                    "conf_spec": ("bigquery",),
                 },
                 "owner": "DataTeam",
             },
