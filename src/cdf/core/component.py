@@ -1,5 +1,6 @@
 """Definitions for services, sources, and destinations in the workspace."""
 
+import importlib
 import inspect
 import typing as t
 from contextlib import suppress
@@ -182,6 +183,10 @@ class Component(_Node, t.Generic[T], frozen=True):
     @classmethod
     def _ensure_dependency(cls, value: t.Any) -> t.Any:
         """Ensure the main function is a dependency."""
+        if isinstance(value, str):
+            mod, func = value.split(":", 1)
+            mod = importlib.import_module(mod)
+            value = getattr(mod, func)
         if isinstance(value, (dict, injector.Dependency)):
             parsed_dep = injector.Dependency.model_validate(value)
         else:
@@ -225,6 +230,10 @@ class Entrypoint(_Node, t.Generic[T], frozen=True):
     @classmethod
     def _bind_main(cls, value: t.Any) -> t.Any:
         """Bind the active workspace to the main function."""
+        if isinstance(value, str):
+            mod, func = value.split(":", 1)
+            mod = importlib.import_module(mod)
+            value = getattr(mod, func)
         return _bind_active_workspace(value)
 
     def __str__(self):
@@ -257,6 +266,10 @@ class DataPipeline(Entrypoint[t.Optional[LoadInfo]], frozen=True):
     @classmethod
     def _bind_ancillary(cls, value: t.Any) -> t.Any:
         """Bind the active workspace to the ancillary functions."""
+        if isinstance(value, str):
+            mod, func = value.split(":", 1)
+            mod = importlib.import_module(mod)
+            value = getattr(mod, func)
         return _bind_active_workspace(value)
 
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Optional[LoadInfo]:
@@ -287,6 +300,10 @@ class DataPublisher(Entrypoint[None], frozen=True):
     @classmethod
     def _bind_ancillary(cls, value: t.Any) -> t.Any:
         """Bind the active workspace to the ancillary functions."""
+        if isinstance(value, str):
+            mod, func = value.split(":", 1)
+            mod = importlib.import_module(mod)
+            value = getattr(mod, func)
         return _bind_active_workspace(value)
 
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> None:
