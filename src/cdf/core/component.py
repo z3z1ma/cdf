@@ -315,13 +315,31 @@ class Operation(Entrypoint[int], frozen=True):
 
 # Type definitions for the components
 
-ServiceDef = t.Union[Service, t.Callable[["Workspace"], Service]]
-SourceDef = t.Union[Source, t.Callable[["Workspace"], Source]]
-DestinationDef = t.Union[Destination, t.Callable[["Workspace"], Destination]]
+ServiceDef = t.Union[
+    Service,
+    t.Dict[str, t.Any],
+    t.Callable[["Workspace"], Service],
+]
+SourceDef = t.Union[
+    Source,
+    t.Dict[str, t.Any],
+    t.Callable[["Workspace"], Source],
+]
+DestinationDef = t.Union[
+    Destination,
+    t.Dict[str, t.Any],
+    t.Callable[["Workspace"], Destination],
+]
 
-DataPipelineDef = t.Union[DataPipeline, t.Callable[["Workspace"], DataPipeline]]
-DataPublisherDef = t.Union[DataPublisher, t.Callable[["Workspace"], DataPublisher]]
-OperationDef = t.Union[Operation, t.Callable[["Workspace"], Operation]]
+DataPipelineDef = t.Union[
+    DataPipeline, t.Dict[str, t.Any], t.Callable[["Workspace"], DataPipeline]
+]
+DataPublisherDef = t.Union[
+    DataPublisher, t.Dict[str, t.Any], t.Callable[["Workspace"], DataPublisher]
+]
+OperationDef = t.Union[
+    Operation, t.Dict[str, t.Any], t.Callable[["Workspace"], Operation]
+]
 
 TComponent = t.TypeVar("TComponent", bound=t.Union[Component, Entrypoint])
 TComponentDef = t.TypeVar(

@@ -442,11 +442,16 @@ if __name__ == "__main__":
                 main=injector.Dependency(factory=lambda a: a + 1 * 5 / 10),
                 owner="Alex",
             ),
-            cmp.Service(
-                name="prod_bigquery",
-                main=injector.Dependency(factory=lambda: "dwh-123"),
-                owner="DataTeam",
-            ),
+            # Example of a service defined with a dict
+            {
+                "name": "prod_bigquery",
+                "main": {
+                    "factory": lambda b, project_id: f"dwh-1{b+1:.0f}3?{project_id=}",
+                    "lifecycle": "prototype",
+                    "config_spec": ("bigquery",),
+                },
+                "owner": "DataTeam",
+            },
             cmp.Service(
                 name="sfdc",
                 main=injector.Dependency(
