@@ -52,12 +52,6 @@ class Workspace:
     """A list of configuration sources resolved and merged by the workspace."""
     service_definitions: t.Iterable[cmp.ServiceDef] = field(default_factory=tuple)
     """An iterable of service definitions that the workspace provides."""
-    source_definitions: t.Iterable[cmp.SourceDef] = field(default_factory=tuple)
-    """An iterable of source definitions that the workspace provides."""
-    destination_definitions: t.Iterable[cmp.DestinationDef] = field(
-        default_factory=tuple
-    )
-    """An iterable of destination definitions that the workspace provides."""
     data_pipelines: t.Iterable[cmp.DataPipelineDef] = field(default_factory=tuple)
     """An iterable of data pipelines that the workspace provides."""
     data_publishers: t.Iterable[cmp.DataPublisherDef] = field(default_factory=tuple)
@@ -96,10 +90,6 @@ class Workspace:
         )
         for service in self.services.values():
             self.container.add_from_dependency(service.name, service.main)
-        for source in self.sources.values():
-            self.container.add_from_dependency(source.name, source.main)
-        for destination in self.destinations.values():
-            self.container.add_from_dependency(destination.name, destination.main)
         self.activate()
 
     def activate(self) -> "Workspace":
@@ -139,16 +129,6 @@ class Workspace:
     def services(self) -> t.Dict[str, cmp.Service]:
         """Return the services of the workspace."""
         return self._parse_definitions(self.service_definitions, cmp.Service)
-
-    @cached_property
-    def sources(self) -> t.Dict[str, cmp.Source]:
-        """Return the sources of the workspace."""
-        return self._parse_definitions(self.source_definitions, cmp.Source)
-
-    @cached_property
-    def destinations(self) -> t.Dict[str, cmp.Destination]:
-        """Return the destinations of the workspace."""
-        return self._parse_definitions(self.destination_definitions, cmp.Destination)
 
     @cached_property
     def pipelines(self) -> t.Dict[str, cmp.DataPipeline]:
@@ -230,8 +210,6 @@ class Workspace:
             return 1
 
         cli.command("list-services")(lambda: _list(self.services))
-        cli.command("list-sources")(lambda: _list(self.sources))
-        cli.command("list-destinations")(lambda: _list(self.destinations))
         cli.command("list-pipelines")(lambda: _list(self.pipelines))
         cli.command("list-publishers")(lambda: _list(self.publishers))
         cli.command("list-operations")(lambda: _list(self.operations))
@@ -383,28 +361,13 @@ class Workspace:
 if __name__ == "__main__":
     import dlt
     import duckdb
-    from dlt.common.destination import Destination
     from dlt.pipeline.pipeline import Pipeline
-    from dlt.sources import DltSource
 
-    def test_pipeline(
-        pipeline: Pipeline,
-        source_a: DltSource,
-        temp_duckdb: Destination,
-        cdf_environment: str,
-    ):
-        print("Running pipeline")
-        load_info = pipeline.run(source_a)
-        print("Pipeline finished")
-        with pipeline.sql_client() as client:
-            print("Querying DuckDB in " + cdf_environment)
-            print(
-                client.execute_sql("SELECT * FROM some_pipeline_dataset.test_resource")
-            )
-        return load_info
+    import cdf.core.context as ctx
 
     @dlt.source
-    def test_source(a: int, prod_bigquery: str):
+    @ctx.resolve
+    def source_a(a: int, prod_bigquery: str):
         @dlt.resource
         def test_resource():
             print("Reading from API")
@@ -413,6 +376,20 @@ if __name__ == "__main__":
         return [test_resource]
 
     memory_duckdb = dlt.destinations.duckdb(duckdb.connect(":memory:"))
+
+    def test_pipeline(
+        pipeline: Pipeline,
+        cdf_environment: str,
+    ):
+        print("Running pipeline")
+        load_info = pipeline.run(source_a())
+        print("Pipeline finished")
+        with pipeline.sql_client() as client:
+            print("Querying DuckDB in " + cdf_environment)
+            print(
+                client.execute_sql("SELECT * FROM some_pipeline_dataset.test_resource")
+            )
+        return load_info
 
     # Switch statement on environment
     # to scaffold a FF provider, which is hereforward dictated by the user
@@ -461,33 +438,11 @@ if __name__ == "__main__":
                 owner="RevOps",
             ),
         ],
-        source_definitions=[
-            cmp.Source(
-                name="source_a",
-                main=injector.Dependency.prototype(test_source),
-                owner="Alex",
-                description="Source A",
-            )
-        ],
-        destination_definitions=[
-            cmp.Destination(
-                name="temp_duckdb",
-                main=injector.Dependency.instance(memory_duckdb),
-                owner="Alex",
-                description="In-memory DuckDB",
-            ),
-            cmp.Destination(
-                name="dev_sandbox",
-                main=injector.Dependency.instance(memory_duckdb),
-                owner="Alex",
-                description="In-memory DuckDB",
-            ),
-        ],
         data_pipelines=[
             cmp.DataPipeline(
                 main=test_pipeline,
-                pipeline_factory=lambda temp_duckdb: dlt.pipeline(
-                    "some_pipeline", destination=temp_duckdb
+                pipeline_factory=lambda: dlt.pipeline(
+                    "some_pipeline", destination=memory_duckdb
                 ),
                 integration_test=lambda: True,
                 name="exchangerate_pipeline",

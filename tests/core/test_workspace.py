@@ -54,14 +54,6 @@ def test_workspace():
                 owner="RevOps",
             ),
         ],
-        source_definitions=[
-            cmp.Source(
-                name="source_a",
-                main=injector.Dependency.prototype(test_source),
-                owner="Alex",
-                description="Source A",
-            )
-        ],
     )
 
     @conf.map_config_values(secret_number="a.b.c")
@@ -82,5 +74,4 @@ def test_workspace():
     assert datateam.conf_resolver["sfdc.username"] == "abc"
     assert datateam.container.resolve_or_raise("sfdc") == "https://sfdc.com/abc"
     assert datateam.invoke(c) == 100
-    source = datateam.sources["source_a"]()
-    assert list(source) == [{"a": 1, "prod_bigquery": "dwh-123"}]
+    assert list(datateam.invoke(test_source)) == [{"a": 1, "prod_bigquery": "dwh-123"}]

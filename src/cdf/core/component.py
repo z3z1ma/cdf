@@ -10,7 +10,6 @@ import pydantic
 from dlt.common.destination import Destination as DltDestination
 from dlt.common.pipeline import LoadInfo
 from dlt.pipeline.pipeline import Pipeline as DltPipeline
-from dlt.sources import DltSource
 
 import cdf.core.context as ctx
 import cdf.core.injector as injector
@@ -22,11 +21,7 @@ T = t.TypeVar("T")
 
 __all__ = [
     "Service",
-    "Source",
-    "Destination",
     "ServiceDef",
-    "SourceDef",
-    "DestinationDef",
     "DataPipeline",
     "DataPipelineDef",
     "DataPublisher",
@@ -247,14 +242,6 @@ class Service(Component[t.Any], frozen=True):
     """A service that the workspace provides. IE an API, database, requests client, etc."""
 
 
-class Source(Component[DltSource], frozen=True):
-    """A dlt source which we can extract data from."""
-
-
-class Destination(Component[DltDestination], frozen=True):
-    """A dlt destination which we can load data into."""
-
-
 # The following classes are entrypoints exposed to the user via CLI
 
 
@@ -276,7 +263,7 @@ class DataPipeline(Entrypoint[t.Optional[LoadInfo]], frozen=True):
         """Run the data pipeline"""
         return self.main(self.pipeline_factory(), *args, **kwargs)
 
-    def get_schemas(self, destination: t.Optional[Destination] = None):
+    def get_schemas(self, destination: t.Optional[DltDestination] = None):
         """Get the schemas for the pipeline."""
         pipeline = self.pipeline_factory()
         pipeline.sync_destination(destination=destination)
@@ -320,16 +307,6 @@ ServiceDef = t.Union[
     t.Dict[str, t.Any],
     t.Callable[["Workspace"], Service],
 ]
-SourceDef = t.Union[
-    Source,
-    t.Dict[str, t.Any],
-    t.Callable[["Workspace"], Source],
-]
-DestinationDef = t.Union[
-    Destination,
-    t.Dict[str, t.Any],
-    t.Callable[["Workspace"], Destination],
-]
 
 DataPipelineDef = t.Union[
     DataPipeline, t.Dict[str, t.Any], t.Callable[["Workspace"], DataPipeline]
@@ -345,8 +322,6 @@ TComponent = t.TypeVar("TComponent", bound=t.Union[Component, Entrypoint])
 TComponentDef = t.TypeVar(
     "TComponentDef",
     ServiceDef,
-    SourceDef,
-    DestinationDef,
     DataPipelineDef,
     DataPublisherDef,
     OperationDef,
