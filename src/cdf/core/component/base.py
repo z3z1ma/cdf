@@ -1,5 +1,3 @@
-"""Definitions for services, sources, and destinations in the workspace."""
-
 import importlib
 import inspect
 import typing as t
@@ -13,26 +11,14 @@ import cdf.core.context as ctx
 import cdf.core.injector as injector
 
 if t.TYPE_CHECKING:
-    from dlt.common.destination import Destination as DltDestination
-    from dlt.common.pipeline import LoadInfo
-    from dlt.pipeline.pipeline import Pipeline as DltPipeline
-
     from cdf.core.workspace import Workspace
 
 T = t.TypeVar("T")
 
 __all__ = [
-    "Service",
-    "ServiceDef",
-    "DataPipeline",
-    "DataPipelineDef",
-    "DataPublisher",
-    "DataPublisherDef",
-    "Operation",
-    "OperationDef",
-    "ServiceLevelAgreement",
     "Component",
-    "TComponent",
+    "Entrypoint",
+    "ServiceLevelAgreement",
 ]
 
 
@@ -276,99 +262,3 @@ class Entrypoint(_Node, t.Generic[T], frozen=True):
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Any:
         """Invoke the entrypoint."""
         return self.main(*args, **kwargs)
-
-
-# The following classes are injected into the workspace DI container
-
-
-class Service(Component[t.Any], frozen=True):
-    """A service that the workspace provides. IE an API, database, requests client, etc."""
-
-
-# The following classes are entrypoints exposed to the user via CLI
-
-
-class DataPipeline(
-    Entrypoint[t.Tuple["DltPipeline", t.Callable[..., t.Optional["LoadInfo"]]]],
-    frozen=True,
-):
-    """A data pipeline which loads data from a source to a destination."""
-
-    integration_test: t.Optional[t.Callable[..., bool]] = None
-    """A function to test the pipeline in an integration environment"""
-
-    @pydantic.field_validator("integration_test", mode="before")
-    @classmethod
-    def _bind_ancillary(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
-        """Bind the active workspace to the ancillary functions."""
-        return _get_bind_func(info)(_unwrap_entrypoint(value))
-
-    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Optional["LoadInfo"]:
-        """Run the data pipeline"""
-        _, runner = self.main(*args, **kwargs)
-        return runner()
-
-    def get_schemas(self, destination: t.Optional["DltDestination"] = None):
-        """Get the schemas for the pipeline."""
-        pipeline, _ = self.main()
-        pipeline.sync_destination(destination=destination)
-        return pipeline.schemas
-
-
-def _ping() -> bool:
-    """A default preflight check which always returns True."""
-    return bool("pong")
-
-
-class DataPublisher(Entrypoint[t.Any], frozen=True):
-    """A data publisher which pushes data to an operational system."""
-
-    preflight_check: t.Callable[..., bool] = _ping
-    """A user defined function to check if the data publisher is able to publish data"""
-
-    integration_test: t.Optional[t.Callable[..., bool]] = None
-    """A function to test the data publisher in an integration environment"""
-
-    @pydantic.field_validator("preflight_check", "integration_test", mode="before")
-    @classmethod
-    def _bind_ancillary(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
-        """Bind the active workspace to the ancillary functions."""
-        return _get_bind_func(info)(_unwrap_entrypoint(value))
-
-    def __call__(self, *args: t.Any, **kwargs: t.Any) -> None:
-        """Publish the data"""
-        if not self.preflight_check():
-            raise RuntimeError("Preflight check failed")
-        return self.main(*args, **kwargs)
-
-
-class Operation(Entrypoint[int], frozen=True):
-    """A generic callable that returns an exit code."""
-
-
-# Type definitions for the components
-
-ServiceDef = t.Union[
-    Service,
-    t.Dict[str, t.Any],
-    t.Callable[["Workspace"], Service],
-]
-
-DataPipelineDef = t.Union[
-    DataPipeline, t.Dict[str, t.Any], t.Callable[["Workspace"], DataPipeline]
-]
-DataPublisherDef = t.Union[
-    DataPublisher, t.Dict[str, t.Any], t.Callable[["Workspace"], DataPublisher]
-]
-OperationDef = t.Union[
-    Operation, t.Dict[str, t.Any], t.Callable[["Workspace"], Operation]
-]
-
-TComponent = t.TypeVar("TComponent", bound=t.Union[Component, Entrypoint])
-TComponentDef = t.TypeVar(
-    "TComponentDef",
-    ServiceDef,
-    DataPipelineDef,
-    DataPublisherDef,
-    OperationDef,
-)
