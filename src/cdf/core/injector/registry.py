@@ -223,9 +223,11 @@ def _safe_get_type_hints(obj: t.Any) -> t.Dict[str, t.Type]:
         A dictionary of attribute names to type hints.
     """
     try:
+        if isinstance(obj, partial):
+            obj = obj.func
         return t.get_type_hints(obj)
     except Exception as e:
-        logger.warning(f"Failed to get type hints for {obj!r}: {e}")
+        logger.debug(f"Failed to get type hints for {obj!r}: {e}")
         return {}
 
 

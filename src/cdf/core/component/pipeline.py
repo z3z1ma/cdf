@@ -1,3 +1,4 @@
+import inspect
 import typing as t
 
 import pydantic
@@ -11,7 +12,15 @@ if t.TYPE_CHECKING:
 
 
 class DataPipeline(
-    Entrypoint[t.Tuple["DltPipeline", t.Callable[..., t.Optional["LoadInfo"]]]],
+    Entrypoint[
+        t.Tuple[
+            "DltPipeline",
+            t.Union[
+                t.Callable[..., "LoadInfo"],
+                t.Callable[..., t.Iterator["LoadInfo"]],
+            ],
+        ]
+    ],
     frozen=True,
 ):
     """A data pipeline which loads data from a source to a destination."""
@@ -25,10 +34,12 @@ class DataPipeline(
         """Bind the active workspace to the ancillary functions."""
         return _get_bind_func(info)(_unwrap_entrypoint(value))
 
-    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Optional["LoadInfo"]:
+    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.List["LoadInfo"]:
         """Run the data pipeline"""
         _, runner = self.main(*args, **kwargs)
-        return runner()
+        if inspect.isgeneratorfunction(runner):
+            return list(runner())
+        return [t.cast("LoadInfo", runner())]
 
     def get_schemas(self, destination: t.Optional["DltDestination"] = None):
         """Get the schemas for the pipeline."""
