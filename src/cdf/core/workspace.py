@@ -65,10 +65,15 @@ class Workspace(pydantic.BaseModel, frozen=True):
     """The path to the sqlmesh root for the workspace."""
     sqlmesh_context_kwargs: t.Dict[str, t.Any] = {}
     """Keyword arguments to pass to the sqlmesh context."""
-    sqlmesh_context_class: t.Optional[t.Type[t.Any]] = (
-        None  # PERF: in order to defer the sqlmesh import -- we cannot type this
-    )
-    """A custom context class to use for sqlmesh."""
+
+    if t.TYPE_CHECKING:
+        # PERF: this is a workaround for pydantic not being able to build a model with a forwardref
+        # we still want the deferred import at runtime
+        sqlmesh_context_class: t.Optional[t.Type[sqlmesh.Context]] = None
+        """A custom context class to use for sqlmesh."""
+    else:
+        sqlmesh_context_class: t.Optional[t.Type[t.Any]] = None
+        """A custom context class to use for sqlmesh."""
 
     @pydantic.model_validator(mode="after")
     def _setup(self) -> Self:
