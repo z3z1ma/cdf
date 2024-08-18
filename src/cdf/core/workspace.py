@@ -362,7 +362,6 @@ class Workspace(pydantic.BaseModel, frozen=True):
 if __name__ == "__main__":
     import dlt
     import duckdb
-    from dlt.pipeline.pipeline import Pipeline
 
     import cdf.core.context as ctx
 
@@ -379,18 +378,24 @@ if __name__ == "__main__":
     memory_duckdb = dlt.destinations.duckdb(duckdb.connect(":memory:"))
 
     def test_pipeline(
-        pipeline: Pipeline,
         cdf_environment: str,
     ):
-        print("Running pipeline")
-        load_info = pipeline.run(source_a())
-        print("Pipeline finished")
-        with pipeline.sql_client() as client:
-            print("Querying DuckDB in " + cdf_environment)
-            print(
-                client.execute_sql("SELECT * FROM some_pipeline_dataset.test_resource")
-            )
-        return load_info
+        pipeline = dlt.pipeline("some_pipeline", destination=memory_duckdb)
+
+        def run():
+            print("Running pipeline")
+            load_info = pipeline.run(source_a())
+            print("Pipeline finished")
+            with pipeline.sql_client() as client:
+                print("Querying DuckDB in " + cdf_environment)
+                print(
+                    client.execute_sql(
+                        "SELECT * FROM some_pipeline_dataset.test_resource"
+                    )
+                )
+            return load_info
+
+        return pipeline, run
 
     # Switch statement on environment
     # to scaffold a FF provider, which is hereforward dictated by the user
@@ -441,9 +446,6 @@ if __name__ == "__main__":
         pipeline_definitions=[
             cmp.DataPipeline(
                 main=test_pipeline,
-                pipeline_factory=lambda: dlt.pipeline(
-                    "some_pipeline", destination=memory_duckdb
-                ),
                 integration_test=lambda: True,
                 name="exchangerate_pipeline",
                 owner="Alex",

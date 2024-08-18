@@ -273,7 +273,7 @@ class Entrypoint(_Node, t.Generic[T], frozen=True):
     def __str__(self):
         return f"<Entrypoint {self.name} ({self.sla.name})>"
 
-    def __call__(self, *args: t.Any, **kwargs: t.Any) -> T:
+    def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Any:
         """Invoke the entrypoint."""
         return self.main(*args, **kwargs)
 
@@ -288,15 +288,16 @@ class Service(Component[t.Any], frozen=True):
 # The following classes are entrypoints exposed to the user via CLI
 
 
-class DataPipeline(Entrypoint[t.Optional["LoadInfo"]], frozen=True):
+class DataPipeline(
+    Entrypoint[t.Tuple["DltPipeline", t.Callable[..., t.Optional["LoadInfo"]]]],
+    frozen=True,
+):
     """A data pipeline which loads data from a source to a destination."""
 
-    pipeline_factory: t.Callable[..., "DltPipeline"]
-    """A factory function to create the dlt pipeline object"""
     integration_test: t.Optional[t.Callable[..., bool]] = None
     """A function to test the pipeline in an integration environment"""
 
-    @pydantic.field_validator("pipeline_factory", "integration_test", mode="before")
+    @pydantic.field_validator("integration_test", mode="before")
     @classmethod
     def _bind_ancillary(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
         """Bind the active workspace to the ancillary functions."""
@@ -304,11 +305,12 @@ class DataPipeline(Entrypoint[t.Optional["LoadInfo"]], frozen=True):
 
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.Optional["LoadInfo"]:
         """Run the data pipeline"""
-        return self.main(self.pipeline_factory(), *args, **kwargs)
+        _, runner = self.main(*args, **kwargs)
+        return runner()
 
     def get_schemas(self, destination: t.Optional["DltDestination"] = None):
         """Get the schemas for the pipeline."""
-        pipeline = self.pipeline_factory()
+        pipeline, _ = self.main()
         pipeline.sync_destination(destination=destination)
         return pipeline.schemas
 
@@ -318,11 +320,12 @@ def _ping() -> bool:
     return bool("pong")
 
 
-class DataPublisher(Entrypoint[None], frozen=True):
+class DataPublisher(Entrypoint[t.Any], frozen=True):
     """A data publisher which pushes data to an operational system."""
 
     preflight_check: t.Callable[..., bool] = _ping
     """A user defined function to check if the data publisher is able to publish data"""
+
     integration_test: t.Optional[t.Callable[..., bool]] = None
     """A function to test the data publisher in an integration environment"""
 
