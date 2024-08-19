@@ -208,11 +208,11 @@ class Component(_Node, t.Generic[T], frozen=True):
 
     @pydantic.field_validator("main", mode="before")
     @classmethod
-    def _ensure_dependency(cls, value: t.Any) -> t.Any:
+    def _ensure_dependency(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
         """Ensure the main function is a dependency."""
         value = _unwrap_entrypoint(value)
         if isinstance(value, (dict, injector.Dependency)):
-            parsed_dep = injector.Dependency.model_validate(value)
+            parsed_dep = injector.Dependency.model_validate(value, context=info.context)
         else:
             parsed_dep = injector.Dependency.wrap(value)
         # NOTE: We do this extra round-trip to bypass the unecessary Generic type check in pydantic

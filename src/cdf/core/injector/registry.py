@@ -679,6 +679,10 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
             return func_or_cls
 
         sig = inspect.signature(func_or_cls)
+        is_resolved_sentinel = "__deps_resolved__"
+
+        if any(hasattr(f, is_resolved_sentinel) for f in _iter_wrapped(func_or_cls)):
+            return func_or_cls
 
         @wraps(func_or_cls)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
@@ -701,6 +705,7 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
                         bound_args.arguments[name] = dep
             return func_or_cls(*bound_args.args, **bound_args.kwargs)
 
+        setattr(wrapper, is_resolved_sentinel, True)
         return wrapper
 
     def __call__(
@@ -784,6 +789,13 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
             ),
             values_schema=pydantic_core.core_schema.any_schema(),
         )
+
+
+def _iter_wrapped(f: t.Callable):
+    yield f
+    f_w = inspect.unwrap(f)
+    if f_w is not f:
+        yield from _iter_wrapped(f_w)
 
 
 GLOBAL_REGISTRY = DependencyRegistry()

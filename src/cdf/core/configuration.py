@@ -59,6 +59,7 @@ import re
 import string
 import typing as t
 from collections import ChainMap
+from contextlib import suppress
 from pathlib import Path
 
 import pydantic
@@ -480,6 +481,7 @@ class ConfigResolver(t.MutableMapping):
             return func_or_cls
 
         sig = inspect.signature(func_or_cls)
+        is_resolved_sentinel = "__config_resolved__"
 
         resolver_hint = getattr(
             inspect.unwrap(func_or_cls),
@@ -487,16 +489,24 @@ class ConfigResolver(t.MutableMapping):
             self._parse_hint_from_params(func_or_cls, sig),
         )
 
+        if any(hasattr(f, is_resolved_sentinel) for f in _iter_wrapped(func_or_cls)):
+            return func_or_cls
+
         @functools.wraps(func_or_cls)
         def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
             bound_args = sig.bind_partial(*args, **kwargs)
             bound_args.apply_defaults()
+
+            # Apply converters to string literal arguments
             for arg_name, arg_value in bound_args.arguments.items():
-                # The simplest case: a string argument
                 if isinstance(arg_value, str):
-                    bound_args.arguments[arg_name] = self.apply_converters(
-                        arg_value, self
-                    )
+                    with suppress(Exception):
+                        bound_args.arguments[arg_name] = self.apply_converters(
+                            arg_value,
+                            self,
+                        )
+
+            # Resolve configuration values
             for name, param in sig.parameters.items():
                 value = _MISSING
                 if not self.is_resolvable(param):
@@ -522,6 +532,7 @@ class ConfigResolver(t.MutableMapping):
 
             return func_or_cls(*bound_args.args, **bound_args.kwargs)
 
+        setattr(wrapper, is_resolved_sentinel, True)
         return wrapper
 
     def is_resolvable(self, param: inspect.Parameter) -> bool:
@@ -552,3 +563,10 @@ class ConfigResolver(t.MutableMapping):
             keys_schema=pydantic_core.core_schema.str_schema(),
             values_schema=pydantic_core.core_schema.any_schema(),
         )
+
+
+def _iter_wrapped(f: t.Callable):
+    yield f
+    f_w = inspect.unwrap(f)
+    if f_w is not f:
+        yield from _iter_wrapped(f_w)

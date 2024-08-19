@@ -251,15 +251,17 @@ class Workspace(pydantic.BaseModel, frozen=True):
 
             # Run the pipeline
             start = time.time()
-            click.echo((info := pipeline_definition()) or "No load info returned.")
+            jobs = pipeline_definition()
             click.echo(
                 f"Pipeline process finished in {time.time() - start:.2f} seconds.",
                 err=True,
             )
 
             # Check for failed jobs
-            if info and info.has_failed_jobs:
-                ctx.fail("Pipeline failed.")
+            for job in jobs:
+                if job.has_failed_jobs:
+                    ctx.fail("Pipeline failed.")
+
             ctx.exit(0)
 
         @cli.command("run-publisher")
@@ -389,7 +391,7 @@ if __name__ == "__main__":
 
         def run():
             print("Running pipeline")
-            load_info = pipeline.run(source_a())
+            load = pipeline.run(source_a())
             print("Pipeline finished")
             with pipeline.sql_client() as client:
                 print("Querying DuckDB in " + cdf_environment)
@@ -398,7 +400,7 @@ if __name__ == "__main__":
                         "SELECT * FROM some_pipeline_dataset.test_resource"
                     )
                 )
-            return load_info
+            return load
 
         return pipeline, run
 
