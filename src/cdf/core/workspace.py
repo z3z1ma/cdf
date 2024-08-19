@@ -195,15 +195,19 @@ class Workspace(pydantic.BaseModel, frozen=True):
             """A dynamically generated CLI for the workspace."""
             self.activate()
 
-        def _list(d: t.Dict[str, cmp.TComponent]) -> int:
+        def _list(d: t.Dict[str, cmp.TComponent], verbose: bool = False) -> None:
             for name in sorted(d.keys()):
-                click.echo(name)
-            return 1
+                if verbose:
+                    click.echo(d[name].model_dump_json(indent=2, exclude={"main"}))
+                else:
+                    click.echo(d[name])
 
-        cli.command("list-services")(lambda: _list(self.services))
-        cli.command("list-pipelines")(lambda: _list(self.pipelines))
-        cli.command("list-publishers")(lambda: _list(self.publishers))
-        cli.command("list-operations")(lambda: _list(self.operations))
+        for k in ("services", "pipelines", "publishers", "operations"):
+            cli.command(f"list-{k}")(
+                click.option("-v", "--verbose", is_flag=True)(
+                    lambda verbose=False, k=k: _list(getattr(self, k), verbose=verbose)
+                )
+            )
 
         @cli.command("run-pipeline")
         @click.argument(
@@ -218,46 +222,51 @@ class Workspace(pydantic.BaseModel, frozen=True):
         )
         @click.pass_context
         def run_pipeline(
-            ctx: click.Context, pipeline: t.Optional[str] = None, test: bool = False
+            ctx: click.Context,
+            pipeline_name: t.Optional[str] = None,
+            test: bool = False,
         ) -> None:
             """Run a data pipeline."""
             # Prompt for a pipeline if not specified
-            if pipeline is None:
-                pipeline = click.prompt(
+            if pipeline_name is None:
+                pipeline_name = click.prompt(
                     "Enter a pipeline",
                     type=click.Choice(list(self.pipelines.keys())),
                     show_choices=True,
                 )
-                if pipeline is None:
+                if pipeline_name is None:
                     raise click.BadParameter(
                         "Pipeline must be specified.", ctx=ctx, param_hint="pipeline"
                     )
 
-            # Get the pipeline definition
-            pipeline_definition = self.pipelines[pipeline]
+            pipeline = self.pipelines[pipeline_name]
 
-            # Run the integration test if specified
             if test:
-                if not pipeline_definition.integration_test:
-                    raise click.UsageError(
-                        f"Pipeline `{pipeline}` does not define an integration test."
-                    )
-                click.echo("Running integration test.", err=True)
-                if pipeline_definition.integration_test():
+                click.echo("Running pipeline tests.", err=True)
+                try:
+                    pipeline.run_tests()
+                except Exception as e:
+                    click.echo(f"Pipeline test failed: {e}", err=True)
+                    ctx.exit(1)
+                else:
                     click.echo("Integration test passed.", err=True)
                     ctx.exit(0)
-                else:
-                    ctx.fail("Integration test failed.")
 
-            # Run the pipeline
             start = time.time()
-            jobs = pipeline_definition()
+            try:
+                jobs = pipeline()
+            except Exception as e:
+                click.echo(
+                    f"Pipeline failed after {time.time() - start:.2f} seconds: {e}",
+                    err=True,
+                )
+                ctx.exit(1)
+
             click.echo(
                 f"Pipeline process finished in {time.time() - start:.2f} seconds.",
                 err=True,
             )
 
-            # Check for failed jobs
             for job in jobs:
                 if job.has_failed_jobs:
                     ctx.fail("Pipeline failed.")
@@ -402,7 +411,7 @@ if __name__ == "__main__":
                 )
             return load
 
-        return pipeline, run
+        return pipeline, run, []
 
     # Switch statement on environment
     # to scaffold a FF provider, which is hereforward dictated by the user
@@ -453,7 +462,6 @@ if __name__ == "__main__":
         pipeline_definitions=[
             cmp.DataPipeline(
                 main=test_pipeline,
-                integration_test=lambda: True,
                 name="exchangerate_pipeline",
                 owner="Alex",
                 description="A test pipeline",

@@ -19,30 +19,28 @@ class DataPipeline(
                 t.Callable[..., "LoadInfo"],
                 t.Callable[..., t.Iterator["LoadInfo"]],
             ],
+            t.List[t.Callable[..., None]],
         ]
     ],
     frozen=True,
 ):
     """A data pipeline which loads data from a source to a destination."""
 
-    integration_test: t.Optional[t.Callable[..., bool]] = None
-    """A function to test the pipeline in an integration environment"""
-
-    @pydantic.field_validator("integration_test", mode="before")
-    @classmethod
-    def _bind_ancillary(cls, value: t.Any, info: pydantic.ValidationInfo) -> t.Any:
-        """Bind the active workspace to the ancillary functions."""
-        return _get_bind_func(info)(_unwrap_entrypoint(value))
-
     def __call__(self, *args: t.Any, **kwargs: t.Any) -> t.List["LoadInfo"]:
         """Run the data pipeline"""
-        _, runner = self.main(*args, **kwargs)
+        _, runner, _ = self.main(*args, **kwargs)
         if inspect.isgeneratorfunction(runner):
             return list(runner())
         return [t.cast("LoadInfo", runner())]
 
     def get_schemas(self, destination: t.Optional["DltDestination"] = None):
         """Get the schemas for the pipeline."""
-        pipeline, _ = self.main()
+        pipeline, _, _ = self.main()
         pipeline.sync_destination(destination=destination)
         return pipeline.schemas
+
+    def run_tests(self) -> None:
+        """Run the integration test for the pipeline."""
+        _, _, tests = self.main()
+        for test in tests:
+            test()
