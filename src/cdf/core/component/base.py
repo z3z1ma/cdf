@@ -193,8 +193,10 @@ class Component(_Node, t.Generic[T], frozen=True):
 
     @pydantic.model_validator(mode="before")
     @classmethod
-    def _parse_metadata(cls, data: t.Any) -> t.Any:
+    def _parse_func(cls, data: t.Any) -> t.Any:
         """Parse node metadata."""
+        if inspect.isfunction(data):
+            data = {"main": data}
         if isinstance(data, dict):
             dep = data["main"]
             if isinstance(dep, dict):
@@ -243,8 +245,10 @@ class Entrypoint(_Node, t.Generic[T], frozen=True):
 
     @pydantic.model_validator(mode="before")
     @classmethod
-    def _parse_metadata(cls, data: t.Any) -> t.Any:
+    def _parse_func(cls, data: t.Any) -> t.Any:
         """Parse node metadata."""
+        if inspect.isfunction(data):
+            data = {"main": data}
         if isinstance(data, dict):
             func = _unwrap_entrypoint(data["main"])
             return {**_parse_metadata_from_callable(func), **data}

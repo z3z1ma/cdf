@@ -211,7 +211,7 @@ class Workspace(pydantic.BaseModel, frozen=True):
 
         @cli.command("run-pipeline")
         @click.argument(
-            "pipeline",
+            "pipeline_name",
             required=False,
             type=click.Choice(list(self.pipelines.keys())),
         )
@@ -227,7 +227,6 @@ class Workspace(pydantic.BaseModel, frozen=True):
             test: bool = False,
         ) -> None:
             """Run a data pipeline."""
-            # Prompt for a pipeline if not specified
             if pipeline_name is None:
                 pipeline_name = click.prompt(
                     "Enter a pipeline",
@@ -246,10 +245,10 @@ class Workspace(pydantic.BaseModel, frozen=True):
                 try:
                     pipeline.run_tests()
                 except Exception as e:
-                    click.echo(f"Pipeline test failed: {e}", err=True)
+                    click.echo(f"Pipeline test(s) failed: {e}", err=True)
                     ctx.exit(1)
                 else:
-                    click.echo("Integration test passed.", err=True)
+                    click.echo("Pipeline test(s) passed!", err=True)
                     ctx.exit(0)
 
             start = time.time()
@@ -275,62 +274,45 @@ class Workspace(pydantic.BaseModel, frozen=True):
 
         @cli.command("run-publisher")
         @click.argument(
-            "publisher", required=False, type=click.Choice(list(self.publishers.keys()))
+            "publisher_name",
+            required=False,
+            type=click.Choice(list(self.publishers.keys())),
         )
         @click.option(
             "--test",
             is_flag=True,
             help="Run the publishers integration test if defined.",
         )
-        @click.option(
-            "--skip-preflight-check",
-            is_flag=True,
-            help="Skip the pre-check for the publisher.",
-        )
         @click.pass_context
         def run_publisher(
             ctx: click.Context,
-            publisher: t.Optional[str] = None,
+            publisher_name: t.Optional[str] = None,
             test: bool = False,
-            skip_preflight_check: bool = False,
         ) -> None:
             """Run a data publisher."""
-            # Prompt for a publisher if not specified
-            if publisher is None:
-                publisher = click.prompt(
+            if publisher_name is None:
+                publisher_name = click.prompt(
                     "Enter a publisher",
                     type=click.Choice(list(self.publishers.keys())),
                     show_choices=True,
                 )
-                if publisher is None:
+                if publisher_name is None:
                     raise click.BadParameter(
                         "Publisher must be specified.", ctx=ctx, param_hint="publisher"
                     )
 
-            # Get the publisher definition
-            publisher_definition = self.publishers[publisher]
+            publisher = self.publishers[publisher_name]
 
-            # Run the integration test if specified
-            if test:
-                if not publisher_definition.integration_test:
-                    raise click.UsageError(
-                        f"Publisher `{publisher}` does not define an integration test."
-                    )
-                click.echo("Running integration test.", err=True)
-                if publisher_definition.integration_test():
-                    click.echo("Integration test passed.", err=True)
-                    ctx.exit(0)
-                else:
-                    ctx.fail("Integration test failed.")
-
-            # Optionally run the preflight check
-            if not skip_preflight_check:
-                if not publisher_definition.preflight_check():
-                    ctx.fail("Preflight-check failed.")
-
-            # Run the publisher
             start = time.time()
-            click.echo(publisher_definition())
+            try:
+                publisher()
+            except Exception as e:
+                click.echo(
+                    f"Publisher failed after {time.time() - start:.2f} seconds: {e}",
+                    err=True,
+                )
+                ctx.exit(1)
+
             click.echo(
                 f"Publisher process finished in {time.time() - start:.2f} seconds.",
                 err=True,
@@ -339,28 +321,29 @@ class Workspace(pydantic.BaseModel, frozen=True):
 
         @cli.command("run-operation")
         @click.argument(
-            "operation", required=False, type=click.Choice(list(self.operations.keys()))
+            "operation_name",
+            required=False,
+            type=click.Choice(list(self.operations.keys())),
         )
         @click.pass_context
-        def run_operation(ctx: click.Context, operation: t.Optional[str] = None) -> int:
+        def run_operation(
+            ctx: click.Context, operation_name: t.Optional[str] = None
+        ) -> int:
             """Run an operation."""
-            # Prompt for an operation if not specified
-            if operation is None:
-                operation = click.prompt(
+            if operation_name is None:
+                operation_name = click.prompt(
                     "Enter an operation",
                     type=click.Choice(list(self.operations.keys())),
                     show_choices=True,
                 )
-                if operation is None:
+                if operation_name is None:
                     raise click.BadParameter(
                         "Operation must be specified.", ctx=ctx, param_hint="operation"
                     )
 
-            # Get the operation definition
-            operation_definition = self.operations[operation]
+            operation = self.operations[operation_name]
 
-            # Run the operation
-            ctx.exit(operation_definition())
+            ctx.exit(operation())
 
         return cli
 

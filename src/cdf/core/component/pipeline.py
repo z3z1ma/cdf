@@ -42,5 +42,7 @@ class DataPipeline(
     def run_tests(self) -> None:
         """Run the integration test for the pipeline."""
         _, _, tests = self.main()
+        if not tests:
+            raise ValueError("No tests found for pipeline")
         for test in tests:
             test()
