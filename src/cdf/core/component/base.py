@@ -194,15 +194,19 @@ class Component(_Node, t.Generic[T], frozen=True):
     @pydantic.model_validator(mode="before")
     @classmethod
     def _parse_func(cls, data: t.Any) -> t.Any:
-        """Parse node metadata."""
-        if inspect.isfunction(data):
+        """Parse function metadata into node defaults."""
+        if inspect.isfunction(data) or isinstance(data, injector.Dependency):
             data = {"main": data}
         if isinstance(data, dict):
             dep = data["main"]
             if isinstance(dep, dict):
                 func = dep["factory"]
+                if dep.get("alias", None):
+                    data.setdefault("name", dep["alias"])
             elif isinstance(dep, injector.Dependency):
                 func = dep.factory
+                if dep.alias:
+                    data.setdefault("name", dep.alias)
             else:
                 func = dep
             return {**_parse_metadata_from_callable(func), **data}

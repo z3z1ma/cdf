@@ -61,7 +61,7 @@ def test_workspace():
         return secret_number * 10
 
     # Imperatively add dependencies or config if needed
-    datateam.container.add_from_dependency("c", injector.Dependency.prototype(c))
+    datateam.container.add_from_dependency(injector.Dependency.prototype(c))
     datateam.conf_resolver.import_source({"a.b.c": 10})
 
     def source_a(a: int, prod_bigquery: str):

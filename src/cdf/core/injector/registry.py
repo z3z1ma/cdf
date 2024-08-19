@@ -241,6 +241,8 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
 
     conf_spec: t.Optional[t.Union[t.Tuple[str, ...], t.Dict[str, str]]] = None
     """A hint for configuration values."""
+    alias: t.Optional[str] = None
+    """Used as an alternative to inferring the name from the factory."""
 
     _instance: t.Optional[T] = None
     """The instance of the dependency once resolved."""
@@ -450,7 +452,23 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
         if self._is_resolved:
             return _unwrap_type(type(self._instance))
 
-    def generate_key(self, name: DependencyKey) -> t.Union[str, TypedKey]:
+    def try_infer_name(self) -> t.Optional[str]:
+        """Infer the name of the dependency from the factory."""
+        if self.alias:
+            return self.alias
+        if isinstance(self.factory, partial):
+            f = inspect.unwrap(self.factory.func)
+        else:
+            f = inspect.unwrap(self.factory)
+        if inspect.isfunction(f):
+            return f.__name__
+        if inspect.isclass(f):
+            return f.__name__
+        return getattr(f, "name", None)
+
+    def generate_key(
+        self, name: t.Optional[DependencyKey] = None
+    ) -> t.Union[str, TypedKey]:
         """Generate a typed key for the dependency.
 
         Args:
@@ -459,6 +477,12 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
         Returns:
             A typed key if the type can be inferred, else the name.
         """
+        if not name:
+            name = self.try_infer_name()
+            if not name:
+                raise ValueError(
+                    "Cannot infer name for dependency and no name or alias provided"
+                )
         if isinstance(name, TypedKey):
             return name
         elif isinstance(name, tuple):
@@ -548,7 +572,10 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
     add_instance = partialmethod(add, lifecycle=Lifecycle.INSTANCE)
 
     def add_from_dependency(
-        self, key: DependencyKey, dependency: Dependency, override: bool = False
+        self,
+        dependency: Dependency,
+        key: t.Optional[DependencyKey] = None,
+        override: bool = False,
     ) -> None:
         """Add a Dependency object to the container.
 

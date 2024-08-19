@@ -82,27 +82,27 @@ class Workspace(pydantic.BaseModel, frozen=True):
             self.conf_resolver.import_source(source)
         self.conf_resolver.set_environment(self.environment)
         self.container.add_from_dependency(
-            "cdf_workspace",
             injector.Dependency.instance(self),
+            key="cdf_workspace",
             override=True,
         )
         self.container.add_from_dependency(
-            "cdf_environment",
             injector.Dependency.instance(self.environment),
+            key="cdf_environment",
             override=True,
         )
         self.container.add_from_dependency(
-            "cdf_config",
             injector.Dependency.instance(self.conf_resolver),
+            key="cdf_config",
             override=True,
         )
         self.container.add_from_dependency(
-            "cdf_transform",
             injector.Dependency.singleton(self.get_sqlmesh_context_or_raise),
+            key="cdf_transform",
             override=True,
         )
         for service in self.services.values():
-            self.container.add_from_dependency(service.name, service.main)
+            self.container.add_from_dependency(service.main, key=service.name)
         self.activate()
         return self
 
@@ -396,9 +396,8 @@ if __name__ == "__main__":
 
         return pipeline, run, []
 
-    # Switch statement on environment
-    # to scaffold a FF provider, which is hereforward dictated by the user
-    # instead of implicit?
+    def ff_provider():
+        return 1
 
     # Define a workspace
     datateam = Workspace(
@@ -441,6 +440,7 @@ if __name__ == "__main__":
                 ),
                 owner="RevOps",
             ),
+            injector.Dependency[int](factory=ff_provider, alias="ff_main"),
         ],
         pipeline_definitions=[
             cmp.DataPipeline(
