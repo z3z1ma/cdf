@@ -448,7 +448,8 @@ if __name__ == "__main__":
                 name="exchangerate_pipeline",
                 owner="Alex",
                 description="A test pipeline",
-            )
+            ),
+            test_pipeline,  # we can use the proto directly with assumptions
         ],
     )
 

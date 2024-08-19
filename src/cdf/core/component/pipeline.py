@@ -1,9 +1,7 @@
 import inspect
 import typing as t
 
-import pydantic
-
-from .base import Entrypoint, _get_bind_func, _unwrap_entrypoint
+from .base import Entrypoint
 
 if t.TYPE_CHECKING:
     from dlt.common.destination import Destination as DltDestination
@@ -11,17 +9,18 @@ if t.TYPE_CHECKING:
     from dlt.pipeline.pipeline import Pipeline as DltPipeline
 
 
+DataPipelineProto = t.Tuple[
+    "DltPipeline",
+    t.Union[
+        t.Callable[..., "LoadInfo"],
+        t.Callable[..., t.Iterator["LoadInfo"]],
+    ],  # run
+    t.List[t.Callable[..., None]],  # tests
+]
+
+
 class DataPipeline(
-    Entrypoint[
-        t.Tuple[
-            "DltPipeline",
-            t.Union[
-                t.Callable[..., "LoadInfo"],
-                t.Callable[..., t.Iterator["LoadInfo"]],
-            ],
-            t.List[t.Callable[..., None]],
-        ]
-    ],
+    Entrypoint[DataPipelineProto],
     frozen=True,
 ):
     """A data pipeline which loads data from a source to a destination."""

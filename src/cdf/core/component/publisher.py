@@ -2,21 +2,16 @@ import typing as t
 
 from .base import Entrypoint
 
-
-def _ping() -> bool:
-    """A default preflight check which always returns True."""
-    return bool("pong")
+DataPublisherProto = t.Tuple[
+    t.Callable[..., None],  # run
+    t.Callable[..., bool],  # preflight
+    t.Optional[t.Callable[..., None]],  # success hook
+    t.Optional[t.Callable[..., None]],  # failure hook
+]
 
 
 class DataPublisher(
-    Entrypoint[
-        t.Tuple[
-            t.Callable[..., None],  # run
-            t.Callable[..., bool],  # preflight
-            t.Optional[t.Callable[..., None]],  # success hook
-            t.Optional[t.Callable[..., None]],  # failure hook
-        ]
-    ],
+    Entrypoint[DataPublisherProto],
     frozen=True,
 ):
     """A data publisher which pushes data to an operational system."""
