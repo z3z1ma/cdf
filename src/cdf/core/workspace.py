@@ -394,7 +394,11 @@ if __name__ == "__main__":
                 )
             return load
 
-        return pipeline, run, []
+        def test():
+            print("Do some testing")
+            return True, "Validated all columns are present in resource."
+
+        return pipeline, run, [test]
 
     def ff_provider():
         return 1
