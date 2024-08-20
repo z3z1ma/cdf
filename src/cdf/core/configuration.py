@@ -277,16 +277,12 @@ class ConfigLoader:
         self,
         *sources: ConfigSource,
         environment: str = "dev",
-        deferred: bool = False,
     ) -> None:
         """Initialize the configuration loader."""
         self.environment = environment
         self.sources = list(sources)
-        self._writable_dict = {}
-        if not deferred:
-            self._config = self._load()
 
-    def _load(self) -> t.MutableMapping[str, t.Any]:
+    def load(self) -> t.MutableMapping[str, t.Any]:
         """Load configuration from sources."""
         scopes = _ConfigScopes(
             explicit=_to_box({}), environment=_to_box({}), baseline=_to_box({})
@@ -326,23 +322,21 @@ class ConfigLoader:
                         )
                     else:
                         logger.debug(f"Configuration file not found: {env_path}")
-        return ChainMap(self._writable_dict, scopes.resolve())
+        return scopes.resolve()
 
-    @property
-    def config(self) -> t.Mapping[str, t.Any]:
-        """Get the configuration dictionary."""
-        if not hasattr(self, "_config"):
-            self._config = self._load()
-        return self._config
-
-    def import_(self, source: ConfigSource, append: bool = True) -> None:
+    def import_source(self, source: ConfigSource, append: bool = True) -> None:
         """Include a new source of configuration."""
         if append:
             # Takes priority within the same scope
             self.sources.append(source)
         else:
             self.sources.insert(0, source)
-        self._config = self._load()
+
+    def clear_sources(self) -> t.List[ConfigSource]:
+        """Clear all sources of configuration returning the previous sources."""
+        cleared_sources = self.sources.copy()
+        self.sources.clear()
+        return cleared_sources
 
 
 _MISSING: t.Any = object()
@@ -384,48 +378,76 @@ class Request:
         return cls(item)
 
 
-class ConfigResolver(t.MutableMapping):
-    """Resolve configuration values."""
+class ConfigLoaderProtocol(t.Protocol):
+    environment: str
+    sources: t.List[ConfigSource]
 
-    map_section = staticmethod(map_config_section)
-    """Mark a function to inject configuration values from a specific section."""
-    map_values = staticmethod(map_config_values)
-    """Mark a function to inject configuration values from a specific mapping of param names to keys."""
+    def load(self) -> t.MutableMapping[str, t.Any]: ...
+
+    def import_source(self, source: ConfigSource, append: bool = True) -> None: ...
+
+    def clear_sources(self) -> t.List[ConfigSource]: ...
+
+
+class ConfigResolver(t.MutableMapping[str, t.Any]):
+    """Resolve configuration values."""
 
     def __init__(
         self,
         *sources: ConfigSource,
         environment: str = "dev",
-        loader: ConfigLoader = ConfigLoader("config.json"),
+        loader: ConfigLoaderProtocol = ConfigLoader("config.json"),
+        deferred: bool = False,
     ) -> None:
-        """Initialize the configuration resolver."""
+        """Initialize the configuration resolver.
+
+        The environment serves 2 purposes:
+        1. It determines supplementary configuration file to load, e.g. config.dev.json.
+        2. It prefixes configuration keys and prioritizes them over non-prefixed keys. e.g. dev.api.key.
+
+        These are not mutually exclusive and can be used together.
+
+        Args:
+            sources: The sources of configuration.
+            environment: The environment to load configuration for.
+            loader: The configuration loader.
+            deferred: If True, the configuration is not loaded until requested.
+        """
+        self.environment = environment
         for source in sources:
-            loader.import_(source)
+            loader.import_source(source)
         self._loader = loader
+        self._config = loader.load() if not deferred else None
         self._frozen_environment = os.environ.copy()
+        self._explicit_values = _to_box({})
 
     @property
-    def config(self) -> t.Mapping[str, t.Any]:
+    def wrapped(self) -> t.MutableMapping[str, t.Any]:
         """Get the configuration dictionary."""
-        return self._loader.config
+        if self._config is None:
+            self._config = _to_box(self._loader.load())
+        return ChainMap(self._explicit_values, self._config)
 
     def __getitem__(self, key: str) -> t.Any:
         """Get a configuration value."""
-        v = self.config[key]
+        try:
+            v = self.wrapped[f"{self.environment}.{key}"]
+        except KeyError:
+            v = self.wrapped[key]
         return self.apply_converters(v, self)
 
     def __setitem__(self, key: str, value: t.Any) -> None:
         """Set a configuration value."""
-        self._loader._writable_dict[key] = value
+        self._explicit_values[f"{self.environment}.{key}"] = value
 
     def __delitem__(self, key: str) -> None:
-        self._loader._writable_dict.pop(key, None)
+        self._explicit_values.pop(f"{self.environment}.{key}", None)
 
     def __iter__(self) -> t.Iterator[str]:
-        return iter(self.config)
+        return iter(self.wrapped)
 
     def __len__(self) -> int:
-        return len(self.config)
+        return len(self.wrapped)
 
     def __getattr__(self, key: str) -> t.Any:
         """Get a configuration value."""
@@ -449,16 +471,34 @@ class ConfigResolver(t.MutableMapping):
 
     def set_environment(self, environment: str) -> None:
         """Set the environment of the configuration resolver."""
+        self.environment = environment
         self._loader.environment = environment
+        self._config = None
 
     def import_source(self, source: ConfigSource, append: bool = True) -> None:
         """Include a new source of configuration."""
-        self._loader.import_(source, append)
+        self._loader.import_source(source, append)
+        self._config = None
+
+    def clear_sources(self) -> t.List[ConfigSource]:
+        """Clear all sources of configuration returning the previous sources."""
+        sources = self._loader.clear_sources()
+        self._config = None
+        return sources
+
+    map_section = staticmethod(map_config_section)
+    """Mark a function to inject configuration values from a specific section."""
+
+    map_values = staticmethod(map_config_values)
+    """Mark a function to inject configuration values from a specific mapping of param names to keys."""
 
     add_custom_converter = staticmethod(add_custom_converter)
-    apply_converters = staticmethod(apply_converters)
+    """Add a custom converter to the configuration system."""
 
-    kwarg_hint = "_cdf_resolve"
+    apply_converters = staticmethod(apply_converters)
+    """Apply converters to a string."""
+
+    KWARG_HINT = "_cdf_resolve"
     """A hint supplied in a kwarg to engage the configuration resolver."""
 
     def _parse_hint_from_params(
@@ -470,8 +510,8 @@ class ConfigResolver(t.MutableMapping):
         a dictionary of param names to config keys is present in the function signature.
         """
         sig = sig or inspect.signature(func_or_cls)
-        if self.kwarg_hint in sig.parameters:
-            resolver_spec = sig.parameters[self.kwarg_hint]
+        if self.KWARG_HINT in sig.parameters:
+            resolver_spec = sig.parameters[self.KWARG_HINT]
             if isinstance(resolver_spec.default, (tuple, dict)):
                 return resolver_spec.default
 

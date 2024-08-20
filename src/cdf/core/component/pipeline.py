@@ -15,7 +15,7 @@ DataPipelineProto = t.Tuple[
         t.Callable[..., "LoadInfo"],
         t.Callable[..., t.Iterator["LoadInfo"]],
     ],  # run
-    t.List[t.Callable[..., t.Optional[t.Union[bool, t.Tuple[bool, str]]]]],  # tests
+    t.Sequence[t.Callable[..., t.Optional[t.Union[bool, t.Tuple[bool, str]]]]],  # tests
 ]
 
 
@@ -43,7 +43,8 @@ class DataPipeline(
         _, _, tests = self.main()
         if not tests:
             raise ValueError("No tests found for pipeline")
-        tpl = "{nr}. {message} ({state})"
+        tpl = "[{nr}/{tot}] {message} ({state})"
+        tot = len(tests)
         for nr, test in enumerate(tests, 1):
             result_struct = test()
             if isinstance(result_struct, bool) or result_struct is None:
@@ -54,10 +55,12 @@ class DataPipeline(
                 raise ValueError(f"Invalid return type for test: {result_struct}")
 
             if result is True:
-                print(tpl.format(nr=nr, state="PASS", message=reason))
+                print(tpl.format(nr=nr, tot=tot, state="PASS", message=reason))
             elif result is False:
-                raise ValueError(tpl.format(nr=nr, state="FAIL", message=reason))
+                raise ValueError(
+                    tpl.format(nr=nr, tot=tot, state="FAIL", message=reason)
+                )
             elif result is None:
-                print(tpl.format(nr=nr, state="SKIP", message=reason))
+                print(tpl.format(nr=nr, state="SKIP", tot=tot, message=reason))
             else:
                 raise ValueError(f"Invalid return value for test: {result}")

@@ -62,7 +62,7 @@ def test_config_resolver():
     }
     assert resolver["db_1"] == 1
     assert resolver["main_api"] == resolver["db_2"]
-    resolver._loader.import_({"db_1": 2})
+    resolver.import_source({"db_1": 2})
     assert resolver["db_1"] == 2
 
     @ConfigResolver.map_values(db_1="db_1", db_2="db_2")
