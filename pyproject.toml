@@ -1,5 +1,5 @@
 [project]
-name = "cdf"
+name = "python-cdf"
 version = "0.9.2"
 description = "A framework to manage data continuously"
 authors = [
@@ -27,16 +27,20 @@ requires-python = ">=3.9,<3.13"
 readme = "README.md"
 license.file = "LICENSE"
 
+[tool.poetry]
+packages = [{ include = "src" }]
+
 [project.optional-dependencies]
 dev = [
+    # "poetry @ git+https://github.com/radoering/poetry.git@pep621-support",
     "pytest>=7.4.3",
     "pytest-mock>=3.12.0",
     "pydoc-markdown>4",
 ]
 
 [build-system]
-requires = ["hatchling"]
-build-backend = "hatchling.build"
+requires = ["poetry-core@ git+https://github.com/radoering/poetry-core.git@pep621-support"]
+build-backend = "poetry.core.masonry.api"
 
 [tool.hatch.metadata]
 allow-direct-references = true

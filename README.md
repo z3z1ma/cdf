@@ -45,8 +45,6 @@ CDF (Continuous Data Framework) is an integrated framework designed to manage da
 
 1. **Installation**:
 
-    (NOT YET PUBLISHED ON PYPI, INSTALLATION INSTRUCTIONS WILL BE UPDATED SOON)
-
     CDF requires Python 3.9 or newer. Install CDF using pip:
 
     ```bash
