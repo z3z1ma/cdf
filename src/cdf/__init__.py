@@ -8,6 +8,7 @@ from cdf.core.configuration import (
 )
 from cdf.core.context import (
     get_active_workspace,
+    invoke,
     resolve,
     set_active_workspace,
     use_workspace,
@@ -31,5 +32,6 @@ __all__ = [
     "get_active_workspace",
     "set_active_workspace",
     "resolve",
+    "invoke",
     "use_workspace",
 ]

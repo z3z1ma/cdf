@@ -2,12 +2,15 @@
 
 import contextlib
 import functools
+import logging
 import typing as t
 from contextvars import ContextVar, Token
 
 if t.TYPE_CHECKING:
     from cdf.core.injector import Lifecycle
     from cdf.core.workspace import Workspace
+
+logger = logging.getLogger(__name__)
 
 _ACTIVE_WORKSPACE: ContextVar[t.Optional["Workspace"]] = ContextVar(
     "active_workspace", default=None
@@ -91,6 +94,16 @@ def resolve(
         return _resolve(dependencies)
 
     return _resolve
+
+
+def invoke(func_or_cls: t.Callable, *args: t.Any, **kwargs: t.Any) -> t.Any:
+    """Invoke a function or class with resolved dependencies."""
+    workspace = get_active_workspace()
+    if workspace is None:
+        logger.debug("Invoking %s without a bound workspace", func_or_cls)
+        return func_or_cls(*args, **kwargs)
+    logger.debug("Invoking %s bound to workspace %s", func_or_cls, workspace)
+    return workspace.invoke(func_or_cls, *args, **kwargs)
 
 
 def get_default_callable_lifecycle() -> t.Optional["Lifecycle"]:
