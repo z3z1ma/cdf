@@ -6,8 +6,8 @@
 
 <p align="center">
 <img src="https://img.shields.io/badge/Python-3776AB.svg?style=flat-square&logo=Python&logoColor=white" alt="Python" />
-<img src="https://img.shields.io/badge/sqlmesh-0.57.0+-blue" alt="SQLMesh" />
-<img src="https://img.shields.io/badge/dlt-0.4.0+-blue" alt="dlt" />
+<img src="https://img.shields.io/badge/sqlmesh-0.100.0+-blue" alt="SQLMesh" />
+<img src="https://img.shields.io/badge/dlt-0.5.0+-blue" alt="dlt" />
 </p>
 <img src="https://img.shields.io/github/license/z3z1ma/cdf?style=flat-square&color=5D6D7E" alt="GitHub license" />
 <img src="https://img.shields.io/github/last-commit/z3z1ma/cdf?style=flat-square&color=5D6D7E" alt="git-last-commit" />
@@ -34,52 +34,23 @@
 
 CDF (Continuous Data Framework) is an integrated framework designed to manage data across the entire lifecycle, from ingestion through transformation to publishing. It is built on top of two open-source projects, `sqlmesh` and `dlt`, providing a unified interface for complex data operations. CDF simplifies data engineering workflows, offering scalable solutions from small to large projects through an opinionated project structure that supports both multi-workspace and single-workspace layouts.
 
-Sources are consumed in pipelines. Pipelines procedurally describe the extraction of one or more sources into a single dataset. The combination of the pipeline script and some static configuration comprises what is called a specification. A pipeline is executed with a sink that is externally injected. Sinks describe a single logical location. This means pipelines are parameterized and the same specification can be reused across different sinks. Sinks are scripts which export an ingest variable that pipelines use and a transform variable which models use. Models are transformations of data within a sink.
+> [!WARNING]
+> The repo is currently under ACTIVE development with multiple large refactors already having been completed. As such, you must be aware that the codebase is not yet stable and is subject to change. Furthermore, you must look to the code (or tests) itself for the most accurate and up-to-date information until this disclaimer is removed.
 
 ## Features
 
-- **Unified Data Management**: Seamlessly manage data pipelines, transformations, and publishing within a single framework.
-- **Opinionated Project Structure**: Adopt a scalable project structure that grows with your data needs, from single to multiple workspaces.
-- **Automated Environment Management**: Automatically manage virtual environments to isolate and manage dependencies.
-- **Automated Component Discoverability**: Automatically discover pipelines, models, publishers, and other components within your workspace.
-- **Enhanced Configuration Management**: Leverage automated configuration management for streamlined setup and deployment.
-- **Extensible and Scalable**: Designed to scale from small to large data projects, providing extensible components for custom operations.
+...
 
 ## Getting Started
 
 1. **Installation**:
 
-    CDF requires Python 3.8 or newer. Install CDF using pip:
+    (NOT YET PUBLISHED ON PYPI, INSTALLATION INSTRUCTIONS WILL BE UPDATED SOON)
+
+    CDF requires Python 3.9 or newer. Install CDF using pip:
 
     ```bash
-    pip install cdf
-    ```
-
-2. **Initialize a Workspace or Project**:
-
-    Create a new workspace or project in your desired directory:
-
-    ```bash
-    cdf init-workspace /path/to/workspace
-    # or
-    cdf init-project /path/to/project
-    ```
-
-3. **Run Pipelines and Scripts**:
-
-    Execute data pipelines, scripts, or notebooks within your workspace:
-
-    ```bash
-    cdf pipeline workspace_name.pipeline_name
-    cdf execute-script workspace_name.script_name
-    ```
-
-4. **Publish Data**:
-
-    Publish transformed data to external systems or sinks:
-
-    ```bash
-    cdf publish workspace_name.publisher_name
+    pip install python-cdf
     ```
 
 ## Documentation
@@ -92,11 +63,12 @@ Contributions to CDF are welcome! Please refer to the [contributing guidelines](
 
 ## License
 
-CDF is licensed under [MIT License](LICENSE).
+CDF is licensed under [Apache 2.0 License](LICENSE).
 
 ---
 
 This README provides an overview of the CDF tool, highlighting its primary features, installation steps, basic usage examples, and contribution guidelines. It serves as a starting point for users to understand the capabilities of CDF and how it can be integrated into their data engineering workflows.
+
 ### 🧪 Tests
 
 Run the tests with `pytest`:
