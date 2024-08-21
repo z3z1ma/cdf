@@ -1,6 +1,6 @@
 [project]
 name = "python-cdf"
-version = "0.9.3"
+version = "0.9.4"
 description = "A framework to manage data continuously"
 authors = [
     { name = "z3z1ma", email = "butler.alex2010@gmail.com" },
@@ -28,7 +28,9 @@ readme = "README.md"
 license.file = "LICENSE"
 
 [tool.poetry]
-packages = [{ include = "src/cdf" }]
+packages = [
+    { include = "cdf", from = "src" }
+]
 
 [project.optional-dependencies]
 dev = [
