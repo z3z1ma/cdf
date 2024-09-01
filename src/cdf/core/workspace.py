@@ -145,16 +145,16 @@ class Workspace(pydantic.BaseModel, frozen=True):
     @t.overload
     def get_sqlmesh_context(
         self,
-        gateway: t.Optional[str] = ...,
-        must_exist: t.Literal[False] = False,
+        gateway: t.Optional[str],
+        must_exist: t.Literal[False],
         **kwargs: t.Any,
     ) -> t.Optional["sqlmesh.Context"]: ...
 
     @t.overload
     def get_sqlmesh_context(
         self,
-        gateway: t.Optional[str] = ...,
-        must_exist: t.Literal[True] = True,
+        gateway: t.Optional[str],
+        must_exist: t.Literal[True],
         **kwargs: t.Any,
     ) -> "sqlmesh.Context": ...
 

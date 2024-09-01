@@ -106,9 +106,11 @@ def invoke(func_or_cls: t.Callable, *args: t.Any, **kwargs: t.Any) -> t.Any:
     return workspace.invoke(func_or_cls, *args, **kwargs)
 
 
-def get_default_callable_lifecycle() -> t.Optional["Lifecycle"]:
+def get_default_callable_lifecycle() -> "Lifecycle":
     """Get the default lifecycle for callables when otherwise unspecified."""
-    return _DEFAULT_CALLABLE_LIFECYCLE.get()
+    from cdf.core.injector import Lifecycle
+
+    return _DEFAULT_CALLABLE_LIFECYCLE.get() or Lifecycle.SINGLETON
 
 
 def set_default_callable_lifecycle(lifecycle: t.Optional["Lifecycle"]) -> Token:

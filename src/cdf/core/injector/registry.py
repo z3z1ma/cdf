@@ -15,6 +15,7 @@ import pydantic_core
 from typing_extensions import ParamSpec, Self
 
 import cdf.core.configuration as conf
+from cdf.core.context import get_default_callable_lifecycle
 from cdf.core.injector.errors import DependencyCycleError, DependencyMutationError
 
 logger = logging.getLogger(__name__)
@@ -65,6 +66,13 @@ class Lifecycle(enum.Enum):
 
     def __str__(self) -> str:
         return self.name.lower()
+
+    @classmethod
+    def default_for(cls, obj: t.Any) -> "Lifecycle":
+        """Get the default lifecycle."""
+        if callable(obj):
+            return get_default_callable_lifecycle()
+        return cls.INSTANCE
 
 
 class TypedKey(t.NamedTuple):
@@ -263,17 +271,10 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
     @classmethod
     def _ensure_lifecycle(cls, data: t.Any) -> t.Any:
         """Ensure a valid lifecycle is set for the dependency."""
-        from cdf.core.context import get_default_callable_lifecycle
 
         if isinstance(data, dict):
             factory = data["factory"]
-            default_callable_lc = (
-                get_default_callable_lifecycle() or Lifecycle.SINGLETON
-            )
-            lc = data.get(
-                "lifecycle",
-                default_callable_lc if callable(factory) else Lifecycle.INSTANCE,
-            )
+            lc = data.get("lifecycle", Lifecycle.default_for(factory))
             if isinstance(lc, str):
                 lc = Lifecycle[lc.upper()]
             if not isinstance(lc, Lifecycle):
@@ -360,14 +361,9 @@ class Dependency(pydantic.BaseModel, t.Generic[T]):
             A new Dependency object with the object as the factory.
         """
         if callable(obj):
-            from cdf.core.context import get_default_callable_lifecycle
-
             if args or kwargs:
                 obj = partial(obj, *args, **kwargs)
-            default_callable_lc = (
-                get_default_callable_lifecycle() or Lifecycle.SINGLETON
-            )
-            return cls(factory=obj, lifecycle=default_callable_lc)
+            return cls(factory=obj, lifecycle=get_default_callable_lifecycle())
         return cls(factory=obj, lifecycle=Lifecycle.INSTANCE)
 
     def map_value(self, func: t.Callable[[T], T]) -> Self:
@@ -541,12 +537,7 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
 
         # Assume singleton lifecycle if the value is callable unless set in context
         if lifecycle is None:
-            from cdf.core.context import get_default_callable_lifecycle
-
-            default_callable_lc = (
-                get_default_callable_lifecycle() or Lifecycle.SINGLETON
-            )
-            lifecycle = default_callable_lc if callable(value) else Lifecycle.INSTANCE
+            lifecycle = Lifecycle.default_for(value)
 
         # If the value is callable and has initialization args, bind them early so
         # we don't need to schlepp them around
@@ -762,7 +753,7 @@ class DependencyRegistry(t.MutableMapping[DependencyKey, Dependency]):
         return len(self.dependencies)
 
     def __repr__(self) -> str:
-        return f"<DependencyRegistry {self.dependencies.keys()}>"
+        return f"DependencyRegistry(<{list(self.dependencies.keys())}>)"
 
     def __str__(self) -> str:
         return repr(self)
