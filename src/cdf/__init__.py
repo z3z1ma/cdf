@@ -1,5 +1,11 @@
 import cdf.core.configuration as conf
-from cdf.core.component import DataPipeline, DataPublisher, Operation, Service
+from cdf.core.component import (
+    DataPipeline,
+    DataPublisher,
+    Operation,
+    Service,
+    ServiceLevelAgreement,
+)
 from cdf.core.configuration import (
     ConfigResolver,
     Request,
@@ -22,6 +28,7 @@ __all__ = [
     "DataPublisher",
     "Operation",
     "Service",
+    "ServiceLevelAgreement",
     "ConfigResolver",
     "Request",
     "map_config_section",

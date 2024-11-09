@@ -51,13 +51,21 @@ class Workspace(pydantic.BaseModel, frozen=True):
         "~/.cdf.toml",
     )
     """A list of configuration sources resolved and merged by the workspace."""
-    service_definitions: t.Iterable[cmp.ServiceDef] = ()
+    services_: t.Iterable[cmp.ServiceDef] = pydantic.Field(
+        default_factory=tuple, alias="services"
+    )
     """An iterable of raw service definitions that the workspace provides."""
-    pipeline_definitions: t.Iterable[cmp.DataPipelineDef] = ()
+    pipelines_: t.Iterable[cmp.DataPipelineDef] = pydantic.Field(
+        default_factory=tuple, alias="pipelines"
+    )
     """An iterable of raw pipeline definitions that the workspace provides."""
-    publishers_definitions: t.Iterable[cmp.DataPublisherDef] = ()
+    publishers_: t.Iterable[cmp.DataPublisherDef] = pydantic.Field(
+        default_factory=tuple, alias="publishers"
+    )
     """An iterable of raw publisher definitions that the workspace provides."""
-    operation_definitions: t.Iterable[cmp.OperationDef] = ()
+    operations_: t.Iterable[cmp.OperationDef] = pydantic.Field(
+        default_factory=tuple, alias="operations"
+    )
     """An iterable of raw generic operation definitions that the workspace provides."""
 
     # TODO: define an adapter for transformation providers
@@ -125,22 +133,22 @@ class Workspace(pydantic.BaseModel, frozen=True):
     @cached_property
     def services(self) -> t.Dict[str, cmp.Service]:
         """Return the resolved services of the workspace."""
-        return self._parse_definitions(self.service_definitions, cmp.Service)
+        return self._parse_definitions(self.services_, cmp.Service)
 
     @cached_property
     def pipelines(self) -> t.Dict[str, cmp.DataPipeline]:
         """Return the resolved data pipelines of the workspace."""
-        return self._parse_definitions(self.pipeline_definitions, cmp.DataPipeline)
+        return self._parse_definitions(self.pipelines_, cmp.DataPipeline)
 
     @cached_property
     def publishers(self) -> t.Dict[str, cmp.DataPublisher]:
         """Return the resolved data publishers of the workspace."""
-        return self._parse_definitions(self.publishers_definitions, cmp.DataPublisher)
+        return self._parse_definitions(self.publishers_, cmp.DataPublisher)
 
     @cached_property
     def operations(self) -> t.Dict[str, cmp.Operation]:
         """Return the resolved operations of the workspace."""
-        return self._parse_definitions(self.operation_definitions, cmp.Operation)
+        return self._parse_definitions(self.operations_, cmp.Operation)
 
     @t.overload
     def get_sqlmesh_context(
@@ -203,7 +211,9 @@ class Workspace(pydantic.BaseModel, frozen=True):
                     click.echo(d[name])
 
         for k in ("services", "pipelines", "publishers", "operations"):
-            cli.command(f"list-{k}")(
+            cli.command(
+                f"list-{k}", help=f"List the {k} in the {self.name} workspace."
+            )(
                 click.option("-v", "--verbose", is_flag=True)(
                     lambda verbose=False, k=k: _list(getattr(self, k), verbose=verbose)
                 )
@@ -329,7 +339,7 @@ class Workspace(pydantic.BaseModel, frozen=True):
         def run_operation(
             ctx: click.Context, operation_name: t.Optional[str] = None
         ) -> int:
-            """Run an operation."""
+            """Run a generic operation."""
             if operation_name is None:
                 operation_name = click.prompt(
                     "Enter an operation",
@@ -356,105 +366,3 @@ class Workspace(pydantic.BaseModel, frozen=True):
         """Invoke a function with configuration and dependencies defined in the workspace."""
         with ctx.use_workspace(self):
             return self.bind(func_or_cls)(*args, **kwargs)
-
-
-if __name__ == "__main__":
-    import dlt
-    import duckdb
-
-    import cdf.core.context as ctx
-
-    @dlt.source
-    @ctx.resolve
-    def source_a(a: int, prod_bigquery: str):
-        @dlt.resource
-        def test_resource():
-            print("Reading from API")
-            yield from [{"a": a, "prod_bigquery": prod_bigquery}]
-
-        return [test_resource]
-
-    memory_duckdb = dlt.destinations.duckdb(duckdb.connect(":memory:"))
-
-    def test_pipeline(
-        cdf_environment: str,
-    ):
-        pipeline = dlt.pipeline("some_pipeline", destination=memory_duckdb)
-
-        def run():
-            print("Running pipeline")
-            load = pipeline.run(source_a())
-            print("Pipeline finished")
-            with pipeline.sql_client() as client:
-                print("Querying DuckDB in " + cdf_environment)
-                print(
-                    client.execute_sql(
-                        "SELECT * FROM some_pipeline_dataset.test_resource"
-                    )
-                )
-            return load
-
-        def test():
-            print("Do some testing")
-            return True, "Validated all columns are present in resource."
-
-        return pipeline, run, [test]
-
-    def ff_provider():
-        return 1
-
-    # Define a workspace
-    datateam = Workspace(
-        name="data-team",
-        version="0.1.1",
-        configuration_sources=[
-            {
-                "sfdc": {"username": "abc"},
-                "bigquery": {"project_id": "project-123"},
-            },
-        ],
-        service_definitions=[
-            cmp.Service(
-                name="a",
-                main=injector.Dependency(factory=lambda: 1),
-                owner="Alex",
-                description="A secret number",
-                sla=cmp.ServiceLevelAgreement.CRITICAL,
-            ),
-            cmp.Service(
-                name="b",
-                main=injector.Dependency(factory=lambda a: a + 1 * 5 / 10),
-                owner="Alex",
-            ),
-            # Example of a service defined with a dict
-            {
-                "name": "prod_bigquery",
-                "main": {
-                    "factory": lambda b, project_id: f"dwh-1{b+1:.0f}3?{project_id=}",
-                    "lifecycle": "prototype",
-                    "conf_spec": ("bigquery",),
-                },
-                "owner": "DataTeam",
-            },
-            cmp.Service(
-                name="sfdc",
-                main=injector.Dependency(
-                    factory=lambda username: f"https://sfdc.com/{username}",
-                    conf_spec=("sfdc",),
-                ),
-                owner="RevOps",
-            ),
-            injector.Dependency[int](factory=ff_provider, alias="ff_main"),
-        ],
-        pipeline_definitions=[
-            cmp.DataPipeline(
-                main=test_pipeline,
-                name="exchangerate_pipeline",
-                owner="Alex",
-                description="A test pipeline",
-            ),
-            test_pipeline,  # we can use the proto directly with assumptions
-        ],
-    )
-
-    datateam.cli()
