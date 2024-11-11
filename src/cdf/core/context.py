@@ -292,7 +292,7 @@ class Context(t.MutableMapping[str, t.Any]):
         ] = {}
         self._singletons: t.Dict[t.Tuple[t.Optional[str], str], t.Any] = {}
         self._resolving: t.Set[t.Tuple[t.Optional[str], str]] = set()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.namespace = namespace
         self.parent = parent
 
@@ -356,41 +356,65 @@ class Context(t.MutableMapping[str, t.Any]):
             Resolved dependency or default value.
         """
         key = (namespace or self.namespace, name)
+        if key in self._dependencies:
+            return self._dependencies[key]
+        elif key in self._factories:
+            if key in self._resolving:
+                cycle = " -> ".join(
+                    [f"{ns}:{n}" for ns, n in list(self._resolving) + [key]]
+                )
+                raise DependencyCycleError(f"Dependency cycle detected: {cycle}")
+            self._resolving.add(key)
+            try:
+                factory, singleton = self._factories[key]
+                if singleton and key in self._singletons:
+                    return self._singletons[key]
+                factory = self.inject_dependencies(factory)
+                result = factory()
+                if inspect.iscoroutine(result):
+                    try:
+                        loop = asyncio.get_running_loop()
+                    except RuntimeError:
+                        loop = None
+                    if loop and loop.is_running():
+                        result = asyncio.run_coroutine_threadsafe(result, loop).result()
+                    else:
+                        result = asyncio.run(result)
+                if singleton:
+                    self._singletons[key] = result
+                return result
+            finally:
+                self._resolving.remove(key)
+        elif self.parent:
+            return self.parent.get(name, default, namespace or self.namespace)
+        else:
+            if default is not ...:
+                return default
+            raise DependencyNotFoundError(
+                f"Dependency '{name}' not found in namespace '{namespace or self.namespace}'. "
+                f"Available dependencies: {list(self)}"
+            )
+
+    def drop(self, name: str, namespace: t.Optional[str] = None) -> None:
+        """Drop a singleton dependency.
+
+        Args:
+            name: Name of the dependency.
+            namespace: Namespace to use for the dependency.
+
+        Raises:
+            DependencyNotFoundError: If the dependency is not found.
+        """
+        key = (namespace or self.namespace, name)
         with self._lock:
             if key in self._dependencies:
-                return self._dependencies[key]
+                del self._dependencies[key]
             elif key in self._factories:
-                if key in self._resolving:
-                    cycle = " -> ".join(
-                        [f"{ns}:{n}" for ns, n in list(self._resolving) + [key]]
-                    )
-                    raise DependencyCycleError(f"Dependency cycle detected: {cycle}")
-                self._resolving.add(key)
-                try:
-                    factory, singleton = self._factories[key]
-                    if singleton and key in self._singletons:
-                        return self._singletons[key]
-                    factory = self.inject_dependencies(factory)
-                    result = factory()
-                    if inspect.iscoroutine(result):
-                        try:
-                            loop = asyncio.get_running_loop()
-                        except RuntimeError:
-                            loop = asyncio.new_event_loop()
-                        result = loop.run_until_complete(result)
-                    if singleton:
-                        self._singletons[key] = result
-                    return result
-                finally:
-                    self._resolving.remove(key)
-            elif self.parent:
-                return self.parent.get(name, default, namespace or self.namespace)
+                del self._factories[key]
+                self._singletons.pop(key, None)
             else:
-                if default is not ...:
-                    return default
                 raise DependencyNotFoundError(
-                    f"Dependency '{name}' not found in namespace '{namespace or self.namespace}'. "
-                    f"Available dependencies: {list(self)}"
+                    f"Dependency '{name}' not found in namespace '{self.namespace}'"
                 )
 
     def __getitem__(self, name: str) -> t.Any:
@@ -434,17 +458,7 @@ class Context(t.MutableMapping[str, t.Any]):
         Returns:
             Resolved dependency.
         """
-        key = (self.namespace, name)
-        with self._lock:
-            if key in self._dependencies:
-                del self._dependencies[key]
-            elif key in self._factories:
-                del self._factories[key]
-                self._singletons.pop(key, None)
-            else:
-                raise DependencyNotFoundError(
-                    f"Dependency '{name}' not found in namespace '{self.namespace}'"
-                )
+        self.drop(name)
 
     def __iter__(self) -> t.Iterator[str]:
         """Iterate over the dependency names."""
@@ -488,38 +502,20 @@ class Context(t.MutableMapping[str, t.Any]):
         """
         sig = inspect.signature(func)
 
-        if inspect.iscoroutinefunction(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            bound_args = sig.bind_partial(*args, **kwargs)
+            for name, _ in sig.parameters.items():
+                if name not in bound_args.arguments:
+                    if name == _CONTEXT_PARAM_NAME:
+                        bound_args.arguments[name] = self
+                    elif name == _CONFIGURATION_PARAM_NAME:
+                        bound_args.arguments[name] = self.config
+                    elif name in self:
+                        bound_args.arguments[name] = self.get(name)
+            return func(*bound_args.args, **bound_args.kwargs)
 
-            @wraps(func)
-            async def awrapper(*args, **kwargs):
-                bound_args = sig.bind_partial(*args, **kwargs)
-                for name, _ in sig.parameters.items():
-                    if name not in bound_args.arguments:
-                        if name == _CONTEXT_PARAM_NAME:
-                            bound_args.arguments[name] = self
-                        elif name == _CONFIGURATION_PARAM_NAME:
-                            bound_args.arguments[name] = self.config
-                        elif name in self:
-                            bound_args.arguments[name] = self.get(name)
-                return await func(*bound_args.args, **bound_args.kwargs)
-
-            return awrapper
-        else:
-
-            @wraps(func)
-            def wrapper(*args, **kwargs):
-                bound_args = sig.bind_partial(*args, **kwargs)
-                for name, _ in sig.parameters.items():
-                    if name not in bound_args.arguments:
-                        if name == _CONTEXT_PARAM_NAME:
-                            bound_args.arguments[name] = self
-                        elif name == _CONFIGURATION_PARAM_NAME:
-                            bound_args.arguments[name] = self.config
-                        elif name in self:
-                            bound_args.arguments[name] = self.get(name)
-                return func(*bound_args.args, **bound_args.kwargs)
-
-            return wrapper
+        return wrapper
 
     def __call__(self, func: t.Callable) -> t.Callable:
         """Allow the context to be used as a decorator.
@@ -595,7 +591,7 @@ class Context(t.MutableMapping[str, t.Any]):
     def load_dependencies_from_config(self):
         """Load plugins specified in the configuration under 'dependency_paths'."""
         dep_paths = self.config.get("dependency_paths", [])
-        with self, self._lock:
+        with self:
             linecache.clearcache()
             for path_str in dep_paths:
                 path = Path(path_str)
