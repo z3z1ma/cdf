@@ -18,29 +18,39 @@ from contextvars import ContextVar
 from functools import wraps
 from pathlib import Path
 
+import yaml
+from box import Box
+
 if sys.version_info >= (3, 11):
     import tomllib
 else:
     import tomli as tomllib
 
-import yaml
-from box import Box
+if sys.version_info >= (3, 9):
+    from typing import ParamSpec
+else:
+    from typing_extensions import ParamSpec
+
+
+T = t.TypeVar("T")
+P = ParamSpec("P")
 
 ConfigurationSource = t.Union[
     str, Path, t.Mapping[str, t.Any], t.Callable[[], "ConfigurationSource"]
 ]
 
-_CONTEXT_PARAM_NAME = "context"
-_CONFIGURATION_PARAM_NAME = "configuration"
+_CONTEXT_PARAM_NAME = "C"
 
 __all__ = [
     "Context",
     "ConfigurationSource",
     "ConverterBox",
     "SimpleConfigurationLoader",
-    "dependency",
+    "register_dep",
     "active_context",
     "add_custom_converter",
+    "_get_converter",
+    "_remove_converter",
 ]
 
 
@@ -124,6 +134,11 @@ class ConverterBox(Box):
         if isinstance(value, str):
             return self._apply_converters(value)
         return value
+
+    def values(self) -> t.ValuesView[t.Any]:  # type: ignore
+        return t.cast(
+            t.ValuesView[t.Any], map(self._apply_converters, super().values())
+        )
 
     def _apply_converters(self, data: t.Any) -> t.Any:
         """Apply converters to a configuration value.
@@ -227,6 +242,15 @@ class SimpleConfigurationLoader:
         self._resolver = (
             _merge_configs if resolution_strategy == "merge" else _scope_configs
         )
+
+    def add_source(self, source: ConfigurationSource) -> t.Mapping[str, t.Any]:
+        """Add a configuration source to the loader.
+
+        Args:
+            source: Configuration source to add.
+        """
+        self.sources += (source,)
+        return self.load()
 
     def load(self) -> Box:
         """Load and merge configurations from all sources."""
@@ -485,8 +509,11 @@ class Context(t.MutableMapping[str, t.Any]):
         key = (self.namespace, name)
         return key in self._dependencies or key in self._factories
 
-    def inject_dependencies(self, func: t.Callable) -> t.Callable:
+    def inject_dependencies(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
         """Decorator to inject dependencies into functions based on parameter names.
+
+        We also inject the context as a parameter with the name 'C'. This is allows
+        access to the DI container and configuration within the function.
 
         Args:
             func: Function to decorate.
@@ -503,21 +530,21 @@ class Context(t.MutableMapping[str, t.Any]):
         sig = inspect.signature(func)
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args, **kwargs) -> T:
             bound_args = sig.bind_partial(*args, **kwargs)
             for name, _ in sig.parameters.items():
                 if name not in bound_args.arguments:
                     if name == _CONTEXT_PARAM_NAME:
                         bound_args.arguments[name] = self
-                    elif name == _CONFIGURATION_PARAM_NAME:
-                        bound_args.arguments[name] = self.config
                     elif name in self:
                         bound_args.arguments[name] = self.get(name)
             return func(*bound_args.args, **bound_args.kwargs)
 
         return wrapper
 
-    def __call__(self, func: t.Callable) -> t.Callable:
+    wire = inject_dependencies  # Alias for inject_dependencies
+
+    def __call__(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
         """Allow the context to be used as a decorator.
 
         Args:
@@ -528,30 +555,69 @@ class Context(t.MutableMapping[str, t.Any]):
         """
         return self.inject_dependencies(func)
 
-    def dependency(
+    @t.overload
+    def register_dep(
+        self,
+        func: t.Callable[P, T],
+        /,
+    ) -> t.Callable[P, T]:
+        """Decorator to register a singleton dependency in the global context.
+
+        Args:
+            func: Function to register.
+
+        Returns:
+            Function that registers the dependency in the global context.
+        """
+
+    @t.overload
+    def register_dep(
         self,
         name: t.Optional[str] = None,
         /,
+        *,
         singleton: bool = True,
         namespace: t.Optional[str] = None,
-    ) -> t.Callable:
-        """Decorator to register a dependency in the context.
+    ) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
+        """Decorator to register a dependency in the global context.
 
         Args:
-            name: Name of the dependency.
+            name: Name of the dependency, if not provided, the function name is used.
             singleton: Whether the dependency should be a singleton.
             namespace: Namespace to use for the dependency.
 
         Returns:
-            Decorator function that registers the dependency in the context.
+            Decorator function that registers the dependency in the global context.
         """
 
-        def decorator(func: t.Callable[..., t.Any]) -> t.Callable[..., t.Any]:
-            nonlocal name
-            if name is None:
-                name = func.__name__
-            self.add_factory(name, func, singleton=singleton, namespace=namespace)
+    def register_dep(
+        self,
+        name_or_func: t.Union[None, str, t.Callable[P, T]] = None,
+        /,
+        singleton: bool = True,
+        namespace: t.Optional[str] = None,
+    ) -> t.Union[t.Callable[P, T], t.Callable[[t.Callable[P, T]], t.Callable[P, T]]]:
+        """Decorator to register a dependency in the global context.
+
+        Args:
+            name_or_func: Name of the dependency or function to register.
+            singleton: Whether the dependency should be a singleton.
+            namespace: Namespace to use for the dependency.
+
+        Returns:
+            Decorator function that registers the dependency in the global context.
+        """
+
+        def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
+            nonlocal name_or_func
+            name = name_or_func if isinstance(name_or_func, str) else func.__name__
+            self.add_factory(
+                name or func.__name__, func, singleton=singleton, namespace=namespace
+            )
             return func
+
+        if callable(name_or_func):
+            return decorator(name_or_func)
 
         return decorator
 
@@ -611,16 +677,33 @@ active_context: ContextVar[Context] = ContextVar("active_context")
 """Stores the active context for the current execution context."""
 
 
-def dependency(
+@t.overload
+def register_dep(
+    func: t.Callable[P, T],
+    /,
+) -> t.Callable[P, T]:
+    """Decorator to register a singleton dependency in the global context.
+
+    Args:
+        func: Function to register.
+
+    Returns:
+        Function that registers the dependency in the global context.
+    """
+
+
+@t.overload
+def register_dep(
     name: t.Optional[str] = None,
     /,
+    *,
     singleton: bool = True,
     namespace: t.Optional[str] = None,
-):
+) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
     """Decorator to register a dependency in the global context.
 
     Args:
-        name: Name of the dependency.
+        name: Name of the dependency, if not provided, the function name is used.
         singleton: Whether the dependency should be a singleton.
         namespace: Namespace to use for the dependency.
 
@@ -628,13 +711,35 @@ def dependency(
         Decorator function that registers the dependency in the global context.
     """
 
-    def decorator(func: t.Callable[..., t.Any]) -> t.Callable[..., t.Any]:
-        nonlocal name
-        if name is None:
-            name = func.__name__
+
+def register_dep(
+    name_or_func: t.Union[None, str, t.Callable[P, T]] = None,
+    /,
+    singleton: bool = True,
+    namespace: t.Optional[str] = None,
+) -> t.Union[t.Callable[P, T], t.Callable[[t.Callable[P, T]], t.Callable[P, T]]]:
+    """Decorator to register a dependency in the global context.
+
+    Args:
+        name_or_func: Name of the dependency or function to register.
+        singleton: Whether the dependency should be a singleton.
+        namespace: Namespace to use for the dependency.
+
+    Returns:
+        Decorator function that registers the dependency in the global context.
+    """
+
+    def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
+        nonlocal name_or_func
+        name = name_or_func if isinstance(name_or_func, str) else func.__name__
         ctx = active_context.get()
-        ctx.add_factory(name, func, singleton=singleton, namespace=namespace)
+        ctx.add_factory(
+            name or func.__name__, func, singleton=singleton, namespace=namespace
+        )
         return func
+
+    if callable(name_or_func):
+        return decorator(name_or_func)
 
     return decorator
 
@@ -666,7 +771,7 @@ if __name__ == "__main__":
 
     active_context.set(ctx)
 
-    @dependency("bar")
+    @register_dep("bar")
     def foo(context: Context, configuration: dict) -> bool:
         assert context is ctx, "Context is not the same"
         assert configuration is ctx.config, "Config is not the same"

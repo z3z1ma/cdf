@@ -1,0 +1,7 @@
+options:
+  - name: "postgres"
+datasets:
+  main:
+    - table1
+external_api:
+  api_key: 123
