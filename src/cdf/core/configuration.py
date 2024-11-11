@@ -1,51 +1,13 @@
-"""Configuration utilities for the CDF configuration resolver system.
+"""Configuration utils for the CDF configuration resolver system.
 
-There are 3 ways to request configuration values:
-
-1. Using a Request annotation:
-
-Pro: It's explicit and re-usable. An annotation can be used in multiple places.
+A function or method which is wired to the configuration resolver can specific a
+kwarg named context and configuration can be accessed via context.config["..."]
 
 ```python
 import typing as t
-import cdf.core.configuration as conf
 
-def foo(bar: t.Annotated[str, conf.Request["api.key"]]) -> None:
-    print(bar)
-```
-
-2. Setting a __cdf_resolve__ attribute on a callable object. This can be done
-directly or by using the `map_section` or `map_values` decorators:
-
-Pro: It's concise and can be used in a decorator. It also works with classes.
-
-```python
-import cdf.core.configuration as conf
-
-@conf.map_section("api")
-def foo(key: str) -> None:
-    print(key)
-
-@conf.map_values(key="api.key")
-def bar(key: str) -> None:
-    print(key)
-
-def baz(key: str) -> None:
-    print(key)
-
-baz.__cdf_resolve__ = ("api",)
-```
-
-3. Using the `_cdf_resolve` kwarg to request the resolver:
-
-Pro: It's flexible and can be used in any function. It requires no imports.
-
-```python
-def foo(key: str, _cdf_resolve=("api",)) -> None:
-    print(key)
-
-def bar(key: str, _cdf_resolve={"key": "api.key"}) -> None:
-    print(key)
+def foo(context) -> None:
+    print(context.config["bar"])
 ```
 """
 
@@ -342,41 +304,6 @@ class ConfigLoader:
 _MISSING: t.Any = object()
 """A sentinel value for a missing configuration value."""
 
-RESOLVER_HINT = "__cdf_resolve__"
-"""A hint to engage the configuration resolver."""
-
-
-def map_config_section(
-    *sections: str,
-) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
-    """Mark a function to inject configuration values from a specific section."""
-
-    def decorator(func_or_cls: t.Callable[P, T]) -> t.Callable[P, T]:
-        setattr(inspect.unwrap(func_or_cls), RESOLVER_HINT, sections)
-        return func_or_cls
-
-    return decorator
-
-
-def map_config_values(
-    **mapping: t.Any,
-) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
-    """Mark a function to inject configuration values from a specific mapping of param names to keys."""
-
-    def decorator(func_or_cls: t.Callable[P, T]) -> t.Callable[P, T]:
-        setattr(inspect.unwrap(func_or_cls), RESOLVER_HINT, mapping)
-        return func_or_cls
-
-    return decorator
-
-
-class Request:
-    def __init__(self, item: str):
-        self.item = item
-
-    def __class_getitem__(cls, item: str) -> "Request":
-        return cls(item)
-
 
 class ConfigLoaderProtocol(t.Protocol):
     environment: str
@@ -405,7 +332,7 @@ class ConfigResolver(t.MutableMapping[str, t.Any]):
         1. It determines supplementary configuration file to load, e.g. config.dev.json.
         2. It prefixes configuration keys and prioritizes them over non-prefixed keys. e.g. dev.api.key.
 
-        These are not mutually exclusive and can be used together.
+        These are not mutually exclusive and can be used together. See 12-factor app best practices.
 
         Args:
             sources: The sources of configuration.
@@ -486,34 +413,11 @@ class ConfigResolver(t.MutableMapping[str, t.Any]):
         self._config = None
         return sources
 
-    map_section = staticmethod(map_config_section)
-    """Mark a function to inject configuration values from a specific section."""
-
-    map_values = staticmethod(map_config_values)
-    """Mark a function to inject configuration values from a specific mapping of param names to keys."""
-
     add_custom_converter = staticmethod(add_custom_converter)
     """Add a custom converter to the configuration system."""
 
     apply_converters = staticmethod(apply_converters)
     """Apply converters to a string."""
-
-    KWARG_HINT = "_cdf_resolve"
-    """A hint supplied in a kwarg to engage the configuration resolver."""
-
-    def _parse_hint_from_params(
-        self, func_or_cls: t.Callable, sig: t.Optional[inspect.Signature] = None
-    ) -> t.Optional[t.Union[t.Tuple[str, ...], t.Mapping[str, str]]]:
-        """Get the sections or explicit lookups from a function.
-
-        This assumes a kwarg named `_cdf_resolve` that is either a tuple of section names or
-        a dictionary of param names to config keys is present in the function signature.
-        """
-        sig = sig or inspect.signature(func_or_cls)
-        if self.KWARG_HINT in sig.parameters:
-            resolver_spec = sig.parameters[self.KWARG_HINT]
-            if isinstance(resolver_spec.default, (tuple, dict)):
-                return resolver_spec.default
 
     def resolve_defaults(self, func_or_cls: t.Callable[P, T]) -> t.Callable[..., T]:
         """Resolve configuration values into a function or class."""
@@ -522,12 +426,6 @@ class ConfigResolver(t.MutableMapping[str, t.Any]):
 
         sig = inspect.signature(func_or_cls)
         is_resolved_sentinel = "__config_resolved__"
-
-        resolver_hint = getattr(
-            inspect.unwrap(func_or_cls),
-            RESOLVER_HINT,
-            self._parse_hint_from_params(func_or_cls, sig),
-        )
 
         if any(hasattr(f, is_resolved_sentinel) for f in _iter_wrapped(func_or_cls)):
             return func_or_cls
@@ -549,6 +447,8 @@ class ConfigResolver(t.MutableMapping[str, t.Any]):
             # Resolve configuration values
             for name, param in sig.parameters.items():
                 value = _MISSING
+                # TODO: just look for context?
+
                 if not self.is_resolvable(param):
                     continue
 
