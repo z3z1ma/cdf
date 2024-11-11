@@ -1,14 +1,18 @@
 """Context module for dependency injection and configuration management."""
 
 import ast
+import asyncio
 import collections
+import importlib.util
 import inspect
 import io
 import json
+import linecache
 import os
 import re
 import string
 import sys
+import threading
 import typing as t
 from contextvars import ContextVar
 from functools import wraps
@@ -27,7 +31,7 @@ ConfigurationSource = t.Union[
 ]
 
 _CONTEXT_PARAM_NAME = "context"
-_CONFIG_PARAM_NAME = "configuration"
+_CONFIGURATION_PARAM_NAME = "configuration"
 
 __all__ = [
     "Context",
@@ -185,6 +189,14 @@ def _scope_configs(*configs: Box) -> Box:
     return ConverterBox(collections.ChainMap(*configs), box_dots=True)
 
 
+class DependencyCycleError(RuntimeError):
+    """Raised when a dependency cycle is detected."""
+
+
+class DependencyNotFoundError(KeyError):
+    """Raised when a dependency is not found in the context."""
+
+
 class SimpleConfigurationLoader:
     """Loads configuration from multiple sources and merges them using a resolution strategy."""
 
@@ -218,8 +230,6 @@ class SimpleConfigurationLoader:
 
     def load(self) -> Box:
         """Load and merge configurations from all sources."""
-        if self._config is not None:
-            return self._config
         configs = [Box(self._load(source), box_dots=True) for source in self.sources]
         self._config = self._resolver(*configs)
         return self._config
@@ -259,37 +269,58 @@ class SimpleConfigurationLoader:
 class Context(t.MutableMapping[str, t.Any]):
     """Provides access to configuration and acts as a DI container with dependency resolution."""
 
-    def __init__(self, config_loader: SimpleConfigurationLoader) -> None:
+    loader_type = SimpleConfigurationLoader
+
+    def __init__(
+        self,
+        loader: SimpleConfigurationLoader,
+        namespace: t.Optional[str] = None,
+        parent: t.Optional["Context"] = None,
+    ) -> None:
         """Initialize the context with a configuration loader.
 
         Args:
-            config_loader: Configuration loader to use for loading configuration.
+            loader: Configuration loader to use for loading configuration.
+            namespace: Namespace to use for the context.
+            parent: Parent context to inherit dependencies from.
         """
-        self._config_loader = config_loader
+        self._loader = loader
         self._config: t.Optional[Box] = None
-        self._dependencies: t.Dict[str, t.Any] = {}
-        self._factories: t.Dict[str, t.Tuple[t.Callable[..., t.Any], bool]] = {}
-        self._singletons: t.Dict[str, t.Any] = {}
-        self._resolving: t.Set[str] = set()
+        self._dependencies: t.Dict[t.Tuple[t.Optional[str], str], t.Any] = {}
+        self._factories: t.Dict[
+            t.Tuple[t.Optional[str], str], t.Tuple[t.Callable[..., t.Any], bool]
+        ] = {}
+        self._singletons: t.Dict[t.Tuple[t.Optional[str], str], t.Any] = {}
+        self._resolving: t.Set[t.Tuple[t.Optional[str], str]] = set()
+        self._lock = threading.Lock()
+        self.namespace = namespace
+        self.parent = parent
 
     @property
     def config(self) -> Box:
         """Lazily load and return the configuration as a Box."""
         if self._config is None:
-            self._config = self._config_loader.load()
+            self._config = self._loader.load()
         return self._config
 
-    def add(self, name: str, instance: t.Any) -> None:
+    def add(
+        self, name: str, instance: t.Any, namespace: t.Optional[str] = None
+    ) -> None:
         """Register a dependency instance.
 
         Args:
             name: Name of the dependency.
             instance: Dependency instance to register.
         """
-        self._dependencies[name] = instance
+        with self._lock:
+            self._dependencies[(namespace or self.namespace, name)] = instance
 
     def add_factory(
-        self, name: str, factory: t.Callable[..., t.Any], singleton: bool = True
+        self,
+        name: str,
+        factory: t.Callable[..., t.Any],
+        singleton: bool = True,
+        namespace: t.Optional[str] = None,
     ) -> None:
         """Register a dependency factory.
 
@@ -297,17 +328,26 @@ class Context(t.MutableMapping[str, t.Any]):
             name: Name of the dependency.
             factory: Dependency factory function.
             singleton: Whether the dependency should be a singleton.
+            namespace: Namespace to use for the dependency.
         """
-        self._factories[name] = (factory, singleton)
-        if singleton and name in self._singletons:
-            del self._singletons[name]
+        key = (namespace or self.namespace, name)
+        with self._lock:
+            self._factories[key] = (factory, singleton)
+            if singleton and key in self._singletons:
+                del self._singletons[key]
 
-    def get(self, name: str, default: t.Optional[t.Any] = None) -> t.Any:
+    def get(
+        self,
+        name: str,
+        default: t.Optional[t.Any] = ...,
+        namespace: t.Optional[str] = None,
+    ) -> t.Any:
         """Resolve a dependency by name, handling recursive dependencies.
 
         Args:
             name: Name of the dependency.
             default: Default value to return if the dependency is not found.
+            namespace: Namespace to use for the dependency.
 
         Raises:
             RuntimeError: If a dependency cycle is detected.
@@ -315,27 +355,43 @@ class Context(t.MutableMapping[str, t.Any]):
         Returns:
             Resolved dependency or default value.
         """
-        if name in self._dependencies:
-            return self._dependencies[name]
-        elif name in self._factories:
-            if name in self._resolving:
-                raise RuntimeError(
-                    f"Dependency cycle detected: {' -> '.join(list(self._resolving) + [name])}"
+        key = (namespace or self.namespace, name)
+        with self._lock:
+            if key in self._dependencies:
+                return self._dependencies[key]
+            elif key in self._factories:
+                if key in self._resolving:
+                    cycle = " -> ".join(
+                        [f"{ns}:{n}" for ns, n in list(self._resolving) + [key]]
+                    )
+                    raise DependencyCycleError(f"Dependency cycle detected: {cycle}")
+                self._resolving.add(key)
+                try:
+                    factory, singleton = self._factories[key]
+                    if singleton and key in self._singletons:
+                        return self._singletons[key]
+                    factory = self.inject_dependencies(factory)
+                    result = factory()
+                    if inspect.iscoroutine(result):
+                        try:
+                            loop = asyncio.get_running_loop()
+                        except RuntimeError:
+                            loop = asyncio.new_event_loop()
+                        result = loop.run_until_complete(result)
+                    if singleton:
+                        self._singletons[key] = result
+                    return result
+                finally:
+                    self._resolving.remove(key)
+            elif self.parent:
+                return self.parent.get(name, default, namespace or self.namespace)
+            else:
+                if default is not ...:
+                    return default
+                raise DependencyNotFoundError(
+                    f"Dependency '{name}' not found in namespace '{namespace or self.namespace}'. "
+                    f"Available dependencies: {list(self)}"
                 )
-            self._resolving.add(name)
-            try:
-                factory, singleton = self._factories[name]
-                wrapped_factory = self.inject_dependencies(factory)
-                if singleton:
-                    if name not in self._singletons:
-                        self._singletons[name] = wrapped_factory()
-                    return self._singletons[name]
-                else:
-                    return wrapped_factory()
-            finally:
-                self._resolving.remove(name)
-        else:
-            return default
 
     def __getitem__(self, name: str) -> t.Any:
         """Allow dictionary-like access to dependencies.
@@ -344,7 +400,7 @@ class Context(t.MutableMapping[str, t.Any]):
             name: Name of the dependency.
 
         Raises:
-            KeyError: If the dependency is not found.
+            DependencyNotFoundError: If the dependency is not found.
 
         Returns:
             Resolved dependency.
@@ -373,22 +429,31 @@ class Context(t.MutableMapping[str, t.Any]):
             name: Name of the dependency.
 
         Raises:
-            KeyError: If the dependency is not found.
+            DependencyNotFoundError: If the dependency is not found.
 
         Returns:
             Resolved dependency.
         """
-        if name in self._dependencies:
-            del self._dependencies[name]
-        elif name in self._factories:
-            del self._factories[name]
-            self._singletons.pop(name, None)
-        else:
-            raise KeyError(f"Dependency '{name}' not found")
+        key = (self.namespace, name)
+        with self._lock:
+            if key in self._dependencies:
+                del self._dependencies[key]
+            elif key in self._factories:
+                del self._factories[key]
+                self._singletons.pop(key, None)
+            else:
+                raise DependencyNotFoundError(
+                    f"Dependency '{name}' not found in namespace '{self.namespace}'"
+                )
 
     def __iter__(self) -> t.Iterator[str]:
         """Iterate over the dependency names."""
-        return iter(set(self._dependencies.keys()).union(self._factories.keys()))
+        return (
+            name
+            for (_, name) in set(self._dependencies.keys()).union(
+                self._factories.keys()
+            )
+        )
 
     def __len__(self) -> int:
         """Return the number of dependencies."""
@@ -403,7 +468,8 @@ class Context(t.MutableMapping[str, t.Any]):
         Returns:
             True if the dependency is registered, False otherwise
         """
-        return name in self._dependencies or name in self._factories
+        key = (self.namespace, name)
+        return key in self._dependencies or key in self._factories
 
     def inject_dependencies(self, func: t.Callable) -> t.Callable:
         """Decorator to inject dependencies into functions based on parameter names.
@@ -413,23 +479,47 @@ class Context(t.MutableMapping[str, t.Any]):
 
         Returns:
             Decorated function that injects dependencies based on parameter names.
+
+        Example:
+            @context.inject_dependencies
+            def my_function(db_connection, config):
+                # db_connection and config are injected based on their names
+                pass
         """
         sig = inspect.signature(func)
 
-        @wraps(func)
-        def wrapper(*args, **kwargs):
-            bound_args = sig.bind_partial(*args, **kwargs)
-            for name, _ in sig.parameters.items():
-                if name not in bound_args.arguments:
-                    if name == _CONTEXT_PARAM_NAME:
-                        bound_args.arguments[name] = self
-                    elif name == _CONFIG_PARAM_NAME:
-                        bound_args.arguments[name] = self.config
-                    elif name in self:
-                        bound_args.arguments[name] = self.get(name)
-            return func(*bound_args.args, **bound_args.kwargs)
+        if inspect.iscoroutinefunction(func):
 
-        return wrapper
+            @wraps(func)
+            async def awrapper(*args, **kwargs):
+                bound_args = sig.bind_partial(*args, **kwargs)
+                for name, _ in sig.parameters.items():
+                    if name not in bound_args.arguments:
+                        if name == _CONTEXT_PARAM_NAME:
+                            bound_args.arguments[name] = self
+                        elif name == _CONFIGURATION_PARAM_NAME:
+                            bound_args.arguments[name] = self.config
+                        elif name in self:
+                            bound_args.arguments[name] = self.get(name)
+                return await func(*bound_args.args, **bound_args.kwargs)
+
+            return awrapper
+        else:
+
+            @wraps(func)
+            def wrapper(*args, **kwargs):
+                bound_args = sig.bind_partial(*args, **kwargs)
+                for name, _ in sig.parameters.items():
+                    if name not in bound_args.arguments:
+                        if name == _CONTEXT_PARAM_NAME:
+                            bound_args.arguments[name] = self
+                        elif name == _CONFIGURATION_PARAM_NAME:
+                            bound_args.arguments[name] = self.config
+                        elif name in self:
+                            bound_args.arguments[name] = self.get(name)
+                return func(*bound_args.args, **bound_args.kwargs)
+
+            return wrapper
 
     def __call__(self, func: t.Callable) -> t.Callable:
         """Allow the context to be used as a decorator.
@@ -443,13 +533,18 @@ class Context(t.MutableMapping[str, t.Any]):
         return self.inject_dependencies(func)
 
     def dependency(
-        self, name: t.Optional[str] = None, /, singleton: bool = True
+        self,
+        name: t.Optional[str] = None,
+        /,
+        singleton: bool = True,
+        namespace: t.Optional[str] = None,
     ) -> t.Callable:
         """Decorator to register a dependency in the context.
 
         Args:
             name: Name of the dependency.
             singleton: Whether the dependency should be a singleton.
+            namespace: Namespace to use for the dependency.
 
         Returns:
             Decorator function that registers the dependency in the context.
@@ -459,22 +554,79 @@ class Context(t.MutableMapping[str, t.Any]):
             nonlocal name
             if name is None:
                 name = func.__name__
-            self.add_factory(name, func, singleton=singleton)
+            self.add_factory(name, func, singleton=singleton, namespace=namespace)
             return func
 
         return decorator
+
+    def __enter__(self) -> "Context":
+        self._token = active_context.set(self)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        active_context.reset(self._token)
+
+    def reload_config(self):
+        """Reload the configuration from the sources."""
+        self._config = self._loader.load()
+
+    def combine(self, other: "Context") -> "Context":
+        """Combine this context with another, returning a new context with merged configurations and dependencies.
+
+        Args:
+            other: Context to combine with.
+
+        Returns:
+            New context with merged configurations and dependencies
+        """
+        combined_loader = self.loader_type(
+            *self._loader.sources,
+            *other._loader.sources,
+            resolution_strategy="merge",
+        )
+        combined_context = self.__class__(
+            loader=combined_loader, namespace=self.namespace, parent=self
+        )
+        combined_context._dependencies.update(other._dependencies)
+        combined_context._factories.update(other._factories)
+        combined_context._singletons.update(other._singletons)
+        return combined_context
+
+    def load_dependencies_from_config(self):
+        """Load plugins specified in the configuration under 'dependency_paths'."""
+        dep_paths = self.config.get("dependency_paths", [])
+        with self, self._lock:
+            linecache.clearcache()
+            for path_str in dep_paths:
+                path = Path(path_str)
+                if path.is_dir():
+                    for file in path.glob("*.py"):
+                        module_name = file.stem
+                        spec = importlib.util.spec_from_file_location(module_name, file)
+                        module = importlib.util.module_from_spec(spec)  # type: ignore
+                        spec.loader.exec_module(module)  # type: ignore
+                else:
+                    raise ValueError(
+                        f"Plugin path '{path}' is not a directory or does not exist."
+                    )
 
 
 active_context: ContextVar[Context] = ContextVar("active_context")
 """Stores the active context for the current execution context."""
 
 
-def dependency(name: t.Optional[str] = None, /, singleton: bool = True):
+def dependency(
+    name: t.Optional[str] = None,
+    /,
+    singleton: bool = True,
+    namespace: t.Optional[str] = None,
+):
     """Decorator to register a dependency in the global context.
 
     Args:
         name: Name of the dependency.
         singleton: Whether the dependency should be a singleton.
+        namespace: Namespace to use for the dependency.
 
     Returns:
         Decorator function that registers the dependency in the global context.
@@ -485,7 +637,7 @@ def dependency(name: t.Optional[str] = None, /, singleton: bool = True):
         if name is None:
             name = func.__name__
         ctx = active_context.get()
-        ctx.add_factory(name, func, singleton=singleton)
+        ctx.add_factory(name, func, singleton=singleton, namespace=namespace)
         return func
 
     return decorator
@@ -493,7 +645,7 @@ def dependency(name: t.Optional[str] = None, /, singleton: bool = True):
 
 if __name__ == "__main__":
     ctx = Context(
-        config_loader=SimpleConfigurationLoader(
+        loader=SimpleConfigurationLoader(
             # Example configuration sources, dictionary, file path, callable
             # with converters and environment variable expansion
             {"name": "${USER}", "age": 30},
@@ -501,7 +653,9 @@ if __name__ == "__main__":
             lambda: {"processor": "add_one", "seq": "@tuple (1,2,3)"},
             lambda: {"model_A": "@float @resolve age"},
             "pyproject.toml",
-        )
+            {"dependency_paths": ["path/ok"]},
+        ),
+        namespace="foo",
     )
     # Access configuration by index or attr (configs are merged)
     print(ctx.config["name"], ctx.config.age)
@@ -517,10 +671,14 @@ if __name__ == "__main__":
     active_context.set(ctx)
 
     @dependency("bar")
-    def foo(context: Context, config: dict) -> bool:
+    def foo(context: Context, configuration: dict) -> bool:
         assert context is ctx, "Context is not the same"
-        assert config is ctx.config, "Config is not the same"
+        assert configuration is ctx.config, "Config is not the same"
         return True
 
     # Inject dependencies
     print(ctx["bar"])
+
+    ctx_other = Context(loader=SimpleConfigurationLoader({"name": "Alice"}))
+    ctx_merged = ctx.combine(ctx_other)
+    print(ctx_merged.config.name)
