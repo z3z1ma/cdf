@@ -393,7 +393,7 @@ class Context(t.MutableMapping[str, t.Any]):
                 factory, singleton = self._factories[key]
                 if singleton and key in self._singletons:
                     return self._singletons[key]
-                factory = self.inject_dependencies(factory)
+                factory = self.inject_deps(factory)
                 result = factory()
                 if inspect.iscoroutine(result):
                     try:
@@ -509,7 +509,7 @@ class Context(t.MutableMapping[str, t.Any]):
         key = (self.namespace, name)
         return key in self._dependencies or key in self._factories
 
-    def inject_dependencies(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
+    def inject_deps(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
         """Decorator to inject dependencies into functions based on parameter names.
 
         We also inject the context as a parameter with the name 'C'. This is allows
@@ -522,7 +522,7 @@ class Context(t.MutableMapping[str, t.Any]):
             Decorated function that injects dependencies based on parameter names.
 
         Example:
-            @context.inject_dependencies
+            @context.inject_deps
             def my_function(db_connection, config):
                 # db_connection and config are injected based on their names
                 pass
@@ -542,7 +542,7 @@ class Context(t.MutableMapping[str, t.Any]):
 
         return wrapper
 
-    wire = inject_dependencies  # Alias for inject_dependencies
+    wire = inject_deps  # Alias for inject_deps
 
     def __call__(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
         """Allow the context to be used as a decorator.
@@ -553,7 +553,7 @@ class Context(t.MutableMapping[str, t.Any]):
         Returns:
             Decorated function that injects dependencies based on parameter names.
         """
-        return self.inject_dependencies(func)
+        return self.inject_deps(func)
 
     @t.overload
     def register_dep(

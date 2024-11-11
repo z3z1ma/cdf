@@ -26,13 +26,13 @@ logger = logging.getLogger(__name__)
 
 # This exists because the default harness LRU implementation does not store >1000 flags
 # The interface is mostly satisfied by dict, so we subclass it and implement the missing methods
-class _HarnessCache(dict, Cache):
+class _HarnessCache(dict, Cache):  # type: ignore
     """A cache implementation for the harness feature flag provider."""
 
     def set(self, key: str, value: bool) -> None:
         self[key] = value
 
-    def remove(self, key: str | t.List[str]) -> None:
+    def remove(self, key: str | t.List[str]) -> None:  # type: ignore
         if isinstance(key, str):
             self.pop(key, None)
         for k in key:
