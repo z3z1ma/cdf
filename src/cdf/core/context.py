@@ -654,24 +654,6 @@ class Context(t.MutableMapping[str, t.Any]):
         combined_context._singletons.update(other._singletons)
         return combined_context
 
-    def load_dependencies_from_config(self):
-        """Load plugins specified in the configuration under 'dependency_paths'."""
-        dep_paths = self.config.get("dependency_paths", [])
-        with self:
-            linecache.clearcache()
-            for path_str in dep_paths:
-                path = Path(path_str)
-                if path.is_dir():
-                    for file in path.glob("*.py"):
-                        module_name = file.stem
-                        spec = importlib.util.spec_from_file_location(module_name, file)
-                        module = importlib.util.module_from_spec(spec)  # type: ignore
-                        spec.loader.exec_module(module)  # type: ignore
-                else:
-                    raise ValueError(
-                        f"Plugin path '{path}' is not a directory or does not exist."
-                    )
-
 
 active_context: ContextVar[Context] = ContextVar("active_context")
 """Stores the active context for the current execution context."""

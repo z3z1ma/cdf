@@ -37,7 +37,11 @@ def num_abilities(resp: requests.Response) -> int:
 
 
 def test_fetch():
+    import asyncio
+
     futs = []
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     for i in range(5):
         print(f"Starting iteration {i}")
         futs.append(
@@ -49,6 +53,7 @@ def test_fetch():
         )
 
     for fut in futs:
+        loop.run_until_complete(fut)
         print(fut.unwrap())
 
 

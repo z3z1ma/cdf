@@ -235,29 +235,6 @@ def test_converters(config_source: dict, expected_result: object):
     assert list(config.values())[0] == expected_result
 
 
-def test_plugin_loading(tmp_path):
-    """Test loading plugins from a directory and using the defined services."""
-    plugin_dir = tmp_path / "plugins"
-    plugin_dir.mkdir()
-    plugin_file = plugin_dir / "my_plugin.py"
-    plugin_file.write_text(
-        """
-from cdf.core.context import register_dep
-
-@register_dep
-def plugin_service():
-    return "Service from plugin"
-"""
-    )
-
-    config_source = {"dependency_paths": [str(plugin_dir)]}
-    loader = SimpleConfigurationLoader(config_source, include_env=False)
-    context = Context(loader)
-    context.load_dependencies_from_config()
-
-    assert context.get("plugin_service") == "Service from plugin"
-
-
 def test_dependency_cycle_detection(basic_context: Context):
     """Test detection of cyclic dependencies."""
 
