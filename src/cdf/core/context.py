@@ -260,7 +260,11 @@ class Context(t.MutableMapping[str, t.Any]):
     """Provides access to configuration and acts as a DI container with dependency resolution."""
 
     def __init__(self, config_loader: SimpleConfigurationLoader) -> None:
-        """Initialize the context with a configuration loader."""
+        """Initialize the context with a configuration loader.
+
+        Args:
+            config_loader: Configuration loader to use for loading configuration.
+        """
         self._config_loader = config_loader
         self._config: t.Optional[Box] = None
         self._dependencies: t.Dict[str, t.Any] = {}
@@ -276,19 +280,41 @@ class Context(t.MutableMapping[str, t.Any]):
         return self._config
 
     def add(self, name: str, instance: t.Any) -> None:
-        """Register a dependency instance."""
+        """Register a dependency instance.
+
+        Args:
+            name: Name of the dependency.
+            instance: Dependency instance to register.
+        """
         self._dependencies[name] = instance
 
     def add_factory(
         self, name: str, factory: t.Callable[..., t.Any], singleton: bool = True
     ) -> None:
-        """Register a dependency factory."""
+        """Register a dependency factory.
+
+        Args:
+            name: Name of the dependency.
+            factory: Dependency factory function.
+            singleton: Whether the dependency should be a singleton.
+        """
         self._factories[name] = (factory, singleton)
         if singleton and name in self._singletons:
             del self._singletons[name]
 
     def get(self, name: str, default: t.Optional[t.Any] = None) -> t.Any:
-        """Resolve a dependency by name, handling recursive dependencies."""
+        """Resolve a dependency by name, handling recursive dependencies.
+
+        Args:
+            name: Name of the dependency.
+            default: Default value to return if the dependency is not found.
+
+        Raises:
+            RuntimeError: If a dependency cycle is detected.
+
+        Returns:
+            Resolved dependency or default value.
+        """
         if name in self._dependencies:
             return self._dependencies[name]
         elif name in self._factories:
@@ -312,18 +338,46 @@ class Context(t.MutableMapping[str, t.Any]):
             return default
 
     def __getitem__(self, name: str) -> t.Any:
-        """Allow dictionary-like access to dependencies."""
+        """Allow dictionary-like access to dependencies.
+
+        Args:
+            name: Name of the dependency.
+
+        Raises:
+            KeyError: If the dependency is not found.
+
+        Returns:
+            Resolved dependency.
+        """
         return self.get(name)
 
     def __setitem__(self, name: str, value: t.Any) -> None:
-        """Set a dependency instance."""
+        """Set a dependency instance.
+
+        Args:
+            name: Name of the dependency.
+            value: Value to set as the dependency.
+
+        Returns:
+            Resolved dependency.
+        """
         if callable(value):
             self.add_factory(name, value)
         else:
             self.add(name, value)
 
     def __delitem__(self, name: str) -> None:
-        """Delete a dependency."""
+        """Delete a dependency.
+
+        Args:
+            name: Name of the dependency.
+
+        Raises:
+            KeyError: If the dependency is not found.
+
+        Returns:
+            Resolved dependency.
+        """
         if name in self._dependencies:
             del self._dependencies[name]
         elif name in self._factories:
@@ -341,11 +395,25 @@ class Context(t.MutableMapping[str, t.Any]):
         return len(set(self._dependencies.keys()).union(self._factories.keys()))
 
     def __contains__(self, name: object) -> bool:
-        """Check if a dependency is registered."""
+        """Check if a dependency is registered.
+
+        Args:
+            name: Name of the dependency.
+
+        Returns:
+            True if the dependency is registered, False otherwise
+        """
         return name in self._dependencies or name in self._factories
 
     def inject_dependencies(self, func: t.Callable) -> t.Callable:
-        """Decorator to inject dependencies into functions based on parameter names."""
+        """Decorator to inject dependencies into functions based on parameter names.
+
+        Args:
+            func: Function to decorate.
+
+        Returns:
+            Decorated function that injects dependencies based on parameter names.
+        """
         sig = inspect.signature(func)
 
         @wraps(func)
@@ -364,11 +432,28 @@ class Context(t.MutableMapping[str, t.Any]):
         return wrapper
 
     def __call__(self, func: t.Callable) -> t.Callable:
-        """Allow the context to be used as a decorator."""
+        """Allow the context to be used as a decorator.
+
+        Args:
+            func: Function to decorate.
+
+        Returns:
+            Decorated function that injects dependencies based on parameter names.
+        """
         return self.inject_dependencies(func)
 
-    def dependency(self, name: t.Optional[str] = None, /, singleton: bool = True):
-        """Decorator to register a service in the context."""
+    def dependency(
+        self, name: t.Optional[str] = None, /, singleton: bool = True
+    ) -> t.Callable:
+        """Decorator to register a dependency in the context.
+
+        Args:
+            name: Name of the dependency.
+            singleton: Whether the dependency should be a singleton.
+
+        Returns:
+            Decorator function that registers the dependency in the context.
+        """
 
         def decorator(func: t.Callable[..., t.Any]) -> t.Callable[..., t.Any]:
             nonlocal name
@@ -381,10 +466,19 @@ class Context(t.MutableMapping[str, t.Any]):
 
 
 active_context: ContextVar[Context] = ContextVar("active_context")
+"""Stores the active context for the current execution context."""
 
 
 def dependency(name: t.Optional[str] = None, /, singleton: bool = True):
-    """Decorator to register a service in the global context."""
+    """Decorator to register a dependency in the global context.
+
+    Args:
+        name: Name of the dependency.
+        singleton: Whether the dependency should be a singleton.
+
+    Returns:
+        Decorator function that registers the dependency in the global context.
+    """
 
     def decorator(func: t.Callable[..., t.Any]) -> t.Callable[..., t.Any]:
         nonlocal name
