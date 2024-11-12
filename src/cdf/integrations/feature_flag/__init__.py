@@ -16,7 +16,7 @@ from cdf.integrations.feature_flag.harness import HarnessFeatureFlagAdapter
 from cdf.integrations.feature_flag.launchdarkly import LaunchDarklyFeatureFlagAdapter
 from cdf.integrations.feature_flag.noop import NoopFeatureFlagAdapter
 from cdf.integrations.feature_flag.split import SplitFeatureFlagAdapter
-from cdf.types import M
+from cdf.data_structures import M
 
 ADAPTERS: t.Dict[str, t.Type[AbstractFeatureFlagAdapter]] = {
     "filesystem": FilesystemFeatureFlagAdapter,

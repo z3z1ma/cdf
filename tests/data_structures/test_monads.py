@@ -5,7 +5,7 @@ from collections import defaultdict
 
 import requests
 
-from cdf.types.monads import State, promise, state, to_state
+from cdf.data_structures.monads import State, promise, state, to_state
 
 threadtime = defaultdict(list)
 

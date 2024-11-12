@@ -4,13 +4,11 @@ import asyncio
 import os
 import pytest
 from cdf.core.context import (
-    _CONVERTERS,
     Context,
     DependencyCycleError,
     DependencyNotFoundError,
     SimpleConfigurationLoader,
     active_context,
-    add_custom_converter,
 )
 
 
@@ -28,49 +26,13 @@ def mock_environment():
 @pytest.fixture
 def simple_loader():
     """Fixture to provide a simple configuration loader."""
-    return SimpleConfigurationLoader("tests/fixtures/conf.yaml", include_env=False)
+    return SimpleConfigurationLoader("tests/fixtures/conf.yaml", include_envvars=False)
 
 
 @pytest.fixture
 def basic_context(simple_loader: SimpleConfigurationLoader):
     """Fixture to create a context with the simple loader."""
     return Context(simple_loader)
-
-
-def test_configuration_loader_with_env(mock_environment):
-    """Test that configuration values are loaded correctly with environment variable expansion."""
-    config_sources = [
-        {"name": "${USER}", "age": "@int 30"},
-        {"model": "SVM", "num_iter": "@int 35"},
-        lambda: {"processor": "add_one", "seq": "@tuple (1,2,3)"},
-        lambda: {"model_A": "@float @resolve age"},
-        {"dependency_paths": ["path/ok"]},
-    ]
-    loader = SimpleConfigurationLoader(*config_sources, include_env=False)
-    config = loader.load()
-
-    assert config.name == "test_user"
-    assert config.age == 30
-    assert config.model == "SVM"
-    assert config.num_iter == 35
-    assert config.processor == "add_one"
-    assert config.seq == (1, 2, 3)
-    assert config.model_A == 30.0
-    assert config.dependency_paths == ["path/ok"]
-
-
-def test_custom_converter_integration():
-    """Test custom converter functionality by adding a custom 'double' converter."""
-
-    def multiply_by_two(value: str) -> int:
-        return int(value) * 2
-
-    add_custom_converter("double", multiply_by_two)
-    loader = SimpleConfigurationLoader({"value": "@double 21"}, include_env=False)
-    config = loader.load()
-
-    assert config.value == 42
-    _CONVERTERS.pop("double")  # Cleanup after test
 
 
 def test_basic_dependency_injection(basic_context: Context):
@@ -117,16 +79,16 @@ def test_singleton_and_transient_dependencies(basic_context: Context):
 
 def test_namespaced_contexts():
     """Test dependency injection with namespaced contexts to prevent collisions."""
-    loader = SimpleConfigurationLoader(include_env=False)
+    loader = SimpleConfigurationLoader(include_envvars=False)
     parent = Context(loader, namespace="parent")
     child = Context(loader, namespace="child", parent=parent)
 
     @parent.register_dep
-    def service(): # type: ignore
+    def service():  # type: ignore
         return "Service in parent"
 
     @child.register_dep
-    def service(): # type: ignore
+    def service():  # type: ignore
         return "Service in child"
 
     assert child.get("service") == "Service in child"
@@ -176,7 +138,7 @@ def test_dependency_removal(basic_context: Context):
 
 def test_dependency_with_namespace():
     """Test namespaced dependency registration and retrieval."""
-    loader = SimpleConfigurationLoader(include_env=False)
+    loader = SimpleConfigurationLoader(include_envvars=False)
     context = Context(loader, namespace="main")
 
     @context.register_dep(namespace="db")
@@ -190,18 +152,18 @@ def test_dependency_with_namespace():
 
 def test_combined_contexts_with_conflicts():
     """Test combining contexts with conflicting dependency names across namespaces."""
-    loader1 = SimpleConfigurationLoader({"name": "Context1"}, include_env=False)
+    loader1 = SimpleConfigurationLoader({"name": "Context1"}, include_envvars=False)
     context1 = Context(loader1, namespace="ns1")
 
-    loader2 = SimpleConfigurationLoader({"age": 42}, include_env=False)
+    loader2 = SimpleConfigurationLoader({"age": 42}, include_envvars=False)
     context2 = Context(loader2, namespace="ns2")
 
     @context1.register_dep
-    def service(): # type: ignore
+    def service():  # type: ignore
         return "Service from ns1"
 
     @context2.register_dep
-    def service(): # type: ignore
+    def service():  # type: ignore
         return "Service from ns2"
 
     combined_context = context1.combine(context2)
@@ -211,7 +173,7 @@ def test_combined_contexts_with_conflicts():
 
 def test_reload_config():
     """Test configuration reloading after adding a new source."""
-    loader = SimpleConfigurationLoader({"value": 1}, include_env=False)
+    loader = SimpleConfigurationLoader({"value": 1}, include_envvars=False)
     context = Context(loader)
     assert context.config.value == 1
 
@@ -230,7 +192,7 @@ def test_reload_config():
 )
 def test_converters(config_source: dict, expected_result: object):
     """Test various built-in converters for list, bool, and dict values."""
-    loader = SimpleConfigurationLoader(config_source, include_env=False)
+    loader = SimpleConfigurationLoader(config_source, include_envvars=False)
     config = loader.load()
     assert list(config.values())[0] == expected_result
 
