@@ -3,6 +3,9 @@
 import asyncio
 import os
 import pytest
+from unittest import mock
+
+from contextlib import AbstractContextManager
 from cdf.core.context import (
     Context,
     DependencyCycleError,
@@ -10,6 +13,17 @@ from cdf.core.context import (
     SimpleConfigurationLoader,
     active_context,
 )
+
+
+class SampleResource(AbstractContextManager):
+    def __init__(self):
+        self.cleaned_up = False
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.cleaned_up = True
 
 
 @pytest.fixture
@@ -33,6 +47,43 @@ def simple_loader():
 def basic_context(simple_loader: SimpleConfigurationLoader):
     """Fixture to create a context with the simple loader."""
     return Context(simple_loader)
+
+
+@pytest.fixture
+def context():
+    mock_loader = mock.Mock()
+    return Context(loader=mock_loader)
+
+
+def test_resource_cleanup_on_exit(context: Context):
+    context.add_factory("sample_resource", SampleResource, singleton=False)
+    with context as ctx:
+        retrieved_resource = ctx.get("sample_resource")
+        assert not retrieved_resource.cleaned_up
+    assert retrieved_resource.cleaned_up
+
+    @context.wire
+    def foo(sample_resource):
+        assert not sample_resource.cleaned_up
+        return sample_resource
+
+    func_resource = foo()
+    assert func_resource.cleaned_up
+
+    @context.wire
+    def bar():
+        @context.wire
+        def baz(sample_resource):
+            assert not sample_resource.cleaned_up
+            return sample_resource
+
+        # ensure the resource is only cleaned up after the context.wire stack unwinds
+        scoped_resource = baz()
+        assert not scoped_resource.cleaned_up
+        return scoped_resource
+
+    nested_resource = bar()
+    assert nested_resource.cleaned_up
 
 
 def test_basic_dependency_injection(basic_context: Context):

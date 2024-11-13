@@ -1,5 +1,7 @@
-"""Context module for dependency injection and configuration management."""
+"""Context module for dependency injection."""
 
+import atexit
+import contextlib
 import asyncio
 import inspect
 import sys
@@ -7,7 +9,6 @@ import threading
 import typing as t
 from contextvars import ContextVar
 from functools import wraps
-from pathlib import Path
 
 from box import Box
 
@@ -25,9 +26,13 @@ P = ParamSpec("P")
 
 __all__ = [
     "Context",
+    "injected",
     "register_dep",
     "active_context",
 ]
+
+injected = object()
+"""Sentinel value to indicate that a dependency MUST be injected."""
 
 
 class DependencyCycleError(RuntimeError):
@@ -65,12 +70,16 @@ class Context(t.MutableMapping[str, t.Any]):
         self._singletons: t.Dict[t.Tuple[t.Optional[str], str], t.Any] = {}
         self._resolving: t.Set[t.Tuple[t.Optional[str], str]] = set()
         self._lock = threading.RLock()
+        self._exit_stack = contextlib.ExitStack()
+        self._call_stack_depth = 0
         self.namespace = namespace
         self.parent = parent
 
     @property
     def config(self) -> Box:
         """Lazily load and return the configuration as a Box."""
+        # TODO: instead of passing a loader, it might make more sense to pass loaded
+        # configuration and have the responsibility of loading live in a higher level
         if self._config is None:
             self._config = self._loader.load()
         return self._config
@@ -143,7 +152,13 @@ class Context(t.MutableMapping[str, t.Any]):
                     return self._singletons[key]
                 factory = self.inject_deps(factory)
                 result = factory()
-                if inspect.iscoroutine(result):
+                if isinstance(result, contextlib.AbstractContextManager):
+                    if singleton:
+                        result = result.__enter__()
+                        atexit.register(result.__exit__, None, None, None)
+                    else:
+                        result = self._exit_stack.enter_context(result)
+                elif inspect.iscoroutine(result):
                     try:
                         loop = asyncio.get_running_loop()
                     except RuntimeError:
@@ -280,13 +295,24 @@ class Context(t.MutableMapping[str, t.Any]):
         @wraps(func)
         def wrapper(*args, **kwargs) -> T:
             bound_args = sig.bind_partial(*args, **kwargs)
-            for name, _ in sig.parameters.items():
+            for name, p in sig.parameters.items():
                 if name not in bound_args.arguments:
                     if name == CONTEXT_PARAM_NAME:
                         bound_args.arguments[name] = self
                     elif name in self:
                         bound_args.arguments[name] = self.get(name)
-            return func(*bound_args.args, **bound_args.kwargs)
+                    elif p.default is injected:
+                        raise DependencyNotFoundError(
+                            f"Required dependency '{name}' not found in namespace '{self.namespace}' while calling '{func.__name__}'. "
+                        )
+            self._call_stack_depth += 1
+            try:
+                rv = func(*bound_args.args, **bound_args.kwargs)
+                return rv
+            finally:
+                self._call_stack_depth -= 1
+                if self._call_stack_depth == 0:
+                    self._exit_stack.close()
 
         return wrapper
 
@@ -375,6 +401,13 @@ class Context(t.MutableMapping[str, t.Any]):
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         active_context.reset(self._token)
+        self._exit_stack.close()
+        for key, (_, singleton) in self._factories.items():
+            if singleton and exc_type is not None:
+                instance = self._singletons[key]
+                atexit.unregister(instance.__exit__)
+                instance.__exit__(exc_type, exc_value, traceback)
+        self._singletons.clear()
 
     def reload_config(self):
         """Reload the configuration from the sources."""
@@ -401,6 +434,14 @@ class Context(t.MutableMapping[str, t.Any]):
         combined_context._factories.update(other._factories)
         combined_context._singletons.update(other._singletons)
         return combined_context
+
+    def reset(self) -> None:
+        """Reset the context to its initial state."""
+        self._config = None
+        self._dependencies.clear()
+        self._factories.clear()
+        self._singletons.clear()
+        self._resolving.clear()
 
 
 active_context: ContextVar[Context] = ContextVar("active_context")
