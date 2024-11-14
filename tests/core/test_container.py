@@ -54,44 +54,6 @@ def context():
     return Container()
 
 
-def test_resource_cleanup_on_exit(context: Container):
-    context.add_factory("sample_resource", SampleResource, singleton=False)
-    with context as ctx:
-        retrieved_resource = ctx.get("sample_resource")
-        assert not retrieved_resource.cleaned_up
-    assert retrieved_resource.cleaned_up
-
-    @context.wire
-    def foo(sample_resource):
-        assert not sample_resource.cleaned_up
-        return sample_resource
-
-    func_resource = foo()
-    assert func_resource.cleaned_up
-
-    @context.wire
-    def bar():
-        @context.wire
-        def baz(sample_resource):
-            assert not sample_resource.cleaned_up
-            return sample_resource
-
-        # ensure the resource is only cleaned up after the context.wire stack unwinds
-        scoped_resource = baz()
-        assert not scoped_resource.cleaned_up
-        return scoped_resource
-
-    nested_resource = bar()
-    assert nested_resource.cleaned_up
-
-    # ensure singletons are cleaned up on exit
-    context.add_factory("singleton_resource", SampleResource, singleton=True)
-    s_resource = context.get("singleton_resource")
-    assert not s_resource.cleaned_up
-    atexit._run_exitfuncs()
-    assert s_resource.cleaned_up
-
-
 def test_basic_dependency_injection(basic_context: Container):
     """Test basic dependency injection functionality within the context."""
     basic_context.config = {"db_url": "sqlite:///:memory:"}
@@ -112,26 +74,84 @@ def test_basic_dependency_injection(basic_context: Container):
     assert result == "Logic with Repo using Connected to sqlite:///:memory:"
 
 
-def test_singleton_and_transient_dependencies(basic_context: Container):
-    """Test singleton vs transient dependency behaviors."""
-    counter = {"count": 0}
+def test_add_and_retrieve_singleton_dependency(basic_context: Container):
+    """Test adding a singleton dependency using a factory."""
+    count = 0
 
-    @basic_context.register_dep("singleton_service", singleton=True)
+    def singleton_dep():
+        nonlocal count
+        count += 1
+        return f"instance_{count}"
+
+    basic_context.add_factory("singleton_dep", singleton_dep, singleton=True)
+    instance_1 = basic_context.get("singleton_dep")
+    instance_2 = basic_context.get("singleton_dep")
+    assert instance_1 == instance_2
+    assert count == 1
+
+
+def test_add_and_retrieve_transient_dependency(basic_context):
+    """Test adding a transient dependency using a factory."""
+    count = 0
+
+    def transient_dep():
+        nonlocal count
+        count += 1
+        return f"instance_{count}"
+
+    basic_context.add_factory("transient_dep", transient_dep, singleton=False)
+    instance_1 = basic_context.get("transient_dep")
+    instance_2 = basic_context.get("transient_dep")
+    assert instance_1 != instance_2
+    assert count == 2
+
+
+def test_register_dependency_with_decorator(basic_context: Container):
+    """Test registering a dependency using the register_dep decorator."""
+
+    @basic_context.register_dep("decorated_dep")
     def _():
-        counter["count"] += 1
-        return f"Instance {counter['count']}"
+        return "Decorated Dependency"
 
-    @basic_context.register_dep("transient_service", singleton=False)
-    def _():
-        counter["count"] += 1
-        return f"Instance {counter['count']}"
+    assert basic_context.get("decorated_dep") == "Decorated Dependency"
 
-    assert basic_context.get("singleton_service") == basic_context.get(
-        "singleton_service"
-    )
-    assert basic_context.get("transient_service") != basic_context.get(
-        "transient_service"
-    )
+
+def test_inject_deps_decorator(basic_context: Container):
+    """Test injecting dependencies into a function with inject_deps."""
+    basic_context.add("dep", "injected_value")
+
+    @basic_context.inject_deps
+    def func(dep):
+        return dep
+
+    assert func() == "injected_value"
+
+
+def test_dependency_cycle_detection(basic_context: Container):
+    """Test detection of cyclic dependencies."""
+
+    @basic_context.register_dep("service_a")
+    def _(service_b):
+        return "Service A" + service_b
+
+    @basic_context.register_dep("service_b")
+    def _(service_a):
+        return "Service B" + service_a
+
+    with pytest.raises(DependencyCycleError):
+        basic_context.get("service_a")
+
+
+def test_add_and_inject_multiple_dependencies(basic_context: Container):
+    """Test adding and injecting multiple dependencies into a function."""
+    basic_context.add("db_conn", "db_connection")
+    basic_context.add("cache", "cache_service")
+
+    @basic_context.inject_deps
+    def process(db_conn, cache):
+        return f"{db_conn} and {cache}"
+
+    assert process() == "db_connection and cache_service"
 
 
 def test_namespaced_contexts():
@@ -149,6 +169,28 @@ def test_namespaced_contexts():
 
     assert child.get("service") == "Service in child"
     assert parent.get("service") == "Service in parent"
+
+
+def test_context_management(basic_context: Container):
+    """Test active context management with context enter and exit."""
+    with basic_context:
+        assert active_container.get() is basic_context
+
+    with pytest.raises(LookupError):
+        active_container.get()  # No active context outside `with` block
+
+
+def test_dependency_removal(basic_context: Container):
+    """Test removing a dependency from the context."""
+
+    @basic_context.register_dep("temp_service")
+    def _():
+        return "Temporary Service"
+
+    assert basic_context.get("temp_service") == "Temporary Service"
+    del basic_context["temp_service"]
+    with pytest.raises(DependencyNotFoundError):
+        basic_context.get("temp_service")
 
 
 def test_async_dependencies(basic_context: Container):
@@ -177,19 +219,6 @@ def test_async_injection(basic_context: Container):
 
     result = asyncio.run(async_function())
     assert result == "Received Async Dependency"
-
-
-def test_dependency_removal(basic_context: Container):
-    """Test removing a dependency from the context."""
-
-    @basic_context.register_dep("temp_service")
-    def _():
-        return "Temporary Service"
-
-    assert basic_context.get("temp_service") == "Temporary Service"
-    del basic_context["temp_service"]
-    with pytest.raises(DependencyNotFoundError):
-        basic_context.get("temp_service")
 
 
 def test_dependency_with_namespace():
@@ -238,34 +267,10 @@ def test_converters(config_source: dict, expected_result: object):
     assert list(config.values())[0] == expected_result
 
 
-def test_dependency_cycle_detection(basic_context: Container):
-    """Test detection of cyclic dependencies."""
-
-    @basic_context.register_dep("service_a")
-    def _(service_b):
-        return "Service A" + service_b
-
-    @basic_context.register_dep("service_b")
-    def _(service_a):
-        return "Service B" + service_a
-
-    with pytest.raises(DependencyCycleError):
-        basic_context.get("service_a")
-
-
 def test_dependency_not_found_error(basic_context: Container):
     """Test that accessing a non-existent dependency raises DependencyNotFoundError."""
     with pytest.raises(DependencyNotFoundError):
         basic_context.get("nonexistent")
-
-
-def test_context_management(basic_context: Container):
-    """Test active context management with context enter and exit."""
-    with basic_context:
-        assert active_container.get() is basic_context
-
-    with pytest.raises(LookupError):
-        active_container.get()  # No active context outside `with` block
 
 
 @pytest.mark.parametrize(
@@ -286,3 +291,46 @@ def test_dependency_with_parameters(
 
     basic_context.config.db_host = param
     assert basic_context.get("db_connection") == expected
+
+
+def test_dependency_with_default_value(basic_context: Container):
+    """Test retrieving a dependency with a default value."""
+    assert basic_context.get("optional_dep", default="default_value") == "default_value"
+
+
+def test_resource_cleanup_on_exit(context: Container):
+    context.add_factory("sample_resource", SampleResource, singleton=False)
+    with context as ctx:
+        retrieved_resource = ctx.get("sample_resource")
+        assert not retrieved_resource.cleaned_up
+    assert retrieved_resource.cleaned_up
+
+    @context.wire
+    def foo(sample_resource):
+        assert not sample_resource.cleaned_up
+        return sample_resource
+
+    func_resource = foo()
+    assert func_resource.cleaned_up
+
+    @context.wire
+    def bar():
+        @context.wire
+        def baz(sample_resource):
+            assert not sample_resource.cleaned_up
+            return sample_resource
+
+        # ensure the resource is only cleaned up after the context.wire stack unwinds
+        scoped_resource = baz()
+        assert not scoped_resource.cleaned_up
+        return scoped_resource
+
+    nested_resource = bar()
+    assert nested_resource.cleaned_up
+
+    # ensure singletons are cleaned up on exit
+    context.add_factory("singleton_resource", SampleResource, singleton=True)
+    s_resource = context.get("singleton_resource")
+    assert not s_resource.cleaned_up
+    atexit._run_exitfuncs()
+    assert s_resource.cleaned_up
