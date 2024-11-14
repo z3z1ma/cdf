@@ -90,12 +90,12 @@ def test_basic_dependency_injection(basic_context: Context):
     """Test basic dependency injection functionality within the context."""
     basic_context.config.db_url = "sqlite:///:memory:"
 
-    @basic_context.register_dep
-    def db_connection(C):
+    @basic_context.register_dep("db_connection")
+    def _(C):
         return f"Connected to {C.config.db_url}"
 
-    @basic_context.register_dep
-    def repo(db_connection):
+    @basic_context.register_dep("repo")
+    def _(db_connection):
         return f"Repo using {db_connection}"
 
     @basic_context
@@ -110,13 +110,13 @@ def test_singleton_and_transient_dependencies(basic_context: Context):
     """Test singleton vs transient dependency behaviors."""
     counter = {"count": 0}
 
-    @basic_context.register_dep(singleton=True)
-    def singleton_service():
+    @basic_context.register_dep("singleton_service", singleton=True)
+    def _():
         counter["count"] += 1
         return f"Instance {counter['count']}"
 
-    @basic_context.register_dep(singleton=False)
-    def transient_service():
+    @basic_context.register_dep("transient_service", singleton=False)
+    def _():
         counter["count"] += 1
         return f"Instance {counter['count']}"
 
@@ -134,12 +134,12 @@ def test_namespaced_contexts():
     parent = Context(loader, namespace="parent")
     child = Context(loader, namespace="child", parent=parent)
 
-    @parent.register_dep
-    def service():  # type: ignore
+    @parent.register_dep("service")
+    def _():
         return "Service in parent"
 
-    @child.register_dep
-    def service():  # type: ignore
+    @child.register_dep("service")
+    def _():
         return "Service in child"
 
     assert child.get("service") == "Service in child"
@@ -162,7 +162,7 @@ def test_async_injection(basic_context: Context):
     """Test asynchronous function injection."""
 
     @basic_context.register_dep("async_dependency")
-    async def async_register_dep():
+    async def _():
         await asyncio.sleep(0.1)
         return "Async Dependency"
 
@@ -177,8 +177,8 @@ def test_async_injection(basic_context: Context):
 def test_dependency_removal(basic_context: Context):
     """Test removing a dependency from the context."""
 
-    @basic_context.register_dep
-    def temp_service():
+    @basic_context.register_dep("temp_service")
+    def _():
         return "Temporary Service"
 
     assert basic_context.get("temp_service") == "Temporary Service"
@@ -192,8 +192,8 @@ def test_dependency_with_namespace():
     loader = SimpleConfigurationLoader(include_envvars=False)
     context = Context(loader, namespace="main")
 
-    @context.register_dep(namespace="db")
-    def db_service():
+    @context.register_dep("db_service", namespace="db")
+    def _():
         return "DB Service"
 
     assert context.get("db_service", namespace="db") == "DB Service"
@@ -209,12 +209,12 @@ def test_combined_contexts_with_conflicts():
     loader2 = SimpleConfigurationLoader({"age": 42}, include_envvars=False)
     context2 = Context(loader2, namespace="ns2")
 
-    @context1.register_dep
-    def service():  # type: ignore
+    @context1.register_dep("service")
+    def _():
         return "Service from ns1"
 
-    @context2.register_dep
-    def service():  # type: ignore
+    @context2.register_dep("service")
+    def _():
         return "Service from ns2"
 
     combined_context = context1.combine(context2)
@@ -251,13 +251,13 @@ def test_converters(config_source: dict, expected_result: object):
 def test_dependency_cycle_detection(basic_context: Context):
     """Test detection of cyclic dependencies."""
 
-    @basic_context.register_dep
-    def service_a(service_b):
-        return "Service A"
+    @basic_context.register_dep("service_a")
+    def _(service_b):
+        return "Service A" + service_b
 
-    @basic_context.register_dep
-    def service_b(service_a):
-        return "Service B"
+    @basic_context.register_dep("service_b")
+    def _(service_a):
+        return "Service B" + service_a
 
     with pytest.raises(DependencyCycleError):
         basic_context.get("service_a")
@@ -288,8 +288,8 @@ def test_context_management(basic_context: Context):
 def test_dependency_with_parameters(basic_context: Context, param: str, expected: str):
     """Test parameterized dependencies with context configuration."""
 
-    @basic_context.register_dep
-    def db_connection(C):
+    @basic_context.register_dep("db_connection")
+    def _(C):
         return f"Connected to DB at {C.config.db_host}"
 
     basic_context.config.db_host = param

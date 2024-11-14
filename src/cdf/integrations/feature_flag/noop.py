@@ -12,7 +12,7 @@ class NoopFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         """Initialize the adapter."""
         pass
 
-    def get(self, feature_name: str) -> bool: # type: ignore
+    def get(self, feature_name: str) -> bool:  # type: ignore
         return True
 
     def save(self, feature_name: str, flag: bool) -> None:

@@ -25,7 +25,7 @@ class LaunchDarklyFeatureFlagAdapter(AbstractFeatureFlagAdapter):
     def __str__(self) -> str:
         return self.sdk_key
 
-    def get(self, feature_name: str) -> bool: # type: ignore
+    def get(self, feature_name: str) -> bool:  # type: ignore
         raise NotImplementedError("This provider is not yet implemented")
 
     def save(self, feature_name: str, flag: bool) -> None:

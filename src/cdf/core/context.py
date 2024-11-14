@@ -155,7 +155,11 @@ class Context(t.MutableMapping[str, t.Any]):
                 if isinstance(result, contextlib.AbstractContextManager):
                     if singleton:
                         result = result.__enter__()
-                        atexit.register(result.__exit__, None, None, None)
+
+                        def _cleanup() -> None:
+                            result.__exit__(*sys.exc_info())
+
+                        atexit.register(_cleanup)
                     else:
                         result = self._exit_stack.enter_context(result)
                 elif inspect.iscoroutine(result):
@@ -401,13 +405,7 @@ class Context(t.MutableMapping[str, t.Any]):
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         active_context.reset(self._token)
-        self._exit_stack.close()
-        for key, (_, singleton) in self._factories.items():
-            if singleton and exc_type is not None:
-                instance = self._singletons[key]
-                atexit.unregister(instance.__exit__)
-                instance.__exit__(exc_type, exc_value, traceback)
-        self._singletons.clear()
+        self._exit_stack.__exit__(exc_type, exc_value, traceback)
 
     def reload_config(self):
         """Reload the configuration from the sources."""
