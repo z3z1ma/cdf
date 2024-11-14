@@ -18,7 +18,7 @@ if sys.version_info >= (3, 9):
 else:
     from typing_extensions import ParamSpec
 
-from cdf.core.configuration import ConverterBox
+from cdf.core.configuration import ConfigBox
 from cdf.core.constants import CONTEXT_PARAM_NAME
 
 T = t.TypeVar("T")
@@ -72,7 +72,7 @@ class Container(t.MutableMapping[str, t.Any]):
         self._lock = threading.RLock()
         self._exit_stack = contextlib.ExitStack()
         self._call_stack_depth = 0
-        self._config = ConverterBox(config or {})
+        self._config = ConfigBox(config or {})
         self.namespace = namespace
         self.parent = parent
 
@@ -92,7 +92,7 @@ class Container(t.MutableMapping[str, t.Any]):
         Args:
             value: New configuration
         """
-        self._config = ConverterBox(value)
+        self._config = ConfigBox(value)
 
     @property
     def config_readonly(self) -> MappingProxyType[str, t.Any]:

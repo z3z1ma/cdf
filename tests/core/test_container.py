@@ -12,7 +12,7 @@ from cdf.core.container import (
     DependencyNotFoundError,
     active_container,
 )
-from cdf.core.configuration import SimpleConfigurationLoader
+from cdf.core.configuration import ConfigurationLoader
 
 
 class SampleResource(AbstractContextManager):
@@ -40,11 +40,11 @@ def mock_environment():
 @pytest.fixture
 def simple_loader():
     """Fixture to provide a simple configuration loader."""
-    return SimpleConfigurationLoader("tests/fixtures/conf.yaml", include_envvars=False)
+    return ConfigurationLoader("tests/fixtures/conf.yaml", include_envvars=False)
 
 
 @pytest.fixture
-def basic_context(simple_loader: SimpleConfigurationLoader):
+def basic_context(simple_loader: ConfigurationLoader):
     """Fixture to create a context with the simple loader."""
     return Container(simple_loader.load())
 
@@ -262,7 +262,7 @@ def test_combined_contexts_with_conflicts():
 )
 def test_converters(config_source: dict, expected_result: object):
     """Test various built-in converters for list, bool, and dict values."""
-    loader = SimpleConfigurationLoader(config_source, include_envvars=False)
+    loader = ConfigurationLoader(config_source, include_envvars=False)
     config = loader.load()
     assert list(config.values())[0] == expected_result
 

@@ -27,8 +27,8 @@ ConfigurationSource = t.Union[
 
 __all__ = [
     "ConfigurationSource",
-    "ConverterBox",
-    "SimpleConfigurationLoader",
+    "ConfigBox",
+    "ConfigurationLoader",
     "add_custom_converter",
     "_get_converter",
     "_remove_converter",
@@ -95,7 +95,7 @@ def _expand_env_vars(template: str, **env_overrides: t.Any) -> str:
     return string.Template(template).safe_substitute(env_overrides, **os.environ)
 
 
-def _read_parse_file(
+def _load_file(
     path: t.Union[str, Path],
     mode: str = "r",
     parser: t.Callable[[str], t.Any] = json.loads,
@@ -107,7 +107,7 @@ def _read_parse_file(
     return parser(rendered)
 
 
-class ConverterBox(Box):
+class ConfigBox(Box):
     """Box that applies @ converters to configuration values."""
 
     def __getitem__(self, item: t.Any, _ignore_default: bool = False) -> t.Any:
@@ -174,7 +174,7 @@ class ConverterBox(Box):
 
 def _merge_configs(*configs: Box) -> Box:
     """Combine multiple configuration Boxes using merge_update."""
-    merged = ConverterBox(box_dots=True)
+    merged = ConfigBox(box_dots=True)
     for config in configs:
         merged.merge_update(config)
     return merged
@@ -182,10 +182,10 @@ def _merge_configs(*configs: Box) -> Box:
 
 def _scope_configs(*configs: Box) -> Box:
     """Combine multiple configuration Boxes via ChainMap to provide scope-based resolution."""
-    return ConverterBox(collections.ChainMap(*configs), box_dots=True)
+    return ConfigBox(collections.ChainMap(*configs), box_dots=True)
 
 
-class SimpleConfigurationLoader:
+class ConfigurationLoader:
     """Loads configuration from multiple sources and merges them using a resolution strategy."""
 
     SUPPORTED_EXTENSIONS = ("json", "yaml", "yml", "toml", "py")
@@ -222,7 +222,7 @@ class SimpleConfigurationLoader:
     @classmethod
     def from_name(
         cls, name: str, /, *, search_path: t.Optional[Path] = None
-    ) -> "SimpleConfigurationLoader":
+    ) -> "ConfigurationLoader":
         """Create a configuration loader from a name by searching for files with supported extensions.
 
         Args:
@@ -269,7 +269,7 @@ class SimpleConfigurationLoader:
             Configuration as a dictionary.
         """
         if callable(source):
-            return SimpleConfigurationLoader._load(source())
+            return ConfigurationLoader._load(source())
         elif isinstance(source, dict):
             return source
         elif isinstance(source, (str, Path)):
@@ -277,13 +277,11 @@ class SimpleConfigurationLoader:
             if not path.exists():
                 return {}
             if path.suffix == ".json":
-                return _read_parse_file(path, parser=json.loads)
+                return _load_file(path, parser=json.loads)
             elif path.suffix in (".yaml", ".yml"):
-                return _read_parse_file(
-                    path, parser=lambda s: yaml.safe_load(io.StringIO(s))
-                )
+                return _load_file(path, parser=lambda s: yaml.safe_load(io.StringIO(s)))
             elif path.suffix == ".toml":
-                return _read_parse_file(path, parser=tomllib.loads)
+                return _load_file(path, parser=tomllib.loads)
             else:
                 raise ValueError(f"Unsupported file format: {path.suffix}")
         else:

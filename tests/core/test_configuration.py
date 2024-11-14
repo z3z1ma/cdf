@@ -15,13 +15,13 @@ else:
 
 from cdf.core.configuration import (
     _CONVERTERS,
-    SimpleConfigurationLoader,
+    ConfigurationLoader,
     add_custom_converter,
     _get_converter,
     _remove_converter,
     _expand_env_vars,
-    _read_parse_file,
-    ConverterBox,
+    _load_file,
+    ConfigBox,
 )
 
 
@@ -43,7 +43,7 @@ def test_custom_converter_integration():
         return int(value) * 2
 
     add_custom_converter("double", multiply_by_two)
-    loader = SimpleConfigurationLoader({"value": "@double 21"}, include_envvars=False)
+    loader = ConfigurationLoader({"value": "@double 21"}, include_envvars=False)
     config = loader.load()
 
     assert config.value == 42
@@ -94,7 +94,7 @@ def test_read_json_file():
         tmp.write(b'{"key": "value"}')
         tmp_path = tmp.name
 
-    result = _read_parse_file(tmp_path, parser=json.loads)
+    result = _load_file(tmp_path, parser=json.loads)
     assert result == {"key": "value"}
     os.remove(tmp_path)
 
@@ -105,7 +105,7 @@ def test_read_yaml_file():
         tmp.write(b"key: value")
         tmp_path = tmp.name
 
-    result = _read_parse_file(tmp_path, parser=yaml.safe_load)
+    result = _load_file(tmp_path, parser=yaml.safe_load)
     assert result == {"key": "value"}
     os.remove(tmp_path)
 
@@ -116,7 +116,7 @@ def test_read_toml_file():
         tmp.write(b'key = "value"')
         tmp_path = tmp.name
 
-    result = _read_parse_file(tmp_path, parser=tomllib.loads)
+    result = _load_file(tmp_path, parser=tomllib.loads)
     assert result == {"key": "value"}
     os.remove(tmp_path)
 
@@ -124,12 +124,12 @@ def test_read_toml_file():
 def test_read_nonexistent_file():
     """Test reading a non-existent file returns an empty dictionary."""
     with pytest.raises(FileNotFoundError):
-        _read_parse_file("nonexistent.json", parser=json.loads)
+        _load_file("nonexistent.json", parser=json.loads)
 
 
 def test_loader_with_multiple_sources():
     """Test loading from multiple configuration sources."""
-    loader = SimpleConfigurationLoader({"key1": "value1"}, {"key2": "value2"})
+    loader = ConfigurationLoader({"key1": "value1"}, {"key2": "value2"})
     config = loader.load()
     assert config.key1 == "value1"
     assert config.key2 == "value2"
@@ -141,9 +141,7 @@ def test_loader_from_name_with_extensions():
         tmp.write(b'{"name": "test"}')
         tmp_path = Path(tmp.name).with_suffix("")
 
-    loader = SimpleConfigurationLoader.from_name(
-        tmp_path.stem, search_path=tmp_path.parent
-    )
+    loader = ConfigurationLoader.from_name(tmp_path.stem, search_path=tmp_path.parent)
     config = loader.load()
     assert config.name == "test"
     os.remove(tmp.name)
@@ -151,7 +149,7 @@ def test_loader_from_name_with_extensions():
 
 def test_loader_resolution_strategy_scope():
     """Test scope-based resolution strategy in the configuration loader."""
-    loader = SimpleConfigurationLoader(
+    loader = ConfigurationLoader(
         {"key": "global_value"}, {"key": "scoped_value"}, resolution_strategy="scope"
     )
     config = loader.load()
@@ -160,34 +158,34 @@ def test_loader_resolution_strategy_scope():
 
 def test_loader_invalid_source_type():
     """Test loading from an invalid source type raises TypeError."""
-    loader = SimpleConfigurationLoader(123)  # type: ignore
+    loader = ConfigurationLoader(123)  # type: ignore
     with pytest.raises(TypeError):
         loader.load()
 
 
 def test_converter_box_apply_converters():
-    """Test applying converters in the ConverterBox."""
-    box = ConverterBox({"key": "@int 42"}, box_dots=True)
+    """Test applying converters in the ConfigBox."""
+    box = ConfigBox({"key": "@int 42"}, box_dots=True)
     assert box["key"] == 42
 
 
 def test_converter_box_values():
-    """Test accessing all values in ConverterBox with applied converters."""
-    box = ConverterBox({"key1": "@int 42", "key2": "@bool True"}, box_dots=True)
+    """Test accessing all values in ConfigBox with applied converters."""
+    box = ConfigBox({"key1": "@int 42", "key2": "@bool True"}, box_dots=True)
     values = list(box.values())
     assert values == [42, True]
 
 
 def test_converter_box_invalid_converter():
     """Test invalid converter raises ValueError."""
-    box = ConverterBox({"key": "@unknown value"}, box_dots=True)
+    box = ConfigBox({"key": "@unknown value"}, box_dots=True)
     with pytest.raises(ValueError):
         box["key"]
 
 
 def test_converter_box_non_string_data():
     """Test that non-string data is a no-op in _apply_converters."""
-    box = ConverterBox({"key": 42}, box_dots=True)
+    box = ConfigBox({"key": 42}, box_dots=True)
     assert box["key"] == 42
 
 
@@ -201,21 +199,21 @@ def test_converter_box_non_string_data():
 )
 def test_various_converters(config_source, expected_result):
     """Test various converters."""
-    loader = SimpleConfigurationLoader(config_source, include_envvars=False)
+    loader = ConfigurationLoader(config_source, include_envvars=False)
     config = loader.load()
     assert list(config.values())[0] == expected_result
 
 
 def test_converter_box_resolve_unknown_key():
     """Test resolve converter with an unknown key raises ValueError."""
-    box = ConverterBox({"key": "@resolve unknown_key"}, box_dots=True)
+    box = ConfigBox({"key": "@resolve unknown_key"}, box_dots=True)
     with pytest.raises(ValueError):
         box["key"]
 
 
 def test_converter_box_empty_string():
     """Test empty string with converter pattern returns None."""
-    box = ConverterBox({"key": "@int "}, box_dots=True)
+    box = ConfigBox({"key": "@int "}, box_dots=True)
     assert box["key"] is None
 
 
@@ -228,7 +226,7 @@ def test_configuration_loader_with_env(mock_environment):
         lambda: {"model_A": "@float @resolve age"},
         {"dependency_paths": ["path/ok"]},
     ]
-    loader = SimpleConfigurationLoader(*config_sources, include_envvars=False)
+    loader = ConfigurationLoader(*config_sources, include_envvars=False)
     config = loader.load()
 
     assert config.name == "test_user"

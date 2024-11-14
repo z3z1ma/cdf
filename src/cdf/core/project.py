@@ -6,7 +6,7 @@ import typing as t
 from pathlib import Path
 
 
-from cdf.core.configuration import SimpleConfigurationLoader
+from cdf.core.configuration import ConfigurationLoader
 from cdf.core.constants import (
     CONFIG_FILE_NAME,
     DEFAULT_DATA_PACKAGES_DIR,
@@ -52,7 +52,7 @@ class DataPackage:
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
         return Container(
-            config=SimpleConfigurationLoader.from_name(
+            config=ConfigurationLoader.from_name(
                 CONFIG_FILE_NAME, search_path=self.package_path
             ).load(),
             namespace=self.name,
@@ -95,7 +95,7 @@ class Project:
     def _create_container(self) -> Container:
         """Create a container for the project."""
         return Container(
-            config=SimpleConfigurationLoader.from_name(
+            config=ConfigurationLoader.from_name(
                 CONFIG_FILE_NAME, search_path=self.project_path
             ).load(),
             namespace=self.name,

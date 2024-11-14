@@ -1454,6 +1454,7 @@ dependencies = [
     { name = "pydantic" },
     { name = "python-box" },
     { name = "python-dotenv" },
+    { name = "shellingham" },
     { name = "sqlmesh" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
     { name = "typing-extensions" },
@@ -1483,6 +1484,7 @@ requires-dist = [
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "python-box", specifier = "~=7.2.0" },
     { name = "python-dotenv", specifier = ">=1,<2" },
+    { name = "shellingham", specifier = "~=1.5.4" },
     { name = "sqlmesh" },
     { name = "tomli", marker = "python_full_version < '3.11'", specifier = ">=2.0.1" },
     { name = "typing-extensions", specifier = ">=4,<5" },
@@ -1747,6 +1749,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ed/22/a438e0caa4576f8c383fa4d35f1cc01655a46c75be358960d815bfbb12bd/setuptools-75.3.0.tar.gz", hash = "sha256:fba5dd4d766e97be1b1681d98712680ae8f2f26d7881245f2ce9e40714f1a686", size = 1351577 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/90/12/282ee9bce8b58130cb762fbc9beabd531549952cac11fc56add11dcb7ea0/setuptools-75.3.0-py3-none-any.whl", hash = "sha256:f2504966861356aa38616760c0f66568e535562374995367b4e69c7143cf6bcd", size = 1251070 },
+]
+
+[[package]]
+name = "shellingham"
+version = "1.5.4"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/15/8b3609fd3830ef7b27b655beb4b4e9c62313a4e8da8c676e142cc210d58e/shellingham-1.5.4.tar.gz", hash = "sha256:8dbca0739d487e5bd35ab3ca4b36e11c4078f3a234bfce294b0a0291363404de", size = 10310 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e0/f9/0595336914c5619e5f28a1fb793285925a8cd4b432c9da0a987836c7f822/shellingham-1.5.4-py2.py3-none-any.whl", hash = "sha256:7ecfff8f2fd72616f7481040475a65b2bf8af90a56c89140852d1120324e8686", size = 9755 },
 ]
 
 [[package]]

@@ -10,6 +10,7 @@ dependencies = [
   "dlt[duckdb]",
   "duckdb",
   # The following deps have well-defined version ranges
+  "shellingham~=1.5.4",
   "tomli >= 2.0.1 ; python_version<'3.11'",
   "mysql-mimic>=2,<3",
   "harness-featureflags>=1.2.0,<1.6.1",
