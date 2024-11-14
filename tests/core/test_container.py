@@ -1,15 +1,16 @@
 """Tests for the context module."""
 
 import asyncio
+import atexit
 import os
 import pytest
 
 from contextlib import AbstractContextManager
-from cdf.core.context import (
-    Context,
+from cdf.core.container import (
+    Container,
     DependencyCycleError,
     DependencyNotFoundError,
-    active_context,
+    active_container,
 )
 from cdf.core.configuration import SimpleConfigurationLoader
 
@@ -45,15 +46,15 @@ def simple_loader():
 @pytest.fixture
 def basic_context(simple_loader: SimpleConfigurationLoader):
     """Fixture to create a context with the simple loader."""
-    return Context(simple_loader.load())
+    return Container(simple_loader.load())
 
 
 @pytest.fixture
 def context():
-    return Context()
+    return Container()
 
 
-def test_resource_cleanup_on_exit(context: Context):
+def test_resource_cleanup_on_exit(context: Container):
     context.add_factory("sample_resource", SampleResource, singleton=False)
     with context as ctx:
         retrieved_resource = ctx.get("sample_resource")
@@ -83,8 +84,15 @@ def test_resource_cleanup_on_exit(context: Context):
     nested_resource = bar()
     assert nested_resource.cleaned_up
 
+    # ensure singletons are cleaned up on exit
+    context.add_factory("singleton_resource", SampleResource, singleton=True)
+    s_resource = context.get("singleton_resource")
+    assert not s_resource.cleaned_up
+    atexit._run_exitfuncs()
+    assert s_resource.cleaned_up
 
-def test_basic_dependency_injection(basic_context: Context):
+
+def test_basic_dependency_injection(basic_context: Container):
     """Test basic dependency injection functionality within the context."""
     basic_context.config = {"db_url": "sqlite:///:memory:"}
 
@@ -104,7 +112,7 @@ def test_basic_dependency_injection(basic_context: Context):
     assert result == "Logic with Repo using Connected to sqlite:///:memory:"
 
 
-def test_singleton_and_transient_dependencies(basic_context: Context):
+def test_singleton_and_transient_dependencies(basic_context: Container):
     """Test singleton vs transient dependency behaviors."""
     counter = {"count": 0}
 
@@ -128,8 +136,8 @@ def test_singleton_and_transient_dependencies(basic_context: Context):
 
 def test_namespaced_contexts():
     """Test dependency injection with namespaced contexts to prevent collisions."""
-    parent = Context(namespace="parent")
-    child = Context(namespace="child", parent=parent)
+    parent = Container(namespace="parent")
+    child = Container(namespace="child", parent=parent)
 
     @parent.register_dep("service")
     def _():
@@ -143,7 +151,7 @@ def test_namespaced_contexts():
     assert parent.get("service") == "Service in parent"
 
 
-def test_async_dependencies(basic_context: Context):
+def test_async_dependencies(basic_context: Container):
     """Test asynchronous dependency injection."""
 
     @basic_context.register_dep
@@ -155,7 +163,7 @@ def test_async_dependencies(basic_context: Context):
     assert result == "Async Service"
 
 
-def test_async_injection(basic_context: Context):
+def test_async_injection(basic_context: Container):
     """Test asynchronous function injection."""
 
     @basic_context.register_dep("async_dependency")
@@ -171,7 +179,7 @@ def test_async_injection(basic_context: Context):
     assert result == "Received Async Dependency"
 
 
-def test_dependency_removal(basic_context: Context):
+def test_dependency_removal(basic_context: Container):
     """Test removing a dependency from the context."""
 
     @basic_context.register_dep("temp_service")
@@ -186,7 +194,7 @@ def test_dependency_removal(basic_context: Context):
 
 def test_dependency_with_namespace():
     """Test namespaced dependency registration and retrieval."""
-    context = Context(namespace="main")
+    context = Container(namespace="main")
 
     @context.register_dep("db_service", namespace="db")
     def _():
@@ -199,8 +207,8 @@ def test_dependency_with_namespace():
 
 def test_combined_contexts_with_conflicts():
     """Test combining contexts with conflicting dependency names across namespaces."""
-    context1 = Context({"name": "Context1"}, namespace="ns1")
-    context2 = Context({"age": 42}, namespace="ns2")
+    context1 = Container({"name": "Context1"}, namespace="ns1")
+    context2 = Container({"age": 42}, namespace="ns2")
 
     @context1.register_dep("service")
     def _():
@@ -230,7 +238,7 @@ def test_converters(config_source: dict, expected_result: object):
     assert list(config.values())[0] == expected_result
 
 
-def test_dependency_cycle_detection(basic_context: Context):
+def test_dependency_cycle_detection(basic_context: Container):
     """Test detection of cyclic dependencies."""
 
     @basic_context.register_dep("service_a")
@@ -245,19 +253,19 @@ def test_dependency_cycle_detection(basic_context: Context):
         basic_context.get("service_a")
 
 
-def test_dependency_not_found_error(basic_context: Context):
+def test_dependency_not_found_error(basic_context: Container):
     """Test that accessing a non-existent dependency raises DependencyNotFoundError."""
     with pytest.raises(DependencyNotFoundError):
         basic_context.get("nonexistent")
 
 
-def test_context_management(basic_context: Context):
+def test_context_management(basic_context: Container):
     """Test active context management with context enter and exit."""
     with basic_context:
-        assert active_context.get() is basic_context
+        assert active_container.get() is basic_context
 
     with pytest.raises(LookupError):
-        active_context.get()  # No active context outside `with` block
+        active_container.get()  # No active context outside `with` block
 
 
 @pytest.mark.parametrize(
@@ -267,7 +275,9 @@ def test_context_management(basic_context: Context):
         ("remote", "Connected to DB at remote"),
     ],
 )
-def test_dependency_with_parameters(basic_context: Context, param: str, expected: str):
+def test_dependency_with_parameters(
+    basic_context: Container, param: str, expected: str
+):
     """Test parameterized dependencies with context configuration."""
 
     @basic_context.register_dep("db_connection")

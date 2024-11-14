@@ -26,10 +26,10 @@ P = ParamSpec("P")
 
 
 __all__ = [
-    "Context",
+    "Container",
     "injected",
     "register_dep",
-    "active_context",
+    "active_container",
 ]
 
 injected = object()
@@ -44,14 +44,17 @@ class DependencyNotFoundError(KeyError):
     """Raised when a dependency is not found in the context."""
 
 
-class Context(t.MutableMapping[str, t.Any]):
+class Container(t.MutableMapping[str, t.Any]):
     """Provides access to configuration and acts as a DI container with dependency resolution."""
+
+    active: t.ClassVar[ContextVar["Container"]] = ContextVar("activeContainer")
+    """Context variable to store the active container."""
 
     def __init__(
         self,
         config: t.Optional[t.Mapping[str, t.Any]] = None,
         namespace: t.Optional[str] = None,
-        parent: t.Optional["Context"] = None,
+        parent: t.Optional["Container"] = None,
     ) -> None:
         """Initialize the context with a configuration loader.
 
@@ -415,15 +418,15 @@ class Context(t.MutableMapping[str, t.Any]):
 
         return decorator
 
-    def __enter__(self) -> "Context":
-        self._token = active_context.set(self)
+    def __enter__(self) -> "Container":
+        self._token = active_container.set(self)
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        active_context.reset(self._token)
+        active_container.reset(self._token)
         self._exit_stack.__exit__(exc_type, exc_value, traceback)
 
-    def combine(self, other: "Context") -> "Context":
+    def combine(self, other: "Container") -> "Container":
         """Combine this context with another, returning a new context with merged configurations and dependencies.
 
         Args:
@@ -448,8 +451,8 @@ class Context(t.MutableMapping[str, t.Any]):
         self._resolving.clear()
 
 
-active_context: ContextVar[Context] = ContextVar("active_context")
-"""Stores the active context for the current execution context."""
+active_container = Container.active
+"""Context variable to store the active container."""
 
 
 @t.overload
@@ -507,7 +510,7 @@ def register_dep(
     def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
         nonlocal name_or_func
         name = name_or_func if isinstance(name_or_func, str) else func.__name__
-        ctx = active_context.get()
+        ctx = active_container.get()
         ctx.add_factory(
             name or func.__name__, func, singleton=singleton, namespace=namespace
         )

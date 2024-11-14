@@ -1,18 +1,18 @@
 """Core classes for managing data packages and projects."""
 
-import collections
 import importlib.util
 import sys
 import typing as t
 from pathlib import Path
 
-from cdf.core.configuration import ConverterBox, SimpleConfigurationLoader
+
+from cdf.core.configuration import SimpleConfigurationLoader
 from cdf.core.constants import (
     CONFIG_FILE_NAME,
     DEFAULT_DATA_PACKAGES_DIR,
     DEFAULT_DEPENDENCIES_DIR,
 )
-from cdf.core.context import Context
+from cdf.core.container import Container
 
 PathType = t.Union[str, Path]
 
@@ -29,34 +29,34 @@ def _load_module_from_path(path: Path) -> t.Dict[str, t.Any]:
 
 
 class DataPackage:
-    """Represents a data package with its own context and processing logic."""
+    """Represents a data package with its own container and processing logic."""
 
     def __init__(
         self,
         package_path: PathType,
-        parent_context: Context,
+        parent_container: Container,
     ) -> None:
         """Initialize the data package.
 
         Args:
             package_path: Path to the data package directory.
-            parent_context: The parent context from the project.
+            parent_container: The parent container from the project.
         """
         self.package_path = Path(package_path)
         self.name = self.package_path.name
-        self.parent_context = parent_context
+        self.parent_container = parent_container
 
-        self.context = self._create_context()
+        self.container = self._create_container()
         self._load_dependencies()
 
-    def _create_context(self) -> Context:
-        """Create a context for the data package, inheriting from the parent context."""
-        return Context(
-            loader=SimpleConfigurationLoader.from_name(
+    def _create_container(self) -> Container:
+        """Create a container for the data package, inheriting from the parent container."""
+        return Container(
+            config=SimpleConfigurationLoader.from_name(
                 CONFIG_FILE_NAME, search_path=self.package_path
-            ),
+            ).load(),
             namespace=self.name,
-            parent=self.parent_context,
+            parent=self.parent_container,
         )
 
     def _load_dependencies(self) -> None:
@@ -70,15 +70,12 @@ class DataPackage:
 
     @property
     def config(self) -> t.Dict[str, t.Any]:
-        """Get the configuration for the data package."""
-        return ConverterBox(
-            collections.ChainMap(self.context.config, self.parent_context.config),
-            box_dots=True,
-        )
+        """Get the data package configuration."""
+        return self.container.config
 
 
 class Project:
-    """Manages a project with its data packages and context."""
+    """Manages a project with its data packages and container."""
 
     def __init__(self, project_path: PathType) -> None:
         """Initialize the project.
@@ -89,18 +86,18 @@ class Project:
         self.project_path = Path(project_path)
         self.name = self.project_path.name
 
-        self.context = self._create_context()
+        self.container = self._create_container()
         self._load_dependencies()
 
         self.data_packages: t.Dict[str, DataPackage] = {}
         self._discover_data_packages()
 
-    def _create_context(self) -> Context:
-        """Create a context for the project."""
-        return Context(
-            loader=SimpleConfigurationLoader.from_name(
+    def _create_container(self) -> Container:
+        """Create a container for the project."""
+        return Container(
+            config=SimpleConfigurationLoader.from_name(
                 CONFIG_FILE_NAME, search_path=self.project_path
-            ),
+            ).load(),
             namespace=self.name,
         )
 
@@ -115,14 +112,16 @@ class Project:
 
     def _discover_data_packages(self) -> None:
         """Discover and load data packages within the project."""
-        data_packages_dir = self.context.config.get(
+        data_packages_dir = self.container.config.get(
             "data_packages_dir", DEFAULT_DATA_PACKAGES_DIR
         )
         packages_dir = self.project_path / data_packages_dir
         if packages_dir.exists():
             for package_dir in packages_dir.iterdir():
                 if package_dir.is_dir():
-                    data_package = DataPackage(package_dir, parent_context=self.context)
+                    data_package = DataPackage(
+                        package_dir, parent_container=self.container
+                    )
                     self.data_packages[data_package.name] = data_package
 
     def get_data_package(self, name: str) -> t.Optional[DataPackage]:
@@ -138,12 +137,12 @@ class Project:
 
     @property
     def config(self) -> t.Dict[str, t.Any]:
-        """Get the top-level configuration for the project."""
-        return self.context.config
+        """Get the project configuration."""
+        return self.container.config
 
 
 if __name__ == "__main__":
     project = Project(".")
     print(project.data_packages)
-    print(project.context.config["z"])
+    print(project.container.config["z"])
     print(project.data_packages["synthetic"].config["z"])
