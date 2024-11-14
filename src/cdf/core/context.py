@@ -2,6 +2,7 @@
 
 import atexit
 import contextlib
+from types import MappingProxyType
 import asyncio
 import inspect
 import sys
@@ -17,7 +18,7 @@ if sys.version_info >= (3, 9):
 else:
     from typing_extensions import ParamSpec
 
-from cdf.core.configuration import SimpleConfigurationLoader
+from cdf.core.configuration import ConverterBox
 from cdf.core.constants import CONTEXT_PARAM_NAME
 
 T = t.TypeVar("T")
@@ -46,23 +47,19 @@ class DependencyNotFoundError(KeyError):
 class Context(t.MutableMapping[str, t.Any]):
     """Provides access to configuration and acts as a DI container with dependency resolution."""
 
-    loader_type = SimpleConfigurationLoader
-
     def __init__(
         self,
-        loader: SimpleConfigurationLoader,
+        config: t.Optional[t.Mapping[str, t.Any]] = None,
         namespace: t.Optional[str] = None,
         parent: t.Optional["Context"] = None,
     ) -> None:
         """Initialize the context with a configuration loader.
 
         Args:
-            loader: Configuration loader to use for loading configuration.
+            config: Configuration to use for the context.
             namespace: Namespace to use for the context.
             parent: Parent context to inherit dependencies from.
         """
-        self._loader = loader
-        self._config: t.Optional[Box] = None
         self._dependencies: t.Dict[t.Tuple[t.Optional[str], str], t.Any] = {}
         self._factories: t.Dict[
             t.Tuple[t.Optional[str], str], t.Tuple[t.Callable[..., t.Any], bool]
@@ -72,17 +69,36 @@ class Context(t.MutableMapping[str, t.Any]):
         self._lock = threading.RLock()
         self._exit_stack = contextlib.ExitStack()
         self._call_stack_depth = 0
+        self._config = ConverterBox(config or {})
         self.namespace = namespace
         self.parent = parent
 
     @property
     def config(self) -> Box:
-        """Lazily load and return the configuration as a Box."""
-        # TODO: instead of passing a loader, it might make more sense to pass loaded
-        # configuration and have the responsibility of loading live in a higher level
-        if self._config is None:
-            self._config = self._loader.load()
+        """Return the read-only configuration for the context.
+
+        Returns:
+            Read-only configuration box
+        """
         return self._config
+
+    @config.setter
+    def config(self, value: t.Mapping[str, t.Any]) -> None:
+        """Set a new read-only configuration for the context.
+
+        Args:
+            value: New configuration
+        """
+        self._config = ConverterBox(value)
+
+    @property
+    def config_readonly(self) -> MappingProxyType[str, t.Any]:
+        """Return the read-only configuration for the context.
+
+        Returns:
+            Read-only configuration box
+        """
+        return MappingProxyType(self._config)
 
     def add(
         self, name: str, instance: t.Any, namespace: t.Optional[str] = None
@@ -407,10 +423,6 @@ class Context(t.MutableMapping[str, t.Any]):
         active_context.reset(self._token)
         self._exit_stack.__exit__(exc_type, exc_value, traceback)
 
-    def reload_config(self):
-        """Reload the configuration from the sources."""
-        self._config = self._loader.load()
-
     def combine(self, other: "Context") -> "Context":
         """Combine this context with another, returning a new context with merged configurations and dependencies.
 
@@ -420,13 +432,8 @@ class Context(t.MutableMapping[str, t.Any]):
         Returns:
             New context with merged configurations and dependencies
         """
-        combined_loader = self.loader_type(
-            *self._loader.sources,
-            *other._loader.sources,
-            resolution_strategy="merge",
-        )
         combined_context = self.__class__(
-            loader=combined_loader, namespace=self.namespace, parent=self
+            {**self.config, **other.config}, namespace=self.namespace, parent=self
         )
         combined_context._dependencies.update(other._dependencies)
         combined_context._factories.update(other._factories)
@@ -435,7 +442,6 @@ class Context(t.MutableMapping[str, t.Any]):
 
     def reset(self) -> None:
         """Reset the context to its initial state."""
-        self._config = None
         self._dependencies.clear()
         self._factories.clear()
         self._singletons.clear()

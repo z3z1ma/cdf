@@ -3,16 +3,15 @@
 import asyncio
 import os
 import pytest
-from unittest import mock
 
 from contextlib import AbstractContextManager
 from cdf.core.context import (
     Context,
     DependencyCycleError,
     DependencyNotFoundError,
-    SimpleConfigurationLoader,
     active_context,
 )
+from cdf.core.configuration import SimpleConfigurationLoader
 
 
 class SampleResource(AbstractContextManager):
@@ -46,13 +45,12 @@ def simple_loader():
 @pytest.fixture
 def basic_context(simple_loader: SimpleConfigurationLoader):
     """Fixture to create a context with the simple loader."""
-    return Context(simple_loader)
+    return Context(simple_loader.load())
 
 
 @pytest.fixture
 def context():
-    mock_loader = mock.Mock()
-    return Context(loader=mock_loader)
+    return Context()
 
 
 def test_resource_cleanup_on_exit(context: Context):
@@ -88,7 +86,7 @@ def test_resource_cleanup_on_exit(context: Context):
 
 def test_basic_dependency_injection(basic_context: Context):
     """Test basic dependency injection functionality within the context."""
-    basic_context.config.db_url = "sqlite:///:memory:"
+    basic_context.config = {"db_url": "sqlite:///:memory:"}
 
     @basic_context.register_dep("db_connection")
     def _(C):
@@ -130,9 +128,8 @@ def test_singleton_and_transient_dependencies(basic_context: Context):
 
 def test_namespaced_contexts():
     """Test dependency injection with namespaced contexts to prevent collisions."""
-    loader = SimpleConfigurationLoader(include_envvars=False)
-    parent = Context(loader, namespace="parent")
-    child = Context(loader, namespace="child", parent=parent)
+    parent = Context(namespace="parent")
+    child = Context(namespace="child", parent=parent)
 
     @parent.register_dep("service")
     def _():
@@ -189,8 +186,7 @@ def test_dependency_removal(basic_context: Context):
 
 def test_dependency_with_namespace():
     """Test namespaced dependency registration and retrieval."""
-    loader = SimpleConfigurationLoader(include_envvars=False)
-    context = Context(loader, namespace="main")
+    context = Context(namespace="main")
 
     @context.register_dep("db_service", namespace="db")
     def _():
@@ -203,11 +199,8 @@ def test_dependency_with_namespace():
 
 def test_combined_contexts_with_conflicts():
     """Test combining contexts with conflicting dependency names across namespaces."""
-    loader1 = SimpleConfigurationLoader({"name": "Context1"}, include_envvars=False)
-    context1 = Context(loader1, namespace="ns1")
-
-    loader2 = SimpleConfigurationLoader({"age": 42}, include_envvars=False)
-    context2 = Context(loader2, namespace="ns2")
+    context1 = Context({"name": "Context1"}, namespace="ns1")
+    context2 = Context({"age": 42}, namespace="ns2")
 
     @context1.register_dep("service")
     def _():
@@ -220,17 +213,6 @@ def test_combined_contexts_with_conflicts():
     combined_context = context1.combine(context2)
     assert combined_context.get("service", namespace="ns1") == "Service from ns1"
     assert combined_context.get("service", namespace="ns2") == "Service from ns2"
-
-
-def test_reload_config():
-    """Test configuration reloading after adding a new source."""
-    loader = SimpleConfigurationLoader({"value": 1}, include_envvars=False)
-    context = Context(loader)
-    assert context.config.value == 1
-
-    loader.add_source({"value": 2})
-    context.reload_config()
-    assert context.config.value == 2
 
 
 @pytest.mark.parametrize(
