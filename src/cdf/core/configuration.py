@@ -214,6 +214,7 @@ class SimpleConfigurationLoader:
         if include_envvars:
             self.sources += (dict(os.environ),)
         self._config = None
+        self._resolution_strategy = resolution_strategy
         self._resolver = (
             _merge_configs if resolution_strategy == "merge" else _scope_configs
         )
@@ -252,7 +253,9 @@ class SimpleConfigurationLoader:
     def load(self) -> Box:
         """Load and merge configurations from all sources."""
         configs = [Box(self._load(source), box_dots=True) for source in self.sources]
-        self._config = self._resolver(*configs)
+        self._config = self._resolver(
+            *(configs if self._resolution_strategy == "merge" else reversed(configs))
+        )
         return self._config
 
     @staticmethod
