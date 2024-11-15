@@ -1,8 +1,8 @@
 """A MySQL proxy server which uses SQLMesh to execute queries."""
 
-import typing as t
 import asyncio
 import logging
+import typing as t
 from collections import defaultdict
 
 import numpy as np

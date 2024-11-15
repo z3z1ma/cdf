@@ -47,10 +47,7 @@ class SlackMessageComposer:
         are always displayed. NOTICE: attachments blocks are deprecated by Slack
         """
         self.slack_message["attachments"][0]["blocks"].extend(blocks)
-        if (
-            len(self.slack_message["attachments"][0]["blocks"])
-            >= SLACK_MAX_ATTACHMENTS_BLOCKS
-        ):
+        if len(self.slack_message["attachments"][0]["blocks"]) >= SLACK_MAX_ATTACHMENTS_BLOCKS:
             raise ValueError("Too many attachments")
         return self
 
@@ -219,9 +216,7 @@ def stringify_list(list_variation: t.Union[t.List[str], str]) -> str:
     return "\n".join(sorted(set(list_variation), key=lambda item: order[item]))
 
 
-def send_basic_slack_message(
-    incoming_hook: str, message: str, is_markdown: bool = True
-) -> None:
+def send_basic_slack_message(incoming_hook: str, message: str, is_markdown: bool = True) -> None:
     """Sends a `message` to  Slack `incoming_hook`, by default formatted as markdown."""
     resp = requests.post(
         incoming_hook,

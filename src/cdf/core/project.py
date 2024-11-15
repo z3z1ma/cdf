@@ -1,22 +1,16 @@
 """Core classes for managing data packages and projects."""
 
-import inspect
 import importlib.util
-import subprocess  # nosec
+import inspect
 import sys
 import typing as t
-from abc import ABC, abstractmethod
 from pathlib import Path
 from types import ModuleType
 
-
-from cdf.core.configuration import ConfigurationLoader, ConfigBox
-from cdf.core.constants import (
-    CONFIG_FILE_NAME,
-    DEFAULT_DATA_PACKAGES_DIR,
-    DEFAULT_DEPENDENCIES_DIR,
-)
+from cdf.core.configuration import ConfigBox, ConfigurationLoader
+from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
 from cdf.core.container import Container
+from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
 
 PathType = t.Union[str, Path]
 
@@ -30,79 +24,6 @@ def _load_module_from_path(path: Path) -> t.Dict[str, t.Any]:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module.__dict__
-
-
-class ExtractLoadAdapterBase(ABC):
-    """Abstract base class for all extract-load adapters."""
-
-    def __init__(self, package: "DataPackage") -> None:
-        self.package = package
-
-    @abstractmethod
-    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
-        """Discover available pipelines."""
-        pass
-
-    @abstractmethod
-    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
-        """Run a specific pipeline."""
-        pass
-
-
-class DltAdapter(ExtractLoadAdapterBase):
-    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
-        """Discover all extract-load pipelines in main.py."""
-        pipelines = {}
-        main_script = self.package.path / "main.py"
-        if main_script.exists():
-            pipelines.update(self.package._load_scripts_from_module(main_script))
-
-        return pipelines
-
-    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
-        """Run a specific pipeline."""
-        pipelines = self.discover_pipelines()
-        if pipeline_name not in pipelines:
-            raise ValueError(
-                f"Pipeline {pipeline_name} not found in package {self.package.name}"
-            )
-        pipelines[pipeline_name](**kwargs)
-
-
-class SlingAdapter(ExtractLoadAdapterBase):
-    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
-        """Discover all pipelines for sling."""
-        pipelines = {}
-        main_script = self.package.path / "main.py"
-        if main_script.exists():
-            pipelines.update(self.package._load_scripts_from_module(main_script))
-
-        return pipelines
-
-    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
-        """Run a specific pipeline."""
-        pipelines = self.discover_pipelines()
-        if pipeline_name not in pipelines:
-            raise ValueError(
-                f"Pipeline {pipeline_name} not found in package {self.package.name}"
-            )
-        pipelines[pipeline_name](**kwargs)
-
-
-class SingerAdapter(ExtractLoadAdapterBase):
-    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
-        """Singer doesn't have callable pipelines; define commands."""
-        return {"default_pipeline": self.run_pipeline}
-
-    def run_pipeline(self, pipeline_name: str = "default_pipeline", **kwargs) -> None:
-        """Run a singer pipeline using subprocess."""
-        tap = self.package.config.get("singer_tap")
-        target = self.package.config.get("singer_target")
-        if not tap or not target:
-            raise ValueError(
-                "Singer adapter requires 'singer_tap' and 'singer_target' in config."
-            )
-        subprocess.run(["echo", "1"], check=True)  # nosec
 
 
 class DataPackage:

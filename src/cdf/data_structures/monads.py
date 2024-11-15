@@ -19,9 +19,7 @@ T = t.TypeVar("T")  # The type of the value inside the Monad
 U = t.TypeVar("U")  # The transformed type of the value inside the Monad
 K = t.TypeVar("K")  # A known type that is not necessarily the same as T
 L = t.TypeVar("L")  # A known type that is not necessarily the same as U
-E = t.TypeVar(
-    "E", bound=BaseException, covariant=True
-)  # The type of the error inside the Result
+E = t.TypeVar("E", bound=BaseException, covariant=True)  # The type of the error inside the Result
 P = ParamSpec("P")
 
 TState = t.TypeVar("TState")  # The type of the state
@@ -313,9 +311,7 @@ class Result(Monad[T], t.Generic[T, E]):
 
         def __call__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
 
-        def __rshift__(
-            self, func: t.Callable[[T], "Result[U, E]"]
-        ) -> "Result[U, E]": ...
+        def __rshift__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
 
     def __iter__(self) -> t.Iterator[T]:
         """Allows safely unwrapping the value of the Result using a for construct."""
@@ -608,9 +604,7 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
 
         return Promise(coro())
 
-    def catch(
-        self, on_rejected: t.Callable[[Exception], "U | Promise[U]"]
-    ) -> "Promise[U]":
+    def catch(self, on_rejected: t.Callable[[Exception], "U | Promise[U]"]) -> "Promise[U]":
         """Adds a rejection handler to the Promise.
 
         Args:
@@ -710,9 +704,7 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
             return default
 
     @classmethod
-    def lift(
-        cls, func: t.Callable[[U], T]
-    ) -> t.Callable[["U | Promise[U]"], "Promise[T]"]:
+    def lift(cls, func: t.Callable[[U], T]) -> t.Callable[["U | Promise[U]"], "Promise[T]"]:
         """Lifts a synchronous function to operate on Promises.
 
         Args:
@@ -783,11 +775,7 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
         Returns:
             True if the Promise is fulfilled, False otherwise.
         """
-        return (
-            self._task.done()
-            and not self._task.cancelled()
-            and self._task.exception() is None
-        )
+        return self._task.done() and not self._task.cancelled() and self._task.exception() is None
 
     def is_rejected(self) -> bool:
         """Checks if the Promise has been rejected.
@@ -962,9 +950,7 @@ class State(t.Generic[S, A], Monad[A], abc.ABC):
         )
 
     def unwrap_or(self, default: B) -> t.Union[A, B]:
-        raise NotImplementedError(
-            "State cannot directly return a value without an initial state."
-        )
+        raise NotImplementedError("State cannot directly return a value without an initial state.")
 
     def __hash__(self) -> int:
         return id(self.run_state)
@@ -980,9 +966,7 @@ class State(t.Generic[S, A], Monad[A], abc.ABC):
         return f"State({self.run_state})"
 
     @classmethod
-    def lift(
-        cls, func: t.Callable[[U], A]
-    ) -> t.Callable[["U | State[S, U]"], "State[S, A]"]:
+    def lift(cls, func: t.Callable[[U], A]) -> t.Callable[["U | State[S, U]"], "State[S, A]"]:
         """Lifts a function to work within the State monad.
         Args:
             func: A function to lift.

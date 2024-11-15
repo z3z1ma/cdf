@@ -141,9 +141,7 @@ def test_loader_from_name_with_extensions():
         tmp.write(b'{"name": "test"}')
         tmp_path = Path(tmp.name).with_suffix("")
 
-    loader = ConfigurationLoader.from_name(
-        tmp_path.stem, search_paths=[tmp_path.parent]
-    )
+    loader = ConfigurationLoader.from_name(tmp_path.stem, search_paths=[tmp_path.parent])
     config = loader.load()
     assert config.name == "test"
     os.remove(tmp.name)

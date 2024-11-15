@@ -117,9 +117,7 @@ class ConfigBox(Box):
         return value
 
     def values(self) -> t.ValuesView[t.Any]:  # type: ignore
-        return t.cast(
-            t.ValuesView[t.Any], map(self._apply_converters, super().values())
-        )
+        return t.cast(t.ValuesView[t.Any], map(self._apply_converters, super().values()))
 
     def _apply_converters(self, data: t.Any) -> t.Any:
         """Apply converters to a configuration value.
@@ -215,9 +213,7 @@ class ConfigurationLoader:
             self.sources += (dict(os.environ),)
         self._config = None
         self._resolution_strategy = resolution_strategy
-        self._resolver = (
-            _merge_configs if resolution_strategy == "merge" else _scope_configs
-        )
+        self._resolver = _merge_configs if resolution_strategy == "merge" else _scope_configs
 
     @classmethod
     def from_name(

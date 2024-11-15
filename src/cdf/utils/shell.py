@@ -1,7 +1,8 @@
-import sys
 import shlex
-import shellingham
+import sys
 from pathlib import Path
+
+import shellingham
 
 __all__ = [
     "get_activate_command",

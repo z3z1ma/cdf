@@ -10,10 +10,7 @@ import dlt
 import fsspec
 from dlt.common.configuration import with_config
 
-from cdf.integrations.feature_flag.base import (
-    AbstractFeatureFlagAdapter,
-    FlagAdapterResponse,
-)
+from cdf.integrations.feature_flag.base import AbstractFeatureFlagAdapter, FlagAdapterResponse
 
 logger = logging.getLogger(__name__)
 
@@ -109,9 +106,7 @@ class FilesystemFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         Args:
             flags: The feature flags to save.
         """
-        self._flags.update(
-            {k: FlagAdapterResponse.from_bool(v) for k, v in flags.items()}
-        )
+        self._flags.update({k: FlagAdapterResponse.from_bool(v) for k, v in flags.items()})
         self._commit()
 
 

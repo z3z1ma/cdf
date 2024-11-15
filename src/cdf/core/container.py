@@ -1,15 +1,15 @@
 """Context module for dependency injection."""
 
+import asyncio
 import atexit
 import contextlib
-from types import MappingProxyType
-import asyncio
 import inspect
 import sys
 import threading
 import typing as t
 from contextvars import ContextVar
 from functools import wraps
+from types import MappingProxyType
 
 if sys.version_info >= (3, 9):
     from typing import ParamSpec
@@ -101,9 +101,7 @@ class Container(t.MutableMapping[str, t.Any]):
         """
         return MappingProxyType(self._config)
 
-    def add(
-        self, name: str, instance: t.Any, namespace: t.Optional[str] = None
-    ) -> None:
+    def add(self, name: str, instance: t.Any, namespace: t.Optional[str] = None) -> None:
         """Register a dependency instance.
 
         Args:
@@ -158,9 +156,7 @@ class Container(t.MutableMapping[str, t.Any]):
             return self._dependencies[key]
         elif key in self._factories:
             if key in self._resolving:
-                cycle = " -> ".join(
-                    [f"{ns}:{n}" for ns, n in list(self._resolving) + [key]]
-                )
+                cycle = " -> ".join([f"{ns}:{n}" for ns, n in list(self._resolving) + [key]])
                 raise DependencyCycleError(f"Dependency cycle detected: {cycle}")
             self._resolving.add(key)
             try:
@@ -270,12 +266,7 @@ class Container(t.MutableMapping[str, t.Any]):
 
     def __iter__(self) -> t.Iterator[str]:
         """Iterate over the dependency names."""
-        return (
-            name
-            for (_, name) in set(self._dependencies.keys()).union(
-                self._factories.keys()
-            )
-        )
+        return (name for (_, name) in set(self._dependencies.keys()).union(self._factories.keys()))
 
     def __len__(self) -> int:
         """Return the number of dependencies."""
@@ -406,9 +397,7 @@ class Container(t.MutableMapping[str, t.Any]):
         def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
             nonlocal name_or_func
             name = name_or_func if isinstance(name_or_func, str) else func.__name__
-            self.add_factory(
-                name or func.__name__, func, singleton=singleton, namespace=namespace
-            )
+            self.add_factory(name or func.__name__, func, singleton=singleton, namespace=namespace)
             return func
 
         if callable(name_or_func):
@@ -509,9 +498,7 @@ def register_dep(
         nonlocal name_or_func
         name = name_or_func if isinstance(name_or_func, str) else func.__name__
         ctx = active_container.get()
-        ctx.add_factory(
-            name or func.__name__, func, singleton=singleton, namespace=namespace
-        )
+        ctx.add_factory(name or func.__name__, func, singleton=singleton, namespace=namespace)
         return func
 
     if callable(name_or_func):

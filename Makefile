@@ -6,7 +6,8 @@ lint:
 	@uv tool run ruff check
 
 format:
-	@uv tool run ruff format
+	@uv tool run isort src
+	@uv tool run ruff format --preview
 
 test:
 	@uv run pytest

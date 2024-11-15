@@ -280,9 +280,7 @@ def test_dependency_not_found_error(basic_context: Container):
         ("remote", "Connected to DB at remote"),
     ],
 )
-def test_dependency_with_parameters(
-    basic_context: Container, param: str, expected: str
-):
+def test_dependency_with_parameters(basic_context: Container, param: str, expected: str):
     """Test parameterized dependencies with context configuration."""
 
     @basic_context.register_dep("db_connection")
