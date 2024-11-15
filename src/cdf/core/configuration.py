@@ -172,7 +172,7 @@ class ConfigBox(Box):
         return transformed_v
 
 
-def _merge_configs(*configs: Box) -> Box:
+def _merge_configs(*configs: t.MutableMapping[str, t.Any]) -> ConfigBox:
     """Combine multiple configuration Boxes using merge_update."""
     merged = ConfigBox(box_dots=True)
     for config in configs:
@@ -180,7 +180,7 @@ def _merge_configs(*configs: Box) -> Box:
     return merged
 
 
-def _scope_configs(*configs: Box) -> Box:
+def _scope_configs(*configs: t.MutableMapping[str, t.Any]) -> ConfigBox:
     """Combine multiple configuration Boxes via ChainMap to provide scope-based resolution."""
     return ConfigBox(collections.ChainMap(*configs), box_dots=True)
 

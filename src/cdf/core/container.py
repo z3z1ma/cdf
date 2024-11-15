@@ -11,8 +11,6 @@ import typing as t
 from contextvars import ContextVar
 from functools import wraps
 
-from box import Box
-
 if sys.version_info >= (3, 9):
     from typing import ParamSpec
 else:
@@ -77,7 +75,7 @@ class Container(t.MutableMapping[str, t.Any]):
         self.parent = parent
 
     @property
-    def config(self) -> Box:
+    def config(self) -> ConfigBox:
         """Return the read-only configuration for the context.
 
         Returns:

@@ -6,7 +6,7 @@ import typing as t
 from pathlib import Path
 
 
-from cdf.core.configuration import ConfigurationLoader
+from cdf.core.configuration import ConfigurationLoader, ConfigBox
 from cdf.core.constants import (
     CONFIG_FILE_NAME,
     DEFAULT_DATA_PACKAGES_DIR,
@@ -69,7 +69,7 @@ class DataPackage:
             sys.path.pop(0)
 
     @property
-    def config(self) -> t.Dict[str, t.Any]:
+    def config(self) -> ConfigBox:
         """Get the data package configuration."""
         return self.container.config
 
@@ -103,7 +103,9 @@ class Project:
 
     def _load_dependencies(self) -> None:
         """Load dependencies from Python files in the 'dependencies' directory."""
-        dependencies_dir = self.project_path / DEFAULT_DEPENDENCIES_DIR
+        dependencies_dir = self.project_path / self.container.config.get(
+            "dependencies_dir", DEFAULT_DEPENDENCIES_DIR
+        )
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             for py_file in dependencies_dir.glob("*.py"):
@@ -112,12 +114,11 @@ class Project:
 
     def _discover_data_packages(self) -> None:
         """Discover and load data packages within the project."""
-        data_packages_dir = self.container.config.get(
+        data_packages_dir = self.project_path / self.container.config.get(
             "data_packages_dir", DEFAULT_DATA_PACKAGES_DIR
         )
-        packages_dir = self.project_path / data_packages_dir
-        if packages_dir.exists():
-            for package_dir in packages_dir.iterdir():
+        if data_packages_dir.exists():
+            for package_dir in data_packages_dir.iterdir():
                 if package_dir.is_dir():
                     data_package = DataPackage(
                         package_dir, parent_container=self.container
@@ -136,7 +137,7 @@ class Project:
         return self.data_packages.get(name)
 
     @property
-    def config(self) -> t.Dict[str, t.Any]:
+    def config(self) -> ConfigBox:
         """Get the project configuration."""
         return self.container.config
 
@@ -144,5 +145,5 @@ class Project:
 if __name__ == "__main__":
     project = Project(".")
     print(project.data_packages)
-    print(project.container.config["z"])
-    print(project.data_packages["synthetic"].config["z"])
+    print(project.config.some.value)
+    print(project.data_packages["synthetic"].config.other.value)
