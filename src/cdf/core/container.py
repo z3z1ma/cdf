@@ -194,7 +194,7 @@ class Container(t.MutableMapping[str, t.Any]):
             finally:
                 self._resolving.remove(key)
         elif self.parent:
-            return self.parent.get(name, default, namespace or self.namespace)
+            return self.parent.get(name, default, namespace)
         else:
             if default is not ...:
                 return default
@@ -322,7 +322,7 @@ class Container(t.MutableMapping[str, t.Any]):
                         bound_args.arguments[name] = self
                     elif name in self:
                         bound_args.arguments[name] = self.get(name)
-                    elif p.default is injected:
+                    elif p.default is injected or p.default is ...:
                         raise DependencyNotFoundError(
                             f"Required dependency '{name}' not found in namespace '{self.namespace}' while calling '{func.__name__}'. "
                         )

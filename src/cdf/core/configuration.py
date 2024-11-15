@@ -221,22 +221,22 @@ class ConfigurationLoader:
 
     @classmethod
     def from_name(
-        cls, name: str, /, *, search_path: t.Optional[Path] = None
+        cls, name: str, /, *, search_paths: t.Optional[t.Iterable[Path]] = None
     ) -> "ConfigurationLoader":
         """Create a configuration loader from a name by searching for files with supported extensions.
 
         Args:
             name: Name of the configuration file.
-            search_path: Path to search for the configuration file.
+            search_paths: Paths to search for the named configuration file.
 
         Returns:
             Configuration loader with the found configuration files.
         """
-        path = search_path or Path.cwd()
         return cls(
             *tuple(
                 conf_path
                 for ext in cls.SUPPORTED_EXTENSIONS
+                for path in search_paths or [Path.cwd()]
                 for conf_path in path.glob(f"{name}.{ext}")
             )
         )

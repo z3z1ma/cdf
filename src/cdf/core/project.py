@@ -1,9 +1,13 @@
 """Core classes for managing data packages and projects."""
 
+import inspect
 import importlib.util
+import subprocess  # nosec
 import sys
 import typing as t
+from abc import ABC, abstractmethod
 from pathlib import Path
+from types import ModuleType
 
 
 from cdf.core.configuration import ConfigurationLoader, ConfigBox
@@ -28,53 +32,171 @@ def _load_module_from_path(path: Path) -> t.Dict[str, t.Any]:
     return module.__dict__
 
 
+class ExtractLoadAdapterBase(ABC):
+    """Abstract base class for all extract-load adapters."""
+
+    def __init__(self, package: "DataPackage") -> None:
+        self.package = package
+
+    @abstractmethod
+    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
+        """Discover available pipelines."""
+        pass
+
+    @abstractmethod
+    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
+        """Run a specific pipeline."""
+        pass
+
+
+class DltAdapter(ExtractLoadAdapterBase):
+    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
+        """Discover all extract-load pipelines in main.py."""
+        pipelines = {}
+        main_script = self.package.path / "main.py"
+        if main_script.exists():
+            pipelines.update(self.package._load_scripts_from_module(main_script))
+
+        return pipelines
+
+    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
+        """Run a specific pipeline."""
+        pipelines = self.discover_pipelines()
+        if pipeline_name not in pipelines:
+            raise ValueError(
+                f"Pipeline {pipeline_name} not found in package {self.package.name}"
+            )
+        pipelines[pipeline_name](**kwargs)
+
+
+class SlingAdapter(ExtractLoadAdapterBase):
+    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
+        """Discover all pipelines for sling."""
+        pipelines = {}
+        main_script = self.package.path / "main.py"
+        if main_script.exists():
+            pipelines.update(self.package._load_scripts_from_module(main_script))
+
+        return pipelines
+
+    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
+        """Run a specific pipeline."""
+        pipelines = self.discover_pipelines()
+        if pipeline_name not in pipelines:
+            raise ValueError(
+                f"Pipeline {pipeline_name} not found in package {self.package.name}"
+            )
+        pipelines[pipeline_name](**kwargs)
+
+
+class SingerAdapter(ExtractLoadAdapterBase):
+    def discover_pipelines(self) -> t.Dict[str, t.Callable]:
+        """Singer doesn't have callable pipelines; define commands."""
+        return {"default_pipeline": self.run_pipeline}
+
+    def run_pipeline(self, pipeline_name: str = "default_pipeline", **kwargs) -> None:
+        """Run a singer pipeline using subprocess."""
+        tap = self.package.config.get("singer_tap")
+        target = self.package.config.get("singer_target")
+        if not tap or not target:
+            raise ValueError(
+                "Singer adapter requires 'singer_tap' and 'singer_target' in config."
+            )
+        subprocess.run(["echo", "1"], check=True)  # nosec
+
+
 class DataPackage:
     """Represents a data package with its own container and processing logic."""
 
-    def __init__(
-        self,
-        package_path: PathType,
-        parent_container: Container,
-    ) -> None:
+    def __init__(self, project: "Project", package_path: PathType) -> None:
         """Initialize the data package.
 
         Args:
+            project: The project containing the data package.
             package_path: Path to the data package directory.
-            parent_container: The parent container from the project.
         """
-        self.package_path = Path(package_path)
-        self.name = self.package_path.name
-        self.parent_container = parent_container
-
+        self.project = project
+        self.path = Path(package_path)
+        self.name = self.path.name
         self.container = self._create_container()
         self._load_dependencies()
+        self.extract_load_adapter = self._initialize_adapter()
 
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
         return Container(
             config=ConfigurationLoader.from_name(
-                CONFIG_FILE_NAME, search_path=self.package_path
+                CONFIG_FILE_NAME,
+                search_paths=[
+                    self.project.path,
+                    self.path,
+                    Path.home() / ".cdf",
+                ],
             ).load(),
             namespace=self.name,
-            parent=self.parent_container,
+            parent=self.project.container,
         )
 
     def _load_dependencies(self) -> None:
         """Load dependencies from Python files in the 'dependencies' directory."""
-        dependencies_dir = self.package_path / "dependencies"
+        dependencies_dir = self.path / "dependencies"
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             for py_file in dependencies_dir.glob("*.py"):
                 _load_module_from_path(py_file)
             sys.path.pop(0)
 
+    def _initialize_adapter(self) -> ExtractLoadAdapterBase:
+        """Initialize the appropriate extract-load adapter."""
+        adapter_type = self.config.get("extract_load_adapter")
+        if adapter_type == "dlt":
+            return DltAdapter(self)
+        elif adapter_type == "sling":
+            return SlingAdapter(self)
+        elif adapter_type == "singer":
+            return SingerAdapter(self)
+        else:
+            raise ValueError(f"Unsupported extract-load adapter: {adapter_type}")
+
     @property
     def config(self) -> ConfigBox:
         """Get the data package configuration."""
         return self.container.config
 
+    @property
+    def schedules(self) -> t.List[str]:
+        """Get defined schedules for the data package."""
+        return self.config.get("schedules", [])
 
-class Project:
+    def _load_module(self, module_path: str) -> ModuleType:
+        """Load a module from the package directory."""
+        sys.path.insert(0, str(self.path))
+        try:
+            module = importlib.import_module(module_path)
+            return module
+        finally:
+            sys.path.pop(0)
+
+    def _load_scripts_from_module(self, script_path: Path) -> t.Dict[str, t.Callable]:
+        """Load all callable functions from a module."""
+        module = self._load_module(script_path.stem)
+        functions = {
+            name: obj
+            for name, obj in inspect.getmembers(module, inspect.isfunction)
+            if inspect.getmodule(obj) == module
+        }
+        return functions
+
+    def discover_extract_load_pipelines(self) -> t.Dict[str, t.Callable]:
+        """Delegate to the adapter to discover pipelines."""
+        return self.extract_load_adapter.discover_pipelines()
+
+    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
+        """Delegate to the adapter to run the pipeline."""
+        self.extract_load_adapter.run_pipeline(pipeline_name, **kwargs)
+
+
+class Project(t.Mapping[str, DataPackage]):
     """Manages a project with its data packages and container."""
 
     def __init__(self, project_path: PathType) -> None:
@@ -83,8 +205,8 @@ class Project:
         Args:
             project_path: Path to the project directory.
         """
-        self.project_path = Path(project_path)
-        self.name = self.project_path.name
+        self.path = Path(project_path)
+        self.name = self.path.name
 
         self.container = self._create_container()
         self._load_dependencies()
@@ -96,14 +218,18 @@ class Project:
         """Create a container for the project."""
         return Container(
             config=ConfigurationLoader.from_name(
-                CONFIG_FILE_NAME, search_path=self.project_path
+                CONFIG_FILE_NAME,
+                search_paths=[
+                    self.path,
+                    Path.home() / ".cdf",
+                ],
             ).load(),
             namespace=self.name,
         )
 
     def _load_dependencies(self) -> None:
         """Load dependencies from Python files in the 'dependencies' directory."""
-        dependencies_dir = self.project_path / self.container.config.get(
+        dependencies_dir = self.path / self.container.config.get(
             "dependencies_dir", DEFAULT_DEPENDENCIES_DIR
         )
         if dependencies_dir.exists():
@@ -114,36 +240,48 @@ class Project:
 
     def _discover_data_packages(self) -> None:
         """Discover and load data packages within the project."""
-        data_packages_dir = self.project_path / self.container.config.get(
+        data_packages_dir = self.path / self.container.config.get(
             "data_packages_dir", DEFAULT_DATA_PACKAGES_DIR
         )
         if data_packages_dir.exists():
             for package_dir in data_packages_dir.iterdir():
                 if package_dir.is_dir():
-                    data_package = DataPackage(
-                        package_dir, parent_container=self.container
-                    )
+                    data_package = DataPackage(self, package_dir)
                     self.data_packages[data_package.name] = data_package
-
-    def get_data_package(self, name: str) -> t.Optional[DataPackage]:
-        """Get a data package by name.
-
-        Args:
-            name: Name of the data package.
-
-        Returns:
-            The DataPackage instance if found, else None.
-        """
-        return self.data_packages.get(name)
 
     @property
     def config(self) -> ConfigBox:
         """Get the project configuration."""
         return self.container.config
 
+    def __getitem__(self, key: str) -> DataPackage:
+        return self.data_packages[key]
+
+    def __iter__(self) -> t.Iterator[str]:
+        return iter(self.data_packages)
+
+    def __len__(self) -> int:
+        return len(self.data_packages)
+
+    def __getattr__(self, key: str) -> DataPackage:
+        try:
+            return self[key]
+        except KeyError as e:
+            raise AttributeError(f"No data package found with name: {key}") from e
+
+    def __repr__(self) -> str:
+        return f"Project({self.path})"
+
+
+class ExtractLoadAdapter(t.Protocol):
+    def main(self, **kwargs: t.Any) -> None:
+        """Runs the pipeline with the provided arguments."""
+        ...
+
 
 if __name__ == "__main__":
-    project = Project(".")
+    project = Project("examples/simple_project")
     print(project.data_packages)
     print(project.config.some.value)
-    print(project.data_packages["synthetic"].config.other.value)
+    print(project.synthetic.discover_extract_load_pipelines())
+    project.synthetic.run_pipeline("main_pipeline")
