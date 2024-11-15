@@ -3,16 +3,17 @@
 import asyncio
 import atexit
 import os
+from contextlib import AbstractContextManager
+
 import pytest
 
-from contextlib import AbstractContextManager
+from cdf.core.configuration import ConfigurationLoader
 from cdf.core.container import (
     Container,
     DependencyCycleError,
     DependencyNotFoundError,
     active_container,
 )
-from cdf.core.configuration import ConfigurationLoader
 
 
 class SampleResource(AbstractContextManager):

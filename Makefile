@@ -1,12 +1,12 @@
 .PHONY: all test lint format scan scan-new-baseline scan-without-baseline
 
-all: format lint scan test
+all: format lint test
 
 lint:
 	@uv tool run ruff check
 
 format:
-	@uv tool run isort src
+	@uv tool run ruff check --fix --select I
 	@uv tool run ruff format --preview
 
 test:

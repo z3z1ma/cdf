@@ -1,12 +1,13 @@
 """Tests for the context module."""
 
+import json
 import os
-import pytest
+import sys
 import tempfile
 from pathlib import Path
-import json
+
+import pytest
 import yaml
-import sys
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -15,13 +16,13 @@ else:
 
 from cdf.core.configuration import (
     _CONVERTERS,
-    ConfigurationLoader,
-    add_custom_converter,
-    _get_converter,
-    _remove_converter,
-    _expand_env_vars,
-    _load_file,
     ConfigBox,
+    ConfigurationLoader,
+    _expand_env_vars,
+    _get_converter,
+    _load_file,
+    _remove_converter,
+    add_custom_converter,
 )
 
 
