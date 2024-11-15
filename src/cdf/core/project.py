@@ -93,7 +93,8 @@ class DataPackage:
         """Load a module from the package directory."""
         sys.path.insert(0, str(self.path))
         try:
-            module = importlib.import_module(module_path)
+            with self.container:
+                module = importlib.import_module(module_path)
             return module
         finally:
             sys.path.pop(0)
@@ -114,7 +115,8 @@ class DataPackage:
 
     def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
         """Delegate to the adapter to run the pipeline."""
-        self.extract_load_adapter.run_pipeline(pipeline_name, **kwargs)
+        with self.container:
+            self.extract_load_adapter.run_pipeline(pipeline_name, **kwargs)
 
 
 class Project(t.Mapping[str, DataPackage]):
@@ -202,7 +204,9 @@ class ExtractLoadAdapter(t.Protocol):
 
 if __name__ == "__main__":
     project = Project("examples/simple_project")
+    project.container.add("test1", 123)
     print(project.data_packages)
     print(project.config.some.value)
     print(project.synthetic.discover_extract_load_pipelines())
+    project.synthetic.container.add("test2", 321)
     project.synthetic.run_pipeline("main_pipeline")

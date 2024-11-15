@@ -71,6 +71,7 @@ class Container(t.MutableMapping[str, t.Any]):
         self._exit_stack = contextlib.ExitStack()
         self._call_stack_depth = 0
         self._config = ConfigBox(config or {})
+        self._tokens = []
         self.namespace = namespace
         self.parent = parent
 
@@ -266,11 +267,23 @@ class Container(t.MutableMapping[str, t.Any]):
 
     def __iter__(self) -> t.Iterator[str]:
         """Iterate over the dependency names."""
-        return (name for (_, name) in set(self._dependencies.keys()).union(self._factories.keys()))
+        seen = set()
+        for _, name in set(self._dependencies.keys()).union(self._factories.keys()):
+            if name not in seen:
+                yield name
+                seen.add(name)
+        if self.parent is not None:
+            for name in self.parent:
+                if name not in seen:
+                    yield name
+                    seen.add(name)
 
     def __len__(self) -> int:
         """Return the number of dependencies."""
-        return len(set(self._dependencies.keys()).union(self._factories.keys()))
+        dep_count = len(set(self._dependencies.keys()).union(self._factories.keys()))
+        if self.parent is not None:
+            dep_count += len(self.parent)
+        return dep_count
 
     def __contains__(self, name: object) -> bool:
         """Check if a dependency is registered.
@@ -282,7 +295,10 @@ class Container(t.MutableMapping[str, t.Any]):
             True if the dependency is registered, False otherwise
         """
         key = (self.namespace, name)
-        return key in self._dependencies or key in self._factories
+        exists = key in self._dependencies or key in self._factories
+        if not exists and self.parent is not None:
+            return name in self.parent
+        return exists
 
     def inject_deps(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
         """Decorator to inject dependencies into functions based on parameter names.
@@ -406,11 +422,11 @@ class Container(t.MutableMapping[str, t.Any]):
         return decorator
 
     def __enter__(self) -> "Container":
-        self._token = active_container.set(self)
+        self._tokens.append(active_container.set(self))
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        active_container.reset(self._token)
+        active_container.reset(self._tokens.pop())
         self._exit_stack.__exit__(exc_type, exc_value, traceback)
 
     def combine(self, other: "Container") -> "Container":
@@ -505,3 +521,33 @@ def register_dep(
         return decorator(name_or_func)
 
     return decorator
+
+
+@t.overload
+def inject_deps(func: t.Callable[..., T], /) -> t.Callable[..., T]: ...
+
+
+@t.overload
+def inject_deps(
+    *, late_bind: bool = True
+) -> t.Callable[[t.Callable[..., T]], t.Callable[..., T]]: ...
+
+
+def inject_deps(func: t.Optional[t.Callable[..., T]] = None, /, *, late_bind: bool = True):
+    """Decorator to inject dependencies into functions based on parameter names."""
+
+    def decorator(f: t.Callable[..., T]) -> t.Callable[..., T]:
+        container = None if late_bind else active_container.get()
+
+        @wraps(f)
+        def wrapper(*args, **kwargs):
+            nonlocal container
+            if container is None:
+                container = active_container.get()
+            return container(f)(*args, **kwargs)
+
+        return wrapper
+
+    if func is None:
+        return decorator
+    return decorator(func)
