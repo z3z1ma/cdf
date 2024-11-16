@@ -44,6 +44,8 @@ include = ["src"]
 exclude = ["examples/", "docs/"]
 ignore = ["src/builtin"]
 reportPrivateImportUsage = false
+reportImplicitOverride = false
+reportAny = false
 
 [tool.ruff]
 line-length = 100

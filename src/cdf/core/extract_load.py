@@ -14,8 +14,8 @@ if t.TYPE_CHECKING:
 class ExtractLoadAdapterBase(ABC):
     """Abstract base class for all extract-load adapters."""
 
-    def __init__(self, package: "DataPackage") -> None:
-        self.package: "DataPackage" = package
+    def __init__(self, package: DataPackage) -> None:
+        self.package: DataPackage = package
 
     @abstractmethod
     def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
@@ -23,13 +23,12 @@ class ExtractLoadAdapterBase(ABC):
         pass
 
     @abstractmethod
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:  # pyright: ignore[reportAny]
+    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pass
 
 
 class DltAdapter(ExtractLoadAdapterBase):
-    @t.override
     def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Discover all extract-load pipelines in main.py."""
         pipelines: dict[str, t.Callable[..., t.Any]] = {}
@@ -39,8 +38,7 @@ class DltAdapter(ExtractLoadAdapterBase):
 
         return pipelines
 
-    @t.override
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:  # pyright: ignore[reportAny]
+    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pipelines: dict[str, t.Callable[..., t.Any]] = self.discover_pipelines()
         if pipeline_name not in pipelines:
@@ -49,7 +47,6 @@ class DltAdapter(ExtractLoadAdapterBase):
 
 
 class SlingAdapter(ExtractLoadAdapterBase):
-    @t.override
     def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Discover all pipelines for sling."""
         pipelines: dict[str, t.Callable[..., t.Any]] = {}
@@ -59,8 +56,7 @@ class SlingAdapter(ExtractLoadAdapterBase):
 
         return pipelines
 
-    @t.override
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:  # pyright: ignore[reportAny]
+    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pipelines: dict[str, t.Callable[..., t.Any]] = self.discover_pipelines()
         if pipeline_name not in pipelines:
@@ -69,13 +65,11 @@ class SlingAdapter(ExtractLoadAdapterBase):
 
 
 class SingerAdapter(ExtractLoadAdapterBase):
-    @t.override
     def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Singer doesn't have callable pipelines; define commands."""
         return {"default_pipeline": self.run_pipeline}
 
-    @t.override
-    def run_pipeline(self, pipeline_name: str = "default_pipeline", **kwargs: t.Any) -> None:  # pyright: ignore[reportAny]
+    def run_pipeline(self, pipeline_name: str = "default_pipeline", **kwargs: t.Any) -> None:
         """Run a singer pipeline using subprocess."""
         tap = t.cast(str, self.package.config.get("singer_tap"))
         target = t.cast(str, self.package.config.get("singer_target"))

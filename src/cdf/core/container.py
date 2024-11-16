@@ -1,4 +1,6 @@
-"""Context module for dependency injection."""
+"""Container module for dependency injection."""
+
+from __future__ import annotations
 
 import asyncio
 import atexit
@@ -7,21 +9,17 @@ import inspect
 import sys
 import threading
 import typing as t
-from contextvars import ContextVar
+from collections.abc import Iterator, Mapping, MutableMapping
+from contextvars import ContextVar, Token
 from functools import wraps
-from types import MappingProxyType
-
-if sys.version_info >= (3, 9):
-    from typing import ParamSpec
-else:
-    from typing_extensions import ParamSpec
+from types import MappingProxyType, TracebackType
 
 from cdf.core.configuration import ConfigBox
 from cdf.core.constants import CONTEXT_PARAM_NAME
 
-T = t.TypeVar("T")
-P = ParamSpec("P")
 
+T = t.TypeVar("T")
+P = t.ParamSpec("P")
 
 __all__ = [
     "Container",
@@ -42,17 +40,17 @@ class DependencyNotFoundError(KeyError):
     """Raised when a dependency is not found in the context."""
 
 
-class Container(t.MutableMapping[str, t.Any]):
+class Container(MutableMapping[str, t.Any]):
     """Provides access to configuration and acts as a DI container with dependency resolution."""
 
-    active: t.ClassVar[ContextVar["Container"]] = ContextVar("activeContainer")
+    active: t.ClassVar[ContextVar[Container]] = ContextVar("activeContainer")
     """Context variable to store the active container."""
 
     def __init__(
         self,
-        config: t.Optional[t.Mapping[str, t.Any]] = None,
-        namespace: t.Optional[str] = None,
-        parent: t.Optional["Container"] = None,
+        config: Mapping[str, t.Any] | None = None,
+        namespace: str | None = None,
+        parent: Container | None = None,
     ) -> None:
         """Initialize the context with a configuration loader.
 
@@ -61,19 +59,17 @@ class Container(t.MutableMapping[str, t.Any]):
             namespace: Namespace to use for the context.
             parent: Parent context to inherit dependencies from.
         """
-        self._dependencies: t.Dict[t.Tuple[t.Optional[str], str], t.Any] = {}
-        self._factories: t.Dict[
-            t.Tuple[t.Optional[str], str], t.Tuple[t.Callable[..., t.Any], bool]
-        ] = {}
-        self._singletons: t.Dict[t.Tuple[t.Optional[str], str], t.Any] = {}
-        self._resolving: t.Set[t.Tuple[t.Optional[str], str]] = set()
-        self._lock = threading.RLock()
-        self._exit_stack = contextlib.ExitStack()
-        self._call_stack_depth = 0
-        self._config = ConfigBox(config or {})
-        self._tokens = []
-        self.namespace = namespace
-        self.parent = parent
+        self._dependencies: dict[tuple[str | None, str], t.Any] = {}
+        self._factories: dict[tuple[str | None, str], tuple[t.Callable[..., t.Any], bool]] = {}
+        self._singletons: dict[tuple[str | None, str], t.Any] = {}
+        self._resolving: set[tuple[str | None, str]] = set()
+        self._lock: threading.RLock = threading.RLock()
+        self._exit_stack: contextlib.ExitStack = contextlib.ExitStack()
+        self._call_stack_depth: int = 0
+        self._config: ConfigBox = ConfigBox(config or {})
+        self._tokens: list[Token[Container]] = []
+        self.namespace: str | None = namespace
+        self.parent: Container | None = parent
 
     @property
     def config(self) -> ConfigBox:
@@ -85,7 +81,7 @@ class Container(t.MutableMapping[str, t.Any]):
         return self._config
 
     @config.setter
-    def config(self, value: t.Mapping[str, t.Any]) -> None:
+    def config(self, value: Mapping[str, t.Any]) -> None:  # pyright: ignore[reportPropertyTypeMismatch]
         """Set a new read-only configuration for the context.
 
         Args:
@@ -102,7 +98,7 @@ class Container(t.MutableMapping[str, t.Any]):
         """
         return MappingProxyType(self._config)
 
-    def add(self, name: str, instance: t.Any, namespace: t.Optional[str] = None) -> None:
+    def add(self, name: str, instance: t.Any, namespace: str | None = None) -> None:
         """Register a dependency instance.
 
         Args:
@@ -117,7 +113,7 @@ class Container(t.MutableMapping[str, t.Any]):
         name: str,
         factory: t.Callable[..., t.Any],
         singleton: bool = True,
-        namespace: t.Optional[str] = None,
+        namespace: str | None = None,
     ) -> None:
         """Register a dependency factory.
 
@@ -136,8 +132,8 @@ class Container(t.MutableMapping[str, t.Any]):
     def get(
         self,
         name: str,
-        default: t.Optional[t.Any] = ...,
-        namespace: t.Optional[str] = None,
+        default: t.Any = ...,
+        namespace: str | None = None,
     ) -> t.Any:
         """Resolve a dependency by name, handling recursive dependencies.
 
@@ -168,14 +164,14 @@ class Container(t.MutableMapping[str, t.Any]):
                 result = factory()
                 if isinstance(result, contextlib.AbstractContextManager):
                     if singleton:
-                        result = result.__enter__()
+                        result = t.cast(t.Any, result.__enter__())
 
-                        def _cleanup() -> None:
+                        @atexit.register
+                        def _() -> None:
                             result.__exit__(*sys.exc_info())
 
-                        atexit.register(_cleanup)
                     else:
-                        result = self._exit_stack.enter_context(result)
+                        result = t.cast(t.Any, self._exit_stack.enter_context(result))  # pyright: ignore[reportUnknownArgumentType]
                 elif inspect.iscoroutine(result):
                     try:
                         loop = asyncio.get_running_loop()
@@ -197,10 +193,10 @@ class Container(t.MutableMapping[str, t.Any]):
                 return default
             raise DependencyNotFoundError(
                 f"Dependency '{name}' not found in namespace '{namespace or self.namespace}'. "
-                f"Available dependencies: {list(self)}"
+                + f"Available dependencies: {list(self)}"
             )
 
-    def drop(self, name: str, namespace: t.Optional[str] = None) -> None:
+    def drop(self, name: str, namespace: str | None = None) -> None:
         """Drop a singleton dependency.
 
         Args:
@@ -265,9 +261,9 @@ class Container(t.MutableMapping[str, t.Any]):
         """
         self.drop(name)
 
-    def __iter__(self) -> t.Iterator[str]:
+    def __iter__(self) -> Iterator[str]:
         """Iterate over the dependency names."""
-        seen = set()
+        seen: set[str] = set()
         for _, name in set(self._dependencies.keys()).union(self._factories.keys()):
             if name not in seen:
                 yield name
@@ -321,7 +317,7 @@ class Container(t.MutableMapping[str, t.Any]):
         sig = inspect.signature(func)
 
         @wraps(func)
-        def wrapper(*args, **kwargs) -> T:
+        def wrapper(*args: t.Any, **kwargs: t.Any) -> T:
             bound_args = sig.bind_partial(*args, **kwargs)
             for name, p in sig.parameters.items():
                 if name not in bound_args.arguments:
@@ -344,7 +340,9 @@ class Container(t.MutableMapping[str, t.Any]):
 
         return wrapper
 
-    wire = inject_deps  # Alias for inject_deps
+    @wraps(inject_deps)
+    def wire(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
+        return self.inject_deps(func)
 
     def __call__(self, func: t.Callable[..., T]) -> t.Callable[..., T]:
         """Allow the context to be used as a decorator.
@@ -375,11 +373,11 @@ class Container(t.MutableMapping[str, t.Any]):
     @t.overload
     def register_dep(
         self,
-        name: t.Optional[str] = None,
+        name: str | None = None,
         /,
         *,
         singleton: bool = True,
-        namespace: t.Optional[str] = None,
+        namespace: str | None = None,
     ) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
         """Decorator to register a dependency in the global context.
 
@@ -394,11 +392,11 @@ class Container(t.MutableMapping[str, t.Any]):
 
     def register_dep(
         self,
-        name_or_func: t.Union[None, str, t.Callable[P, T]] = None,
+        name_or_func: str | t.Callable[P, T] | None = None,
         /,
         singleton: bool = True,
-        namespace: t.Optional[str] = None,
-    ) -> t.Union[t.Callable[P, T], t.Callable[[t.Callable[P, T]], t.Callable[P, T]]]:
+        namespace: str | None = None,
+    ) -> t.Callable[P, T] | t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
         """Decorator to register a dependency in the global context.
 
         Args:
@@ -425,9 +423,11 @@ class Container(t.MutableMapping[str, t.Any]):
         self._tokens.append(active_container.set(self))
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(
+        self, exc_type: type[BaseException], exc_value: BaseException, traceback: TracebackType
+    ) -> None:
         active_container.reset(self._tokens.pop())
-        self._exit_stack.__exit__(exc_type, exc_value, traceback)
+        _ = self._exit_stack.__exit__(exc_type, exc_value, traceback)
 
     def combine(self, other: "Container") -> "Container":
         """Combine this context with another, returning a new context with merged configurations and dependencies.
@@ -475,11 +475,11 @@ def register_dep(
 
 @t.overload
 def register_dep(
-    name: t.Optional[str] = None,
+    name: str | None = None,
     /,
     *,
     singleton: bool = True,
-    namespace: t.Optional[str] = None,
+    namespace: str | None = None,
 ) -> t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
     """Decorator to register a dependency in the global context.
 
@@ -494,11 +494,11 @@ def register_dep(
 
 
 def register_dep(
-    name_or_func: t.Union[None, str, t.Callable[P, T]] = None,
+    name_or_func: str | t.Callable[P, T] | None = None,
     /,
     singleton: bool = True,
-    namespace: t.Optional[str] = None,
-) -> t.Union[t.Callable[P, T], t.Callable[[t.Callable[P, T]], t.Callable[P, T]]]:
+    namespace: str | None = None,
+) -> t.Callable[P, T] | t.Callable[[t.Callable[P, T]], t.Callable[P, T]]:
     """Decorator to register a dependency in the global context.
 
     Args:
@@ -533,14 +533,14 @@ def inject_deps(
 ) -> t.Callable[[t.Callable[..., T]], t.Callable[..., T]]: ...
 
 
-def inject_deps(func: t.Optional[t.Callable[..., T]] = None, /, *, late_bind: bool = True):
+def inject_deps(func: t.Callable[..., T] | None = None, /, *, late_bind: bool = True):
     """Decorator to inject dependencies into functions based on parameter names."""
 
     def decorator(f: t.Callable[..., T]) -> t.Callable[..., T]:
         container = None if late_bind else active_container.get()
 
         @wraps(f)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: t.Any, **kwargs: t.Any) -> T:
             nonlocal container
             if container is None:
                 container = active_container.get()
