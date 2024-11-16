@@ -1,9 +1,13 @@
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 """Core classes for managing data packages and projects."""
+
+from __future__ import annotations
 
 import importlib.util
 import inspect
 import sys
 import typing as t
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from types import ModuleType
 
@@ -12,10 +16,10 @@ from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFA
 from cdf.core.container import Container
 from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
 
-PathType = t.Union[str, Path]
+PathType = Path | str
 
 
-def _load_module_from_path(path: Path) -> t.Dict[str, t.Any]:
+def _load_module_from_path(path: Path) -> dict[str, t.Any]:
     """Load a Python module from a file path."""
     module_name = path.stem
     spec = importlib.util.spec_from_file_location(module_name, path)
@@ -26,6 +30,7 @@ def _load_module_from_path(path: Path) -> t.Dict[str, t.Any]:
     return module.__dict__
 
 
+@t.final
 class DataPackage:
     """Represents a data package with its own container and processing logic."""
 
@@ -64,12 +69,14 @@ class DataPackage:
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             for py_file in dependencies_dir.glob("*.py"):
-                _load_module_from_path(py_file)
-            sys.path.pop(0)
+                _ = _load_module_from_path(py_file)
+            _ = sys.path.pop(0)
 
     def _initialize_adapter(self) -> ExtractLoadAdapterBase:
         """Initialize the appropriate extract-load adapter."""
         adapter_type = self.config.get("extract_load_adapter")
+        if not isinstance(adapter_type, str):
+            raise TypeError("Extract-load adapter must be a string")
         if adapter_type == "dlt":
             return DltAdapter(self)
         elif adapter_type == "sling":
@@ -85,9 +92,12 @@ class DataPackage:
         return self.container.config
 
     @property
-    def schedules(self) -> t.List[str]:
+    def schedules(self) -> list[str]:
         """Get defined schedules for the data package."""
-        return self.config.get("schedules", [])
+        schedules = self.config.get("schedules", [])
+        if not isinstance(schedules, list):
+            raise TypeError("Schedules must be a list")
+        return schedules
 
     def _load_module(self, module_path: str) -> ModuleType:
         """Load a module from the package directory."""
@@ -97,9 +107,9 @@ class DataPackage:
                 module = importlib.import_module(module_path)
             return module
         finally:
-            sys.path.pop(0)
+            _ = sys.path.pop(0)
 
-    def _load_scripts_from_module(self, script_path: Path) -> t.Dict[str, t.Callable]:
+    def load_scripts_from_module(self, script_path: Path) -> dict[str, t.Callable[..., t.Any]]:
         """Load all callable functions from a module."""
         module = self._load_module(script_path.stem)
         functions = {
@@ -109,17 +119,18 @@ class DataPackage:
         }
         return functions
 
-    def discover_extract_load_pipelines(self) -> t.Dict[str, t.Callable]:
+    def discover_extract_load_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Delegate to the adapter to discover pipelines."""
         return self.extract_load_adapter.discover_pipelines()
 
-    def run_pipeline(self, pipeline_name: str, **kwargs) -> None:
+    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:  # pyright: ignore[reportAny]
         """Delegate to the adapter to run the pipeline."""
         with self.container:
             self.extract_load_adapter.run_pipeline(pipeline_name, **kwargs)
 
 
-class Project(t.Mapping[str, DataPackage]):
+@t.final
+class Project(Mapping[str, DataPackage]):
     """Manages a project with its data packages and container."""
 
     def __init__(self, project_path: PathType) -> None:
@@ -134,7 +145,7 @@ class Project(t.Mapping[str, DataPackage]):
         self.container = self._create_container()
         self._load_dependencies()
 
-        self.data_packages: t.Dict[str, DataPackage] = {}
+        self.data_packages: dict[str, DataPackage] = {}
         self._discover_data_packages()
 
     def _create_container(self) -> Container:
@@ -152,14 +163,14 @@ class Project(t.Mapping[str, DataPackage]):
 
     def _load_dependencies(self) -> None:
         """Load dependencies from Python files in the 'dependencies' directory."""
-        dependencies_dir = self.path / self.container.config.get(
-            "dependencies_dir", DEFAULT_DEPENDENCIES_DIR
+        dependencies_dir = self.path / str(
+            self.container.config.get("dependencies_dir", DEFAULT_DEPENDENCIES_DIR)
         )
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             for py_file in dependencies_dir.glob("*.py"):
-                _load_module_from_path(py_file)
-            sys.path.pop(0)
+                _ = _load_module_from_path(py_file)
+            _ = sys.path.pop(0)
 
     def _discover_data_packages(self) -> None:
         """Discover and load data packages within the project."""
@@ -177,12 +188,15 @@ class Project(t.Mapping[str, DataPackage]):
         """Get the project configuration."""
         return self.container.config
 
+    @t.override
     def __getitem__(self, key: str) -> DataPackage:
         return self.data_packages[key]
 
-    def __iter__(self) -> t.Iterator[str]:
+    @t.override
+    def __iter__(self) -> Iterator[str]:
         return iter(self.data_packages)
 
+    @t.override
     def __len__(self) -> int:
         return len(self.data_packages)
 
@@ -192,14 +206,9 @@ class Project(t.Mapping[str, DataPackage]):
         except KeyError as e:
             raise AttributeError(f"No data package found with name: {key}") from e
 
+    @t.override
     def __repr__(self) -> str:
         return f"Project({self.path})"
-
-
-class ExtractLoadAdapter(t.Protocol):
-    def main(self, **kwargs: t.Any) -> None:
-        """Runs the pipeline with the provided arguments."""
-        ...
 
 
 if __name__ == "__main__":
