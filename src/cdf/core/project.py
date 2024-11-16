@@ -15,19 +15,9 @@ from cdf.core.configuration import ConfigBox, ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
 from cdf.core.container import Container
 from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
+from cdf.utils.file import load_module_from_path
 
 PathType = Path | str
-
-
-def _load_module_from_path(path: Path) -> dict[str, t.Any]:
-    """Load a Python module from a file path."""
-    module_name = path.stem
-    spec = importlib.util.spec_from_file_location(module_name, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f"Could not load module from path: {path}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module.__dict__
 
 
 @t.final
@@ -69,7 +59,7 @@ class DataPackage:
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             for py_file in dependencies_dir.glob("*.py"):
-                _ = _load_module_from_path(py_file)
+                _ = load_module_from_path(py_file)
             _ = sys.path.pop(0)
 
     def _initialize_adapter(self) -> ExtractLoadAdapterBase:
@@ -169,7 +159,7 @@ class Project(Mapping[str, DataPackage]):
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             for py_file in dependencies_dir.glob("*.py"):
-                _ = _load_module_from_path(py_file)
+                _ = load_module_from_path(py_file)
             _ = sys.path.pop(0)
 
     def _discover_data_packages(self) -> None:

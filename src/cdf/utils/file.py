@@ -1,13 +1,13 @@
 # pyright: reportUnreachable=false
 import functools
+import importlib
+import importlib.util
 import io
 import json
 import os
 import string
 import sys
 import typing as t
-import importlib
-import importlib.util
 from pathlib import Path
 
 import yaml
@@ -25,6 +25,7 @@ __all__ = [
     "load_json",
     "load_yaml",
     "load_toml",
+    "load_module_from_path",
     "load_file_from_extension",
 ]
 
@@ -77,6 +78,24 @@ load_yaml = functools.partial(load_file, parser=lambda s: yaml.safe_load(io.Stri
 load_toml = functools.partial(load_file, parser=toml.loads)
 
 
+def load_module_from_path(path: Path | str) -> dict[str, t.Any]:
+    """Load a Python module from a file path.
+
+    Args:
+        path: Path to the Python file to load.
+
+    Returns:
+        The loaded module's dictionary.
+    """
+    path = Path(path)
+    spec = importlib.util.spec_from_file_location(path.stem, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module from path: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.__dict__
+
+
 def load_file_from_extension(path: Path | str) -> dict[str, t.Any]:
     """Load file based on its extension.
 
@@ -96,11 +115,6 @@ def load_file_from_extension(path: Path | str) -> dict[str, t.Any]:
     elif path.suffix == ".toml":
         return load_toml(path)
     elif path.suffix == ".py":
-        spec = importlib.util.spec_from_file_location(path.stem, path)
-        if spec is None or spec.loader is None:
-            raise ImportError(f"Could not load module from path: {path}")
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.__dict__["config"]
+        return load_module_from_path(path)["config"]
     else:
         raise ValueError(f"Unsupported file format: {path.suffix}")
