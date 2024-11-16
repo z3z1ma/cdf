@@ -1,0 +1,13 @@
+[project]
+name = "simple-project"
+version = "0.1.0"
+description = "A simple projecrt"
+requires-python = ">=3.9, <3.13"
+dependencies = []
+
+[tool.uv.workspace]
+members = ["data_packages/*"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

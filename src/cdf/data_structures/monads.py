@@ -5,7 +5,6 @@ from __future__ import annotations
 import abc
 import asyncio
 import functools
-import inspect
 import sys
 import typing as t
 
@@ -20,9 +19,7 @@ T = t.TypeVar("T")  # The type of the value inside the Monad
 U = t.TypeVar("U")  # The transformed type of the value inside the Monad
 K = t.TypeVar("K")  # A known type that is not necessarily the same as T
 L = t.TypeVar("L")  # A known type that is not necessarily the same as U
-E = t.TypeVar(
-    "E", bound=BaseException, covariant=True
-)  # The type of the error inside the Result
+E = t.TypeVar("E", bound=BaseException, covariant=True)  # The type of the error inside the Result
 P = ParamSpec("P")
 
 TState = t.TypeVar("TState")  # The type of the state
@@ -314,9 +311,7 @@ class Result(Monad[T], t.Generic[T, E]):
 
         def __call__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
 
-        def __rshift__(
-            self, func: t.Callable[[T], "Result[U, E]"]
-        ) -> "Result[U, E]": ...
+        def __rshift__(self, func: t.Callable[[T], "Result[U, E]"]) -> "Result[U, E]": ...
 
     def __iter__(self) -> t.Iterator[T]:
         """Allows safely unwrapping the value of the Result using a for construct."""
@@ -489,30 +484,26 @@ class Err(Result[T, E]):
 
 
 class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
-    def __init__(
-        self,
-        coro_func: t.Callable[P, t.Coroutine[None, None, T]],
-        *args: P.args,
-        **kwargs: P.kwargs,
-    ) -> None:
-        """Initializes a Promise with a coroutine function.
+    def __init__(self, coro: t.Coroutine[t.Any, t.Any, T]) -> None:
+        """Initializes a Promise with a coroutine.
 
         Args:
-            coro_func: A coroutine function that returns a value of type T.
-            args: Positional arguments to pass to the coroutine function.
-            kwargs: Keyword arguments to pass to the coroutine function.
+            coro: An asyncio coroutine that will produce a result of type T.
         """
-        self._loop = asyncio.get_event_loop()
-        if callable(coro_func):
-            coro = coro_func(*args, **kwargs)
-        elif inspect.iscoroutine(coro_func):
-            coro = t.cast(t.Coroutine[None, None, T], coro_func)
-        else:
-            raise ValueError("Invalid coroutine function")
-        self._future: asyncio.Future[T] = asyncio.ensure_future(coro, loop=self._loop)
+        if not asyncio.iscoroutine(coro):
+            raise ValueError("The provided argument must be an asyncio coroutine.")
+        self._task = asyncio.ensure_future(coro)
+
+    def __await__(self) -> t.Generator[t.Any, None, T]:
+        """Allows the Promise to be awaited."""
+        return self._task.__await__()
+
+    def __hash__(self) -> int:
+        """Returns the hash of the underlying task."""
+        return hash(self._task)
 
     @classmethod
-    def pure(cls, value: K) -> "Promise[K]":
+    def pure(cls, value: T) -> "Promise[T]":
         """Creates a Promise that is already resolved with a value.
 
         Args:
@@ -521,15 +512,54 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
         Returns:
             A new Promise that is already resolved with the value.
         """
-        return cls.from_value(value)  # type: ignore
+        return cls.resolve(value)
 
-    def __hash__(self) -> int:
-        return hash(self._future)
+    @classmethod
+    def resolve(cls, value: "T | Promise[T]") -> "Promise[T]":
+        """Resolves a value or another Promise into a Promise.
 
-    def __await__(self):
-        """Allows the Promise to be awaited."""
-        yield from self._future.__await__()
-        return (yield from self._future.__await__())
+        Args:
+            value: The value or Promise to resolve.
+
+        Returns:
+            A Promise that wraps the provided value or the result of the provided Promise.
+        """
+        if isinstance(value, Promise):
+            return value
+        elif asyncio.isfuture(value) or asyncio.iscoroutine(value):
+            return cls(value)
+        else:
+
+            async def coro():
+                return value
+
+            return cls(coro())
+
+    @classmethod
+    def reject(cls, exception: BaseException) -> "Promise[T]":
+        """Creates a Promise that is already rejected with an exception.
+
+        Args:
+            exception: The exception to reject the Promise with.
+
+        Returns:
+            A Promise that will raise the provided exception when awaited.
+        """
+
+        async def coro():
+            raise exception
+
+        return cls(coro())
+
+    @classmethod
+    def from_value(cls, value: T) -> "Promise[T]":
+        """Alias for resolve, creates a Promise that is already resolved with a value."""
+        return cls.resolve(value)
+
+    @classmethod
+    def from_exception(cls, exception: BaseException) -> "Promise[T]":
+        """Alias for reject, creates a Promise that is already rejected with an exception."""
+        return cls.reject(exception)
 
     def set_result(self, result: T) -> None:
         """Sets a result on the Promise.
@@ -537,164 +567,231 @@ class Promise(t.Generic[T], t.Awaitable[T], Monad[T]):
         Args:
             result: The result to set on the Promise.
         """
-        if not self._future.done():
-            self._loop.call_soon_threadsafe(self._future.set_result, result)
+        if not self._task.done():
+            self._task.set_result(result)
 
-    def set_exception(self, exception: Exception) -> None:
+    def set_exception(self, exception: BaseException) -> None:
         """Sets an exception on the Promise.
 
         Args:
             exception: The exception to set on the Promise.
         """
-        if not self._future.done():
-            self._loop.call_soon_threadsafe(self._future.set_exception, exception)
+        if not self._task.done():
+            self._task.set_exception(exception)
+
+    def then(self, on_fulfilled: t.Callable[[T], "U | Promise[U]"]) -> "Promise[U]":
+        """Chains a function to be executed when the Promise is fulfilled.
+
+        Args:
+            on_fulfilled: A function that takes the result and returns a new value or Promise.
+
+        Returns:
+            A new Promise resulting from the application of the provided function.
+        """
+
+        async def coro():
+            try:
+                result = await self._task
+                value = on_fulfilled(result)
+                if isinstance(value, Promise):
+                    return await value
+                elif asyncio.iscoroutine(value) or asyncio.isfuture(value):
+                    return await value
+                else:
+                    return value
+            except Exception as e:
+                raise e
+
+        return Promise(coro())
+
+    def catch(self, on_rejected: t.Callable[[Exception], "U | Promise[U]"]) -> "Promise[U]":
+        """Adds a rejection handler to the Promise.
+
+        Args:
+            on_rejected: A function that handles exceptions and returns a new value or Promise.
+
+        Returns:
+            A new Promise that has the result of the rejection handler if an exception occurs.
+        """
+
+        async def coro():
+            try:
+                return await self._task
+            except Exception as e:
+                value = on_rejected(e)
+                if isinstance(value, Promise):
+                    return await value
+                elif asyncio.iscoroutine(value) or asyncio.isfuture(value):
+                    return await value
+                else:
+                    return value
+
+        return Promise(coro())
 
     def bind(self, func: t.Callable[[T], "Promise[U]"]) -> "Promise[U]":
-        """Applies a function to the result of the Promise.
+        """Applies a function that returns a Promise to the result of this Promise.
 
         Args:
-            func: A function that takes a value of type T and returns a Promise containing a value of type U.
+            func: A function that takes the result and returns a new Promise.
 
         Returns:
-            A new Promise containing the result of the original Promise after applying the function.
+            A new Promise resulting from the application of the provided function.
         """
 
-        async def bound_coro() -> U:
-            try:
-                value = await self
-                next_promise = func(value)
-                return await next_promise
-            except Exception as e:
-                future = self._loop.create_future()
-                future.set_exception(e)
-                return t.cast(U, await future)
+        def on_fulfilled(result: T) -> "Promise[U]":
+            return func(result)
 
-        return Promise(bound_coro)
+        return self.then(on_fulfilled)
 
     def map(self, func: t.Callable[[T], U]) -> "Promise[U]":
-        """Applies a mapping function to the result of the Promise.
+        """Applies a synchronous function to the result of the Promise.
 
         Args:
-            func: A function that takes a value of type T and returns a value of type U.
+            func: A function that takes the result and returns a new value.
 
         Returns:
-            A new Promise containing the result of the original Promise after applying the function.
+            A new Promise containing the result of the function.
         """
 
-        async def mapped_coro() -> U:
-            try:
-                value = await self
-                return func(value)
-            except Exception as e:
-                future = self._loop.create_future()
-                future.set_exception(e)
-                return t.cast(U, await future)
+        async def coro():
+            result = await self._task
+            return func(result)
 
-        return Promise(mapped_coro)
-
-    then = map  # syntactic sugar, equivalent to map
+        return Promise(coro())
 
     def filter(self, predicate: t.Callable[[T], bool]) -> "Promise[T]":
         """Filters the result of the Promise based on a predicate.
 
         Args:
-            predicate: A function that takes a value of type T and returns a boolean.
+            predicate: A function that returns True if the value should be kept.
 
         Returns:
-            A new Promise containing the result of the original Promise if the predicate holds.
+            A new Promise containing the result if the predicate is True, else raises ValueError.
         """
 
-        async def filtered_coro() -> T:
-            try:
-                value = await self
-                if predicate(value):
-                    return value
-                else:
-                    raise ValueError("Filter predicate failed")
-            except Exception as e:
-                future = self._loop.create_future()
-                future.set_exception(e)
-                return await future
+        async def coro():
+            result = await self._task
+            if predicate(result):
+                return result
+            else:
+                raise ValueError("Filter predicate failed")
 
-        return Promise(filtered_coro)
+        return Promise(coro())
 
     def unwrap(self) -> T:
-        return self._loop.run_until_complete(self)
-
-    def unwrap_or(self, default: T) -> T:
-        """Tries to unwrap the Promise, returning a default value if unwrapping raises an exception.
-
-        Args:
-            default: The value to return if unwrapping raises an exception.
+        """Synchronously retrieves the result of the Promise.
 
         Returns:
-            The unwrapped value or the default value if an exception is raised.
+            The result of the Promise.
+
+        Raises:
+            Exception: If the Promise is not yet completed or if an exception occurred.
+        """
+        return self.get_result()
+
+    def unwrap_or(self, default: T) -> T:
+        """Retrieves the result or returns a default value if an exception occurred.
+
+        Args:
+            default: The default value to return if the Promise is rejected.
+
+        Returns:
+            The result of the Promise or the default value.
         """
         try:
-            return self._loop.run_until_complete(self)
+            return self.get_result()
         except Exception:
             return default
 
     @classmethod
-    def from_value(cls, value: T) -> "Promise[T]":
-        """Creates a Promise that is already resolved with a value.
+    def lift(cls, func: t.Callable[[U], T]) -> t.Callable[["U | Promise[U]"], "Promise[T]"]:
+        """Lifts a synchronous function to operate on Promises.
 
         Args:
-            value: The value to resolve the Promise with.
+            func: A synchronous function to lift.
 
         Returns:
-            A new Promise that is already resolved with the value.
+            A function that takes a value or Promise and returns a Promise.
         """
 
-        async def _fut():
-            return value
-
-        return cls(_fut)
-
-    @classmethod
-    def from_exception(cls, exception: BaseException) -> "Promise[T]":
-        """Creates a Promise that is already resolved with an exception.
-
-        Args:
-            exception: The exception to resolve the Promise with.
-
-        Returns:
-            A new Promise that is already resolved with the exception.
-        """
-
-        async def _fut():
-            raise exception
-
-        return cls(_fut)
-
-    @classmethod
-    def lift(
-        cls, func: t.Callable[[U], T]
-    ) -> t.Callable[["U | Promise[U]"], "Promise[T]"]:
-        """
-        Lifts a synchronous function to work within the Promise context,
-        making it return a Promise of the result and allowing it to be used
-        with Promise inputs.
-
-        Args:
-            func: A synchronous function that returns a value of type T.
-
-        Returns:
-            A function that, when called, returns a Promise wrapping the result of the original function.
-        """
-
-        @functools.wraps(func)
         def wrapper(value: "U | Promise[U]") -> "Promise[T]":
-            if isinstance(value, Promise):
-                return value.map(func)
-            value = t.cast(U, value)
-
-            async def async_wrapper() -> T:
-                return func(value)
-
-            return cls(async_wrapper)
+            promise_value = cls.resolve(value)
+            return promise_value.map(func)
 
         return wrapper
+
+    @classmethod
+    def all(cls, promises: t.Iterable["Promise[T]"]) -> "Promise[t.List[T]]":
+        """Waits for all Promises to be fulfilled.
+
+        Args:
+            promises: An iterable of Promises.
+
+        Returns:
+            A Promise that resolves to a list of results.
+        """
+
+        async def coro():
+            return await asyncio.gather(*(p._task for p in promises))
+
+        return Promise(coro())
+
+    @classmethod
+    def race(cls, promises: t.Iterable["Promise[T]"]) -> "Promise[T]":
+        """Returns a Promise that resolves or rejects as soon as one of the Promises does.
+
+        Args:
+            promises: An iterable of Promises.
+
+        Returns:
+            A Promise that resolves or rejects with the outcome of the first settled Promise.
+        """
+
+        async def coro():
+            tasks = [p._task for p in promises]
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            result_task = done.pop()
+            return await result_task
+
+        return Promise(coro())
+
+    def get_result(self) -> T:
+        """Retrieves the result of the Promise synchronously.
+
+        Returns:
+            The result of the Promise.
+
+        Raises:
+            Exception: If the Promise is not yet completed or if an exception occurred.
+        """
+        if self._task.done():
+            return self._task.result()
+        else:
+            raise Exception("Promise is not yet completed.")
+
+    def is_fulfilled(self) -> bool:
+        """Checks if the Promise has been fulfilled.
+
+        Returns:
+            True if the Promise is fulfilled, False otherwise.
+        """
+        return self._task.done() and not self._task.cancelled() and self._task.exception() is None
+
+    def is_rejected(self) -> bool:
+        """Checks if the Promise has been rejected.
+
+        Returns:
+            True if the Promise is rejected, False otherwise.
+        """
+        return self._task.done() and self._task.exception() is not None
+
+    def is_pending(self) -> bool:
+        """Checks if the Promise is still pending.
+
+        Returns:
+            True if the Promise is pending, False otherwise.
+        """
+        return not self._task.done()
 
 
 class Lazy(Monad[T]):
@@ -853,9 +950,7 @@ class State(t.Generic[S, A], Monad[A], abc.ABC):
         )
 
     def unwrap_or(self, default: B) -> t.Union[A, B]:
-        raise NotImplementedError(
-            "State cannot directly return a value without an initial state."
-        )
+        raise NotImplementedError("State cannot directly return a value without an initial state.")
 
     def __hash__(self) -> int:
         return id(self.run_state)
@@ -871,9 +966,7 @@ class State(t.Generic[S, A], Monad[A], abc.ABC):
         return f"State({self.run_state})"
 
     @classmethod
-    def lift(
-        cls, func: t.Callable[[U], A]
-    ) -> t.Callable[["U | State[S, U]"], "State[S, A]"]:
+    def lift(cls, func: t.Callable[[U], A]) -> t.Callable[["U | State[S, U]"], "State[S, A]"]:
         """Lifts a function to work within the State monad.
         Args:
             func: A function to lift.

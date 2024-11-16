@@ -56,9 +56,7 @@ def test_sum_value(data):
 
 def test_avg_value(data):
     func = avg_value("age")
-    assert (
-        reduce(lambda metric, item: func(item, metric), data, 0) == 35.714285714285715
-    )
+    assert reduce(lambda metric, item: func(item, metric), data, 0) == 35.714285714285715
 
 
 def test_median_value(data):

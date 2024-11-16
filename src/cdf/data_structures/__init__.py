@@ -4,7 +4,7 @@ import sys
 import typing as t
 from pathlib import Path
 
-import cdf.types.monads as M
+import cdf.data_structures.monads as M
 
 if t.TYPE_CHECKING:
     import decimal

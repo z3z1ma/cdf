@@ -7,16 +7,16 @@ never be exposed to the internet. It should always be behind a firewall and
 only accessible by trusted clients.
 """
 
-import pickle
-import typing as t
 import http.server
+import io
+import json
+import logging
+import pickle
 import socketserver
 import traceback
-import logging
+import typing as t
 import uuid
-import json
-import io
-from contextlib import redirect_stdout, redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 
 import sqlmesh
 

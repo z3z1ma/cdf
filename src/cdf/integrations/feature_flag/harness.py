@@ -16,23 +16,20 @@ from featureflags.evaluations.feature import FeatureConfigKind
 from featureflags.interface import Cache
 from featureflags.util import log as _ff_logger
 
-from cdf.integrations.feature_flag.base import (
-    AbstractFeatureFlagAdapter,
-    FlagAdapterResponse,
-)
+from cdf.integrations.feature_flag.base import AbstractFeatureFlagAdapter, FlagAdapterResponse
 
 logger = logging.getLogger(__name__)
 
 
 # This exists because the default harness LRU implementation does not store >1000 flags
 # The interface is mostly satisfied by dict, so we subclass it and implement the missing methods
-class _HarnessCache(dict, Cache):
+class _HarnessCache(dict, Cache):  # type: ignore
     """A cache implementation for the harness feature flag provider."""
 
     def set(self, key: str, value: bool) -> None:
         self[key] = value
 
-    def remove(self, key: str | t.List[str]) -> None:
+    def remove(self, key: str | t.List[str]) -> None:  # type: ignore
         if isinstance(key, str):
             self.pop(key, None)
         for k in key:
@@ -73,9 +70,7 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
         if self._client is None:
             client = CfClient(
                 sdk_key=str(self.sdk_key),
-                config=Config(
-                    enable_stream=False, enable_analytics=False, cache=_HarnessCache()
-                ),
+                config=Config(enable_stream=False, enable_analytics=False, cache=_HarnessCache()),
             )
             client.wait_for_initialization()
             self._client = client
@@ -98,9 +93,7 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
 
     def get_all_feature_names(self) -> t.List[str]:
         """Get all the feature flags."""
-        return list(
-            map(lambda f: f.split("/", 1)[1], self.client._repository.cache.keys())
-        )
+        return list(map(lambda f: f.split("/", 1)[1], self.client._repository.cache.keys()))
 
     def _toggle(self, feature_name: str, flag: bool) -> None:
         """Toggle a feature flag."""
@@ -192,17 +185,12 @@ class HarnessFeatureFlagAdapter(AbstractFeatureFlagAdapter):
             return f"{ns}__{resource}"
 
         resource_lookup = {
-            _get_resource_id(key): resource
-            for key, resource in source.resources.items()
+            _get_resource_id(key): resource for key, resource in source.resources.items()
         }
         every_resource = resource_lookup.keys()
-        selected_resources = set(
-            map(_get_resource_id, source.selected_resources.keys())
-        )
+        selected_resources = set(map(_get_resource_id, source.selected_resources.keys()))
 
-        current_flags = set(
-            filter(lambda f: f.startswith(ns), self.get_all_feature_names())
-        )
+        current_flags = set(filter(lambda f: f.startswith(ns), self.get_all_feature_names()))
 
         removed = current_flags.difference(every_resource)
         added = selected_resources.difference(current_flags)

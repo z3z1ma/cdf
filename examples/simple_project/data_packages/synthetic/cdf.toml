@@ -1,0 +1,2 @@
+extract_load_adapter = "dlt"
+schedules = ["0 0 * * *", "30 12 * * *"]

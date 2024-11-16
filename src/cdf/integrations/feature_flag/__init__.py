@@ -10,13 +10,13 @@ import typing as t
 import dlt
 from dlt.common.configuration import with_config
 
+from cdf.data_structures import M
 from cdf.integrations.feature_flag.base import AbstractFeatureFlagAdapter
 from cdf.integrations.feature_flag.file import FilesystemFeatureFlagAdapter
 from cdf.integrations.feature_flag.harness import HarnessFeatureFlagAdapter
 from cdf.integrations.feature_flag.launchdarkly import LaunchDarklyFeatureFlagAdapter
 from cdf.integrations.feature_flag.noop import NoopFeatureFlagAdapter
 from cdf.integrations.feature_flag.split import SplitFeatureFlagAdapter
-from cdf.types import M
 
 ADAPTERS: t.Dict[str, t.Type[AbstractFeatureFlagAdapter]] = {
     "filesystem": FilesystemFeatureFlagAdapter,

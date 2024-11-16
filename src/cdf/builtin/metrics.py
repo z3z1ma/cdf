@@ -81,9 +81,7 @@ def avg_value(key: str) -> MetricFunc:
     """Returns the average of a key in a dataset"""
     n_sum, n_count = 0, 0
 
-    def _avg_value(
-        item: t.Any, last_value: t.Optional[TNumber] = None
-    ) -> t.Optional[TNumber]:
+    def _avg_value(item: t.Any, last_value: t.Optional[TNumber] = None) -> t.Optional[TNumber]:
         nonlocal n_sum, n_count
         k = item.get(key)
         if k is None:
@@ -99,9 +97,7 @@ def median_value(key: str, window: int = 1000) -> MetricFunc:
     """Returns the median of a key in a dataset"""
     arr = []
 
-    def _median_value(
-        item: t.Any, last_value: t.Optional[TNumber] = None
-    ) -> t.Optional[TNumber]:
+    def _median_value(item: t.Any, last_value: t.Optional[TNumber] = None) -> t.Optional[TNumber]:
         nonlocal arr
         k = item.get(key)
         if k is None:
@@ -118,9 +114,7 @@ def stdev_value(key: str) -> MetricFunc:
     """Returns the standard deviation of a key in a dataset"""
     n_sum, n_squared_sum, n_count = 0, 0, 0
 
-    def _stdev_value(
-        item: t.Any, last_value: t.Optional[TNumber] = None
-    ) -> t.Optional[float]:
+    def _stdev_value(item: t.Any, last_value: t.Optional[TNumber] = None) -> t.Optional[float]:
         nonlocal n_sum, n_squared_sum, n_count
         k = item.get(key)
         if k is None:
@@ -138,9 +132,7 @@ def variance_value(key: str) -> MetricFunc:
     """Returns the variance of a key in a dataset"""
     n_sum, n_squared_sum, n_count = 0, 0, 0
 
-    def _variance_value(
-        item: t.Any, last_value: t.Optional[TNumber] = None
-    ) -> t.Optional[float]:
+    def _variance_value(item: t.Any, last_value: t.Optional[TNumber] = None) -> t.Optional[float]:
         nonlocal n_sum, n_squared_sum, n_count
         k = item.get(key)
         if k is None:
