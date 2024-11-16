@@ -1,28 +1,23 @@
+# pyright: reportUnknownMemberType=false
 """Configuration loader for CDF."""
+
+from __future__ import annotations
 
 import ast
 import collections
-import io
 import json
 import os
 import re
 import string
-import sys
 import typing as t
+from collections.abc import Iterable, Mapping, MutableMapping, ValuesView
 from pathlib import Path
 
-import yaml
 from box import Box
 
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
+from cdf.utils.file import load_file_from_extension
 
-
-ConfigurationSource = t.Union[
-    str, Path, t.Mapping[str, t.Any], t.Callable[[], "ConfigurationSource"]
-]
+ConfigurationSource = str | Path | Mapping[str, t.Any] | t.Callable[[], "ConfigurationSource"]
 
 
 __all__ = [
@@ -40,7 +35,7 @@ def _to_bool(value: str) -> bool:
     return value.lower() in ("true", "yes", "1")
 
 
-def _make_eval_func(type_: t.Type):
+def _make_eval_func(type_: type):
     """Create a function to evaluate a py literal string with type assertion."""
 
     def _eval(value: str) -> t.Any:
@@ -52,7 +47,7 @@ def _make_eval_func(type_: t.Type):
     return _eval
 
 
-_CONVERTERS = {
+_CONVERTERS: dict[str, t.Callable[[str], t.Any]] = {
     "json": json.loads,
     "int": int,
     "float": float,
@@ -63,7 +58,6 @@ _CONVERTERS = {
     "list": _make_eval_func(list),
     "tuple": _make_eval_func(tuple),
     "set": _make_eval_func(set),
-    "resolve": None,
 }
 """Converters for configuration values."""
 
@@ -90,34 +84,22 @@ def _remove_converter(name: str) -> None:
     del _CONVERTERS[name]
 
 
-def _expand_env_vars(template: str, **env_overrides: t.Any) -> str:
-    """Resolve environment variables in the format ${VAR} or $VAR."""
-    return string.Template(template).safe_substitute(env_overrides, **os.environ)
-
-
-def _load_file(
-    path: t.Union[str, Path],
-    mode: str = "r",
-    parser: t.Callable[[str], t.Any] = json.loads,
-    **env_overrides: t.Any,
-) -> t.Any:
-    """Read a file from the given path and parse it using the specified parser."""
-    with open(path, mode=mode) as f:
-        rendered = _expand_env_vars(f.read(), **env_overrides)
-    return parser(rendered)
-
-
 class ConfigBox(Box):
     """Box that applies @ converters to configuration values."""
 
+    META_CONVERTER: t.ClassVar[str] = "resolve"
+
     def __getitem__(self, item: t.Any, _ignore_default: bool = False) -> t.Any:
-        value = super().__getitem__(item, _ignore_default)
+        value = t.cast(t.Any, super().__getitem__(item, _ignore_default))
         if isinstance(value, str):
             return self._apply_converters(value)
         return value
 
-    def values(self) -> t.ValuesView[t.Any]:  # type: ignore
-        return t.cast(t.ValuesView[t.Any], map(self._apply_converters, super().values()))
+    def values(self) -> ValuesView[t.Any]:  # pyright: ignore[reportIncompatibleMethodOverride]
+        dict_self = t.cast(dict[str, t.Any], self)
+        for k, v in dict_self.items():
+            self[k] = self._apply_converters(v)
+        return ValuesView(dict_self)
 
     def _apply_converters(self, data: t.Any) -> t.Any:
         """Apply converters to a configuration value.
@@ -133,7 +115,7 @@ class ConfigBox(Box):
         - list: Convert to list
         - tuple: Convert to tuple
         - set: Convert to set
-        - resolve: Resolve value from partial configuration
+        - resolve: A meta converter to resolve value from partial configuration
 
         Args:
             data: Configuration value to apply converters to.
@@ -145,8 +127,8 @@ class ConfigBox(Box):
             Converted configuration value.
         """
         if not isinstance(data, str):
-            raise ValueError("Value must be a string")
-        data = _expand_env_vars(data)
+            return data
+        data = string.Template(data).safe_substitute(os.environ)
         converters = _CONVERTER_PATTERN.findall(data)
         if len(converters) == 0:
             return data
@@ -156,7 +138,7 @@ class ConfigBox(Box):
         transformed_v = base_v
         for converter in reversed(converters):
             try:
-                if converter.lower() == "resolve":
+                if converter.lower() == self.META_CONVERTER:
                     try:
                         transformed_v = self[transformed_v]
                     except KeyError as e:
@@ -169,8 +151,11 @@ class ConfigBox(Box):
                 raise ValueError(f"Failed to convert value: {e}") from e
         return transformed_v
 
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(...)"
 
-def _merge_configs(*configs: t.MutableMapping[str, t.Any]) -> ConfigBox:
+
+def _merge_configs(*configs: MutableMapping[str, t.Any]) -> ConfigBox:
     """Combine multiple configuration Boxes using merge_update."""
     merged = ConfigBox(box_dots=True)
     for config in configs:
@@ -178,7 +163,7 @@ def _merge_configs(*configs: t.MutableMapping[str, t.Any]) -> ConfigBox:
     return merged
 
 
-def _scope_configs(*configs: t.MutableMapping[str, t.Any]) -> ConfigBox:
+def _scope_configs(*configs: MutableMapping[str, t.Any]) -> ConfigBox:
     """Combine multiple configuration Boxes via ChainMap to provide scope-based resolution."""
     return ConfigBox(collections.ChainMap(*configs), box_dots=True)
 
@@ -186,7 +171,7 @@ def _scope_configs(*configs: t.MutableMapping[str, t.Any]) -> ConfigBox:
 class ConfigurationLoader:
     """Loads configuration from multiple sources and merges them using a resolution strategy."""
 
-    SUPPORTED_EXTENSIONS = ("json", "yaml", "yml", "toml", "py")
+    SUPPORTED_EXTENSIONS: t.ClassVar[tuple[str, ...]] = ("json", "yaml", "yml", "toml", "py")
 
     def __init__(
         self,
@@ -201,24 +186,24 @@ class ConfigurationLoader:
             resolution_strategy: Strategy to use for merging configurations
             - "merge": Merge all configurations into a single Box
             - "scope": Combine configurations into a ChainMap for scope-based resolution
-            include_env: Whether to include environment variables
+            include_envvars: Whether to include environment variables
 
         Raises:
             ValueError: If an unsupported resolution strategy is provided
         """
-        if resolution_strategy not in ("merge", "scope"):
-            raise ValueError(f"Unsupported resolution strategy: {resolution_strategy}")
-        self.sources = sources
+        self.sources: tuple[ConfigurationSource, ...] = sources
         if include_envvars:
             self.sources += (dict(os.environ),)
-        self._config = None
-        self._resolution_strategy = resolution_strategy
-        self._resolver = _merge_configs if resolution_strategy == "merge" else _scope_configs
+        self._config: ConfigBox | None = None
+        self._resolution_strategy: str = resolution_strategy
+        self._resolver: t.Callable[..., ConfigBox] = (
+            _merge_configs if resolution_strategy == "merge" else _scope_configs
+        )
 
     @classmethod
     def from_name(
-        cls, name: str, /, *, search_paths: t.Optional[t.Iterable[Path]] = None
-    ) -> "ConfigurationLoader":
+        cls, name: str, /, *, search_paths: Iterable[Path] | None = None
+    ) -> ConfigurationLoader:
         """Create a configuration loader from a name by searching for files with supported extensions.
 
         Args:
@@ -237,7 +222,7 @@ class ConfigurationLoader:
             )
         )
 
-    def add_source(self, source: ConfigurationSource) -> t.Mapping[str, t.Any]:
+    def add_source(self, source: ConfigurationSource) -> Mapping[str, t.Any]:
         """Add a configuration source to the loader.
 
         Args:
@@ -246,7 +231,7 @@ class ConfigurationLoader:
         self.sources += (source,)
         return self.load()
 
-    def load(self) -> Box:
+    def load(self) -> ConfigBox:
         """Load and merge configurations from all sources."""
         configs = [Box(self._load(source), box_dots=True) for source in self.sources]
         self._config = self._resolver(
@@ -255,7 +240,7 @@ class ConfigurationLoader:
         return self._config
 
     @staticmethod
-    def _load(source: ConfigurationSource) -> t.Mapping[str, t.Any]:
+    def _load(source: ConfigurationSource) -> Mapping[str, t.Any]:
         """Load configuration from a single source.
 
         Args:
@@ -269,16 +254,6 @@ class ConfigurationLoader:
         elif isinstance(source, dict):
             return source
         elif isinstance(source, (str, Path)):
-            path = Path(source)
-            if not path.exists():
-                return {}
-            if path.suffix == ".json":
-                return _load_file(path, parser=json.loads)
-            elif path.suffix in (".yaml", ".yml"):
-                return _load_file(path, parser=lambda s: yaml.safe_load(io.StringIO(s)))
-            elif path.suffix == ".toml":
-                return _load_file(path, parser=tomllib.loads)
-            else:
-                raise ValueError(f"Unsupported file format: {path.suffix}")
+            return load_file_from_extension(source)
         else:
             raise TypeError(f"Invalid config source: {source}")

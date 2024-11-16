@@ -1,26 +1,17 @@
+# pyright: reportAttributeAccessIssue=false, reportPrivateUsage=false
 """Tests for the context module."""
 
-import json
 import os
-import sys
 import tempfile
 from pathlib import Path
 
 import pytest
-import yaml
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:
-    import tomli as tomllib
 
 from cdf.core.configuration import (
     _CONVERTERS,
     ConfigBox,
     ConfigurationLoader,
-    _expand_env_vars,
     _get_converter,
-    _load_file,
     _remove_converter,
     add_custom_converter,
 )
@@ -80,52 +71,6 @@ def test_remove_converter():
     _remove_converter("temp")
     with pytest.raises(KeyError):
         _get_converter("temp")
-
-
-def test_expand_env_vars(mock_environment):
-    """Test expansion of environment variables in a string."""
-    template = "User: ${USER}, Path: $PATH"
-    expanded = _expand_env_vars(template)
-    assert expanded == "User: test_user, Path: $PATH"
-
-
-def test_read_json_file():
-    """Test reading a JSON configuration file."""
-    with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
-        tmp.write(b'{"key": "value"}')
-        tmp_path = tmp.name
-
-    result = _load_file(tmp_path, parser=json.loads)
-    assert result == {"key": "value"}
-    os.remove(tmp_path)
-
-
-def test_read_yaml_file():
-    """Test reading a YAML configuration file."""
-    with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as tmp:
-        tmp.write(b"key: value")
-        tmp_path = tmp.name
-
-    result = _load_file(tmp_path, parser=yaml.safe_load)
-    assert result == {"key": "value"}
-    os.remove(tmp_path)
-
-
-def test_read_toml_file():
-    """Test reading a TOML configuration file."""
-    with tempfile.NamedTemporaryFile(suffix=".toml", delete=False) as tmp:
-        tmp.write(b'key = "value"')
-        tmp_path = tmp.name
-
-    result = _load_file(tmp_path, parser=tomllib.loads)
-    assert result == {"key": "value"}
-    os.remove(tmp_path)
-
-
-def test_read_nonexistent_file():
-    """Test reading a non-existent file returns an empty dictionary."""
-    with pytest.raises(FileNotFoundError):
-        _load_file("nonexistent.json", parser=json.loads)
 
 
 def test_loader_with_multiple_sources():

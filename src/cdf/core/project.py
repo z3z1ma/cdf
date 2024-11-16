@@ -34,7 +34,7 @@ def _load_module_from_path(path: Path) -> dict[str, t.Any]:
 class DataPackage:
     """Represents a data package with its own container and processing logic."""
 
-    def __init__(self, project: "Project", package_path: PathType) -> None:
+    def __init__(self, project: Project, package_path: PathType) -> None:
         """Initialize the data package.
 
         Args:
@@ -123,7 +123,7 @@ class DataPackage:
         """Delegate to the adapter to discover pipelines."""
         return self.extract_load_adapter.discover_pipelines()
 
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:  # pyright: ignore[reportAny]
+    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Delegate to the adapter to run the pipeline."""
         with self.container:
             self.extract_load_adapter.run_pipeline(pipeline_name, **kwargs)
@@ -188,15 +188,12 @@ class Project(Mapping[str, DataPackage]):
         """Get the project configuration."""
         return self.container.config
 
-    @t.override
     def __getitem__(self, key: str) -> DataPackage:
         return self.data_packages[key]
 
-    @t.override
     def __iter__(self) -> Iterator[str]:
         return iter(self.data_packages)
 
-    @t.override
     def __len__(self) -> int:
         return len(self.data_packages)
 
@@ -206,7 +203,6 @@ class Project(Mapping[str, DataPackage]):
         except KeyError as e:
             raise AttributeError(f"No data package found with name: {key}") from e
 
-    @t.override
     def __repr__(self) -> str:
         return f"Project({self.path})"
 

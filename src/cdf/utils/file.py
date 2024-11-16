@@ -1,0 +1,97 @@
+# pyright: reportUnreachable=false
+import functools
+import io
+import json
+import os
+import string
+import sys
+import typing as t
+from pathlib import Path
+
+import yaml
+
+if sys.version_info >= (3, 11):
+    import tomllib as toml
+else:
+    import tomli as toml
+
+__all__ = [
+    "toml",
+    "yaml",
+    "json",
+    "load_file",
+    "load_json",
+    "load_yaml",
+    "load_toml",
+    "load_file_from_extension",
+]
+
+
+def _expand_vars(template: str, **context: t.Any) -> str:
+    """Resolve variables in the format ${VAR} or $VAR from env and context.
+
+    Args:
+        template: The template string to resolve.
+        **context: Additional context to use for variable expansion.
+
+    Returns:
+        The resolved string.
+    """
+    return string.Template(template).safe_substitute(os.environ, **context)
+
+
+def load_file(
+    path: Path | str,
+    mode: str = "r",
+    parser: t.Callable[[str], t.Any] = json.loads,
+    expand_env_vars: bool = True,
+    *,
+    context: dict[str, t.Any] | None = None,
+) -> t.Any:
+    """Read a file from the given path and parse it using the specified parser.
+
+    Args:
+        path: Path to the file to read.
+        mode: File open mode.
+        parser: Parser function to use for the file content.
+        expand_env_vars: Whether to expand environment variables in the file content.
+        context: Additional context to use for variable expansion.
+
+    Returns:
+        The parsed file content.
+    """
+    with open(path, mode=mode) as f:
+        raw = f.read()
+        if expand_env_vars:
+            context = context or {}
+            rendered = _expand_vars(raw, **context)
+        else:
+            rendered = raw
+    return parser(rendered)
+
+
+load_json = functools.partial(load_file, parser=json.loads)
+load_yaml = functools.partial(load_file, parser=lambda s: yaml.safe_load(io.StringIO(s)))
+load_toml = functools.partial(load_file, parser=toml.loads)
+
+
+def load_file_from_extension(path: Path | str) -> dict[str, t.Any]:
+    """Load file based on its extension.
+
+    Args:
+        path: Path to the file to load.
+
+    Returns:
+        The parsed file content.
+    """
+    path = Path(path)
+    if not path.exists():
+        return {}
+    if path.suffix == ".json":
+        return load_json(path)
+    elif path.suffix in (".yaml", ".yml"):
+        return load_yaml(path)
+    elif path.suffix == ".toml":
+        return load_toml(path)
+    else:
+        raise ValueError(f"Unsupported file format: {path.suffix}")

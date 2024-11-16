@@ -1,8 +1,10 @@
+# pyright: reportUnknownMemberType=false
 import shlex
 import sys
+import typing as t
 from pathlib import Path
 
-import shellingham
+import shellingham  # pyright: ignore[reportMissingTypeStubs]
 
 __all__ = [
     "get_activate_command",
@@ -24,7 +26,7 @@ def get_activate_command(root_path: Path) -> str:
         str: The command to activate the virtual environment.
     """
     try:
-        shell, _ = shellingham.detect_shell()
+        shell, _ = t.cast(tuple[str, t.Any], shellingham.detect_shell())
     except shellingham.ShellDetectionFailure:
         shell = ""
     if shell == "fish":
