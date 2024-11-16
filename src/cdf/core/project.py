@@ -3,13 +3,10 @@
 
 from __future__ import annotations
 
-import importlib.util
-import inspect
 import sys
 import typing as t
 from collections.abc import Iterator, Mapping
 from pathlib import Path
-from types import ModuleType
 
 from cdf.core.configuration import ConfigBox, ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
@@ -62,19 +59,22 @@ class DataPackage:
                 _ = load_module_from_path(py_file)
             _ = sys.path.pop(0)
 
+    # TODO: next step is probably to refactor this?
+    # runtime polymorphism is good actually, but lets be sure on the interface
     def _initialize_adapter(self) -> ExtractLoadAdapterBase:
         """Initialize the appropriate extract-load adapter."""
         adapter_type = self.config.get("extract_load_adapter")
         if not isinstance(adapter_type, str):
             raise TypeError("Extract-load adapter must be a string")
         if adapter_type == "dlt":
-            return DltAdapter(self)
+            adapter_impl = DltAdapter
         elif adapter_type == "sling":
-            return SlingAdapter(self)
+            adapter_impl = SlingAdapter
         elif adapter_type == "singer":
-            return SingerAdapter(self)
+            adapter_impl = SingerAdapter
         else:
             raise ValueError(f"Unsupported extract-load adapter: {adapter_type}")
+        return adapter_impl(self.path, self.config)
 
     @property
     def config(self) -> ConfigBox:
@@ -88,26 +88,6 @@ class DataPackage:
         if not isinstance(schedules, list):
             raise TypeError("Schedules must be a list")
         return schedules
-
-    def _load_module(self, module_path: str) -> ModuleType:
-        """Load a module from the package directory."""
-        sys.path.insert(0, str(self.path))
-        try:
-            with self.container:
-                module = importlib.import_module(module_path)
-            return module
-        finally:
-            _ = sys.path.pop(0)
-
-    def load_scripts_from_module(self, script_path: Path) -> dict[str, t.Callable[..., t.Any]]:
-        """Load all callable functions from a module."""
-        module = self._load_module(script_path.stem)
-        functions = {
-            name: obj
-            for name, obj in inspect.getmembers(module, inspect.isfunction)
-            if inspect.getmodule(obj) == module
-        }
-        return functions
 
     def discover_extract_load_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Delegate to the adapter to discover pipelines."""

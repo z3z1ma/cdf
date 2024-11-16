@@ -9,6 +9,7 @@ import string
 import sys
 import typing as t
 from pathlib import Path
+from types import ModuleType
 
 import yaml
 
@@ -78,7 +79,7 @@ load_yaml = functools.partial(load_file, parser=lambda s: yaml.safe_load(io.Stri
 load_toml = functools.partial(load_file, parser=toml.loads)
 
 
-def load_module_from_path(path: Path | str) -> dict[str, t.Any]:
+def load_module_from_path(path: Path | str) -> ModuleType:
     """Load a Python module from a file path.
 
     Args:
@@ -93,7 +94,7 @@ def load_module_from_path(path: Path | str) -> dict[str, t.Any]:
         raise ImportError(f"Could not load module from path: {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return module.__dict__
+    return module
 
 
 def load_file_from_extension(path: Path | str) -> dict[str, t.Any]:
@@ -115,6 +116,6 @@ def load_file_from_extension(path: Path | str) -> dict[str, t.Any]:
     elif path.suffix == ".toml":
         return load_toml(path)
     elif path.suffix == ".py":
-        return load_module_from_path(path)["config"]
+        return load_module_from_path(path).__dict__["config"]
     else:
         raise ValueError(f"Unsupported file format: {path.suffix}")
