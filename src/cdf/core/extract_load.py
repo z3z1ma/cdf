@@ -8,6 +8,7 @@ import subprocess  # nosec
 import sys
 import typing as t
 from abc import ABC, abstractmethod
+from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
 
@@ -32,61 +33,81 @@ class ExtractLoadAdapterBase(ABC):
         """Run a specific pipeline."""
         pass
 
+
+T = t.TypeVar("T")
+
+
+class ScriptLoaderMixin(t.Generic[T]):
     def _load_module(self, module_path: Path | str) -> ModuleType:
         """Load a module from the package directory."""
-        sys.path.insert(0, str(self.package_path))
+        path = Path(module_path)
+        sys.path.insert(0, str(path.parent))
         try:
-            return load_module_from_path(module_path)
+            return load_module_from_path(path)
         finally:
             _ = sys.path.pop(0)
 
-    def load_functions_from_module(self, script_path: Path) -> dict[str, t.Callable[..., t.Any]]:
+    def _load_functions_from_module(
+        self,
+        script_path: Path,
+        func_glob: str = "*",
+    ) -> dict[str, t.Callable[..., T]]:
         """Load all callable functions from a module."""
         module = self._load_module(script_path)
         functions = {
             name: obj
             for name, obj in inspect.getmembers(module, inspect.isfunction)
-            if inspect.getmodule(obj) == module
+            if not inspect.isbuiltin(obj)
+            and inspect.getmodule(inspect.unwrap((obj))) in (module, None)
+            and fnmatch(name, func_glob)
         }
         return functions
 
 
-class DltAdapter(ExtractLoadAdapterBase):
-    def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
+class DltPipelineProtocol(t.Protocol):
+    def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
+
+
+class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol]):
+    def discover_pipelines(self) -> dict[str, DltPipelineProtocol]:
         """Discover all extract-load pipelines in main.py."""
-        pipelines: dict[str, t.Callable[..., t.Any]] = {}
+        pipelines: dict[str, DltPipelineProtocol] = {}
         main_script = self.package_path / "main.py"
         if main_script.exists():
-            pipelines.update(self.load_functions_from_module(main_script))
+            pipelines.update(self._load_functions_from_module(main_script, "pipeline_*"))
 
         return pipelines
 
     def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
-        pipelines: dict[str, t.Callable[..., t.Any]] = self.discover_pipelines()
+        pipelines = self.discover_pipelines()
         if pipeline_name not in pipelines:
             raise ValueError(
-                f"Pipeline {pipeline_name} not found in package {self.package_path.stem}"
+                f"Pipeline {pipeline_name} not found in package {self.package_path.stem}, ensure it exists."
             )
         pipelines[pipeline_name](**kwargs)
 
 
-class SlingAdapter(ExtractLoadAdapterBase):
-    def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
+class SlingPipelineProtocol(t.Protocol):
+    def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
+
+
+class SlingAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[SlingPipelineProtocol]):
+    def discover_pipelines(self) -> dict[str, SlingPipelineProtocol]:
         """Discover all pipelines for sling."""
-        pipelines: dict[str, t.Callable[..., t.Any]] = {}
+        pipelines: dict[str, SlingPipelineProtocol] = {}
         main_script = self.package_path / "main.py"
         if main_script.exists():
-            pipelines.update(self.load_functions_from_module(main_script))
+            pipelines.update(self._load_functions_from_module(main_script, "pipeline_*"))
 
         return pipelines
 
     def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
-        pipelines: dict[str, t.Callable[..., t.Any]] = self.discover_pipelines()
+        pipelines = self.discover_pipelines()
         if pipeline_name not in pipelines:
             raise ValueError(
-                f"Pipeline {pipeline_name} not found in package {self.package_path.stem}"
+                f"Pipeline {pipeline_name} not found in package {self.package_path.stem}, ensure it exists",
             )
         pipelines[pipeline_name](**kwargs)
 

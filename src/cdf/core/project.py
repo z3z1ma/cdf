@@ -178,10 +178,12 @@ class Project(Mapping[str, DataPackage]):
 
 
 if __name__ == "__main__":
-    project = Project("examples/simple_project")
+    project = Project("../cdf-toy-project")
+    print(project)
     project.container.add("test1", 123)
     print(project.data_packages)
     print(project.config.some.value)
     print(project.synthetic.discover_extract_load_pipelines())
+    print(project.synthetic.extract_load_adapter)
     project.synthetic.container.add("test2", 321)
-    project.synthetic.run_pipeline("main_pipeline")
+    project.synthetic.run_pipeline("pipeline_main")
