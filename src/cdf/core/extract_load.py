@@ -29,7 +29,7 @@ class ExtractLoadAdapterBase(ABC):
         pass
 
     @abstractmethod
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pass
 
@@ -78,7 +78,7 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
 
         return pipelines
 
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pipelines = self.discover_pipelines()
         if pipeline_name not in pipelines:
@@ -102,7 +102,7 @@ class SlingAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[SlingPipelineProtoc
 
         return pipelines
 
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pipelines = self.discover_pipelines()
         if pipeline_name not in pipelines:
@@ -115,9 +115,9 @@ class SlingAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[SlingPipelineProtoc
 class SingerAdapter(ExtractLoadAdapterBase):
     def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Singer doesn't have callable pipelines; define commands."""
-        return {"default_pipeline": self.run_pipeline}
+        return {"default_pipeline": self}
 
-    def run_pipeline(self, pipeline_name: str = "default_pipeline", **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str = "default_pipeline", **kwargs: t.Any) -> None:
         """Run a singer pipeline using subprocess."""
         tap = t.cast(str, self.config.get("singer_tap"))
         target = t.cast(str, self.config.get("singer_target"))

@@ -6,7 +6,9 @@ from __future__ import annotations
 import sys
 import typing as t
 from collections.abc import Iterator, Mapping
+from functools import wraps
 from pathlib import Path
+from types import ModuleType
 
 from cdf.core.configuration import ConfigBox, ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
@@ -14,7 +16,21 @@ from cdf.core.container import Container
 from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
 from cdf.utils.file import load_module_from_path
 
+T = t.TypeVar("T")
+P = t.ParamSpec("P")
 PathType = Path | str
+
+
+def run_with_context(func: t.Callable[P, T]) -> t.Callable[P, T]:
+    """A decorator to run a function with a container context."""
+
+    @wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs):
+        self = t.cast(Project | DataPackage, args[0])
+        with self.container:
+            return func(*args, **kwargs)
+
+    return wrapper
 
 
 @t.final
@@ -32,8 +48,8 @@ class DataPackage:
         self.path = Path(package_path)
         self.name = self.path.name
         self.container = self._create_container()
-        self._load_dependencies()
-        self.extract_load_adapter = self._initialize_adapter()
+        self._dependencies = self._load_dependencies()
+        self._extract_load_adapter = self._initialize_el_adapter()
 
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
@@ -50,18 +66,20 @@ class DataPackage:
             parent=self.project.container,
         )
 
-    def _load_dependencies(self) -> None:
+    def _load_dependencies(self) -> tuple[ModuleType, ...]:
         """Load dependencies from Python files in the 'dependencies' directory."""
         dependencies_dir = self.path / "dependencies"
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
-            for py_file in dependencies_dir.glob("*.py"):
-                _ = load_module_from_path(py_file)
-            _ = sys.path.pop(0)
+            try:
+                return tuple(
+                    load_module_from_path(py_file) for py_file in dependencies_dir.glob("*.py")
+                )
+            finally:
+                _ = sys.path.pop(0)
+        return ()
 
-    # TODO: next step is probably to refactor this?
-    # runtime polymorphism is good actually, but lets be sure on the interface
-    def _initialize_adapter(self) -> ExtractLoadAdapterBase:
+    def _initialize_el_adapter(self) -> ExtractLoadAdapterBase:
         """Initialize the appropriate extract-load adapter."""
         adapter_type = self.config.get("extract_load_adapter")
         if not isinstance(adapter_type, str):
@@ -89,14 +107,15 @@ class DataPackage:
             raise TypeError("Schedules must be a list")
         return schedules
 
+    @run_with_context
     def discover_extract_load_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Delegate to the adapter to discover pipelines."""
-        return self.extract_load_adapter.discover_pipelines()
+        return self._extract_load_adapter.discover_pipelines()
 
+    @run_with_context
     def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Delegate to the adapter to run the pipeline."""
-        with self.container:
-            self.extract_load_adapter.run_pipeline(pipeline_name, **kwargs)
+        self._extract_load_adapter(pipeline_name, **kwargs)
 
 
 @t.final
@@ -179,11 +198,19 @@ class Project(Mapping[str, DataPackage]):
 
 if __name__ == "__main__":
     project = Project("../cdf-toy-project")
-    print(project)
+
+    print("Project", project)
+
+    print("Adding `test1` to project container")
     project.container.add("test1", 123)
-    print(project.data_packages)
-    print(project.config.some.value)
-    print(project.synthetic.discover_extract_load_pipelines())
-    print(project.synthetic.extract_load_adapter)
+
+    print("project.data_packages", project.data_packages)
+    print("project.config.some.value", project.config.some.value)
+
+    print("Discovered pipelines", project.synthetic.discover_extract_load_pipelines())
+
+    print("Adding `test2` to project container")
     project.synthetic.container.add("test2", 321)
+
+    print("Running pipeline `pipeline_main`")
     project.synthetic.run_pipeline("pipeline_main")
