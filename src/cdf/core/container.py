@@ -24,6 +24,7 @@ __all__ = [
     "Container",
     "injected",
     "register_dep",
+    "inject_deps",
     "active_container",
 ]
 
