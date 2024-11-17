@@ -1,6 +1,7 @@
 # pyright: reportAttributeAccessIssue=false, reportPrivateUsage=false
 """Tests for the context module."""
 
+import datetime
 import os
 import tempfile
 from pathlib import Path
@@ -141,6 +142,9 @@ def test_converter_box_non_string_data():
         ({"list_value": "@list [1,2,3]"}, [1, 2, 3]),
         ({"bool_value": "@bool True"}, True),
         ({"dict_value": "@dict {'a':1,'b':2}"}, {"a": 1, "b": 2}),
+        ({"datetime_value": "@datetime 2025-01-01 12:00"}, datetime.datetime(2025, 1, 1, 12)),
+        ({"date_value_1": "@date 2025-01-01"}, datetime.date(2025, 1, 1)),
+        ({"date_value_2": "@date 01/01/2025"}, datetime.date(2025, 1, 1)),
     ],
 )
 def test_various_converters(config_source, expected_result):

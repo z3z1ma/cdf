@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import ast
 import collections
+import datetime
 import json
 import os
 import re
@@ -13,6 +14,7 @@ import typing as t
 from collections.abc import Iterable, Mapping, MutableMapping, ValuesView
 from pathlib import Path
 
+import dateutil.parser
 from box import Box
 
 from cdf.utils.file import load_file_from_extension
@@ -33,6 +35,16 @@ __all__ = [
 def _to_bool(value: str) -> bool:
     """Convert a string to a boolean value."""
     return value.lower() in ("true", "yes", "1")
+
+
+def _to_datetime(value: str) -> datetime.datetime:
+    """Convert a string to a datetime object."""
+    return dateutil.parser.parse(value)
+
+
+def _to_date(value: str) -> datetime.date:
+    """Convert a string to a date object."""
+    return dateutil.parser.parse(value).date()
 
 
 def _make_eval_func(type_: type):
@@ -58,6 +70,8 @@ _CONVERTERS: dict[str, t.Callable[[str], t.Any]] = {
     "list": _make_eval_func(list),
     "tuple": _make_eval_func(tuple),
     "set": _make_eval_func(set),
+    "datetime": _to_datetime,
+    "date": _to_date,
 }
 """Converters for configuration values."""
 
