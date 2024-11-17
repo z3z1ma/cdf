@@ -208,6 +208,7 @@ if __name__ == "__main__":
     print("project.config.some.value", project.config.some.value)
 
     print("Discovered pipelines", project.synthetic.discover_extract_load_pipelines())
+    print("Index into pipeline", project.synthetic._extract_load_adapter.pipeline_main)  # pyright: ignore[reportPrivateUsage]
 
     print("Adding `test2` to project container")
     project.synthetic.container.add("test2", 321)

@@ -20,12 +20,16 @@ from cdf.utils.file import load_module_from_path
 logger = logging.getLogger(__name__)
 
 
+T = t.TypeVar("T")
+
+
 class ExtractLoadAdapterBase(ABC):
     """Abstract base class for all extract-load adapters."""
 
     def __init__(self, package_path: Path, config: ConfigBox) -> None:
         self.package_path: Path = package_path
         self.config: ConfigBox = config
+        self._pipelines: dict[str, t.Callable[..., t.Any]] = {}
 
     @abstractmethod
     def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
@@ -45,8 +49,14 @@ class ExtractLoadAdapterBase(ABC):
     ) -> None:
         pass
 
+    def __getitem__(self, name: str) -> t.Callable[..., t.Any]:
+        return (self._pipelines or self.discover_pipelines())[name]
 
-T = t.TypeVar("T")
+    def __getattr__(self, name: str) -> t.Callable[..., t.Any]:
+        try:
+            return (self._pipelines or self.discover_pipelines())[name]
+        except KeyError as e:
+            raise AttributeError from e
 
 
 class ScriptLoaderMixin(t.Generic[T]):
@@ -81,8 +91,12 @@ class DltPipelineProtocol(t.Protocol):
 
 
 class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol]):
+    _pipelines: dict[str, DltPipelineProtocol]
+
     def discover_pipelines(self) -> dict[str, DltPipelineProtocol]:
         """Discover all extract-load pipelines in main.py."""
+        if self._pipelines:
+            return self._pipelines
         pipelines: dict[str, DltPipelineProtocol] = {}
         main_script = self.package_path / "main.py"
         if main_script.exists():
@@ -92,6 +106,7 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
             logger.warning("No main.py found in package %s", self.package_path.stem)
         if not pipelines:
             logger.warning("No extract-load pipelines found in package %s", self.package_path.stem)
+        self._pipelines = pipelines
         return pipelines
 
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
@@ -111,8 +126,11 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
         from dlt.common.configuration.container import Container
         from dlt.common.configuration.providers import CustomLoaderDocProvider
         from dlt.common.configuration.specs import PluggableRunContext
+        from dlt.common.runtime.run_context import RunContext
 
-        with Container().injectable_context(PluggableRunContext()) as dlt_context:
+        with Container().injectable_context(
+            PluggableRunContext(RunContext(run_dir=str(self.package_path)))
+        ) as dlt_context:
             provider_name = f"cdf.{self.package_path.name}.configuration"
             if provider_name not in dlt_context.providers:
                 logger.debug("Injecting CDF configuration provider: %s", provider_name)
@@ -120,6 +138,7 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
                     CustomLoaderDocProvider(provider_name, lambda: self.config)
                 )
             yield
+            logger.debug("Restoring DLT context")
 
 
 class SlingPipelineProtocol(t.Protocol):
