@@ -4,16 +4,20 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import subprocess  # nosec
 import sys
 import typing as t
 from abc import ABC, abstractmethod
+from contextlib import contextmanager
 from fnmatch import fnmatch
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, TracebackType
 
 from cdf.core.configuration import ConfigBox
 from cdf.utils.file import load_module_from_path
+
+logger = logging.getLogger(__name__)
 
 
 class ExtractLoadAdapterBase(ABC):
@@ -31,6 +35,14 @@ class ExtractLoadAdapterBase(ABC):
     @abstractmethod
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
+        pass
+
+    def __enter__(self) -> None:
+        pass
+
+    def __exit__(
+        self, exc_type: type[BaseException], exc_val: BaseException, exc_tb: TracebackType
+    ) -> None:
         pass
 
 
@@ -74,8 +86,12 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
         pipelines: dict[str, DltPipelineProtocol] = {}
         main_script = self.package_path / "main.py"
         if main_script.exists():
-            pipelines.update(self._load_functions_from_module(main_script, "pipeline_*"))
-
+            with self._inject_provider():
+                pipelines.update(self._load_functions_from_module(main_script, "pipeline_*"))
+        else:
+            logger.warning("No main.py found in package %s", self.package_path.stem)
+        if not pipelines:
+            logger.warning("No extract-load pipelines found in package %s", self.package_path.stem)
         return pipelines
 
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
@@ -85,7 +101,25 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
             raise ValueError(
                 f"Pipeline {pipeline_name} not found in package {self.package_path.stem}, ensure it exists."
             )
-        pipelines[pipeline_name](**kwargs)
+        with self._inject_provider():
+            logger.info("Running pipeline %s", pipeline_name)
+            pipelines[pipeline_name](**kwargs)
+
+    @contextmanager
+    def _inject_provider(self):
+        """Inject the CDF context into the DLT context for centralized configuration."""
+        from dlt.common.configuration.container import Container
+        from dlt.common.configuration.providers import CustomLoaderDocProvider
+        from dlt.common.configuration.specs import PluggableRunContext
+
+        with Container().injectable_context(PluggableRunContext()) as dlt_context:
+            provider_name = f"cdf.{self.package_path.name}.configuration"
+            if provider_name not in dlt_context.providers:
+                logger.debug("Injecting CDF configuration provider: %s", provider_name)
+                dlt_context.providers.add_provider(
+                    CustomLoaderDocProvider(provider_name, lambda: self.config)
+                )
+            yield
 
 
 class SlingPipelineProtocol(t.Protocol):
@@ -99,7 +133,10 @@ class SlingAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[SlingPipelineProtoc
         main_script = self.package_path / "main.py"
         if main_script.exists():
             pipelines.update(self._load_functions_from_module(main_script, "pipeline_*"))
-
+        else:
+            logger.warning("No main.py found in package %s", self.package_path.stem)
+        if not pipelines:
+            logger.warning("No extract-load pipelines found in package %s", self.package_path.stem)
         return pipelines
 
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
@@ -109,6 +146,7 @@ class SlingAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[SlingPipelineProtoc
             raise ValueError(
                 f"Pipeline {pipeline_name} not found in package {self.package_path.stem}, ensure it exists",
             )
+        logger.info("Running pipeline %s", pipeline_name)
         pipelines[pipeline_name](**kwargs)
 
 
@@ -123,4 +161,5 @@ class SingerAdapter(ExtractLoadAdapterBase):
         target = t.cast(str, self.config.get("singer_target"))
         if not tap or not target:
             raise ValueError("Singer adapter requires 'singer_tap' and 'singer_target' in config.")
+        logger.info("Running Singer pipeline from %s to %s", tap, target)
         _ = subprocess.run(["echo", "1"], check=True)  # nosec
