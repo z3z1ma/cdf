@@ -66,21 +66,19 @@ class SqlMeshAdapter(TransformationAdapterBase):
         """Discover SqlMesh models."""
         return self.context.models
 
-    def __call__(self, **kwargs: t.Any) -> None:
+    def __call__(self, *, environment: str = "prod", **kwargs: t.Any) -> None:
         """Run SqlMesh plan and run commands using the sqlmesh API."""
         logger.info("Running 'sqlmesh plan' in '%s'", self.package_path)
         try:
-            _ = self.context.plan()
+            plan_builder = self.context.plan_builder(environment)
+            self.context.apply(plan_builder.build())
         except Exception as e:
             logger.error("SqlMesh plan failed: %s", e)
             raise
 
         logger.info("Running 'sqlmesh run' in '%s'", self.package_path)
-        try:
-            _ = self.context.run()
-        except Exception as e:
-            logger.error("SqlMesh run failed: %s", e)
-            raise
+        if not self.context.run(environment):
+            logger.error("SqlMesh run failed")
 
 
 class DbtAdapter(TransformationAdapterBase):
@@ -121,7 +119,7 @@ class DbtAdapter(TransformationAdapterBase):
 
 
 class JinjaSqlAdapter(TransformationAdapterBase):
-    """Adapter for Jinja templated SQL transformations."""
+    """Adapter for simple Jinja templated SQL DDL/DML."""
 
     def discover_transformations(self) -> dict[str, Path]:
         """Discover Jinja templated SQL scripts."""
@@ -138,7 +136,7 @@ class JinjaSqlAdapter(TransformationAdapterBase):
                     transformations[transformation_name] = sql_file
         return transformations
 
-    def __call__(self, transformation_name: str | None = None, **kwargs: t.Any) -> None:
+    def __call__(self, **kwargs: t.Any) -> None:
         """Execute Jinja templated SQL scripts."""
         from jinja2 import Environment, FileSystemLoader
         from sqlalchemy import create_engine, text
@@ -153,17 +151,10 @@ class JinjaSqlAdapter(TransformationAdapterBase):
         env = Environment(loader=FileSystemLoader(str(sql_dir)))
 
         transformations = self.discover_transformations()
-
-        if transformation_name:
-            if transformation_name not in transformations:
-                raise ValueError(f"Transformation '{transformation_name}' not found")
-            to_execute = [(transformation_name, transformations[transformation_name])]
-        else:
-            # Execute all transformations in sorted order
-            to_execute = sorted(transformations.items(), key=lambda x: x[0])
+        sorted_statements = sorted(transformations.items(), key=lambda x: x[0])
 
         with engine.connect() as conn:
-            for name, sql_file in to_execute:
+            for name, sql_file in sorted_statements:
                 logger.info("Executing SQL script: %s", name)
                 template = env.get_template(str(sql_file.relative_to(sql_dir)))
                 sql_content = template.render()
