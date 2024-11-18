@@ -198,8 +198,8 @@ class DataPackage:
     @inject_package
     def run_tests(self) -> Mapping[str, t.Any]:
         """Run tests using the test adapter."""
-        success, results = self.test_adapter()
-        if not success:
+        results, err = self.test_adapter()
+        if err:
             raise AssertionError(f"Tests failed for package {self.name}:\n{results}")
         return results
 

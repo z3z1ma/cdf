@@ -33,7 +33,7 @@ class TestAdapterBase(ABC, t.Generic[T]):
         pass
 
     @abstractmethod
-    def __call__(self) -> tuple[bool, Mapping[str, T]]:
+    def __call__(self) -> tuple[Mapping[str, T], bool]:
         """Run tests for the package."""
         pass
 
@@ -52,7 +52,7 @@ class PytestAdapter(TestAdapterBase[pytest.TestReport]):
         _ = pytest.main([str(self.package_path), "--collect-only"], plugins=[CaseCollector()])
         return collected_items
 
-    def __call__(self) -> tuple[bool, Mapping[str, pytest.TestReport]]:
+    def __call__(self) -> tuple[Mapping[str, pytest.TestReport], bool]:
         """Run pytest tests programmatically."""
         results: dict[str, pytest.TestReport] = {}
 
@@ -62,7 +62,7 @@ class PytestAdapter(TestAdapterBase[pytest.TestReport]):
                     results[report.nodeid] = report
 
         _ = pytest.main([str(self.package_path)], plugins=[ReportCollector()])
-        return not any(report.outcome == "failed" for report in results.values()), results
+        return results, any(report.outcome == "failed" for report in results.values())
 
 
 _OptExcInfo = tuple[type[BaseException], BaseException, TracebackType] | tuple[None, None, None]
@@ -116,7 +116,7 @@ class UnittestAdapter(TestAdapterBase[str]):
         _flatten_suite(suite)
         return test_names
 
-    def __call__(self) -> tuple[bool, Mapping[str, str]]:
+    def __call__(self) -> tuple[Mapping[str, str], bool]:
         """Run unittest tests programmatically."""
         loader = unittest.TestLoader()
         suite = loader.discover(start_dir=str(self.package_path))
@@ -124,9 +124,8 @@ class UnittestAdapter(TestAdapterBase[str]):
         result = _CollectingTestResult()
         _ = suite.run(result)
 
-        success = result.wasSuccessful()
         results = result.test_results
-        return success, results
+        return results, not result.wasSuccessful()
 
 
 class _DbtRunResult(t.Protocol):
@@ -167,7 +166,7 @@ class DbtTestAdapter(TestAdapterBase[_DbtRunResult]):
         else:
             raise RuntimeError from invocation_info.exception
 
-    def __call__(self) -> tuple[bool, Mapping[str, _DbtRunResult]]:
+    def __call__(self) -> tuple[Mapping[str, _DbtRunResult], bool]:
         """Run dbt tests and collect results."""
         from dbt.artifacts.schemas.run import RunExecutionResult
         from dbt.cli.main import dbtRunner
@@ -185,6 +184,6 @@ class DbtTestAdapter(TestAdapterBase[_DbtRunResult]):
         run_execution = t.cast(RunExecutionResult, invocation_info.result)
         logger.debug("dbt test results generated at: %s", run_execution.generated_at)
 
-        return not any(r.failures for r in run_execution.results), {
-            r.node.unique_id: t.cast(_DbtRunResult, r) for r in run_execution.results
-        }
+        return {r.node.unique_id: r for r in run_execution.results}, any(
+            r.failures for r in run_execution.results
+        )
