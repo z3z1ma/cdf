@@ -6,6 +6,7 @@ from __future__ import annotations
 import sys
 import typing as t
 from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 from types import ModuleType
@@ -14,11 +15,30 @@ from cdf.core.configuration import ConfigBox, ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
 from cdf.core.container import Container
 from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
+from cdf.core.testing import PytestAdapter, TestAdapterBase
 from cdf.utils.file import load_module_from_path
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
 PathType = Path | str
+
+
+@contextmanager
+def _inject_sys_path(*paths: str) -> Iterator[None]:
+    """Temporarily add paths to sys.path.
+
+    Args:
+        paths (List[str]): List of paths to temporarily add to sys.path.
+
+    Yields:
+        None
+    """
+    original_sys_path = sys.path[:]
+    try:
+        sys.path[:0] = paths
+        yield
+    finally:
+        sys.path = original_sys_path
 
 
 def run_with_context(func: t.Callable[P, T]) -> t.Callable[P, T]:
@@ -27,7 +47,7 @@ def run_with_context(func: t.Callable[P, T]) -> t.Callable[P, T]:
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs):
         self = t.cast(Project | DataPackage, args[0])
-        with self.container:
+        with self.container, _inject_sys_path(str(self.path)):
             return func(*args, **kwargs)
 
     return wrapper
@@ -50,6 +70,7 @@ class DataPackage:
         self.container = self._create_container()
         self._dependencies = self._load_dependencies()
         self._extract_load_adapter = self._initialize_el_adapter()
+        self._test_adapter = self._initialize_test_adapter()
 
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
@@ -94,6 +115,10 @@ class DataPackage:
             raise ValueError(f"Unsupported extract-load adapter: {adapter_type}")
         return adapter_impl(self.path, self.config)
 
+    def _initialize_test_adapter(self) -> TestAdapterBase[t.Any]:
+        """Initialize the test adapter."""
+        return PytestAdapter(self.path, self.config)
+
     @property
     def config(self) -> ConfigBox:
         """Get the data package configuration."""
@@ -116,6 +141,14 @@ class DataPackage:
     def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Delegate to the adapter to run the pipeline."""
         self._extract_load_adapter(pipeline_name, **kwargs)
+
+    @run_with_context
+    def run_tests(self) -> dict[str, t.Any]:
+        """Run tests using the test adapter."""
+        success, results = self._test_adapter.run_tests()
+        if not success:
+            raise AssertionError(f"Tests failed for package {self.name}:\n{results}")
+        return results
 
 
 @t.final
@@ -215,3 +248,6 @@ if __name__ == "__main__":
 
     print("Running pipeline `pipeline_main`")
     project.synthetic.run_pipeline("pipeline_main")
+
+    print("Running tests for `synthetic` package")
+    _ = project.synthetic.run_tests()
