@@ -33,7 +33,7 @@ class TestAdapterBase(ABC, t.Generic[T]):
         pass
 
     @abstractmethod
-    def run_tests(self) -> tuple[bool, Mapping[str, T]]:
+    def __call__(self) -> tuple[bool, Mapping[str, T]]:
         """Run tests for the package."""
         pass
 
@@ -52,7 +52,7 @@ class PytestAdapter(TestAdapterBase[pytest.TestReport]):
         _ = pytest.main([str(self.package_path), "--collect-only"], plugins=[CaseCollector()])
         return collected_items
 
-    def run_tests(self) -> tuple[bool, Mapping[str, pytest.TestReport]]:
+    def __call__(self) -> tuple[bool, Mapping[str, pytest.TestReport]]:
         """Run pytest tests programmatically."""
         results: dict[str, pytest.TestReport] = {}
 
@@ -116,7 +116,7 @@ class UnittestAdapter(TestAdapterBase[str]):
         _flatten_suite(suite)
         return test_names
 
-    def run_tests(self) -> tuple[bool, Mapping[str, str]]:
+    def __call__(self) -> tuple[bool, Mapping[str, str]]:
         """Run unittest tests programmatically."""
         loader = unittest.TestLoader()
         suite = loader.discover(start_dir=str(self.package_path))
@@ -165,7 +165,7 @@ class DbtTestAdapter(TestAdapterBase[_DbtRunResult]):
         else:
             raise RuntimeError from invocation_info.exception
 
-    def run_tests(self) -> tuple[bool, Mapping[str, _DbtRunResult]]:
+    def __call__(self) -> tuple[bool, Mapping[str, _DbtRunResult]]:
         """Run dbt tests and collect results."""
         from dbt.artifacts.schemas.run import RunExecutionResult
         from dbt.cli.main import dbtRunner

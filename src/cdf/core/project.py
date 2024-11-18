@@ -154,7 +154,7 @@ class DataPackage:
     @run_with_context
     def run_tests(self) -> Mapping[str, t.Any]:
         """Run tests using the test adapter."""
-        success, results = self._test_adapter.run_tests()
+        success, results = self._test_adapter()
         if not success:
             raise AssertionError(f"Tests failed for package {self.name}:\n{results}")
         return results
