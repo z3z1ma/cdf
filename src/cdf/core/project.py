@@ -16,6 +16,12 @@ from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFA
 from cdf.core.container import Container
 from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
 from cdf.core.testing import DbtTestAdapter, PytestAdapter, TestAdapterBase, UnittestAdapter
+from cdf.core.transform import (
+    DbtAdapter,
+    JinjaSqlAdapter,
+    SqlMeshAdapter,
+    TransformationAdapterBase,
+)
 from cdf.utils.file import load_module_from_path
 
 __all__ = ["DataPackage", "Project"]
@@ -43,7 +49,7 @@ def _inject_sys_path(*paths: str) -> Iterator[None]:
         sys.path = original_sys_path
 
 
-def run_with_context(func: t.Callable[P, T]) -> t.Callable[P, T]:
+def inject_package(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """A decorator to run a function with a container context."""
 
     @wraps(func)
@@ -73,6 +79,7 @@ class DataPackage:
         self._dependencies = self._load_dependencies()
         self._extract_load_adapter = self._initialize_el_adapter()
         self._test_adapter = self._initialize_test_adapter()
+        self._transform_adapter = self._initialize_transform_adapter()
 
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
@@ -102,7 +109,7 @@ class DataPackage:
                 _ = sys.path.pop(0)
         return ()
 
-    def _initialize_el_adapter(self) -> ExtractLoadAdapterBase:
+    def _initialize_el_adapter(self) -> ExtractLoadAdapterBase | None:
         """Initialize the appropriate extract-load adapter."""
         match self.config.get("extract_load_adapter"):
             case "dlt":
@@ -111,11 +118,13 @@ class DataPackage:
                 adapter_impl = SlingAdapter
             case "singer":
                 adapter_impl = SingerAdapter
+            case None:
+                return None
             case _:
                 raise ValueError("Unsupported extract-load adapter")
         return adapter_impl(self.path, self.config)
 
-    def _initialize_test_adapter(self) -> TestAdapterBase[t.Any]:
+    def _initialize_test_adapter(self) -> TestAdapterBase[t.Any] | None:
         """Initialize the test adapter."""
         match self.config.get("test_adapter", "pytest"):
             case "pytest":
@@ -124,8 +133,25 @@ class DataPackage:
                 adapter_impl = UnittestAdapter
             case "dbt":
                 adapter_impl = DbtTestAdapter
+            case None:
+                return None
             case _:
                 raise ValueError("Unsupported test adapter")
+        return adapter_impl(self.path, self.config)
+
+    def _initialize_transform_adapter(self) -> TransformationAdapterBase | None:
+        """Initialize the appropriate transformation adapter."""
+        match self.config.get("transform_adapter"):
+            case "sqlmesh":
+                adapter_impl = SqlMeshAdapter
+            case "dbt":
+                adapter_impl = DbtAdapter
+            case "jinja_sql":
+                adapter_impl = JinjaSqlAdapter
+            case None:
+                return None
+            case _:
+                raise ValueError("Unsupported transformation adapter")
         return adapter_impl(self.path, self.config)
 
     @property
@@ -141,23 +167,46 @@ class DataPackage:
             raise TypeError("Schedules must be a list")
         return schedules
 
-    @run_with_context
+    @property
+    def extract_load_adapter(self) -> ExtractLoadAdapterBase:
+        if self._extract_load_adapter is None:
+            raise ValueError(f"No extract-load adapter configured for the {self.name} package")
+        return self._extract_load_adapter
+
+    @property
+    def test_adapter(self) -> TestAdapterBase[t.Any]:
+        if self._test_adapter is None:
+            raise ValueError(f"No test adapter configured for the {self.name} package")
+        return self._test_adapter
+
+    @property
+    def transform_adapter(self) -> TransformationAdapterBase:
+        if self._transform_adapter is None:
+            raise ValueError(f"No transformation adapter configured for the {self.name} package")
+        return self._transform_adapter
+
+    @inject_package
     def discover_extract_load_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Delegate to the adapter to discover pipelines."""
-        return self._extract_load_adapter.discover_pipelines()
+        return self.extract_load_adapter.discover_pipelines()
 
-    @run_with_context
-    def run_pipeline(self, pipeline_name: str, **kwargs: t.Any) -> None:
+    @inject_package
+    def run_pipeline(self, pipeline_name: str, /, **kwargs: t.Any) -> None:
         """Delegate to the adapter to run the pipeline."""
-        self._extract_load_adapter(pipeline_name, **kwargs)
+        self.extract_load_adapter(pipeline_name, **kwargs)
 
-    @run_with_context
+    @inject_package
     def run_tests(self) -> Mapping[str, t.Any]:
         """Run tests using the test adapter."""
-        success, results = self._test_adapter()
+        success, results = self.test_adapter()
         if not success:
             raise AssertionError(f"Tests failed for package {self.name}:\n{results}")
         return results
+
+    @inject_package
+    def run_transformations(self, **kwargs: t.Any) -> None:
+        """Run transformations using the transformation adapter."""
+        self.transform_adapter(**kwargs)
 
 
 @t.final
@@ -250,7 +299,7 @@ if __name__ == "__main__":
     print("project.config.some.value", project.config.some.value)
 
     print("Discovered pipelines", project.synthetic.discover_extract_load_pipelines())
-    print("Index into pipeline", project.synthetic._extract_load_adapter.pipeline_main)  # pyright: ignore[reportPrivateUsage]
+    print("Index into pipeline", project.synthetic.extract_load_adapter.pipeline_main)
 
     print("Adding `test2` to project container")
     project.synthetic.container.add("test2", 321)
