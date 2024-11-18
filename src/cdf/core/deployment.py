@@ -6,6 +6,8 @@ import typing as t
 
 from cdf.core.project import Project
 
+__all__ = ["DeploymentManager"]
+
 
 @t.final
 class DeploymentManager:

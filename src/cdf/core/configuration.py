@@ -19,9 +19,6 @@ from box import Box
 
 from cdf.utils.file import load_file_from_extension
 
-ConfigurationSource = str | Path | Mapping[str, t.Any] | t.Callable[[], "ConfigurationSource"]
-
-
 __all__ = [
     "ConfigurationSource",
     "ConfigBox",
@@ -30,6 +27,8 @@ __all__ = [
     "_get_converter",
     "_remove_converter",
 ]
+
+ConfigurationSource = str | Path | Mapping[str, t.Any] | t.Callable[[], "ConfigurationSource"]
 
 
 def _to_bool(value: str) -> bool:

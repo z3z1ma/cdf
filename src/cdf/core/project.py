@@ -15,8 +15,10 @@ from cdf.core.configuration import ConfigBox, ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
 from cdf.core.container import Container
 from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
-from cdf.core.testing import PytestAdapter, TestAdapterBase
+from cdf.core.testing import DbtTestAdapter, PytestAdapter, TestAdapterBase, UnittestAdapter
 from cdf.utils.file import load_module_from_path
+
+__all__ = ["DataPackage", "Project"]
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
@@ -102,22 +104,29 @@ class DataPackage:
 
     def _initialize_el_adapter(self) -> ExtractLoadAdapterBase:
         """Initialize the appropriate extract-load adapter."""
-        adapter_type = self.config.get("extract_load_adapter")
-        if not isinstance(adapter_type, str):
-            raise TypeError("Extract-load adapter must be a string")
-        if adapter_type == "dlt":
-            adapter_impl = DltAdapter
-        elif adapter_type == "sling":
-            adapter_impl = SlingAdapter
-        elif adapter_type == "singer":
-            adapter_impl = SingerAdapter
-        else:
-            raise ValueError(f"Unsupported extract-load adapter: {adapter_type}")
+        match self.config.get("extract_load_adapter"):
+            case "dlt":
+                adapter_impl = DltAdapter
+            case "sling":
+                adapter_impl = SlingAdapter
+            case "singer":
+                adapter_impl = SingerAdapter
+            case _:
+                raise ValueError("Unsupported extract-load adapter")
         return adapter_impl(self.path, self.config)
 
     def _initialize_test_adapter(self) -> TestAdapterBase[t.Any]:
         """Initialize the test adapter."""
-        return PytestAdapter(self.path, self.config)
+        match self.config.get("test_adapter", "pytest"):
+            case "pytest":
+                adapter_impl = PytestAdapter
+            case "unittest":
+                adapter_impl = UnittestAdapter
+            case "dbt":
+                adapter_impl = DbtTestAdapter
+            case _:
+                raise ValueError("Unsupported test adapter")
+        return adapter_impl(self.path, self.config)
 
     @property
     def config(self) -> ConfigBox:
@@ -143,7 +152,7 @@ class DataPackage:
         self._extract_load_adapter(pipeline_name, **kwargs)
 
     @run_with_context
-    def run_tests(self) -> dict[str, t.Any]:
+    def run_tests(self) -> Mapping[str, t.Any]:
         """Run tests using the test adapter."""
         success, results = self._test_adapter.run_tests()
         if not success:

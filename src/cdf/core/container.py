@@ -17,16 +17,10 @@ from types import MappingProxyType, TracebackType
 from cdf.core.configuration import ConfigBox
 from cdf.core.constants import CONTEXT_PARAM_NAME
 
+__all__ = ["Container", "injected", "register_dep", "inject_deps", "active_container"]
+
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
-
-__all__ = [
-    "Container",
-    "injected",
-    "register_dep",
-    "inject_deps",
-    "active_container",
-]
 
 injected = object()
 """Sentinel value to indicate that a dependency MUST be injected."""
