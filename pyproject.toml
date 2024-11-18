@@ -23,13 +23,15 @@ dependencies = [
   "dynaconf>=3,<4",
   "python-box~=7.2.0",
   "eval_type_backport~=0.1.3; python_version<'3.10'",
+  "pytest>=7.4.3",
 ]
 requires-python = ">=3.10,<3.13"
 readme = "README.md"
 license.file = "LICENSE"
+scripts = { cdf = "cdf.cli.main:cli" }
 
 [project.optional-dependencies]
-dev = ["pytest>=7.4.3", "pytest-mock>=3.12.0", "pydoc-markdown>4"]
+dev = ["pytest-mock>=3.12.0", "pydoc-markdown>4"]
 
 [build-system]
 requires = ["hatchling"]

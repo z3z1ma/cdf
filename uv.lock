@@ -1317,6 +1317,7 @@ dependencies = [
     { name = "pex" },
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "pytest" },
     { name = "python-box" },
     { name = "python-dotenv" },
     { name = "shellingham" },
@@ -1328,7 +1329,6 @@ dependencies = [
 [package.optional-dependencies]
 dev = [
     { name = "pydoc-markdown" },
-    { name = "pytest" },
     { name = "pytest-mock" },
 ]
 
@@ -1345,7 +1345,7 @@ requires-dist = [
     { name = "psutil", specifier = "~=5.9.0" },
     { name = "pydantic", specifier = ">=2.5.0,<3" },
     { name = "pydoc-markdown", marker = "extra == 'dev'", specifier = ">4" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=7.4.3" },
+    { name = "pytest", specifier = ">=7.4.3" },
     { name = "pytest-mock", marker = "extra == 'dev'", specifier = ">=3.12.0" },
     { name = "python-box", specifier = "~=7.2.0" },
     { name = "python-dotenv", specifier = ">=1,<2" },
