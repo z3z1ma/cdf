@@ -31,7 +31,7 @@ license.file = "LICENSE"
 scripts = { cdf = "cdf.cli.main:cli" }
 
 [project.optional-dependencies]
-dev = ["pytest-mock>=3.12.0", "pydoc-markdown>4"]
+dev = ["dbt-core>=1.8.0", "pytest-mock>=3.12.0", "pydoc-markdown>4"]
 
 [build-system]
 requires = ["hatchling"]
