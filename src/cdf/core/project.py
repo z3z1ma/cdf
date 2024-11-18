@@ -47,7 +47,7 @@ def run_with_context(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """A decorator to run a function with a container context."""
 
     @wraps(func)
-    def wrapper(*args: P.args, **kwargs: P.kwargs):
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         self = t.cast(Project | DataPackage, args[0])
         with self.container, _inject_sys_path(str(self.path)):
             return func(*args, **kwargs)

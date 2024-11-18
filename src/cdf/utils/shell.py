@@ -29,19 +29,19 @@ def get_activate_command(root_path: Path) -> str:
         shell, _ = t.cast(tuple[str, t.Any], shellingham.detect_shell())
     except shellingham.ShellDetectionFailure:
         shell = ""
-    if shell == "fish":
-        command, filename = "source", "activate.fish"
-    elif shell == "nu":
-        command, filename = "overlay use", "activate.nu"
-    elif shell == "csh":
-        command, filename = "source", "activate.csh"
-    elif shell in ["powershell", "pwsh"]:
-        command, filename = ".", "Activate.ps1"
-    elif shell == "cmd":
-        command, filename = ".", "activate.bat"
-    else:
-        command, filename = "source", "activate"
-
+    match shell:
+        case "fish":
+            command, filename = "source", "activate.fish"
+        case "nu":
+            command, filename = "overlay use", "activate.nu"
+        case "csh":
+            command, filename = "source", "activate.csh"
+        case "powershell" | "pwsh":
+            command, filename = ".", "Activate.ps1"
+        case "cmd":
+            command, filename = ".", "activate.bat"
+        case _:
+            command, filename = "source", "activate"
     if (activation_script := root_path / filename).exists():
         if WINDOWS:
             return f"{_quote(str(activation_script), shell)}"
