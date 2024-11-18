@@ -1,4 +1,9 @@
-"""Container module for dependency injection."""
+"""Container module for dependency injection.
+
+Containers act as the primary mechanism for DI and manual configuration resolution. They allow code
+simplification in most cases by decoupling services which interact with external APIs or databases
+from the functions which leverage them such as data pipelines, reverse ETL, ad hoc analytics, etc.
+"""
 
 from __future__ import annotations
 
