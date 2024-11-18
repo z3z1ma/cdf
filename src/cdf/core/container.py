@@ -413,17 +413,25 @@ class Container(MutableMapping[str, t.Any]):
 
         return decorator
 
-    def __enter__(self) -> "Container":
+    def activate(self) -> Container:
+        """Set this container as the active container."""
         self._tokens.append(active_container.set(self))
         return self
+
+    def deactivate(self) -> None:
+        """Reset the active container to the previous container."""
+        active_container.reset(self._tokens.pop())
+
+    def __enter__(self) -> Container:
+        return self.activate()
 
     def __exit__(
         self, exc_type: type[BaseException], exc_value: BaseException, traceback: TracebackType
     ) -> None:
-        active_container.reset(self._tokens.pop())
+        self.deactivate()
         _ = self._exit_stack.__exit__(exc_type, exc_value, traceback)
 
-    def combine(self, other: "Container") -> "Container":
+    def combine(self, other: Container) -> Container:
         """Combine this context with another, returning a new context with merged configurations and dependencies.
 
         Args:

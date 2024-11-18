@@ -154,6 +154,10 @@ class DataPackage:
                 raise ValueError("Unsupported transformation adapter")
         return adapter_impl(self.path, self.config)
 
+    def activate(self) -> None:
+        """Set the data package container as the active container."""
+        _ = self.container.activate()
+
     @property
     def config(self) -> ConfigBox:
         """Get the data package configuration."""
