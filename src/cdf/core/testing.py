@@ -155,6 +155,8 @@ class DbtTestAdapter(TestAdapterBase[_DbtRunResult]):
             "test",
             "--project-dir",
             str(self.package_path),
+            "--select",
+            "test_type:unit",
         ]
 
         logger.debug("Running dbt command: %s", " ".join(args))
@@ -171,12 +173,11 @@ class DbtTestAdapter(TestAdapterBase[_DbtRunResult]):
         from dbt.cli.main import dbtRunner
 
         runner = dbtRunner()
-        args = ["test", "--project-dir", str(self.package_path), "--log-format", "json"]
+        args = ["test", "--project-dir", str(self.package_path), "--select", "test_type:unit"]
 
         logger.debug("Running dbt command: %s", " ".join(args))
 
         invocation_info = runner.invoke(args)
-
         if invocation_info.exception:
             logger.error("dbt test command raised an exception: %s", invocation_info.exception)
             raise RuntimeError(f"dbt test command failed: {invocation_info.exception}")
