@@ -12,7 +12,7 @@ from pathlib import Path
 from types import ModuleType
 
 from cdf.core.configuration import ConfigurationLoader
-from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
+from cdf.core.constants import CONFIG_FILE_NAME
 from cdf.core.container import Container
 from cdf.core.extract_load import ExtractLoadAdapterBase, extract_load_adapter_factory
 from cdf.core.models import DataPackageConfig, ProjectConfig
@@ -73,24 +73,26 @@ class DataPackage:
         self.name = self.path.name
 
         self.container = self._create_container()
-        self.config = DataPackageConfig.model_validate(self.container.config, from_attributes=True)
+        self.settings = DataPackageConfig.model_validate(
+            self.container.config.package, from_attributes=True
+        )
 
         self._dependencies = self._load_dependencies()
 
-        if self.config.extract_load:
+        if self.settings.extract_load:
             self._extract_load_adapter = extract_load_adapter_factory(
-                self.path, self.config.extract_load, self.container.config
+                self.path, self.settings.extract_load, self.container.config
             )
         else:
             self._extract_load_adapter = None
 
-        if self.config.test:
-            self._test_adapter = test_adapter_factory(self.path, self.config.test)
+        if self.settings.test:
+            self._test_adapter = test_adapter_factory(self.path, self.settings.test)
         else:
             self._test_adapter = None
 
-        if self.config.transform:
-            self._transform_adapter = transform_adapter_factory(self.path, self.config.transform)
+        if self.settings.transform:
+            self._transform_adapter = transform_adapter_factory(self.path, self.settings.transform)
         else:
             self._transform_adapter = None
 
@@ -111,7 +113,7 @@ class DataPackage:
 
     def _load_dependencies(self) -> tuple[ModuleType, ...]:
         """Load dependencies from Python files in the 'dependencies' directory."""
-        dependencies_dir = self.path / "dependencies"
+        dependencies_dir = self.path / self.project.settings.dependencies_dir
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             try:
@@ -179,14 +181,19 @@ class Project(Mapping[str, DataPackage]):
             project_path: Path to the project directory.
         """
         self.path = Path(project_path)
-        self.name = self.path.name
 
         self.container = self._create_container()
-        self.config = ProjectConfig.model_validate(self.container.config, from_attributes=True)
+        self.settings = ProjectConfig.model_validate(
+            self.container.config.project, from_attributes=True
+        )
         self._load_dependencies()
 
         self.data_packages: dict[str, DataPackage] = {}
         self._discover_data_packages()
+
+    @property
+    def name(self) -> str:
+        return self.settings.name
 
     def _create_container(self) -> Container:
         """Create a container for the project."""
@@ -198,14 +205,12 @@ class Project(Mapping[str, DataPackage]):
                     Path.home() / ".cdf",
                 ],
             ).load(),
-            namespace=self.name,
+            namespace="__main__",
         )
 
     def _load_dependencies(self) -> None:
         """Load dependencies from Python files in the 'dependencies' directory."""
-        dependencies_dir = self.path / str(
-            self.container.config.get("dependencies_dir", DEFAULT_DEPENDENCIES_DIR)
-        )
+        dependencies_dir = self.path / self.settings.dependencies_dir
         if dependencies_dir.exists():
             sys.path.insert(0, str(dependencies_dir))
             for py_file in dependencies_dir.glob("*.py"):
@@ -214,9 +219,7 @@ class Project(Mapping[str, DataPackage]):
 
     def _discover_data_packages(self) -> None:
         """Discover and load data packages within the project."""
-        data_packages_dir = self.path / self.container.config.get(
-            "data_packages_dir", DEFAULT_DATA_PACKAGES_DIR
-        )
+        data_packages_dir = self.path / self.settings.data_packages_dir
         if data_packages_dir.exists():
             for package_dir in data_packages_dir.iterdir():
                 if package_dir.is_dir():
@@ -234,7 +237,7 @@ class Project(Mapping[str, DataPackage]):
 
     def __getattr__(self, key: str) -> DataPackage:
         try:
-            return self[key]
+            return self.data_packages[key]
         except KeyError as e:
             raise AttributeError(f"No data package found with name: {key}") from e
 

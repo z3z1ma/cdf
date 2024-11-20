@@ -283,7 +283,7 @@ class PackageManifest(_CDFConfigModel):
 class DataPackageConfig(_CDFConfigModel):
     """A package comprising a single data source with adapters to extract, load, transform, and test data."""
 
-    schedules: list[str] = []
+    schedules: list[dict[str, str]] = []
     """List of schedules for the data package, for use with Scheduler adapter"""
 
     manifest: PackageManifest
@@ -301,6 +301,9 @@ class DataPackageConfig(_CDFConfigModel):
 
 class ProjectConfig(_CDFConfigModel):
     """A project contains data packages"""
+
+    name: str
+    """Name of the project"""
 
     dependencies_dir: Path = pydantic.Field(default=c.DEFAULT_DEPENDENCIES_DIR)
     """Directory where dependencies are stored"""
