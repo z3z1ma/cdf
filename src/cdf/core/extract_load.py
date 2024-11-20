@@ -9,58 +9,93 @@ import subprocess  # nosec
 import sys
 import typing as t
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from contextlib import contextmanager
 from fnmatch import fnmatch
 from pathlib import Path
-from types import ModuleType, TracebackType
+from types import ModuleType
 
 from cdf.core.configuration import ConfigBox
+from cdf.core.models import (
+    DltAdapterConfig,
+    ExtractLoadConfig,
+    SingerAdapterConfig,
+    SlingAdapterConfig,
+)
 from cdf.utils.file import load_module_from_path
 
 __all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter"]
 
 T = t.TypeVar("T")
+TConfig = t.TypeVar("TConfig", bound=ExtractLoadConfig)
 
 logger = logging.getLogger(__name__)
 
 
-class ExtractLoadAdapterBase(ABC):
+@t.overload
+def extract_load_adapter_factory(
+    package_path: Path, adapter_conf: DltAdapterConfig, package_conf: ConfigBox
+) -> DltAdapter: ...
+
+
+@t.overload
+def extract_load_adapter_factory(
+    package_path: Path, adapter_conf: SingerAdapterConfig, package_conf: ConfigBox
+) -> SingerAdapter: ...
+
+
+@t.overload
+def extract_load_adapter_factory(
+    package_path: Path, adapter_conf: SlingAdapterConfig, package_conf: ConfigBox
+) -> SlingAdapter: ...
+
+
+def extract_load_adapter_factory(
+    package_path: Path, adapter_conf: ExtractLoadConfig, package_conf: ConfigBox
+) -> ExtractLoadAdapterBase[t.Any, t.Any]:
+    match adapter_conf.adapter:
+        case "dlt":
+            return DltAdapter(package_path, adapter_conf, package_conf)
+        case "singer":
+            return SingerAdapter(package_path, adapter_conf, package_conf)
+        case "sling":
+            return SlingAdapter(package_path, adapter_conf, package_conf)
+
+
+class ExtractLoadAdapterBase(ABC, t.Generic[T, TConfig]):
     """Abstract base class for all extract-load adapters."""
 
-    def __init__(self, package_path: Path, config: t.Any) -> None:
+    def __init__(self, package_path: Path, adapter_conf: TConfig, package_conf: ConfigBox) -> None:
         self.package_path: Path = package_path
-        self.config: ConfigBox = config
-        self._pipelines: dict[str, t.Callable[..., t.Any]] = {}
+        self.adapter_conf: TConfig = adapter_conf
+        self.package_conf: ConfigBox = package_conf
+        self._pipelines: Mapping[str, T] = {}
 
     @abstractmethod
-    def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
+    def _discover_pipelines(self) -> Mapping[str, T]:
         """Discover available pipelines."""
         pass
+
+    def discover_pipelines(self) -> Mapping[str, T]:
+        """Discover available pipelines."""
+        if not self._pipelines:
+            self._pipelines = self._discover_pipelines()
+        return self._pipelines
 
     @abstractmethod
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pass
 
-    def __enter__(self) -> None:
-        pass
+    def __getitem__(self, name: str) -> T:
+        return (self._pipelines or self._discover_pipelines())[name]
 
-    def __exit__(
-        self, exc_type: type[BaseException], exc_val: BaseException, exc_tb: TracebackType
-    ) -> None:
-        pass
-
-    def __getitem__(self, name: str) -> t.Callable[..., t.Any]:
-        return (self._pipelines or self.discover_pipelines())[name]
-
-    def __getattr__(self, name: str) -> t.Callable[..., t.Any]:
+    def __getattr__(self, name: str) -> T:
         try:
-            return (self._pipelines or self.discover_pipelines())[name]
+            return (self._pipelines or self._discover_pipelines())[name]
         except KeyError as e:
             raise AttributeError from e
 
-
-class ScriptLoaderMixin(t.Generic[T]):
     def _load_module(self, module_path: Path | str) -> ModuleType:
         """Load a module from the package directory."""
         path = Path(module_path)
@@ -74,11 +109,11 @@ class ScriptLoaderMixin(t.Generic[T]):
         self,
         script_path: Path,
         func_glob: str = "*",
-    ) -> dict[str, t.Callable[..., T]]:
+    ) -> Mapping[str, T]:
         """Load all callable functions from a module."""
         module = self._load_module(script_path)
         functions = {
-            name: obj
+            name: t.cast(T, obj)
             for name, obj in inspect.getmembers(module, inspect.isfunction)
             if not inspect.isbuiltin(obj)
             and inspect.getmodule(inspect.unwrap((obj))) in (module, None)
@@ -91,13 +126,9 @@ class DltPipelineProtocol(t.Protocol):
     def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
 
 
-class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol]):
-    _pipelines: dict[str, DltPipelineProtocol]
-
-    def discover_pipelines(self) -> dict[str, DltPipelineProtocol]:
+class DltAdapter(ExtractLoadAdapterBase[DltPipelineProtocol, DltAdapterConfig]):
+    def _discover_pipelines(self) -> Mapping[str, DltPipelineProtocol]:
         """Discover all extract-load pipelines in main.py."""
-        if self._pipelines:
-            return self._pipelines
         pipelines: dict[str, DltPipelineProtocol] = {}
         main_script = self.package_path / "main.py"
         if main_script.exists():
@@ -107,7 +138,6 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
             logger.warning("No main.py found in package %s", self.package_path.stem)
         if not pipelines:
             logger.warning("No extract-load pipelines found in package %s", self.package_path.stem)
-        self._pipelines = pipelines
         return pipelines
 
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
@@ -136,7 +166,7 @@ class DltAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[DltPipelineProtocol])
             if provider_name not in dlt_context.providers:
                 logger.debug("Injecting CDF configuration provider: %s", provider_name)
                 dlt_context.providers.add_provider(
-                    CustomLoaderDocProvider(provider_name, lambda: self.config)
+                    CustomLoaderDocProvider(provider_name, lambda: self.package_conf)
                 )
             yield
             logger.debug("Restoring DLT context")
@@ -146,40 +176,35 @@ class SlingPipelineProtocol(t.Protocol):
     def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
 
 
-class SlingAdapter(ExtractLoadAdapterBase, ScriptLoaderMixin[SlingPipelineProtocol]):
-    def discover_pipelines(self) -> dict[str, SlingPipelineProtocol]:
+class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol, SlingAdapterConfig]):
+    def _discover_pipelines(self) -> Mapping[str, SlingPipelineProtocol]:
         """Discover all pipelines for sling."""
-        pipelines: dict[str, SlingPipelineProtocol] = {}
-        main_script = self.package_path / "main.py"
-        if main_script.exists():
-            pipelines.update(self._load_functions_from_module(main_script, "pipeline_*"))
-        else:
-            logger.warning("No main.py found in package %s", self.package_path.stem)
-        if not pipelines:
-            logger.warning("No extract-load pipelines found in package %s", self.package_path.stem)
-        return pipelines
+        return {"main_pipeline": self}
 
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
-        pipelines = self.discover_pipelines()
-        if pipeline_name not in pipelines:
-            raise ValueError(
-                f"Pipeline {pipeline_name} not found in package {self.package_path.stem}, ensure it exists",
-            )
-        logger.info("Running pipeline %s", pipeline_name)
-        pipelines[pipeline_name](**kwargs)
+        logger.info(
+            "Running Sling pipeline from %s to %s",
+            self.adapter_conf.source,
+            self.adapter_conf.target,
+        )
+        _ = subprocess.run(["echo", "1"], check=True)  # nosec
 
 
-class SingerAdapter(ExtractLoadAdapterBase):
-    def discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
+class SingerPipelineProtocol(t.Protocol):
+    def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
+
+
+class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol, SingerAdapterConfig]):
+    def _discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Singer doesn't have callable pipelines; define commands."""
-        return {"default_pipeline": self}
+        return {"main_pipeline": self}
 
     def __call__(self, pipeline_name: str = "default_pipeline", **kwargs: t.Any) -> None:
         """Run a singer pipeline using subprocess."""
-        tap = t.cast(str, self.config.get("singer_tap"))
-        target = t.cast(str, self.config.get("singer_target"))
-        if not tap or not target:
-            raise ValueError("Singer adapter requires 'singer_tap' and 'singer_target' in config.")
-        logger.info("Running Singer pipeline from %s to %s", tap, target)
+        logger.info(
+            "Running Singer pipeline from %s to %s",
+            self.adapter_conf.tap,
+            self.adapter_conf.target,
+        )
         _ = subprocess.run(["echo", "1"], check=True)  # nosec

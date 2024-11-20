@@ -7,7 +7,12 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
 
-from cdf.core.configuration import ConfigBox
+from cdf.core.models import (
+    DbtTransformAdapterConfig,
+    JinjaSqlAdapterConfig,
+    SqlMeshAdapterConfig,
+    TransformConfig,
+)
 
 if t.TYPE_CHECKING:
     from sqlmesh import Context as SQLMeshContext
@@ -17,20 +22,57 @@ __all__ = ["SqlMeshAdapter", "DbtAdapter", "JinjaSqlAdapter", "TransformationAda
 logger = logging.getLogger(__name__)
 
 T = t.TypeVar("T")
+TConfig = t.TypeVar("TConfig", bound=TransformConfig)
 
 
-class TransformationAdapterBase(ABC):
+@t.overload
+def transform_adapter_factory(
+    package_path: Path, adapter_conf: DbtTransformAdapterConfig
+) -> DbtAdapter: ...
+
+
+@t.overload
+def transform_adapter_factory(
+    package_path: Path, adapter_conf: SqlMeshAdapterConfig
+) -> SqlMeshAdapter: ...
+
+
+@t.overload
+def transform_adapter_factory(
+    package_path: Path, adapter_conf: JinjaSqlAdapterConfig
+) -> JinjaSqlAdapter: ...
+
+
+def transform_adapter_factory(
+    package_path: Path, adapter_conf: TransformConfig
+) -> TransformationAdapterBase[t.Any]:
+    match adapter_conf.adapter:
+        case "sqlmesh":
+            return DbtAdapter(package_path, adapter_conf)
+        case "dbt":
+            return SqlMeshAdapter(package_path, adapter_conf)
+        case "jinja_sql":
+            return JinjaSqlAdapter(package_path, adapter_conf)
+
+
+class TransformationAdapterBase(ABC, t.Generic[TConfig]):
     """Abstract base class for all transformation adapters."""
 
-    def __init__(self, package_path: Path, config: t.Any) -> None:
+    def __init__(self, package_path: Path, adapter_conf: t.Any) -> None:
         self.package_path: Path = package_path
-        self.config: ConfigBox = config
-        self._transformations: dict[str, t.Any] = {}
+        self.adapter_conf: TConfig = adapter_conf
+        self._transformations: Mapping[str, t.Any] = {}
 
     @abstractmethod
-    def discover_transformations(self) -> Mapping[str, t.Any]:
+    def _discover_transformations(self) -> Mapping[str, t.Any]:
         """Discover available transformations."""
         pass
+
+    def discover_transformations(self) -> Mapping[str, t.Any]:
+        """Discover available transformations."""
+        if not self._transformations:
+            self._transformations = self._discover_transformations()
+        return self._transformations
 
     @abstractmethod
     def __call__(self, **kwargs: t.Any) -> None:
@@ -47,7 +89,7 @@ class TransformationAdapterBase(ABC):
             raise AttributeError(f"No such transformation: {name}") from e
 
 
-class SqlMeshAdapter(TransformationAdapterBase):
+class SqlMeshAdapter(TransformationAdapterBase[SqlMeshAdapterConfig]):
     """Adapter for SqlMesh transformations."""
 
     def __init__(self, package_path: Path, config: t.Any) -> None:
@@ -62,7 +104,7 @@ class SqlMeshAdapter(TransformationAdapterBase):
             self._context = Context(paths=[self.package_path])
         return self._context
 
-    def discover_transformations(self) -> Mapping[str, t.Any]:
+    def _discover_transformations(self) -> Mapping[str, t.Any]:
         """Discover SqlMesh models."""
         return self.context.models
 
@@ -81,10 +123,10 @@ class SqlMeshAdapter(TransformationAdapterBase):
             logger.error("SqlMesh run failed")
 
 
-class DbtAdapter(TransformationAdapterBase):
+class DbtAdapter(TransformationAdapterBase[DbtTransformAdapterConfig]):
     """Adapter for dbt transformations."""
 
-    def discover_transformations(self) -> dict[str, Path]:
+    def _discover_transformations(self) -> Mapping[str, Path]:
         """Discover dbt models."""
         models_dir = self.package_path / "models"
         if not models_dir.exists():
@@ -104,7 +146,7 @@ class DbtAdapter(TransformationAdapterBase):
         dbt = dbtRunner()
 
         project_dir = str(self.package_path)
-        profiles_dir = t.cast(str, self.config.get("dbt_profiles_dir", "~/.dbt"))
+        profiles_dir = self.adapter_conf.profiles_dir
 
         args_list = ["run", "--project-dir", project_dir, "--profiles-dir", profiles_dir]
         logger.info("Running dbt with arguments: %s", args_list)
@@ -118,10 +160,10 @@ class DbtAdapter(TransformationAdapterBase):
             raise
 
 
-class JinjaSqlAdapter(TransformationAdapterBase):
+class JinjaSqlAdapter(TransformationAdapterBase[JinjaSqlAdapterConfig]):
     """Adapter for simple Jinja templated SQL DDL/DML."""
 
-    def discover_transformations(self) -> dict[str, Path]:
+    def _discover_transformations(self) -> dict[str, Path]:
         """Discover Jinja templated SQL scripts."""
         sql_dir = self.package_path / "sql"
         if not sql_dir.exists():
@@ -141,7 +183,7 @@ class JinjaSqlAdapter(TransformationAdapterBase):
         from jinja2 import Environment, FileSystemLoader
         from sqlalchemy import create_engine, text
 
-        db_config = t.cast(dict[str, t.Any], self.config.get("database"))
+        db_config = self.adapter_conf.model_dump()
         if not db_config:
             raise ValueError("Database configuration is missing in config")
 

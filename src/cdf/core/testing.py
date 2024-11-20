@@ -11,21 +11,57 @@ from types import TracebackType
 
 import pytest
 
-from cdf.core.configuration import ConfigBox
+from cdf.core.models import (
+    DbtTestAdapterConfig,
+    PytestAdapterConfig,
+    TestConfig,
+    UnittestAdapterConfig,
+)
 
 __all__ = ["TestAdapterBase", "PytestAdapter", "UnittestAdapter", "DbtTestAdapter"]
 
 logger = logging.getLogger(__name__)
 
 T = t.TypeVar("T")
+TConfig = t.TypeVar("TConfig", bound=TestConfig)
 
 
-class TestAdapterBase(ABC, t.Generic[T]):
+@t.overload
+def test_adapter_factory(
+    package_path: Path, adapter_conf: PytestAdapterConfig
+) -> PytestAdapter: ...
+
+
+@t.overload
+def test_adapter_factory(
+    package_path: Path, adapter_conf: UnittestAdapterConfig
+) -> UnittestAdapter: ...
+
+
+@t.overload
+def test_adapter_factory(
+    package_path: Path, adapter_conf: DbtTestAdapterConfig
+) -> DbtTestAdapter: ...
+
+
+def test_adapter_factory(
+    package_path: Path, adapter_conf: TestConfig
+) -> TestAdapterBase[t.Any, t.Any]:
+    match adapter_conf.adapter:
+        case "pytest":
+            return PytestAdapter(package_path, adapter_conf)
+        case "unittest":
+            return UnittestAdapter(package_path, adapter_conf)
+        case "dbt":
+            return DbtTestAdapter(package_path, adapter_conf)
+
+
+class TestAdapterBase(ABC, t.Generic[T, TConfig]):
     """Abstract base class for test adapters."""
 
-    def __init__(self, package_path: Path, config: t.Any) -> None:
+    def __init__(self, package_path: Path, adapter_conf: TConfig) -> None:
         self.package_path: Path = package_path
-        self.config: ConfigBox = config
+        self.adapter_conf: TConfig = adapter_conf
 
     @abstractmethod
     def discover_tests(self) -> list[t.Any]:
@@ -38,7 +74,7 @@ class TestAdapterBase(ABC, t.Generic[T]):
         pass
 
 
-class PytestAdapter(TestAdapterBase[pytest.TestReport]):
+class PytestAdapter(TestAdapterBase[pytest.TestReport, PytestAdapterConfig]):
     """Adapter for running pytest programmatically."""
 
     def discover_tests(self) -> list[pytest.Item]:
@@ -96,7 +132,7 @@ class _CollectingTestResult(unittest.TestResult):
         self.test_results[str(test)] = "unexpectedSuccess"
 
 
-class UnittestAdapter(TestAdapterBase[str]):
+class UnittestAdapter(TestAdapterBase[str, UnittestAdapterConfig]):
     """Adapter for running built-in unittest module tests."""
 
     def discover_tests(self) -> list[str]:
@@ -140,7 +176,7 @@ class _DbtRunResult(t.Protocol):
     failures: int | None
 
 
-class DbtTestAdapter(TestAdapterBase[_DbtRunResult]):
+class DbtTestAdapter(TestAdapterBase[_DbtRunResult, DbtTestAdapterConfig]):
     """Adapter for running dbt tests."""
 
     def discover_tests(self) -> list[str]:

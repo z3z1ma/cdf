@@ -14,15 +14,10 @@ from types import ModuleType
 from cdf.core.configuration import ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
 from cdf.core.container import Container
-from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
+from cdf.core.extract_load import ExtractLoadAdapterBase, extract_load_adapter_factory
 from cdf.core.models import DataPackageConfig, ProjectConfig
-from cdf.core.testing import DbtTestAdapter, PytestAdapter, TestAdapterBase, UnittestAdapter
-from cdf.core.transform import (
-    DbtAdapter,
-    JinjaSqlAdapter,
-    SqlMeshAdapter,
-    TransformationAdapterBase,
-)
+from cdf.core.testing import TestAdapterBase, test_adapter_factory
+from cdf.core.transform import TransformationAdapterBase, transform_adapter_factory
 from cdf.utils.file import load_module_from_path
 
 __all__ = ["DataPackage", "Project"]
@@ -81,9 +76,23 @@ class DataPackage:
         self.config = DataPackageConfig.model_validate(self.container.config, from_attributes=True)
 
         self._dependencies = self._load_dependencies()
-        self._extract_load_adapter = self._initialize_el_adapter()
-        self._test_adapter = self._initialize_test_adapter()
-        self._transform_adapter = self._initialize_transform_adapter()
+
+        if self.config.extract_load:
+            self._extract_load_adapter = extract_load_adapter_factory(
+                self.path, self.config.extract_load, self.container.config
+            )
+        else:
+            self._extract_load_adapter = None
+
+        if self.config.test:
+            self._test_adapter = test_adapter_factory(self.path, self.config.test)
+        else:
+            self._test_adapter = None
+
+        if self.config.transform:
+            self._transform_adapter = transform_adapter_factory(self.path, self.config.transform)
+        else:
+            self._transform_adapter = None
 
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
@@ -113,69 +122,30 @@ class DataPackage:
                 _ = sys.path.pop(0)
         return ()
 
-    def _initialize_el_adapter(self) -> ExtractLoadAdapterBase | None:
-        """Initialize the appropriate extract-load adapter."""
-        if self.config.extract_load is None:
-            return None
-        match self.config.extract_load.adapter:
-            case "dlt":
-                adapter_impl = DltAdapter
-            case "sling":
-                adapter_impl = SlingAdapter
-            case "singer":
-                adapter_impl = SingerAdapter
-        return adapter_impl(self.path, self.config.extract_load)
-
-    def _initialize_test_adapter(self) -> TestAdapterBase[t.Any] | None:
-        """Initialize the test adapter."""
-        if self.config.test is None:
-            return None
-        match self.config.test.adapter:
-            case "pytest":
-                adapter_impl = PytestAdapter
-            case "unittest":
-                adapter_impl = UnittestAdapter
-            case "dbt":
-                adapter_impl = DbtTestAdapter
-        return adapter_impl(self.path, self.config.test)
-
-    def _initialize_transform_adapter(self) -> TransformationAdapterBase | None:
-        """Initialize the appropriate transformation adapter."""
-        if self.config.transform is None:
-            return None
-        match self.config.transform.adapter:
-            case "sqlmesh":
-                adapter_impl = SqlMeshAdapter
-            case "dbt":
-                adapter_impl = DbtAdapter
-            case "jinja_sql":
-                adapter_impl = JinjaSqlAdapter
-        return adapter_impl(self.path, self.config.transform)
-
     def activate(self) -> None:
         """Set the data package container as the active container."""
         _ = self.container.activate()
 
     @property
-    def extract_load_adapter(self) -> ExtractLoadAdapterBase:
+    def extract_load_adapter(self) -> ExtractLoadAdapterBase[t.Any, t.Any]:
         if self._extract_load_adapter is None:
             raise ValueError(f"No extract-load adapter configured for the {self.name} package")
         return self._extract_load_adapter
 
     @property
-    def test_adapter(self) -> TestAdapterBase[t.Any]:
+    def test_adapter(self) -> TestAdapterBase[t.Any, t.Any]:
         if self._test_adapter is None:
             raise ValueError(f"No test adapter configured for the {self.name} package")
         return self._test_adapter
 
     @property
-    def transform_adapter(self) -> TransformationAdapterBase:
+    def transform_adapter(self) -> TransformationAdapterBase[t.Any]:
         if self._transform_adapter is None:
             raise ValueError(f"No transformation adapter configured for the {self.name} package")
         return self._transform_adapter
 
     @inject_package
-    def discover_extract_load_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
+    def discover_extract_load_pipelines(self) -> Mapping[str, t.Callable[..., t.Any]]:
         """Delegate to the adapter to discover pipelines."""
         return self.extract_load_adapter.discover_pipelines()
 
