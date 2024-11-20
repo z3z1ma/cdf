@@ -28,6 +28,7 @@ __all__ = [
     "load_toml",
     "load_module_from_path",
     "load_file_from_extension",
+    "clear_load_file_cache",
 ]
 
 
@@ -44,6 +45,7 @@ def _expand_vars(template: str, **context: t.Any) -> str:
     return string.Template(template).safe_substitute(os.environ, **context)
 
 
+@functools.lru_cache(maxsize=128)
 def load_file(
     path: Path | str,
     mode: str = "r",
@@ -74,8 +76,16 @@ def load_file(
     return parser(rendered)
 
 
+clear_load_file_cache = load_file.cache_clear
+"""Clear the file loading cache."""
+
+
+def __yaml_safe_load(s: str) -> dict[str, t.Any]:
+    return yaml.safe_load(io.StringIO(s))
+
+
 load_json = functools.partial(load_file, parser=json.loads)
-load_yaml = functools.partial(load_file, parser=lambda s: yaml.safe_load(io.StringIO(s)))
+load_yaml = functools.partial(load_file, parser=__yaml_safe_load)
 load_toml = functools.partial(load_file, parser=toml.loads)
 
 
