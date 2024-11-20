@@ -1,4 +1,6 @@
 # pyright: reportUnknownMemberType=false
+"""Transformation adapters for dbt, Jinja templated SQL, and SqlMesh."""
+
 from __future__ import annotations
 
 import logging
@@ -146,7 +148,7 @@ class DbtAdapter(TransformationAdapterBase[DbtTransformAdapterConfig]):
         dbt = dbtRunner()
 
         project_dir = str(self.package_path)
-        profiles_dir = self.adapter_conf.profiles_dir
+        profiles_dir = self.adapter_conf.profiles_dir or "~/.dbt"
 
         args_list = ["run", "--project-dir", project_dir, "--profiles-dir", profiles_dir]
         logger.info("Running dbt with arguments: %s", args_list)

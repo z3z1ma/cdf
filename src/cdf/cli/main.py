@@ -1,10 +1,15 @@
 # pyright: reportUnknownVariableType=false
+"""CLI for managing CDF projects and data packages."""
+
 import sys
 from pathlib import Path
 
 import click
 
-from cdf.core import DataPackage, Project
+import cdf
+
+_PROJECT_CONTEXT = "PROJECT"
+"""Name of the variable in click context to store the project."""
 
 
 @click.group()
@@ -17,15 +22,15 @@ def cli(ctx: click.Context, project_path: Path | str) -> None:
     if not project_path.exists():
         click.echo(f"Project path '{project_path}' does not exist.", err=True)
         sys.exit(1)
-    ctx.obj["PROJECT"] = Project(project_path)
+    ctx.obj[_PROJECT_CONTEXT] = cdf.Project(project_path)
 
 
-def get_project(ctx: click.Context) -> Project:
+def get_project(ctx: click.Context) -> cdf.Project:
     """Helper function to get the project from context."""
-    return ctx.obj.get("PROJECT")
+    return ctx.obj.get(_PROJECT_CONTEXT)
 
 
-def get_package(ctx: click.Context, data_package: str) -> DataPackage:
+def get_package(ctx: click.Context, data_package: str) -> cdf.DataPackage:
     """Helper function to get a data package or exit."""
     project = get_project(ctx)
     try:

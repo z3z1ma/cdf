@@ -1,4 +1,6 @@
 # pyright: reportUnknownMemberType=false
+"""Test adapters for running pytest, unittest, and dbt tests."""
+
 from __future__ import annotations
 
 import logging
