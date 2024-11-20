@@ -23,7 +23,7 @@ T = t.TypeVar("T")
 class TestAdapterBase(ABC, t.Generic[T]):
     """Abstract base class for test adapters."""
 
-    def __init__(self, package_path: Path, config: ConfigBox) -> None:
+    def __init__(self, package_path: Path, config: t.Any) -> None:
         self.package_path: Path = package_path
         self.config: ConfigBox = config
 

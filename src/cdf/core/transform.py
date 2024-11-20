@@ -22,7 +22,7 @@ T = t.TypeVar("T")
 class TransformationAdapterBase(ABC):
     """Abstract base class for all transformation adapters."""
 
-    def __init__(self, package_path: Path, config: ConfigBox) -> None:
+    def __init__(self, package_path: Path, config: t.Any) -> None:
         self.package_path: Path = package_path
         self.config: ConfigBox = config
         self._transformations: dict[str, t.Any] = {}
@@ -50,7 +50,7 @@ class TransformationAdapterBase(ABC):
 class SqlMeshAdapter(TransformationAdapterBase):
     """Adapter for SqlMesh transformations."""
 
-    def __init__(self, package_path: Path, config: ConfigBox) -> None:
+    def __init__(self, package_path: Path, config: t.Any) -> None:
         super().__init__(package_path, config)
         self._context: SQLMeshContext | None = None
 

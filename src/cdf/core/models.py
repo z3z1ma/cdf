@@ -10,7 +10,7 @@ import pydantic
 import cdf.core.constants as c
 
 
-class _CDFConfigModel(pydantic.BaseModel, arbitrary_types_allowed=True):
+class _CDFConfigModel(pydantic.BaseModel, arbitrary_types_allowed=True, from_attributes=True):
     pass
 
 

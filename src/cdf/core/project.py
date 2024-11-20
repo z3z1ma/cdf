@@ -11,10 +11,11 @@ from functools import wraps
 from pathlib import Path
 from types import ModuleType
 
-from cdf.core.configuration import ConfigBox, ConfigurationLoader
+from cdf.core.configuration import ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME, DEFAULT_DATA_PACKAGES_DIR, DEFAULT_DEPENDENCIES_DIR
 from cdf.core.container import Container
 from cdf.core.extract_load import DltAdapter, ExtractLoadAdapterBase, SingerAdapter, SlingAdapter
+from cdf.core.models import DataPackageConfig, ProjectConfig
 from cdf.core.testing import DbtTestAdapter, PytestAdapter, TestAdapterBase, UnittestAdapter
 from cdf.core.transform import (
     DbtAdapter,
@@ -75,7 +76,10 @@ class DataPackage:
         self.project = project
         self.path = Path(package_path)
         self.name = self.path.name
+
         self.container = self._create_container()
+        self.config = DataPackageConfig.model_validate(self.container.config, from_attributes=True)
+
         self._dependencies = self._load_dependencies()
         self._extract_load_adapter = self._initialize_el_adapter()
         self._test_adapter = self._initialize_test_adapter()
@@ -111,65 +115,46 @@ class DataPackage:
 
     def _initialize_el_adapter(self) -> ExtractLoadAdapterBase | None:
         """Initialize the appropriate extract-load adapter."""
-        match self.config.get("extract_load_adapter"):
+        if self.config.extract_load is None:
+            return None
+        match self.config.extract_load.adapter:
             case "dlt":
                 adapter_impl = DltAdapter
             case "sling":
                 adapter_impl = SlingAdapter
             case "singer":
                 adapter_impl = SingerAdapter
-            case None:
-                return None
-            case _:
-                raise ValueError("Unsupported extract-load adapter")
-        return adapter_impl(self.path, self.config)
+        return adapter_impl(self.path, self.config.extract_load)
 
     def _initialize_test_adapter(self) -> TestAdapterBase[t.Any] | None:
         """Initialize the test adapter."""
-        match self.config.get("test_adapter", "pytest"):
+        if self.config.test is None:
+            return None
+        match self.config.test.adapter:
             case "pytest":
                 adapter_impl = PytestAdapter
             case "unittest":
                 adapter_impl = UnittestAdapter
             case "dbt":
                 adapter_impl = DbtTestAdapter
-            case None:
-                return None
-            case _:
-                raise ValueError("Unsupported test adapter")
-        return adapter_impl(self.path, self.config)
+        return adapter_impl(self.path, self.config.test)
 
     def _initialize_transform_adapter(self) -> TransformationAdapterBase | None:
         """Initialize the appropriate transformation adapter."""
-        match self.config.get("transform_adapter"):
+        if self.config.transform is None:
+            return None
+        match self.config.transform.adapter:
             case "sqlmesh":
                 adapter_impl = SqlMeshAdapter
             case "dbt":
                 adapter_impl = DbtAdapter
             case "jinja_sql":
                 adapter_impl = JinjaSqlAdapter
-            case None:
-                return None
-            case _:
-                raise ValueError("Unsupported transformation adapter")
-        return adapter_impl(self.path, self.config)
+        return adapter_impl(self.path, self.config.transform)
 
     def activate(self) -> None:
         """Set the data package container as the active container."""
         _ = self.container.activate()
-
-    @property
-    def config(self) -> ConfigBox:
-        """Get the data package configuration."""
-        return self.container.config
-
-    @property
-    def schedules(self) -> list[str]:
-        """Get defined schedules for the data package."""
-        schedules = self.config.get("schedules", [])
-        if not isinstance(schedules, list):
-            raise TypeError("Schedules must be a list")
-        return schedules
 
     @property
     def extract_load_adapter(self) -> ExtractLoadAdapterBase:
@@ -227,6 +212,7 @@ class Project(Mapping[str, DataPackage]):
         self.name = self.path.name
 
         self.container = self._create_container()
+        self.config = ProjectConfig.model_validate(self.container.config, from_attributes=True)
         self._load_dependencies()
 
         self.data_packages: dict[str, DataPackage] = {}
@@ -267,11 +253,6 @@ class Project(Mapping[str, DataPackage]):
                     data_package = DataPackage(self, package_dir)
                     self.data_packages[data_package.name] = data_package
 
-    @property
-    def config(self) -> ConfigBox:
-        """Get the project configuration."""
-        return self.container.config
-
     def __getitem__(self, key: str) -> DataPackage:
         return self.data_packages[key]
 
@@ -300,7 +281,7 @@ if __name__ == "__main__":
     project.container.add("test1", 123)
 
     print("project.data_packages", project.data_packages)
-    print("project.config.some.value", project.config.some.value)
+    print("project.config.some.value", project.container.config.some.value)
 
     print("Discovered pipelines", project.synthetic.discover_extract_load_pipelines())
     print("Index into pipeline", project.synthetic.extract_load_adapter.pipeline_main)

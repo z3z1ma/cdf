@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 class ExtractLoadAdapterBase(ABC):
     """Abstract base class for all extract-load adapters."""
 
-    def __init__(self, package_path: Path, config: ConfigBox) -> None:
+    def __init__(self, package_path: Path, config: t.Any) -> None:
         self.package_path: Path = package_path
         self.config: ConfigBox = config
         self._pipelines: dict[str, t.Callable[..., t.Any]] = {}
