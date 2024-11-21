@@ -16,7 +16,7 @@ from cdf.core.extract_load import ExtractLoadAdapterBase, extract_load_adapter_f
 from cdf.core.models import DataPackageConfig, ProjectConfig
 from cdf.core.testing import TestAdapterBase, test_adapter_factory
 from cdf.core.transform import TransformationAdapterBase, transform_adapter_factory
-from cdf.utils.file import load_module_from_path
+from cdf.utils.files import load_module_from_path
 from cdf.utils.general import inject_sys_path
 
 __all__ = ["DataPackage", "Project"]

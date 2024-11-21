@@ -21,7 +21,7 @@ from cdf.core.models import (
     SingerAdapterConfig,
     SlingAdapterConfig,
 )
-from cdf.utils.file import load_module_from_path
+from cdf.utils.files import load_module_from_path
 from cdf.utils.general import inject_sys_path
 
 __all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter"]
