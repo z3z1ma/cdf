@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import sys
 import typing as t
 from collections.abc import Iterator, Mapping
-from contextlib import contextmanager
 from functools import wraps
 from pathlib import Path
 from types import ModuleType
@@ -19,6 +17,7 @@ from cdf.core.models import DataPackageConfig, ProjectConfig
 from cdf.core.testing import TestAdapterBase, test_adapter_factory
 from cdf.core.transform import TransformationAdapterBase, transform_adapter_factory
 from cdf.utils.file import load_module_from_path
+from cdf.utils.general import inject_sys_path
 
 __all__ = ["DataPackage", "Project"]
 
@@ -27,31 +26,13 @@ P = t.ParamSpec("P")
 PathType = Path | str
 
 
-@contextmanager
-def _inject_sys_path(*paths: str) -> Iterator[None]:
-    """Temporarily add paths to sys.path.
-
-    Args:
-        paths (List[str]): List of paths to temporarily add to sys.path.
-
-    Yields:
-        None
-    """
-    original_sys_path = sys.path[:]
-    try:
-        sys.path[:0] = paths
-        yield
-    finally:
-        sys.path = original_sys_path
-
-
 def inject_package(func: t.Callable[P, T]) -> t.Callable[P, T]:
     """A decorator to run a function with a container context."""
 
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         self = t.cast(Project | DataPackage, args[0])
-        with self.container, _inject_sys_path(str(self.path)):
+        with self.container, inject_sys_path(str(self.path)):
             return func(*args, **kwargs)
 
     return wrapper
@@ -115,13 +96,10 @@ class DataPackage:
         """Load dependencies from Python files in the 'dependencies' directory."""
         dependencies_dir = self.path / self.project.settings.dependencies_dir
         if dependencies_dir.exists():
-            sys.path.insert(0, str(dependencies_dir))
-            try:
+            with self.container, inject_sys_path(dependencies_dir):
                 return tuple(
                     load_module_from_path(py_file) for py_file in dependencies_dir.glob("*.py")
                 )
-            finally:
-                _ = sys.path.pop(0)
         return ()
 
     def activate(self) -> None:
@@ -212,10 +190,9 @@ class Project(Mapping[str, DataPackage]):
         """Load dependencies from Python files in the 'dependencies' directory."""
         dependencies_dir = self.path / self.settings.dependencies_dir
         if dependencies_dir.exists():
-            sys.path.insert(0, str(dependencies_dir))
-            for py_file in dependencies_dir.glob("*.py"):
-                _ = load_module_from_path(py_file)
-            _ = sys.path.pop(0)
+            with self.container, inject_sys_path(dependencies_dir):
+                for py_file in dependencies_dir.glob("*.py"):
+                    _ = load_module_from_path(py_file)
 
     def _discover_data_packages(self) -> None:
         """Discover and load data packages within the project."""

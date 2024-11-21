@@ -22,7 +22,14 @@ from types import MappingProxyType, TracebackType
 from cdf.core.configuration import ConfigBox
 from cdf.core.constants import CONTEXT_PARAM_NAME
 
-__all__ = ["Container", "injected", "register_dep", "inject_deps", "active_container"]
+__all__ = [
+    "Container",
+    "injected",
+    "register_dep",
+    "inject_deps",
+    "active_container",
+    "GLOBAL_CONTAINER",
+]
 
 T = t.TypeVar("T")
 P = t.ParamSpec("P")
@@ -520,7 +527,7 @@ def register_dep(
     def decorator(func: t.Callable[P, T]) -> t.Callable[P, T]:
         nonlocal name_or_func
         name = name_or_func if isinstance(name_or_func, str) else func.__name__
-        ctx = active_container.get()
+        ctx = active_container.get(GLOBAL_CONTAINER)
         ctx.add_factory(name or func.__name__, func, singleton=singleton, namespace=namespace)
         return func
 
@@ -544,13 +551,13 @@ def inject_deps(func: t.Callable[..., T] | None = None, /, *, late_bind: bool = 
     """Decorator to inject dependencies into functions based on parameter names."""
 
     def decorator(f: t.Callable[..., T]) -> t.Callable[..., T]:
-        container = None if late_bind else active_container.get()
+        container = None if late_bind else active_container.get(GLOBAL_CONTAINER)
 
         @wraps(f)
         def wrapper(*args: t.Any, **kwargs: t.Any) -> T:
             nonlocal container
             if container is None:
-                container = active_container.get()
+                container = active_container.get(GLOBAL_CONTAINER)
             return container(f)(*args, **kwargs)
 
         return wrapper
@@ -558,3 +565,7 @@ def inject_deps(func: t.Callable[..., T] | None = None, /, *, late_bind: bool = 
     if func is None:
         return decorator
     return decorator(func)
+
+
+GLOBAL_CONTAINER = Container()
+"""A global container to store dependencies."""

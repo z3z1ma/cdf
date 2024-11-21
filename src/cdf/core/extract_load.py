@@ -6,7 +6,6 @@ from __future__ import annotations
 import inspect
 import logging
 import subprocess  # nosec
-import sys
 import typing as t
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -23,6 +22,7 @@ from cdf.core.models import (
     SlingAdapterConfig,
 )
 from cdf.utils.file import load_module_from_path
+from cdf.utils.general import inject_sys_path
 
 __all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter"]
 
@@ -99,11 +99,8 @@ class ExtractLoadAdapterBase(ABC, t.Generic[T, TConfig]):
     def _load_module(self, module_path: Path | str) -> ModuleType:
         """Load a module from the package directory."""
         path = Path(module_path)
-        sys.path.insert(0, str(path.parent))
-        try:
+        with inject_sys_path(path.parent):
             return load_module_from_path(path)
-        finally:
-            _ = sys.path.pop(0)
 
     def _load_functions_from_module(
         self,
