@@ -170,7 +170,7 @@ class ConfigBox(Box):
 
 def _merge_configs(*configs: MutableMapping[str, t.Any]) -> ConfigBox:
     """Combine multiple configuration Boxes using merge_update."""
-    merged = ConfigBox(box_dots=True)
+    merged = ConfigBox()
     for config in configs:
         merged.merge_update(config)
     return merged
@@ -178,7 +178,7 @@ def _merge_configs(*configs: MutableMapping[str, t.Any]) -> ConfigBox:
 
 def _scope_configs(*configs: MutableMapping[str, t.Any]) -> ConfigBox:
     """Combine multiple configuration Boxes via ChainMap to provide scope-based resolution."""
-    return ConfigBox(collections.ChainMap(*configs), box_dots=True)
+    return ConfigBox(collections.ChainMap(*configs))
 
 
 class ConfigurationLoader:
@@ -246,7 +246,7 @@ class ConfigurationLoader:
 
     def load(self) -> ConfigBox:
         """Load and merge configurations from all sources."""
-        configs = [Box(self._load(source), box_dots=True) for source in self.sources]
+        configs = [Box(self._load(source)) for source in self.sources]
         self._config = self._resolver(
             *(configs if self._resolution_strategy == "merge" else reversed(configs))
         )
