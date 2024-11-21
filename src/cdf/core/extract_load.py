@@ -6,6 +6,7 @@ from __future__ import annotations
 import inspect
 import logging
 import subprocess  # nosec
+import tempfile
 import typing as t
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
@@ -21,7 +22,7 @@ from cdf.core.models import (
     SingerAdapterConfig,
     SlingAdapterConfig,
 )
-from cdf.utils.files import load_module_from_path
+from cdf.utils.files import load_module_from_path, yaml
 from cdf.utils.general import inject_sys_path
 
 __all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter"]
@@ -176,7 +177,7 @@ class SlingPipelineProtocol(t.Protocol):
 class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol, SlingAdapterConfig]):
     def _discover_pipelines(self) -> Mapping[str, SlingPipelineProtocol]:
         """Discover all pipelines for sling."""
-        return {"main_pipeline": self}
+        return {"main": self}
 
     def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
@@ -185,7 +186,15 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol, SlingAdapterCon
             self.adapter_conf.source,
             self.adapter_conf.target,
         )
-        _ = subprocess.run(["echo", "1"], check=True)  # nosec
+        replication_conf = self.adapter_conf.model_dump(
+            exclude={"adapter"},
+            exclude_none=True,
+            by_alias=True,
+        )
+        with tempfile.NamedTemporaryFile("w") as f:
+            yaml.dump(replication_conf, f)
+            f.flush()
+            _ = subprocess.run(["sling", "run", "-r", f.name], check=True)
 
 
 class SingerPipelineProtocol(t.Protocol):
