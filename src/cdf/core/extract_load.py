@@ -93,7 +93,7 @@ class ExtractLoadAdapterBase(ABC, t.Generic[T, TConfig]):
         return self._pipelines
 
     @abstractmethod
-    def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pass
 
@@ -150,7 +150,7 @@ class DltAdapter(ExtractLoadAdapterBase[DltPipelineProtocol, DltAdapterConfig]):
             logger.warning("No extract-load pipelines found in package %s", self.package_path.stem)
         return pipelines
 
-    def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         pipelines = self.discover_pipelines()
         if pipeline_name not in pipelines:
@@ -218,6 +218,7 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol, SingerAdapter
 
     def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
         """Run a singer pipeline using subprocess."""
+        # TODO: use pex to convert pip URIs to executable zip files
         logger.info(
             "Running Singer pipeline from %s to %s",
             self.adapter_conf.tap,

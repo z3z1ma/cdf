@@ -1,4 +1,6 @@
 # pyright: reportUnknownMemberType=false
+"""Shell oriented utilities."""
+
 import shlex
 import sys
 import typing as t

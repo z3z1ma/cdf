@@ -1,4 +1,6 @@
 # pyright: reportUnreachable=false
+"""File utilities for loading and parsing various file formats."""
+
 import functools
 import importlib
 import importlib.util
