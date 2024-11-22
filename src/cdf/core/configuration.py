@@ -24,8 +24,8 @@ __all__ = [
     "ConfigurationLoader",
     "add_custom_converter",
     "apply_converters",
-    "_get_converter",
-    "_remove_converter",
+    "get_converter",
+    "remove_converter",
 ]
 
 ConfigurationSource = str | Path | Mapping[str, t.Any] | t.Callable[[], "ConfigurationSource"]
@@ -80,21 +80,21 @@ _CONVERTER_PATTERN = re.compile(r"@(\w+) ", re.IGNORECASE)
 
 def add_custom_converter(name: str, converter: t.Callable[[str], t.Any]) -> None:
     """Add a custom converter to the configuration system."""
-    if name in _CONVERTERS:
+    if name.lower() in _CONVERTERS:
         raise ValueError(f"Converter {name} already exists.")
-    _CONVERTERS[name] = converter
+    _CONVERTERS[name.lower()] = converter
 
 
-def _get_converter(name: str) -> t.Callable[[str], t.Any]:
+def get_converter(name: str) -> t.Callable[[str], t.Any]:
     """Get a custom converter from the configuration system."""
-    return _CONVERTERS[name]
+    return _CONVERTERS[name.lower()]
 
 
-def _remove_converter(name: str) -> None:
+def remove_converter(name: str) -> None:
     """Remove a custom converter from the configuration system."""
-    if name not in _CONVERTERS:
+    if name.lower() not in _CONVERTERS:
         raise ValueError(f"Converter {name} does not exist.")
-    del _CONVERTERS[name]
+    del _CONVERTERS[name.lower()]
 
 
 def apply_converters(data: t.Any, /, partial_conf: ConfigBox | None = None) -> t.Any:
@@ -142,7 +142,7 @@ def apply_converters(data: t.Any, /, partial_conf: ConfigBox | None = None) -> t
                 except KeyError as e:
                     raise ValueError(f"Key not found in resolver: {e}") from e
             else:
-                transformed_v = _CONVERTERS[converter.lower()](transformed_v)
+                transformed_v = get_converter(converter)(transformed_v)
         except KeyError as e:
             raise ValueError(f"Unknown converter: {converter}") from e
         except Exception as e:

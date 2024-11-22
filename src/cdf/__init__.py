@@ -10,6 +10,8 @@ from cdf.core.configuration import (
     ConfigurationLoader,
     add_custom_converter,
     apply_converters,
+    get_converter,
+    remove_converter,
 )
 from cdf.core.container import (
     GLOBAL_CONTAINER,
@@ -39,4 +41,6 @@ __all__ = [
     "GLOBAL_CONTAINER",
     "apply_converters",
     "add_custom_converter",
+    "get_converter",
+    "remove_converter",
 ]
