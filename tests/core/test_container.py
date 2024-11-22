@@ -21,7 +21,7 @@ class SampleResource(AbstractContextManager):
         self.cleaned_up = False
 
     def __enter__(self):
-        return self
+        return super().__enter__()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.cleaned_up = True
@@ -57,11 +57,11 @@ def context():
 
 def test_basic_dependency_injection(basic_context: Container):
     """Test basic dependency injection functionality within the context."""
-    basic_context.config = {"db_url": "sqlite:///:memory:"}
+    basic_context.cfg = {"db_url": "sqlite:///:memory:"}
 
     @basic_context.register_dep("db_connection")
     def _(C):
-        return f"Connected to {C.config.db_url}"
+        return f"Connected to {C.cfg.db_url}"
 
     @basic_context.register_dep("repo")
     def _(db_connection):
@@ -286,9 +286,9 @@ def test_dependency_with_parameters(basic_context: Container, param: str, expect
 
     @basic_context.register_dep("db_connection")
     def _(C):
-        return f"Connected to DB at {C.config.db_host}"
+        return f"Connected to DB at {C.cfg.db_host}"
 
-    basic_context.config.db_host = param
+    basic_context.cfg.db_host = param
     assert basic_context.get("db_connection") == expected
 
 

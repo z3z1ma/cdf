@@ -13,7 +13,7 @@ _PROJECT_CONTEXT = "PROJECT"
 
 
 @click.group()
-@click.option("--project-path", default=".", help="Path to the project directory.")
+@click.option("--project-path", "-p", default=".", help="Path to the project directory.")
 @click.pass_context
 def cli(ctx: click.Context, project_path: Path | str) -> None:
     """CLI for managing CDF projects and data packages."""
@@ -107,7 +107,7 @@ def run_pipeline(
     for item in kwargs:
         if "=" in item:
             key, value = item.split("=", 1)
-            kwargs_dict[key] = cdf.config.apply_converters(value, pkg.container.config)
+            kwargs_dict[key] = cdf.config.apply_converters(value, pkg.container.cfg)
         else:
             click.echo(f"Invalid argument format: '{item}'. Use key=value.", err=True)
             sys.exit(1)

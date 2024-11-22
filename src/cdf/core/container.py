@@ -19,7 +19,7 @@ from contextvars import ContextVar, Token
 from functools import wraps
 from types import MappingProxyType, TracebackType
 
-from cdf.core.configuration import ConfigBox
+from cdf.core.configuration import ConfigBox, ConfigurationLoader
 from cdf.core.constants import CONTEXT_PARAM_NAME
 
 __all__ = [
@@ -54,7 +54,7 @@ class Container(MutableMapping[str, t.Any]):
 
     def __init__(
         self,
-        config: Mapping[str, t.Any] | None = None,
+        config: Mapping[str, t.Any] | ConfigurationLoader | None = None,
         namespace: str | None = None,
         parent: Container | None = None,
     ) -> None:
@@ -72,13 +72,15 @@ class Container(MutableMapping[str, t.Any]):
         self._lock: threading.RLock = threading.RLock()
         self._exit_stack: contextlib.ExitStack = contextlib.ExitStack()
         self._call_stack_depth: int = 0
+        if isinstance(config, ConfigurationLoader):
+            config = config.load()
         self._config: ConfigBox = ConfigBox(config or {})
         self._tokens: list[Token[Container]] = []
         self.namespace: str | None = namespace
         self.parent: Container | None = parent
 
     @property
-    def config(self) -> ConfigBox:
+    def cfg(self) -> ConfigBox:
         """Return the read-only configuration for the context.
 
         Returns:
@@ -86,8 +88,8 @@ class Container(MutableMapping[str, t.Any]):
         """
         return self._config
 
-    @config.setter
-    def config(self, value: Mapping[str, t.Any]) -> None:  # pyright: ignore[reportPropertyTypeMismatch]
+    @cfg.setter
+    def cfg(self, value: Mapping[str, t.Any]) -> None:  # pyright: ignore[reportPropertyTypeMismatch]
         """Set a new read-only configuration for the context.
 
         Args:
@@ -453,7 +455,7 @@ class Container(MutableMapping[str, t.Any]):
             New context with merged configurations and dependencies
         """
         combined_context = self.__class__(
-            {**self.config, **other.config}, namespace=self.namespace, parent=self
+            {**self.cfg, **other.cfg}, namespace=self.namespace, parent=self
         )
         combined_context._dependencies.update(other._dependencies)
         combined_context._factories.update(other._factories)

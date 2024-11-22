@@ -52,6 +52,12 @@ def extract_load_adapter_factory(
 ) -> SlingAdapter: ...
 
 
+@t.overload
+def extract_load_adapter_factory(
+    package_path: Path, adapter_conf: HamiltonAdapterConfig, package_conf: ConfigBox
+) -> HamiltonAdapter: ...
+
+
 def extract_load_adapter_factory(
     package_path: Path, adapter_conf: ExtractLoadConfig, package_conf: ConfigBox
 ) -> ExtractLoadAdapterBase[t.Any, t.Any]:

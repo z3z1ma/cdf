@@ -55,14 +55,14 @@ class DataPackage:
 
         self.container = self._create_container()
         self.settings = DataPackageConfig.model_validate(
-            self.container.config.package, from_attributes=True
+            self.container.cfg.package, from_attributes=True
         )
 
         self._dependencies = self._load_dependencies()
 
         if self.settings.extract_load:
             self._extract_load_adapter = extract_load_adapter_factory(
-                self.path, self.settings.extract_load, self.container.config
+                self.path, self.settings.extract_load, self.container.cfg
             )
         else:
             self._extract_load_adapter = None
@@ -159,10 +159,16 @@ class Project(Mapping[str, DataPackage]):
             project_path: Path to the project directory.
         """
         self.path = Path(project_path)
+        if not self.path.exists():
+            raise FileNotFoundError(f"Project path '{self.path}' does not exist.")
 
         self.container = self._create_container()
+        if "project" not in self.container.cfg:
+            raise ValueError(
+                f"No project configuration found in {self.path}, ensure a project key is defined."
+            )
         self.settings = ProjectConfig.model_validate(
-            self.container.config.project, from_attributes=True
+            self.container.cfg.project, from_attributes=True
         )
         self._load_dependencies()
 
@@ -182,7 +188,7 @@ class Project(Mapping[str, DataPackage]):
                     self.path,
                     Path.home() / ".cdf",
                 ],
-            ).load(),
+            ),
             namespace="__main__",
         )
 
@@ -231,7 +237,7 @@ if __name__ == "__main__":
     project.container.add("test1", 123)
 
     print("project.data_packages", project.data_packages)
-    print("project.config.some.value", project.container.config.some.value)
+    print("project.config.some.value", project.container.cfg.some.value)
 
     print("Discovered pipelines", project.synthetic.discover_extract_load_pipelines())
     print("Index into pipeline", project.synthetic.extract_load_adapter.pipeline_main)
