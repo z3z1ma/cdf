@@ -90,7 +90,7 @@ def discover_pipelines(ctx: click.Context, data_package: str) -> None:
 
 @cli.command()
 @click.argument("data_package")
-@click.argument("pipeline_name")
+@click.argument("pipeline_name", default="main")
 @click.option(
     "--kwargs",
     "-k",
@@ -99,7 +99,7 @@ def discover_pipelines(ctx: click.Context, data_package: str) -> None:
 )
 @click.pass_context
 def run_pipeline(
-    ctx: click.Context, data_package: str, pipeline_name: str, kwargs: list[str]
+    ctx: click.Context, data_package: str, pipeline_name: str = "main", *, kwargs: list[str]
 ) -> None:
     """Run a specific pipeline in a data package."""
     pkg = get_package(ctx, data_package)
@@ -107,7 +107,7 @@ def run_pipeline(
     for item in kwargs:
         if "=" in item:
             key, value = item.split("=", 1)
-            kwargs_dict[key] = value
+            kwargs_dict[key] = cdf.apply_converters(value, pkg.container.config)
         else:
             click.echo(f"Invalid argument format: '{item}'. Use key=value.", err=True)
             sys.exit(1)

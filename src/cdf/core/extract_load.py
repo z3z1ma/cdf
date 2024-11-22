@@ -19,13 +19,14 @@ from cdf.core.configuration import ConfigBox
 from cdf.core.models import (
     DltAdapterConfig,
     ExtractLoadConfig,
+    HamiltonAdapterConfig,
     SingerAdapterConfig,
     SlingAdapterConfig,
 )
-from cdf.utils.files import load_module_from_path, yaml
+from cdf.utils.files import json, load_module_from_path, yaml
 from cdf.utils.general import inject_sys_path
 
-__all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter"]
+__all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter", "HamiltonAdapter"]
 
 T = t.TypeVar("T")
 TConfig = t.TypeVar("TConfig", bound=ExtractLoadConfig)
@@ -61,6 +62,8 @@ def extract_load_adapter_factory(
             return SingerAdapter(package_path, adapter_conf, package_conf)
         case "sling":
             return SlingAdapter(package_path, adapter_conf, package_conf)
+        case "hamilton":
+            return HamiltonAdapter(package_path, adapter_conf, package_conf)
 
 
 class ExtractLoadAdapterBase(ABC, t.Generic[T, TConfig]):
@@ -131,7 +134,10 @@ class DltAdapter(ExtractLoadAdapterBase[DltPipelineProtocol, DltAdapterConfig]):
         main_script = self.package_path / "main.py"
         if main_script.exists():
             with self._inject_provider():
-                pipelines.update(self._load_functions_from_module(main_script, "pipeline_*"))
+                pipelines.update({
+                    k[9:]: v
+                    for k, v in self._load_functions_from_module(main_script, "pipeline_*").items()
+                })
         else:
             logger.warning("No main.py found in package %s", self.package_path.stem)
         if not pipelines:
@@ -143,7 +149,7 @@ class DltAdapter(ExtractLoadAdapterBase[DltPipelineProtocol, DltAdapterConfig]):
         pipelines = self.discover_pipelines()
         if pipeline_name not in pipelines:
             raise ValueError(
-                f"Pipeline {pipeline_name} not found in package {self.package_path.stem}, ensure it exists."
+                f"Pipeline {pipeline_name} not found in package {self.package_path.stem}, available: {list(pipelines)}"
             )
         with self._inject_provider():
             logger.info("Running pipeline %s", pipeline_name)
@@ -179,7 +185,7 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol, SlingAdapterCon
         """Discover all pipelines for sling."""
         return {"main": self}
 
-    def __call__(self, pipeline_name: str, **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
         logger.info(
             "Running Sling pipeline from %s to %s",
@@ -187,9 +193,7 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol, SlingAdapterCon
             self.adapter_conf.target,
         )
         replication_conf = self.adapter_conf.model_dump(
-            exclude={"adapter"},
-            exclude_none=True,
-            by_alias=True,
+            exclude={"adapter"}, exclude_none=True, by_alias=True
         )
         with tempfile.NamedTemporaryFile("w") as f:
             yaml.dump(replication_conf, f)
@@ -204,13 +208,52 @@ class SingerPipelineProtocol(t.Protocol):
 class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol, SingerAdapterConfig]):
     def _discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Singer doesn't have callable pipelines; define commands."""
-        return {"main_pipeline": self}
+        return {"main": self}
 
-    def __call__(self, pipeline_name: str = "default_pipeline", **kwargs: t.Any) -> None:
+    def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
         """Run a singer pipeline using subprocess."""
         logger.info(
             "Running Singer pipeline from %s to %s",
             self.adapter_conf.tap,
             self.adapter_conf.target,
         )
-        _ = subprocess.run(["echo", "1"], check=True)  # nosec
+        with (
+            tempfile.NamedTemporaryFile("w", suffix=".json") as tap_file,
+            tempfile.NamedTemporaryFile("w", suffix=".json") as target_file,
+        ):
+            json.dump(self.adapter_conf.tap_config, tap_file)
+            tap_file.flush()
+            json.dump(self.adapter_conf.target_config, target_file)
+            target_file.flush()
+
+            tap_command = ["tap-" + self.adapter_conf.tap, "--config", tap_file.name]
+            target_command = ["target-" + self.adapter_conf.target, "--config", target_file.name]
+
+            try:
+                tap_process = subprocess.Popen(tap_command, stdout=subprocess.PIPE)  # nosec
+                _ = subprocess.run(target_command, stdin=tap_process.stdout, check=True)  # nosec
+                _ = tap_process.wait()
+                logger.info("Singer pipeline executed successfully.")
+            except subprocess.CalledProcessError as e:
+                logger.error("Error running Singer pipeline: %s", e)
+                raise
+
+
+class HamiltonPipelineProtocol(t.Protocol):
+    def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
+
+
+class HamiltonAdapter(ExtractLoadAdapterBase[HamiltonPipelineProtocol, HamiltonAdapterConfig]):
+    def _discover_pipelines(self) -> Mapping[str, HamiltonPipelineProtocol]:
+        """Expose the configured adapter as a pipeline."""
+        return {"main": self}
+
+    def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
+        """Run the hamilton pipeline."""
+        from hamilton import driver  # pyright: ignore[reportMissingTypeStubs]
+
+        dr = driver.Driver(
+            {"config": self.package_conf}, self._load_module(self.package_path / "main.py")
+        )
+        result = dr.execute(["result"], inputs=self.adapter_conf.inputs)
+        logger.info("Hamilton pipeline executed successfully: %s", result)

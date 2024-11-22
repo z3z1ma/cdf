@@ -9,6 +9,22 @@ import pydantic
 
 import cdf.core.constants as c
 
+__all__ = [
+    "DltAdapterConfig",
+    "SingerAdapterConfig",
+    "SlingAdapterConfig",
+    "HamiltonAdapterConfig",
+    "PytestAdapterConfig",
+    "UnittestAdapterConfig",
+    "DbtTestAdapterConfig",
+    "DbtTransformAdapterConfig",
+    "SqlMeshAdapterConfig",
+    "JinjaSqlAdapterConfig",
+    "PackageManifest",
+    "DataPackageConfig",
+    "ProjectConfig",
+]
+
 
 class _CDFConfigModel(pydantic.BaseModel, arbitrary_types_allowed=True, from_attributes=True):
     pass
@@ -113,7 +129,19 @@ class SlingAdapterConfig(_CDFConfigModel):
     """Environment variables to use for replication."""
 
 
-ExtractLoadConfig = DltAdapterConfig | SingerAdapterConfig | SlingAdapterConfig
+# https://hamilton.dagworks.io/en/latest/
+# https://github.com/DAGWorks-Inc/hamilton
+class HamiltonAdapterConfig(_CDFConfigModel):
+    """Configuration for the DLT adapter."""
+
+    adapter: t.Literal["hamilton"] = "hamilton"
+
+    inputs: dict[str, t.Any] = {}
+
+
+ExtractLoadConfig = (
+    DltAdapterConfig | SingerAdapterConfig | SlingAdapterConfig | HamiltonAdapterConfig
+)
 
 
 class PytestAdapterConfig(_CDFConfigModel):

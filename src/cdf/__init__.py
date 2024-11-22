@@ -5,7 +5,12 @@ import cdf.core.extract_load as el
 import cdf.core.models as m
 import cdf.core.testing as testing
 import cdf.core.transform as tr
-from cdf.core.configuration import ConfigBox, ConfigurationLoader
+from cdf.core.configuration import (
+    ConfigBox,
+    ConfigurationLoader,
+    add_custom_converter,
+    apply_converters,
+)
 from cdf.core.container import (
     GLOBAL_CONTAINER,
     Container,
@@ -32,4 +37,6 @@ __all__ = [
     "DataPackage",
     "Project",
     "GLOBAL_CONTAINER",
+    "apply_converters",
+    "add_custom_converter",
 ]

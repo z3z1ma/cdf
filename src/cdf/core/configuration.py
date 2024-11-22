@@ -6,7 +6,6 @@ from __future__ import annotations
 import ast
 import collections
 import datetime
-import json
 import os
 import re
 import string
@@ -17,13 +16,14 @@ from pathlib import Path
 import dateutil.parser
 from box import Box
 
-from cdf.utils.files import load_file_from_extension
+from cdf.utils.files import json, load_file_from_extension
 
 __all__ = [
     "ConfigurationSource",
     "ConfigBox",
     "ConfigurationLoader",
     "add_custom_converter",
+    "apply_converters",
     "_get_converter",
     "_remove_converter",
 ]
@@ -97,6 +97,59 @@ def _remove_converter(name: str) -> None:
     del _CONVERTERS[name]
 
 
+def apply_converters(data: t.Any, /, partial_conf: ConfigBox | None = None) -> t.Any:
+    """Apply converters to a configuration value.
+
+    Converters are prefixed with @. The following default converters are supported:
+    - json: Convert to JSON object
+    - int: Convert to integer
+    - float: Convert to float
+    - str: Convert to string
+    - bool: Convert to boolean
+    - path: Convert to absolute path
+    - dict: Convert to dictionary
+    - list: Convert to list
+    - tuple: Convert to tuple
+    - set: Convert to set
+    - resolve: A meta converter to resolve value from partial configuration
+
+    Args:
+        data: Configuration value to apply converters to.
+
+    Raises:
+        ValueError: If an unknown converter is used or if a conversion fails.
+
+    Returns:
+        Converted configuration value.
+    """
+    if not isinstance(data, str):
+        return data
+    data = string.Template(data).safe_substitute(os.environ)
+    converters = _CONVERTER_PATTERN.findall(data)
+    if len(converters) == 0:
+        return data
+    base_v = _CONVERTER_PATTERN.sub("", data).lstrip()
+    if not base_v:
+        return None
+    transformed_v = base_v
+    for converter in reversed(converters):
+        try:
+            if converter.lower() == ConfigBox.META_CONVERTER:
+                if partial_conf is None:
+                    raise ValueError("Partial configuration not provided for resolver")
+                try:
+                    transformed_v = partial_conf[transformed_v]
+                except KeyError as e:
+                    raise ValueError(f"Key not found in resolver: {e}") from e
+            else:
+                transformed_v = _CONVERTERS[converter.lower()](transformed_v)
+        except KeyError as e:
+            raise ValueError(f"Unknown converter: {converter}") from e
+        except Exception as e:
+            raise ValueError(f"Failed to convert value: {e}") from e
+    return transformed_v
+
+
 class ConfigBox(Box):
     """Box that applies @ converters to configuration values."""
 
@@ -114,55 +167,9 @@ class ConfigBox(Box):
             self[k] = self._apply_converters(v)
         return ValuesView(dict_self)
 
-    def _apply_converters(self, data: t.Any) -> t.Any:
-        """Apply converters to a configuration value.
-
-        Converters are prefixed with @. The following default converters are supported:
-        - json: Convert to JSON object
-        - int: Convert to integer
-        - float: Convert to float
-        - str: Convert to string
-        - bool: Convert to boolean
-        - path: Convert to absolute path
-        - dict: Convert to dictionary
-        - list: Convert to list
-        - tuple: Convert to tuple
-        - set: Convert to set
-        - resolve: A meta converter to resolve value from partial configuration
-
-        Args:
-            data: Configuration value to apply converters to.
-
-        Raises:
-            ValueError: If an unknown converter is used or if a conversion fails.
-
-        Returns:
-            Converted configuration value.
-        """
-        if not isinstance(data, str):
-            return data
-        data = string.Template(data).safe_substitute(os.environ)
-        converters = _CONVERTER_PATTERN.findall(data)
-        if len(converters) == 0:
-            return data
-        base_v = _CONVERTER_PATTERN.sub("", data).lstrip()
-        if not base_v:
-            return None
-        transformed_v = base_v
-        for converter in reversed(converters):
-            try:
-                if converter.lower() == self.META_CONVERTER:
-                    try:
-                        transformed_v = self[transformed_v]
-                    except KeyError as e:
-                        raise ValueError(f"Key not found in resolver: {e}") from e
-                else:
-                    transformed_v = _CONVERTERS[converter.lower()](transformed_v)
-            except KeyError as e:
-                raise ValueError(f"Unknown converter: {converter}") from e
-            except Exception as e:
-                raise ValueError(f"Failed to convert value: {e}") from e
-        return transformed_v
+    def _apply_converters(self, data: t.Any, /) -> t.Any:
+        """Apply converters to a configuration value."""
+        return apply_converters(data, self)
 
     def __repr__(self) -> str:
         return f"{self.__class__.__name__}(...)"

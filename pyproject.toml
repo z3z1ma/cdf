@@ -52,3 +52,4 @@ reportAny = false
 
 [tool.ruff]
 line-length = 100
+preview = true
