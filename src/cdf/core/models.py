@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import typing as t
+from collections.abc import Iterable
 from pathlib import Path
 
 import pydantic
@@ -137,6 +138,8 @@ class HamiltonAdapterConfig(_CDFConfigModel):
     adapter: t.Literal["hamilton"] = "hamilton"
 
     inputs: dict[str, t.Any] = {}
+
+    scripts: Iterable[Path | str] = "main.py"
 
 
 ExtractLoadConfig = (

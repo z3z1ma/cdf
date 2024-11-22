@@ -258,8 +258,9 @@ class HamiltonAdapter(ExtractLoadAdapterBase[HamiltonPipelineProtocol, HamiltonA
         """Run the hamilton pipeline."""
         from hamilton import driver  # pyright: ignore[reportMissingTypeStubs]
 
-        dr = driver.Driver(
-            {"config": self.package_conf}, self._load_module(self.package_path / "main.py")
-        )
+        modules = [
+            self._load_module(self.package_path / script) for script in self.adapter_conf.scripts
+        ]
+        dr = driver.Driver({"config": self.package_conf}, *modules)
         result = dr.execute(["result"], inputs=self.adapter_conf.inputs)
         logger.info("Hamilton pipeline executed successfully: %s", result)
