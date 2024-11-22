@@ -11,7 +11,7 @@ from cdf.core.configuration import (
     add_custom_converter,
     apply_converters,
     get_converter,
-    remove_converter,
+    remove_custom_converter,
 )
 from cdf.core.container import (
     GLOBAL_CONTAINER,
@@ -39,8 +39,8 @@ __all__ = [
     "DataPackage",
     "Project",
     "GLOBAL_CONTAINER",
+    "get_converter",
     "apply_converters",
     "add_custom_converter",
-    "get_converter",
-    "remove_converter",
+    "remove_custom_converter",
 ]

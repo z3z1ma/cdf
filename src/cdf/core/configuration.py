@@ -25,7 +25,7 @@ __all__ = [
     "add_custom_converter",
     "apply_converters",
     "get_converter",
-    "remove_converter",
+    "remove_custom_converter",
 ]
 
 ConfigurationSource = str | Path | Mapping[str, t.Any] | t.Callable[[], "ConfigurationSource"]
@@ -58,7 +58,7 @@ def _make_eval_func(type_: type):
     return _eval
 
 
-_CONVERTERS: dict[str, t.Callable[[str], t.Any]] = {
+__BUILTIN_CONVERTERS: dict[str, t.Callable[[str], t.Any]] = {
     "json": json.loads,
     "int": int,
     "float": float,
@@ -72,17 +72,12 @@ _CONVERTERS: dict[str, t.Callable[[str], t.Any]] = {
     "datetime": _to_datetime,
     "date": _to_date,
 }
+
+_CONVERTERS: dict[str, t.Callable[[str], t.Any]] = __BUILTIN_CONVERTERS.copy()
 """Converters for configuration values."""
 
 _CONVERTER_PATTERN = re.compile(r"@(\w+) ", re.IGNORECASE)
 """Pattern to match converters in a string."""
-
-
-def add_custom_converter(name: str, converter: t.Callable[[str], t.Any]) -> None:
-    """Add a custom converter to the configuration system."""
-    if name.lower() in _CONVERTERS:
-        raise ValueError(f"Converter {name} already exists.")
-    _CONVERTERS[name.lower()] = converter
 
 
 def get_converter(name: str) -> t.Callable[[str], t.Any]:
@@ -90,10 +85,17 @@ def get_converter(name: str) -> t.Callable[[str], t.Any]:
     return _CONVERTERS[name.lower()]
 
 
-def remove_converter(name: str) -> None:
+def add_custom_converter(name: str, converter: t.Callable[[str], t.Any]) -> None:
+    """Add a custom converter to the configuration system."""
+    if name.lower() in __BUILTIN_CONVERTERS:
+        raise ValueError(f"{name} conflicts with builtin converter.")
+    _CONVERTERS[name.lower()] = converter
+
+
+def remove_custom_converter(name: str) -> None:
     """Remove a custom converter from the configuration system."""
-    if name.lower() not in _CONVERTERS:
-        raise ValueError(f"Converter {name} does not exist.")
+    if name.lower() in __BUILTIN_CONVERTERS:
+        raise ValueError(f"{name} is a builtin converter and cannot be removed.")
     del _CONVERTERS[name.lower()]
 
 

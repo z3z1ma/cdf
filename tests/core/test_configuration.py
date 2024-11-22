@@ -14,7 +14,7 @@ from cdf.core.configuration import (
     ConfigurationLoader,
     add_custom_converter,
     get_converter,
-    remove_converter,
+    remove_custom_converter,
 )
 
 
@@ -51,7 +51,7 @@ def test_add_custom_converter():
 
     add_custom_converter("custom", custom_converter)
     assert get_converter("custom")("value") == "custom_value"
-    remove_converter("custom")  # Cleanup after test
+    remove_custom_converter("custom")  # Cleanup after test
 
 
 def test_add_existing_custom_converter():
@@ -69,7 +69,7 @@ def test_get_nonexistent_converter():
 def test_remove_converter():
     """Test removing a converter successfully."""
     add_custom_converter("temp", lambda x: x)
-    remove_converter("temp")
+    remove_custom_converter("temp")
     with pytest.raises(KeyError):
         get_converter("temp")
 
