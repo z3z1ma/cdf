@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import typing as t
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, MutableMapping
 from functools import wraps
 from pathlib import Path
 from types import ModuleType
@@ -14,7 +14,7 @@ from cdf.core.constants import CONFIG_FILE_NAME
 from cdf.core.container import Container
 from cdf.core.extract_load import ExtractLoadAdapterBase, extract_load_adapter_factory
 from cdf.core.models import DataPackageConfig, FileStateBackendConfig, ProjectConfig
-from cdf.core.state import state_backend_factory
+from cdf.core.state import StateBackend, state_backend_factory
 from cdf.core.testing import TestAdapterBase, test_adapter_factory
 from cdf.core.transform import TransformationAdapterBase, transform_adapter_factory
 from cdf.utils.files import load_module_from_path
@@ -80,7 +80,7 @@ class DataPackage:
 
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
-        return Container(
+        container = Container(
             config=ConfigurationLoader.from_name(
                 CONFIG_FILE_NAME,
                 search_paths=[
@@ -88,10 +88,15 @@ class DataPackage:
                     self.path,
                     Path.home() / ".cdf",
                 ],
-            ).load(),
+            ),
             namespace=self.name,
             parent=self.project.container,
         )
+        try:
+            container.add("cdf_state", self.state)
+        except Exception:
+            pass
+        return container
 
     def _load_dependencies(self) -> tuple[ModuleType, ...]:
         """Load dependencies from Python files in the 'dependencies' directory."""
@@ -148,6 +153,10 @@ class DataPackage:
         """Run transformations using the transformation adapter."""
         self.transform_adapter(**kwargs)
 
+    @property
+    def state(self) -> MutableMapping[str, t.Any]:
+        return self.project.state.scope(self.name)
+
 
 @t.final
 class Project(Mapping[str, DataPackage]):
@@ -187,9 +196,15 @@ class Project(Mapping[str, DataPackage]):
     def name(self) -> str:
         return self.settings.name
 
+    @property
+    def state(self) -> StateBackend:
+        if self._state_backend is None:
+            raise ValueError("No state backend configured for the project")
+        return self._state_backend
+
     def _create_container(self) -> Container:
         """Create a container for the project."""
-        return Container(
+        container = Container(
             config=ConfigurationLoader.from_name(
                 CONFIG_FILE_NAME,
                 search_paths=[
@@ -199,6 +214,8 @@ class Project(Mapping[str, DataPackage]):
             ),
             namespace="__main__",
         )
+        container.add("cdf_state", self.state)
+        return container
 
     def _load_dependencies(self) -> None:
         """Load dependencies from Python files in the 'dependencies' directory."""

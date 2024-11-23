@@ -46,7 +46,7 @@ def state_backend_factory(
 def state_backend_factory(package_path: Path, backend_conf: StateBackendConfig) -> StateBackend:
     match backend_conf.adapter:
         case "file":
-            if not backend_conf.file_path.is_absolute():
+            if not Path(backend_conf.file_path).is_absolute():
                 backend_conf.file_path = package_path / backend_conf.file_path
             return FileStateBackend(
                 **backend_conf.model_dump(exclude={"adapter"}, exclude_none=True)
@@ -182,6 +182,10 @@ class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
         finally:
             session.close()
 
+    def scope(self, namespace: str) -> ScopedMapping:
+        """Scope the mapping to a namespace"""
+        return ScopedMapping(self, namespace)
+
 
 class FileStateBackend(MutableMapping[str, JSON]):
     """Store JSON objects persistently in a local file with dict-like interface"""
@@ -290,5 +294,87 @@ class FileStateBackend(MutableMapping[str, JSON]):
         with self._lock:
             return len(self._data)
 
+    def scope(self, namespace: str) -> ScopedMapping:
+        """Scope the mapping to a namespace"""
+        return ScopedMapping(self, namespace)
+
 
 StateBackend = FileStateBackend | SqlAlchemyStateBackend
+
+
+class ScopedMapping(MutableMapping[str, JSON]):
+    """A mapping that prefixes all keys with a namespace and a delimiter"""
+
+    def __init__(
+        self, mapping: MutableMapping[str, JSON], namespace: str, delimiter: str = ":"
+    ) -> None:
+        """Initialize the NamespaceMapping with a mapping and a namespace
+
+        Args:
+            mapping: The underlying mapping to store the data
+            namespace: The namespace to prefix all keys with
+            delimiter: The delimiter to use between the namespace and the key
+        """
+        self._mapping: MutableMapping[str, JSON] = mapping
+        self._namespace: str = namespace
+        self._delimiter: str = delimiter
+
+    def _prefixed_key(self, key: str) -> str:
+        """Return the key prefixed with the namespace and delimiter
+
+        Args:
+            key: The key to prefix
+
+        Returns:
+            str: The prefixed key
+        """
+        return f"{self._namespace}{self._delimiter}{key}"
+
+    def __getitem__(self, key: str) -> JSON:
+        """Get the JSON object stored under the given key
+
+        Args:
+            key: The key to look up the JSON object with
+
+        Returns:
+            JSON: The JSON object stored under the given key
+        """
+        return self._mapping[self._prefixed_key(key)]
+
+    def __setitem__(self, key: str, value: JSON) -> None:
+        """Set the JSON object under the given key, updating if it already exists
+
+        Args:
+            key: The key to store the JSON object under
+            value: The JSON object to store
+        """
+        self._mapping[self._prefixed_key(key)] = value
+
+    def __delitem__(self, key: str) -> None:
+        """Delete the JSON object stored under the given key
+
+        Args:
+            key: The key to delete the JSON object for
+
+        Raises:
+            KeyError: If the key does not exist
+        """
+        del self._mapping[self._prefixed_key(key)]
+
+    def __iter__(self) -> Iterator[str]:
+        """Iterate over the keys stored in the mapping
+
+        Returns:
+            Iterator[str]: An iterator over the keys stored in the mapping
+        """
+        ns_prefix = f"{self._namespace}{self._delimiter}"
+        return (key[len(ns_prefix) :] for key in self._mapping if key.startswith(ns_prefix))
+
+    def __len__(self) -> int:
+        """Return the number of JSON objects stored in the mapping
+
+        Returns:
+            int: The number of JSON objects stored in the mapping
+        """
+        ns_prefix = f"{self._namespace}{self._delimiter}"
+        return sum(1 for key in self._mapping if key.startswith(ns_prefix))
