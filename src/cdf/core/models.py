@@ -9,6 +9,7 @@ from pathlib import Path
 import pydantic
 
 import cdf.core.constants as c
+from cdf.utils.general import resolve_entry_point
 
 __all__ = [
     "DltAdapterConfig",
@@ -252,6 +253,56 @@ class JinjaSqlAdapterConfig(_CDFConfigModel):
 TransformConfig = DbtTransformAdapterConfig | SqlMeshAdapterConfig | JinjaSqlAdapterConfig
 
 
+class FileStateBackendConfig(_CDFConfigModel):
+    adapter: t.Literal["file"] = "file"
+
+    file_path: Path | str = Path("state.json")
+    """Path to the file where the state will be stored."""
+
+    buffered: bool = False
+    """If True, writes are buffered and flushed to disk on exit."""
+
+    dumper: t.Callable[[t.Any], str] | None = None
+    """Optional custom function to serialize Python objects to strings."""
+
+    loader: t.Callable[[str], t.Any] | None = None
+    """Optional custom function to deserialize strings to Python objects."""
+
+    @pydantic.field_validator("dumper", "loader", mode="before")
+    def validate_callable(cls, value: t.Any):
+        if isinstance(value, str):
+            return resolve_entry_point(value)
+        return value
+
+
+class SqlAlchemyStateBackendConfig(_CDFConfigModel):
+    adapter: t.Literal["sqlalchemy"] = "sqlalchemy"
+
+    connection_str: str
+    """Database URI to connect to."""
+
+    table_name: str
+    """Name of the table where the state will be stored."""
+
+    schema_name: str = "public"
+    """Name of the database schema."""
+
+    dumper: t.Callable[[t.Any], str] | None = None
+    """Optional custom function to serialize Python objects to strings."""
+
+    loader: t.Callable[[str], t.Any] | None = None
+    """Optional custom function to deserialize strings to Python objects."""
+
+    @pydantic.field_validator("dumper", "loader", mode="before")
+    def validate_callable(cls, value: t.Any):
+        if isinstance(value, str):
+            return resolve_entry_point(value)
+        return value
+
+
+StateBackendConfig = FileStateBackendConfig | SqlAlchemyStateBackendConfig
+
+
 class PackageManifest(_CDFConfigModel):
     """Describes the outputs of a data package and provides metadata for interaction."""
 
@@ -354,5 +405,7 @@ class ProjectConfig(_CDFConfigModel):
     global_runtime_parameters: dict[str, t.Any] = {}
     """Runtime defaults for all packages used by cdf internally"""
 
-    # TODO: add state backends
-    ...
+    state_backend: StateBackendConfig = FileStateBackendConfig(
+        file_path=Path("/tmp/cdf.state.json")
+    )
+    """Configuration for the state backend."""

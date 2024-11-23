@@ -13,7 +13,8 @@ from cdf.core.configuration import ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME
 from cdf.core.container import Container
 from cdf.core.extract_load import ExtractLoadAdapterBase, extract_load_adapter_factory
-from cdf.core.models import DataPackageConfig, ProjectConfig
+from cdf.core.models import DataPackageConfig, FileStateBackendConfig, ProjectConfig
+from cdf.core.state import state_backend_factory
 from cdf.core.testing import TestAdapterBase, test_adapter_factory
 from cdf.core.transform import TransformationAdapterBase, transform_adapter_factory
 from cdf.utils.files import load_module_from_path
@@ -174,6 +175,13 @@ class Project(Mapping[str, DataPackage]):
 
         self.data_packages: dict[str, DataPackage] = {}
         self._discover_data_packages()
+
+        if self.settings.state_backend:
+            self._state_backend = state_backend_factory(self.path, self.settings.state_backend)
+        else:
+            self._state_backend = state_backend_factory(
+                self.path, FileStateBackendConfig(file_path=self.path / "state.json")
+            )
 
     @property
     def name(self) -> str:
