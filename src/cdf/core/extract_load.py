@@ -70,6 +70,7 @@ def extract_load_adapter_factory(
             return SlingAdapter(package_path, adapter_conf, package_conf)
         case "hamilton":
             return HamiltonAdapter(package_path, adapter_conf, package_conf)
+    raise ValueError(f"Unknown extract-load adapter: {adapter_conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
 class ExtractLoadAdapterBase(ABC, t.Generic[T, TConfig]):
@@ -213,7 +214,7 @@ class SingerPipelineProtocol(t.Protocol):
 
 class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol, SingerAdapterConfig]):
     def _discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
-        """Singer doesn't have callable pipelines; define commands."""
+        """Expose adapter as callable pipeline."""
         return {"main": self}
 
     def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:

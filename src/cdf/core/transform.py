@@ -55,6 +55,7 @@ def transform_adapter_factory(
             return SqlMeshAdapter(package_path, adapter_conf)
         case "jinja_sql":
             return JinjaSqlAdapter(package_path, adapter_conf)
+    raise ValueError(f"Unknown transform adapter: {adapter_conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
 class TransformationAdapterBase(ABC, t.Generic[TConfig]):

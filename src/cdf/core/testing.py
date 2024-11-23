@@ -56,6 +56,7 @@ def test_adapter_factory(
             return UnittestAdapter(package_path, adapter_conf)
         case "dbt":
             return DbtTestAdapter(package_path, adapter_conf)
+    raise ValueError(f"Unknown test adapter: {adapter_conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
 class TestAdapterBase(ABC, t.Generic[T, TConfig]):
