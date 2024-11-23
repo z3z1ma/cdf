@@ -4,6 +4,7 @@ import cdf.core.configuration as config
 import cdf.core.deployment as deployment
 import cdf.core.extract_load as el
 import cdf.core.models as mdl
+import cdf.core.state as state
 import cdf.core.testing as testing
 import cdf.core.transform as tr
 from cdf.core.container import (
@@ -20,6 +21,7 @@ __all__ = [
     "deployment",
     "el",
     "mdl",
+    "state",
     "testing",
     "tr",
     "config",
