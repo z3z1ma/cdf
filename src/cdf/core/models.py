@@ -405,7 +405,5 @@ class ProjectConfig(_CDFConfigModel):
     global_runtime_parameters: dict[str, t.Any] = {}
     """Runtime defaults for all packages used by cdf internally"""
 
-    state_backend: StateBackendConfig = FileStateBackendConfig(
-        file_path=Path("/tmp/cdf.state.json")
-    )
+    state_backend: StateBackendConfig | None = None
     """Configuration for the state backend."""

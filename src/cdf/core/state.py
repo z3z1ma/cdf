@@ -241,11 +241,10 @@ class FileStateBackend(MutableMapping[str, JSON]):
         Raises:
             KeyError: If the key does not exist
         """
-        with self._lock:
-            try:
-                return self._data[key]
-            except KeyError:
-                raise KeyError(key)
+        try:
+            return self._data[key]
+        except KeyError:
+            raise KeyError(key)
 
     def __setitem__(self, key: str, value: JSON) -> None:
         """Set the JSON object under the given key, updating if it already exists
@@ -254,10 +253,9 @@ class FileStateBackend(MutableMapping[str, JSON]):
             key: The key to store the JSON object under
             value: The JSON object to store
         """
-        with self._lock:
-            self._data[key] = value
-            if not self._buffered:
-                self._write_data()
+        self._data[key] = value
+        if not self._buffered:
+            self._flush()
 
     def __delitem__(self, key: str) -> None:
         """Delete the JSON object stored under the given key
@@ -268,13 +266,12 @@ class FileStateBackend(MutableMapping[str, JSON]):
         Raises:
             KeyError: If the key does not exist
         """
-        with self._lock:
-            try:
-                del self._data[key]
-            except KeyError:
-                raise KeyError(key)
-            if not self._buffered:
-                self._write_data()
+        try:
+            del self._data[key]
+        except KeyError:
+            raise KeyError(key)
+        if not self._buffered:
+            self._flush()
 
     def __iter__(self) -> Iterator[str]:
         """Iterate over the keys stored in the file
@@ -282,8 +279,7 @@ class FileStateBackend(MutableMapping[str, JSON]):
         Returns:
             Iterator[str]: An iterator over the keys stored in the file
         """
-        with self._lock:
-            return iter(self._data.copy())
+        return iter(self._data.copy())
 
     def __len__(self) -> int:
         """Return the number of JSON objects stored in the file
@@ -291,8 +287,7 @@ class FileStateBackend(MutableMapping[str, JSON]):
         Returns:
             int: The number of JSON objects stored in the file
         """
-        with self._lock:
-            return len(self._data)
+        return len(self._data)
 
     def scope(self, namespace: str) -> ScopedMapping:
         """Scope the mapping to a namespace"""
