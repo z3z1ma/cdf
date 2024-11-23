@@ -55,6 +55,7 @@ def state_backend_factory(package_path: Path, backend_conf: StateBackendConfig) 
             return SqlAlchemyStateBackend(
                 **backend_conf.model_dump(exclude={"adapter"}, exclude_none=True)
             )
+    raise ValueError(f"Invalid state backend adapter: {backend_conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
 def _dumper(obj: JSON) -> str:
@@ -67,7 +68,7 @@ class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
     def __init__(
         self,
         table_name: str,
-        schema_name: str = "public",
+        schema_name: str | None = None,
         *,
         connection_str: str,
         dumper: t.Callable[[JSON], str] = _dumper,

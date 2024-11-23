@@ -284,7 +284,7 @@ class SqlAlchemyStateBackendConfig(_CDFConfigModel):
     table_name: str
     """Name of the table where the state will be stored."""
 
-    schema_name: str = "public"
+    schema_name: str | None = None
     """Name of the database schema."""
 
     dumper: t.Callable[[t.Any], str] | None = None
