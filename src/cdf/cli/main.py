@@ -1,6 +1,8 @@
 # pyright: reportUnknownVariableType=false
 """CLI for managing CDF projects and data packages."""
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -10,6 +12,9 @@ import cdf
 
 _PROJECT_CONTEXT = "PROJECT"
 """Name of the variable in click context to store the project."""
+
+_ACTIVE_PACKAGE_CONTEXT = "CDF_ACTIVE_PACKAGE"
+"""An env variable to store the active data package indicating the deps are resolved."""
 
 
 @click.group()
@@ -31,13 +36,16 @@ def get_project(ctx: click.Context) -> cdf.Project:
 
 
 def get_package(ctx: click.Context, data_package: str) -> cdf.DataPackage:
-    """Helper function to get a data package or exit."""
+    """Helper function to get & activate a data package or exit."""
     project = get_project(ctx)
-    try:
-        return project[data_package]
-    except KeyError:
+    if data_package not in project:
         click.echo(f"Data package '{data_package}' not found.", err=True)
         sys.exit(1)
+    if os.getenv(_ACTIVE_PACKAGE_CONTEXT) != data_package:
+        code = subprocess.call(["uv", "sync", "--package", data_package], stdout=subprocess.DEVNULL)
+        if code == 0:
+            os.execvpe("cdf", sys.argv, env={**os.environ, _ACTIVE_PACKAGE_CONTEXT: data_package})
+    return project[data_package]
 
 
 @cli.command()
