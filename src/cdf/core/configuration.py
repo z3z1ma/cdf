@@ -22,9 +22,9 @@ __all__ = [
     "ConfigurationSource",
     "ConfigBox",
     "ConfigurationLoader",
-    "add_custom_converter",
     "apply_converters",
     "get_converter",
+    "add_custom_converter",
     "remove_custom_converter",
 ]
 

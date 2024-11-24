@@ -15,7 +15,7 @@ from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
 
-import cdf.core.models as M
+import cdf.core.interface as I
 from cdf.core.container import Container
 from cdf.utils.files import json, load_module_from_path, yaml
 from cdf.utils.general import inject_sys_path
@@ -29,30 +29,30 @@ logger = logging.getLogger(__name__)
 
 @t.overload
 def extract_load_adapter_factory(
-    package_path: Path, container: Container, conf: M.DltAdapterConfig
+    package_path: Path, container: Container, conf: I.DltAdapterConfig
 ) -> DltAdapter: ...
 
 
 @t.overload
 def extract_load_adapter_factory(
-    package_path: Path, container: Container, conf: M.SingerAdapterConfig
+    package_path: Path, container: Container, conf: I.SingerAdapterConfig
 ) -> SingerAdapter: ...
 
 
 @t.overload
 def extract_load_adapter_factory(
-    package_path: Path, container: Container, conf: M.SlingAdapterConfig
+    package_path: Path, container: Container, conf: I.SlingAdapterConfig
 ) -> SlingAdapter: ...
 
 
 @t.overload
 def extract_load_adapter_factory(
-    package_path: Path, container: Container, conf: M.HamiltonAdapterConfig
+    package_path: Path, container: Container, conf: I.HamiltonAdapterConfig
 ) -> HamiltonAdapter: ...
 
 
 def extract_load_adapter_factory(
-    package_path: Path, container: Container, conf: M.ExtractLoadConfig
+    package_path: Path, container: Container, conf: I.ExtractLoadConfig
 ) -> ExtractLoadAdapterBase[t.Any]:
     """Factory function to create an extract-load adapter based on the provided configuration.
 
@@ -245,8 +245,8 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol]):
         container: Container,
         source: str,
         target: str,
-        defaults: M.SlingReplicationStreamConfig,
-        streams: dict[str, M.SlingReplicationStreamConfig],
+        defaults: I.SlingReplicationStreamConfig,
+        streams: dict[str, I.SlingReplicationStreamConfig],
         env: dict[str, t.Any] | None = None,
     ) -> None:
         """

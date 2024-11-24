@@ -9,7 +9,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
 
-import cdf.core.models as M
+import cdf.core.interface as I
 
 if t.TYPE_CHECKING:
     from sqlmesh import Context as SQLMeshContext
@@ -24,24 +24,24 @@ T = t.TypeVar("T")
 
 @t.overload
 def transform_adapter_factory(
-    package_path: Path, conf: M.DbtTransformAdapterConfig
+    package_path: Path, conf: I.DbtTransformAdapterConfig
 ) -> DbtAdapter: ...
 
 
 @t.overload
 def transform_adapter_factory(
-    package_path: Path, conf: M.SqlMeshAdapterConfig
+    package_path: Path, conf: I.SqlMeshAdapterConfig
 ) -> SqlMeshAdapter: ...
 
 
 @t.overload
 def transform_adapter_factory(
-    package_path: Path, conf: M.JinjaSqlAdapterConfig
+    package_path: Path, conf: I.JinjaSqlAdapterConfig
 ) -> JinjaSqlAdapter: ...
 
 
 def transform_adapter_factory(
-    package_path: Path, conf: M.TransformConfig
+    package_path: Path, conf: I.TransformConfig
 ) -> TransformationAdapterBase:
     """Factory function to create a transformation adapter based on the provided configuration.
 

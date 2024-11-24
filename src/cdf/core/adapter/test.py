@@ -13,7 +13,7 @@ from types import TracebackType
 
 import pytest
 
-import cdf.core.models as M
+import cdf.core.interface as I
 
 __all__ = ["TestAdapterBase", "PytestAdapter", "UnittestAdapter", "DbtTestAdapter"]
 
@@ -23,18 +23,18 @@ T = t.TypeVar("T")
 
 
 @t.overload
-def test_adapter_factory(package_path: Path, conf: M.PytestAdapterConfig) -> PytestAdapter: ...
+def test_adapter_factory(package_path: Path, conf: I.PytestAdapterConfig) -> PytestAdapter: ...
 
 
 @t.overload
-def test_adapter_factory(package_path: Path, conf: M.UnittestAdapterConfig) -> UnittestAdapter: ...
+def test_adapter_factory(package_path: Path, conf: I.UnittestAdapterConfig) -> UnittestAdapter: ...
 
 
 @t.overload
-def test_adapter_factory(package_path: Path, conf: M.DbtTestAdapterConfig) -> DbtTestAdapter: ...
+def test_adapter_factory(package_path: Path, conf: I.DbtTestAdapterConfig) -> DbtTestAdapter: ...
 
 
-def test_adapter_factory(package_path: Path, conf: M.TestConfig) -> TestAdapterBase[t.Any]:
+def test_adapter_factory(package_path: Path, conf: I.TestConfig) -> TestAdapterBase[t.Any]:
     """Factory function to create a test adapter based on the provided configuration.
 
     Args:

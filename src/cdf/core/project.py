@@ -9,14 +9,11 @@ from functools import wraps
 from pathlib import Path
 from types import ModuleType
 
+import cdf.core.adapter as A
+import cdf.core.interface as I
 from cdf.core.configuration import ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME
 from cdf.core.container import Container
-from cdf.core.extract_load import ExtractLoadAdapterBase, extract_load_adapter_factory
-from cdf.core.models import DataPackageConfig, FileStateBackendConfig, ProjectConfig
-from cdf.core.state import state_backend_factory
-from cdf.core.test import TestAdapterBase, test_adapter_factory
-from cdf.core.transform import TransformationAdapterBase, transform_adapter_factory
 from cdf.utils.files import load_module_from_path
 from cdf.utils.general import inject_sys_path
 
@@ -55,26 +52,28 @@ class DataPackage:
         self.name = self.path.name
 
         self.container = self._create_container()
-        self.settings = DataPackageConfig.model_validate(
+        self.settings = I.DataPackageConfig.model_validate(
             self.container.cfg.package, from_attributes=True
         )
 
         self._dependencies = self._load_dependencies()
 
         if self.settings.extract_load:
-            self._extract_load_adapter = extract_load_adapter_factory(
+            self._extract_load_adapter = A.extract_load_adapter_factory(
                 self.path, self.container, conf=self.settings.extract_load
             )
         else:
             self._extract_load_adapter = None
 
         if self.settings.test:
-            self._test_adapter = test_adapter_factory(self.path, self.settings.test)
+            self._test_adapter = A.test_adapter_factory(self.path, self.settings.test)
         else:
             self._test_adapter = None
 
         if self.settings.transform:
-            self._transform_adapter = transform_adapter_factory(self.path, self.settings.transform)
+            self._transform_adapter = A.transform_adapter_factory(
+                self.path, self.settings.transform
+            )
         else:
             self._transform_adapter = None
 
@@ -112,19 +111,19 @@ class DataPackage:
         _ = self.container.activate()
 
     @property
-    def extract_load_adapter(self) -> ExtractLoadAdapterBase[t.Any]:
+    def extract_load_adapter(self) -> A.extract_load.ExtractLoadAdapterBase[t.Any]:
         if self._extract_load_adapter is None:
             raise ValueError(f"No extract-load adapter configured for the {self.name} package")
         return self._extract_load_adapter
 
     @property
-    def test_adapter(self) -> TestAdapterBase[t.Any]:
+    def test_adapter(self) -> A.test.TestAdapterBase[t.Any]:
         if self._test_adapter is None:
             raise ValueError(f"No test adapter configured for the {self.name} package")
         return self._test_adapter
 
     @property
-    def transform_adapter(self) -> TransformationAdapterBase:
+    def transform_adapter(self) -> A.transform.TransformationAdapterBase:
         if self._transform_adapter is None:
             raise ValueError(f"No transformation adapter configured for the {self.name} package")
         return self._transform_adapter
@@ -172,16 +171,16 @@ class Project(Mapping[str, DataPackage]):
             raise ValueError(
                 f"No project configuration found in {self.path}, ensure a project key is defined."
             )
-        self.settings = ProjectConfig.model_validate(
+        self.settings = I.ProjectConfig.model_validate(
             self.container.cfg.project, from_attributes=True
         )
         self._load_dependencies()
 
         if self.settings.state_backend:
-            self.state = state_backend_factory(self.path, self.settings.state_backend)
+            self.state = A.state_backend_factory(self.path, self.settings.state_backend)
         else:
-            self.state = state_backend_factory(
-                self.path, FileStateBackendConfig(file_path=(self.path / "state.json").resolve())
+            self.state = A.state_backend_factory(
+                self.path, I.FileStateBackendConfig(file_path=(self.path / "state.json").resolve())
             )
         self.container.add("cdf_state", self.state)
 

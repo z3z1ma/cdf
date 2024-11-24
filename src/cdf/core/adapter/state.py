@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-import cdf.core.models as M
+import cdf.core.interface as I
 from cdf.utils.files import json
 
 __all__ = ["FileStateBackend", "SqlAlchemyStateBackend", "state_backend_factory"]
@@ -33,17 +33,17 @@ JSON = str | int | float | bool | None | dict[str, "JSON"] | list["JSON"]
 
 @t.overload
 def state_backend_factory(
-    package_path: Path, conf: M.FileStateBackendConfig
+    package_path: Path, conf: I.FileStateBackendConfig
 ) -> FileStateBackend: ...
 
 
 @t.overload
 def state_backend_factory(
-    package_path: Path, conf: M.SqlAlchemyStateBackendConfig
+    package_path: Path, conf: I.SqlAlchemyStateBackendConfig
 ) -> SqlAlchemyStateBackend: ...
 
 
-def state_backend_factory(package_path: Path, conf: M.StateBackendConfig) -> StateBackend:
+def state_backend_factory(package_path: Path, conf: I.StateBackendConfig) -> StateBackend:
     """Factory function to create a state backend instance based on the provided configuration.
 
     Args:

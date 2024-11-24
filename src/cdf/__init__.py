@@ -1,12 +1,12 @@
 """Continous Data Framework (CDF) is a framework for building and deploying data pipelines."""
 
+# Expose the core modules
+import cdf.core.adapter as adapter
 import cdf.core.configuration as config
 import cdf.core.deploy as deploy
-import cdf.core.extract_load as el
-import cdf.core.models as mdl
-import cdf.core.state as state
-import cdf.core.test as test
-import cdf.core.transform as tr
+import cdf.core.interface as interface
+
+# Directly export these symbols
 from cdf.core.container import (
     GLOBAL_CONTAINER,
     Container,
@@ -18,12 +18,9 @@ from cdf.core.container import (
 from cdf.core.project import DataPackage, Project
 
 __all__ = [
+    "adapter",
     "deploy",
-    "el",
-    "mdl",
-    "state",
-    "test",
-    "tr",
+    "interface",
     "config",
     "Container",
     "active_container",
