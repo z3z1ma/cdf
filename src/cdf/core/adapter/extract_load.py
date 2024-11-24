@@ -282,8 +282,8 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol]):
         replication_conf = {
             "source": self.source,
             "target": self.target,
-            "defaults": self.defaults,
-            "streams": self.streams,
+            "defaults": self.defaults.model_dump(by_alias=True),
+            "streams": {k: v.model_dump(by_alias=True) for k, v in self.streams.items()},
         }
         with tempfile.NamedTemporaryFile("w") as f:
             yaml.dump(replication_conf, f)
