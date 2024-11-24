@@ -7,15 +7,15 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
 
-from cdf.core.models import (
-    FileStateBackendConfig,
-    SqlAlchemyStateBackendConfig,
-)
-from cdf.core.state import (
+from cdf.core.adapter.state import (
     FileStateBackend,
     ScopedMapping,
     SqlAlchemyStateBackend,
     state_backend_factory,
+)
+from cdf.core.interface import (
+    FileStateBackendConfig,
+    SqlAlchemyStateBackendConfig,
 )
 
 JSON = str | int | float | bool | None | dict[str, "JSON"] | list["JSON"]

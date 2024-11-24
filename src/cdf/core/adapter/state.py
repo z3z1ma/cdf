@@ -10,21 +10,11 @@ from collections.abc import Iterator, MutableMapping
 from pathlib import Path
 
 import sqlalchemy
-from sqlalchemy import (
-    Column,
-    Engine,
-    MetaData,
-    String,
-    Table,
-    Text,
-    create_engine,
-    func,
-)
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
 import cdf.core.interface as I
-from cdf.utils.files import json
+from cdf.commons.file import json
 
 __all__ = ["FileStateBackend", "SqlAlchemyStateBackend", "state_backend_factory"]
 
@@ -91,13 +81,13 @@ class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
             dumper: A function to serialize a python object to str
             loader: A function to deserialize str to python object
         """
-        self._engine: Engine = create_engine(connection_str)
-        self._metadata: MetaData = MetaData(schema=schema_name)
-        self._table: Table = Table(
+        self._engine: sqlalchemy.Engine = sqlalchemy.create_engine(connection_str)
+        self._metadata: sqlalchemy.MetaData = sqlalchemy.MetaData(schema=schema_name)
+        self._table: sqlalchemy.Table = sqlalchemy.Table(
             table_name,
             self._metadata,
-            Column("key", String, primary_key=True),
-            Column("value", Text),
+            sqlalchemy.Column("key", sqlalchemy.String, primary_key=True),
+            sqlalchemy.Column("value", sqlalchemy.Text),
             extend_existing=True,
         )
         self._metadata.create_all(self._engine)
@@ -185,7 +175,7 @@ class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
         """
         session = self._Session()
         try:
-            stmt = sqlalchemy.select(func.count()).select_from(self._table)
+            stmt = sqlalchemy.select(sqlalchemy.func.count()).select_from(self._table)
             result = session.execute(stmt).scalar()
             return result or 0
         finally:

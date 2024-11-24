@@ -16,9 +16,9 @@ from pathlib import Path
 from types import ModuleType
 
 import cdf.core.interface as I
+from cdf.commons.file import json, load_module_from_path, yaml
+from cdf.commons.general import inject_sys_path
 from cdf.core.container import Container
-from cdf.utils.files import json, load_module_from_path, yaml
-from cdf.utils.general import inject_sys_path
 
 __all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter", "HamiltonAdapter"]
 

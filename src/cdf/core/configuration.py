@@ -16,7 +16,7 @@ from pathlib import Path
 import dateutil.parser
 from box import Box
 
-from cdf.utils.files import json, load_file_from_extension
+from cdf.commons.file import json, load_file_from_extension
 
 __all__ = [
     "ConfigurationSource",

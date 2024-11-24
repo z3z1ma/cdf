@@ -10,7 +10,7 @@ from pathlib import Path
 import pydantic
 
 import cdf.core.constants as c
-from cdf.utils.general import resolve_entry_point
+from cdf.commons.general import resolve_entry_point
 
 __all__ = [
     "DltAdapterConfig",

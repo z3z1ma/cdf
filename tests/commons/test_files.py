@@ -3,7 +3,7 @@ import tempfile
 
 import pytest
 
-from cdf.utils.files import _expand_vars, load_file, load_json, load_toml, load_yaml
+from cdf.commons.file import _expand_vars, load_file, load_json, load_toml, load_yaml
 
 
 @pytest.fixture
