@@ -2,7 +2,6 @@
 """CLI for managing CDF projects and data packages."""
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -36,15 +35,17 @@ def get_project(ctx: click.Context) -> cdf.Project:
 
 
 def get_package(ctx: click.Context, data_package: str) -> cdf.DataPackage:
-    """Helper function to get & activate a data package or exit."""
+    """Helper function to get a data package ensuring it is active or exit."""
     project = get_project(ctx)
     if data_package not in project:
         click.echo(f"Data package '{data_package}' not found.", err=True)
         sys.exit(1)
     if os.getenv(_ACTIVE_PACKAGE_CONTEXT) != data_package:
-        code = subprocess.call(["uv", "sync", "--package", data_package], stdout=subprocess.DEVNULL)
-        if code == 0:
-            os.execvpe("cdf", sys.argv, env={**os.environ, _ACTIVE_PACKAGE_CONTEXT: data_package})
+        os.execvpe(
+            "uv",
+            args=["uv", "run", "--package", data_package, *sys.argv],
+            env={**os.environ, _ACTIVE_PACKAGE_CONTEXT: data_package},
+        )
     return project[data_package]
 
 
