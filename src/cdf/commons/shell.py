@@ -1,9 +1,12 @@
 # pyright: reportUnknownMemberType=false
 """Shell oriented utilities."""
 
+import os
 import shlex
 import sys
 import typing as t
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import shellingham  # pyright: ignore[reportMissingTypeStubs]
@@ -11,6 +14,7 @@ import shellingham  # pyright: ignore[reportMissingTypeStubs]
 __all__ = [
     "get_activate_command",
     "WINDOWS",
+    "change_dir",
 ]
 
 WINDOWS = sys.platform == "win32"
@@ -67,3 +71,21 @@ def _quote(command: str, shell: str) -> str:
         if shell in ["powershell", "pwsh"]:
             return f'& "{command}"'
     return shlex.quote(command)
+
+
+@contextmanager
+def change_dir(target_dir: Path | str) -> Iterator[None]:
+    """Temporarily change the current working directory. (not thread-safe)
+
+    Args:
+        target_dir (Path | str): The target directory to change to.
+
+    Yields:
+        None
+    """
+    original_dir = os.getcwd()
+    try:
+        os.chdir(target_dir)
+        yield
+    finally:
+        os.chdir(original_dir)

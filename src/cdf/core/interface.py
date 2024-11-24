@@ -1,5 +1,4 @@
 """The models module defines pydantic models which concretely define the configuration schema for the CDF project."""
-# TODO: consider renaming this `cdf.core.api`
 
 from __future__ import annotations
 
@@ -10,7 +9,7 @@ from pathlib import Path
 import pydantic
 
 import cdf.core.constants as c
-from cdf.commons.general import resolve_entry_point
+from cdf.commons.pyutils import resolve_entry_point
 
 __all__ = [
     "DltAdapterConfig",

@@ -1,14 +1,13 @@
-"""General utilities for the CDF package."""
+"""Python-specific utilities for the CDF package."""
 
 import importlib
-import os
 import sys
 import typing as t
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-__all__ = ["inject_sys_path", "change_dir", "resolve_entry_point"]
+__all__ = ["inject_sys_path", "resolve_entry_point"]
 
 
 @contextmanager
@@ -31,24 +30,6 @@ def inject_sys_path(*paths: Path | str, prepend: bool = True) -> Iterator[None]:
         yield
     finally:
         sys.path = original_sys_path
-
-
-@contextmanager
-def change_dir(target_dir: Path | str) -> Iterator[None]:
-    """Temporarily change the current working directory. (not thread-safe)
-
-    Args:
-        target_dir (Path | str): The target directory to change to.
-
-    Yields:
-        None
-    """
-    original_dir = os.getcwd()
-    try:
-        os.chdir(target_dir)
-        yield
-    finally:
-        os.chdir(original_dir)
 
 
 def resolve_entry_point(value: str) -> t.Callable[[str], t.Any]:

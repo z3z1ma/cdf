@@ -12,7 +12,7 @@ from types import ModuleType
 import cdf.core.adapter as A
 import cdf.core.interface as I
 from cdf.commons.file import load_module_from_path
-from cdf.commons.general import inject_sys_path
+from cdf.commons.pyutils import inject_sys_path
 from cdf.core.configuration import ConfigurationLoader
 from cdf.core.constants import CONFIG_FILE_NAME
 from cdf.core.container import Container
