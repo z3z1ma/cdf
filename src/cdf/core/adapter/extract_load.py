@@ -282,13 +282,19 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol]):
         replication_conf = {
             "source": self.source,
             "target": self.target,
-            "defaults": self.defaults.model_dump(by_alias=True),
-            "streams": {k: v.model_dump(by_alias=True) for k, v in self.streams.items()},
+            "defaults": self.defaults.model_dump(by_alias=True, exclude_none=True),
+            "streams": {
+                k: v.model_dump(by_alias=True, exclude_none=True) for k, v in self.streams.items()
+            },
         }
+        # TODO: add "before" script (run alphabetically all scripts in same dir starting with before_)
+        # via runpy?
         with tempfile.NamedTemporaryFile("w") as f:
             yaml.dump(replication_conf, f)
             f.flush()
             _ = subprocess.run(["sling", "run", "-r", f.name], check=True)
+        # TODO: add "after" script (run alphabetically all scripts in same dir starting with after_)
+        # via runpy?
 
 
 class SingerPipelineProtocol(t.Protocol):
