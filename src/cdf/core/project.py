@@ -87,6 +87,7 @@ class DataPackage:
                 CONFIG_FILE_NAME,
                 search_paths=[
                     self.project.path,
+                    self.path / "pyproject.toml",
                     self.path,
                     Path.home() / ".cdf",
                 ],
@@ -197,6 +198,7 @@ class Project(Mapping[str, DataPackage]):
             config=ConfigurationLoader.from_name(
                 CONFIG_FILE_NAME,
                 search_paths=[
+                    self.path / "pyproject.toml",
                     self.path,
                     Path.home() / ".cdf",
                 ],

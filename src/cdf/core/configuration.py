@@ -240,7 +240,7 @@ class ConfigurationLoader:
                 conf_path
                 for ext in cls.SUPPORTED_EXTENSIONS
                 for path in search_paths or [Path.cwd()]
-                for conf_path in path.glob(f"{name}.{ext}")
+                for conf_path in (path.glob(f"{name}.{ext}") if path.is_dir() else [path])
             )
         )
 
@@ -276,6 +276,12 @@ class ConfigurationLoader:
         elif isinstance(source, dict):
             return source
         elif isinstance(source, (str, Path)):
-            return load_file_from_extension(source)
+            conf = load_file_from_extension(source)
+            if Path(source).name == "pyproject.toml":
+                pyproject_name = conf.get("project", {}).get("name")
+                conf = conf.get("tool", {}).get("cdf", {})
+                if pyproject_name:
+                    conf.setdefault("project", {}).setdefault("name", pyproject_name)
+            return conf
         else:
             raise TypeError(f"Invalid config source: {source}")
