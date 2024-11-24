@@ -13,58 +13,70 @@ from types import TracebackType
 
 import pytest
 
-from cdf.core.models import (
-    DbtTestAdapterConfig,
-    PytestAdapterConfig,
-    TestConfig,
-    UnittestAdapterConfig,
-)
+import cdf.core.models as M
 
 __all__ = ["TestAdapterBase", "PytestAdapter", "UnittestAdapter", "DbtTestAdapter"]
 
 logger = logging.getLogger(__name__)
 
 T = t.TypeVar("T")
-TConfig = t.TypeVar("TConfig", bound=TestConfig)
 
 
 @t.overload
-def test_adapter_factory(
-    package_path: Path, adapter_conf: PytestAdapterConfig
-) -> PytestAdapter: ...
+def test_adapter_factory(package_path: Path, conf: M.PytestAdapterConfig) -> PytestAdapter: ...
 
 
 @t.overload
-def test_adapter_factory(
-    package_path: Path, adapter_conf: UnittestAdapterConfig
-) -> UnittestAdapter: ...
+def test_adapter_factory(package_path: Path, conf: M.UnittestAdapterConfig) -> UnittestAdapter: ...
 
 
 @t.overload
-def test_adapter_factory(
-    package_path: Path, adapter_conf: DbtTestAdapterConfig
-) -> DbtTestAdapter: ...
+def test_adapter_factory(package_path: Path, conf: M.DbtTestAdapterConfig) -> DbtTestAdapter: ...
 
 
-def test_adapter_factory(
-    package_path: Path, adapter_conf: TestConfig
-) -> TestAdapterBase[t.Any, t.Any]:
-    match adapter_conf.adapter:
+def test_adapter_factory(package_path: Path, conf: M.TestConfig) -> TestAdapterBase[t.Any]:
+    """Factory function to create a test adapter based on the provided configuration.
+
+    Args:
+        package_path (Path): The path to the package containing the tests.
+        conf (M.TestConfig): The configuration object specifying the adapter type and its settings.
+
+    Returns:
+        TestAdapterBase: An instance of a test adapter (PytestAdapter, UnittestAdapter, or DbtTestAdapter).
+
+    Raises:
+        ValueError: If the adapter type specified in the configuration is unknown.
+    """
+    match conf.adapter:
         case "pytest":
-            return PytestAdapter(package_path, adapter_conf)
+            return PytestAdapter(
+                package_path,
+                pytest_args=conf.pytest_args,
+            )
         case "unittest":
-            return UnittestAdapter(package_path, adapter_conf)
+            return UnittestAdapter(
+                package_path,
+                test_pattern=conf.test_pattern,
+            )
         case "dbt":
-            return DbtTestAdapter(package_path, adapter_conf)
-    raise ValueError(f"Unknown test adapter: {adapter_conf.adapter}")  # pyright: ignore[reportUnreachable]
+            return DbtTestAdapter(
+                package_path,
+                project_dir=conf.project_dir,
+                profiles_dir=conf.profiles_dir,
+                target=conf.target,
+                vars=conf.vars,
+                models=conf.models,
+                exclude=conf.exclude,
+                threads=conf.threads,
+            )
+    raise ValueError(f"Unknown test adapter: {conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
-class TestAdapterBase(ABC, t.Generic[T, TConfig]):
+class TestAdapterBase(ABC, t.Generic[T]):
     """Abstract base class for test adapters."""
 
-    def __init__(self, package_path: Path, adapter_conf: TConfig) -> None:
+    def __init__(self, package_path: Path, **kwargs: t.Any) -> None:
         self.package_path: Path = package_path
-        self.adapter_conf: TConfig = adapter_conf
 
     @abstractmethod
     def discover_tests(self) -> list[t.Any]:
@@ -77,8 +89,23 @@ class TestAdapterBase(ABC, t.Generic[T, TConfig]):
         pass
 
 
-class PytestAdapter(TestAdapterBase[pytest.TestReport, PytestAdapterConfig]):
+@t.final
+class PytestAdapter(TestAdapterBase[pytest.TestReport]):
     """Adapter for running pytest programmatically."""
+
+    def __init__(
+        self,
+        package_path: Path,
+        pytest_args: list[str] | None = None,
+    ) -> None:
+        """Initialize the PytestAdapter.
+
+        Args:
+            package_path (Path): The path to the package containing the tests.
+            pytest_args (list[str] | None, optional): Additional arguments to pass to pytest. Defaults to None.
+        """
+        super().__init__(package_path)
+        self.pytest_args = pytest_args or []
 
     def discover_tests(self) -> list[pytest.Item]:
         """Discover test cases in the package."""
@@ -135,8 +162,23 @@ class _CollectingTestResult(unittest.TestResult):
         self.test_results[str(test)] = "unexpectedSuccess"
 
 
-class UnittestAdapter(TestAdapterBase[str, UnittestAdapterConfig]):
+@t.final
+class UnittestAdapter(TestAdapterBase[str]):
     """Adapter for running built-in unittest module tests."""
+
+    def __init__(
+        self,
+        package_path: Path,
+        test_pattern: str = "test*.py",
+    ) -> None:
+        """Initialize the UnittestAdapter.
+
+        Args:
+            package_path (Path): The path to the package containing the tests.
+            test_pattern (str, optional): The pattern to match test files. Defaults to "test*.py".
+        """
+        super().__init__(package_path)
+        self.test_pattern = test_pattern
 
     def discover_tests(self) -> list[str]:
         """Discover test cases in the package."""
@@ -158,7 +200,7 @@ class UnittestAdapter(TestAdapterBase[str, UnittestAdapterConfig]):
     def __call__(self) -> tuple[Mapping[str, str], bool]:
         """Run unittest tests programmatically."""
         loader = unittest.TestLoader()
-        suite = loader.discover(start_dir=str(self.package_path))
+        suite = loader.discover(start_dir=str(self.package_path), pattern=self.test_pattern)
 
         result = _CollectingTestResult()
         _ = suite.run(result)
@@ -179,8 +221,41 @@ class _DbtRunResult(t.Protocol):
     failures: int | None
 
 
-class DbtTestAdapter(TestAdapterBase[_DbtRunResult, DbtTestAdapterConfig]):
+@t.final
+class DbtTestAdapter(TestAdapterBase[_DbtRunResult]):
     """Adapter for running dbt tests."""
+
+    def __init__(
+        self,
+        package_path: Path,
+        project_dir: str | None = None,
+        profiles_dir: str | None = None,
+        target: str | None = None,
+        vars: dict[str, t.Any] | None = None,
+        models: list[str] | None = None,
+        exclude: list[str] | None = None,
+        threads: int | None = None,
+    ) -> None:
+        """Initialize the DbtTestAdapter.
+
+        Args:
+            package_path (Path): The path to the package containing the dbt project.
+            project_dir (str | None, optional): The directory of the dbt project. Defaults to None.
+            profiles_dir (str | None, optional): The directory of the dbt profiles. Defaults to None.
+            target (str | None, optional): The target profile to use. Defaults to None.
+            vars (dict[str, t.Any] | None, optional): Variables to pass to dbt. Defaults to None.
+            models (list[str] | None, optional): Models to include in the test run. Defaults to None.
+            exclude (list[str] | None, optional): Models to exclude from the test run. Defaults to None.
+            threads (int | None, optional): Number of threads to use for dbt. Defaults to 1.
+        """
+        super().__init__(package_path)
+        self.project_dir = project_dir
+        self.profiles_dir = profiles_dir
+        self.target = target
+        self.vars = vars or {}
+        self.models = models or []
+        self.exclude = exclude or []
+        self.threads = threads or 1
 
     def discover_tests(self) -> list[str]:
         """Discover dbt tests in the project."""

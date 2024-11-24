@@ -9,61 +9,84 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
 
-from cdf.core.models import (
-    DbtTransformAdapterConfig,
-    JinjaSqlAdapterConfig,
-    SqlMeshAdapterConfig,
-    TransformConfig,
-)
+import cdf.core.models as M
 
 if t.TYPE_CHECKING:
     from sqlmesh import Context as SQLMeshContext
+
 
 __all__ = ["SqlMeshAdapter", "DbtAdapter", "JinjaSqlAdapter", "TransformationAdapterBase"]
 
 logger = logging.getLogger(__name__)
 
 T = t.TypeVar("T")
-TConfig = t.TypeVar("TConfig", bound=TransformConfig)
 
 
 @t.overload
 def transform_adapter_factory(
-    package_path: Path, adapter_conf: DbtTransformAdapterConfig
+    package_path: Path, conf: M.DbtTransformAdapterConfig
 ) -> DbtAdapter: ...
 
 
 @t.overload
 def transform_adapter_factory(
-    package_path: Path, adapter_conf: SqlMeshAdapterConfig
+    package_path: Path, conf: M.SqlMeshAdapterConfig
 ) -> SqlMeshAdapter: ...
 
 
 @t.overload
 def transform_adapter_factory(
-    package_path: Path, adapter_conf: JinjaSqlAdapterConfig
+    package_path: Path, conf: M.JinjaSqlAdapterConfig
 ) -> JinjaSqlAdapter: ...
 
 
 def transform_adapter_factory(
-    package_path: Path, adapter_conf: TransformConfig
-) -> TransformationAdapterBase[t.Any]:
-    match adapter_conf.adapter:
+    package_path: Path, conf: M.TransformConfig
+) -> TransformationAdapterBase:
+    """Factory function to create a transformation adapter based on the provided configuration.
+
+    Args:
+        package_path (Path): The path to the package containing the transformations.
+        conf (M.TransformConfig): The configuration object specifying the adapter type and its settings.
+
+    Returns:
+        TransformationAdapterBase: An instance of a transformation adapter.
+
+    Raises:
+        ValueError: If the adapter type specified in the configuration is unknown.
+    """
+    match conf.adapter:
         case "sqlmesh":
-            return DbtAdapter(package_path, adapter_conf)
+            return SqlMeshAdapter(
+                package_path,
+                environment=conf.environment,
+            )
         case "dbt":
-            return SqlMeshAdapter(package_path, adapter_conf)
+            return DbtAdapter(
+                package_path,
+                project_dir=conf.project_dir,
+                profiles_dir=conf.profiles_dir,
+                target=conf.target,
+                vars=conf.vars,
+                models=conf.models,
+                exclude=conf.exclude,
+                threads=conf.threads,
+            )
         case "jinja_sql":
-            return JinjaSqlAdapter(package_path, adapter_conf)
-    raise ValueError(f"Unknown transform adapter: {adapter_conf.adapter}")  # pyright: ignore[reportUnreachable]
+            return JinjaSqlAdapter(
+                package_path,
+                connection_str=conf.connection_str,
+                template_dir=conf.template_dir,
+                variables=conf.variables,
+            )
+    raise ValueError(f"Unknown transform adapter: {conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
-class TransformationAdapterBase(ABC, t.Generic[TConfig]):
+class TransformationAdapterBase(ABC):
     """Abstract base class for all transformation adapters."""
 
-    def __init__(self, package_path: Path, adapter_conf: t.Any) -> None:
+    def __init__(self, package_path: Path, **kwargs: t.Any) -> None:
         self.package_path: Path = package_path
-        self.adapter_conf: TConfig = adapter_conf
         self._transformations: Mapping[str, t.Any] = {}
 
     @abstractmethod
@@ -92,15 +115,28 @@ class TransformationAdapterBase(ABC, t.Generic[TConfig]):
             raise AttributeError(f"No such transformation: {name}") from e
 
 
-class SqlMeshAdapter(TransformationAdapterBase[SqlMeshAdapterConfig]):
+@t.final
+class SqlMeshAdapter(TransformationAdapterBase):
     """Adapter for SqlMesh transformations."""
 
-    def __init__(self, package_path: Path, config: t.Any) -> None:
-        super().__init__(package_path, config)
+    def __init__(
+        self,
+        package_path: Path,
+        environment: str = "prod",
+    ) -> None:
+        """Initialize the SqlMeshAdapter.
+
+        Args:
+            package_path (Path): The path to the package containing the transformations.
+            environment (str, optional): The environment in which to run the transformations. Defaults to "prod".
+        """
+        super().__init__(package_path)
+        self.environment = environment
         self._context: SQLMeshContext | None = None
 
     @property
     def context(self) -> SQLMeshContext:
+        """A lazy-loaded SqlMesh context."""
         from sqlmesh import Context
 
         if not self._context:
@@ -126,8 +162,41 @@ class SqlMeshAdapter(TransformationAdapterBase[SqlMeshAdapterConfig]):
             logger.error("SqlMesh run failed")
 
 
-class DbtAdapter(TransformationAdapterBase[DbtTransformAdapterConfig]):
+@t.final
+class DbtAdapter(TransformationAdapterBase):
     """Adapter for dbt transformations."""
+
+    def __init__(
+        self,
+        package_path: Path,
+        project_dir: str | None = None,
+        profiles_dir: str | None = None,
+        target: str | None = None,
+        vars: dict[str, t.Any] | None = None,
+        models: list[str] | None = None,
+        exclude: list[str] | None = None,
+        threads: int | None = None,
+    ) -> None:
+        """Initialize the DbtTestAdapter.
+
+        Args:
+            package_path (Path): The path to the package containing the dbt project.
+            project_dir (str | None, optional): The directory of the dbt project. Defaults to None.
+            profiles_dir (str | None, optional): The directory of the dbt profiles. Defaults to None.
+            target (str | None, optional): The target profile to use. Defaults to None.
+            vars (dict[str, t.Any] | None, optional): Variables to pass to dbt. Defaults to None.
+            models (list[str] | None, optional): Models to include in the test run. Defaults to None.
+            exclude (list[str] | None, optional): Models to exclude from the test run. Defaults to None.
+            threads (int | None, optional): Number of threads to use for dbt. Defaults to 1.
+        """
+        super().__init__(package_path)
+        self.project_dir = project_dir
+        self.profiles_dir = profiles_dir
+        self.target = target
+        self.vars = vars or {}
+        self.models = models or []
+        self.exclude = exclude or []
+        self.threads = threads or 1
 
     def _discover_transformations(self) -> Mapping[str, Path]:
         """Discover dbt models."""
@@ -163,8 +232,29 @@ class DbtAdapter(TransformationAdapterBase[DbtTransformAdapterConfig]):
             raise
 
 
-class JinjaSqlAdapter(TransformationAdapterBase[JinjaSqlAdapterConfig]):
+@t.final
+class JinjaSqlAdapter(TransformationAdapterBase):
     """Adapter for simple Jinja templated SQL DDL/DML."""
+
+    def __init__(
+        self,
+        package_path: Path,
+        connection_str: str,
+        template_dir: str = "sql",
+        variables: dict[str, t.Any] | None = None,
+    ) -> None:
+        """Initialize the JinjaSqlAdapter.
+
+        Args:
+            package_path (Path): The path to the package containing the SQL templates.
+            connection_str (str): The database connection string.
+            template_dir (str, optional): The directory containing the SQL templates. Defaults to "sql".
+            variables (dict[str, t.Any] | None, optional): Variables to pass to the SQL templates. Defaults to None.
+        """
+        super().__init__(package_path)
+        self.connection_str = connection_str
+        self.template_dir = template_dir
+        self.variables = variables or {}
 
     def _discover_transformations(self) -> dict[str, Path]:
         """Discover Jinja templated SQL scripts."""
@@ -186,13 +276,9 @@ class JinjaSqlAdapter(TransformationAdapterBase[JinjaSqlAdapterConfig]):
         from jinja2 import Environment, FileSystemLoader
         from sqlalchemy import create_engine, text
 
-        db_config = self.adapter_conf.model_dump()
-        if not db_config:
-            raise ValueError("Database configuration is missing in config")
+        engine = create_engine(self.connection_str)
 
-        engine = create_engine(db_config["url"])
-
-        sql_dir = self.package_path / "sql"
+        sql_dir = self.package_path / self.template_dir
         env = Environment(loader=FileSystemLoader(str(sql_dir)))
 
         transformations = self.discover_transformations()
@@ -202,7 +288,7 @@ class JinjaSqlAdapter(TransformationAdapterBase[JinjaSqlAdapterConfig]):
             for name, sql_file in sorted_statements:
                 logger.info("Executing SQL script: %s", name)
                 template = env.get_template(str(sql_file.relative_to(sql_dir)))
-                sql_content = template.render()
+                sql_content = template.render(self.variables)
                 try:
                     _ = conn.execute(text(sql_content))
                     logger.info("Successfully executed '%s'", name)

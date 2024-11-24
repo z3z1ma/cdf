@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-from cdf.core.models import FileStateBackendConfig, SqlAlchemyStateBackendConfig, StateBackendConfig
+import cdf.core.models as M
 from cdf.utils.files import json
 
 __all__ = ["FileStateBackend", "SqlAlchemyStateBackend", "state_backend_factory"]
@@ -33,29 +33,37 @@ JSON = str | int | float | bool | None | dict[str, "JSON"] | list["JSON"]
 
 @t.overload
 def state_backend_factory(
-    package_path: Path, backend_conf: FileStateBackendConfig
+    package_path: Path, conf: M.FileStateBackendConfig
 ) -> FileStateBackend: ...
 
 
 @t.overload
 def state_backend_factory(
-    package_path: Path, backend_conf: SqlAlchemyStateBackendConfig
+    package_path: Path, conf: M.SqlAlchemyStateBackendConfig
 ) -> SqlAlchemyStateBackend: ...
 
 
-def state_backend_factory(package_path: Path, backend_conf: StateBackendConfig) -> StateBackend:
-    match backend_conf.adapter:
+def state_backend_factory(package_path: Path, conf: M.StateBackendConfig) -> StateBackend:
+    """Factory function to create a state backend instance based on the provided configuration.
+
+    Args:
+        package_path: The path to the package directory.
+        backend_conf: The configuration for the state backend.
+
+    Returns:
+        StateBackend: An instance of FileStateBackend or SqlAlchemyStateBackend based on the adapter specified in the configuration.
+
+    Raises:
+        ValueError: If the adapter specified in the configuration is invalid.
+    """
+    match conf.adapter:
         case "file":
-            if not Path(backend_conf.file_path).is_absolute():
-                backend_conf.file_path = package_path / backend_conf.file_path
-            return FileStateBackend(
-                **backend_conf.model_dump(exclude={"adapter"}, exclude_none=True)
-            )
+            if not Path(conf.file_path).is_absolute():
+                conf.file_path = package_path / conf.file_path
+            return FileStateBackend(**conf.model_dump(exclude={"adapter"}, exclude_none=True))
         case "sqlalchemy":
-            return SqlAlchemyStateBackend(
-                **backend_conf.model_dump(exclude={"adapter"}, exclude_none=True)
-            )
-    raise ValueError(f"Invalid state backend adapter: {backend_conf.adapter}")  # pyright: ignore[reportUnreachable]
+            return SqlAlchemyStateBackend(**conf.model_dump(exclude={"adapter"}, exclude_none=True))
+    raise ValueError(f"Invalid state backend adapter: {conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
 def _dumper(obj: JSON) -> str:

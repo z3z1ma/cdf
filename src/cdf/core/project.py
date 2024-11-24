@@ -15,7 +15,7 @@ from cdf.core.container import Container
 from cdf.core.extract_load import ExtractLoadAdapterBase, extract_load_adapter_factory
 from cdf.core.models import DataPackageConfig, FileStateBackendConfig, ProjectConfig
 from cdf.core.state import state_backend_factory
-from cdf.core.testing import TestAdapterBase, test_adapter_factory
+from cdf.core.test import TestAdapterBase, test_adapter_factory
 from cdf.core.transform import TransformationAdapterBase, transform_adapter_factory
 from cdf.utils.files import load_module_from_path
 from cdf.utils.general import inject_sys_path
@@ -63,7 +63,7 @@ class DataPackage:
 
         if self.settings.extract_load:
             self._extract_load_adapter = extract_load_adapter_factory(
-                self.path, self.settings.extract_load, self.container.cfg
+                self.path, self.container, conf=self.settings.extract_load
             )
         else:
             self._extract_load_adapter = None
@@ -112,19 +112,19 @@ class DataPackage:
         _ = self.container.activate()
 
     @property
-    def extract_load_adapter(self) -> ExtractLoadAdapterBase[t.Any, t.Any]:
+    def extract_load_adapter(self) -> ExtractLoadAdapterBase[t.Any]:
         if self._extract_load_adapter is None:
             raise ValueError(f"No extract-load adapter configured for the {self.name} package")
         return self._extract_load_adapter
 
     @property
-    def test_adapter(self) -> TestAdapterBase[t.Any, t.Any]:
+    def test_adapter(self) -> TestAdapterBase[t.Any]:
         if self._test_adapter is None:
             raise ValueError(f"No test adapter configured for the {self.name} package")
         return self._test_adapter
 
     @property
-    def transform_adapter(self) -> TransformationAdapterBase[t.Any]:
+    def transform_adapter(self) -> TransformationAdapterBase:
         if self._transform_adapter is None:
             raise ValueError(f"No transformation adapter configured for the {self.name} package")
         return self._transform_adapter
