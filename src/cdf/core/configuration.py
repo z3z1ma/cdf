@@ -278,10 +278,17 @@ class ConfigurationLoader:
         elif isinstance(source, (str, Path)):
             conf = load_file_from_extension(source)
             if Path(source).name == "pyproject.toml":
-                pyproject_name = conf.get("project", {}).get("name")
+                pyproject = conf.get("project", {})
+                pyproject_name = pyproject.get("name")
+                pyproject_version = pyproject.get("version")
+                pyproject_description = pyproject.get("description")
                 conf = conf.get("tool", {}).get("cdf", {})
                 if pyproject_name:
                     conf.setdefault("project", {}).setdefault("name", pyproject_name)
+                if pyproject_version:
+                    conf.setdefault("project", {}).setdefault("version", pyproject_version)
+                if pyproject_description:
+                    conf.setdefault("project", {}).setdefault("description", pyproject_description)
             return conf
         else:
             raise TypeError(f"Invalid config source: {source}")
