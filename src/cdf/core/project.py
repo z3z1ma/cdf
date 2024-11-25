@@ -91,6 +91,7 @@ class DataPackage:
                     self.path,
                     Path.home() / ".cdf",
                 ],
+                context="package",
             ),
             namespace=self.name,
             parent=self.project.container,
@@ -202,6 +203,7 @@ class Project(Mapping[str, DataPackage]):
                     self.path,
                     Path.home() / ".cdf",
                 ],
+                context="project",
             ),
             namespace="__main__",
         )

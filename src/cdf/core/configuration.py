@@ -200,6 +200,7 @@ class ConfigurationLoader:
         *sources: ConfigurationSource,
         resolution_strategy: t.Literal["merge", "scope"] = "merge",
         include_envvars: bool = True,
+        context: t.Literal["project", "package"] = "project",
     ) -> None:
         """Initialize the configuration loader with given sources.
 
@@ -209,6 +210,7 @@ class ConfigurationLoader:
             - "merge": Merge all configurations into a single Box
             - "scope": Combine configurations into a ChainMap for scope-based resolution
             include_envvars: Whether to include environment variables
+            context: The context for which the configuration is being loaded
 
         Raises:
             ValueError: If an unsupported resolution strategy is provided
@@ -221,10 +223,16 @@ class ConfigurationLoader:
         self._resolver: t.Callable[..., ConfigBox] = (
             _merge_configs if resolution_strategy == "merge" else _scope_configs
         )
+        self._context: t.Literal["project", "package"] = context
 
     @classmethod
     def from_name(
-        cls, name: str, /, *, search_paths: Iterable[Path] | None = None
+        cls,
+        name: str,
+        /,
+        *,
+        search_paths: Iterable[Path] | None = None,
+        context: t.Literal["project", "package"] = "project",
     ) -> ConfigurationLoader:
         """Create a configuration loader from a name by searching for files with supported extensions.
 
@@ -241,7 +249,8 @@ class ConfigurationLoader:
                 for ext in cls.SUPPORTED_EXTENSIONS
                 for path in search_paths or [Path.cwd()]
                 for conf_path in (path.glob(f"{name}.{ext}") if path.is_dir() else [path])
-            )
+            ),
+            context=context,
         )
 
     def add_source(self, source: ConfigurationSource) -> Mapping[str, t.Any]:
@@ -255,24 +264,28 @@ class ConfigurationLoader:
 
     def load(self) -> ConfigBox:
         """Load and merge configurations from all sources."""
-        configs = [Box(self._load(source)) for source in self.sources]
+        configs = [Box(self._load(source, self._context)) for source in self.sources]
         self._config = self._resolver(
             *(configs if self._resolution_strategy == "merge" else reversed(configs))
         )
         return self._config
 
     @staticmethod
-    def _load(source: ConfigurationSource) -> Mapping[str, t.Any]:
+    def _load(
+        source: ConfigurationSource,
+        context: t.Literal["project", "package"] = "project",
+    ) -> Mapping[str, t.Any]:
         """Load configuration from a single source.
 
         Args:
             source: Configuration source to load.
+            context: The context for which the configuration is being loaded
 
         Returns:
             Configuration as a dictionary.
         """
         if callable(source):
-            return ConfigurationLoader._load(source())
+            return ConfigurationLoader._load(source(), context)
         elif isinstance(source, dict):
             return source
         elif isinstance(source, (str, Path)):
@@ -283,12 +296,16 @@ class ConfigurationLoader:
                 pyproject_version = pyproject.get("version")
                 pyproject_description = pyproject.get("description")
                 conf = conf.get("tool", {}).get("cdf", {})
-                if pyproject_name:
-                    conf.setdefault("project", {}).setdefault("name", pyproject_name)
-                if pyproject_version:
-                    conf.setdefault("project", {}).setdefault("version", pyproject_version)
-                if pyproject_description:
-                    conf.setdefault("project", {}).setdefault("description", pyproject_description)
+                if context == "project":
+                    cdfproject = conf.setdefault("project", {})
+                    if pyproject_name:
+                        cdfproject.setdefault("name", pyproject_name)
+                else:
+                    cdfmanifest = conf.setdefault("package", {}).setdefault("manifest", {})
+                    if pyproject_version:
+                        cdfmanifest.setdefault("version", pyproject_version)
+                    if pyproject_description:
+                        cdfmanifest.setdefault("description", pyproject_description)
             return conf
         else:
             raise TypeError(f"Invalid config source: {source}")
