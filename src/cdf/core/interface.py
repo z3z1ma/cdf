@@ -54,18 +54,20 @@ class SingerAdapterConfig(_CDFConfigModel):
 
     adapter: t.Literal["singer"] = "singer"
 
-    tap: str
+    tap_name: str
     """Singer tap to use for extracting data"""
+    target_name: str
+    """Singer target to use for loading data"""
+    tap_requirements: str | list[str] | None = None
+    """The pip compatible requirements for the tap, otherwise the tap_name is used"""
+    target_requirements: str | list[str] | None = None
+    """The pip compatible requirements for the target, otherwise the target_name is used"""
     tap_config: dict[str, t.Any] = {}
     """Configuration for the tap which will be serialized as a JSON file on disk"""
-    target: str
-    """Singer target to use for loading data"""
     target_config: dict[str, t.Any] = {}
     """Configuration for the target which will be serialized as a JSON file on disk"""
-    catalog: dict[str, t.Any] | None = None
+    tap_catalog: dict[str, t.Any] | None = None
     """Catalog to use for the tap, will be serialized as a JSON file on disk."""
-    properties: dict[str, t.Any] | None = None
-    """Properties to select or deselect data from the tap."""
     env: dict[str, str] | None = None
     """Environment variables to set during the execution of the tap and target."""
 

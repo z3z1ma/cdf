@@ -864,6 +864,9 @@ dependencies = [
     { name = "ply" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6d/86/08646239a313f895186ff0a4573452038eed8c86f54380b3ebac34d32fb2/jsonpath-ng-1.7.0.tar.gz", hash = "sha256:f6f5f7fd4e5ff79c785f1573b394043b39849fb2bb47bcead935d12b00beab3c", size = 37838 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/35/5a/73ecb3d82f8615f32ccdadeb9356726d6cae3a4bbc840b437ceb95708063/jsonpath_ng-1.7.0-py3-none-any.whl", hash = "sha256:f3d7f9e848cba1b6da28c55b1c26ff915dc9e0b1ba7e752a53d6da8d5cbd00b6", size = 30105 },
+]
 
 [[package]]
 name = "jsonschema"
@@ -1406,11 +1409,11 @@ wheels = [
 
 [[package]]
 name = "pex"
-version = "2.1.164"
+version = "2.24.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/63/64/404867de456a92b111414e6eb0895dd0b82ba6921365cfe20ff92e96d5bc/pex-2.1.164.tar.gz", hash = "sha256:9ff3557f3f35888b40e8d1618bd76b3be41f145d644c08b1a2db95a73620d7f2", size = 4146574 }
+sdist = { url = "https://files.pythonhosted.org/packages/d7/63/6f0ee34888fe9023e89165bbbdafe99c56ebc137f67761d962c1f583a2f6/pex-2.24.1.tar.gz", hash = "sha256:6661f1c2e48ffcd7ea181111ec85bf811a421df76fd6918dc71202fea6f30171", size = 4432992 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f5/75/df33045e065a49b6b39807343da8e3fa24d3e9665ce3650b9dfe59c3e97b/pex-2.1.164-py2.py3-none-any.whl", hash = "sha256:37d7d4cad605784dbf3494608fb5928c2c5e385d60dcc00bc816c4c70d6f0fae", size = 3385868 },
+    { url = "https://files.pythonhosted.org/packages/84/4f/b7673810a5c3e81184faaac76ebbb440c0fb7e841c776b15c7374e9dbf18/pex-2.24.1-py2.py3-none-any.whl", hash = "sha256:fa463f5dd9574cbbaad5d927e2cbb3ce179edbd1bafb0f5fd9e4334717c4886e", size = 3558197 },
 ]
 
 [[package]]
@@ -1710,7 +1713,7 @@ requires-dist = [
     { name = "fsspec", specifier = ">=2022" },
     { name = "harness-featureflags", specifier = ">=1.2.0,<1.6.1" },
     { name = "mysql-mimic", specifier = ">=2,<3" },
-    { name = "pex", specifier = ">=2.1.100,<2.2.0" },
+    { name = "pex", specifier = ">=2.20,<3" },
     { name = "psutil", specifier = "~=5.9.0" },
     { name = "pydantic", specifier = ">=2.5.0,<3" },
     { name = "pydoc-markdown", marker = "extra == 'dev'", specifier = ">4" },

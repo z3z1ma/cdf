@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import logging
 import runpy
 import subprocess  # nosec
+import sys
 import tempfile
 import typing as t
 from abc import ABC, abstractmethod
@@ -79,12 +81,13 @@ def extract_load_adapter_factory(
             return SingerAdapter(
                 package_path,
                 container,
-                tap=conf.tap,
-                target=conf.target,
+                tap_name=conf.tap_name,
+                target_name=conf.target_name,
+                tap_requirements=conf.tap_requirements,
+                target_requirements=conf.target_requirements,
                 tap_config=conf.tap_config,
                 target_config=conf.target_config,
-                catalog=conf.catalog,
-                properties=conf.properties,
+                tap_catalog=conf.tap_catalog,
                 env=conf.env,
             )
         case "sling":
@@ -324,12 +327,13 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
         self,
         package_path: Path,
         container: Container,
-        tap: str,
-        target: str,
+        tap_name: str,
+        target_name: str,  # TODO: how can we pipe tap data to dlt target intuitively (dlt:<dest name>?)
+        tap_requirements: str | list[str] | None = None,
+        target_requirements: str | list[str] | None = None,
         tap_config: dict[str, t.Any] | None = None,
         target_config: dict[str, t.Any] | None = None,
-        catalog: dict[str, t.Any] | None = None,
-        properties: dict[str, t.Any] | None = None,
+        tap_catalog: dict[str, t.Any] | None = None,
         env: dict[str, str] | None = None,
     ) -> None:
         """
@@ -338,22 +342,48 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
         Args:
             package_path (Path): The path to the package directory.
             container (Container): The dependency injection container.
-            tap (str): The name of the tap to use.
-            target (str): The name of the target to use.
+            tap_name (str): The name of the tap to use.
+            target_name (str): The name of the target to use.
+            tap_requirements (str | list[str], optional): Pip dependencies for the tap. Defaults to None.
             tap_config (dict[str, t.Any], optional): Configuration for the tap. Defaults to None.
+            tap_catalog (dict[str, t.Any], optional): Catalog configuration. Defaults to None.
+            target_requirements (str | list[str], optional): Pip dependencies for the target. Defaults to None.
             target_config (dict[str, t.Any], optional): Configuration for the target. Defaults to None.
-            catalog (dict[str, t.Any], optional): Catalog configuration. Defaults to None.
-            properties (dict[str, t.Any], optional): Properties configuration. Defaults to None.
             env (dict[str, str], optional): Environment variables. Defaults to None.
         """
         super().__init__(package_path, container)
-        self.tap = tap
-        self.target = target
+        self.tap_name = tap_name
+        self.target_name = target_name
+        self.tap_requirements = tap_requirements or [tap_name]
         self.tap_config = tap_config or {}
+        self.tap_catalog = tap_catalog or {}
+        self.target_requirements = target_requirements or [target_name]
         self.target_config = target_config or {}
-        self.catalog = catalog or {}
-        self.properties = properties or {}
         self.env = env or {}
+
+    @staticmethod
+    def _generate_pex(pip_deps: str | list[str], console_script: str) -> Path:
+        """Generate a pex file for the given pip dependencies.
+
+        Args:
+            pip_deps (str | list[str]): Pip dependencies as a string or list.
+
+        Returns:
+            Path: The path to the generated pex file.
+        """
+        if isinstance(pip_deps, str):
+            pip_deps = pip_deps.split()
+
+        pex_name = hashlib.md5(("".join(pip_deps) + sys.version).encode()).hexdigest()
+        pex_f = Path(tempfile.gettempdir(), "cdf.pex", pex_name)
+        pex_f.parent.mkdir(parents=True, exist_ok=True)
+
+        if not pex_f.exists():
+            _ = subprocess.run(  # nosec
+                ["pex", *pip_deps, "-c", console_script, "-o", str(pex_f)], check=True
+            )
+
+        return pex_f
 
     def _discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Expose adapter as callable pipeline."""
@@ -361,32 +391,59 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
 
     def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
         """Run a singer pipeline using subprocess."""
-        # TODO: use pex to convert pip URIs to executable zip files
         logger.info(
             "Running Singer pipeline from %s to %s",
-            self.tap,
-            self.target,
+            self.tap_name,
+            self.target_name,
         )
+        tap_pex = self._generate_pex(self.tap_requirements, self.tap_name)
+        tgt_pex = self._generate_pex(self.target_requirements, self.target_name)
+        before_scripts = sorted(self.package_path.glob("before_*.py"))
+        for script in before_scripts:
+            logger.info("Running before script: %s", script)
+            _ = runpy.run_path(
+                str(script),
+                init_globals={
+                    "C": self.container,
+                },
+            )
+        state: dict[str, t.Any] = self.container["cdf_state"] or {}
         with (
-            tempfile.NamedTemporaryFile("w", suffix=".json") as tap_file,
-            tempfile.NamedTemporaryFile("w", suffix=".json") as target_file,
+            tempfile.NamedTemporaryFile("w", suffix=".json") as tap_conf_f,
+            tempfile.NamedTemporaryFile("w", suffix=".json") as tgt_conf_f,
+            tempfile.NamedTemporaryFile("w", suffix=".json") as tap_state_f,
         ):
-            json.dump(self.tap_config, tap_file)
-            tap_file.flush()
-            json.dump(self.target_config, target_file)
-            target_file.flush()
-
-            tap_command = ["tap-" + self.tap, "--config", tap_file.name]
-            target_command = ["target-" + self.target, "--config", target_file.name]
-
+            json.dump(dict(self.tap_config or {}), tap_conf_f)
+            tap_conf_f.flush()
+            json.dump(dict(self.target_config or {}), tgt_conf_f)
+            tgt_conf_f.flush()
+            json.dump(dict(state), tap_state_f)
+            tap_state_f.flush()
+            tap_command = [str(tap_pex), "--config", tap_conf_f.name, "--state", tap_state_f.name]
+            tgt_command = [str(tgt_pex), "--config", tgt_conf_f.name]
             try:
-                tap_process = subprocess.Popen(tap_command, stdout=subprocess.PIPE)  # nosec
-                _ = subprocess.run(target_command, stdin=tap_process.stdout, check=True)  # nosec
-                _ = tap_process.wait()
+                with (
+                    subprocess.Popen(tap_command, stdout=subprocess.PIPE) as tap_process,  # nosec
+                    subprocess.Popen(tgt_command, stdin=tap_process.stdout) as tgt_process,  # nosec
+                ):
+                    _ = tgt_process.wait()
+                if tap_process.returncode > 0:
+                    raise subprocess.CalledProcessError(tap_process.returncode, tgt_command)
+                if tgt_process.returncode > 0:
+                    raise subprocess.CalledProcessError(tgt_process.returncode, tgt_command)
                 logger.info("Singer pipeline executed successfully.")
             except subprocess.CalledProcessError as e:
                 logger.error("Error running Singer pipeline: %s", e)
                 raise
+        after_scripts = sorted(self.package_path.glob("after_*.py"))
+        for script in after_scripts:
+            logger.info("Running after script: %s", script)
+            _ = runpy.run_path(
+                str(script),
+                init_globals={
+                    "C": self.container,
+                },
+            )
 
 
 class HamiltonPipelineProtocol(t.Protocol):
