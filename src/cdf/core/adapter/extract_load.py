@@ -13,11 +13,13 @@ import sys
 import tempfile
 import typing as t
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager, suppress
 from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
+
+import alive_progress  # pyright: ignore[reportMissingTypeStubs]
 
 import cdf.core.interface as I
 from cdf.commons.file import json, load_module_from_path, yaml
@@ -166,6 +168,23 @@ class ExtractLoadAdapterBase(ABC, t.Generic[T]):
         }
         return functions
 
+    def _run_scripts(self, pattern: str, /, **global_context: t.Any) -> dict[str, t.Any]:
+        """Run scripts matching the given pattern in the package dir."""
+        merged_output: dict[str, t.Any] = {}
+        scripts = sorted(self.package_path.glob(f"{pattern}.py"))
+        for script in scripts:
+            logger.info("Running after script: %s", script)
+            merged_output.update(
+                runpy.run_path(
+                    str(script),
+                    init_globals={
+                        **global_context,
+                        "C": self.container,
+                    },
+                )
+            )
+        return merged_output
+
 
 class DltPipelineProtocol(t.Protocol):
     def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
@@ -292,30 +311,18 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol]):
                 k: v.model_dump(by_alias=True, exclude_none=True) for k, v in self.streams.items()
             },
         }
-        before_scripts = sorted(self.package_path.glob("before_*.py"))
-        for script in before_scripts:
-            logger.info("Running before script: %s", script)
-            _ = runpy.run_path(
-                str(script),
-                init_globals={
-                    "replication_conf": replication_conf,
-                    "C": self.container,
-                },
-            )
+        logger.info("Running before scripts")
+        _ = self._run_scripts("before_*", replication_conf=replication_conf)
         with tempfile.NamedTemporaryFile("w") as f:
             yaml.dump(replication_conf, f)
             f.flush()
-            _ = subprocess.run(["sling", "run", "-r", f.name], check=True)
-        after_scripts = sorted(self.package_path.glob("after_*.py"))
-        for script in after_scripts:
-            logger.info("Running after script: %s", script)
-            _ = runpy.run_path(
-                str(script),
-                init_globals={
-                    "replication_conf": replication_conf,
-                    "C": self.container,
-                },
-            )
+            cmd = ["sling", "run", "-r", f.name]
+            process = subprocess.run(cmd)
+        if process.returncode > 0:
+            _ = self._run_scripts("after_error_*", replication_conf=replication_conf)
+            raise subprocess.CalledProcessError(process.returncode, cmd)
+        else:
+            _ = self._run_scripts("after_success_*", replication_conf=replication_conf)
 
 
 class SingerPipelineProtocol(t.Protocol):
@@ -400,18 +407,9 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
         )
         tap_pex = self._generate_pex(self.tap_requirements, self.tap_name)
         tgt_pex = self._generate_pex(self.target_requirements, self.target_name)
-        before_scripts = sorted(self.package_path.glob("before_*.py"))
-        for script in before_scripts:
-            logger.info("Running before script: %s", script)
-            _ = runpy.run_path(
-                str(script),
-                init_globals={
-                    "C": self.container,
-                },
-            )
         state: dict[str, t.Any] = self.container["cdf_state"]
-        # TODO: handle catalog, and "capabilities", prettier output if possible...
-        # Nice loading spinner at least / - \ type of thing
+        _ = self._run_scripts("before_*", tap_pex=tap_pex, tgt_pex=tgt_pex, state=state)
+        # TODO: handle catalog, and "capabilities"
         with (
             tempfile.NamedTemporaryFile("w", suffix=".json") as tap_conf_f,
             tempfile.NamedTemporaryFile("w", suffix=".json") as tgt_conf_f,
@@ -441,7 +439,10 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
                     ) as tgt_process,
                 ):
                     assert tgt_process.stdout
-                    for line in tgt_process.stdout:
+                    for line in t.cast(
+                        Iterator[bytes],
+                        alive_progress.alive_it(iter(tgt_process.stdout)),  # pyright: ignore[reportArgumentType]
+                    ):
                         with suppress(json.JSONDecodeError):
                             last_state_message = json.loads(line.decode())
                 if tap_process.returncode > 0:
@@ -453,16 +454,11 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
                 logger.info("Singer pipeline executed successfully.")
             except subprocess.CalledProcessError as e:
                 logger.error("Error running Singer pipeline: %s", e)
+                _ = self._run_scripts(
+                    "after_error_*", tap_pex=tap_pex, tgt_pex=tgt_pex, state=state
+                )
                 raise
-        after_scripts = sorted(self.package_path.glob("after_*.py"))
-        for script in after_scripts:
-            logger.info("Running after script: %s", script)
-            _ = runpy.run_path(
-                str(script),
-                init_globals={
-                    "C": self.container,
-                },
-            )
+            _ = self._run_scripts("after_success_*", tap_pex=tap_pex, tgt_pex=tgt_pex, state=state)
 
 
 class HamiltonPipelineProtocol(t.Protocol):
