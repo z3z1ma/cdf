@@ -57,7 +57,7 @@ def state_backend_factory(package_path: Path, conf: I.StateBackendConfig) -> Sta
 
 
 def _dumper(obj: JSON) -> str:
-    return json.dumps(obj, separators=(",", ":"), sort_keys=True)
+    return json.dumps(obj, separators=(",", ":"), sort_keys=True, indent=2)
 
 
 class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
@@ -181,6 +181,27 @@ class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
         finally:
             session.close()
 
+    def update(self, *args: t.Any, **kwargs: t.Any) -> None:
+        """Update the stored JSON objects with the given key-value pairs
+
+        Args:
+            *args: The key-value pairs to update the stored JSON objects with
+            **kwargs: The key-value pairs to update the stored JSON objects with
+        """
+        session = self._Session()
+        try:
+            items: dict[str, JSON] = dict(*args, **kwargs)
+            for key, value in items.items():
+                stmt = insert(self._table).values(key=key, value=self._dumper(value))
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=["key"],
+                    set_={"value": self._dumper(value)},
+                )
+                _ = session.execute(stmt)
+            session.commit()
+        finally:
+            session.close()
+
     def scope(self, namespace: str) -> ScopedMapping:
         """Scope the mapping to a namespace"""
         return ScopedMapping(self, namespace)
@@ -288,6 +309,17 @@ class FileStateBackend(MutableMapping[str, JSON]):
         """
         return len(self._data)
 
+    def update(self, *args: t.Any, **kwargs: t.Any) -> None:
+        """Update the stored JSON objects with the given key-value pairs
+
+        Args:
+            *args: The key-value pairs to update the stored JSON objects with
+            **kwargs: The key-value pairs to update the stored JSON objects with
+        """
+        self._data.update(*args, **kwargs)
+        if not self._buffered:
+            self._flush()
+
     def scope(self, namespace: str) -> ScopedMapping:
         """Scope the mapping to a namespace"""
         return ScopedMapping(self, namespace)
@@ -372,3 +404,13 @@ class ScopedMapping(MutableMapping[str, JSON]):
         """
         ns_prefix = f"{self._namespace}{self._delimiter}"
         return sum(1 for key in self._mapping if key.startswith(ns_prefix))
+
+    def update(self, *args: t.Any, **kwargs: t.Any) -> None:
+        """Update the stored JSON objects with the given key-value pairs
+
+        Args:
+            *args: The key-value pairs to update the stored JSON objects with
+            **kwargs: The key-value pairs to update the stored JSON objects with
+        """
+        ns_args = {self._prefixed_key(k): v for k, v in dict[str, JSON](*args, **kwargs).items()}
+        self._mapping.update(ns_args)

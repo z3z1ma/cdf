@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import logging
+import os
 import runpy
 import subprocess  # nosec
 import sys
@@ -13,7 +14,7 @@ import tempfile
 import typing as t
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
@@ -379,6 +380,7 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
         pex_f.parent.mkdir(parents=True, exist_ok=True)
 
         if not pex_f.exists():
+            # TODO: better detection of failure or invalid pex at target path (likely need to try to call --help)
             _ = subprocess.run(  # nosec
                 ["pex", *pip_deps, "-c", console_script, "-o", str(pex_f)], check=True
             )
@@ -407,7 +409,9 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
                     "C": self.container,
                 },
             )
-        state: dict[str, t.Any] = self.container["cdf_state"] or {}
+        state: dict[str, t.Any] = self.container["cdf_state"]
+        # TODO: handle catalog, and "capabilities", prettier output if possible...
+        # Nice loading spinner at least / - \ type of thing
         with (
             tempfile.NamedTemporaryFile("w", suffix=".json") as tap_conf_f,
             tempfile.NamedTemporaryFile("w", suffix=".json") as tgt_conf_f,
@@ -422,15 +426,30 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
             tap_command = [str(tap_pex), "--config", tap_conf_f.name, "--state", tap_state_f.name]
             tgt_command = [str(tgt_pex), "--config", tgt_conf_f.name]
             try:
+                last_state_message = None
                 with (
-                    subprocess.Popen(tap_command, stdout=subprocess.PIPE) as tap_process,  # nosec
-                    subprocess.Popen(tgt_command, stdin=tap_process.stdout) as tgt_process,  # nosec
+                    subprocess.Popen(  # nosec
+                        tap_command,
+                        stdout=subprocess.PIPE,
+                        env={**os.environ, **self.env},
+                    ) as tap_process,
+                    subprocess.Popen(  # nosec
+                        tgt_command,
+                        stdin=tap_process.stdout,
+                        stdout=subprocess.PIPE,
+                        env={**os.environ, **self.env},
+                    ) as tgt_process,
                 ):
-                    _ = tgt_process.wait()
+                    assert tgt_process.stdout
+                    for line in tgt_process.stdout:
+                        with suppress(json.JSONDecodeError):
+                            last_state_message = json.loads(line.decode())
                 if tap_process.returncode > 0:
                     raise subprocess.CalledProcessError(tap_process.returncode, tgt_command)
                 if tgt_process.returncode > 0:
                     raise subprocess.CalledProcessError(tgt_process.returncode, tgt_command)
+                if last_state_message:
+                    state.update(last_state_message)
                 logger.info("Singer pipeline executed successfully.")
             except subprocess.CalledProcessError as e:
                 logger.error("Error running Singer pipeline: %s", e)
