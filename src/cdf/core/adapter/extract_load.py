@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+import runpy
 import subprocess  # nosec
 import tempfile
 import typing as t
@@ -287,14 +288,30 @@ class SlingAdapter(ExtractLoadAdapterBase[SlingPipelineProtocol]):
                 k: v.model_dump(by_alias=True, exclude_none=True) for k, v in self.streams.items()
             },
         }
-        # TODO: add "before" script (run alphabetically all scripts in same dir starting with before_)
-        # via runpy?
+        before_scripts = sorted(self.package_path.glob("before_*.py"))
+        for script in before_scripts:
+            logger.info("Running before script: %s", script)
+            _ = runpy.run_path(
+                str(script),
+                init_globals={
+                    "replication_conf": replication_conf,
+                    "C": self.container,
+                },
+            )
         with tempfile.NamedTemporaryFile("w") as f:
             yaml.dump(replication_conf, f)
             f.flush()
             _ = subprocess.run(["sling", "run", "-r", f.name], check=True)
-        # TODO: add "after" script (run alphabetically all scripts in same dir starting with after_)
-        # via runpy?
+        after_scripts = sorted(self.package_path.glob("after_*.py"))
+        for script in after_scripts:
+            logger.info("Running after script: %s", script)
+            _ = runpy.run_path(
+                str(script),
+                init_globals={
+                    "replication_conf": replication_conf,
+                    "C": self.container,
+                },
+            )
 
 
 class SingerPipelineProtocol(t.Protocol):
