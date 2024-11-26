@@ -13,13 +13,11 @@ import sys
 import tempfile
 import typing as t
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Mapping
+from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
-
-import alive_progress  # pyright: ignore[reportMissingTypeStubs]
 
 import cdf.core.interface as I
 from cdf.commons.file import json, load_module_from_path, yaml
@@ -439,10 +437,7 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
                     ) as tgt_process,
                 ):
                     assert tgt_process.stdout
-                    for line in t.cast(
-                        Iterator[bytes],
-                        alive_progress.alive_it(iter(tgt_process.stdout)),  # pyright: ignore[reportArgumentType]
-                    ):
+                    for line in iter(tgt_process.stdout):
                         with suppress(json.JSONDecodeError):
                             last_state_message = json.loads(line.decode())
                 if tap_process.returncode > 0:
