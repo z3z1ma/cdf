@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import functools
 import os
 import threading
 import typing as t
@@ -16,7 +17,12 @@ from sqlalchemy.orm import Session, sessionmaker
 import cdf.core.interface as I
 from cdf.commons.file import json
 
-__all__ = ["FileStateBackend", "SqlAlchemyStateBackend", "state_backend_factory"]
+__all__ = [
+    "FileStateBackend",
+    "SqlAlchemyStateBackend",
+    "state_backend_factory",
+    "get_default_file_state_backend",
+]
 
 JSON = str | int | float | bool | None | dict[str, "JSON"] | list["JSON"]
 
@@ -414,3 +420,11 @@ class ScopedMapping(MutableMapping[str, JSON]):
         """
         ns_args = {self._prefixed_key(k): v for k, v in dict[str, JSON](*args, **kwargs).items()}
         self._mapping.update(ns_args)
+
+
+@functools.lru_cache()
+def get_default_file_state_backend(path: Path) -> FileStateBackend:
+    """Get a default state backend"""
+    return state_backend_factory(
+        path, I.FileStateBackendConfig(file_path=(path / "state.json").resolve())
+    )

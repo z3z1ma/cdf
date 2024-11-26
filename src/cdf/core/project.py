@@ -184,9 +184,7 @@ class Project(Mapping[str, DataPackage]):
         if self.settings.state_backend:
             self.state = A.state_backend_factory(self.path, self.settings.state_backend)
         else:
-            self.state = A.state_backend_factory(
-                self.path, I.FileStateBackendConfig(file_path=(self.path / "state.json").resolve())
-            )
+            self.state = A.get_default_file_state_backend(self.path)
         self.container.add("cdf_state", self.state)
 
         self.data_packages: dict[str, DataPackage] = {}
