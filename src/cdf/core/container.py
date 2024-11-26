@@ -571,3 +571,5 @@ def inject_deps(func: t.Callable[..., T] | None = None, /, *, late_bind: bool = 
 
 GLOBAL_CONTAINER = Container()
 """A global container to store dependencies."""
+
+_ = active_container.set(GLOBAL_CONTAINER)
