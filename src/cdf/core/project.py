@@ -55,6 +55,7 @@ class DataPackage:
         self.settings = I.DataPackageConfig.model_validate(
             self.container.cfg.package, from_attributes=True
         )
+        self.container["cdf_package"] = self
 
         self._dependencies = self._load_dependencies()
 
@@ -176,6 +177,8 @@ class Project(Mapping[str, DataPackage]):
         self.settings = I.ProjectConfig.model_validate(
             self.container.cfg.project, from_attributes=True
         )
+        self.container["cdf_project"] = self
+
         self._load_dependencies()
 
         if self.settings.state_backend:
