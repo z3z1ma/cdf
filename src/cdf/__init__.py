@@ -17,6 +17,12 @@ from cdf.core.container import (
 )
 from cdf.core.project import DataPackage, Project
 
+
+def get_container() -> Container:
+    """Shorthand sugar for active_container.get"""
+    return active_container.get(GLOBAL_CONTAINER)
+
+
 __all__ = [
     "adapter",
     "deploy",
@@ -30,4 +36,5 @@ __all__ = [
     "DataPackage",
     "Project",
     "GLOBAL_CONTAINER",
+    "get_container",
 ]
