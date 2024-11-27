@@ -16,9 +16,10 @@ import threading
 import typing as t
 from collections.abc import Iterator, Mapping, MutableMapping
 from contextvars import ContextVar, Token
-from functools import wraps
+from functools import partial, wraps
 from types import MappingProxyType, TracebackType
 
+from cdf.commons.pyutils import unique_dict
 from cdf.core.configuration import ConfigBox, ConfigurationLoader
 from cdf.core.constants import CONTEXT_PARAM_NAME
 
@@ -57,6 +58,7 @@ class Container(MutableMapping[str, t.Any]):
         config: Mapping[str, t.Any] | ConfigurationLoader | None = None,
         namespace: str | None = None,
         parent: Container | None = None,
+        strict: bool = False,
     ) -> None:
         """Initialize the context with a configuration loader.
 
@@ -64,10 +66,12 @@ class Container(MutableMapping[str, t.Any]):
             config: Configuration to use for the context.
             namespace: Namespace to use for the context.
             parent: Parent context to inherit dependencies from.
+            strict: If true, raise an error when a dependency would be overwritten in a set operation.
         """
-        self._dependencies: dict[tuple[str | None, str], t.Any] = {}
-        self._factories: dict[tuple[str | None, str], tuple[t.Callable[..., t.Any], bool]] = {}
-        self._singletons: dict[tuple[str | None, str], t.Any] = {}
+        d = partial(unique_dict, name=namespace or "container") if strict else dict
+        self._dependencies: dict[tuple[str | None, str], t.Any] = d()
+        self._factories: dict[tuple[str | None, str], tuple[t.Callable[..., t.Any], bool]] = d()
+        self._singletons: dict[tuple[str | None, str], t.Any] = d()
         self._resolving: set[tuple[str | None, str]] = set()
         self._lock: threading.RLock = threading.RLock()
         self._exit_stack: contextlib.ExitStack = contextlib.ExitStack()

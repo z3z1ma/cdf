@@ -9,6 +9,7 @@ import pytest
 
 from cdf.core.configuration import ConfigurationLoader
 from cdf.core.container import (
+    GLOBAL_CONTAINER,
     Container,
     DependencyCycleError,
     DependencyNotFoundError,
@@ -177,8 +178,8 @@ def test_context_management(basic_context: Container):
     with basic_context:
         assert active_container.get() is basic_context
 
-    with pytest.raises(LookupError):
-        active_container.get()  # No active context outside `with` block
+    # Outside the with block, the active container should revert to the global
+    assert active_container.get() is GLOBAL_CONTAINER
 
 
 def test_dependency_removal(basic_context: Container):

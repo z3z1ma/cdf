@@ -7,7 +7,10 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-__all__ = ["inject_sys_path", "resolve_entry_point"]
+__all__ = ["inject_sys_path", "resolve_entry_point", "unique_dict"]
+
+T = t.TypeVar("T")
+K = t.TypeVar("K", bound=t.Hashable)
 
 
 @contextmanager
@@ -47,3 +50,19 @@ def resolve_entry_point(value: str) -> t.Callable[[str], t.Any]:
         return func
     except (ImportError, AttributeError, TypeError) as e:
         raise ValueError(f"Error resolving entry point '{value}': {e}") from e
+
+
+@t.final
+class unique_dict(dict[K, T]):
+    """Dict that raises when a duplicate key is set."""
+
+    def __init__(self, name: str, *args: dict[K, T], **kwargs: T) -> None:
+        self.name = name
+        super().__init__(*args, **kwargs)
+
+    def __setitem__(self, k: K, v: T) -> None:
+        if k in self:
+            raise ValueError(
+                f"Duplicate key '{k}' found in unique_dict<{self.name}>. Call dict.update(...) if this is intentional."
+            )
+        super().__setitem__(k, v)

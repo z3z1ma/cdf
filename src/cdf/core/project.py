@@ -96,6 +96,7 @@ class DataPackage:
             ),
             namespace=self.name,
             parent=self.project.container,
+            strict=True,
         )
         return container
 
@@ -207,6 +208,7 @@ class Project(Mapping[str, DataPackage]):
                 context="project",
             ),
             namespace="__main__",
+            strict=True,
         )
         return container
 
