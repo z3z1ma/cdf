@@ -56,30 +56,21 @@ class DataPackage:
             self.container.cfg.package, from_attributes=True
         )
         self.container["cdf_package"] = self
-
         self._dependencies = self._load_dependencies()
 
-        if self.settings.extract_load:
-            self._extract_load_adapter = A.extract_load_adapter_factory(
-                self.path, self.container, conf=self.settings.extract_load
-            )
-        else:
-            self._extract_load_adapter = None
+        conf = self.settings.extract_load
+        self._extract_load_adapter = (
+            A.extract_load_adapter_factory(self.path, self.container, conf=conf) if conf else None
+        )
 
-        if self.settings.test:
-            self._test_adapter = A.test_adapter_factory(self.path, self.settings.test)
-        else:
-            self._test_adapter = None
+        conf = self.settings.test
+        self._test_adapter = A.test_adapter_factory(self.path, conf) if conf else None
 
-        if self.settings.transform:
-            self._transform_adapter = A.transform_adapter_factory(
-                self.path, self.settings.transform
-            )
-        else:
-            self._transform_adapter = None
+        conf = self.settings.transform
+        self._transform_adapter = A.transform_adapter_factory(self.path, conf) if conf else None
 
         self.state = project.state.scope(self.name)
-        self.container.add("cdf_state", self.state)
+        self.container["cdf_state"] = self.state
 
     def _create_container(self) -> Container:
         """Create a container for the data package, inheriting from the parent container."""
@@ -179,14 +170,14 @@ class Project(Mapping[str, DataPackage]):
             self.container.cfg.project, from_attributes=True
         )
         self.container["cdf_project"] = self
-
         self._load_dependencies()
 
-        if self.settings.state_backend:
-            self.state = A.state_backend_factory(self.path, self.settings.state_backend)
-        else:
-            self.state = A.get_default_file_state_backend(self.path)
-        self.container.add("cdf_state", self.state)
+        self.state = (
+            A.state_backend_factory(self.path, self.settings.state_backend)
+            if self.settings.state_backend
+            else A.get_default_file_state_backend(self.path)
+        )
+        self.container["cdf_state"] = self.state
 
         self.data_packages: dict[str, DataPackage] = {}
         self._discover_data_packages()
