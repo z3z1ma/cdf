@@ -93,16 +93,24 @@ class Container(MutableMapping[str, t.Any]):
         return self._config
 
     @cfg.setter
-    def cfg(self, value: Mapping[str, t.Any]) -> None:  # pyright: ignore[reportPropertyTypeMismatch]
+    def cfg(self, value: t.Any) -> None:
         """Set a new read-only configuration for the context.
 
         Args:
             value: New configuration
         """
+        if isinstance(value, ConfigurationLoader):
+            value = value.load()
+        if callable(value):
+            value = value()
+        if value is None:
+            self._config.clear()
+        if not isinstance(value, Mapping):
+            raise TypeError("Configuration must be a mapping or a callable that returns a mapping.")
         self._config = ConfigBox(value)
 
     @property
-    def config_readonly(self) -> MappingProxyType[str, t.Any]:
+    def cfg_ro(self) -> MappingProxyType[str, t.Any]:
         """Return the read-only configuration for the context.
 
         Returns:

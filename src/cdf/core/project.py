@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import typing as t
 from collections.abc import Iterator, Mapping
 from functools import wraps
@@ -30,6 +31,11 @@ def inject_package(func: t.Callable[P, T]) -> t.Callable[P, T]:
     @wraps(func)
     def wrapper(*args: P.args, **kwargs: P.kwargs) -> T:
         self = t.cast(Project | DataPackage, args[0])
+        if isinstance(self, Project):
+            os.environ["CDF_PROJECT_PATH"] = str(self.path)
+        else:
+            os.environ["CDF_PROJECT_PATH"] = str(self.project.path)
+            os.environ["CDF_PACKAGE_PATH"] = str(self.path)
         with self.container, inject_sys_path(str(self.path)):
             return func(*args, **kwargs)
 
@@ -48,9 +54,12 @@ class DataPackage:
             package_path: Path to the data package directory.
         """
         self.project = project
-        self.path = Path(package_path)
+        self.path = Path(package_path).resolve()
         self.name = self.path.name
 
+        # TODO: move to context manager
+        os.environ["CDF_PROJECT_PATH"] = str(self.project.path)
+        os.environ["CDF_PACKAGE_PATH"] = str(self.path)
         self.container = self._create_container()
         self.settings = I.DataPackageConfig.model_validate(
             self.container.cfg.package, from_attributes=True
@@ -103,6 +112,7 @@ class DataPackage:
 
     def activate(self) -> None:
         """Set the data package container as the active container."""
+        os.environ["CDF_PACKAGE_PATH"] = str(self.path)
         _ = self.container.activate()
 
     @property
@@ -157,10 +167,12 @@ class Project(Mapping[str, DataPackage]):
         Args:
             project_path: Path to the project directory.
         """
-        self.path = Path(project_path)
+        self.path = Path(project_path).resolve()
         if not self.path.exists():
             raise FileNotFoundError(f"Project path '{self.path}' does not exist.")
 
+        # TODO: move to context manager
+        os.environ["CDF_PROJECT_PATH"] = str(self.path)
         self.container = self._create_container()
         if "project" not in self.container.cfg:
             raise ValueError(

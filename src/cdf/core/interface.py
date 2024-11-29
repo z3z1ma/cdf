@@ -287,9 +287,9 @@ class SqlMeshAdapterConfig(_CDFConfigModel):
 class JinjaSqlAdapterConfig(_CDFConfigModel):
     adapter: t.Literal["jinja_sql"] = "jinja_sql"
 
-    connection_str: str
+    connection_str: str = "duckdb:///:memory:"
     """SqlAlchemy connection string."""
-    template_dir: str
+    template_dir: str = "sql"
     """Path to the Jinja SQL templates."""
     variables: dict[str, t.Any] = {}
     """Variables to pass to the templates."""
