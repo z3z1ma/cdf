@@ -85,6 +85,12 @@ def transform_adapter_factory(
     raise ValueError(f"Unknown transform adapter: {conf.adapter}")  # pyright: ignore[reportUnreachable]
 
 
+# TODO: while the entrypoint pattern here gives us maximum flexibility to truly expose the entire
+# API of the underlying tools (a must for cdf) -- we should complement this with at least a single
+# `run` method that tries to take the happy path for the most common use case with a given tool. So
+# for sqlmesh, it is `plan --run`, for dbt it is `build`, for jinja_sql it just executes entrypoint
+# This confers the benefit of having a uniform interface to fallback on when needed that can simply
+# 'transform' data without needing to know the underlying tool.
 class TransformationAdapterBase(ABC):
     """Abstract base class for all transformation adapters."""
 
