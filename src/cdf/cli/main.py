@@ -29,17 +29,19 @@ def cli(ctx: click.Context, project_path: Path | str) -> None:
     ctx.obj[_PROJECT_CONTEXT] = cdf.Project(project_path)
 
 
-def get_project(ctx: click.Context) -> cdf.Project:
+def _get_project(ctx: click.Context) -> cdf.Project:
     """Helper function to get the project from context."""
     return ctx.obj.get(_PROJECT_CONTEXT)
 
 
-def get_package(ctx: click.Context, data_package: str) -> cdf.DataPackage:
+def _get_package(ctx: click.Context, data_package: str) -> cdf.DataPackage:
     """Helper function to get a data package ensuring it is active or exit."""
-    project = get_project(ctx)
+    project = _get_project(ctx)
     if data_package not in project:
         click.echo(f"Data package '{data_package}' not found.", err=True)
         sys.exit(1)
+    # HACK: an interesting way to ensure dependencies are installed just-in-time for
+    # a given package without fussing with venvs directly
     if os.getenv(_ACTIVE_PACKAGE_CONTEXT) != data_package:
         os.execvpe(
             "uv",
@@ -53,7 +55,7 @@ def get_package(ctx: click.Context, data_package: str) -> cdf.DataPackage:
 @click.pass_context
 def list_packages(ctx: click.Context) -> None:
     """List all data packages in the project."""
-    project = get_project(ctx)
+    project = _get_project(ctx)
     packages = list(project.data_packages.keys())
     if not packages:
         click.echo("No data packages found.")
@@ -68,7 +70,7 @@ def list_packages(ctx: click.Context) -> None:
 @click.pass_context
 def list_schedules(ctx: click.Context, data_package: str) -> None:
     """List schedules for a data package."""
-    pkg = get_package(ctx, data_package)
+    pkg = _get_package(ctx, data_package)
     schedules = pkg.settings.schedules
     if not schedules:
         click.echo(f"No schedules found for data package '{data_package}'.")
@@ -83,7 +85,7 @@ def list_schedules(ctx: click.Context, data_package: str) -> None:
 @click.pass_context
 def discover_pipelines(ctx: click.Context, data_package: str) -> None:
     """Discover pipelines in a data package."""
-    pkg = get_package(ctx, data_package)
+    pkg = _get_package(ctx, data_package)
     try:
         pipelines = pkg.discover_extract_load_pipelines()
         if not pipelines:
@@ -107,11 +109,11 @@ def discover_pipelines(ctx: click.Context, data_package: str) -> None:
     help="Additional arguments for the pipeline in key=value format.",
 )
 @click.pass_context
-def run_pipeline(
+def extract_load(
     ctx: click.Context, data_package: str, pipeline_name: str = "main", *, kwargs: list[str]
 ) -> None:
     """Run a specific pipeline in a data package."""
-    pkg = get_package(ctx, data_package)
+    pkg = _get_package(ctx, data_package)
     kwargs_dict = {}
     for item in kwargs:
         if "=" in item:
@@ -121,7 +123,7 @@ def run_pipeline(
             click.echo(f"Invalid argument format: '{item}'. Use key=value.", err=True)
             sys.exit(1)
     try:
-        pkg.run_pipeline(pipeline_name, **kwargs_dict)
+        pkg.extract_load(pipeline_name, **kwargs_dict)
         click.echo(
             f"Pipeline '{pipeline_name}' in data package '{data_package}' executed successfully."
         )
@@ -133,11 +135,11 @@ def run_pipeline(
 @cli.command()
 @click.argument("data_package")
 @click.pass_context
-def run_tests(ctx: click.Context, data_package: str) -> None:
+def test(ctx: click.Context, data_package: str) -> None:
     """Run tests for a data package."""
-    pkg = get_package(ctx, data_package)
+    pkg = _get_package(ctx, data_package)
     try:
-        results = pkg.run_tests()
+        results = pkg.test()
         click.echo(f"Test results for data package '{data_package}':")
         click.echo(results)
     except AssertionError as e:
@@ -148,14 +150,19 @@ def run_tests(ctx: click.Context, data_package: str) -> None:
         sys.exit(1)
 
 
-@cli.command()
+@cli.command(
+    context_settings=dict(
+        ignore_unknown_options=True,
+        allow_extra_args=True,
+    ),
+)
 @click.argument("data_package")
 @click.pass_context
-def run_transforms(ctx: click.Context, data_package: str) -> None:
+def transform(ctx: click.Context, data_package: str) -> None:
     """Run transforms for a data package."""
-    pkg = get_package(ctx, data_package)
+    pkg = _get_package(ctx, data_package)
     try:
-        pkg.run_transformations()
+        pkg.transform(*ctx.args)
         click.echo(f"Successfully ran transforms for data package '{data_package}'.")
     except Exception as e:
         click.echo(f"Error running transforms: {e}", err=True)
@@ -164,9 +171,9 @@ def run_transforms(ctx: click.Context, data_package: str) -> None:
 
 @cli.command()
 @click.pass_context
-def show_config(ctx: click.Context) -> None:
+def dump_config(ctx: click.Context) -> None:
     """Show the project configuration."""
-    project = get_project(ctx)
+    project = _get_project(ctx)
     click.echo("Project Configuration:")
     for key, value in project.settings.model_dump().items():
         click.echo(f"{key}: {value}")
@@ -175,9 +182,9 @@ def show_config(ctx: click.Context) -> None:
 @cli.command()
 @click.argument("data_package")
 @click.pass_context
-def show_package_config(ctx: click.Context, data_package: str) -> None:
+def dump_package_config(ctx: click.Context, data_package: str) -> None:
     """Show the configuration for a data package."""
-    pkg = get_package(ctx, data_package)
+    pkg = _get_package(ctx, data_package)
     click.echo(f"Configuration for data package '{data_package}':")
     for key, value in pkg.settings.model_dump().items():
         click.echo(f"{key}: {value}")

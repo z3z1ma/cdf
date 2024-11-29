@@ -139,12 +139,12 @@ class DataPackage:
         return self.extract_load_adapter.discover_pipelines()
 
     @inject_package
-    def run_pipeline(self, pipeline_name: str, /, **kwargs: t.Any) -> None:
+    def extract_load(self, pipeline_name: str, /, **kwargs: t.Any) -> None:
         """Delegate to the adapter to run the pipeline."""
         self.extract_load_adapter(pipeline_name, **kwargs)
 
     @inject_package
-    def run_tests(self) -> Mapping[str, t.Any]:
+    def test(self) -> Mapping[str, t.Any]:
         """Run tests using the test adapter."""
         results, err = self.test_adapter()
         if err:
@@ -152,9 +152,9 @@ class DataPackage:
         return results
 
     @inject_package
-    def run_transformations(self, **kwargs: t.Any) -> None:
+    def transform(self, *args: t.Any) -> None:
         """Run transformations using the transformation adapter."""
-        self.transform_adapter(**kwargs)
+        self.transform_adapter(*args)
 
 
 @t.final
@@ -269,7 +269,7 @@ if __name__ == "__main__":
     project.synthetic.container.add("test2", 321)
 
     print("Running pipeline `pipeline_main`")
-    project.synthetic.run_pipeline("pipeline_main")
+    project.synthetic.extract_load("pipeline_main")
 
     print("Running tests for `synthetic` package")
-    _ = project.synthetic.run_tests()
+    _ = project.synthetic.test()
