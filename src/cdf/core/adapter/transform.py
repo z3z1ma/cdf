@@ -313,14 +313,14 @@ class JinjaSqlAdapter(TransformationAdapterBase):
             from jinja2 import Environment, FileSystemLoader
             from sqlalchemy import create_engine, text
 
-            import cdf
+            from cdf.core.container import active_container
 
             _ = args  # TODO: use args to dispatch to other functions or control internal behavior
             engine = create_engine(self.connection_str)
 
             sql_dir = self.package_path / self.template_dir
             env = Environment(loader=FileSystemLoader(str(sql_dir)))
-            container = cdf.get_container()
+            container = active_container.get()
 
             transformations = self.discover_transformations()
             sorted_statements = sorted(transformations.items(), key=lambda x: x[0])
