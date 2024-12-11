@@ -29,7 +29,7 @@ def test_file_state_backend_basic_operations():
     # Create a temporary directory to store the state file
     with tempfile.TemporaryDirectory() as temp_dir:
         state_file = Path(temp_dir) / "state.json"
-        backend = FileStateBackend(file_path=state_file)
+        backend = FileStateBackend(path=state_file)
 
         # Test setting an item
         backend["key1"] = {"data": 123}
@@ -52,7 +52,7 @@ def test_file_state_backend_basic_operations():
         assert set(keys) == {"key2", "key3"}
 
         # Test persistence
-        backend = FileStateBackend(file_path=state_file)
+        backend = FileStateBackend(path=state_file)
         assert len(backend) == 2
         assert backend["key2"] == "value2"
 
@@ -61,7 +61,7 @@ def test_file_state_backend_thread_safety():
     # Create a temporary directory to store the state file
     with tempfile.TemporaryDirectory() as temp_dir:
         state_file = Path(temp_dir) / "state.json"
-        backend = FileStateBackend(file_path=state_file)
+        backend = FileStateBackend(path=state_file)
 
         def worker():
             for i in range(100):
@@ -82,7 +82,7 @@ def test_file_state_backend_missing_key():
     # Create a temporary directory to store the state file
     with tempfile.TemporaryDirectory() as temp_dir:
         state_file = Path(temp_dir) / "state.json"
-        backend = FileStateBackend(file_path=state_file)
+        backend = FileStateBackend(path=state_file)
 
         with pytest.raises(KeyError):
             _ = backend["nonexistent_key"]
@@ -181,7 +181,7 @@ def test_state_backend_factory_file_backend_absolute_path():
         state_file = Path(temp_dir) / "state.json"
         config = FileStateBackendConfig(
             adapter="file",
-            file_path=str(state_file),
+            path=str(state_file),
             buffered=False,
         )
         backend = state_backend_factory(Path(temp_dir), config)
@@ -195,7 +195,7 @@ def test_state_backend_factory_file_backend_relative_path():
         state_file = "state.json"
         config = FileStateBackendConfig(
             adapter="file",
-            file_path=state_file,
+            path=state_file,
             buffered=False,
         )
         backend = state_backend_factory(Path(temp_dir), config)
@@ -290,7 +290,7 @@ def test_file_state_backend_custom_dumper_loader():
             return json.loads(s.lower())
 
         backend = FileStateBackend(
-            file_path=state_file,
+            path=state_file,
             dumper=custom_dumper,
             loader=custom_loader,
         )
@@ -330,18 +330,18 @@ def test_sqlalchemy_state_backend_custom_dumper_loader():
 def test_file_state_backend_persistence():
     with tempfile.TemporaryDirectory() as temp_dir:
         state_file = Path(temp_dir) / "state.json"
-        backend = FileStateBackend(file_path=state_file)
+        backend = FileStateBackend(path=state_file)
         backend["key"] = "value"
 
         # Reload the backend
-        backend = FileStateBackend(file_path=state_file)
+        backend = FileStateBackend(path=state_file)
         assert backend["key"] == "value"
 
 
 def test_file_state_backend_nonexistent_file():
     with tempfile.TemporaryDirectory() as temp_dir:
         state_file = Path(temp_dir) / "nonexistent.json"
-        backend = FileStateBackend(file_path=state_file)
+        backend = FileStateBackend(path=state_file)
         assert len(backend) == 0
 
 

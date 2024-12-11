@@ -301,7 +301,7 @@ TransformConfig = DbtTransformAdapterConfig | SqlMeshAdapterConfig | JinjaSqlAda
 class FileStateBackendConfig(_CDFConfigModel):
     adapter: t.Literal["file"] = "file"
 
-    file_path: Path | str = Path("state.json")
+    path: Path | str = Path("state.json")
     """Path to the file where the state will be stored."""
     buffered: bool = False
     """If True, writes are buffered and flushed to disk on exit."""

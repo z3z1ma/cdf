@@ -53,11 +53,11 @@ def state_backend_factory(
         ValueError: If the adapter specified in the configuration is invalid.
     """
     if conf is None:
-        conf = I.FileStateBackendConfig(file_path=package_path.joinpath("state.json").resolve())
+        conf = I.FileStateBackendConfig(path=package_path.joinpath("state.json").resolve())
     match conf.adapter:
         case "file":
-            if not Path(conf.file_path).is_absolute():
-                conf.file_path = package_path / conf.file_path
+            if not Path(conf.path).is_absolute():
+                conf.path = package_path / conf.path
             return FileStateBackend(**conf.model_dump(exclude={"adapter"}, exclude_none=True))
         case "sqlalchemy":
             return SqlAlchemyStateBackend(**conf.model_dump(exclude={"adapter"}, exclude_none=True))
@@ -220,7 +220,7 @@ class FileStateBackend(MutableMapping[str, JSON]):
 
     def __init__(
         self,
-        file_path: Path | str,
+        path: Path | str,
         *,
         dumper: t.Callable[[JSON], str] = _dumper,
         loader: t.Callable[[str], JSON] = json.loads,
@@ -229,33 +229,33 @@ class FileStateBackend(MutableMapping[str, JSON]):
         """Initialize the storage interface loading data from the file if it exists
 
         Args:
-            file_path: The path to the file to store the data
+            path: The path to the file to store the data
             dumper: A function to serialize a python object to str
             loader: A function to deserialize str to python object
             buffered: If True, buffer writes and write to file on exit
         """
-        self._file_path: Path = Path(file_path).resolve()
+        self._path: Path = Path(path).resolve()
         self._buffered: bool = buffered
         self._lock: threading.Lock = threading.Lock()
         self._data: dict[str, JSON] = {}
         self._dumper: t.Callable[[JSON], str] = dumper
         self._loader: t.Callable[[str], JSON] = loader
-        if self._file_path.exists():
-            self._data = t.cast(dict[str, JSON], self._loader(self._file_path.read_text()))
+        if self._path.exists():
+            self._data = t.cast(dict[str, JSON], self._loader(self._path.read_text()))
         if buffered:
-            _ = atexit.register(self._flush)
+            _ = atexit.register(self._write_threadsafe)
 
-    def _flush(self) -> None:
-        """Flush the buffered data to the file"""
+    def _write_threadsafe(self) -> None:
+        """Write data to the file in a thread-safe manner"""
         with self._lock:
-            self._write_data()
+            self._write()
 
-    def _write_data(self) -> None:
+    def _write(self) -> None:
         """Write data to a temporary file and replace the target file"""
-        temp_file_path = str(self._file_path) + ".tmp"
+        temp_file_path = str(self._path) + ".tmp"
         with open(temp_file_path, "w") as f:
             _ = f.write(self._dumper(self._data))
-        os.replace(temp_file_path, self._file_path)
+        os.replace(temp_file_path, self._path)
 
     def __getitem__(self, key: str) -> JSON:
         """Get the JSON object stored under the given key
@@ -283,7 +283,7 @@ class FileStateBackend(MutableMapping[str, JSON]):
         """
         self._data[key] = value
         if not self._buffered:
-            self._flush()
+            self._write_threadsafe()
 
     def __delitem__(self, key: str) -> None:
         """Delete the JSON object stored under the given key
@@ -299,7 +299,7 @@ class FileStateBackend(MutableMapping[str, JSON]):
         except KeyError:
             raise KeyError(key)
         if not self._buffered:
-            self._flush()
+            self._write_threadsafe()
 
     def __iter__(self) -> Iterator[str]:
         """Iterate over the keys stored in the file
@@ -326,7 +326,7 @@ class FileStateBackend(MutableMapping[str, JSON]):
         """
         self._data.update(*args, **kwargs)
         if not self._buffered:
-            self._flush()
+            self._write_threadsafe()
 
     def scope(self, namespace: str) -> ScopedMapping:
         """Scope the mapping to a namespace"""
