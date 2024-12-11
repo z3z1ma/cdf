@@ -87,7 +87,7 @@ def discover_pipelines(ctx: click.Context, data_package: str) -> None:
     """Discover pipelines in a data package."""
     pkg = _get_package(ctx, data_package)
     try:
-        pipelines = pkg.discover_extract_load_pipelines()
+        pipelines = pkg.discover_ingest_pipelines()
         if not pipelines:
             click.echo(f"No pipelines found in data package '{data_package}'.")
         else:
@@ -109,7 +109,7 @@ def discover_pipelines(ctx: click.Context, data_package: str) -> None:
     help="Additional arguments for the pipeline in key=value format.",
 )
 @click.pass_context
-def extract_load(
+def ingest(
     ctx: click.Context, data_package: str, pipeline_name: str = "main", *, kwargs: list[str]
 ) -> None:
     """Run a specific pipeline in a data package."""
@@ -123,7 +123,7 @@ def extract_load(
             click.echo(f"Invalid argument format: '{item}'. Use key=value.", err=True)
             sys.exit(1)
     try:
-        pkg.extract_load(pipeline_name, **kwargs_dict)
+        pkg.ingest(pipeline_name, **kwargs_dict)
         click.echo(
             f"Pipeline '{pipeline_name}' in data package '{data_package}' executed successfully."
         )

@@ -67,9 +67,9 @@ class DataPackage:
         self.container["cdf_package"] = self
         self._dependencies = self._load_dependencies()
 
-        conf = self.settings.extract_load
-        self._extract_load_adapter = (
-            A.extract_load_adapter_factory(self.path, self.container, conf=conf) if conf else None
+        conf = self.settings.ingest
+        self._ingest_adapter = (
+            A.ingest_adapter_factory(self.path, self.container, conf=conf) if conf else None
         )
 
         conf = self.settings.test
@@ -116,10 +116,10 @@ class DataPackage:
         _ = self.container.activate()
 
     @property
-    def extract_load_adapter(self) -> A.extract_load.ExtractLoadAdapterBase[t.Any]:
-        if self._extract_load_adapter is None:
+    def ingest_adapter(self) -> A.ingest.ExtractLoadAdapterBase[t.Any]:
+        if self._ingest_adapter is None:
             raise ValueError(f"No extract-load adapter configured for the {self.name} package")
-        return self._extract_load_adapter
+        return self._ingest_adapter
 
     @property
     def test_adapter(self) -> A.test.TestAdapterBase[t.Any]:
@@ -134,14 +134,14 @@ class DataPackage:
         return self._transform_adapter
 
     @inject_package
-    def discover_extract_load_pipelines(self) -> Mapping[str, t.Callable[..., t.Any]]:
+    def discover_ingest_pipelines(self) -> Mapping[str, t.Callable[..., t.Any]]:
         """Delegate to the adapter to discover pipelines."""
-        return self.extract_load_adapter.discover_pipelines()
+        return self.ingest_adapter.discover_pipelines()
 
     @inject_package
-    def extract_load(self, pipeline_name: str, /, **kwargs: t.Any) -> None:
+    def ingest(self, pipeline_name: str, /, **kwargs: t.Any) -> None:
         """Delegate to the adapter to run the pipeline."""
-        self.extract_load_adapter(pipeline_name, **kwargs)
+        self.ingest_adapter(pipeline_name, **kwargs)
 
     @inject_package
     def test(self) -> Mapping[str, t.Any]:
@@ -262,14 +262,14 @@ if __name__ == "__main__":
     print("project.data_packages", project.data_packages)
     print("project.config.some.value", project.container.cfg.some.value)
 
-    print("Discovered pipelines", project.synthetic.discover_extract_load_pipelines())
-    print("Index into pipeline", project.synthetic.extract_load_adapter.pipeline_main)
+    print("Discovered pipelines", project.synthetic.discover_ingest_pipelines())
+    print("Index into pipeline", project.synthetic.ingest_adapter.pipeline_main)
 
     print("Adding `test2` to project container")
     project.synthetic.container.add("test2", 321)
 
     print("Running pipeline `pipeline_main`")
-    project.synthetic.extract_load("pipeline_main")
+    project.synthetic.ingest("pipeline_main")
 
     print("Running tests for `synthetic` package")
     _ = project.synthetic.test()

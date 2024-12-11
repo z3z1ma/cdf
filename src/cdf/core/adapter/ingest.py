@@ -32,30 +32,30 @@ logger = logging.getLogger(__name__)
 
 
 @t.overload
-def extract_load_adapter_factory(
+def ingest_adapter_factory(
     package_path: Path, container: Container, conf: I.DltAdapterConfig
 ) -> DltAdapter: ...
 
 
 @t.overload
-def extract_load_adapter_factory(
+def ingest_adapter_factory(
     package_path: Path, container: Container, conf: I.SingerAdapterConfig
 ) -> SingerAdapter: ...
 
 
 @t.overload
-def extract_load_adapter_factory(
+def ingest_adapter_factory(
     package_path: Path, container: Container, conf: I.SlingAdapterConfig
 ) -> SlingAdapter: ...
 
 
 @t.overload
-def extract_load_adapter_factory(
+def ingest_adapter_factory(
     package_path: Path, container: Container, conf: I.HamiltonAdapterConfig
 ) -> HamiltonAdapter: ...
 
 
-def extract_load_adapter_factory(
+def ingest_adapter_factory(
     package_path: Path, container: Container, conf: I.ExtractLoadConfig
 ) -> ExtractLoadAdapterBase[t.Any]:
     """Factory function to create an extract-load adapter based on the provided configuration.

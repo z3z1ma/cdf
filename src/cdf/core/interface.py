@@ -383,7 +383,7 @@ class DataPackageConfig(_CDFConfigModel):
     """Manifest describing the data package outputs and metadata"""
     schedules: list[dict[str, str]] = []
     """List of schedules for the data package, for use with Scheduler adapter"""
-    extract_load: ExtractLoadConfig | None = None
+    ingest: ExtractLoadConfig | None = None
     """Configuration for the extract and load adapter"""
     transform: TransformConfig | None = None
     """Configuration for the transform adapter"""
