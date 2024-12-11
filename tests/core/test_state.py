@@ -9,8 +9,8 @@ from sqlalchemy import create_engine
 
 from cdf.core.adapter.state import (
     FileStateBackend,
-    ScopedMapping,
     SqlAlchemyStateBackend,
+    _ScopedMapping,
     state_backend_factory,
 )
 from cdf.core.interface import (
@@ -222,7 +222,7 @@ def test_state_backend_factory_sqlalchemy_backend():
 
 def test_scoped_mapping_basic_operations():
     base_mapping = {}
-    mapping = ScopedMapping(base_mapping, "namespace")
+    mapping = _ScopedMapping(base_mapping, "namespace")
 
     # Test setting an item
     mapping["key1"] = "value1"
@@ -250,7 +250,7 @@ def test_scoped_mapping_basic_operations():
 
 def test_scoped_mapping_with_custom_delimiter():
     base_mapping = {}
-    mapping = ScopedMapping(base_mapping, "namespace", delimiter="::")
+    mapping = _ScopedMapping(base_mapping, "namespace", delimiter="::")
 
     mapping["key"] = "value"
     assert base_mapping["namespace::key"] == "value"
@@ -259,8 +259,8 @@ def test_scoped_mapping_with_custom_delimiter():
 
 def test_scoped_mapping_multiple_namespaces():
     base_mapping = {}
-    mapping1 = ScopedMapping(base_mapping, "namespace1")
-    mapping2 = ScopedMapping(base_mapping, "namespace2")
+    mapping1 = _ScopedMapping(base_mapping, "namespace1")
+    mapping2 = _ScopedMapping(base_mapping, "namespace2")
 
     mapping1["key"] = "value1"
     mapping2["key"] = "value2"
@@ -273,7 +273,7 @@ def test_scoped_mapping_multiple_namespaces():
 
 def test_scoped_mapping_missing_key():
     base_mapping = {}
-    mapping = ScopedMapping(base_mapping, "namespace")
+    mapping = _ScopedMapping(base_mapping, "namespace")
 
     with pytest.raises(KeyError):
         _ = mapping["nonexistent_key"]

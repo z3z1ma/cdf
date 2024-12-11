@@ -130,6 +130,11 @@ class ExtractLoadAdapterBase(ABC, t.Generic[T]):
             self._pipelines = self._discover_pipelines()
         return self._pipelines
 
+    # TODO: Create a central schema representation we can use across dlt, sling, singer, hamilton, etc.
+    def schema(self) -> t.Any:
+        """Return a schema for the package."""
+        raise NotImplementedError("Schema generation not implemented for this adapter")
+
     @abstractmethod
     def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
         """Run a specific pipeline."""
