@@ -68,7 +68,13 @@ def _dumper(obj: JSON) -> str:
     return json.dumps(obj, separators=(",", ":"), sort_keys=True, indent=2)
 
 
-class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
+class BaseStateBackend(MutableMapping[str, JSON]):
+    def scope(self, namespace: str) -> _ScopedMapping:
+        """Scope the state to a namespace"""
+        return _ScopedMapping(self, namespace)
+
+
+class SqlAlchemyStateBackend(BaseStateBackend):
     """Store JSON objects persistently using SQLAlchemy with dict-like interface"""
 
     def __init__(
@@ -210,12 +216,8 @@ class SqlAlchemyStateBackend(MutableMapping[str, JSON]):
         finally:
             session.close()
 
-    def scope(self, namespace: str) -> ScopedMapping:
-        """Scope the mapping to a namespace"""
-        return ScopedMapping(self, namespace)
 
-
-class FileStateBackend(MutableMapping[str, JSON]):
+class FileStateBackend(BaseStateBackend):
     """Store JSON objects persistently in a local file with dict-like interface"""
 
     def __init__(
@@ -328,15 +330,11 @@ class FileStateBackend(MutableMapping[str, JSON]):
         if not self._buffered:
             self._write_threadsafe()
 
-    def scope(self, namespace: str) -> ScopedMapping:
-        """Scope the mapping to a namespace"""
-        return ScopedMapping(self, namespace)
-
 
 StateBackend = FileStateBackend | SqlAlchemyStateBackend
 
 
-class ScopedMapping(MutableMapping[str, JSON]):
+class _ScopedMapping(MutableMapping[str, JSON]):
     """A mapping that prefixes all keys with a namespace and a delimiter"""
 
     def __init__(
