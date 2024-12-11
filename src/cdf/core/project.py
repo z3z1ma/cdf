@@ -102,7 +102,7 @@ class DataPackage:
 
     def _load_dependencies(self) -> tuple[ModuleType, ...]:
         """Load dependencies from Python files in the 'dependencies' directory."""
-        dependencies_dir = self.path / self.project.settings.dependencies_dir
+        dependencies_dir = self.path / self.settings.dependencies_dir
         if dependencies_dir.exists():
             with self.container, inject_sys_path(dependencies_dir):
                 return tuple(

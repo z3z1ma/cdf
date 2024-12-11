@@ -377,6 +377,8 @@ class DataPackageConfig(_CDFConfigModel):
     schedules: list[dict[str, str]] = []
     """List of schedules for the data package, for use with Scheduler/Deployment adapter"""
 
+    dependencies_dir: Path = pydantic.Field(default=c.DEFAULT_DEPENDENCIES_DIR)
+    """Directory where dependencies are stored"""
     runtime_parameters: dict[str, t.Any] = {}
     """Key-value pairs for runtime parameters used by cdf internally"""
 
