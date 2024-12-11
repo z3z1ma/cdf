@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import atexit
-import functools
 import os
 import threading
 import typing as t
@@ -21,7 +20,6 @@ __all__ = [
     "FileStateBackend",
     "SqlAlchemyStateBackend",
     "state_backend_factory",
-    "get_default_file_state_backend",
 ]
 
 JSON = str | int | float | bool | None | dict[str, "JSON"] | list["JSON"]
@@ -29,7 +27,7 @@ JSON = str | int | float | bool | None | dict[str, "JSON"] | list["JSON"]
 
 @t.overload
 def state_backend_factory(
-    package_path: Path, conf: I.FileStateBackendConfig
+    package_path: Path, conf: I.FileStateBackendConfig | None
 ) -> FileStateBackend: ...
 
 
@@ -39,7 +37,9 @@ def state_backend_factory(
 ) -> SqlAlchemyStateBackend: ...
 
 
-def state_backend_factory(package_path: Path, conf: I.StateBackendConfig) -> StateBackend:
+def state_backend_factory(
+    package_path: Path, conf: I.StateBackendConfig | None = None
+) -> StateBackend:
     """Factory function to create a state backend instance based on the provided configuration.
 
     Args:
@@ -52,6 +52,8 @@ def state_backend_factory(package_path: Path, conf: I.StateBackendConfig) -> Sta
     Raises:
         ValueError: If the adapter specified in the configuration is invalid.
     """
+    if conf is None:
+        conf = I.FileStateBackendConfig(file_path=package_path.joinpath("state.json").resolve())
     match conf.adapter:
         case "file":
             if not Path(conf.file_path).is_absolute():
@@ -420,11 +422,3 @@ class ScopedMapping(MutableMapping[str, JSON]):
         """
         ns_args = {self._prefixed_key(k): v for k, v in dict[str, JSON](*args, **kwargs).items()}
         self._mapping.update(ns_args)
-
-
-@functools.lru_cache()
-def get_default_file_state_backend(path: Path) -> FileStateBackend:
-    """Get a default state backend"""
-    return state_backend_factory(
-        path, I.FileStateBackendConfig(file_path=(path / "state.json").resolve())
-    )
