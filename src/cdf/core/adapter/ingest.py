@@ -215,7 +215,7 @@ class DltAdapter(ExtractLoadAdapterBase[DltPipelineProtocol]):
     def _discover_pipelines(self) -> Mapping[str, DltPipelineProtocol]:
         """Discover all extract-load pipelines in main.py."""
         pipelines: dict[str, DltPipelineProtocol] = {}
-        main_script = self.package_path / "main.py"
+        main_script = self.package_path / c.DLT_ENTRYPOINT
         if main_script.exists():
             with self._inject_provider():
                 pipelines.update({
