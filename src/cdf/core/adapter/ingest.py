@@ -433,22 +433,22 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
                         tap_cmd,
                         stdout=subprocess.PIPE,
                         env={**os.environ, **self.env},
-                    ) as tap_process,
+                    ) as tap_proc,
                     subprocess.Popen(  # nosec
                         tgt_cmd,
-                        stdin=tap_process.stdout,
+                        stdin=tap_proc.stdout,
                         stdout=subprocess.PIPE,
                         env={**os.environ, **self.env},
-                    ) as tgt_process,
+                    ) as tgt_proc,
                 ):
-                    assert tgt_process.stdout
-                    for line in iter(tgt_process.stdout):
+                    assert tgt_proc.stdout
+                    for line in iter(tgt_proc.stdout):
                         with suppress(json.JSONDecodeError):
                             last_state_message = json.loads(line.decode())
-                if tap_process.returncode > 0:
-                    raise subprocess.CalledProcessError(tap_process.returncode, tgt_cmd)
-                if tgt_process.returncode > 0:
-                    raise subprocess.CalledProcessError(tgt_process.returncode, tgt_cmd)
+                if tap_proc.returncode > 0:
+                    raise subprocess.CalledProcessError(tap_proc.returncode, tgt_cmd)
+                if tgt_proc.returncode > 0:
+                    raise subprocess.CalledProcessError(tgt_proc.returncode, tgt_cmd)
                 if last_state_message:
                     state.update(last_state_message)
                 logger.info("Singer pipeline executed successfully.")
@@ -461,6 +461,8 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
             _ = self._run_scripts("after_success_*", tap_cmd=tap_cmd, tgt_cmd=tgt_cmd, state=state)
 
 
+# WIP: The meltano adapter should allow us to basically actuate a meltano.yml either by itself
+# or embedded in package configuration
 class MeltanoPipelineProtocol(t.Protocol):
     def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
 
