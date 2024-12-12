@@ -58,10 +58,10 @@ class SingerAdapterConfig(_CDFConfigModel):
     """Singer tap to use for extracting data"""
     target_name: str
     """Singer target to use for loading data"""
-    tap_requirements: str | list[str] | None = None
-    """The pip compatible requirements for the tap, otherwise the tap_name is used"""
-    target_requirements: str | list[str] | None = None
-    """The pip compatible requirements for the target, otherwise the target_name is used"""
+    tap_requirement: str | None = None
+    """The pip compatible requirement string for the tap, otherwise the tap_name is used"""
+    target_requirement: str | None = None
+    """The pip compatible requirement string for the target, otherwise the target_name is used"""
     tap_config: dict[str, t.Any] = {}
     """Configuration for the tap which will be serialized as a JSON file on disk"""
     target_config: dict[str, t.Any] = {}

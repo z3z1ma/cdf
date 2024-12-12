@@ -84,8 +84,8 @@ def ingest_adapter_factory(
                 container,
                 tap_name=conf.tap_name,
                 target_name=conf.target_name,
-                tap_requirements=conf.tap_requirements,
-                target_requirements=conf.target_requirements,
+                tap_requirement=conf.tap_requirement,
+                target_requirement=conf.target_requirement,
                 tap_config=conf.tap_config,
                 target_config=conf.target_config,
                 tap_catalog=conf.tap_catalog,
@@ -340,8 +340,8 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
         container: Container,
         tap_name: str,
         target_name: str,  # TODO: how can we pipe tap data to dlt target intuitively (dlt:<dest name>?)
-        tap_requirements: str | list[str] | None = None,
-        target_requirements: str | list[str] | None = None,
+        tap_requirement: str | None = None,
+        target_requirement: str | None = None,
         tap_config: dict[str, t.Any] | None = None,
         target_config: dict[str, t.Any] | None = None,
         tap_catalog: dict[str, t.Any] | None = None,
@@ -355,47 +355,22 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
             container (Container): The dependency injection container.
             tap_name (str): The name of the tap to use.
             target_name (str): The name of the target to use.
-            tap_requirements (str | list[str], optional): Pip dependencies for the tap. Defaults to None.
+            tap_requirement (str, optional): Pip dependency string for the tap. Defaults to None.
             tap_config (dict[str, t.Any], optional): Configuration for the tap. Defaults to None.
             tap_catalog (dict[str, t.Any], optional): Catalog configuration. Defaults to None.
-            target_requirements (str | list[str], optional): Pip dependencies for the target. Defaults to None.
+            target_requirement (str, optional): Pip dependency string for the target. Defaults to None.
             target_config (dict[str, t.Any], optional): Configuration for the target. Defaults to None.
             env (dict[str, str], optional): Environment variables. Defaults to None.
         """
         super().__init__(package_path, container)
         self.tap_name = tap_name
         self.target_name = target_name
-        self.tap_requirements = tap_requirements or [tap_name]
+        self.tap_requirement = tap_requirement or tap_name
         self.tap_config = tap_config or {}
         self.tap_catalog = tap_catalog or {}
-        self.target_requirements = target_requirements or [target_name]
+        self.target_requirement = target_requirement or target_name
         self.target_config = target_config or {}
         self.env = env or {}
-
-    @staticmethod
-    def _generate_pex(pip_deps: str | list[str], console_script: str) -> Path:
-        """Generate a pex file for the given pip dependencies.
-
-        Args:
-            pip_deps (str | list[str]): Pip dependencies as a string or list.
-
-        Returns:
-            Path: The path to the generated pex file.
-        """
-        if isinstance(pip_deps, str):
-            pip_deps = pip_deps.split()
-
-        pex_name = hashlib.md5(("".join(pip_deps) + sys.version).encode()).hexdigest()
-        pex_f = Path(tempfile.gettempdir(), "cdf.pex", pex_name)
-        pex_f.parent.mkdir(parents=True, exist_ok=True)
-
-        if not pex_f.exists():
-            # TODO: better detection of failure or invalid pex at target path (likely need to try to call --help)
-            _ = subprocess.run(  # nosec
-                ["pex", *pip_deps, "-c", console_script, "-o", str(pex_f)], check=True
-            )
-
-        return pex_f
 
     def _discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
         """Expose adapter as callable pipeline."""
@@ -408,11 +383,11 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
             self.tap_name,
             self.target_name,
         )
-        tap_pex = self._generate_pex(self.tap_requirements, self.tap_name)
-        tgt_pex = self._generate_pex(self.target_requirements, self.target_name)
+        tap_cmd = ["uvx", "--from", self.tap_requirement, self.tap_name]
+        tgt_cmd = ["uvx", "--from", self.target_requirement, self.target_name]
         state: dict[str, t.Any] = self.container["cdf_state"]
-        _ = self._run_scripts("before_*", tap_pex=tap_pex, tgt_pex=tgt_pex, state=state)
-        # TODO: handle catalog, and "capabilities"
+        _ = self._run_scripts("before_*", tap_cmd=tap_cmd, tgt_cmd=tgt_cmd, state=state)
+        # TODO: handle notion of catalog, and "capabilities" with as little fuss as possible
         with (
             tempfile.NamedTemporaryFile("w", suffix=".json") as tap_conf_f,
             tempfile.NamedTemporaryFile("w", suffix=".json") as tgt_conf_f,
@@ -424,18 +399,18 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
             tgt_conf_f.flush()
             json.dump(dict(state), tap_state_f)
             tap_state_f.flush()
-            tap_command = [str(tap_pex), "--config", tap_conf_f.name, "--state", tap_state_f.name]
-            tgt_command = [str(tgt_pex), "--config", tgt_conf_f.name]
+            tap_cmd.extend(["--config", tap_conf_f.name, "--state", tap_state_f.name])
+            tgt_cmd.extend(["--config", tgt_conf_f.name])
             try:
                 last_state_message = None
                 with (
                     subprocess.Popen(  # nosec
-                        tap_command,
+                        tap_cmd,
                         stdout=subprocess.PIPE,
                         env={**os.environ, **self.env},
                     ) as tap_process,
                     subprocess.Popen(  # nosec
-                        tgt_command,
+                        tgt_cmd,
                         stdin=tap_process.stdout,
                         stdout=subprocess.PIPE,
                         env={**os.environ, **self.env},
@@ -446,19 +421,45 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
                         with suppress(json.JSONDecodeError):
                             last_state_message = json.loads(line.decode())
                 if tap_process.returncode > 0:
-                    raise subprocess.CalledProcessError(tap_process.returncode, tgt_command)
+                    raise subprocess.CalledProcessError(tap_process.returncode, tgt_cmd)
                 if tgt_process.returncode > 0:
-                    raise subprocess.CalledProcessError(tgt_process.returncode, tgt_command)
+                    raise subprocess.CalledProcessError(tgt_process.returncode, tgt_cmd)
                 if last_state_message:
                     state.update(last_state_message)
                 logger.info("Singer pipeline executed successfully.")
             except subprocess.CalledProcessError as e:
                 logger.error("Error running Singer pipeline: %s", e)
                 _ = self._run_scripts(
-                    "after_error_*", tap_pex=tap_pex, tgt_pex=tgt_pex, state=state
+                    "after_error_*", tap_cmd=tap_cmd, tgt_cmd=tgt_cmd, state=state
                 )
                 raise
-            _ = self._run_scripts("after_success_*", tap_pex=tap_pex, tgt_pex=tgt_pex, state=state)
+            _ = self._run_scripts("after_success_*", tap_cmd=tap_cmd, tgt_cmd=tgt_cmd, state=state)
+
+
+class MeltanoPipelineProtocol(t.Protocol):
+    def __call__(self, *args: t.Any, **kwds: t.Any) -> t.Any: ...
+
+
+@t.final
+class MeltanoAdapter(ExtractLoadAdapterBase[MeltanoPipelineProtocol]):
+    def __init__(
+        self,
+        package_path: Path,
+        container: Container,
+        tap_name: str,
+        target_name: str,
+    ) -> None:
+        super().__init__(package_path, container)
+        self.tap_name = tap_name
+        self.target_name = target_name
+
+    def _discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
+        """Expose adapter as callable pipeline."""
+        return {"main": self}
+
+    def __call__(self, pipeline_name: str = "main", **kwargs: t.Any) -> None:
+        cmd = ["uvx", "meltano", "run", self.tap_name, self.target_name]
+        _ = subprocess.run(cmd, check=True, cwd=self.package_path)
 
 
 class HamiltonPipelineProtocol(t.Protocol):
