@@ -62,12 +62,14 @@ class SingerAdapterConfig(_CDFConfigModel):
     """The pip compatible requirement string for the tap, otherwise the tap_name is used"""
     target_requirement: str | None = None
     """The pip compatible requirement string for the target, otherwise the target_name is used"""
-    tap_config: dict[str, t.Any] = {}
+    tap_config: dict[str, t.Any] | Path | str = {}
     """Configuration for the tap which will be serialized as a JSON file on disk"""
-    target_config: dict[str, t.Any] = {}
+    target_config: dict[str, t.Any] | Path | str = {}
     """Configuration for the target which will be serialized as a JSON file on disk"""
-    tap_catalog: dict[str, t.Any] | None = None
+    tap_catalog: dict[str, t.Any] | Path | str | None = None
     """Catalog to use for the tap, will be serialized as a JSON file on disk."""
+    tap_supports_state: bool = True
+    """Whether the tap supports state or not."""
     env: dict[str, str] | None = None
     """Environment variables to set during the execution of the tap and target."""
 

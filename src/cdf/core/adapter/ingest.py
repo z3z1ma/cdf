@@ -3,13 +3,11 @@
 
 from __future__ import annotations
 
-import hashlib
 import inspect
 import logging
 import os
 import runpy
 import subprocess  # nosec
-import sys
 import tempfile
 import typing as t
 from abc import ABC, abstractmethod
@@ -19,9 +17,11 @@ from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
 
+import cdf.core.constants as c
 import cdf.core.interface as I
 from cdf.commons.file import json, load_module_from_path, yaml
 from cdf.commons.pyutils import inject_sys_path
+from cdf.core.configuration import ConfigurationLoader
 from cdf.core.container import Container
 
 __all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter", "HamiltonAdapter"]
@@ -89,6 +89,7 @@ def ingest_adapter_factory(
                 tap_config=conf.tap_config,
                 target_config=conf.target_config,
                 tap_catalog=conf.tap_catalog,
+                tap_supports_state=conf.tap_supports_state,
                 env=conf.env,
             )
         case "sling":
@@ -342,9 +343,10 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
         target_name: str,  # TODO: how can we pipe tap data to dlt target intuitively (dlt:<dest name>?)
         tap_requirement: str | None = None,
         target_requirement: str | None = None,
-        tap_config: dict[str, t.Any] | None = None,
-        target_config: dict[str, t.Any] | None = None,
-        tap_catalog: dict[str, t.Any] | None = None,
+        tap_config: dict[str, t.Any] | Path | str | None = None,
+        target_config: dict[str, t.Any] | Path | str | None = None,
+        tap_catalog: dict[str, t.Any] | Path | str | None = None,
+        tap_supports_state: bool = True,
         env: dict[str, str] | None = None,
     ) -> None:
         """
@@ -360,16 +362,37 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
             tap_catalog (dict[str, t.Any], optional): Catalog configuration. Defaults to None.
             target_requirement (str, optional): Pip dependency string for the target. Defaults to None.
             target_config (dict[str, t.Any], optional): Configuration for the target. Defaults to None.
-            env (dict[str, str], optional): Environment variables. Defaults to None.
+            env (dict[str, str], optional): Environment variables to inject in subprocesses. Defaults to None.
         """
         super().__init__(package_path, container)
+
+        def _resolve_pathlike(p: Path | str) -> Path:
+            p = Path(p)
+            if not p.is_absolute():
+                p = package_path / p
+            return p
+
+        def _load(p: Path | str) -> dict[str, t.Any]:
+            """Load configuration from a path."""
+            return ConfigurationLoader(
+                _resolve_pathlike(p), include_envvars=False, context="package"
+            ).load()
+
+        if isinstance(tap_config, (Path, str)):
+            tap_config = _load(tap_config)
+        if isinstance(target_config, (Path, str)):
+            target_config = _load(target_config)
+        if isinstance(tap_catalog, (Path, str)):
+            tap_catalog = _resolve_pathlike(tap_catalog)
+
         self.tap_name = tap_name
         self.target_name = target_name
         self.tap_requirement = tap_requirement or tap_name
         self.tap_config = tap_config or {}
-        self.tap_catalog = tap_catalog or {}
+        self.tap_catalog = tap_catalog
         self.target_requirement = target_requirement or target_name
         self.target_config = target_config or {}
+        self.tap_supports_state = tap_supports_state
         self.env = env or {}
 
     def _discover_pipelines(self) -> dict[str, t.Callable[..., t.Any]]:
@@ -397,10 +420,12 @@ class SingerAdapter(ExtractLoadAdapterBase[SingerPipelineProtocol]):
             tap_conf_f.flush()
             json.dump(dict(self.target_config or {}), tgt_conf_f)
             tgt_conf_f.flush()
-            json.dump(dict(state), tap_state_f)
-            tap_state_f.flush()
-            tap_cmd.extend(["--config", tap_conf_f.name, "--state", tap_state_f.name])
+            tap_cmd.extend(["--config", tap_conf_f.name])
             tgt_cmd.extend(["--config", tgt_conf_f.name])
+            if self.tap_supports_state:
+                json.dump(dict(state), tap_state_f)
+                tap_state_f.flush()
+                tap_cmd.extend(["--state", tap_state_f.name])
             try:
                 last_state_message = None
                 with (
