@@ -1,6 +1,14 @@
 # pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 """Core classes for managing data packages and projects."""
 
+# TODO: big one here, I think the problem we need to solve in cdf
+# is 2-fold. 1, a collection of useful data pipeline utilities in
+# python that can be leveraged/imported. Like dependency injection,
+# configuration management, logging, etc. 2, a template rendering
+# library for sharing configuration across "packages" which are
+# or should be 100% self-contained and can be written in any language
+# or leverage any existing tooling. IE Meltano, Singer, dlt, Sling, etc.
+
 from __future__ import annotations
 
 import os
