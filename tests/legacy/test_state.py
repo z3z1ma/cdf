@@ -7,13 +7,13 @@ from pathlib import Path
 import pytest
 from sqlalchemy import create_engine
 
-from cdf.core.adapter.state import (
+from cdf.legacy.adapter.state import (
     FileStateBackend,
     SqlAlchemyStateBackend,
     _ScopedMapping,
     state_backend_factory,
 )
-from cdf.core.interface import (
+from cdf.legacy.interface import (
     FileStateBackendConfig,
     SqlAlchemyStateBackendConfig,
 )

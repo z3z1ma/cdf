@@ -13,7 +13,7 @@ from types import TracebackType
 
 import pytest
 
-import cdf.core.interface as I
+import cdf.legacy.interface as I
 
 __all__ = ["TestAdapterBase", "PytestAdapter", "UnittestAdapter", "DbtTestAdapter"]
 

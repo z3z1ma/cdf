@@ -1,6 +1,6 @@
 """Hello, world!"""
 
-from cdf.core.container import inject_deps
+from cdf.legacy.container import inject_deps
 
 
 @inject_deps

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from cdf.core.configuration import (
+from cdf.legacy.configuration import (
     _CONVERTERS,
     ConfigBox,
     ConfigurationLoader,

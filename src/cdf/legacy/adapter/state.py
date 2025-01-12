@@ -13,7 +13,7 @@ import sqlalchemy
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, sessionmaker
 
-import cdf.core.interface as I
+import cdf.legacy.interface as I
 from cdf.commons.file import json
 
 __all__ = [

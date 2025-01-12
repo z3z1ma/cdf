@@ -20,8 +20,8 @@ from functools import partial, wraps
 from types import MappingProxyType, TracebackType
 
 from cdf.commons.pyutils import unique_dict
-from cdf.core.configuration import ConfigBox, ConfigurationLoader
-from cdf.core.constants import CONTEXT_PARAM_NAME
+from cdf.legacy.configuration import ConfigBox, ConfigurationLoader
+from cdf.legacy.constants import CONTEXT_PARAM_NAME
 
 __all__ = [
     "Container",

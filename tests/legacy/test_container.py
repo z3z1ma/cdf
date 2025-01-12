@@ -7,8 +7,8 @@ from contextlib import AbstractContextManager
 
 import pytest
 
-from cdf.core.configuration import ConfigurationLoader
-from cdf.core.container import (
+from cdf.legacy.configuration import ConfigurationLoader
+from cdf.legacy.container import (
     GLOBAL_CONTAINER,
     Container,
     DependencyCycleError,

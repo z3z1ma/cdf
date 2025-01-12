@@ -12,7 +12,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from pathlib import Path
 
-import cdf.core.interface as I
+import cdf.legacy.interface as I
 
 if t.TYPE_CHECKING:
     from sqlmesh import Context as SQLMeshContext
@@ -319,7 +319,7 @@ class JinjaSqlAdapter(TransformationAdapterBase):
             from jinja2 import Environment, FileSystemLoader
             from sqlalchemy import create_engine, text
 
-            from cdf.core.container import active_container
+            from cdf.legacy.container import active_container
 
             _ = args  # TODO: use args to dispatch to other functions or control internal behavior
             engine = create_engine(self.connection_str)

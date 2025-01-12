@@ -103,7 +103,6 @@ Tries to unwrap the Maybe, returning a default value if the Maybe is Nothing.
 
 - `default` - The value to return if unwrapping Nothing.
   
-
 **Returns**:
 
   The unwrapped value or the default value.
@@ -124,7 +123,6 @@ Lifts a function to work within the Maybe monad.
 
 - `func` - A function to lift.
   
-
 **Returns**:
 
   A new function that returns a Maybe value.
@@ -161,7 +159,6 @@ Applies a function to the value inside the Just.
 
 - `func` - A function that takes a value of type T and returns a Maybe containing a value of type U.
   
-
 **Returns**:
 
   The result of applying the function to the value inside the Just.
@@ -180,7 +177,6 @@ Applies a mapping function to the value inside the Just.
 
 - `func` - A function that takes a value of type T and returns a value of type U.
   
-
 **Returns**:
 
   A new Just containing the result of applying the function to the value inside the Just.
@@ -199,7 +195,6 @@ Filters the value inside the Just based on a predicate.
 
 - `predicate` - A function that takes a value of type T and returns a boolean.
   
-
 **Returns**:
 
   A new Just containing the value inside the Just if the predicate holds.
@@ -246,7 +241,6 @@ Applies a function to the value inside the Just.
 
 - `func` - A function that takes a value of type T and returns a Maybe containing a value of type U.
   
-
 **Returns**:
 
   The result of applying the function to the value inside the Just.
@@ -265,7 +259,6 @@ Applies a mapping function to the value inside the Just.
 
 - `func` - A function that takes a value of type T and returns a value of type U.
   
-
 **Returns**:
 
   A new Just containing the result of applying the function to the value inside the Just.
@@ -284,7 +277,6 @@ Filters the value inside the Just based on a predicate.
 
 - `predicate` - A function that takes a value of type T and returns a boolean.
   
-
 **Returns**:
 
   A new Just containing the value inside the Just if the predicate holds.
@@ -345,7 +337,6 @@ Transforms a function to work with arguments and output wrapped in Result monads
 
 - `func` - A function that takes any number of arguments and returns a value of type T.
   
-
 **Returns**:
 
   A function that takes the same number of unwrapped arguments and returns a Result-wrapped result.
@@ -382,7 +373,6 @@ Applies a function to the result of the Ok.
 
 - `func` - A function that takes a value of type T and returns a Result containing a value of type U.
   
-
 **Returns**:
 
   A new Result containing the result of the original Result after applying the function.
@@ -401,7 +391,6 @@ Applies a mapping function to the result of the Ok.
 
 - `func` - A function that takes a value of type T and returns a value of type U.
   
-
 **Returns**:
 
   A new Ok containing the result of the original Ok after applying the function.
@@ -454,7 +443,6 @@ Tries to unwrap the Ok, returning a default value if unwrapping raises an except
 
 - `default` - The value to return if unwrapping raises an exception.
   
-
 **Returns**:
 
   The unwrapped value or the default value if an exception is raised.
@@ -484,7 +472,6 @@ Filters the result of the Ok based on a predicate.
 - `predicate` - A function that takes a value of type T and returns a boolean.
 - `error` - The error to return if the predicate does not hold.
   
-
 **Returns**:
 
   A new Result containing the result of the original Result if the predicate holds.
@@ -535,7 +522,6 @@ Applies a function to the result of the Err.
 
 - `func` - A function that takes a value of type T and returns a Result containing a value of type U.
   
-
 **Returns**:
 
   An Err containing the original error.
@@ -554,7 +540,6 @@ Applies a mapping function to the result of the Err.
 
 - `func` - A function that takes a value of type T and returns a value of type U.
   
-
 **Returns**:
 
   An Err containing the original error.
@@ -603,7 +588,6 @@ Returns a default value since the Result is an Err.
 
 - `default` - The value to return.
   
-
 **Returns**:
 
   The default value.
@@ -636,7 +620,6 @@ Filters the result of the Err based on a predicate.
 
 - `predicate` - A function that takes a value of type T and returns a boolean.
   
-
 **Returns**:
 
   An Err containing the original error.
@@ -691,7 +674,6 @@ Creates a Promise that is already resolved with a value.
 
 - `value` - The value to resolve the Promise with.
   
-
 **Returns**:
 
   A new Promise that is already resolved with the value.
@@ -748,7 +730,6 @@ Applies a function to the result of the Promise.
 
 - `func` - A function that takes a value of type T and returns a Promise containing a value of type U.
   
-
 **Returns**:
 
   A new Promise containing the result of the original Promise after applying the function.
@@ -767,7 +748,6 @@ Applies a mapping function to the result of the Promise.
 
 - `func` - A function that takes a value of type T and returns a value of type U.
   
-
 **Returns**:
 
   A new Promise containing the result of the original Promise after applying the function.
@@ -792,7 +772,6 @@ Filters the result of the Promise based on a predicate.
 
 - `predicate` - A function that takes a value of type T and returns a boolean.
   
-
 **Returns**:
 
   A new Promise containing the result of the original Promise if the predicate holds.
@@ -811,7 +790,6 @@ Tries to unwrap the Promise, returning a default value if unwrapping raises an e
 
 - `default` - The value to return if unwrapping raises an exception.
   
-
 **Returns**:
 
   The unwrapped value or the default value if an exception is raised.
@@ -831,7 +809,6 @@ Creates a Promise that is already resolved with a value.
 
 - `value` - The value to resolve the Promise with.
   
-
 **Returns**:
 
   A new Promise that is already resolved with the value.
@@ -851,7 +828,6 @@ Creates a Promise that is already resolved with an exception.
 
 - `exception` - The exception to resolve the Promise with.
   
-
 **Returns**:
 
   A new Promise that is already resolved with the exception.
@@ -876,7 +852,6 @@ with Promise inputs.
 
 - `func` - A synchronous function that returns a value of type T.
   
-
 **Returns**:
 
   A function that, when called, returns a Promise wrapping the result of the original function.
@@ -942,7 +917,6 @@ Lazily applies a function to the result of the current computation.
 
 - `func` - A function that takes a value of type T and returns a Lazy monad containing a value of type U.
   
-
 **Returns**:
 
   A new Lazy monad containing the result of the computation after applying the function.
@@ -961,7 +935,6 @@ Lazily applies a mapping function to the result of the computation.
 
 - `func` - A function that takes a value of type T and returns a value of type U.
   
-
 **Returns**:
 
   A new Lazy monad containing the result of the computation after applying the function.
@@ -980,7 +953,6 @@ Lazily filters the result of the computation based on a predicate.
 
 - `predicate` - A function that takes a value of type T and returns a boolean.
   
-
 **Returns**:
 
   A new Lazy monad containing the result of the computation if the predicate holds.
@@ -1013,7 +985,6 @@ Tries to evaluate the computation, returning a default value if evaluation raise
 
 - `default` - The value to return if the computation raises an exception.
   
-
 **Returns**:
 
   The result of the computation or the default value if an exception is raised.
@@ -1034,7 +1005,6 @@ Transforms a function to work with arguments and output wrapped in Lazy monads.
 
 - `func` - A function that takes any number of arguments and returns a value of type U.
   
-
 **Returns**:
 
   A function that takes the same number of Lazy-wrapped arguments and returns a Lazy-wrapped result.
@@ -1117,13 +1087,13 @@ Pro: It's explicit and re-usable. An annotation can be used in multiple places.
 
 ```python
 import typing as t
-import cdf.core.configuration as conf
+import cdf.legacy.configuration as conf
 
 def foo(bar: t.Annotated[str, conf.Request["api.key"]]) -> None:
     print(bar)
 ```
 
-2. Setting a __cdf_resolve__ attribute on a callable object. This can be done
+2. Setting a **cdf_resolve** attribute on a callable object. This can be done
 directly or by using the `map_section` or `map_values` decorators:
 
 Pro: It's concise and can be used in a decorator. It also works with classes.
@@ -1171,7 +1141,6 @@ Load a configuration from a file path.
 
 - `path` - The file path.
   
-
 **Returns**:
 
   A Result monad with the configuration dictionary if the file format is JSON, YAML or TOML.
@@ -2182,7 +2151,6 @@ Create a dependency from an instance.
 
 - `instance` - The instance to use as the dependency.
   
-
 **Returns**:
 
   A new Dependency object with the instance lifecycle.
@@ -2205,7 +2173,6 @@ Create a singleton dependency.
 - `args` - Positional arguments to pass to the factory.
 - `kwargs` - Keyword arguments to pass to the factory.
   
-
 **Returns**:
 
   A new Dependency object with the singleton lifecycle.
@@ -2228,7 +2195,6 @@ Create a prototype dependency.
 - `args` - Positional arguments to pass to the factory.
 - `kwargs` - Keyword arguments to pass to the factory.
   
-
 **Returns**:
 
   A new Dependency object with the prototype lifecycle.
@@ -2250,7 +2216,6 @@ Assumes singleton lifecycle for callables unless a default lifecycle context is 
 
 - `obj` - The object to wrap.
   
-
 **Returns**:
 
   A new Dependency object with the object as the factory.
@@ -2269,7 +2234,6 @@ Apply a function to the unwrapped value.
 
 - `func` - The function to apply to the unwrapped value.
   
-
 **Returns**:
 
   A new Dependency object with the function applied.
@@ -2293,7 +2257,6 @@ already resolved and idempotent is True or the dependency is an instance.
 - `funcs` - The functions to apply to the wrapped value.
 - `idempotent` - If True, allow transformations on resolved dependencies to be a no-op.
   
-
 **Returns**:
 
   The Dependency object with the transformations applied.
@@ -2353,7 +2316,6 @@ Generate a typed key for the dependency.
 
 - `name` - The name of the dependency.
   
-
 **Returns**:
 
   A typed key if the type can be inferred, else the name.
@@ -2494,7 +2456,6 @@ Get a dependency.
 - `name_or_key` - The name or typed key of the dependency.
 - `must_exist` - If True, raise KeyError if the dependency is not found.
   
-
 **Returns**:
 
   The dependency if found, else None.
@@ -2553,7 +2514,6 @@ Inject dependencies into a function.
 
 - `func_or_cls` - The function or class to inject dependencies into.
   
-
 **Returns**:
 
   A function that can be called with dependencies injected
@@ -2575,7 +2535,6 @@ Invoke a callable with dependencies injected from the registry.
 - `args` - Positional arguments to pass to the callable.
 - `kwargs` - Keyword arguments to pass to the callable.
   
-
 **Returns**:
 
   The result of the callable
@@ -3246,7 +3205,6 @@ Get a feature flag adapter by name.
 - `provider` - The name of the feature flag adapter.
 - `options` - The configuration for the feature flag adapter.
   
-
 **Returns**:
 
   The feature flag adapter.
@@ -3299,7 +3257,6 @@ Get a feature flag.
 
 - `feature_name` - The name of the feature flag.
   
-
 **Returns**:
 
   The feature flag.
@@ -3645,8 +3602,6 @@ Apply the feature flags to a dlt source.
 
 - `source` - The source to apply the feature flags to.
   
-
 **Returns**:
 
   The source with the feature flags applied.
-

@@ -18,13 +18,13 @@ from functools import wraps
 from pathlib import Path
 from types import ModuleType
 
-import cdf.core.adapter as A
-import cdf.core.interface as I
+import cdf.legacy.adapter as A
+import cdf.legacy.interface as I
 from cdf.commons.file import load_module_from_path
 from cdf.commons.pyutils import inject_sys_path
-from cdf.core.configuration import ConfigurationLoader
-from cdf.core.constants import CONFIG_FILE_NAME
-from cdf.core.container import Container
+from cdf.legacy.configuration import ConfigurationLoader
+from cdf.legacy.constants import CONFIG_FILE_NAME
+from cdf.legacy.container import Container
 
 __all__ = ["DataPackage", "Project"]
 

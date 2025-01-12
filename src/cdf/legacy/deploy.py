@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import typing as t
 
-from cdf.core.project import Project
+from cdf.legacy.project import Project
 
 __all__ = ["DeploymentManager"]
 

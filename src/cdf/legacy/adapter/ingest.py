@@ -17,12 +17,12 @@ from fnmatch import fnmatch
 from pathlib import Path
 from types import ModuleType
 
-import cdf.core.constants as c
-import cdf.core.interface as I
+import cdf.legacy.constants as c
+import cdf.legacy.interface as I
 from cdf.commons.file import json, load_module_from_path, yaml
 from cdf.commons.pyutils import inject_sys_path
-from cdf.core.configuration import ConfigurationLoader
-from cdf.core.container import Container
+from cdf.legacy.configuration import ConfigurationLoader
+from cdf.legacy.container import Container
 
 __all__ = ["DltAdapter", "SlingAdapter", "SingerAdapter", "HamiltonAdapter"]
 

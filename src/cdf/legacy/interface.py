@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pydantic
 
-import cdf.core.constants as c
+import cdf.legacy.constants as c
 from cdf.commons.pyutils import resolve_entry_point
 
 __all__ = [
