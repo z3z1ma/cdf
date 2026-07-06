@@ -32,6 +32,7 @@ Business logic belongs in lower crates; CLI must not bypass lower-layer invarian
 - 2026-07-06: Assigned to CLI worker. Worker owns `crates/firn-cli/**`, its own evidence/review records, and may update `Cargo.lock` only for CLI dependencies. Do not touch `.gitignore`, lower-crate implementation, parent ticket, or unrelated records.
 - 2026-07-06: Implemented the practical CLI surface in `crates/firn-cli` with split modules for parsing, context loading, command handling, and JSON/error output. Commands use existing lower-crate APIs where exposed and return explicit unsupported exits instead of faking invariant-sensitive writes. Evidence recorded in `.10x/evidence/2026-07-06-cli-surface.md`.
 - 2026-07-06: Implemented the first supported `firn sql` surface under `.10x/tickets/done/2026-07-06-local-system-sql.md`: read-only local system-history queries over checkpoint and package metadata. `sql` is no longer a blocker for the CLI surface.
+- 2026-07-06: Split lower-layer child `.10x/tickets/2026-07-06-package-replay-firn-line-runtime.md` to address the shared missing runtime primitive behind `resume` and `replay package`: explicit prepared-package DuckDB replay into `CheckpointStore::commit` without source contact. CLI plumbing remains blocked until that child exposes a usable API.
 
 ## Blockers
 
@@ -43,8 +44,8 @@ Full acceptance is blocked by missing lower-layer APIs. Exact unsupported surfac
 - `run`: no runtime orchestrator that preserves package, destination receipt, and checkpoint commit invariants end to end.
 - `contract freeze` and `contract test`: no contract registry/snapshot writer or fixture runner.
 - `state migrate` and `state recover`: no state migration runner or destination mirror recovery API.
-- `resume`: no run ledger/recovery orchestrator.
-- `replay package`: package replay view exists, but no destination/checkpoint replay API records receipts and commits checkpoints.
+- `resume`: no run ledger/recovery orchestrator; `.10x/tickets/2026-07-06-package-replay-firn-line-runtime.md` owns the first explicit prepared-package receipt-verified checkpoint recovery primitive.
+- `replay package`: package replay view exists, but no destination/checkpoint replay API records receipts and commits checkpoints; `.10x/tickets/2026-07-06-package-replay-firn-line-runtime.md` owns the first prepared-package DuckDB primitive.
 - `backfill`: no backfill planner/orchestrator.
 - `package gc`: no retention planner tied to checkpoint history.
 - `status` for resources with freshness SLOs: no runtime ledger/package receipt timestamps for freshness evaluation.
