@@ -1477,6 +1477,7 @@ dependencies = [
 name = "firn-conformance"
 version = "0.1.0"
 dependencies = [
+ "arrow-schema 59.0.0",
  "firn-kernel",
 ]
 
@@ -1496,6 +1497,7 @@ name = "firn-declarative"
 version = "0.1.0"
 dependencies = [
  "arrow-schema 59.0.0",
+ "firn-conformance",
  "firn-http",
  "firn-kernel",
  "hex",

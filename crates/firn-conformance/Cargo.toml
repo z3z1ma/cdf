@@ -7,3 +7,6 @@ description = "Conformance harness boundary for firn."
 
 [dependencies]
 firn-kernel = { path = "../firn-kernel" }
+
+[dev-dependencies]
+arrow-schema = "59.0.0"

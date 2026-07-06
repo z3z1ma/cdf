@@ -2,3 +2,4 @@
 
 pub mod checkpoint_store;
 pub mod destination;
+pub mod resource;

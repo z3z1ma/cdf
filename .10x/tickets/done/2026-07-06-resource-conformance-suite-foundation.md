@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -46,9 +46,20 @@ Full resource data completeness, replay, and boundedness honesty remain parent s
 - `.10x/tickets/done/2026-07-05-declarative-resources.md`
 - `.10x/tickets/done/2026-07-06-destination-conformance-suite-foundation.md`
 
+## Evidence and review
+
+- `.10x/evidence/2026-07-06-resource-conformance-suite-foundation.md`
+- `.10x/reviews/2026-07-06-resource-conformance-suite-foundation-review.md`
+
 ## Progress and notes
 
 - 2026-07-06: Split from the conformance parent after read-only parent/subagent inspection found `firn-conformance` currently exports checkpoint-store and destination suites only. The current public resource traits support a planning-level foundation now; full resource data completeness, position replay, chaos, golden packages, and the MVP demo remain separate later work.
+- 2026-07-06: Parent marked active and assigned to a worker. Worker owns the scoped resource conformance harness and declarative consumer tests; parent owns final review, quality evidence, closure records, and commit.
+- 2026-07-06: Worker implemented `firn_conformance::resource` with planning-only `ResourceStream`/`QueryableResource` checks, negative faulty-resource self-tests, and declarative REST/SQL/file consumer tests. Real workspace `cargo fmt --all -- --check` passes, but `cargo test -p firn-conformance --locked --no-fail-fast` and `cargo test -p firn-declarative --locked --no-fail-fast` fail before compilation because the new scoped dev-dependency edges require a `Cargo.lock` update outside the worker write boundary. Worker left `Cargo.lock` untouched and verified the same test/clippy commands in `/tmp/firn-resource-conformance-verify` after an isolated lock update: `cargo test -p firn-conformance --locked --no-fail-fast`, `cargo test -p firn-declarative --locked --no-fail-fast`, `cargo clippy -p firn-conformance --all-targets --locked -- -D warnings`, and `cargo clippy -p firn-declarative --all-targets --locked -- -D warnings` all passed.
+- 2026-07-06: Parent accepted the scoped `Cargo.lock` update required by the new dev-dependency edges and independently reran focused conformance/declarative test, clippy, nextest, fmt, and diff checks successfully.
+- 2026-07-06: Parent hardened the worker implementation after bounded mutation runs exposed missed harness self-test cases, then reran `cargo mutants` over `crates/firn-conformance/src/resource/mod.rs` with `firn-conformance` and `firn-declarative` as the test oracle. Final result: 27 mutants tested, 22 caught, 5 unviable.
+- 2026-07-06: Parent ran the mandatory `QUALITY.md` closure checks, including workspace check/test/clippy/doc/feature-matrix checks, nextest, coverage, semver, audit/deny/vet/OSV, semgrep, gitleaks, machete, udeps, rust-code-analysis, jscpd, direct unsafe inventory, CodeQL with reusable database path `target/quality/codeql-db-rust`, Miri, cargo-careful, and geiger. Results are recorded in `.10x/evidence/2026-07-06-resource-conformance-suite-foundation.md`.
+- 2026-07-06: Closure review passed with no blocking findings. Remaining source execution, completeness, replay suffix, chaos, golden-package, MVP demo, and live Postgres behavior remains parent scope.
 
 ## Blockers
 

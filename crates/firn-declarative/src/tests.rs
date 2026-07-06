@@ -1,4 +1,7 @@
 use super::*;
+use firn_conformance::resource::{
+    PredicateExpectation, ResourceConformanceCase, assert_queryable_resource_conformance,
+};
 use firn_kernel::{
     CursorOrderingClaim, DeliveryGuarantee, IncrementalShape, PredicateId, PushdownFidelity,
     QueryableResource, ResourceStream, ScanPredicate, ScanRequest, ScopeKey, SortDirection,
@@ -57,25 +60,42 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
         Some("python://./src/gh.py#flatten_reactions")
     );
 
+    let cursor_predicate_id = PredicateId::new("p1").unwrap();
+    let unsupported_predicate_id = PredicateId::new("p2").unwrap();
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: None,
-        filters: vec![ScanPredicate {
-            predicate_id: PredicateId::new("p1").unwrap(),
-            expression: "updated_at >= checkpoint.cursor".to_owned(),
-        }],
+        filters: vec![
+            ScanPredicate {
+                predicate_id: cursor_predicate_id.clone(),
+                expression: "updated_at >= checkpoint.cursor".to_owned(),
+            },
+            ScanPredicate {
+                predicate_id: unsupported_predicate_id.clone(),
+                expression: "id = 1".to_owned(),
+            },
+        ],
         limit: None,
         order_by: vec![],
         scope: ScopeKey::Resource,
     };
 
+    assert_queryable_resource_conformance(
+        resource,
+        [
+            ResourceConformanceCase::new(request.clone()).with_expected_predicates([
+                PredicateExpectation::inexact(cursor_predicate_id),
+                PredicateExpectation::unsupported(unsupported_predicate_id),
+            ]),
+        ],
+    );
     let plan = resource.negotiate(&request).unwrap();
     assert_eq!(plan.pushed_predicates.len(), 1);
     assert_eq!(
         plan.pushed_predicates[0].fidelity,
         PushdownFidelity::Inexact
     );
-    assert!(plan.unsupported_predicates.is_empty());
+    assert_eq!(plan.unsupported_predicates.len(), 1);
     assert_eq!(
         plan.delivery_guarantee,
         DeliveryGuarantee::EffectivelyOncePerKey
@@ -151,6 +171,23 @@ resource:
     assert_eq!(
         file_resource.capabilities().incremental,
         IncrementalShape::File
+    );
+    let file_predicate_id = PredicateId::new("file-p1").unwrap();
+    let file_request = ScanRequest {
+        resource_id: file_resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: vec![ScanPredicate {
+            predicate_id: file_predicate_id.clone(),
+            expression: "event_id = 1".to_owned(),
+        }],
+        limit: None,
+        order_by: vec![],
+        scope: ScopeKey::Resource,
+    };
+    assert_queryable_resource_conformance(
+        file_resource,
+        [ResourceConformanceCase::new(file_request)
+            .with_expected_predicates([PredicateExpectation::unsupported(file_predicate_id)])],
     );
 
     let sql_resource = resources
@@ -235,11 +272,12 @@ trust = "governed"
     let resource = compile_document(&parse_toml(input).unwrap())
         .unwrap()
         .remove(0);
+    let predicate_id = PredicateId::new("p1").unwrap();
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: Some(vec!["id".to_owned()]),
         filters: vec![ScanPredicate {
-            predicate_id: PredicateId::new("p1").unwrap(),
+            predicate_id: predicate_id.clone(),
             expression: "id = 1".to_owned(),
         }],
         limit: Some(10),
@@ -250,6 +288,11 @@ trust = "governed"
         scope: ScopeKey::Resource,
     };
 
+    assert_queryable_resource_conformance(
+        &resource,
+        [ResourceConformanceCase::new(request.clone())
+            .with_expected_predicates([PredicateExpectation::exact(predicate_id)])],
+    );
     let plan = resource.negotiate(&request).unwrap();
     assert_eq!(plan.pushed_predicates[0].fidelity, PushdownFidelity::Exact);
 }
