@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-05
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/2026-07-05-formats-and-subprocess.md, .10x/tickets/2026-07-05-package-builder-reader.md
+Depends-On: .10x/tickets/2026-07-05-formats-and-subprocess.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
 # Implement Singer/Airbyte adapters and package archive
 
@@ -32,4 +32,3 @@ Airbyte destinations remain out of scope.
 ## Blockers
 
 None.
-

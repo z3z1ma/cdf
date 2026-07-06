@@ -31,13 +31,13 @@ MVP foundation:
 - `.10x/tickets/done/2026-07-05-bootstrap-rust-workspace.md`
 - `.10x/tickets/done/2026-07-05-kernel-core-types.md`
 - `.10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md`
-- `.10x/tickets/2026-07-05-package-builder-reader.md`
-- `.10x/tickets/2026-07-05-contract-compiler-normalization.md`
+- `.10x/tickets/done/2026-07-05-package-builder-reader.md`
+- `.10x/tickets/done/2026-07-05-contract-compiler-normalization.md`
 - `.10x/tickets/2026-07-05-datafusion-engine-planner.md`
 
 MVP authoring, destinations, and product surface:
 
-- `.10x/tickets/2026-07-05-http-toolkit.md`
+- `.10x/tickets/done/2026-07-05-http-toolkit.md`
 - `.10x/tickets/2026-07-05-declarative-resources.md`
 - `.10x/tickets/2026-07-05-formats-and-subprocess.md`
 - `.10x/tickets/2026-07-05-python-sdk-bridge.md`
@@ -84,6 +84,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-05: Bootstrap workspace child ticket closed with evidence and review; root Cargo workspace and crate skeletons now exist.
 - 2026-07-06: Kernel QUALITY verification opened a separate supply-chain policy ticket because `cargo deny` license policy and cargo-vet adoption are not yet ratified.
 - 2026-07-06: Checkpoint store child ticket closed with kernel `CheckpointStore` contract, in-memory store, SQLite WAL store, rewind/history behavior, mutation-clean tests, quality evidence, and review.
+- 2026-07-06: Contract compiler, package builder/reader, and HTTP toolkit child tickets closed with parent review and shared QUALITY evidence. Reusable CodeQL database now lives at `target/quality/codeql-db-rust`.
 
 ## Blockers
 

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/2026-07-05-http-toolkit.md, .10x/tickets/2026-07-05-contract-compiler-normalization.md
+Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-05-http-toolkit.md, .10x/tickets/done/2026-07-05-contract-compiler-normalization.md
 
 # Implement declarative resources
 
@@ -33,4 +33,3 @@ No CLI command implementation except APIs consumed by project/CLI tickets.
 ## Blockers
 
 None.
-

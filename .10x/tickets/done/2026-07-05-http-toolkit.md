@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-05
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
@@ -29,8 +29,10 @@ No declarative resource compiler; no Python SDK bindings.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-06: Assigned to HTTP worker in parallel with package and contract workers. Worker owns `crates/firn-http/**` and may propose minimal `firn-kernel` additions only when required for shared error/taxonomy integration; leave unrelated dirty `.gitignore` changes untouched.
+- 2026-07-06: Implemented pure `firn-http` toolkit primitives for supported paginators, rate limiting, retry taxonomy/budgeting, auth refresh hooks, egress allowlist enforcement, redacted tracing, and plan-visible pagination auto-detection. No `firn-kernel` changes were required; evidence recorded in `.10x/evidence/2026-07-06-http-toolkit.md`.
+- 2026-07-06: Parent review confirmed the toolkit remains pure/no-network, blocks disallowed hosts before transport use, and redacts known secret material in debug/trace paths. Closure evidence recorded in `.10x/evidence/2026-07-06-package-contract-http-quality-gates.md`; closure review recorded in `.10x/reviews/2026-07-06-http-toolkit-review.md`.
 
 ## Blockers
 
 None.
-

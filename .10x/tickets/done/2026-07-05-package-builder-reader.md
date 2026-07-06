@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-05
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
@@ -29,8 +29,10 @@ No destination-specific commit, no DataFusion execution, no package archive unti
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-06: Assigned to package worker after checkpoint-store closure. Worker owns `crates/firn-package/**` and may propose minimal `firn-kernel` additions only when required by `.10x/specs/package-lifecycle-determinism.md`; leave unrelated dirty `.gitignore` changes untouched.
+- 2026-07-06: Implemented package manifest models, canonical JSON identity hashing, required directory layout, LZ4 Arrow IPC segment write/read, artifact hooks, receipt append/storage, verification, atomic lifecycle status updates, tombstoning, replay views, and focused package tests in `crates/firn-package`. No `firn-kernel` additions were required. Evidence recorded in `.10x/evidence/2026-07-06-package-builder-reader.md`.
+- 2026-07-06: Parent review confirmed receipts are stored outside identity and replay-visible, package verification catches tampering, and tombstoning preserves manifest/hash records. Closure evidence recorded in `.10x/evidence/2026-07-06-package-contract-http-quality-gates.md`; closure review recorded in `.10x/reviews/2026-07-06-package-builder-reader-review.md`.
 
 ## Blockers
 
 None.
-

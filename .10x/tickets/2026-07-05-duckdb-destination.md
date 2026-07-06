@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/2026-07-05-package-builder-reader.md, .10x/tickets/2026-07-05-contract-compiler-normalization.md
+Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-05-contract-compiler-normalization.md
 
 # Implement DuckDB destination
 
@@ -33,4 +33,3 @@ No CLI-specific doctor UI; expose probes for project/CLI ticket.
 ## Blockers
 
 None.
-
