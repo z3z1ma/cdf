@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -53,11 +53,17 @@ The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still o
 - `.10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md`
 - `.10x/evidence/2026-07-06-package-replay-firn-line-runtime.md`
 - `.10x/reviews/2026-07-06-package-replay-firn-line-runtime-review.md`
+- `.10x/evidence/2026-07-06-prepared-package-chaos-conformance.md`
+- `.10x/reviews/2026-07-06-prepared-package-chaos-conformance-review.md`
 
 ## Progress and notes
 
 - 2026-07-06: Split from the conformance/chaos/golden parent after the prepared-package runtime child closed. Current source has the exact public hook needed to simulate the committed-before-checkpointed window without source contact. Explorer Hubble recommended making the first chaos slice a narrow helper-process test so durable package, DuckDB, and SQLite state are proven across a real process boundary while still excluding a general process-kill chaos runner. This child consumes the runtime primitive from `firn-conformance` rather than duplicating sequencing in product code.
 - 2026-07-06: Do not implement in the ticket-creation turn. Assign to a worker in a later turn with the references above and a write boundary of `crates/firn-conformance/**` plus dependency metadata needed only for that crate.
+- 2026-07-06: Parent activated the ticket and is assigning implementation to a worker. Worker owns the scoped conformance harness, focused self-tests, scoped `firn-conformance` dependency metadata, and focused verification. Parent owns final integration review, broader `QUALITY.md` evidence, ticket graph updates, and commit.
+- 2026-07-06: Worker implemented `crates/firn-conformance/src/package_replay/` as a focused prepared-package DuckDB/SQLite replay harness exported from the thin crate root. The harness builds a deterministic Arrow IPC package fixture, keeps `StateDelta` caller-supplied, wraps the public `firn-project` replay/recovery runtime, and adds assertions for durable package receipts, checkpoint heads, duplicate/no-op replay identity, DuckDB mirror evidence, and recovery without a second destination write. Focused tests cover packaged/no-receipts success, duplicate replay, current-test-binary helper-process exit at `after_receipt_verified`, durable SQLite recovery, failed recovery inputs, and negative self-tests for harness assertion gaps. Initial `cargo test -p firn-conformance --offline --no-fail-fast` passed after updating `Cargo.lock` for scoped conformance dependency edges; locked verification is still pending.
+- 2026-07-06: Parent verification completed. Focused gates passed: `cargo fmt --all -- --check`, `git diff --check`, `cargo test -p firn-conformance --locked --no-fail-fast`, `cargo clippy -p firn-conformance --all-targets --locked -- -D warnings`, `cargo test -p firn-project --locked --no-fail-fast`, and downstream package/DuckDB/SQLite tests. Broader `QUALITY.md` gates passed where structurally available, including workspace checks, clippy feature matrices, workspace tests, nextest, docs, coverage, audit/deny/vet/OSV/Semgrep/gitleaks, reusable CodeQL analysis at `target/quality/codeql-db-rust`, machete, udeps, semver-checks, rust-code-analysis, jscpd, tokei, scc, direct owned unsafe scan, and `cargo careful`. Kani, fuzz listing, and Geiger are recorded as tool/infrastructure limits rather than implementation failures in `.10x/evidence/2026-07-06-prepared-package-chaos-conformance.md`.
+- 2026-07-06: Mutation testing over `crates/firn-conformance/src/package_replay/mod.rs` passed with 36 mutants tested, 20 caught, 16 unviable, 0 missed, and 0 timed out. A parent review found no blocking issues in `.10x/reviews/2026-07-06-prepared-package-chaos-conformance-review.md`. Acceptance criteria are fully mapped to evidence, so this child is closed.
 
 ## Blockers
 

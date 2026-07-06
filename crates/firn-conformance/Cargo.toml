@@ -6,7 +6,14 @@ license.workspace = true
 description = "Conformance harness boundary for firn."
 
 [dependencies]
+arrow-array = "59.0.0"
+arrow-schema = "59.0.0"
+firn-dest-duckdb = { path = "../firn-dest-duckdb" }
 firn-kernel = { path = "../firn-kernel" }
+firn-package = { path = "../firn-package" }
+firn-project = { path = "../firn-project" }
+firn-state-sqlite = { path = "../firn-state-sqlite" }
+serde_json = "1.0.150"
 
 [dev-dependencies]
-arrow-schema = "59.0.0"
+tempfile = "3.27.0"

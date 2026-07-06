@@ -1477,8 +1477,15 @@ dependencies = [
 name = "firn-conformance"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 59.0.0",
  "arrow-schema 59.0.0",
+ "firn-dest-duckdb",
  "firn-kernel",
+ "firn-package",
+ "firn-project",
+ "firn-state-sqlite",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
