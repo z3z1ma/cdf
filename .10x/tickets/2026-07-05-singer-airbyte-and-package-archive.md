@@ -30,6 +30,7 @@ Airbyte destinations remain out of scope.
 - 2026-07-05: Opened from book and specs.
 - 2026-07-06: Split `.10x/tickets/done/2026-07-06-singer-airbyte-protocol-adapters.md` for executable Singer/Airbyte protocol parsing and opaque `ForeignState` mapping. `firn package archive` remains intentionally excluded from that child because Parquet transcode intersects the active supply-chain blocker.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-singer-airbyte-protocol-adapters.md` with focused Singer/Airbyte parser, per-stream batch conversion, canonical opaque `ForeignState` hashing, package write/replay tests, mutation-clean adapter tests, and QUALITY evidence. This parent remains open for `firn package archive`.
+- 2026-07-06: Split package archive transcode into executable child `.10x/tickets/2026-07-06-package-archive-transcode-primitive.md`. The child owns the supply-chain-clean IPC-to-Parquet primitive and in-memory fidelity report data model. Archive file placement, manifest archive metadata, and CLI wiring remain in this parent until the primitive is proven.
 
 ## Blockers
 
