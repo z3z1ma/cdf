@@ -1455,6 +1455,8 @@ checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
 name = "firn-cli"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
  "firn-contract",
  "firn-declarative",
  "firn-dest-duckdb",
@@ -1466,6 +1468,7 @@ dependencies = [
  "firn-state-sqlite",
  "futures-executor",
  "futures-util",
+ "rusqlite",
  "serde",
  "serde_json",
 ]

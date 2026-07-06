@@ -92,9 +92,12 @@ impl ProjectContext {
         absolute_under_root(&self.root, &self.environment.packages)
     }
 
+    pub fn state_store_path(&self) -> Result<PathBuf> {
+        sqlite_uri_path(&self.root, &self.environment.state)
+    }
+
     pub fn state_store(&self) -> Result<SqliteCheckpointStore> {
-        let path = sqlite_uri_path(&self.root, &self.environment.state)?;
-        SqliteCheckpointStore::open(path)
+        SqliteCheckpointStore::open(self.state_store_path()?)
     }
 
     pub fn destination_runtime(&self) -> DestinationRuntime {

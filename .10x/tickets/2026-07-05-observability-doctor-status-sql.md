@@ -1,6 +1,6 @@
-Status: open
+Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
 Depends-On: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md
 
@@ -29,6 +29,8 @@ No dashboard or UI.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-06: Split first executable child `.10x/tickets/done/2026-07-06-local-system-sql.md` for read-only local `firn sql` over checkpoint/package metadata.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-local-system-sql.md`; `firn sql` now supports read-only local system-history queries over checkpoint rows and package manifest/receipt metadata.
 
 ## Blockers
 

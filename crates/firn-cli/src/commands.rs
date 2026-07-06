@@ -19,6 +19,7 @@ use crate::{
     },
     context::{DestinationRuntime, DoctorProbe, ProjectContext, require_lock},
     output::{CliError, CommandOutput, InvocationResult},
+    system_sql,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -140,15 +141,17 @@ fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
 }
 
 fn sql(cli: &Cli, args: SqlArgs) -> Result<CommandOutput, CliError> {
-    let _context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    Err(CliError::not_supported(
+    let query = system_sql::read_only_query(&args.query)?;
+    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let report = system_sql::run(&context, query)?;
+    output(
         "sql",
         format!(
-            "ad-hoc system SQL query `{}` has no lower-layer read-only query API",
-            args.query
+            "sql returned {} row(s) from local system history",
+            report.row_count()
         ),
-        "ledger/destination SQL query facade",
-    ))
+        report,
+    )
 }
 
 fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, CliError> {

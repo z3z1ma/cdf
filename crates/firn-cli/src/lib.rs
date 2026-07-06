@@ -6,6 +6,7 @@ mod args;
 mod commands;
 mod context;
 mod output;
+mod system_sql;
 
 pub use output::InvocationResult;
 

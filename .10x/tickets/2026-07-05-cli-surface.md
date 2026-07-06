@@ -31,6 +31,7 @@ Business logic belongs in lower crates; CLI must not bypass lower-layer invarian
 - 2026-07-05: Opened from book and specs.
 - 2026-07-06: Assigned to CLI worker. Worker owns `crates/firn-cli/**`, its own evidence/review records, and may update `Cargo.lock` only for CLI dependencies. Do not touch `.gitignore`, lower-crate implementation, parent ticket, or unrelated records.
 - 2026-07-06: Implemented the practical CLI surface in `crates/firn-cli` with split modules for parsing, context loading, command handling, and JSON/error output. Commands use existing lower-crate APIs where exposed and return explicit unsupported exits instead of faking invariant-sensitive writes. Evidence recorded in `.10x/evidence/2026-07-06-cli-surface.md`.
+- 2026-07-06: Implemented the first supported `firn sql` surface under `.10x/tickets/done/2026-07-06-local-system-sql.md`: read-only local system-history queries over checkpoint and package metadata. `sql` is no longer a blocker for the CLI surface.
 
 ## Blockers
 
@@ -40,7 +41,6 @@ Full acceptance is blocked by missing lower-layer APIs. Exact unsupported surfac
 - `plan`/`explain` DDL preview: no scan/resource-schema to destination-DDL planning facade.
 - `preview`: declarative resource execution/open is not implemented below the CLI, so one-batch preview cannot inspect source data yet.
 - `run`: no runtime orchestrator that preserves package, destination receipt, and checkpoint commit invariants end to end.
-- `sql`: no read-only system SQL facade over ledger/packages/receipts/mirrors.
 - `contract freeze` and `contract test`: no contract registry/snapshot writer or fixture runner.
 - `state migrate` and `state recover`: no state migration runner or destination mirror recovery API.
 - `resume`: no run ledger/recovery orchestrator.
