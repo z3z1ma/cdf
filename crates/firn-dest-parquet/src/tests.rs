@@ -6,6 +6,9 @@ use crate::manifest::{ParquetObjectManifest, ReplacePointer, canonical_json_byte
 use arrow_array::{ArrayRef, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use duckdb::Connection;
+use firn_conformance::destination::{
+    DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
+};
 use firn_kernel::{
     CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentId,
     SourcePosition,
@@ -289,6 +292,24 @@ fn sheet_declares_append_replace_and_unsupported_semantics_honestly() {
             idempotency_token: IdempotencyToken::new("sha256:test").unwrap(),
         })
         .is_err()
+    );
+}
+
+#[test]
+fn reusable_destination_conformance_suite_accepts_parquet_sheet_and_plans() {
+    let temp = tempfile::tempdir().unwrap();
+    let dest = ParquetDestination::new_filesystem(temp.path()).unwrap();
+
+    assert_destination_conformance(
+        &dest,
+        [
+            DestinationConformanceCase::new(representative_commit_request(
+                WriteDisposition::Append,
+            )),
+            DestinationConformanceCase::new(representative_commit_request(
+                WriteDisposition::Replace,
+            )),
+        ],
     );
 }
 

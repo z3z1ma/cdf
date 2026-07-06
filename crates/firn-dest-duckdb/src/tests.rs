@@ -3,6 +3,9 @@ use std::sync::Arc;
 
 use arrow_array::{ArrayRef, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use firn_conformance::destination::{
+    DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
+};
 use firn_kernel::{
     CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentId,
     SourcePosition,
@@ -106,6 +109,25 @@ fn sheet_declares_duckdb_destination_contract() {
         dest.capabilities()
             .bulk_paths
             .contains(&BulkPath::ArrowIpcPackageRows)
+    );
+}
+
+#[test]
+fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
+    let temp = tempfile::tempdir().unwrap();
+    let dest = destination(&temp.path().join("local.duckdb"));
+
+    assert_destination_conformance(
+        &dest,
+        [
+            DestinationConformanceCase::new(representative_commit_request(
+                WriteDisposition::Append,
+            )),
+            DestinationConformanceCase::new(representative_commit_request(
+                WriteDisposition::Replace,
+            )),
+            DestinationConformanceCase::new(representative_commit_request(WriteDisposition::Merge)),
+        ],
     );
 }
 

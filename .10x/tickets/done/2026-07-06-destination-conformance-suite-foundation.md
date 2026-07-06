@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -46,7 +46,11 @@ No live Postgres conformance execution until `.10x/tickets/2026-07-05-postgres-d
 ## Progress and notes
 
 - 2026-07-06: Split from the conformance parent after inspecting the book, conformance governance spec, destination receipts spec, current `DestinationProtocol`, existing `firn-conformance` checkpoint-store structure, and active blockers. The common kernel trait currently covers sheet and dry-run planning; destination-specific public APIs still own commit and receipt verification coverage.
+- 2026-07-06: Parent marked the child active for worker implementation. The worker owns the scoped conformance harness and DuckDB/Parquet consumer test integration; parent owns final review, quality evidence, closure records, and commit.
+- 2026-07-06: Implemented reusable `firn-conformance::destination` harness in `crates/firn-conformance/src/destination/mod.rs`; `lib.rs` remains a thin module export. DuckDB and Parquet tests consume the harness through dev-dependencies while retaining destination-specific physical commit and receipt verification tests.
+- 2026-07-06: Review found and repaired a vacuous migration-support assertion and a clippy duplicate-branch lint in the faulty self-test implementation.
+- 2026-07-06: Closure evidence recorded in `.10x/evidence/2026-07-06-destination-conformance-suite-foundation.md`; review recorded in `.10x/reviews/2026-07-06-destination-conformance-suite-foundation-review.md`.
 
 ## Blockers
 
-None for the DuckDB/Parquet destination-conformance foundation.
+None for the DuckDB/Parquet destination-conformance foundation. Supply-chain policy gaps from `cargo deny check` and `cargo vet` remain separately owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
