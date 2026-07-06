@@ -1,4 +1,4 @@
-Status: blocked
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md
@@ -38,7 +38,10 @@ No Rust source edits, no package archive file writes, no manifest mutation, no C
 ## Progress and notes
 
 - 2026-07-06: Opened after read-only parent/subagent inspection found archive persistence still underspecified. Record-backed behavior covers in-memory transcode and high-level archive intent, but not the persisted metadata and lifecycle contract needed for implementation.
+- 2026-07-06: Ratified the persisted archive contract in `.10x/specs/package-lifecycle-determinism.md`: `archive/parquet/data/<segment_id>.parquet`, `archive/parquet/fidelity.json`, top-level non-identity `manifest.archives.parquet` metadata, unchanged `manifest.identity`/`package_hash`/signature signing input, status-preserving archive behavior, replay preference for IPC, manifest-last crash safety, idempotent rerun semantics, `--force` replacement, and `firn package archive <PACKAGE_DIR> [--format parquet] [--force] [--json]` CLI output/exit behavior.
+- 2026-07-06: Opened executable implementation child `.10x/tickets/2026-07-06-package-archive-persistence-cli.md`.
+- 2026-07-06: Evidence recorded in `.10x/evidence/2026-07-06-package-archive-contract-ratification.md`; closure review recorded in `.10x/reviews/2026-07-06-package-archive-contract-ratification-review.md`.
 
 ## Blockers
 
-The persisted archive contract requires ratification of file placement, manifest metadata, identity/hash participation, lifecycle status behavior, rerun/crash policy, and CLI UX before implementation.
+None.
