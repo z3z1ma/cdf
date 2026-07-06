@@ -20,6 +20,7 @@ use firn_kernel::{
 };
 use firn_package::{PackageBuilder, PackageReader, PackageStatus};
 use firn_state_sqlite::SqliteCheckpointStore;
+use rusqlite::Connection;
 use serde_json::Value;
 use serde_json::json;
 
@@ -211,6 +212,222 @@ fn run_returns_unsupported_instead_of_faking_writes() {
             .unwrap()
             .contains("CheckpointStore::commit")
     );
+}
+
+#[test]
+fn status_ignores_non_serving_freshness_resources() {
+    let project = TestProject::new();
+    write_status_resource(&project, "governed", "1h");
+    let state_path = project.root.join(".firn/state.db");
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(
+        !state_path.exists(),
+        "status must not create state DB when nothing is evaluable"
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "status");
+    assert_eq!(json["result"]["summary"]["total"], 0);
+    assert!(
+        json["result"]["freshness_resources"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    let human = run(["firn", "--project", project.root_str(), "status"]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert_eq!(human.stdout, "no freshness SLO resources to evaluate\n");
+}
+
+#[test]
+fn status_reports_fresh_committed_head() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    commit_status_head(
+        &project,
+        "pipeline-1",
+        "checkpoint-status-fresh",
+        "package-status-fresh",
+        "receipt-status-fresh",
+        now_ms_for_test(),
+    );
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["fresh"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["resource_id"], "local.events");
+    assert_eq!(resource["trust_level"], "serving");
+    assert_eq!(resource["state_scope"], json!({ "kind": "resource" }));
+    assert_eq!(resource["max_age_ms"], 3_600_000);
+    assert_eq!(resource["freshness_state"], "fresh");
+    assert_eq!(
+        resource["checkpoint"]["checkpoint_id"],
+        "checkpoint-status-fresh"
+    );
+    assert_eq!(resource["checkpoint"]["pipeline_id"], "pipeline-1");
+    assert!(resource["age_ms"].as_u64().unwrap() <= 3_600_000);
+    let human = run(["firn", "--project", project.root_str(), "status"]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert_eq!(human.stdout, "freshness SLO status fresh: 1 resource(s)\n");
+}
+
+#[test]
+fn status_reports_stale_committed_head() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1ms");
+    commit_status_head(
+        &project,
+        "pipeline-1",
+        "checkpoint-status-stale",
+        "package-status-stale",
+        "receipt-status-stale",
+        1,
+    );
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["stale"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "stale");
+    assert!(resource["age_ms"].as_u64().unwrap() > 1);
+    let human = run(["firn", "--project", project.root_str(), "status"]);
+    assert_eq!(human.exit_code, 1, "stderr: {}", human.stderr);
+    assert_eq!(
+        human.stdout,
+        "freshness SLO breach: 1 stale, 0 fresh, 0 non-evaluable\n"
+    );
+}
+
+#[test]
+fn status_clamps_future_committed_head_age_to_zero() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1ms");
+    commit_status_head(
+        &project,
+        "pipeline-1",
+        "checkpoint-status-future",
+        "package-status-future",
+        "receipt-status-future",
+        now_ms_for_test() + 3_600_000,
+    );
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "fresh");
+    assert_eq!(resource["age_ms"], 0);
+}
+
+#[test]
+fn status_reports_elapsed_age_from_committed_timestamp() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    commit_status_head(
+        &project,
+        "pipeline-1",
+        "checkpoint-status-age",
+        "package-status-age",
+        "receipt-status-age",
+        now_ms_for_test() - 120_000,
+    );
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let age_ms = json["result"]["freshness_resources"][0]["age_ms"]
+        .as_u64()
+        .unwrap();
+    assert!(
+        (120_000..180_000).contains(&age_ms),
+        "unexpected age_ms: {age_ms}"
+    );
+}
+
+#[test]
+fn status_reports_missing_state_as_non_evaluable() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    let state_path = project.root.join(".firn/state.db");
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 78, "stderr: {}", result.stderr);
+    assert!(
+        !state_path.exists(),
+        "status must not create missing state DB"
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["non_evaluable"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "non_evaluable");
+    assert_eq!(resource["non_evaluable_reason"], "state_database_missing");
+    let human = run(["firn", "--project", project.root_str(), "status"]);
+    assert_eq!(human.exit_code, 78, "stderr: {}", human.stderr);
+    assert_eq!(
+        human.stdout,
+        "freshness SLO status non-evaluable: 1 resource(s), 0 fresh\n"
+    );
+}
+
+#[test]
+fn status_reports_missing_checkpoint_table_as_non_evaluable() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    fs::create_dir_all(project.root.join(".firn")).unwrap();
+    Connection::open(project.root.join(".firn/state.db")).unwrap();
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 78, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["non_evaluable"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "non_evaluable");
+    assert_eq!(resource["non_evaluable_reason"], "checkpoint_table_missing");
+}
+
+#[test]
+fn status_reports_ambiguous_multiple_pipeline_heads_as_non_evaluable() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    let committed_at_ms = now_ms_for_test();
+    commit_status_head(
+        &project,
+        "pipeline-1",
+        "checkpoint-status-ambiguous-1",
+        "package-status-ambiguous-1",
+        "receipt-status-ambiguous-1",
+        committed_at_ms,
+    );
+    commit_status_head(
+        &project,
+        "pipeline-2",
+        "checkpoint-status-ambiguous-2",
+        "package-status-ambiguous-2",
+        "receipt-status-ambiguous-2",
+        committed_at_ms,
+    );
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 78, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["non_evaluable"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "non_evaluable");
+    assert_eq!(
+        resource["non_evaluable_reason"],
+        "ambiguous_committed_heads"
+    );
+    assert_eq!(resource["matching_committed_heads"], 2);
 }
 
 #[test]
@@ -1006,6 +1223,101 @@ impl TestProject {
     fn root_str(&self) -> &str {
         &self.root_string
     }
+}
+
+fn write_status_resource(project: &TestProject, trust: &str, max_age: &str) {
+    let status_resource = RESOURCE.replace(
+        "trust = \"governed\"",
+        &format!("trust = \"{trust}\"\nfreshness = {{ max_age = \"{max_age}\" }}"),
+    );
+    fs::write(project.root.join("resources/files.toml"), status_resource).unwrap();
+}
+
+fn commit_status_head(
+    project: &TestProject,
+    pipeline_id: &str,
+    checkpoint_id: &str,
+    package_hash: &str,
+    receipt_id: &str,
+    committed_at_ms: i64,
+) {
+    let store = SqliteCheckpointStore::open(project.root.join(".firn/state.db")).unwrap();
+    let delta = status_delta(pipeline_id, checkpoint_id, package_hash);
+    let checkpoint_id = delta.checkpoint_id.clone();
+    store.propose(delta).unwrap();
+    store
+        .commit(
+            &checkpoint_id,
+            status_receipt(package_hash, receipt_id, committed_at_ms),
+        )
+        .unwrap();
+}
+
+fn status_delta(pipeline_id: &str, checkpoint_id: &str, package_hash: &str) -> StateDelta {
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: "updated_at".to_owned(),
+        value: CursorValue::I64(42),
+    });
+    StateDelta {
+        checkpoint_id: CheckpointId::new(checkpoint_id).unwrap(),
+        pipeline_id: PipelineId::new(pipeline_id).unwrap(),
+        resource_id: ResourceId::new("local.events").unwrap(),
+        scope: ScopeKey::Resource,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: output_position.clone(),
+        package_hash: PackageHash::new(package_hash).unwrap(),
+        schema_hash: SchemaHash::new("schema-status-1").unwrap(),
+        segments: vec![StateSegment {
+            segment_id: SegmentId::new("seg-status-1").unwrap(),
+            scope: ScopeKey::Resource,
+            output_position,
+            row_count: 1,
+            byte_count: 8,
+        }],
+    }
+}
+
+fn status_receipt(package_hash: &str, receipt_id: &str, committed_at_ms: i64) -> Receipt {
+    Receipt {
+        receipt_id: ReceiptId::new(receipt_id).unwrap(),
+        destination: DestinationId::new("local-test").unwrap(),
+        target: TargetName::new("events").unwrap(),
+        package_hash: PackageHash::new(package_hash).unwrap(),
+        segment_acks: vec![SegmentAck {
+            segment_id: SegmentId::new("seg-status-1").unwrap(),
+            row_count: 1,
+            byte_count: 8,
+        }],
+        disposition: WriteDisposition::Append,
+        idempotency_token: IdempotencyToken::new(package_hash).unwrap(),
+        transaction: None,
+        counts: CommitCounts {
+            rows_written: 1,
+            rows_inserted: Some(1),
+            rows_updated: Some(0),
+            rows_deleted: Some(0),
+        },
+        schema_hash: SchemaHash::new("schema-status-1").unwrap(),
+        migrations: Vec::new(),
+        committed_at_ms,
+        verify: VerifyClause {
+            kind: "status".to_owned(),
+            statement: "select 1".to_owned(),
+            parameters: BTreeMap::new(),
+        },
+    }
+}
+
+fn now_ms_for_test() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        .try_into()
+        .unwrap()
 }
 
 #[derive(Clone, Copy, Debug)]

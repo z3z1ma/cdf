@@ -7,6 +7,7 @@ mod commands;
 mod context;
 mod doctor_drift;
 mod output;
+mod status_freshness;
 mod system_sql;
 
 pub use output::InvocationResult;

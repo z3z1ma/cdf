@@ -36,6 +36,8 @@ No dashboard or UI.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md`; `firn doctor` now runs a fixed process-based Python interpreter probe, validates version/GIL/free-threaded metadata, enforces `python.require_free_threaded`, fails configured Python resources without an interpreter, and avoids executing project Python resource code.
 - 2026-07-06: Split child `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md` for the next bounded doctor slice: closure-grade environment details, secret resolvability/redaction behavior, and DuckDB ICU reporting.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md`; `firn doctor` now reports structured project/environment details, redacted resolved secret references including env/file/declarative coverage, missing/unavailable secret failures without value leakage, and read-only DuckDB ICU details for missing and existing databases.
+- 2026-07-06: Split child `.10x/tickets/done/2026-07-06-status-freshness-local-ledger.md` for local read-only `firn status` freshness evaluation. The child explicitly avoids inventing a pipeline default by evaluating only unambiguous committed local ledger heads.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-status-freshness-local-ledger.md`; `firn status` now evaluates serving freshness SLOs from existing committed SQLite checkpoint heads, reports fresh/stale/non-evaluable states with structured details, keeps missing or ambiguous local state non-evaluable, and preserves concise scheduler-friendly human output.
 
 ## Blockers
 

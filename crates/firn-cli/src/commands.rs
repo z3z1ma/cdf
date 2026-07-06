@@ -27,7 +27,7 @@ use crate::{
     context::{DestinationRuntime, DoctorProbe, ProjectContext, require_lock},
     doctor_drift::{self, DriftStatus},
     output::{CliError, CommandOutput, InvocationResult},
-    system_sql,
+    status_freshness, system_sql,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -566,44 +566,10 @@ fn secret_check_details(report: &firn_project::ProjectValidationReport) -> serde
 
 fn status(cli: &Cli) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    let serving = context
-        .resources
-        .iter()
-        .filter_map(|resource| {
-            let descriptor = resource.descriptor();
-            descriptor
-                .freshness
-                .as_ref()
-                .map(|freshness| StatusResource {
-                    resource_id: descriptor.resource_id.to_string(),
-                    trust_level: format!("{:?}", descriptor.trust_level),
-                    max_age_ms: freshness.max_age_ms,
-                })
-        })
-        .collect::<Vec<_>>();
-    let exit_code = if serving.is_empty() { 0 } else { 78 };
-    let report = StatusReport {
-        freshness_resources: serving,
-        evaluable: exit_code == 0,
-        reason: if exit_code == 0 {
-            None
-        } else {
-            Some(
-                "freshness SLO evaluation requires last-success timestamps from runtime ledger/package receipts"
-                    .to_owned(),
-            )
-        },
-    };
-    report_output(
-        "status",
-        if exit_code == 0 {
-            "no freshness SLO resources to evaluate".to_owned()
-        } else {
-            "freshness SLO status is not yet evaluable".to_owned()
-        },
-        report,
-        exit_code,
-    )
+    let report = status_freshness::evaluate(&context)?;
+    let exit_code = report.exit_code();
+    let human = status_freshness::human_summary(&report);
+    report_output("status", human, report, exit_code)
 }
 
 fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
@@ -1280,20 +1246,6 @@ enum CheckStatus {
     Failed,
     Skipped,
     Unsupported,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct StatusReport {
-    freshness_resources: Vec<StatusResource>,
-    evaluable: bool,
-    reason: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct StatusResource {
-    resource_id: String,
-    trust_level: String,
-    max_age_ms: u64,
 }
 
 const HELP_TEXT: &str = r#"firn 0.1.0
