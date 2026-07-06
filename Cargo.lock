@@ -1476,6 +1476,9 @@ dependencies = [
 [[package]]
 name = "firn-conformance"
 version = "0.1.0"
+dependencies = [
+ "firn-kernel",
+]
 
 [[package]]
 name = "firn-contract"
@@ -1637,6 +1640,7 @@ dependencies = [
 name = "firn-state-sqlite"
 version = "0.1.0"
 dependencies = [
+ "firn-conformance",
  "firn-kernel",
  "rusqlite",
  "serde",

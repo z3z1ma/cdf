@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
 Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-parquet-object-store-destination.md, .10x/tickets/2026-07-05-postgres-destination.md
 
@@ -29,6 +29,8 @@ No new production behavior except test hooks required for chaos.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-06: Split child `.10x/tickets/done/2026-07-06-checkpoint-store-conformance-suite.md` for the first reusable conformance harness over the public checkpoint-store contract. This advances store conformance independently of unfinished resource, destination, chaos, and golden-package suites.
+- 2026-07-06: Closed checkpoint-store conformance child with mutation-hardened reusable harness, MVP in-memory/SQLite store integration, and evidence/review records. Resource conformance, destination conformance, chaos, golden-package fixtures, and MVP killer-demo harness remain open in this parent.
 
 ## Blockers
 

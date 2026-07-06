@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+use firn_conformance::checkpoint_store::{
+    assert_checkpoint_store_conformance, assert_checkpoint_store_send_sync,
+};
 use firn_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
@@ -549,12 +552,20 @@ fn assert_branch_rewind_reports_only_current_branch_ahead<S: CheckpointStore>(st
     );
 }
 
-fn assert_checkpoint_store_send_sync<T: CheckpointStore + Send + Sync>() {}
-
 #[test]
 fn store_types_implement_thread_safe_checkpoint_store() {
     assert_checkpoint_store_send_sync::<InMemoryCheckpointStore>();
     assert_checkpoint_store_send_sync::<SqliteCheckpointStore>();
+}
+
+#[test]
+fn in_memory_passes_checkpoint_store_conformance() {
+    assert_checkpoint_store_conformance(InMemoryCheckpointStore::new);
+}
+
+#[test]
+fn sqlite_passes_checkpoint_store_conformance() {
+    assert_checkpoint_store_conformance(|| SqliteCheckpointStore::open_in_memory().unwrap());
 }
 
 #[test]

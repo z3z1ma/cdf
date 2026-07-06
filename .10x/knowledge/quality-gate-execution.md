@@ -18,4 +18,6 @@ With CodeQL CLI 2.25.6 and local Cargo/Rust 1.96.1, Firn's Rust extractor diagno
 
 For protocol parsers and validation-heavy Rust code, a bounded package-local `cargo mutants` pass is high-signal after the normal focused tests pass. Treat surviving mutants as closure evidence gaps when they map to the ticket acceptance contract; add focused assertions for field shape validation, deterministic serialization, line numbers, and identity formatting instead of accepting broad coverage percentages as proof.
 
+For reusable conformance harnesses, include negative self-tests with deliberately faulty implementations so mutation testing can prove the harness itself fails on contract violations. When the harness is consumed by downstream crates, run `cargo mutants` with both the harness crate and at least one downstream consumer in `--test-package`; otherwise harness-local tests or downstream integration may silently be omitted from the mutation oracle.
+
 Do not place generated quality reports or CodeQL databases in tracked source. Prefer ignored build output or `/tmp` for transient reports, and record summarized results in `.10x/evidence/`.
