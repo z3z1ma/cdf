@@ -25,6 +25,9 @@ pub const LOCKFILE_VERSION: u16 = 1;
 mod internal;
 mod lockfile;
 mod models;
+mod runtime;
+#[cfg(test)]
+mod runtime_tests;
 mod secrets;
 mod sources;
 #[cfg(test)]
@@ -32,5 +35,6 @@ mod tests;
 
 pub use lockfile::*;
 pub use models::*;
+pub use runtime::*;
 pub use secrets::*;
 pub use sources::*;

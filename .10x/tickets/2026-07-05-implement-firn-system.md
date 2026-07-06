@@ -34,7 +34,7 @@ MVP foundation:
 - `.10x/tickets/done/2026-07-05-package-builder-reader.md`
 - `.10x/tickets/done/2026-07-05-contract-compiler-normalization.md`
 - `.10x/tickets/done/2026-07-05-datafusion-engine-planner.md`
-- `.10x/tickets/2026-07-06-package-replay-firn-line-runtime.md`
+- `.10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md`
 
 MVP authoring, destinations, and product surface:
 
@@ -104,7 +104,8 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed supply-chain policy child `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`; `deny.toml` now makes advisory/license/source policy explicit, and `supply-chain/` now initializes cargo-vet so `cargo vet --locked` passes with a current-version exemption backlog.
 - 2026-07-06: Closed package archive primitive child `.10x/tickets/done/2026-07-06-package-archive-transcode-primitive.md`; `firn-package` now has a supply-chain-clean IPC-to-Parquet in-memory archive report primitive, `firn-dest-parquet` delegates to the shared writer, and the remaining archive CLI/file-placement/manifest metadata work stays with `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
 - 2026-07-06: Closed Parquet file-source child `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`; `firn-formats` now reads Parquet sources through DuckDB's bundled reader and an Arrow IPC bridge without adding the blocked direct arrow-rs `parquet`/`paste` path, with parser, malformed-input, package replay, mutation, and QUALITY evidence.
-- 2026-07-06: Split child `.10x/tickets/2026-07-06-package-replay-firn-line-runtime.md` for the missing lower-layer prepared-package DuckDB/SQLite replay/checkpoint runtime primitive. This is the smallest shared unblocking step for CLI `resume`/`replay package`, chaos recovery, golden replay gates, and the MVP crash-window demo without solving live source extraction in the same slice.
+- 2026-07-06: Split child now closed at `.10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md` for the missing lower-layer prepared-package DuckDB/SQLite replay/checkpoint runtime primitive. This is the smallest shared unblocking step for CLI `resume`/`replay package`, chaos recovery, golden replay gates, and the MVP crash-window demo without solving live source extraction in the same slice.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md`; `firn-project` now exposes a receipt-verified prepared-package DuckDB/SQLite replay and recovery runtime primitive with focused tests, mutation coverage, full relevant `QUALITY.md` evidence, and closure review. CLI command wiring, broader run/resume orchestration, chaos killpoints, golden fixtures, and full MVP demo remain with their existing active tickets.
 
 ## Blockers
 

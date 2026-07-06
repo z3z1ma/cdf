@@ -1628,14 +1628,20 @@ dependencies = [
 name = "firn-project"
 version = "0.1.0"
 dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
  "firn-contract",
  "firn-declarative",
+ "firn-dest-duckdb",
  "firn-http",
  "firn-kernel",
+ "firn-package",
+ "firn-state-sqlite",
  "hex",
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "toml",
 ]
 
