@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-06
 
 # Checkpoints, state, and the firn line
 
@@ -38,6 +38,8 @@ Scopes MUST support partition, window, file, stream, schema-contract, and destin
 
 The store trait MUST support head lookup, propose, commit, abandon, history, and rewind. SQLite and in-memory stores ship at MVP. Future stores MUST pass the same conformance contract.
 
+The public checkpoint store trait MUST be `Send + Sync` and use shared receivers so a runtime can hold one store handle across workers. Store implementations MUST hide mutation behind implementation-owned synchronization or transactional storage and MUST NOT expose raw write handles that bypass the firn-line invariant.
+
 Rewind MUST append history or markers and move the head without deleting old transitions. Rewind output MUST report committed packages that are now ahead of state.
 
 ## Destination mirrors
@@ -50,10 +52,10 @@ Destinations capable of tables SHOULD mirror `_firn_loads` and `_firn_state`. Re
 
 - Tests prove no checkpoint commit succeeds without a receipt covering package hash and segments.
 - SQLite enforces a single committed head per scope under transaction.
+- Tests prove the MVP stores satisfy the shared thread-safe store contract without exposing a committed-write bypass.
 - Rewind never deletes checkpoint history and reports ahead-of-state packages.
 - Destination mirror recovery reconstructs heads from receipts and marks evidence limits.
 
 ## Explicit exclusions
 
 This spec does not define the destination write protocol itself, package file layout, or CLI command UX beyond required operations.
-

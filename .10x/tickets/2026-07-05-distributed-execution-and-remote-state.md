@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-05
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/2026-07-05-checkpoint-store-sqlite.md
+Depends-On: .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
 # Implement distributed execution and remote state stores
 
@@ -33,4 +33,3 @@ No new artifact type may be introduced without superseding decision.
 ## Blockers
 
 None.
-

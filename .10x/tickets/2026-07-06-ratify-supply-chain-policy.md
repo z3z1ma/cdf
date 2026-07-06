@@ -28,6 +28,7 @@ No opportunistic dependency upgrades, no broad `cargo update`, no CI workflow ch
 ## Progress and notes
 
 - 2026-07-06: Opened from kernel QUALITY verification. `cargo deny check advisories` passed with default config, but full `cargo deny check` failed because no `deny.toml` exists and the default config has no allowed-license list, rejecting even Apache-2.0/MIT project and dependency licenses. `cargo vet` reported that `supply-chain/` is not initialized.
+- 2026-07-06: Checkpoint-store QUALITY verification added `rusqlite`, `serde_json`, and dev-only `tempfile` to the dependency graph. `cargo audit`, `cargo deny check advisories`, `osv-scanner`, Semgrep, CodeQL, and gitleaks remained clean. Full `cargo deny check` still fails only at the unratified license allowlist, and `cargo vet` still fails because `supply-chain/` is absent.
 
 ## Blockers
 

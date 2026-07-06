@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-05
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-datafusion-engine-planner.md, .10x/tickets/2026-07-05-checkpoint-store-sqlite.md
+Depends-On: .10x/tickets/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
 # Implement CLI surface
 
@@ -33,4 +33,3 @@ Business logic belongs in lower crates; CLI must not bypass lower-layer invarian
 ## Blockers
 
 None.
-

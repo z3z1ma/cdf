@@ -718,6 +718,8 @@ pub struct StateSegment {
     pub byte_count: u64,
 }
 
+pub const CHECKPOINT_STATE_VERSION: u16 = 1;
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Receipt {
     pub receipt_id: ReceiptId,
@@ -750,6 +752,97 @@ impl Receipt {
             .iter()
             .all(|segment| acked_segments.contains(&segment.segment_id))
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointStatus {
+    Proposed,
+    Committed,
+    Abandoned,
+    Rewound,
+}
+
+impl CheckpointStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Proposed => "proposed",
+            Self::Committed => "committed",
+            Self::Abandoned => "abandoned",
+            Self::Rewound => "rewound",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self> {
+        match value {
+            "proposed" => Ok(Self::Proposed),
+            "committed" => Ok(Self::Committed),
+            "abandoned" => Ok(Self::Abandoned),
+            "rewound" => Ok(Self::Rewound),
+            other => Err(FirnError::data(format!(
+                "unknown checkpoint status {other:?}"
+            ))),
+        }
+    }
+}
+
+impl TryFrom<&str> for CheckpointStatus {
+    type Error = FirnError;
+
+    fn try_from(value: &str) -> Result<Self> {
+        Self::parse(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Checkpoint {
+    pub delta: StateDelta,
+    pub status: CheckpointStatus,
+    pub receipt: Option<Receipt>,
+    pub is_head: bool,
+    pub created_at_ms: i64,
+    pub committed_at_ms: Option<i64>,
+    pub rewind_target_checkpoint_id: Option<CheckpointId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindRequest {
+    pub marker_checkpoint_id: CheckpointId,
+    pub pipeline_id: PipelineId,
+    pub resource_id: ResourceId,
+    pub scope: ScopeKey,
+    pub target_checkpoint_id: CheckpointId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RewindReport {
+    pub marker: Checkpoint,
+    pub head: Checkpoint,
+    pub packages_ahead: Vec<PackageHash>,
+}
+
+pub trait CheckpointStore: Send + Sync {
+    fn propose(&self, delta: StateDelta) -> Result<Checkpoint>;
+
+    fn commit(&self, checkpoint_id: &CheckpointId, receipt: Receipt) -> Result<Checkpoint>;
+
+    fn abandon(&self, checkpoint_id: &CheckpointId) -> Result<Checkpoint>;
+
+    fn head(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Option<Checkpoint>>;
+
+    fn history(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Vec<Checkpoint>>;
+
+    fn rewind(&self, request: RewindRequest) -> Result<RewindReport>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1110,6 +1203,64 @@ mod tests {
         assert_eq!(
             receipt,
             serde_json::from_str::<Receipt>(&receipt_json).unwrap()
+        );
+    }
+
+    #[test]
+    fn checkpoint_contract_values_serde_round_trip() {
+        let (delta, receipt) = sample_state_delta_and_receipt();
+        assert_eq!(CHECKPOINT_STATE_VERSION, 1);
+        assert_eq!(CheckpointStatus::Committed.as_str(), "committed");
+        assert_eq!(
+            CheckpointStatus::parse("rewound").unwrap(),
+            CheckpointStatus::Rewound
+        );
+
+        let checkpoint = Checkpoint {
+            delta: delta.clone(),
+            status: CheckpointStatus::Committed,
+            receipt: Some(receipt.clone()),
+            is_head: true,
+            created_at_ms: 1_700_000_000_000,
+            committed_at_ms: Some(receipt.committed_at_ms),
+            rewind_target_checkpoint_id: None,
+        };
+        let checkpoint_json = serde_json::to_string(&checkpoint).unwrap();
+        assert_eq!(
+            checkpoint,
+            serde_json::from_str::<Checkpoint>(&checkpoint_json).unwrap()
+        );
+
+        let rewind_request = RewindRequest {
+            marker_checkpoint_id: CheckpointId::new("rewind-marker-1").unwrap(),
+            pipeline_id: delta.pipeline_id.clone(),
+            resource_id: delta.resource_id.clone(),
+            scope: delta.scope.clone(),
+            target_checkpoint_id: delta.checkpoint_id.clone(),
+        };
+        let request_json = serde_json::to_string(&rewind_request).unwrap();
+        assert_eq!(
+            rewind_request,
+            serde_json::from_str::<RewindRequest>(&request_json).unwrap()
+        );
+
+        let rewind_report = RewindReport {
+            marker: Checkpoint {
+                delta,
+                status: CheckpointStatus::Rewound,
+                receipt: None,
+                is_head: false,
+                created_at_ms: 1_700_000_000_001,
+                committed_at_ms: None,
+                rewind_target_checkpoint_id: Some(checkpoint.delta.checkpoint_id.clone()),
+            },
+            head: checkpoint,
+            packages_ahead: vec![PackageHash::new("package-sha256").unwrap()],
+        };
+        let report_json = serde_json::to_string(&rewind_report).unwrap();
+        assert_eq!(
+            rewind_report,
+            serde_json::from_str::<RewindReport>(&report_json).unwrap()
         );
     }
 
