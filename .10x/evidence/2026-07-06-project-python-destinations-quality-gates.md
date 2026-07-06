@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md
+Relates-To: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
 
 # Project, Python, and destination quality gates
 
@@ -57,7 +57,7 @@ Ran the `QUALITY.md` loop at production depth for this batch: formatting, featur
 
 ## CodeQL limits
 
-The final CodeQL run produced 0 findings and no `include` macro expansion failures for the active-batch crate roots after `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`. The local Rust extractor still reported generic macro expansion diagnostics for standard and third-party macros and summarized 41 extracted-with-error files and 9 without-error files. This limits CodeQL confidence; it does not contradict the other compile/test/lint/scanner evidence. The remaining extractor friction is tracked by `.10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md`.
+The final CodeQL run produced 0 findings and no `include` macro expansion failures for the active-batch crate roots after `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`. The local Rust extractor still reported generic macro expansion diagnostics for standard and third-party macros and summarized 41 extracted-with-error files and 9 without-error files. This limits CodeQL confidence; it does not contradict the other compile/test/lint/scanner evidence. The remaining extractor friction was later closed by `.10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md`.
 
 ## What this supports or challenges
 

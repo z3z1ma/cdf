@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-local-system-sql.md, .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/2026-07-05-observability-doctor-status-sql.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md
+Relates-To: .10x/tickets/done/2026-07-06-local-system-sql.md, .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/2026-07-05-observability-doctor-status-sql.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
 
 # Local System SQL Evidence
 
@@ -98,7 +98,7 @@ Repository-level policy/tooling limits:
 - Full `cargo deny check` exited 4 because the repository still has no ratified `deny.toml` license allowlist; this rejects normal present licenses such as Apache-2.0 and MIT. The blocker is owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
 - `cargo vet` exited 255 because `supply-chain/` has not been initialized. The adoption decision is owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
 - A raw whole-repository `gitleaks dir .` scan found generated `target/**` build artifacts from bundled third-party DuckDB/mbedTLS/Parquet sources. Source-snapshot and git-history scans were clean, so no tracked-source secret was found.
-- CodeQL analysis reused the existing database as requested. The active extractor-coverage issue remains owned by `.10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md`.
+- CodeQL analysis reused the existing database as requested. The extractor-coverage issue was later closed by `.10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md`.
 
 System-SQL tests cover:
 

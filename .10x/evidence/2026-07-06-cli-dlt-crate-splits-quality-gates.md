@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-dlt-shim-preview.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md
+Relates-To: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-dlt-shim-preview.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
 
 # CLI, dlt, and crate-split quality gates
 
@@ -63,7 +63,7 @@ Final pre-commit focused recheck after record closure and ticket moves:
 - `cargo vet`: failed because `supply-chain/` is not initialized. Owner: `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
 - Raw `gitleaks dir` over the entire repository found generated `target/**` artifacts, including prior redacted reports and bundled generated third-party source. Source-only and git-history scans were clean, so no tracked-source secret was found.
 - `cargo geiger --all-features` does not run cleanly from the virtual workspace manifest. A package-mode run was noisy and exceeded a reasonable sidecar budget. Direct first-party source search found no `unsafe`, `unsafe impl`, `unsafe trait`, FFI, raw pointer conversions, `transmute`, or `MaybeUninit`; matches were ordinary `Send`/`Sync` bounds and prose.
-- CodeQL produced 0 findings but reported limited Rust extractor coverage: 113 Rust files scanned, 80 extracted with errors, and 33 without errors. This is owned by `.10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md`.
+- CodeQL produced 0 findings but reported limited Rust extractor coverage: 113 Rust files scanned, 80 extracted with errors, and 33 without errors. This is owned by `.10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md`.
 - Miri, `cargo careful`, sanitizers, `cargo +nightly udeps`, fuzzing, Kani, Criterion, `cargo bench`, and `cargo mutants` were not run for this batch. The local toolchain is stable-only for nightly checks, no configured fuzz/proof/benchmark harness exists for this surface, no first-party unsafe was introduced, and this broad mixed batch is already covered by workspace tests, nextest, feature matrix, coverage, semver, scanners, and CodeQL.
 
 ## What this supports or challenges
