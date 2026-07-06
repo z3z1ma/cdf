@@ -1654,7 +1654,10 @@ dependencies = [
  "firn-formats",
  "firn-kernel",
  "firn-package",
+ "hex",
  "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
 ]

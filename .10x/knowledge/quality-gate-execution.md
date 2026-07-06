@@ -16,4 +16,6 @@ With CodeQL CLI 2.25.6 and local Cargo/Rust 1.96.1, Firn's Rust extractor diagno
 
 `cargo geiger` can clean normal Cargo build output and may fail on dependency scan warnings even when firn-owned code has no `unsafe`. Prefer running it in an isolated `CARGO_TARGET_DIR` when possible, and always pair it with a direct source search over `crates/` for `unsafe`, FFI, raw-pointer, and `Send`/`Sync` surfaces.
 
+For protocol parsers and validation-heavy Rust code, a bounded package-local `cargo mutants` pass is high-signal after the normal focused tests pass. Treat surviving mutants as closure evidence gaps when they map to the ticket acceptance contract; add focused assertions for field shape validation, deterministic serialization, line numbers, and identity formatting instead of accepting broad coverage percentages as proof.
+
 Do not place generated quality reports or CodeQL databases in tracked source. Prefer ignored build output or `/tmp` for transient reports, and record summarized results in `.10x/evidence/`.
