@@ -32,6 +32,7 @@ No dashboard or UI.
 - 2026-07-06: Split first executable child `.10x/tickets/done/2026-07-06-local-system-sql.md` for read-only local `firn sql` over checkpoint/package metadata.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-local-system-sql.md`; `firn sql` now supports read-only local system-history queries over checkpoint rows and package manifest/receipt metadata.
 - 2026-07-06: Split and closed child `.10x/tickets/done/2026-07-06-duckdb-ledger-mirror-doctor-drift.md` for the first concrete local DuckDB ledger/mirror drift doctor probe. `firn doctor` now reports local DuckDB ledger/mirror drift as skipped, passed, or failed with read-only probes.
+- 2026-07-06: Split child `.10x/tickets/2026-07-06-python-doctor-interpreter-probe.md` for the next bounded doctor slice: configured Python interpreter health, version, GIL/free-threaded status, and `python.require_free_threaded` compatibility. This keeps the observability work moving without crossing into blocked run/preview/status runtime orchestration.
 
 ## Blockers
 
