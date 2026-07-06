@@ -1524,6 +1524,20 @@ dependencies = [
 [[package]]
 name = "firn-dest-parquet"
 version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "duckdb",
+ "firn-kernel",
+ "firn-package",
+ "hex",
+ "object_store",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tokio",
+]
 
 [[package]]
 name = "firn-dest-postgres"
