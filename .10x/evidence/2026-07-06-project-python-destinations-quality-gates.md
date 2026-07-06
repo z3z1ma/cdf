@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
+Relates-To: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
 
 # Project, Python, and destination quality gates
 
@@ -65,4 +65,4 @@ This supports accepting the project/Python/DuckDB implemented surfaces, the Post
 
 ## Limits
 
-This evidence does not close `.10x/tickets/2026-07-05-postgres-destination.md`, because live Postgres execution evidence is still missing. It does not ratify license or cargo-vet policy, and it does not prove absence of bugs outside executed tests and scanner coverage.
+This evidence does not close `.10x/tickets/done/2026-07-05-postgres-destination.md`, because live Postgres execution evidence is still missing. It does not ratify license or cargo-vet policy, and it does not prove absence of bugs outside executed tests and scanner coverage.

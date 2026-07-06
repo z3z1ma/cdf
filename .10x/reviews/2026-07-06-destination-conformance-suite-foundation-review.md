@@ -32,4 +32,4 @@ Pass. The implementation stays within the ticket boundary, keeps `crates/firn-co
 
 ## Residual risk
 
-The suite foundation covers sheet truth and dry-run planning for DuckDB/Parquet. It does not yet cover resource conformance, chaos killpoints, golden-package fixtures, MVP demo execution, or live Postgres destination conformance; those remain owned by `.10x/tickets/2026-07-05-conformance-chaos-golden.md` and `.10x/tickets/2026-07-05-postgres-destination.md`.
+The suite foundation covers sheet truth and dry-run planning for DuckDB/Parquet. It does not yet cover resource conformance, chaos killpoints, golden-package fixtures, MVP demo execution, or live Postgres destination conformance; those remain owned by `.10x/tickets/2026-07-05-conformance-chaos-golden.md` and `.10x/tickets/done/2026-07-05-postgres-destination.md`.

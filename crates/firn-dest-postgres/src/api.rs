@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use crate::*;
 use crate::{ddl::*, dml::*, mirrors::*, validate::*};
 
@@ -33,6 +35,7 @@ pub fn plan_postgres_load(
 
     let mut verify = verify_clause(
         &target_name,
+        input.target.schema.as_ref(),
         &input.package_hash,
         &input.idempotency_token,
         &input.schema_hash,
@@ -47,6 +50,11 @@ pub fn plan_postgres_load(
         kernel,
         target: input.target,
         stage_table,
+        columns: input.columns,
+        merge_keys: input.merge_keys,
+        dedup: input.dedup,
+        resource_id: input.resource_id,
+        state_delta: input.state_delta,
         system_ddl: system_table_ddl(),
         target_ddl: migrations,
         idempotency_check: idempotency_check_statement(),
@@ -60,6 +68,28 @@ pub fn plan_postgres_load(
         verify,
         drift,
     })
+}
+
+#[derive(Clone, Debug)]
+pub struct PostgresCommitRequest {
+    pub package_dir: PathBuf,
+    pub plan: PostgresLoadPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostgresCommitOutcome {
+    pub receipt: Receipt,
+    pub duplicate: bool,
+    pub plan: PostgresLoadPlan,
+    pub package_receipt_recorded: bool,
+    pub package_receipt_error: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PostgresReceiptVerification {
+    pub verified: bool,
+    pub receipt_id: ReceiptId,
+    pub reason: Option<String>,
 }
 
 pub fn build_receipt(plan: &PostgresLoadPlan, input: PostgresReceiptInput) -> Result<Receipt> {

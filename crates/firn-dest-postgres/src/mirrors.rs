@@ -24,14 +24,14 @@ pub(crate) fn mirror_statements(
 
 pub(crate) fn record_load_sql() -> String {
     format!(
-        "INSERT INTO {} (\"receipt_id\", \"destination\", \"target\", \"resource_id\", \"package_hash\", \"idempotency_token\", \"disposition\", \"schema_hash\", \"rows_written\", \"rows_inserted\", \"rows_updated\", \"rows_deleted\", \"segment_count\", \"migrations_json\", \"receipt_json\", \"xid\", \"duplicate\", \"committed_at_ms\")\nVALUES ($1, 'postgres', $2, $4, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb, $14::jsonb, $15, $16, $17)\nON CONFLICT (\"target\", \"package_hash\") DO NOTHING",
+        "INSERT INTO {} (\"receipt_id\", \"destination\", \"target\", \"resource_id\", \"package_hash\", \"idempotency_token\", \"disposition\", \"schema_hash\", \"rows_written\", \"rows_inserted\", \"rows_updated\", \"rows_deleted\", \"segment_count\", \"migrations_json\", \"receipt_json\", \"xid\", \"duplicate\", \"committed_at_ms\")\nVALUES ($1, 'postgres', $2, $4, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13::text::jsonb, $14::text::jsonb, $15, $16, $17)\nON CONFLICT (\"target\", \"package_hash\") DO NOTHING",
         quote_identifier_unchecked(FIRN_LOADS_TABLE)
     )
 }
 
 pub(crate) fn state_mirror_sql() -> String {
     format!(
-        "INSERT INTO {} (\"pipeline_id\", \"resource_id\", \"scope\", \"state_version\", \"checkpoint_id\", \"package_hash\", \"schema_hash\", \"output_position_json\", \"receipt_id\", \"committed_at_ms\")\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9, $10)\nON CONFLICT (\"pipeline_id\", \"resource_id\", \"scope\") DO UPDATE SET\n  \"state_version\" = EXCLUDED.\"state_version\",\n  \"checkpoint_id\" = EXCLUDED.\"checkpoint_id\",\n  \"package_hash\" = EXCLUDED.\"package_hash\",\n  \"schema_hash\" = EXCLUDED.\"schema_hash\",\n  \"output_position_json\" = EXCLUDED.\"output_position_json\",\n  \"receipt_id\" = EXCLUDED.\"receipt_id\",\n  \"committed_at_ms\" = EXCLUDED.\"committed_at_ms\"\nWHERE {}.\"committed_at_ms\" <= EXCLUDED.\"committed_at_ms\"",
+        "INSERT INTO {} (\"pipeline_id\", \"resource_id\", \"scope\", \"state_version\", \"checkpoint_id\", \"package_hash\", \"schema_hash\", \"output_position_json\", \"receipt_id\", \"committed_at_ms\")\nVALUES ($1, $2, $3, $4, $5, $6, $7, $8::text::jsonb, $9, $10)\nON CONFLICT (\"pipeline_id\", \"resource_id\", \"scope\") DO UPDATE SET\n  \"state_version\" = EXCLUDED.\"state_version\",\n  \"checkpoint_id\" = EXCLUDED.\"checkpoint_id\",\n  \"package_hash\" = EXCLUDED.\"package_hash\",\n  \"schema_hash\" = EXCLUDED.\"schema_hash\",\n  \"output_position_json\" = EXCLUDED.\"output_position_json\",\n  \"receipt_id\" = EXCLUDED.\"receipt_id\",\n  \"committed_at_ms\" = EXCLUDED.\"committed_at_ms\"\nWHERE {}.\"committed_at_ms\" <= EXCLUDED.\"committed_at_ms\"",
         quote_identifier_unchecked(FIRN_STATE_TABLE),
         quote_identifier_unchecked(FIRN_STATE_TABLE)
     )
@@ -39,6 +39,7 @@ pub(crate) fn state_mirror_sql() -> String {
 
 pub(crate) fn verify_clause(
     target: &TargetName,
+    target_schema: Option<&PostgresIdentifier>,
     package_hash: &PackageHash,
     idempotency_token: &IdempotencyToken,
     schema_hash: &SchemaHash,
@@ -53,11 +54,14 @@ pub(crate) fn verify_clause(
         ("schema_hash".to_owned(), schema_hash.as_str().to_owned()),
     ]);
     parameters.insert("destination".to_owned(), POSTGRES_DESTINATION_ID.to_owned());
+    if let Some(schema) = target_schema {
+        parameters.insert("target_schema".to_owned(), schema.as_str().to_owned());
+    }
 
     VerifyClause {
         kind: "postgres_sql".to_owned(),
         statement: format!(
-            "SELECT \"receipt_id\", \"xid\", \"rows_written\", \"schema_hash\", \"receipt_json\" FROM {} WHERE \"destination\" = 'postgres' AND \"target\" = $1 AND \"package_hash\" = $2 AND \"idempotency_token\" = $3 AND \"schema_hash\" = $4",
+            "SELECT \"receipt_id\", \"xid\", \"rows_written\", \"schema_hash\", \"receipt_json\"::text AS \"receipt_json\" FROM {} WHERE \"destination\" = 'postgres' AND \"target\" = $1 AND \"package_hash\" = $2 AND \"idempotency_token\" = $3 AND \"schema_hash\" = $4",
             quote_identifier_unchecked(FIRN_LOADS_TABLE)
         ),
         parameters,

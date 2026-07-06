@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-05
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
@@ -34,8 +34,9 @@ No warehouse destinations in this ticket.
 - 2026-07-06: Parent integration revalidated package tests, clippy, formatting, `cargo audit`, `cargo deny check advisories`, OSV, and `git diff --check` after Python upgraded to PyO3 0.29 through `pyo3-arrow`. The stale PyO3 advisory blocker is resolved. This ticket remains blocked because the current crate has no live Postgres driver/execution path or live integration evidence for append, replace, merge, receipt verification, or rollback behavior.
 - 2026-07-06: Split the large `crates/firn-dest-postgres/src/lib.rs` into focused files under `crates/firn-dest-postgres/src/` while preserving the crate-root API. Organization evidence recorded in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
 - 2026-07-06: Replaced the intermediate `include!` split with ordinary Rust modules under `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`. Final parent quality gates recorded in `.10x/evidence/2026-07-06-project-python-destinations-quality-gates.md`. This ticket remains blocked on live Postgres execution evidence.
-- 2026-07-06: Rechecked the live-execution blocker. Homebrew Postgres binaries are present (`postgres`, `initdb`, `pg_ctl`, `psql`, `pg_isready`), but `crates/firn-dest-postgres` remains a planning/SQL/receipt crate with no driver-backed commit path. Opened child `.10x/tickets/2026-07-06-postgres-live-execution.md` for the live driver, package row loading, transaction execution, receipt verification, and ephemeral-server integration evidence. Environment/source evidence is recorded in `.10x/evidence/2026-07-06-postgres-live-execution-scope.md`.
+- 2026-07-06: Rechecked the live-execution blocker. Homebrew Postgres binaries are present (`postgres`, `initdb`, `pg_ctl`, `psql`, `pg_isready`), but `crates/firn-dest-postgres` remained a planning/SQL/receipt crate with no driver-backed commit path. Opened child `.10x/tickets/done/2026-07-06-postgres-live-execution.md` for the live driver, package row loading, transaction execution, receipt verification, and ephemeral-server integration evidence. Environment/source evidence is recorded in `.10x/evidence/2026-07-06-postgres-live-execution-scope.md`.
+- 2026-07-06: Closed live execution child `.10x/tickets/done/2026-07-06-postgres-live-execution.md`; Postgres destination now has live driver-backed append, replace, merge, duplicate no-op, receipt verification, schema-scoped mirror, rollback, and exact decimal evidence. Closure evidence is `.10x/evidence/2026-07-06-postgres-live-execution.md`; review is `.10x/reviews/2026-07-06-postgres-live-execution-review.md`.
 
 ## Blockers
 
-None. Completion depends on `.10x/tickets/2026-07-06-postgres-live-execution.md`.
+None.

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/2026-07-05-postgres-destination.md, .10x/specs/destination-receipts-guarantees.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/project-cli-observability-security.md
+Relates-To: .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/specs/destination-receipts-guarantees.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/project-cli-observability-security.md
 
 # Postgres destination implementation evidence
 

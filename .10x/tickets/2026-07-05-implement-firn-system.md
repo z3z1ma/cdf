@@ -45,7 +45,7 @@ MVP authoring, destinations, and product surface:
 - `.10x/tickets/done/2026-07-05-python-sdk-bridge.md`
 - `.10x/tickets/done/2026-07-05-duckdb-destination.md`
 - `.10x/tickets/done/2026-07-05-parquet-object-store-destination.md`
-- `.10x/tickets/2026-07-05-postgres-destination.md`
+- `.10x/tickets/done/2026-07-05-postgres-destination.md`
 - `.10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md`
 - `.10x/tickets/2026-07-05-cli-surface.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
@@ -110,7 +110,8 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-golden-package-conformance-foundation.md`; `firn-conformance` now owns a reusable golden-package evidence harness with committed prepared-orders expected evidence, 100 local regeneration proof, verification-before-comparison, negative self-tests, mutation evidence, and full QUALITY evidence. Broader live-run golden gates and MVP demo work remain with `.10x/tickets/2026-07-05-conformance-chaos-golden.md`.
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md`; `firn-engine` now has an additive explicit-run-id tracing entry point with exact run/resource/package/partition span fields, preserved package identity, and mutation-clean execution tests. `inspect run` remains blocked under `.10x/tickets/2026-07-05-observability-doctor-status-sql.md` until run-ledger semantics are ratified.
 - 2026-07-06: Closed package archive contract ratification at `.10x/tickets/done/2026-07-06-package-archive-contract-ratification.md`; the active package spec now defines persisted archive layout, non-identity metadata, status-preserving lifecycle behavior, rerun/crash policy, and CLI contract. Opened `.10x/tickets/2026-07-06-package-archive-persistence-cli.md` as the executable source slice.
-- 2026-07-06: Rechecked the Postgres destination blocker and found local Postgres binaries are available while the crate remains planning-only. Opened `.10x/tickets/2026-07-06-postgres-live-execution.md` to implement the live driver-backed commit path and integration evidence needed by Postgres destination and downstream conformance work.
+- 2026-07-06: Rechecked the Postgres destination blocker and found local Postgres binaries are available while the crate remains planning-only. Opened `.10x/tickets/done/2026-07-06-postgres-live-execution.md` to implement the live driver-backed commit path and integration evidence needed by Postgres destination and downstream conformance work.
+- 2026-07-06: Closed Postgres destination and its live execution child. `firn-dest-postgres` now has driver-backed package commits, ephemeral local Postgres integration coverage for append/replace/merge/duplicate/receipt verification/mirrors/rollback/decimals, schema-scoped mirrors, and full relevant QUALITY evidence in `.10x/evidence/2026-07-06-postgres-live-execution.md`.
 
 ## Blockers
 

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/2026-07-06-postgres-live-execution.md
+Relates-To: .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-postgres-live-execution.md
 
 # Postgres live execution scope evidence
 

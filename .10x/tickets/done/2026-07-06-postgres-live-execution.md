@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-postgres-destination.md
+Parent: .10x/tickets/done/2026-07-05-postgres-destination.md
 
 # Implement live Postgres destination execution
 
@@ -34,6 +34,7 @@ No Postgres source connector, no CLI command wiring, no project/doctor drift UI,
 ## Progress and notes
 
 - 2026-07-06: Opened after rechecking the parent blocker. Local Homebrew Postgres binaries are present, but the current crate has no driver dependency or live commit path. The worker should start from the existing `PostgresLoadPlan`/SQL/receipt surface and keep the live API small.
+- 2026-07-06: Implemented and parent-reviewed live Postgres package commits using the existing `PostgresLoadPlan`, canonical package loading, COPY staging, append/replace/merge transactions, xid receipts, schema-scoped mirrors, duplicate no-op replay, receipt verification, Decimal128/Decimal256 mapping, and best-effort package receipt append reporting. Evidence recorded in `.10x/evidence/2026-07-06-postgres-live-execution.md`; review recorded in `.10x/reviews/2026-07-06-postgres-live-execution-review.md`.
 
 ## Blockers
 

@@ -1,4 +1,4 @@
-use crate::*;
+use crate::{ddl::system_target_columns, *};
 
 pub(crate) fn write_statements(
     input: &PostgresLoadPlanInput,
@@ -51,14 +51,11 @@ pub(crate) fn create_stage_sql(
         .iter()
         .map(PostgresColumn::definition_sql)
         .collect::<Vec<_>>();
-    definitions.push(format!(
-        "{} TEXT NOT NULL",
-        quote_identifier_unchecked(FIRN_SEGMENT_COLUMN)
-    ));
-    definitions.push(format!(
-        "{} BIGINT NOT NULL",
-        quote_identifier_unchecked(FIRN_ROW_COLUMN)
-    ));
+    definitions.extend(
+        system_target_columns()
+            .into_iter()
+            .map(|column| column.definition_sql()),
+    );
 
     format!(
         "CREATE TEMP TABLE {} (\n  {}\n) ON COMMIT DROP",
@@ -76,10 +73,7 @@ pub(crate) fn append_insert_sql(
     target_columns.extend(quoted_system_target_column_names());
 
     let mut selected_columns = quoted_column_names(columns);
-    selected_columns.push("$1".to_owned());
-    selected_columns.push(quote_identifier_unchecked(FIRN_SEGMENT_COLUMN));
-    selected_columns.push(quote_identifier_unchecked(FIRN_ROW_COLUMN));
-    selected_columns.push("$2".to_owned());
+    selected_columns.extend(quoted_system_target_column_names());
 
     format!(
         "INSERT INTO {} ({})\nSELECT {} FROM {}",
@@ -98,10 +92,7 @@ pub(crate) fn merge_sql(
     target_columns.extend(quoted_system_target_column_names());
 
     let mut selected_columns = quoted_column_names(&input.columns);
-    selected_columns.push("$1".to_owned());
-    selected_columns.push(quote_identifier_unchecked(FIRN_SEGMENT_COLUMN));
-    selected_columns.push(quote_identifier_unchecked(FIRN_ROW_COLUMN));
-    selected_columns.push("$2".to_owned());
+    selected_columns.extend(quoted_system_target_column_names());
 
     let conflict_columns = input
         .merge_keys
@@ -141,8 +132,7 @@ pub(crate) fn merge_sql(
 
 pub(crate) fn stage_select_list(columns: &[PostgresColumn]) -> String {
     let mut selected = quoted_column_names(columns);
-    selected.push(quote_identifier_unchecked(FIRN_SEGMENT_COLUMN));
-    selected.push(quote_identifier_unchecked(FIRN_ROW_COLUMN));
+    selected.extend(quoted_system_target_column_names());
     selected.join(", ")
 }
 

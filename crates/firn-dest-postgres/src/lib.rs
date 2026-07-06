@@ -25,11 +25,16 @@ pub const FIRN_LOADED_AT_COLUMN: &str = "_firn_loaded_at_ms";
 pub const POSTGRES_XID_SQL: &str = "SELECT txid_current()::text AS xid";
 
 mod api;
+mod commit;
 mod ddl;
 mod dml;
 mod identifiers;
+#[cfg(test)]
+mod live_tests;
 mod mirrors;
+mod package;
 mod plan;
+mod rows;
 mod sheet;
 #[cfg(test)]
 mod tests;

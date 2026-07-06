@@ -3,13 +3,16 @@ use crate::{api::*, ddl::*, validate::*};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PostgresDestination {
-    sheet: PostgresDestinationSheet,
+    pub(crate) sheet: PostgresDestinationSheet,
+    #[serde(skip)]
+    pub(crate) database_url: Option<String>,
 }
 
 impl Default for PostgresDestination {
     fn default() -> Self {
         Self {
             sheet: postgres_destination_sheet(),
+            database_url: None,
         }
     }
 }

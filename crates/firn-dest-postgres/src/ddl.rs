@@ -155,7 +155,7 @@ pub(crate) fn idempotency_check_statement() -> PostgresStatement {
     PostgresStatement::query(
         "check_duplicate_package",
         format!(
-            "SELECT \"receipt_json\" FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2 AND \"idempotency_token\" = $3",
+            "SELECT \"receipt_json\"::text AS \"receipt_json\" FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2",
             quote_identifier_unchecked(FIRN_LOADS_TABLE)
         ),
         StatementExpectation::ReturnsDuplicateReceiptIfPresent,

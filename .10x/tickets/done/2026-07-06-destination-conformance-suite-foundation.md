@@ -29,7 +29,7 @@ Record targeted `cargo test -p firn-conformance --locked --no-fail-fast`, `cargo
 
 ## Explicit exclusions
 
-No live Postgres conformance execution until `.10x/tickets/2026-07-05-postgres-destination.md` is unblocked. No chaos killpoints, golden-package fixtures, resource conformance suite, new destination production behavior, new generic finalize trait, or changes to destination receipt semantics.
+No live Postgres conformance execution in this foundation slice; it remains owned by the active conformance parent after `.10x/tickets/done/2026-07-05-postgres-destination.md` closure. No chaos killpoints, golden-package fixtures, resource conformance suite, new destination production behavior, new generic finalize trait, or changes to destination receipt semantics.
 
 ## References
 
