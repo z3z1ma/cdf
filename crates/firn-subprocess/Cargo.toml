@@ -6,3 +6,14 @@ license.workspace = true
 description = "Subprocess adapter boundary for firn."
 
 [dependencies]
+firn-formats = { path = "../firn-formats" }
+firn-kernel = { path = "../firn-kernel" }
+serde = { version = "1.0.228", features = ["derive"] }
+tokio = { version = "1.48.0", features = ["io-util", "macros", "process", "rt", "time"] }
+
+[dev-dependencies]
+arrow-array = "59.0.0"
+arrow-ipc = { version = "59.0.0", features = ["lz4"] }
+arrow-schema = "59.0.0"
+firn-package = { path = "../firn-package" }
+tempfile = "3.27.0"

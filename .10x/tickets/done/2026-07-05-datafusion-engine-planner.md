@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-05
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
@@ -29,6 +29,9 @@ No concrete HTTP, Python, subprocess, or destination driver implementation.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-06: Assigned to engine worker after contract compiler and package builder closure. Worker owns `crates/firn-engine/**` and may propose minimal cross-crate API additions only when required by the active specs; leave unrelated dirty `.gitignore` untouched.
+- 2026-07-06: Implemented the `firn-engine` MVP planner/execution surface for mock Tier A/Tier B resources, pushdown fidelity negotiation, boundedness rejection, explain data, operator-chain records, and package output. No cross-crate API additions were required. Evidence recorded in `.10x/evidence/2026-07-06-datafusion-engine-planner.md`; closure review recorded in `.10x/reviews/2026-07-06-datafusion-engine-planner-review.md`.
+- 2026-07-06: Workspace quality gates for the engine/declarative/formats batch are recorded in `.10x/evidence/2026-07-06-engine-declarative-formats-quality-gates.md`.
 
 ## Blockers
 
