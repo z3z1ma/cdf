@@ -486,7 +486,8 @@ fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutput, CliError
 fn doctor(cli: &Cli) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let mut checks = vec![
-        DoctorCheck::passed("project_file", "firn.toml parsed and environment resolved"),
+        DoctorCheck::passed("project_file", "firn.toml parsed and environment resolved")
+            .with_details(project_health_details(&context)),
         DoctorCheck::passed(
             "declarative_resources",
             format!("{} resource(s) compiled", context.resources.len()),
@@ -501,13 +502,16 @@ fn doctor(cli: &Cli) -> Result<CommandOutput, CliError> {
         &resolver,
         &provider,
     ) {
-        Ok(report) => checks.push(DoctorCheck::passed(
-            "secrets",
-            format!(
-                "{} secret reference(s) resolved",
-                report.checked_secrets.len()
-            ),
-        )),
+        Ok(report) => checks.push(
+            DoctorCheck::passed(
+                "secrets",
+                format!(
+                    "{} secret reference(s) resolved",
+                    report.checked_secrets.len()
+                ),
+            )
+            .with_details(secret_check_details(&report)),
+        ),
         Err(error) => checks.push(DoctorCheck::failed("secrets", error.to_string())),
     }
 
@@ -538,6 +542,26 @@ fn doctor(cli: &Cli) -> Result<CommandOutput, CliError> {
         report,
         if failed == 0 { 0 } else { 1 },
     )
+}
+
+fn project_health_details(context: &ProjectContext) -> serde_json::Value {
+    json!({
+        "project_root": context.root,
+        "selected_environment": context.environment.name,
+        "compiled_resources": context.resources.len(),
+        "lockfile_present": context.lock.is_some(),
+    })
+}
+
+fn secret_check_details(report: &firn_project::ProjectValidationReport) -> serde_json::Value {
+    json!({
+        "count": report.checked_secrets.len(),
+        "references": report
+            .checked_secrets
+            .iter()
+            .map(|check| check.uri.as_str())
+            .collect::<Vec<_>>(),
+    })
 }
 
 fn status(cli: &Cli) -> Result<CommandOutput, CliError> {
@@ -948,15 +972,33 @@ fn python_can_parallelize(report: &PythonProbeReport) -> bool {
 
 fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
     match runtime {
-        DestinationRuntime::DuckDb { icu_probe, .. } => {
-            let mut checks = vec![DoctorCheck::passed(
-                "destination",
-                "DuckDB destination capabilities loaded",
-            )];
+        DestinationRuntime::DuckDb {
+            database_path,
+            icu_probe,
+            ..
+        } => {
+            let mut checks = vec![
+                DoctorCheck::passed("destination", "DuckDB destination capabilities loaded")
+                    .with_details(json!({
+                        "kind": "duck_db",
+                        "database_path": database_path,
+                    })),
+            ];
             checks.push(match icu_probe {
-                DoctorProbe::Passed => DoctorCheck::passed("duckdb_icu", "ICU probe passed"),
-                DoctorProbe::Failed { message } => DoctorCheck::failed("duckdb_icu", message),
-                DoctorProbe::Skipped { reason } => DoctorCheck::skipped("duckdb_icu", reason),
+                DoctorProbe::Passed => DoctorCheck::passed("duckdb_icu", "ICU probe passed")
+                    .with_details(duckdb_icu_details(&database_path, true, None)),
+                DoctorProbe::Failed { message } => {
+                    DoctorCheck::failed("duckdb_icu", message.clone())
+                        .with_details(duckdb_icu_details(&database_path, false, Some(message)))
+                }
+                DoctorProbe::Skipped { reason } => {
+                    DoctorCheck::skipped("duckdb_icu", reason.clone()).with_details(json!({
+                        "database_path": database_path,
+                        "database_exists": false,
+                        "probe": "icu_sort_key",
+                        "reason": reason,
+                    }))
+                }
             });
             checks
         }
@@ -968,6 +1010,20 @@ fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
             vec![DoctorCheck::unsupported("destination", reason)]
         }
     }
+}
+
+fn duckdb_icu_details(
+    database_path: &str,
+    available: bool,
+    diagnostic: Option<String>,
+) -> serde_json::Value {
+    json!({
+        "database_path": database_path,
+        "database_exists": true,
+        "probe": "icu_sort_key",
+        "available": available,
+        "diagnostic": diagnostic,
+    })
 }
 
 fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {

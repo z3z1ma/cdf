@@ -352,6 +352,15 @@ fn doctor_skips_duckdb_drift_without_creating_missing_databases() {
         "doctor drift probe must not create DuckDB DB"
     );
     let json = stderr_or_stdout_json(&result.stdout);
+    let project_file = named_check(&json, "project_file");
+    assert_eq!(project_file["details"]["project_root"], project.root_str());
+    assert_eq!(project_file["details"]["selected_environment"], "dev");
+    assert_eq!(project_file["details"]["compiled_resources"], 1);
+    assert_eq!(project_file["details"]["lockfile_present"], false);
+    let icu = named_check(&json, "duckdb_icu");
+    assert_eq!(icu["status"], "skipped");
+    assert_eq!(icu["details"]["database_exists"], false);
+    assert_eq!(icu["details"]["probe"], "icu_sort_key");
     let drift = named_check(&json, "ledger_destination_drift");
     assert_eq!(drift["status"], "skipped");
     assert!(
@@ -360,6 +369,162 @@ fn doctor_skips_duckdb_drift_without_creating_missing_databases() {
             .unwrap()
             .contains("SQLite state database is absent")
     );
+}
+
+#[test]
+fn doctor_reports_lockfile_presence_when_lock_exists() {
+    let project = TestProject::new();
+    write_minimal_lockfile(&project);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let project_file = named_check(&json, "project_file");
+    assert_eq!(project_file["details"]["lockfile_present"], true);
+}
+
+#[test]
+fn doctor_reports_resolved_secret_references_without_values() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        "resolved-destination-dsn-value\n",
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("auth-token"),
+        "resolved-auth-token-value\n",
+    )
+    .unwrap();
+    fs::write(project.root.join("sql-dsn"), "resolved-file-secret-value\n").unwrap();
+    write_secret_project(
+        &project,
+        "postgres://secret://file/destination-dsn",
+        Some("secret://file/auth-token"),
+        Some("secret://file/sql-dsn"),
+    );
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "resolved-destination-dsn-value");
+    assert_secret_absent(&result, "resolved-auth-token-value");
+    assert_secret_absent(&result, "resolved-file-secret-value");
+    let json = stderr_or_stdout_json(&result.stdout);
+    let secrets = named_check(&json, "secrets");
+    assert_eq!(secrets["status"], "passed");
+    assert_eq!(secrets["details"]["count"], 3);
+    let references = secrets["details"]["references"].as_array().unwrap();
+    for reference in [
+        "secret://file/destination-dsn".to_owned(),
+        "secret://file/auth-token".to_owned(),
+        "secret://file/sql-dsn".to_owned(),
+    ] {
+        assert!(
+            references.iter().any(|value| value == &reference),
+            "missing secret reference {reference}"
+        );
+    }
+}
+
+#[test]
+fn doctor_later_secret_failure_does_not_leak_already_resolved_secrets() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-before-failure"),
+        "already-resolved-destination-value\n",
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("token-before-failure"),
+        "already-resolved-token-value\n",
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("resolved-file-secret"),
+        "already-resolved-file-value\n",
+    )
+    .unwrap();
+    write_secret_project(
+        &project,
+        "postgres://secret://file/destination-before-failure",
+        Some("secret://file/token-before-failure"),
+        Some("secret://env/FIRN_CLI_MISSING_SQL_AFTER_RESOLVED"),
+    );
+    let project_file = project.root.join("firn.toml");
+    let project_text = fs::read_to_string(&project_file).unwrap().replace(
+        "packages = \".firn/packages\"",
+        "packages = \"secret://file/resolved-file-secret\"",
+    );
+    fs::write(project_file, project_text).unwrap();
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    assert_secret_absent(&result, "already-resolved-destination-value");
+    assert_secret_absent(&result, "already-resolved-token-value");
+    assert_secret_absent(&result, "already-resolved-file-value");
+    let json = stderr_or_stdout_json(&result.stdout);
+    let secrets = named_check(&json, "secrets");
+    assert_eq!(secrets["status"], "failed");
+    assert!(
+        secrets["message"]
+            .as_str()
+            .unwrap()
+            .contains("secret://env/FIRN_CLI_MISSING_SQL_AFTER_RESOLVED")
+    );
+}
+
+#[test]
+fn doctor_fails_missing_and_unavailable_secrets_without_leaking_values() {
+    for case in [
+        SecretFailureCase::EnvironmentDestination,
+        SecretFailureCase::File,
+        SecretFailureCase::DeclarativeAuthToken,
+        SecretFailureCase::DeclarativeSqlConnection,
+        SecretFailureCase::UnavailableProvider,
+    ] {
+        let project = TestProject::new();
+        write_secret_failure_project(&project, case);
+
+        let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+        assert_eq!(result.exit_code, 1, "case {case:?}");
+        assert_secret_absent(&result, "would-be-token-value");
+        assert_secret_absent(&result, "would-be-file-value");
+        let json = stderr_or_stdout_json(&result.stdout);
+        let secrets = named_check(&json, "secrets");
+        assert_eq!(secrets["status"], "failed", "case {case:?}");
+        assert!(secrets.as_object().unwrap().get("details").is_none());
+    }
+}
+
+#[test]
+fn doctor_runs_duckdb_icu_probe_for_existing_database_with_safe_details() {
+    let project = TestProject::new();
+    let duckdb_path = project.root.join(".firn/dev.duckdb");
+    DuckDbDestination::new(&duckdb_path)
+        .unwrap()
+        .probe_icu()
+        .unwrap();
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert!(duckdb_path.exists(), "fixture should create the DuckDB DB");
+    let json = stderr_or_stdout_json(&result.stdout);
+    let icu = named_check(&json, "duckdb_icu");
+    assert!(
+        matches!(icu["status"].as_str(), Some("passed" | "failed")),
+        "unexpected ICU status: {icu}"
+    );
+    assert_eq!(icu["details"]["database_exists"], true);
+    assert_eq!(icu["details"]["probe"], "icu_sort_key");
+    assert_eq!(
+        icu["details"]["available"],
+        icu["status"].as_str().unwrap() == "passed"
+    );
+    assert!(!icu.to_string().contains("resolved-api-token-value"));
 }
 
 #[test]
@@ -841,6 +1006,166 @@ impl TestProject {
     fn root_str(&self) -> &str {
         &self.root_string
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+enum SecretFailureCase {
+    EnvironmentDestination,
+    File,
+    DeclarativeAuthToken,
+    DeclarativeSqlConnection,
+    UnavailableProvider,
+}
+
+fn write_secret_failure_project(project: &TestProject, case: SecretFailureCase) {
+    match case {
+        SecretFailureCase::EnvironmentDestination => write_secret_project(
+            project,
+            "postgres://secret://env/FIRN_CLI_MISSING_DESTINATION_SECRET",
+            None,
+            None,
+        ),
+        SecretFailureCase::File => write_secret_project(
+            project,
+            "duckdb://.firn/dev.duckdb",
+            None,
+            Some("secret://file/missing-sql-dsn"),
+        ),
+        SecretFailureCase::DeclarativeAuthToken => write_secret_project(
+            project,
+            "duckdb://.firn/dev.duckdb",
+            Some("secret://env/FIRN_CLI_MISSING_AUTH_TOKEN"),
+            None,
+        ),
+        SecretFailureCase::DeclarativeSqlConnection => write_secret_project(
+            project,
+            "duckdb://.firn/dev.duckdb",
+            None,
+            Some("secret://env/FIRN_CLI_MISSING_SQL_CONNECTION"),
+        ),
+        SecretFailureCase::UnavailableProvider => write_secret_project(
+            project,
+            "postgres://secret://keychain/prod-token",
+            None,
+            None,
+        ),
+    }
+}
+
+fn write_secret_project(
+    project: &TestProject,
+    destination: &str,
+    rest_token: Option<&str>,
+    sql_connection: Option<&str>,
+) {
+    let mut resources = String::new();
+    if rest_token.is_some() {
+        resources.push_str("\n[resources.\"api.*\"]\nsource = \"resources/api.toml\"\n");
+    }
+    if sql_connection.is_some() {
+        resources.push_str("\n[resources.\"warehouse.*\"]\nsource = \"resources/sql.toml\"\n");
+    }
+    if rest_token.is_none() && sql_connection.is_none() {
+        resources.push_str("\n[resources.\"local.*\"]\nsource = \"resources/files.toml\"\n");
+    }
+
+    fs::write(
+        project.root.join("firn.toml"),
+        format!(
+            r#"
+[project]
+name = "cli_test"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.firn/state.db"
+packages = ".firn/packages"
+destination = "{destination}"
+{resources}
+"#
+        ),
+    )
+    .unwrap();
+
+    if let Some(token) = rest_token {
+        fs::write(
+            project.root.join("resources/api.toml"),
+            rest_resource(token),
+        )
+        .unwrap();
+    }
+    if let Some(connection) = sql_connection {
+        fs::write(
+            project.root.join("resources/sql.toml"),
+            sql_resource(connection),
+        )
+        .unwrap();
+    }
+}
+
+fn rest_resource(token: &str) -> String {
+    format!(
+        r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.test"
+auth = {{ kind = "bearer", token = "{token}" }}
+
+[resource.items]
+path = "/items"
+records = "$"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+  {{ name = "id", type = "int64", nullable = false }},
+] }}
+"#
+    )
+}
+
+fn sql_resource(connection: &str) -> String {
+    format!(
+        r#"
+[source.warehouse]
+kind = "sql"
+connection = "{connection}"
+
+[resource.orders]
+table = "orders"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+  {{ name = "id", type = "int64", nullable = false }},
+] }}
+"#
+    )
+}
+
+fn assert_secret_absent(result: &crate::InvocationResult, secret: &str) {
+    assert!(!result.stdout.contains(secret), "stdout leaked {secret}");
+    assert!(!result.stderr.contains(secret), "stderr leaked {secret}");
+}
+
+fn write_minimal_lockfile(project: &TestProject) {
+    fs::write(
+        project.root.join("firn.lock"),
+        r#"
+version = 1
+normalizer = "namecase-v1"
+
+[project]
+name = "cli_test"
+default_environment = "dev"
+
+[dependency_tuple]
+firn = "0.1.0"
+arrow_rs = "59.0.0"
+"#,
+    )
+    .unwrap();
 }
 
 fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {
