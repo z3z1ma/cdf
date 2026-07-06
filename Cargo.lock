@@ -1620,6 +1620,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 59.0.0",
  "arrow-schema 59.0.0",
+ "firn-conformance",
  "firn-kernel",
  "firn-package",
  "postgres",

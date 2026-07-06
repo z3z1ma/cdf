@@ -1,4 +1,7 @@
 use super::*;
+use firn_conformance::destination::{
+    DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
+};
 use firn_kernel::{
     CheckpointId, CursorPosition, CursorValue, PartitionId, PipelineId, ScopeKey, SegmentId,
     SourcePosition,
@@ -65,6 +68,25 @@ fn input(disposition: WriteDisposition, dedup: MergeDedupPolicy) -> PostgresLoad
     }
 }
 
+fn conformance_case(
+    destination: &PostgresDestination,
+    disposition: WriteDisposition,
+) -> DestinationConformanceCase {
+    let request = representative_commit_request(disposition);
+    let migrations = destination.plan_commit(&request).unwrap().migrations;
+    assert!(
+        migrations
+            .iter()
+            .any(|migration| migration.migration_id == "postgres.create_firn_loads")
+    );
+    assert!(
+        migrations
+            .iter()
+            .any(|migration| migration.migration_id == "postgres.create_firn_state")
+    );
+    DestinationConformanceCase::new(request).with_expected_migrations(migrations)
+}
+
 #[test]
 fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
     let destination = PostgresDestination::new();
@@ -104,6 +126,20 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
         .find(|mapping| mapping.arrow_type == "Dictionary")
         .unwrap();
     assert_eq!(dictionary.fidelity, PostgresTypeFidelity::Unsupported);
+}
+
+#[test]
+fn reusable_destination_conformance_suite_accepts_postgres_sheet_and_plans() {
+    let destination = PostgresDestination::new();
+
+    assert_destination_conformance(
+        &destination,
+        [
+            conformance_case(&destination, WriteDisposition::Append),
+            conformance_case(&destination, WriteDisposition::Replace),
+            conformance_case(&destination, WriteDisposition::Merge),
+        ],
+    );
 }
 
 #[test]

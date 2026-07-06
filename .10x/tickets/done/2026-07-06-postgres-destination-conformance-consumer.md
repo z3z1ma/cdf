@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -57,6 +57,9 @@ No new Postgres production commit behavior, no new destination semantics, no CDC
 ## Progress and notes
 
 - 2026-07-06: Opened after re-reading the book, active conformance parent, destination conformance foundation, Postgres live execution evidence, and current `firn-conformance`/`firn-dest-postgres` source. This is the smallest unblocked conformance step because Postgres already has live execution but has not yet been wired into the reusable destination conformance harness.
+- 2026-07-06: Activated for worker implementation. Write scope is expected to be limited to `crates/firn-dest-postgres/Cargo.toml` and `crates/firn-dest-postgres/src/tests.rs` unless the reusable conformance harness proves too narrow, in which case the ticket must record why before broadening.
+- 2026-07-06: Implemented the Postgres consumer test through `firn-conformance`, including expected system-table migrations from `plan_commit`; updated `Cargo.lock` offline for the local dev-dependency. Evidence is recorded in `.10x/evidence/2026-07-06-postgres-destination-conformance-consumer.md`; review is recorded in `.10x/reviews/2026-07-06-postgres-destination-conformance-consumer-review.md`.
+- 2026-07-06: Closed after focused Postgres/conformance tests, live Postgres tests, nextest, check, clippy, formatting, diff check, cargo deny/audit/vet, OSV, Semgrep, CodeQL, gitleaks, unsafe scan, machete, and udeps passed.
 
 ## Blockers
 
