@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -50,13 +50,16 @@ The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still o
 - `.10x/evidence/2026-07-06-package-builder-reader.md`
 - `.10x/reviews/2026-07-06-package-builder-reader-review.md`
 - `.10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md`
+- `.10x/evidence/2026-07-06-golden-package-conformance-foundation.md`
+- `.10x/reviews/2026-07-06-golden-package-conformance-foundation-review.md`
 
 ## Progress and notes
 
 - 2026-07-06: Split from the conformance/chaos/golden parent after prepared-package chaos conformance closed. Current `firn-package` unit tests already prove one fixed package hash, but `firn-conformance` does not yet own a reusable golden-package harness or committed expected evidence. The book and active specs make the first conformance-owned hash-by-hash fixture comparison clear enough to execute without inventing live run, archive, or CLI behavior.
 - 2026-07-06: Explorer Dalton independently confirmed no blocker for a prepared-package golden foundation and recommended a committed `prepared-orders-v1` expected fixture, 100 local regenerations, package verification before comparison, and negative self-tests for corrupted expected hash/file evidence. Full Chapter 19/22 source-run golden determinism remains later work because `firn run`, seeded run IDs/ULIDs, plan-text fixtures, and cross-OS CI are not available in this slice.
 - 2026-07-06: Do not implement in the ticket-creation turn. Assign to a worker in a later turn with the references above and a write boundary of `crates/firn-conformance/**` plus scoped fixture expectation files if needed.
+- 2026-07-06: Worker implemented `crates/firn-conformance/src/golden_package/` and committed expected fixture `crates/firn-conformance/golden/prepared-orders-v1/expected.json`. Parent review verified the harness builds through public `firn-package` APIs, verifies packages before comparison, compares all required evidence fields, includes negative self-tests, and keeps `lib.rs` thin. Closure evidence is recorded in `.10x/evidence/2026-07-06-golden-package-conformance-foundation.md`; review passed in `.10x/reviews/2026-07-06-golden-package-conformance-foundation-review.md`.
 
 ## Blockers
 
-None for the first golden-package conformance foundation.
+None.

@@ -1,0 +1,105 @@
+{
+  "manifest_version": 1,
+  "package_hash": "sha256:6ce1b03f1138777b3a521362d56533d8f509ed6e84973738bd372f37e3bf36a8",
+  "package_status": "packaged",
+  "signature_signing_input": "sha256:6ce1b03f1138777b3a521362d56533d8f509ed6e84973738bd372f37e3bf36a8",
+  "signature_value": null,
+  "identity_manifest_version": 1,
+  "identity_layout": [
+    "plan/",
+    "schema/",
+    "data/",
+    "quarantine/",
+    "stats/",
+    "lineage/",
+    "state/",
+    "destination/",
+    "trace.jsonl"
+  ],
+  "identity_files": [
+    {
+      "path": "data/seg-000001.arrow",
+      "byte_count": 1082,
+      "sha256": "3877d05802f03053efcdc1ba97244cdb449cc2fdcf9e91d051f85e52fef1cdc1"
+    },
+    {
+      "path": "destination/commit_plan.json",
+      "byte_count": 42,
+      "sha256": "02c5e08897abb3b23a752f30587878a7f8e8a03a5c5b55963f8ea609594976e5"
+    },
+    {
+      "path": "lineage/batches.parquet",
+      "byte_count": 26,
+      "sha256": "eca0454c93c57d11c91c9c0a391074f100815044376fda82ed8f7e1b9df3470b"
+    },
+    {
+      "path": "plan/execution_plan.txt",
+      "byte_count": 58,
+      "sha256": "8f31ef3be9b47f9876701d4d6f3d1766c4fd57a3da26a97fb19200740280128e"
+    },
+    {
+      "path": "plan/resource_plan.json",
+      "byte_count": 38,
+      "sha256": "bc490fbab505c869160d0b00025260bd15e3532c9d869571a07aadac95b9bdf6"
+    },
+    {
+      "path": "plan/validation_program.json",
+      "byte_count": 24,
+      "sha256": "109735eb4b29593aeb3c1ef0c30625faac9d562580fb0ec2ca6583306a89b49b"
+    },
+    {
+      "path": "quarantine/part-000001.parquet",
+      "byte_count": 29,
+      "sha256": "286b4bcb249dc294265a2fbe2b639ddc6769a8f949f3bc0e6c8fcfbfcf8906d9"
+    },
+    {
+      "path": "schema/diff.json",
+      "byte_count": 2,
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "path": "schema/observed.arrow.json",
+      "byte_count": 43,
+      "sha256": "77f3806215607a2e91bf486a1f39bf054a3a7f7b6def8f8f9dce10dcbcfc7a55"
+    },
+    {
+      "path": "schema/output.arrow.json",
+      "byte_count": 43,
+      "sha256": "77f3806215607a2e91bf486a1f39bf054a3a7f7b6def8f8f9dce10dcbcfc7a55"
+    },
+    {
+      "path": "state/input_checkpoint.json",
+      "byte_count": 19,
+      "sha256": "122882e368a496a3df9ef1423df6d109ac151fc3dbcafdbb25449fd81f174b41"
+    },
+    {
+      "path": "state/proposed_delta.json",
+      "byte_count": 18,
+      "sha256": "ecb15c68c76ac1774b0895696d7a7cd1745f32c108ae535bdb5b05b2060ddb6b"
+    },
+    {
+      "path": "stats/profile.parquet",
+      "byte_count": 24,
+      "sha256": "1a0c556628ca429d56fc3dd94b48e87eb0f4e8148a3337febb9ac3cacd09efbb"
+    },
+    {
+      "path": "stats/quality.parquet",
+      "byte_count": 26,
+      "sha256": "40eeec2132d2f3ef70aa4ea7a81d1e9c5becd59f7425f3714760e0e27b7fe7a3"
+    },
+    {
+      "path": "trace.jsonl",
+      "byte_count": 31,
+      "sha256": "d2cf624ee30bbe5aa281c3bd3b25c0c5780137f060746d98ea27b97bb9934f66"
+    }
+  ],
+  "segments": [
+    {
+      "segment_id": "seg-000001",
+      "path": "data/seg-000001.arrow",
+      "row_count": 3,
+      "byte_count": 1082,
+      "sha256": "3877d05802f03053efcdc1ba97244cdb449cc2fdcf9e91d051f85e52fef1cdc1"
+    }
+  ]
+}

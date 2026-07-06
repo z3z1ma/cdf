@@ -1484,6 +1484,7 @@ dependencies = [
  "firn-package",
  "firn-project",
  "firn-state-sqlite",
+ "serde",
  "serde_json",
  "tempfile",
 ]
