@@ -15,6 +15,7 @@ firn-kernel = { path = "../firn-kernel" }
 firn-package = { path = "../firn-package" }
 futures-util = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
+tracing = "0.1.44"
 
 [dev-dependencies]
 futures-executor = "0.3.32"

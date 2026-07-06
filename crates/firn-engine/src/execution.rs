@@ -3,10 +3,11 @@ use std::{path::Path, sync::Arc};
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
 use firn_contract::ValidationProgram;
-use firn_kernel::{FirnError, ResourceStream, Result, SegmentId, with_source_name};
+use firn_kernel::{FirnError, ResourceStream, Result, RunId, SegmentId, with_source_name};
 use firn_package::{PackageBuilder, PackageStatus};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use tracing::{Instrument, Span, info_span};
 
 use crate::{
     EnginePlan, EngineRunOutput, ExecutionProfile, LineageSummary, planning::validate_program,
@@ -25,7 +26,51 @@ struct SchemaFieldArtifact {
     nullable: bool,
 }
 
+#[derive(Clone, Debug)]
+struct ExecutionTraceContext {
+    run_id: String,
+    resource_id: String,
+    package_id: String,
+}
+
+impl ExecutionTraceContext {
+    fn new(run_id: &RunId, plan: &EnginePlan) -> Self {
+        Self {
+            run_id: run_id.as_str().to_owned(),
+            resource_id: plan.scan.request.resource_id.as_str().to_owned(),
+            package_id: plan.package_id.clone(),
+        }
+    }
+}
+
 pub async fn execute_to_package<R>(
+    plan: &EnginePlan,
+    resource: &R,
+    package_dir: impl AsRef<Path>,
+) -> Result<EngineRunOutput>
+where
+    R: ResourceStream + ?Sized,
+{
+    execute_to_package_inner(None, plan, resource, package_dir).await
+}
+
+pub async fn execute_to_package_with_run_id<R>(
+    run_id: &RunId,
+    plan: &EnginePlan,
+    resource: &R,
+    package_dir: impl AsRef<Path>,
+) -> Result<EngineRunOutput>
+where
+    R: ResourceStream + ?Sized,
+{
+    let trace_context = ExecutionTraceContext::new(run_id, plan);
+    execute_to_package_inner(Some(&trace_context), plan, resource, package_dir)
+        .instrument(package_execution_span(&trace_context))
+        .await
+}
+
+async fn execute_to_package_inner<R>(
+    trace_context: Option<&ExecutionTraceContext>,
     plan: &EnginePlan,
     resource: &R,
     package_dir: impl AsRef<Path>,
@@ -52,37 +97,46 @@ where
             break;
         }
 
-        let mut stream = resource.open(partition).await?;
-        while let Some(batch) = stream.next().await {
-            if remaining_limit == Some(0) {
-                break;
+        let partition_span = trace_context
+            .map(|context| partition_execution_span(context, partition.partition_id.as_str()))
+            .unwrap_or_else(Span::none);
+
+        async {
+            let mut stream = resource.open(partition).await?;
+            while let Some(batch) = stream.next().await {
+                if remaining_limit == Some(0) {
+                    break;
+                }
+
+                let batch = batch?;
+                lineage.input_batches.push(batch.header.batch_id.clone());
+                let Some(record_batch) = batch.record_batch() else {
+                    return Err(FirnError::data(
+                        "package execution requires in-memory Arrow record batches at MVP",
+                    ));
+                };
+
+                let output = execute_batch(record_batch, plan, &mut remaining_limit)?;
+                if output.num_rows() == 0 {
+                    continue;
+                }
+
+                let output = apply_contract_exec(output, &plan.validation_program)?;
+                let output = apply_normalize_exec(output, &plan.validation_program)?;
+                output_schema = Some(schema_artifact(output.schema().as_ref()));
+                profile.output_rows += output.num_rows() as u64;
+                profile.output_bytes += output.get_array_memory_size() as u64;
+                profile.output_batches += 1;
+
+                let segment_id = SegmentId::new(format!("seg-{:06}", segments.len() + 1))?;
+                let segment = builder.write_segment(segment_id.clone(), &[output])?;
+                lineage.output_segments.push(segment_id);
+                segments.push(segment);
             }
-
-            let batch = batch?;
-            lineage.input_batches.push(batch.header.batch_id.clone());
-            let Some(record_batch) = batch.record_batch() else {
-                return Err(FirnError::data(
-                    "package execution requires in-memory Arrow record batches at MVP",
-                ));
-            };
-
-            let output = execute_batch(record_batch, plan, &mut remaining_limit)?;
-            if output.num_rows() == 0 {
-                continue;
-            }
-
-            let output = apply_contract_exec(output, &plan.validation_program)?;
-            let output = apply_normalize_exec(output, &plan.validation_program)?;
-            output_schema = Some(schema_artifact(output.schema().as_ref()));
-            profile.output_rows += output.num_rows() as u64;
-            profile.output_bytes += output.get_array_memory_size() as u64;
-            profile.output_batches += 1;
-
-            let segment_id = SegmentId::new(format!("seg-{:06}", segments.len() + 1))?;
-            let segment = builder.write_segment(segment_id.clone(), &[output])?;
-            lineage.output_segments.push(segment_id);
-            segments.push(segment);
+            Ok(())
         }
+        .instrument(partition_span)
+        .await?;
     }
 
     builder.write_json_artifact(
@@ -106,6 +160,25 @@ where
         profile,
         lineage,
     })
+}
+
+fn package_execution_span(context: &ExecutionTraceContext) -> Span {
+    info_span!(
+        "firn_engine.package_execution",
+        run_id = context.run_id.as_str(),
+        resource_id = context.resource_id.as_str(),
+        package_id = context.package_id.as_str()
+    )
+}
+
+fn partition_execution_span(context: &ExecutionTraceContext, partition_id: &str) -> Span {
+    info_span!(
+        "firn_engine.partition_execution",
+        run_id = context.run_id.as_str(),
+        resource_id = context.resource_id.as_str(),
+        package_id = context.package_id.as_str(),
+        partition_id = partition_id
+    )
 }
 
 fn execute_batch(

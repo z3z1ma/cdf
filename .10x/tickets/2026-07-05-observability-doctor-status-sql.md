@@ -38,8 +38,9 @@ No dashboard or UI.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md`; `firn doctor` now reports structured project/environment details, redacted resolved secret references including env/file/declarative coverage, missing/unavailable secret failures without value leakage, and read-only DuckDB ICU details for missing and existing databases.
 - 2026-07-06: Split child `.10x/tickets/done/2026-07-06-status-freshness-local-ledger.md` for local read-only `firn status` freshness evaluation. The child explicitly avoids inventing a pipeline default by evaluating only unambiguous committed local ledger heads.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-status-freshness-local-ledger.md`; `firn status` now evaluates serving freshness SLOs from existing committed SQLite checkpoint heads, reports fresh/stale/non-evaluable states with structured details, keeps missing or ambiguous local state non-evaluable, and preserves concise scheduler-friendly human output.
-- 2026-07-06: Opened child `.10x/tickets/2026-07-06-engine-execution-tracing-spans.md` for the next bounded observability slice: engine package-execution spans with caller-supplied `RunId`, resource, partition, and package identifiers. Read-only exploration found `inspect run` is blocked until run-ledger and run-to-artifact semantics are ratified.
+- 2026-07-06: Opened child `.10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md` for the next bounded observability slice: engine package-execution spans with caller-supplied `RunId`, resource, partition, and package identifiers. Read-only exploration found `inspect run` is blocked until run-ledger and run-to-artifact semantics are ratified.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md`; `firn-engine` now exposes additive `execute_to_package_with_run_id`, emits exact package and partition tracing fields, preserves the existing untraced API and package identity, and has mutation-clean execution tests with full relevant `QUALITY.md` evidence.
 
 ## Blockers
 
-None.
+`inspect run` story assembly remains blocked until run-id minting, run ledger ownership, run-to-package/checkpoint/receipt mapping, multi-resource and multi-package run bounds, transition ordering storage, and verdict-summary ownership are ratified.

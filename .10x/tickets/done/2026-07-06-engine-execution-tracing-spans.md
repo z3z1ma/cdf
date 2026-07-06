@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-observability-doctor-status-sql.md
@@ -51,7 +51,10 @@ No `inspect run`, no CLI parser or command changes, no run ledger, no run id gen
 
 - 2026-07-06: Explorer Hegel performed read-only inspection and found `inspect run` is not executable without inventing unratified run-ledger semantics. The safe next observability slice is engine execution tracing with an explicit caller-supplied `RunId`. Current `firn-engine::execute_to_package` has resource, partition, and package context, and `RunId` already exists as a kernel id type, so a first tracing entry point can be added without solving run orchestration.
 - 2026-07-06: Do not implement in the ticket-creation turn. Assign to a worker in a later turn with this ticket and the referenced records.
+- 2026-07-06: Implemented additive `execute_to_package_with_run_id` in `firn-engine`, preserving `execute_to_package`. The traced path emits exact package and partition span fields for caller-supplied `RunId`, resource id, package id, and partition id.
+- 2026-07-06: Added exact span-capture tests, traced/untraced manifest identity tests, and mutation-driven hardening for residual limit depletion, profile byte accounting, and validation-program source/output-name coverage.
+- 2026-07-06: Closure evidence recorded in `.10x/evidence/2026-07-06-engine-execution-tracing-spans.md`; closure review recorded in `.10x/reviews/2026-07-06-engine-execution-tracing-spans-review.md`. Final bounded mutation testing over `crates/firn-engine/src/execution.rs` reported 29 mutants tested, 18 caught, 11 unviable, and 0 missed.
 
 ## Blockers
 
-None for the additive explicit-run-id tracing entry point.
+None.
