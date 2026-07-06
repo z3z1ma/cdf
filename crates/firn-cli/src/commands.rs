@@ -1,4 +1,9 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command as ProcessCommand,
+};
 
 use firn_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use firn_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
@@ -7,9 +12,11 @@ use firn_kernel::{
     ResourceId, ResourceStream, ScanPredicate, ScanRequest, ScopeKey, SortDirection,
 };
 use firn_package::{MANIFEST_FILE, PackageReader};
-use firn_project::{FileResourceSourceResolver, generate_lockfile, validate_project};
+use firn_project::{
+    FileResourceSourceResolver, ResourceSourceKind, generate_lockfile, validate_project,
+};
 use futures_util::StreamExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
@@ -24,6 +31,33 @@ use crate::{
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const MIN_PYTHON_MAJOR: u16 = 3;
+const MIN_PYTHON_MINOR: u16 = 12;
+const PYTHON_INTERPRETER_PROBE: &str = r#"
+import json
+import platform
+import sys
+import sysconfig
+
+gil_enabled = True
+is_gil_enabled = getattr(sys, "_is_gil_enabled", None)
+if is_gil_enabled is not None:
+    gil_enabled = bool(is_gil_enabled())
+
+free_threaded_build = sysconfig.get_config_var("Py_GIL_DISABLED") == 1
+version = sys.version_info
+sys.stdout.write(json.dumps({
+    "executable": sys.executable,
+    "version": "{}.{}.{}".format(version.major, version.minor, version.micro),
+    "major": version.major,
+    "minor": version.minor,
+    "micro": version.micro,
+    "implementation": platform.python_implementation(),
+    "gil_enabled": gil_enabled,
+    "free_threaded_build": free_threaded_build,
+    "can_parallelize_python": free_threaded_build and not gil_enabled,
+}, sort_keys=True))
+"#;
 
 pub fn execute(cli: Cli) -> InvocationResult {
     let json_mode = cli.json;
@@ -734,26 +768,182 @@ fn list_packages(root: PathBuf) -> Result<Vec<PackageListEntry>, CliError> {
 }
 
 fn python_check(context: &ProjectContext) -> DoctorCheck {
+    let require_free_threaded = context.config.python.require_free_threaded.unwrap_or(false);
     let Some(interpreter) = &context.config.python.interpreter else {
-        return DoctorCheck::skipped("python", "no python.interpreter configured");
+        return if has_python_resource(context) {
+            DoctorCheck::failed(
+                "python",
+                "python.interpreter is required because at least one Python resource is configured",
+            )
+            .with_details(json!({
+                "python_resources": python_resource_count(context),
+                "require_free_threaded": require_free_threaded,
+            }))
+        } else {
+            DoctorCheck::skipped("python", "no python.interpreter configured")
+        };
     };
+
+    let path = configured_interpreter_path(&context.root, interpreter);
+    let (executable, report) = match probe_python_interpreter(&path) {
+        Ok(report) => report,
+        Err(message) => {
+            return DoctorCheck::failed("python", message)
+                .with_details(python_config_details(&path, require_free_threaded));
+        }
+    };
+    let details = python_probe_details(&executable, &report, require_free_threaded);
+
+    if (report.major, report.minor) < (MIN_PYTHON_MAJOR, MIN_PYTHON_MINOR) {
+        return DoctorCheck::failed(
+            "python",
+            format!(
+                "Python interpreter {} is older than required {MIN_PYTHON_MAJOR}.{MIN_PYTHON_MINOR}",
+                python_version(&report)
+            ),
+        )
+        .with_details(details);
+    }
+
+    if require_free_threaded && !python_can_parallelize(&report) {
+        return DoctorCheck::failed(
+            "python",
+            "configured Python resources require a free-threaded interpreter with the GIL disabled",
+        )
+        .with_details(details);
+    }
+
+    DoctorCheck::passed(
+        "python",
+        format!(
+            "configured interpreter {} passed Python doctor probe",
+            python_version(&report)
+        ),
+    )
+    .with_details(details)
+}
+
+fn configured_interpreter_path(root: &Path, interpreter: &str) -> PathBuf {
     let path = PathBuf::from(interpreter);
-    let path = if path.is_absolute() {
+    if path.is_absolute() {
         path
     } else {
-        context.root.join(path)
-    };
-    if path.exists() {
-        DoctorCheck::passed(
-            "python",
-            format!("configured interpreter exists at {}", path.display()),
-        )
-    } else {
-        DoctorCheck::failed(
-            "python",
-            format!("configured interpreter is missing at {}", path.display()),
-        )
+        root.join(path)
     }
+}
+
+fn has_python_resource(context: &ProjectContext) -> bool {
+    python_resource_count(context) > 0
+}
+
+fn python_resource_count(context: &ProjectContext) -> usize {
+    context
+        .config
+        .resources
+        .values()
+        .filter(|resource| matches!(resource.source_kind(), ResourceSourceKind::Python { .. }))
+        .count()
+}
+
+fn probe_python_interpreter(path: &Path) -> Result<(PathBuf, PythonProbeReport), String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            format!("configured interpreter is missing at {}", path.display())
+        } else {
+            format!(
+                "configured interpreter metadata could not be read at {}: {error}",
+                path.display()
+            )
+        }
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "configured interpreter is not a file at {}",
+            path.display()
+        ));
+    }
+    if !is_executable(&metadata) {
+        return Err(format!(
+            "configured interpreter is not executable at {}",
+            path.display()
+        ));
+    }
+
+    let executable = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let output = ProcessCommand::new(&executable)
+        .arg("-I")
+        .arg("-c")
+        .arg(PYTHON_INTERPRETER_PROBE)
+        .output()
+        .map_err(|error| format!("configured interpreter could not be executed: {error}"))?;
+    if !output.status.success() {
+        return Err(match output.status.code() {
+            Some(code) => {
+                format!("configured interpreter inspection exited unsuccessfully with code {code}")
+            }
+            None => "configured interpreter inspection exited unsuccessfully".to_owned(),
+        });
+    }
+
+    let report: PythonProbeReport = serde_json::from_slice(&output.stdout).map_err(|error| {
+        format!("configured interpreter did not emit valid inspection JSON: {error}")
+    })?;
+    validate_python_probe_report(&report)?;
+    Ok((executable, report))
+}
+
+#[cfg(unix)]
+fn is_executable(metadata: &fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn is_executable(_metadata: &fs::Metadata) -> bool {
+    true
+}
+
+fn validate_python_probe_report(report: &PythonProbeReport) -> Result<(), String> {
+    if report.version != python_version(report) {
+        return Err("configured interpreter emitted inconsistent version metadata".to_owned());
+    }
+    if report.can_parallelize_python != python_can_parallelize(report) {
+        return Err("configured interpreter emitted inconsistent GIL metadata".to_owned());
+    }
+    Ok(())
+}
+
+fn python_config_details(path: &Path, require_free_threaded: bool) -> serde_json::Value {
+    json!({
+        "executable": path.display().to_string(),
+        "require_free_threaded": require_free_threaded,
+    })
+}
+
+fn python_probe_details(
+    executable: &Path,
+    report: &PythonProbeReport,
+    require_free_threaded: bool,
+) -> serde_json::Value {
+    json!({
+        "executable": executable.display().to_string(),
+        "reported_executable": report.executable,
+        "version": python_version(report),
+        "implementation": report.implementation,
+        "gil_enabled": report.gil_enabled,
+        "free_threaded_build": report.free_threaded_build,
+        "can_parallelize_python": python_can_parallelize(report),
+        "require_free_threaded": require_free_threaded,
+    })
+}
+
+fn python_version(report: &PythonProbeReport) -> String {
+    format!("{}.{}.{}", report.major, report.minor, report.micro)
+}
+
+fn python_can_parallelize(report: &PythonProbeReport) -> bool {
+    report.free_threaded_build && !report.gil_enabled
 }
 
 fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
@@ -953,6 +1143,19 @@ struct PackageListEntry {
 struct PackageVerifyReport {
     package_hash: String,
     checked_files: Vec<firn_package::FileEntry>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+struct PythonProbeReport {
+    executable: String,
+    version: String,
+    major: u16,
+    minor: u16,
+    micro: u16,
+    implementation: String,
+    gil_enabled: bool,
+    free_threaded_build: bool,
+    can_parallelize_python: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

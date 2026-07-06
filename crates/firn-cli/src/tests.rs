@@ -59,6 +59,21 @@ schema = { fields = [
 ] }
 "#;
 
+const PYTHON_RESOURCE_PROJECT: &str = r#"
+[project]
+name = "cli_test"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.firn/state.db"
+packages = ".firn/packages"
+destination = "duckdb://.firn/dev.duckdb"
+
+[resources."events.raw"]
+source = "python://src/events.py#raw_events"
+"#;
+
 #[test]
 fn help_lists_required_command_surface() {
     let result = run(["firn", "--help"]);
@@ -345,6 +360,339 @@ fn doctor_skips_duckdb_drift_without_creating_missing_databases() {
             .unwrap()
             .contains("SQLite state database is absent")
     );
+}
+
+#[test]
+fn doctor_skips_python_without_interpreter_or_python_resources() {
+    let project = TestProject::new();
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "skipped");
+    assert!(python.as_object().unwrap().get("details").is_none());
+}
+
+#[test]
+fn doctor_fails_python_resource_without_interpreter() {
+    let project = TestProject::new();
+    fs::write(project.root.join("firn.toml"), PYTHON_RESOURCE_PROJECT).unwrap();
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("python.interpreter")
+    );
+    assert_eq!(python["details"]["python_resources"], 1);
+}
+
+#[test]
+fn doctor_uses_fixed_python_probe_not_python_resource_code() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_probe_validating_interpreter(
+        &interpreter,
+        &python_probe_json(&interpreter, 3, 12, 7, true, false),
+    );
+    write_python_resource_config_project(&project, "fake-python");
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "passed");
+    assert_eq!(python["details"]["version"], "3.12.7");
+}
+
+#[test]
+fn doctor_passes_gil_enabled_python_interpreter_with_details() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(
+        &interpreter,
+        &python_probe_json(&interpreter, 3, 12, 7, true, false),
+    );
+    write_python_config_project(&project, "fake-python", false);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "passed");
+    assert_eq!(
+        python["details"]["executable"],
+        interpreter.canonicalize().unwrap().display().to_string()
+    );
+    assert_eq!(python["details"]["version"], "3.12.7");
+    assert_eq!(python["details"]["implementation"], "CPython");
+    assert_eq!(python["details"]["gil_enabled"], true);
+    assert_eq!(python["details"]["free_threaded_build"], false);
+    assert_eq!(python["details"]["can_parallelize_python"], false);
+    assert_eq!(python["details"]["require_free_threaded"], false);
+}
+
+#[test]
+fn doctor_passes_when_free_threaded_required_and_gil_disabled() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(
+        &interpreter,
+        &python_probe_json(&interpreter, 3, 13, 1, false, true),
+    );
+    write_python_config_project(&project, "fake-python", true);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "passed");
+    assert_eq!(python["details"]["gil_enabled"], false);
+    assert_eq!(python["details"]["free_threaded_build"], true);
+    assert_eq!(python["details"]["can_parallelize_python"], true);
+    assert_eq!(python["details"]["require_free_threaded"], true);
+}
+
+#[test]
+fn doctor_fails_when_free_threaded_required_but_gil_enabled() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(
+        &interpreter,
+        &python_probe_json(&interpreter, 3, 12, 7, true, false),
+    );
+    write_python_config_project(&project, "fake-python", true);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("free-threaded")
+    );
+    assert_eq!(python["details"]["require_free_threaded"], true);
+    assert_eq!(python["details"]["can_parallelize_python"], false);
+}
+
+#[test]
+fn doctor_fails_when_free_threaded_build_still_has_gil_enabled() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(
+        &interpreter,
+        &python_probe_json(&interpreter, 3, 13, 1, true, true),
+    );
+    write_python_config_project(&project, "fake-python", true);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert_eq!(python["details"]["gil_enabled"], true);
+    assert_eq!(python["details"]["free_threaded_build"], true);
+    assert_eq!(python["details"]["can_parallelize_python"], false);
+    assert_eq!(python["details"]["require_free_threaded"], true);
+}
+
+#[test]
+fn doctor_fails_missing_python_interpreter() {
+    let project = TestProject::new();
+    write_python_config_project(&project, "absent-python", true);
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("configured interpreter is missing")
+    );
+    assert!(
+        python["details"]["executable"]
+            .as_str()
+            .unwrap()
+            .ends_with("absent-python")
+    );
+    assert_eq!(python["details"]["require_free_threaded"], true);
+}
+
+#[cfg(unix)]
+#[test]
+fn doctor_fails_non_executable_python_interpreter() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    fs::write(&interpreter, "#!/bin/sh\nexit 0\n").unwrap();
+    set_mode(&interpreter, 0o644);
+    write_python_config_project(&project, "fake-python", false);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("not executable")
+    );
+}
+
+#[test]
+fn doctor_fails_unsuccessful_python_probe_without_echoing_output() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_failing_interpreter(&interpreter);
+    write_python_config_project(&project, "fake-python", false);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    assert!(!result.stdout.contains("SUPER_SECRET"));
+    assert!(!result.stderr.contains("SUPER_SECRET"));
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("exited unsuccessfully")
+    );
+}
+
+#[test]
+fn doctor_fails_invalid_python_probe_json_without_echoing_output() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(&interpreter, "not-json SUPER_SECRET");
+    write_python_config_project(&project, "fake-python", false);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    assert!(!result.stdout.contains("SUPER_SECRET"));
+    assert!(!result.stderr.contains("SUPER_SECRET"));
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("valid inspection JSON")
+    );
+}
+
+#[test]
+fn doctor_fails_probe_json_with_inconsistent_version_metadata() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(
+        &interpreter,
+        &python_probe_json_from(FakePythonProbe {
+            executable: &interpreter,
+            version: "3.12.8",
+            major: 3,
+            minor: 12,
+            micro: 7,
+            gil_enabled: true,
+            free_threaded_build: false,
+            can_parallelize_python: false,
+        }),
+    );
+    write_python_config_project(&project, "fake-python", false);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("inconsistent version metadata")
+    );
+}
+
+#[test]
+fn doctor_fails_probe_json_with_inconsistent_gil_metadata() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(
+        &interpreter,
+        &python_probe_json_from(FakePythonProbe {
+            executable: &interpreter,
+            version: "3.12.7",
+            major: 3,
+            minor: 12,
+            micro: 7,
+            gil_enabled: false,
+            free_threaded_build: true,
+            can_parallelize_python: false,
+        }),
+    );
+    write_python_config_project(&project, "fake-python", false);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("inconsistent GIL metadata")
+    );
+}
+
+#[test]
+fn doctor_fails_old_python_interpreter_version() {
+    let project = TestProject::new();
+    let interpreter = project.root.join("fake-python");
+    write_fake_interpreter(
+        &interpreter,
+        &python_probe_json(&interpreter, 3, 11, 9, true, false),
+    );
+    write_python_config_project(&project, "fake-python", false);
+
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let python = named_check(&json, "python");
+    assert_eq!(python["status"], "failed");
+    assert!(
+        python["message"]
+            .as_str()
+            .unwrap()
+            .contains("older than required 3.12")
+    );
+    assert_eq!(python["details"]["version"], "3.11.9");
 }
 
 #[test]
@@ -723,4 +1071,139 @@ fn named_check<'a>(json: &'a Value, name: &str) -> &'a Value {
         .iter()
         .find(|check| check["name"] == name)
         .unwrap()
+}
+
+fn write_python_config_project(
+    project: &TestProject,
+    interpreter: &str,
+    require_free_threaded: bool,
+) {
+    let mut text = PROJECT.to_owned();
+    text.push_str("\n[python]\ninterpreter = ");
+    text.push_str(&serde_json::to_string(interpreter).unwrap());
+    text.push('\n');
+    if require_free_threaded {
+        text.push_str("require_free_threaded = true\n");
+    }
+    fs::write(project.root.join("firn.toml"), text).unwrap();
+}
+
+fn write_python_resource_config_project(project: &TestProject, interpreter: &str) {
+    let mut text = PYTHON_RESOURCE_PROJECT.to_owned();
+    text.push_str("\n[python]\ninterpreter = ");
+    text.push_str(&serde_json::to_string(interpreter).unwrap());
+    text.push('\n');
+    fs::write(project.root.join("firn.toml"), text).unwrap();
+}
+
+fn write_fake_interpreter(path: &Path, stdout: &str) {
+    fs::write(
+        path,
+        format!("#!/bin/sh\ncat <<'FIRN_FAKE_PYTHON_JSON'\n{stdout}\nFIRN_FAKE_PYTHON_JSON\n"),
+    )
+    .unwrap();
+    make_executable(path);
+}
+
+fn write_probe_validating_interpreter(path: &Path, stdout: &str) {
+    fs::write(
+        path,
+        format!(
+            r#"#!/bin/sh
+if [ "$#" -ne 3 ]; then exit 10; fi
+if [ "$1" != "-I" ]; then exit 11; fi
+if [ "$2" != "-c" ]; then exit 12; fi
+
+case "$3" in
+  *"sysconfig.get_config_var"*) ;;
+  *) exit 13 ;;
+esac
+
+case "$3" in
+  *"_is_gil_enabled"*) ;;
+  *) exit 14 ;;
+esac
+
+case "$3" in
+  *"src/events.py"*|*"raw_events"*|*"python://"*) exit 15 ;;
+esac
+
+cat <<'FIRN_FAKE_PYTHON_JSON'
+{stdout}
+FIRN_FAKE_PYTHON_JSON
+"#
+        ),
+    )
+    .unwrap();
+    make_executable(path);
+}
+
+fn write_failing_interpreter(path: &Path) {
+    fs::write(
+        path,
+        "#!/bin/sh\necho SUPER_SECRET_STDOUT\necho SUPER_SECRET_STDERR >&2\nexit 42\n",
+    )
+    .unwrap();
+    make_executable(path);
+}
+
+fn python_probe_json(
+    executable: &Path,
+    major: u16,
+    minor: u16,
+    micro: u16,
+    gil_enabled: bool,
+    free_threaded_build: bool,
+) -> String {
+    let version = format!("{major}.{minor}.{micro}");
+    python_probe_json_from(FakePythonProbe {
+        executable,
+        version: &version,
+        major,
+        minor,
+        micro,
+        gil_enabled,
+        free_threaded_build,
+        can_parallelize_python: free_threaded_build && !gil_enabled,
+    })
+}
+
+struct FakePythonProbe<'a> {
+    executable: &'a Path,
+    version: &'a str,
+    major: u16,
+    minor: u16,
+    micro: u16,
+    gil_enabled: bool,
+    free_threaded_build: bool,
+    can_parallelize_python: bool,
+}
+
+fn python_probe_json_from(probe: FakePythonProbe<'_>) -> String {
+    json!({
+        "executable": probe.executable.display().to_string(),
+        "version": probe.version,
+        "major": probe.major,
+        "minor": probe.minor,
+        "micro": probe.micro,
+        "implementation": "CPython",
+        "gil_enabled": probe.gil_enabled,
+        "free_threaded_build": probe.free_threaded_build,
+        "can_parallelize_python": probe.can_parallelize_python,
+    })
+    .to_string()
+}
+
+fn make_executable(path: &Path) {
+    #[cfg(unix)]
+    set_mode(path, 0o755);
+}
+
+#[cfg(unix)]
+fn set_mode(path: &Path, mode: u32) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path).unwrap().permissions();
+    permissions.set_mode(mode);
+    fs::set_permissions(path, permissions).unwrap();
 }
