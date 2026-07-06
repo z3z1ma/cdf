@@ -1,4 +1,4 @@
-Status: blocked
+Status: active
 Created: 2026-07-05
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
@@ -34,7 +34,8 @@ No warehouse destinations in this ticket.
 - 2026-07-06: Parent integration revalidated package tests, clippy, formatting, `cargo audit`, `cargo deny check advisories`, OSV, and `git diff --check` after Python upgraded to PyO3 0.29 through `pyo3-arrow`. The stale PyO3 advisory blocker is resolved. This ticket remains blocked because the current crate has no live Postgres driver/execution path or live integration evidence for append, replace, merge, receipt verification, or rollback behavior.
 - 2026-07-06: Split the large `crates/firn-dest-postgres/src/lib.rs` into focused files under `crates/firn-dest-postgres/src/` while preserving the crate-root API. Organization evidence recorded in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
 - 2026-07-06: Replaced the intermediate `include!` split with ordinary Rust modules under `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`. Final parent quality gates recorded in `.10x/evidence/2026-07-06-project-python-destinations-quality-gates.md`. This ticket remains blocked on live Postgres execution evidence.
+- 2026-07-06: Rechecked the live-execution blocker. Homebrew Postgres binaries are present (`postgres`, `initdb`, `pg_ctl`, `psql`, `pg_isready`), but `crates/firn-dest-postgres` remains a planning/SQL/receipt crate with no driver-backed commit path. Opened child `.10x/tickets/2026-07-06-postgres-live-execution.md` for the live driver, package row loading, transaction execution, receipt verification, and ephemeral-server integration evidence. Environment/source evidence is recorded in `.10x/evidence/2026-07-06-postgres-live-execution-scope.md`.
 
 ## Blockers
 
-- No live Postgres execution evidence exists. `pg_isready` reports `/tmp:5432 - no response`, `docker` is not installed, and `TEST_DATABASE_URL`/`DATABASE_URL` are unset. The current implementation is a deterministic planning/SQL/receipt surface only; ticket closure requires either a reachable Postgres-backed commit implementation/test or an active superseding decision that narrows this child ticket to planning-only behavior.
+None. Completion depends on `.10x/tickets/2026-07-06-postgres-live-execution.md`.
