@@ -39,6 +39,7 @@ No Rust source edits, no Cargo dependency changes, no `cargo deny`/`cargo audit`
 ## Progress and notes
 
 - 2026-07-06: Opened after the user questioned the DuckDB-backed Parquet workaround. Current local evidence: `cargo search parquet` reports `parquet = "59.0.0"` as latest; local registry metadata for `parquet-59.0.0` contains an unconditional `[dependencies.paste] version = "1.0"` entry; the current Firn `Cargo.lock` has no `parquet` or `paste` package entry because the workaround avoids that path.
+- 2026-07-06: Recorded `.10x/research/2026-07-06-native-parquet-paste-risk.md`. Current evidence shows latest `parquet 59.0.0` still depends unconditionally on `paste`, latest `datafusion 54.0.0` still uses `parquet 58.3.0` behind its Parquet feature, and `RUSTSEC-2024-0436` is an informational unmaintained advisory with no patched version rather than a known exploit advisory. Recommended path, pending user/project ratification, is a narrow time-boxed exception for `paste 1.0.15` only through native arrow-rs/DataFusion Parquet, then replacing the DuckDB-backed Parquet surfaces with native implementations under bounded tickets.
 
 ## Blockers
 
