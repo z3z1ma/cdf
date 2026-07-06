@@ -10,11 +10,13 @@ use std::{
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use firn_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use firn_kernel::{
     CHECKPOINT_STATE_VERSION, CheckpointId, CheckpointStore, CommitCounts, CursorPosition,
-    CursorValue, DestinationId, IdempotencyToken, PackageHash, PipelineId, Receipt, ReceiptId,
-    ResourceId, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
-    StateSegment, TargetName, VerifyClause, WriteDisposition,
+    CursorValue, DestinationCommitRequest, DestinationId, IdempotencyToken, PackageHash,
+    PartitionId, PipelineId, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck,
+    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
+    WriteDisposition,
 };
 use firn_package::{PackageBuilder, PackageReader, PackageStatus};
 use firn_state_sqlite::SqliteCheckpointStore;
@@ -322,6 +324,82 @@ fn sql_rejects_non_readonly_before_artifact_access() {
 }
 
 #[test]
+fn doctor_skips_duckdb_drift_without_creating_missing_databases() {
+    let project = TestProject::new();
+    let state_path = project.root.join(".firn/state.db");
+    let duckdb_path = project.root.join(".firn/dev.duckdb");
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!state_path.exists(), "doctor must not create state DB");
+    assert!(
+        !duckdb_path.exists(),
+        "doctor drift probe must not create DuckDB DB"
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    let drift = named_check(&json, "ledger_destination_drift");
+    assert_eq!(drift["status"], "skipped");
+    assert!(
+        drift["message"]
+            .as_str()
+            .unwrap()
+            .contains("SQLite state database is absent")
+    );
+}
+
+#[test]
+fn doctor_passes_clean_duckdb_ledger_mirror_drift_check() {
+    let project = TestProject::new();
+    create_duckdb_doctor_fixture(&project, DoctorDriftFixtureMode::Clean);
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let drift = named_check(&json, "ledger_destination_drift");
+    assert_eq!(drift["status"], "passed");
+    assert_eq!(drift["details"]["counts"]["ledger_heads"], 1);
+    assert_eq!(drift["details"]["counts"]["expected_loads"], 1);
+    assert_eq!(drift["details"]["counts"]["expected_state_rows"], 1);
+    assert_eq!(drift["details"]["counts"]["mirror_loads"], 1);
+    assert_eq!(drift["details"]["counts"]["mirror_state_rows"], 1);
+    assert_eq!(drift["details"]["examples"].as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn doctor_fails_on_duckdb_state_mirror_drift() {
+    let project = TestProject::new();
+    create_duckdb_doctor_fixture(&project, DoctorDriftFixtureMode::StatePositionDrift);
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let drift = named_check(&json, "ledger_destination_drift");
+    assert_eq!(drift["status"], "failed");
+    assert_eq!(drift["details"]["counts"]["mismatched_state_rows"], 1);
+    assert_eq!(drift["details"]["examples"][0]["kind"], "mismatched_state");
+    assert_eq!(
+        drift["details"]["examples"][0]["field"],
+        "output_position_json"
+    );
+}
+
+#[test]
+fn doctor_fails_on_missing_and_extra_duckdb_mirror_rows() {
+    let project = TestProject::new();
+    create_duckdb_doctor_fixture(&project, DoctorDriftFixtureMode::TargetDrift);
+    let result = run(["firn", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let drift = named_check(&json, "ledger_destination_drift");
+    assert_eq!(drift["status"], "failed");
+    assert_eq!(drift["details"]["counts"]["missing_loads"], 1);
+    assert_eq!(drift["details"]["counts"]["extra_loads"], 1);
+    assert_eq!(drift["details"]["counts"]["missing_state_rows"], 1);
+    assert_eq!(drift["details"]["counts"]["extra_state_rows"], 1);
+}
+
+#[test]
 fn package_verify_uses_lower_package_reader() {
     let temp = TempDir::new("firn-cli-package");
     let package_dir = temp.path().join("pkg");
@@ -349,6 +427,13 @@ fn package_verify_uses_lower_package_reader() {
 
 struct SystemSqlFixture {
     package_hash: String,
+}
+
+#[derive(Clone, Copy)]
+enum DoctorDriftFixtureMode {
+    Clean,
+    StatePositionDrift,
+    TargetDrift,
 }
 
 #[test]
@@ -438,6 +523,51 @@ fn create_system_sql_fixture(project: &TestProject) -> SystemSqlFixture {
     }
 }
 
+fn create_duckdb_doctor_fixture(project: &TestProject, mode: DoctorDriftFixtureMode) {
+    let package_root = project.root.join(".firn/packages");
+    fs::create_dir_all(&package_root).unwrap();
+    let package_dir = package_root.join("pkg-doctor-1");
+    let mut builder = PackageBuilder::create(&package_dir, "pkg-doctor-1").unwrap();
+    builder
+        .write_segment(SegmentId::new("seg-000001").unwrap(), &[sample_sql_batch()])
+        .unwrap();
+    let manifest = builder.finish().unwrap();
+    let package_hash = PackageHash::new(manifest.package_hash.clone()).unwrap();
+    let output_position = doctor_output_position(42);
+    let segment = doctor_state_segment(output_position.clone());
+
+    let destination = DuckDbDestination::new(project.root.join(".firn/dev.duckdb")).unwrap();
+    let outcome = destination
+        .commit_package(DuckDbCommitRequest {
+            package_dir: package_dir.clone(),
+            commit: DestinationCommitRequest {
+                package_hash: package_hash.clone(),
+                target: TargetName::new("events").unwrap(),
+                disposition: WriteDisposition::Append,
+                segments: vec![segment.clone()],
+                idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
+            },
+            schema_hash: SchemaHash::new("schema-doctor-1").unwrap(),
+            merge_keys: Vec::new(),
+        })
+        .unwrap();
+
+    let ledger_output_position = match mode {
+        DoctorDriftFixtureMode::Clean => output_position,
+        DoctorDriftFixtureMode::StatePositionDrift => doctor_output_position(43),
+        DoctorDriftFixtureMode::TargetDrift => output_position,
+    };
+    let delta = doctor_delta(&package_hash, ledger_output_position);
+    let checkpoint_id = delta.checkpoint_id.clone();
+    let mut receipt = outcome.receipt;
+    if matches!(mode, DoctorDriftFixtureMode::TargetDrift) {
+        receipt.target = TargetName::new("other_events").unwrap();
+    }
+    let store = SqliteCheckpointStore::open(project.root.join(".firn/state.db")).unwrap();
+    store.propose(delta).unwrap();
+    store.commit(&checkpoint_id, receipt).unwrap();
+}
+
 fn sample_sql_batch() -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -450,6 +580,42 @@ fn sample_sql_batch() -> RecordBatch {
         Some("margaret"),
     ]));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+fn doctor_output_position(value: i64) -> SourcePosition {
+    SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: "id".to_owned(),
+        value: CursorValue::I64(value),
+    })
+}
+
+fn doctor_state_segment(output_position: SourcePosition) -> StateSegment {
+    StateSegment {
+        segment_id: SegmentId::new("seg-000001").unwrap(),
+        scope: ScopeKey::Partition {
+            partition_id: PartitionId::new("p0").unwrap(),
+        },
+        output_position,
+        row_count: 3,
+        byte_count: 48,
+    }
+}
+
+fn doctor_delta(package_hash: &PackageHash, output_position: SourcePosition) -> StateDelta {
+    StateDelta {
+        checkpoint_id: CheckpointId::new("checkpoint-doctor-1").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-1").unwrap(),
+        resource_id: ResourceId::new("local.events").unwrap(),
+        scope: ScopeKey::Resource,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: output_position.clone(),
+        package_hash: package_hash.clone(),
+        schema_hash: SchemaHash::new("schema-doctor-1").unwrap(),
+        segments: vec![doctor_state_segment(output_position)],
+    }
 }
 
 fn sample_sql_delta(package_hash: &str) -> StateDelta {
@@ -548,4 +714,13 @@ fn run<const N: usize>(args: [&str; N]) -> crate::InvocationResult {
 
 fn stderr_or_stdout_json(text: &str) -> Value {
     serde_json::from_str(text).unwrap()
+}
+
+fn named_check<'a>(json: &'a Value, name: &str) -> &'a Value {
+    json["result"]["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|check| check["name"] == name)
+        .unwrap()
 }

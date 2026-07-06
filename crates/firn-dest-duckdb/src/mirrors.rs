@@ -117,3 +117,77 @@ pub(crate) fn insert_mirrors(
     }
     Ok(())
 }
+
+pub(crate) fn read_mirror_snapshot(conn: &Connection) -> Result<DuckDbMirrorSnapshot> {
+    let loads_table_present = table_exists(conn, "_firn_loads")?;
+    let state_table_present = table_exists(conn, "_firn_state")?;
+    Ok(DuckDbMirrorSnapshot {
+        loads_table_present,
+        state_table_present,
+        loads: if loads_table_present {
+            read_load_rows(conn)?
+        } else {
+            Vec::new()
+        },
+        state: if state_table_present {
+            read_state_rows(conn)?
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+fn table_exists(conn: &Connection, table_name: &str) -> Result<bool> {
+    conn.query_row(
+        "SELECT count(*) > 0 FROM information_schema.tables WHERE table_schema = 'main' AND table_name = ?",
+        params![table_name],
+        |row| row.get(0),
+    )
+    .map_err(|error| duckdb_error(format!("query DuckDB mirror table presence for {table_name}"), error))
+}
+
+fn read_load_rows(conn: &Connection) -> Result<Vec<DuckDbMirrorLoadRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT target, idempotency_token, package_hash, receipt_id, receipt_json \
+             FROM _firn_loads ORDER BY target, idempotency_token",
+        )
+        .map_err(|error| duckdb_error("prepare DuckDB _firn_loads snapshot query", error))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DuckDbMirrorLoadRow {
+                target: row.get(0)?,
+                idempotency_token: row.get(1)?,
+                package_hash: row.get(2)?,
+                receipt_id: row.get(3)?,
+                receipt_json: row.get(4)?,
+            })
+        })
+        .map_err(|error| duckdb_error("query DuckDB _firn_loads snapshot", error))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| duckdb_error("read DuckDB _firn_loads snapshot row", error))
+}
+
+fn read_state_rows(conn: &Connection) -> Result<Vec<DuckDbMirrorStateRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT target, package_hash, segment_id, scope_json, output_position_json, row_count, byte_count \
+             FROM _firn_state ORDER BY target, package_hash, segment_id",
+        )
+        .map_err(|error| duckdb_error("prepare DuckDB _firn_state snapshot query", error))?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(DuckDbMirrorStateRow {
+                target: row.get(0)?,
+                package_hash: row.get(1)?,
+                segment_id: row.get(2)?,
+                scope_json: row.get(3)?,
+                output_position_json: row.get(4)?,
+                row_count: row.get(5)?,
+                byte_count: row.get(6)?,
+            })
+        })
+        .map_err(|error| duckdb_error("query DuckDB _firn_state snapshot", error))?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| duckdb_error("read DuckDB _firn_state snapshot row", error))
+}

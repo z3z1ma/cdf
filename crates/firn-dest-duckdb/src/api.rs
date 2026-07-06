@@ -69,6 +69,34 @@ pub struct IcuProbe {
     pub error: Option<String>,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DuckDbMirrorSnapshot {
+    pub loads_table_present: bool,
+    pub state_table_present: bool,
+    pub loads: Vec<DuckDbMirrorLoadRow>,
+    pub state: Vec<DuckDbMirrorStateRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuckDbMirrorLoadRow {
+    pub target: String,
+    pub idempotency_token: String,
+    pub package_hash: String,
+    pub receipt_id: String,
+    pub receipt_json: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuckDbMirrorStateRow {
+    pub target: String,
+    pub package_hash: String,
+    pub segment_id: String,
+    pub scope_json: Option<String>,
+    pub output_position_json: Option<String>,
+    pub row_count: u64,
+    pub byte_count: u64,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct PackageData {
     pub(crate) fields: Vec<FieldPlan>,
@@ -348,9 +376,26 @@ impl DuckDbDestination {
         }
     }
 
+    pub fn read_mirror_snapshot_read_only(&self) -> Result<DuckDbMirrorSnapshot> {
+        let conn = self.open_read_only_connection()?;
+        read_mirror_snapshot(&conn)
+    }
+
     fn open_connection(&self) -> Result<Connection> {
         Connection::open(&self.database_path)
             .map_err(|error| duckdb_error(format!("open {}", self.database_path.display()), error))
+    }
+
+    fn open_read_only_connection(&self) -> Result<Connection> {
+        let config = Config::default()
+            .access_mode(AccessMode::ReadOnly)
+            .map_err(|error| duckdb_error("configure read-only DuckDB open", error))?;
+        Connection::open_with_flags(&self.database_path, config).map_err(|error| {
+            duckdb_error(
+                format!("open {} read-only", self.database_path.display()),
+                error,
+            )
+        })
     }
 
     pub(crate) fn acquire_writer_lock(&self) -> Result<WriterLock> {

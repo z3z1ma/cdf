@@ -103,6 +103,13 @@ impl ProjectContext {
     pub fn destination_runtime(&self) -> DestinationRuntime {
         destination_runtime(&self.root, &self.environment.destination)
     }
+
+    pub fn duckdb_destination_path(&self) -> Option<PathBuf> {
+        self.environment
+            .destination
+            .strip_prefix("duckdb://")
+            .map(|path| absolute_under_root(&self.root, path))
+    }
 }
 
 pub fn require_lock(context: &ProjectContext) -> Result<&FirnLock> {

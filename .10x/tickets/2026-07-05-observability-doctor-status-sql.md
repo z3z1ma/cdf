@@ -31,6 +31,7 @@ No dashboard or UI.
 - 2026-07-05: Opened from book and specs.
 - 2026-07-06: Split first executable child `.10x/tickets/done/2026-07-06-local-system-sql.md` for read-only local `firn sql` over checkpoint/package metadata.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-local-system-sql.md`; `firn sql` now supports read-only local system-history queries over checkpoint rows and package manifest/receipt metadata.
+- 2026-07-06: Split and closed child `.10x/tickets/done/2026-07-06-duckdb-ledger-mirror-doctor-drift.md` for the first concrete local DuckDB ledger/mirror drift doctor probe. `firn doctor` now reports local DuckDB ledger/mirror drift as skipped, passed, or failed with read-only probes.
 
 ## Blockers
 

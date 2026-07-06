@@ -18,6 +18,7 @@ use crate::{
         PackageCommand, ReplayPackageArgs, ResumeArgs, RunArgs, ScanArgs, SqlArgs, StateCommand,
     },
     context::{DestinationRuntime, DoctorProbe, ProjectContext, require_lock},
+    doctor_drift::{self, DriftStatus},
     output::{CliError, CommandOutput, InvocationResult},
     system_sql,
 };
@@ -478,10 +479,7 @@ fn doctor(cli: &Cli) -> Result<CommandOutput, CliError> {
 
     checks.push(python_check(&context));
     checks.extend(destination_checks(context.destination_runtime()));
-    checks.push(DoctorCheck::unsupported(
-        "ledger_destination_drift",
-        "destination mirror drift comparison is not exposed by lower crates",
-    ));
+    checks.push(ledger_destination_drift_check(&context));
 
     let failed = checks
         .iter()
@@ -782,6 +780,24 @@ fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
     }
 }
 
+fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {
+    match doctor_drift::probe(context) {
+        Ok(probe) => match probe.status {
+            DriftStatus::Passed => DoctorCheck::passed("ledger_destination_drift", probe.message)
+                .with_details(probe.details),
+            DriftStatus::Failed => DoctorCheck::failed("ledger_destination_drift", probe.message)
+                .with_details(probe.details),
+            DriftStatus::Skipped => DoctorCheck::skipped("ledger_destination_drift", probe.message)
+                .with_details(probe.details),
+            DriftStatus::Unsupported => {
+                DoctorCheck::unsupported("ledger_destination_drift", probe.message)
+                    .with_details(probe.details)
+            }
+        },
+        Err(error) => DoctorCheck::failed("ledger_destination_drift", error.message),
+    }
+}
+
 fn scope_key(scope_json: Option<&str>) -> Result<ScopeKey, CliError> {
     match scope_json {
         Some(json) => serde_json::from_str(json).map_err(|error| {
@@ -951,6 +967,8 @@ struct DoctorCheck {
     name: String,
     status: CheckStatus,
     message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<serde_json::Value>,
 }
 
 impl DoctorCheck {
@@ -959,6 +977,7 @@ impl DoctorCheck {
             name: name.into(),
             status: CheckStatus::Passed,
             message: message.into(),
+            details: None,
         }
     }
 
@@ -967,6 +986,7 @@ impl DoctorCheck {
             name: name.into(),
             status: CheckStatus::Failed,
             message: message.into(),
+            details: None,
         }
     }
 
@@ -975,6 +995,7 @@ impl DoctorCheck {
             name: name.into(),
             status: CheckStatus::Skipped,
             message: message.into(),
+            details: None,
         }
     }
 
@@ -983,7 +1004,13 @@ impl DoctorCheck {
             name: name.into(),
             status: CheckStatus::Unsupported,
             message: message.into(),
+            details: None,
         }
+    }
+
+    fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
     }
 }
 

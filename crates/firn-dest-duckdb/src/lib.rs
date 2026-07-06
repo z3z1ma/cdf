@@ -18,7 +18,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use duckdb::{
-    Connection, OptionalExt, appender_params_from_iter, params,
+    AccessMode, Config, Connection, OptionalExt, appender_params_from_iter, params,
     types::{TimeUnit as DuckTimeUnit, Value},
 };
 use firn_kernel::{

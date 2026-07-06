@@ -5,6 +5,7 @@ use std::ffi::OsString;
 mod args;
 mod commands;
 mod context;
+mod doctor_drift;
 mod output;
 mod system_sql;
 
