@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -65,6 +65,10 @@ Boundedness honesty remains parent scope until a public boundedness signal exist
 ## Progress and notes
 
 - 2026-07-06: Split from the conformance parent after inspection showed the existing resource conformance harness is planning-only and `firn-formats` has real file readers but no openable `ResourceStream` wrapper. The next complete step is an execution-level conformance oracle plus a real file-source consumer for CSV, JSON, NDJSON, and Parquet.
+- 2026-07-06: Implemented `firn-conformance::resource::assert_resource_stream_execution_conformance` with negative self-tests and added `firn-formats::FileResource` over the existing file readers. CSV, JSON, NDJSON, and Parquet tests now consume both planning and execution conformance harnesses.
+- 2026-07-06: Parent review found and fixed a semver break where public fields had been added to `FormatRead`; the final implementation derives `FileResource` schema/position from existing batch data and leaves `FormatRead`'s public field set unchanged.
+- 2026-07-06: Evidence is recorded in `.10x/evidence/2026-07-06-resource-execution-conformance-file-sources.md`; closure review is recorded in `.10x/reviews/2026-07-06-resource-execution-conformance-file-sources-review.md`.
+- 2026-07-06: Closed after focused tests, nextest, clippy, formatting, diff check, docs, cargo metadata, cargo deny/audit/vet, OSV, Semgrep, CodeQL with reusable DB refresh, gitleaks, direct unsafe scan, isolated Geiger, machete, udeps, semver-checks, rust-code-analysis, jscpd, llvm-cov, and bounded mutation testing all produced acceptable evidence.
 
 ## Blockers
 

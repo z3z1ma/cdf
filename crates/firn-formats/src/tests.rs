@@ -11,10 +11,14 @@ use std::{
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
+use firn_conformance::resource::{
+    ResourceExecutionConformanceCase, assert_resource_stream_conformance,
+    assert_resource_stream_execution_conformance,
+};
 use firn_contract::{ContractPolicy, NORMALIZER_NAMECASE_V1};
 use firn_kernel::{
-    ErrorKind, PartitionId, ResourceId, SchemaSource, ScopeKey, SegmentId, SourcePosition,
-    with_source_name,
+    ErrorKind, PartitionId, ResourceId, ResourceStream, ScanRequest, SchemaHash, SchemaSource,
+    ScopeKey, SegmentId, SourcePosition, with_source_name,
 };
 
 fn options(resource: &str, partition: &str) -> ReadOptions {
@@ -53,6 +57,38 @@ fn record_batches(read: &FormatRead) -> Vec<RecordBatch> {
 fn write_parquet_file(path: &Path, batches: &[RecordBatch]) {
     let bytes = firn_package::transcode_record_batches_to_parquet_bytes(batches).unwrap();
     fs::write(path, bytes).unwrap();
+}
+
+fn file_scan_request(resource: &FileResource) -> ScanRequest {
+    ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: resource.descriptor().state_scope.clone(),
+    }
+}
+
+fn assert_file_resource_conformance(
+    source: &FileSource,
+    expected_schema_hash: &SchemaHash,
+    expected_rows: u64,
+) {
+    let resource = FileResource::new(source.clone()).unwrap();
+    let request = file_scan_request(&resource);
+    assert_resource_stream_conformance(&resource, [request.clone()]);
+    futures_executor::block_on(assert_resource_stream_execution_conformance(
+        &resource,
+        [ResourceExecutionConformanceCase::new(
+            request,
+            expected_schema_hash.clone(),
+            [source.options.partition_id.clone()],
+            expected_rows,
+        )
+        .with_expected_partition_rows([(source.options.partition_id.clone(), expected_rows)])
+        .require_file_manifest_positions()],
+    ));
 }
 
 #[test]
@@ -110,17 +146,17 @@ fn ndjson_inference_feeds_contract_observed_schema() {
 }
 
 #[test]
-fn csv_and_json_file_sources_produce_descriptors_and_batches() {
+fn csv_json_and_ndjson_file_sources_produce_descriptors_and_batches() {
     let temp = tempfile::tempdir().unwrap();
     let csv_path = temp.path().join("orders.csv");
     fs::write(&csv_path, "id,name\n1,ada\n2,grace\n").unwrap();
 
-    let csv = read_file_source(&FileSource::new(
+    let csv_source = FileSource::new(
         &csv_path,
         FileFormat::Csv(CsvOptions::default()),
         options("orders_csv", "file"),
-    ))
-    .unwrap();
+    );
+    let csv = read_file_source(&csv_source).unwrap();
     assert_eq!(
         csv.batches
             .iter()
@@ -133,6 +169,7 @@ fn csv_and_json_file_sources_produce_descriptors_and_batches() {
         csv.batches[0].header.source_position,
         Some(SourcePosition::FileManifest(_))
     ));
+    assert_file_resource_conformance(&csv_source, &csv.schema_hash, 2);
 
     let json_path = temp.path().join("orders.json");
     fs::write(
@@ -140,13 +177,31 @@ fn csv_and_json_file_sources_produce_descriptors_and_batches() {
         r#"[{"id":1,"name":"ada"},{"id":2,"name":"grace"}]"#,
     )
     .unwrap();
-    let json = read_file_source(&FileSource::new(
+    let json_source = FileSource::new(
         &json_path,
         FileFormat::Json(JsonOptions::default()),
         options("orders_json", "file"),
-    ))
-    .unwrap();
+    );
+    let json = read_file_source(&json_source).unwrap();
     assert_eq!(json.batches[0].header.row_count, 2);
+    assert_file_resource_conformance(&json_source, &json.schema_hash, 2);
+
+    let ndjson_path = temp.path().join("orders.ndjson");
+    fs::write(
+        &ndjson_path,
+        r#"{"id":1,"name":"ada"}
+{"id":2,"name":"grace"}
+"#,
+    )
+    .unwrap();
+    let ndjson_source = FileSource::new(
+        &ndjson_path,
+        FileFormat::Ndjson(JsonOptions::default()),
+        options("orders_ndjson", "file"),
+    );
+    let ndjson = read_file_source(&ndjson_source).unwrap();
+    assert_eq!(ndjson.batches[0].header.row_count, 2);
+    assert_file_resource_conformance(&ndjson_source, &ndjson.schema_hash, 2);
 
     let json_object_path = temp.path().join("single-order.json");
     fs::write(&json_object_path, r#"{"id":3,"name":"alan"}"#).unwrap();
@@ -165,12 +220,12 @@ fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
     let parquet_path = temp.path().join("orders.parquet");
     write_parquet_file(&parquet_path, &[sample_batch()]);
 
-    let read = read_file_source(&FileSource::new(
+    let source = FileSource::new(
         &parquet_path,
         FileFormat::Parquet,
         options("orders_parquet", "file"),
-    ))
-    .unwrap();
+    );
+    let read = read_file_source(&source).unwrap();
 
     assert_eq!(
         read.descriptor.schema_source,
@@ -224,6 +279,8 @@ fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
         fs::metadata(&parquet_path).unwrap().len()
     );
     assert_eq!(manifest.files[0].sha256.as_ref().unwrap().len(), 64);
+
+    assert_file_resource_conformance(&source, &read.schema_hash, 3);
 }
 
 #[test]

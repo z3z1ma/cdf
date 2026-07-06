@@ -6,6 +6,13 @@ use firn_kernel::{
     ScanPredicate, ScanRequest, SchemaSource, ScopeKey, ScopeKind,
 };
 
+mod execution;
+
+pub use execution::{
+    ResourceExecutionConformanceCase, SourcePositionRequirement,
+    assert_resource_stream_execution_conformance,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceConformanceCase {
     pub request: ScanRequest,
