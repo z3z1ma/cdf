@@ -40,7 +40,7 @@ MVP authoring, destinations, and product surface:
 - `.10x/tickets/done/2026-07-05-http-toolkit.md`
 - `.10x/tickets/done/2026-07-05-declarative-resources.md`
 - `.10x/tickets/done/2026-07-05-formats-and-subprocess.md`
-- `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md`
+- `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`
 - `.10x/tickets/done/2026-07-05-python-sdk-bridge.md`
 - `.10x/tickets/done/2026-07-05-duckdb-destination.md`
 - `.10x/tickets/done/2026-07-05-parquet-object-store-destination.md`
@@ -89,7 +89,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Kernel QUALITY verification opened a separate supply-chain policy ticket because `cargo deny` license policy and cargo-vet adoption are not yet ratified.
 - 2026-07-06: Checkpoint store child ticket closed with kernel `CheckpointStore` contract, in-memory store, SQLite WAL store, rewind/history behavior, mutation-clean tests, quality evidence, and review.
 - 2026-07-06: Contract compiler, package builder/reader, and HTTP toolkit child tickets closed with parent review and shared QUALITY evidence. Reusable CodeQL database now lives at `target/quality/codeql-db-rust`.
-- 2026-07-06: DataFusion engine, declarative resources, and formats/subprocess core child tickets closed with evidence and reviews. Parquet file-source support was split to `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md` after scanners showed the direct arrow-rs `parquet` crate would introduce `RUSTSEC-2024-0436` through `paste`.
+- 2026-07-06: DataFusion engine, declarative resources, and formats/subprocess core child tickets closed with evidence and reviews. Parquet file-source support was split to `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md` after scanners showed the direct arrow-rs `parquet` crate would introduce `RUSTSEC-2024-0436` through `paste`.
 - 2026-07-06: Project format/secrets, Python SDK/bridge, and DuckDB destination child tickets closed with evidence and reviews. Postgres destination has a deterministic planning/SQL/receipt surface but remains blocked until live Postgres execution evidence or a superseding planning-only decision exists.
 - 2026-07-06: User ratified a crate-organization convention to avoid monolithic `lib.rs` files where possible. Recorded in `.10x/knowledge/rust-crate-organization.md`; split the new project, Python, DuckDB, and Postgres crate roots with verification in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
 - 2026-07-06: Opened `.10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md` for older large crate roots from earlier child tickets so the convention is not lost; it later closed after child split tickets completed.
@@ -102,6 +102,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md`; `firn doctor` now has structured project/environment health, redacted secret-reference details with env/file/declarative coverage, missing-secret failure redaction, and DuckDB ICU safe details.
 - 2026-07-06: Closed supply-chain policy child `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`; `deny.toml` now makes advisory/license/source policy explicit, and `supply-chain/` now initializes cargo-vet so `cargo vet --locked` passes with a current-version exemption backlog.
 - 2026-07-06: Closed package archive primitive child `.10x/tickets/done/2026-07-06-package-archive-transcode-primitive.md`; `firn-package` now has a supply-chain-clean IPC-to-Parquet in-memory archive report primitive, `firn-dest-parquet` delegates to the shared writer, and the remaining archive CLI/file-placement/manifest metadata work stays with `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+- 2026-07-06: Closed Parquet file-source child `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`; `firn-formats` now reads Parquet sources through DuckDB's bundled reader and an Arrow IPC bridge without adding the blocked direct arrow-rs `parquet`/`paste` path, with parser, malformed-input, package replay, mutation, and QUALITY evidence.
 
 ## Blockers
 

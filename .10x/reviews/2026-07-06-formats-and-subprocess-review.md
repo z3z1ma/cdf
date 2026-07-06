@@ -25,7 +25,7 @@ None for the retained scope.
 
 ## Verdict
 
-Pass. Focused tests cover Arrow IPC schema preservation, NDJSON contract integration, CSV/JSON file-source batches, package write/replay compatibility, subprocess stderr/exit/timeout/malformed-output behavior, and Parquet blocker reporting. The attempted `parquet` dependency was removed after scanners reported `RUSTSEC-2024-0436`; the unresolved Parquet requirement is owned by `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md`.
+Pass. Focused tests cover Arrow IPC schema preservation, NDJSON contract integration, CSV/JSON file-source batches, package write/replay compatibility, subprocess stderr/exit/timeout/malformed-output behavior, and Parquet blocker reporting. The attempted `parquet` dependency was removed after scanners reported `RUSTSEC-2024-0436`; the unresolved Parquet requirement is owned by `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`.
 
 ## Residual risk
 

@@ -10,6 +10,11 @@ use arrow_csv::reader::{Format as ArrowCsvFormat, ReaderBuilder as CsvReaderBuil
 use arrow_ipc::reader::StreamReader;
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
 use arrow_schema::{ArrowError, SchemaRef};
+use duckdb::Connection;
+use duckdb_arrow::{
+    datatypes::SchemaRef as DuckSchemaRef, ipc::writer::StreamWriter as DuckStreamWriter,
+    record_batch::RecordBatch as DuckRecordBatch,
+};
 use firn_contract::ObservedSchema;
 use firn_kernel::{
     Batch, BatchId, FileManifest, FilePosition, FirnError, ResourceDescriptor, Result,
@@ -22,14 +27,6 @@ use crate::schema::schema_hash;
 use crate::{CsvOptions, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions};
 
 pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
-    if matches!(source.format, FileFormat::Parquet) {
-        return Err(FirnError::contract(
-            "Parquet file source support is blocked by supply-chain policy: arrow-rs parquet currently pulls RUSTSEC-2024-0436 through paste",
-        ));
-    }
-
-    let bytes = fs::read(&source.path)
-        .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
     let position = file_source_position(&source.path)?;
     let scope = ScopeKey::File {
         path: path_string(&source.path)?,
@@ -37,31 +34,47 @@ pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
 
     match &source.format {
         FileFormat::Csv(options) => {
+            let bytes = fs::read(&source.path)
+                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
             read_csv_bytes_with_scope(&bytes, &source.options, options, scope, Some(position))
         }
         FileFormat::Json(options) => {
+            let bytes = fs::read(&source.path)
+                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
             read_json_bytes_with_scope(&bytes, &source.options, options, scope, Some(position))
         }
         FileFormat::Ndjson(options) => {
+            let bytes = fs::read(&source.path)
+                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
             read_ndjson_bytes_with_scope(&bytes, &source.options, options, scope, Some(position))
         }
-        FileFormat::Parquet => unreachable!("Parquet support returns before file reads"),
+        FileFormat::Parquet => {
+            read_parquet_file_with_scope(&source.path, &source.options, scope, Some(position))
+        }
     }
 }
 
 pub fn read_arrow_ipc_stream<R: Read>(reader: R, options: &ReadOptions) -> Result<FormatRead> {
-    let mut reader = StreamReader::try_new(reader, None).map_err(FirnError::from)?;
-    let schema = reader.schema();
-    let record_batches = collect_record_batches(&mut reader)?;
-    build_output(
-        schema,
-        record_batches,
+    read_arrow_ipc_stream_with_scope(
+        reader,
         options,
         ScopeKey::Stream {
             name: "arrow_ipc_stdout".to_owned(),
         },
         None,
     )
+}
+
+fn read_arrow_ipc_stream_with_scope<R: Read>(
+    reader: R,
+    options: &ReadOptions,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    let mut reader = StreamReader::try_new(reader, None).map_err(FirnError::from)?;
+    let schema = reader.schema();
+    let record_batches = collect_record_batches(&mut reader)?;
+    build_output(schema, record_batches, options, scope, position)
 }
 
 pub fn read_csv_bytes(
@@ -147,6 +160,52 @@ fn read_ndjson_bytes_with_scope(
         .map_err(FirnError::from)?;
     let record_batches = collect_record_batches(&mut reader)?;
     build_output(schema, record_batches, options, scope, position)
+}
+
+fn read_parquet_file_with_scope(
+    path: &Path,
+    options: &ReadOptions,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    let (schema, record_batches) = read_duckdb_parquet_batches(path)?;
+    let ipc_bytes = duckdb_arrow_batches_to_ipc(schema, &record_batches)?;
+    read_arrow_ipc_stream_with_scope(Cursor::new(ipc_bytes), options, scope, position)
+}
+
+fn read_duckdb_parquet_batches(path: &Path) -> Result<(DuckSchemaRef, Vec<DuckRecordBatch>)> {
+    let path = path_string(path)?;
+    let conn = Connection::open_in_memory()
+        .map_err(|error| duckdb_data_error("open in-memory DuckDB Parquet reader", error))?;
+    let mut statement = conn
+        .prepare("SELECT * FROM read_parquet(?)")
+        .map_err(|error| duckdb_data_error("prepare DuckDB Parquet reader", error))?;
+    let mut arrow = statement
+        .query_arrow([path.as_str()])
+        .map_err(|error| duckdb_data_error("read DuckDB Parquet file", error))?;
+    let schema = arrow.get_schema();
+    let record_batches = arrow.by_ref().collect();
+    Ok((schema, record_batches))
+}
+
+fn duckdb_arrow_batches_to_ipc(
+    schema: DuckSchemaRef,
+    record_batches: &[DuckRecordBatch],
+) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    {
+        let mut writer = DuckStreamWriter::try_new(&mut bytes, schema.as_ref())
+            .map_err(|error| duckdb_arrow_data_error("create DuckDB Arrow IPC stream", error))?;
+        for record_batch in record_batches {
+            writer
+                .write(record_batch)
+                .map_err(|error| duckdb_arrow_data_error("write DuckDB Arrow IPC stream", error))?;
+        }
+        writer
+            .finish()
+            .map_err(|error| duckdb_arrow_data_error("finish DuckDB Arrow IPC stream", error))?;
+    }
+    Ok(bytes)
 }
 
 fn build_output(
@@ -268,6 +327,14 @@ fn path_string(path: &Path) -> Result<String> {
 }
 
 fn io_data_error(context: impl Into<String>, error: std::io::Error) -> FirnError {
+    FirnError::data(format!("{}: {error}", context.into()))
+}
+
+fn duckdb_data_error(context: impl Into<String>, error: duckdb::Error) -> FirnError {
+    FirnError::data(format!("{}: {error}", context.into()))
+}
+
+fn duckdb_arrow_data_error(context: impl Into<String>, error: impl std::fmt::Display) -> FirnError {
     FirnError::data(format!("{}: {error}", context.into()))
 }
 

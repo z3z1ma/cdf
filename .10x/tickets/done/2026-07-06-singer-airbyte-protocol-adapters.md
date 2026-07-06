@@ -28,7 +28,7 @@ Record tests for Singer schema/record/state parsing, Airbyte catalog/record/lega
 
 ## Explicit exclusions
 
-No `firn package archive`, Parquet transcode, Airbyte destination support, full connector lifecycle, external process invocation contract changes, or state migration UI. Parquet archive work remains gated by `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md` or a later ratified policy/alternative writer.
+No `firn package archive`, Parquet transcode, Airbyte destination support, full connector lifecycle, external process invocation contract changes, or state migration UI. Parquet archive work remains gated by `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md` or a later ratified policy/alternative writer.
 
 ## References
 

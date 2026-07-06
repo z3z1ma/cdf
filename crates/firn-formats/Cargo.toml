@@ -6,11 +6,13 @@ license.workspace = true
 description = "External data format boundary for firn."
 
 [dependencies]
+duckdb-arrow = { package = "arrow", version = "58.3.0", default-features = false, features = ["ipc"] }
 arrow-array = "59.0.0"
 arrow-csv = "59.0.0"
 arrow-ipc = { version = "59.0.0", features = ["lz4"] }
 arrow-json = "59.0.0"
 arrow-schema = "59.0.0"
+duckdb = { version = "1.10504.0", features = ["bundled", "parquet"] }
 firn-contract = { path = "../firn-contract" }
 firn-kernel = { path = "../firn-kernel" }
 hex = "0.4.3"

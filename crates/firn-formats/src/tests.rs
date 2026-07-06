@@ -4,10 +4,11 @@ use std::{
     collections::{BTreeMap, HashMap},
     fs,
     io::Cursor,
+    path::Path,
     sync::Arc,
 };
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use firn_contract::{ContractPolicy, NORMALIZER_NAMECASE_V1};
@@ -47,6 +48,11 @@ fn record_batches(read: &FormatRead) -> Vec<RecordBatch> {
         .iter()
         .map(|batch| batch.record_batch().unwrap().clone())
         .collect()
+}
+
+fn write_parquet_file(path: &Path, batches: &[RecordBatch]) {
+    let bytes = firn_package::transcode_record_batches_to_parquet_bytes(batches).unwrap();
+    fs::write(path, bytes).unwrap();
 }
 
 #[test]
@@ -141,18 +147,83 @@ fn csv_and_json_file_sources_produce_descriptors_and_batches() {
     ))
     .unwrap();
     assert_eq!(json.batches[0].header.row_count, 2);
+
+    let json_object_path = temp.path().join("single-order.json");
+    fs::write(&json_object_path, r#"{"id":3,"name":"alan"}"#).unwrap();
+    let json_object = read_file_source(&FileSource::new(
+        &json_object_path,
+        FileFormat::Json(JsonOptions::default()),
+        options("single_order_json", "file"),
+    ))
+    .unwrap();
+    assert_eq!(json_object.batches[0].header.row_count, 1);
 }
 
 #[test]
-fn parquet_file_source_reports_supply_chain_blocker() {
-    let error = read_file_source(&FileSource::new(
-        "orders.parquet",
+fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("orders.parquet");
+    write_parquet_file(&parquet_path, &[sample_batch()]);
+
+    let read = read_file_source(&FileSource::new(
+        &parquet_path,
         FileFormat::Parquet,
         options("orders_parquet", "file"),
     ))
-    .unwrap_err();
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.message.contains("RUSTSEC-2024-0436"));
+    .unwrap();
+
+    assert_eq!(
+        read.descriptor.schema_source,
+        SchemaSource::Discovered {
+            schema_hash: Some(read.schema_hash.clone())
+        }
+    );
+    assert!(matches!(read.descriptor.state_scope, ScopeKey::File { .. }));
+    assert_eq!(
+        read.batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .sum::<u64>(),
+        3
+    );
+    assert_eq!(
+        read.batches[0].header.observed_schema_hash,
+        read.schema_hash
+    );
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.num_columns(), 2);
+    assert_eq!(batch.schema().field(0).name(), "id");
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int64);
+    assert_eq!(batch.schema().field(1).name(), "name");
+    assert_eq!(batch.schema().field(1).data_type(), &DataType::Utf8);
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    let names = batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!([ids.value(0), ids.value(1), ids.value(2)], [1, 2, 3]);
+    assert_eq!(names.value(0), "ada");
+    assert!(names.is_null(1));
+    assert_eq!(names.value(2), "grace");
+
+    let SourcePosition::FileManifest(manifest) =
+        read.batches[0].header.source_position.as_ref().unwrap()
+    else {
+        panic!("Parquet file source should set a file manifest position");
+    };
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(manifest.files[0].path, parquet_path.to_str().unwrap());
+    assert_eq!(
+        manifest.files[0].size_bytes,
+        fs::metadata(&parquet_path).unwrap().len()
+    );
+    assert_eq!(manifest.files[0].sha256.as_ref().unwrap().len(), 64);
 }
 
 #[test]
@@ -178,17 +249,30 @@ fn malformed_inputs_map_to_data_errors() {
     )
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Data);
+
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("bad.parquet");
+    fs::write(&parquet_path, b"not parquet").unwrap();
+    let error = read_file_source(&FileSource::new(
+        &parquet_path,
+        FileFormat::Parquet,
+        options("bad_parquet", "file"),
+    ))
+    .unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.message.contains("read DuckDB Parquet file"));
 }
 
 #[test]
-fn adapter_output_can_be_packaged_and_replayed_like_native_output() {
-    let read = read_ndjson_bytes(
-        br#"{"id":1,"name":"ada"}
-{"id":2,"name":"grace"}
-"#,
-        &options("orders", "p0"),
-        &JsonOptions::default(),
-    )
+fn parquet_source_output_can_be_packaged_and_replayed_like_native_output() {
+    let parquet_source = tempfile::tempdir().unwrap();
+    let parquet_path = parquet_source.path().join("orders.parquet");
+    write_parquet_file(&parquet_path, &[sample_batch()]);
+    let read = read_file_source(&FileSource::new(
+        &parquet_path,
+        FileFormat::Parquet,
+        options("orders", "p0"),
+    ))
     .unwrap();
     let temp = tempfile::tempdir().unwrap();
     let mut builder = firn_package::PackageBuilder::create(temp.path(), "pkg-formats").unwrap();
@@ -211,7 +295,7 @@ fn adapter_output_can_be_packaged_and_replayed_like_native_output() {
         .read_segment(&SegmentId::new("seg-formats").unwrap())
         .unwrap();
 
-    assert_eq!(manifest.identity.segments[0].row_count, 2);
+    assert_eq!(manifest.identity.segments[0].row_count, 3);
     assert_eq!(
         replayed[0].schema().as_ref(),
         record_batches(&read)[0].schema().as_ref()

@@ -1,13 +1,13 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-declarative-resources.md, .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/2026-07-06-parquet-format-source-supply-chain.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
+Relates-To: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-declarative-resources.md, .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Engine, declarative, formats, and subprocess quality gates
 
 ## What was observed
 
-The engine, declarative resource compiler, formats adapters, and subprocess adapter batch passed the applicable workspace quality gates after the Parquet source reader was split to `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md`.
+The engine, declarative resource compiler, formats adapters, and subprocess adapter batch passed the applicable workspace quality gates after the Parquet source reader was split to `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`.
 
 The reusable CodeQL database was created at `target/quality/codeql-db-rust` for this source/dependency state and analyzed in place. Future quality passes should reuse this directory unless Rust source, dependency resolution, or CodeQL tooling has changed enough to require rebuilding the database.
 

@@ -1571,11 +1571,13 @@ dependencies = [
 name = "firn-formats"
 version = "0.1.0"
 dependencies = [
+ "arrow",
  "arrow-array 59.0.0",
  "arrow-csv 59.0.0",
  "arrow-ipc 59.0.0",
  "arrow-json 59.0.0",
  "arrow-schema 59.0.0",
+ "duckdb",
  "firn-contract",
  "firn-kernel",
  "firn-package",

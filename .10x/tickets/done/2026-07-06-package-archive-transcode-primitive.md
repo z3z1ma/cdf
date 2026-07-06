@@ -37,7 +37,7 @@ No `firn-cli` command surface, no archive file placement, no manifest archive me
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`
-- `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md`
+- `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`
 - `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`
 
 ## Progress and notes

@@ -36,7 +36,7 @@ Airbyte protocol facts are stable enough for a parser slice:
 
 Open a focused child ticket for Singer/Airbyte protocol parsing and `ForeignState` mapping in `firn-subprocess`. The child can use existing JSON and Arrow/NDJSON machinery, add no Parquet dependency, and preserve the crate-organization convention by using focused modules rather than growing `src/lib.rs`.
 
-Do not include `firn package archive` in that child. Archive Parquet transcode remains blocked by `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md` or by a later ratified supply-chain policy/alternative writer.
+Do not include `firn package archive` in that child. Archive Parquet transcode remains blocked by `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md` or by a later ratified supply-chain policy/alternative writer.
 
 ## Limits
 

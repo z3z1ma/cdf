@@ -9,7 +9,7 @@ Relates-To: .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/specs/r
 
 `firn-formats` now reads Arrow IPC streams, NDJSON, CSV, and JSON object/array files into existing `firn-kernel::Batch` values with `ResourceDescriptor`, observed schema, and deterministic local schema hash population. NDJSON inference is routed through `firn-contract::ObservedSchema` and `compile_validation_program`, so row-shaped JSON feeds the same contract-observed schema path as other Arrow-backed inputs.
 
-Parquet file-source support was attempted with `parquet = "59.0.0"` and then removed before closure because `cargo deny check advisories` and OSV reported `RUSTSEC-2024-0436` through its unconditional `paste` dependency. The unresolved Parquet reader requirement is owned by `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md`; `FileFormat::Parquet` currently returns a contract error that names the supply-chain blocker.
+Parquet file-source support was attempted with `parquet = "59.0.0"` and then removed before closure because `cargo deny check advisories` and OSV reported `RUSTSEC-2024-0436` through its unconditional `paste` dependency. The unresolved Parquet reader requirement is owned by `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`; `FileFormat::Parquet` currently returns a contract error that names the supply-chain blocker.
 
 `firn-subprocess` now supervises OS subprocess adapters for Arrow IPC and NDJSON stdout. It captures bounded stderr trace lines, maps nonzero exits and timeouts to the shared `Transient` taxonomy, and preserves parser/malformed-output failures as `Data` errors with stderr context.
 
