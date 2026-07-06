@@ -1,5 +1,6 @@
 """Typed authoring surface for firn Python resources."""
 
+from . import dlt as dlt
 from .context import Context, CursorView, HttpClient, HttpResponse, Logger, SecretProvider
 from .resource import (
     ArrowArrayExport,
@@ -24,5 +25,6 @@ __all__ = [
     "ResourceYield",
     "Row",
     "SecretProvider",
+    "dlt",
     "resource",
 ]

@@ -58,6 +58,16 @@ impl PythonBridgeOptions {
         Ok(self)
     }
 
+    pub fn with_resource_id(mut self, resource_id: ResourceId) -> Self {
+        self.resource_id = resource_id;
+        self.batch_id_prefix = format!(
+            "{}-{}",
+            sanitize_id_part(self.resource_id.as_str()),
+            sanitize_id_part(self.partition_id.as_str())
+        );
+        self
+    }
+
     fn read_options(&self) -> Result<ReadOptions> {
         ReadOptions::new(self.resource_id.clone(), self.partition_id.clone())
             .with_batch_id_prefix(self.batch_id_prefix.clone())?
@@ -296,6 +306,83 @@ impl PythonResourceBridge {
         Ok(read)
     }
 
+    pub fn batches_from_dlt_resource(&self, resource: &Bound<'_, PyAny>) -> Result<DltShimRead> {
+        let metadata = extract_dlt_metadata(resource)?.ok_or_else(|| {
+            FirnError::contract(
+                "dlt preview requires firn dlt shim metadata on the resource object",
+            )
+        })?;
+        if metadata.kind != DltShimObjectKind::Resource {
+            return Err(FirnError::contract(
+                "dlt preview expected resource metadata; use batches_from_dlt_source for sources",
+            ));
+        }
+        let bridge = self.bridge_for_dlt_metadata(&metadata)?;
+        let iterable = materialize_dlt_resource(resource)?;
+        let mut read = bridge.batches_from_python_iterable(&iterable)?;
+        if let Some(descriptor) = read.descriptor.as_mut() {
+            metadata.apply_to_descriptor(descriptor)?;
+        }
+        Ok(DltShimRead {
+            migration_table: metadata.migration_table(),
+            metadata,
+            read,
+        })
+    }
+
+    pub fn batches_from_dlt_source(&self, source: &Bound<'_, PyAny>) -> Result<Vec<DltShimRead>> {
+        let source_metadata = extract_dlt_metadata(source)?;
+        if let Some(metadata) = &source_metadata
+            && metadata.kind == DltShimObjectKind::Resource
+        {
+            return self
+                .batches_from_dlt_resource(source)
+                .map(|read| vec![read]);
+        }
+        let source_name = source_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.resource_id_hint())
+            .map(ToOwned::to_owned);
+
+        let source_output = if source.hasattr("__call__").map_err(py_error)? {
+            source.call0().map_err(py_error)?
+        } else {
+            source.clone()
+        };
+        if let Some(metadata) = extract_dlt_metadata(&source_output)?
+            && metadata.kind == DltShimObjectKind::Resource
+        {
+            let mut read = self.batches_from_dlt_resource(&source_output)?;
+            if read.metadata.source_name.is_none() {
+                read.metadata.source_name.clone_from(&source_name);
+            }
+            return Ok(vec![read]);
+        }
+
+        let mut reads = Vec::new();
+        let iterator = source_output.try_iter().map_err(py_error)?;
+        for item in iterator {
+            let item = item.map_err(py_error)?;
+            let mut read = self.batches_from_dlt_resource(&item)?;
+            if read.metadata.source_name.is_none() {
+                read.metadata.source_name.clone_from(&source_name);
+            }
+            reads.push(read);
+        }
+        Ok(reads)
+    }
+
+    fn bridge_for_dlt_metadata(&self, metadata: &DltShimMetadata) -> Result<Self> {
+        let Some(resource_id) = metadata.resource_id_hint() else {
+            return Ok(self.clone());
+        };
+        Ok(Self::new(
+            self.options
+                .clone()
+                .with_resource_id(ResourceId::new(resource_id)?),
+        ))
+    }
+
     fn flush_json_rows(
         &self,
         json_rows: &mut Vec<String>,
@@ -322,6 +409,14 @@ impl PythonResourceBridge {
             &self.options,
             next_batch_index,
         )
+    }
+}
+
+fn materialize_dlt_resource<'py>(resource: &Bound<'py, PyAny>) -> Result<Bound<'py, PyAny>> {
+    if resource.hasattr("__call__").map_err(py_error)? {
+        resource.call0().map_err(py_error)
+    } else {
+        Ok(resource.clone())
     }
 }
 

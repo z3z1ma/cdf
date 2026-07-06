@@ -78,4 +78,4 @@ No evidence challenged the implemented scope after the PyO3 0.28 dependency was 
 
 The local interpreter is a GIL-enabled CPython build, so actual free-threaded parallel execution could not be witnessed locally. The local Python environment does not have `pyarrow`, so the test that would exercise a Python-library `__arrow_c_stream__` yield returns early when `pyarrow` is unavailable; the Rust import path still compiles through `pyo3-arrow` and is covered by boundary detection/model tests. This evidence therefore supports local GIL correctness, typed SDK cleanliness, dependency safety, and modeled free-threaded semantics, but not measured free-threaded wall-clock parallelism on a 3.14t interpreter.
 
-After moving the ticket to `done`, a scoped reference search still found old-path references in `.10x/tickets/2026-07-05-implement-firn-system.md` and `.10x/tickets/2026-07-05-dlt-shim-preview.md`. Those records are outside this worker's write boundary and were not edited.
+After moving the ticket to `done`, a scoped worker found old-path references outside its write boundary. Later parent record maintenance repaired the live parent and dlt ticket references.

@@ -24,7 +24,7 @@ Record Rust/Python integration tests, pyright output, deterministic hash compari
 
 ## Explicit exclusions
 
-dlt shim preview is owned by `.10x/tickets/2026-07-05-dlt-shim-preview.md`.
+dlt shim preview is owned by `.10x/tickets/done/2026-07-05-dlt-shim-preview.md`.
 
 ## Progress and notes
 

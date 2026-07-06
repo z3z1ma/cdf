@@ -33,4 +33,4 @@ Pass. The implementation satisfies the ticket with focused surfaces in `crates/f
 
 Actual free-threaded parallel execution and Python-library PyCapsule import should be re-run on an environment with a 3.14t interpreter and an Arrow-producing Python library such as `pyarrow` or `arro3-core`. This is a verification-environment limit, not an implementation blocker for the current local ticket because the bridge avoids unratified runtime behavior and records the limit in evidence.
 
-After the ticket was moved to `done`, old-path references remained in `.10x/tickets/2026-07-05-implement-firn-system.md` and `.10x/tickets/2026-07-05-dlt-shim-preview.md`. They were left unchanged because this worker's write boundary excluded parent and sibling tickets.
+After the ticket was moved to `done`, a scoped worker left some parent/sibling references unchanged because its write boundary excluded those records. Later parent record maintenance repaired the live parent and dlt ticket references.

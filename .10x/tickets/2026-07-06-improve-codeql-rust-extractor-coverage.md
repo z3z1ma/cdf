@@ -28,6 +28,7 @@ No product behavior changes. No suppressing CodeQL findings. No generated baseli
 ## Progress and notes
 
 - 2026-07-06: Opened after final quality evidence for the project/Python/DuckDB/Postgres batch showed 0 CodeQL SARIF findings but poor extractor metrics: 41 Rust files extracted with errors and 9 without errors, mostly generic macro expansion diagnostics for standard and third-party macros. The earlier `include!`-specific failures were fixed by `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`.
+- 2026-07-06: CLI/dlt/crate-split quality refreshed the reusable database at `target/quality/codeql-db-rust` only after source files were newer than the existing DB. Analysis still produced 0 non-diagnostic findings, but extractor metrics were 113 Rust files scanned, 80 extracted with errors, and 33 without errors. This reinforces the need to improve or explicitly accept the local Rust extractor coverage limit.
 
 ## Blockers
 

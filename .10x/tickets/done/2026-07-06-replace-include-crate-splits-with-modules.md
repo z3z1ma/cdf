@@ -30,7 +30,7 @@ Record focused fmt/test/clippy output and CodeQL extraction-log evidence.
 
 ## Explicit exclusions
 
-No behavioral changes, no dependency changes, no `.gitignore` changes, no edits to older monolithic crate roots already owned by `.10x/tickets/2026-07-06-split-existing-rust-crate-roots.md`.
+No behavioral changes, no dependency changes, no `.gitignore` changes, no edits to older monolithic crate roots already owned by `.10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md`.
 
 ## Progress and notes
 

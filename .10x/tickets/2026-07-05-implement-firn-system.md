@@ -49,7 +49,7 @@ MVP authoring, destinations, and product surface:
 - `.10x/tickets/2026-07-05-cli-surface.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
-- `.10x/tickets/2026-07-05-dlt-shim-preview.md`
+- `.10x/tickets/done/2026-07-05-dlt-shim-preview.md`
 
 Fast-follow and full-system completion:
 
@@ -60,7 +60,7 @@ Fast-follow and full-system completion:
 - `.10x/tickets/2026-07-05-lakehouse-warehouse-and-vault.md`
 - `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`
 - `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`
-- `.10x/tickets/2026-07-06-split-existing-rust-crate-roots.md`
+- `.10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md`
 - `.10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md`
 
 ## Acceptance criteria
@@ -92,8 +92,9 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: DataFusion engine, declarative resources, and formats/subprocess core child tickets closed with evidence and reviews. Parquet file-source support was split to `.10x/tickets/2026-07-06-parquet-format-source-supply-chain.md` after scanners showed the direct arrow-rs `parquet` crate would introduce `RUSTSEC-2024-0436` through `paste`.
 - 2026-07-06: Project format/secrets, Python SDK/bridge, and DuckDB destination child tickets closed with evidence and reviews. Postgres destination has a deterministic planning/SQL/receipt surface but remains blocked until live Postgres execution evidence or a superseding planning-only decision exists.
 - 2026-07-06: User ratified a crate-organization convention to avoid monolithic `lib.rs` files where possible. Recorded in `.10x/knowledge/rust-crate-organization.md`; split the new project, Python, DuckDB, and Postgres crate roots with verification in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
-- 2026-07-06: Opened `.10x/tickets/2026-07-06-split-existing-rust-crate-roots.md` for older large crate roots from earlier child tickets so the convention is not lost.
+- 2026-07-06: Opened `.10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md` for older large crate roots from earlier child tickets so the convention is not lost; it later closed after child split tickets completed.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`; the new project, Python, DuckDB, and Postgres crate roots now use ordinary Rust modules rather than `include!` maps. Consolidated quality evidence for the batch is `.10x/evidence/2026-07-06-project-python-destinations-quality-gates.md`. Remaining local CodeQL extractor-quality work is owned by `.10x/tickets/2026-07-06-improve-codeql-rust-extractor-coverage.md`.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-05-dlt-shim-preview.md` with scoped preview shim evidence and review. Closed `.10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md` after splitting the remaining large Rust crate roots into ordinary modules. CLI has a practical command surface but remains blocked on lower-layer runtime APIs. Consolidated quality evidence for this commit batch is `.10x/evidence/2026-07-06-cli-dlt-crate-splits-quality-gates.md`.
 
 ## Blockers
 

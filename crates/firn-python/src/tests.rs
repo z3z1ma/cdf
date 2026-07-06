@@ -9,7 +9,11 @@ use arrow_array::{ArrayRef, Int64Array, StringArray};
 use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use firn_http::{EgressAllowlist, HeaderMap, HttpMethod, SecretValue};
-use firn_kernel::{ErrorKind, PageToken};
+use firn_kernel::{
+    CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
+    CursorOrderingClaim, CursorValue, ErrorKind, PackageHash, PageToken, PipelineId, Receipt,
+    RewindReport, RewindRequest, SchemaHash, SegmentId, StateDelta, StateSegment,
+};
 use pyo3::types::PyList;
 
 fn bridge() -> PythonResourceBridge {
@@ -359,4 +363,271 @@ fn can_read_back_hash_from_arrow_ipc_bytes() {
     .unwrap();
 
     assert_eq!(imported.batches[0].header.row_count, 1);
+}
+
+#[test]
+fn dlt_resource_metadata_maps_to_firn_descriptor_and_snapshot() {
+    Python::attach(|py| {
+        let module = PyModule::from_code(
+            py,
+            c"
+def orders():
+    yield {'id': 1, 'region': 'us', 'updated_at': '2026-07-01T00:00:00Z'}
+
+orders.__firn_dlt_metadata__ = {
+    'kind': 'resource',
+    'name': 'orders',
+    'primary_key': 'id',
+    'merge_key': ('id', 'region'),
+    'write_disposition': {'disposition': 'merge', 'strategy': 'scd2'},
+    'schema_contract': 'freeze',
+    'incremental': {
+        'cursor_path': 'updated_at',
+        'initial_value': '2026-01-01T00:00:00Z',
+        'row_order': 'desc',
+        'lag_tolerance_ms': 5000,
+    },
+    'selected': True,
+}
+",
+            c"dlt_fixture.py",
+            c"dlt_fixture",
+        )
+        .unwrap();
+        let resource = module.getattr("orders").unwrap();
+        let preview = bridge().batches_from_dlt_resource(&resource).unwrap();
+        let descriptor = preview.read.descriptor.as_ref().unwrap();
+
+        assert_eq!(descriptor.resource_id.as_str(), "orders");
+        assert_eq!(descriptor.primary_key, vec!["id"]);
+        assert_eq!(descriptor.merge_key, vec!["id", "region"]);
+        assert_eq!(
+            descriptor.cursor.as_ref().unwrap().field.as_str(),
+            "updated_at"
+        );
+        assert_eq!(
+            descriptor.cursor.as_ref().unwrap().ordering,
+            CursorOrderingClaim::Inexact
+        );
+        assert_eq!(descriptor.cursor.as_ref().unwrap().lag_tolerance_ms, 5000);
+        assert_eq!(descriptor.write_disposition, WriteDisposition::Merge);
+        assert_eq!(
+            descriptor.contract.as_ref().unwrap().as_str(),
+            "dlt-orders-freeze"
+        );
+        assert_eq!(descriptor.state_scope, ScopeKey::Resource);
+        assert_eq!(preview.read.row_count(), 1);
+
+        let snapshot = serde_json::to_string_pretty(&preview.migration_table).unwrap();
+        assert!(snapshot.contains("primary_key"));
+        assert!(snapshot.contains("write_disposition.strategy"));
+        assert!(snapshot.contains("dlt destination delegation"));
+    });
+}
+
+#[test]
+fn dlt_source_functions_expand_to_resource_reads() {
+    Python::attach(|py| {
+        let module = PyModule::from_code(
+            py,
+            c"
+def users():
+    yield {'id': 1, 'name': 'ada'}
+
+users.__firn_dlt_metadata__ = {
+    'kind': 'resource',
+    'name': 'users',
+    'primary_key': 'id',
+    'write_disposition': 'merge',
+    'selected': True,
+}
+
+def crm():
+    return [users]
+
+crm.__firn_dlt_metadata__ = {
+    'kind': 'source',
+    'name': 'crm',
+}
+",
+            c"dlt_source_fixture.py",
+            c"dlt_source_fixture",
+        )
+        .unwrap();
+        let source = module.getattr("crm").unwrap();
+        let reads = bridge().batches_from_dlt_source(&source).unwrap();
+
+        assert_eq!(reads.len(), 1);
+        assert_eq!(reads[0].metadata.source_name.as_deref(), Some("crm"));
+        assert_eq!(
+            reads[0]
+                .read
+                .descriptor
+                .as_ref()
+                .unwrap()
+                .resource_id
+                .as_str(),
+            "users"
+        );
+        assert_eq!(
+            reads[0].read.descriptor.as_ref().unwrap().merge_key,
+            vec!["id"]
+        );
+        assert_eq!(reads[0].read.row_count(), 1);
+    });
+}
+
+#[test]
+fn dlt_current_state_view_reads_committed_checkpoint_heads() {
+    let pipeline_id = PipelineId::new("pipeline").unwrap();
+    let resource_id = ResourceId::new("orders").unwrap();
+    let metadata = DltShimMetadata {
+        kind: DltShimObjectKind::Resource,
+        name: Some("orders".to_owned()),
+        table_name: None,
+        source_name: Some("crm".to_owned()),
+        primary_key: Some(vec!["id".to_owned()]),
+        merge_key: None,
+        incremental: None,
+        write_disposition: None,
+        schema_contract: None,
+        selected: true,
+        parallelized: false,
+    };
+    let resource_position = fixture_state_delta_position(
+        "updated_at",
+        CursorValue::String("2026-07-01T00:00:00Z".to_owned()),
+    );
+    let source_position = fixture_dlt_foreign_state(&serde_json::json!({
+        "field_names": {"cf_1": "Customer Field"}
+    }))
+    .unwrap();
+    let store = FixtureCheckpointStore {
+        checkpoints: vec![
+            checkpoint_fixture(
+                "resource-head",
+                pipeline_id.clone(),
+                resource_id.clone(),
+                ScopeKey::Resource,
+                resource_position,
+            ),
+            checkpoint_fixture(
+                "source-head",
+                pipeline_id.clone(),
+                resource_id.clone(),
+                ScopeKey::Stream {
+                    name: "dlt_source:crm".to_owned(),
+                },
+                source_position,
+            ),
+        ],
+    };
+
+    let view = dlt_current_state_view(&store, pipeline_id, resource_id, &metadata).unwrap();
+
+    assert_eq!(
+        view.resource_state["last_value"],
+        serde_json::json!("2026-07-01T00:00:00Z")
+    );
+    assert_eq!(
+        view.source_state.as_ref().unwrap()["field_names"]["cf_1"],
+        serde_json::json!("Customer Field")
+    );
+    assert!(view.note.contains("committed Firn checkpoint heads"));
+}
+
+struct FixtureCheckpointStore {
+    checkpoints: Vec<Checkpoint>,
+}
+
+impl CheckpointStore for FixtureCheckpointStore {
+    fn propose(&self, _delta: StateDelta) -> Result<Checkpoint> {
+        Err(FirnError::internal("fixture store does not propose"))
+    }
+
+    fn commit(&self, _checkpoint_id: &CheckpointId, _receipt: Receipt) -> Result<Checkpoint> {
+        Err(FirnError::internal("fixture store does not commit"))
+    }
+
+    fn abandon(&self, _checkpoint_id: &CheckpointId) -> Result<Checkpoint> {
+        Err(FirnError::internal("fixture store does not abandon"))
+    }
+
+    fn head(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Option<Checkpoint>> {
+        Ok(self
+            .checkpoints
+            .iter()
+            .find(|checkpoint| {
+                checkpoint.delta.pipeline_id == *pipeline_id
+                    && checkpoint.delta.resource_id == *resource_id
+                    && checkpoint.delta.scope == *scope
+                    && checkpoint.is_head
+            })
+            .cloned())
+    }
+
+    fn history(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Vec<Checkpoint>> {
+        Ok(self
+            .checkpoints
+            .iter()
+            .filter(|checkpoint| {
+                checkpoint.delta.pipeline_id == *pipeline_id
+                    && checkpoint.delta.resource_id == *resource_id
+                    && checkpoint.delta.scope == *scope
+            })
+            .cloned()
+            .collect())
+    }
+
+    fn rewind(&self, _request: RewindRequest) -> Result<RewindReport> {
+        Err(FirnError::internal("fixture store does not rewind"))
+    }
+}
+
+fn checkpoint_fixture(
+    checkpoint_id: &str,
+    pipeline_id: PipelineId,
+    resource_id: ResourceId,
+    scope: ScopeKey,
+    output_position: SourcePosition,
+) -> Checkpoint {
+    let segment = StateSegment {
+        segment_id: SegmentId::new(format!("{checkpoint_id}-segment")).unwrap(),
+        scope: scope.clone(),
+        output_position: output_position.clone(),
+        row_count: 1,
+        byte_count: 1,
+    };
+    let delta = StateDelta {
+        checkpoint_id: CheckpointId::new(checkpoint_id).unwrap(),
+        pipeline_id,
+        resource_id,
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position,
+        package_hash: PackageHash::new(format!("{checkpoint_id}-package")).unwrap(),
+        schema_hash: SchemaHash::new(format!("{checkpoint_id}-schema")).unwrap(),
+        segments: vec![segment],
+    };
+    Checkpoint {
+        delta,
+        status: CheckpointStatus::Committed,
+        receipt: None,
+        is_head: true,
+        created_at_ms: 1,
+        committed_at_ms: Some(2),
+        rewind_target_checkpoint_id: None,
+    }
 }
