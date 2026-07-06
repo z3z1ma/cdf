@@ -1,0 +1,34 @@
+Status: open
+Created: 2026-07-06
+Updated: 2026-07-06
+Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Depends-On: None
+
+# Ratify supply-chain policy gates
+
+## Scope
+
+Define and implement the repository policy needed for supply-chain quality gates that the security specification expects: `cargo-deny` policy, cargo-vet adoption decision, and how license/source/advisory checks are run locally and in CI. Owns only policy/configuration files required for these gates, such as `deny.toml`, `supply-chain/**`, and follow-on documentation or CI wiring when explicitly in scope.
+
+## Acceptance criteria
+
+- A ratified license/source/advisory policy exists for `cargo deny check`, including explicit handling of Apache-2.0, MIT, Unicode, BSD, LLVM-exception, and other licenses present in the current dependency graph.
+- The project either initializes cargo-vet metadata with a concrete audit/exemption policy or records an active decision deferring cargo-vet adoption.
+- The selected gates run without policy-configuration failures on the current workspace.
+- The policy does not weaken vulnerability, source, or license checks merely to make tools pass.
+
+## Evidence expectations
+
+Record `cargo deny check`, `cargo audit`, and cargo-vet or cargo-vet-decision evidence after the policy is implemented.
+
+## Explicit exclusions
+
+No opportunistic dependency upgrades, no broad `cargo update`, no CI workflow changes unless the ticket is explicitly expanded or a child ticket is opened.
+
+## Progress and notes
+
+- 2026-07-06: Opened from kernel QUALITY verification. `cargo deny check advisories` passed with default config, but full `cargo deny check` failed because no `deny.toml` exists and the default config has no allowed-license list, rejecting even Apache-2.0/MIT project and dependency licenses. `cargo vet` reported that `supply-chain/` is not initialized.
+
+## Blockers
+
+- License/source policy and cargo-vet adoption are unratified.

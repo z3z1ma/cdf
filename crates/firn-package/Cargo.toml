@@ -1,0 +1,8 @@
+[package]
+name = "firn-package"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Package builder and reader boundary for firn."
+
+[dependencies]

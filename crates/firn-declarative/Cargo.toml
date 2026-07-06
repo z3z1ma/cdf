@@ -1,0 +1,8 @@
+[package]
+name = "firn-declarative"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Declarative resource authoring boundary for firn."
+
+[dependencies]

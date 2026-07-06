@@ -1,0 +1,8 @@
+[package]
+name = "firn-dest-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Postgres destination boundary for firn."
+
+[dependencies]

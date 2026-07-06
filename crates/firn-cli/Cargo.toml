@@ -1,0 +1,8 @@
+[package]
+name = "firn-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line entry point for firn."
+
+[dependencies]

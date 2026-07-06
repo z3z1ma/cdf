@@ -1,0 +1,8 @@
+[package]
+name = "firn-formats"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "External data format boundary for firn."
+
+[dependencies]

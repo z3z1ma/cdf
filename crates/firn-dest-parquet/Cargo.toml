@@ -1,0 +1,8 @@
+[package]
+name = "firn-dest-parquet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Parquet object-store destination boundary for firn."
+
+[dependencies]

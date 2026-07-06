@@ -1,0 +1,15 @@
+[package]
+name = "firn-kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Core types, traits, and artifact contracts for firn."
+
+[dependencies]
+arrow-array = "59.0.0"
+arrow-schema = "59.0.0"
+futures-core = "0.3.32"
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.150"

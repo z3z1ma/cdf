@@ -1,0 +1,26 @@
+[workspace]
+members = [
+    "crates/firn-kernel",
+    "crates/firn-engine",
+    "crates/firn-contract",
+    "crates/firn-package",
+    "crates/firn-state-sqlite",
+    "crates/firn-http",
+    "crates/firn-formats",
+    "crates/firn-declarative",
+    "crates/firn-python",
+    "crates/firn-wasm",
+    "crates/firn-subprocess",
+    "crates/firn-dest-duckdb",
+    "crates/firn-dest-parquet",
+    "crates/firn-dest-postgres",
+    "crates/firn-project",
+    "crates/firn-cli",
+    "crates/firn-conformance",
+]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
