@@ -93,8 +93,8 @@ Results:
 - `cargo doc --workspace --all-features --no-deps --locked` exited 0.
 - `cargo machete` exited 0 with no unused dependency candidates.
 - `cargo audit --json` exited 0 and reported 0 vulnerabilities and 0 warnings.
-- `cargo deny check advisories` exited 0. Full `cargo deny check` exited 4 on the existing unratified license allowlist policy, with advisories/bans/sources OK and licenses failed; this remains owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
-- `cargo vet` exited 255 because `supply-chain/` has not been initialized; this remains owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo deny check advisories` exited 0. Full `cargo deny check` exited 4 on the existing unratified license allowlist policy, with advisories/bans/sources OK and licenses failed; this remains owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo vet` exited 255 because `supply-chain/` has not been initialized; this remains owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - `osv-scanner scan source -r .` exited 0 with no issues.
 - `tools/codeql-rust-quality.sh` refreshed the reusable database at `target/quality/codeql-db-rust` because the input fingerprint was missing after the new wrapper landed. The run wrote `target/quality/codeql-db-rust/firn-codeql-inputs.sha256`, analyzed successfully, produced 0 SARIF findings, and reported 115 Rust files extracted, 82 with warnings, 33 without warnings, 1186 extraction warnings, and 0 extraction errors. These warnings match the recorded local CodeQL Rust extractor macro limit.
 - Semgrep Rust and security-audit scans exited 0 with 0 findings. Additional targeted Semgrep scans over the new untracked `doctor_drift.rs` and changed DuckDB files also exited 0 with 0 findings.
@@ -119,4 +119,4 @@ The probe treats non-DuckDB destinations as unsupported and does not implement P
 
 If an existing DuckDB database lacks mirror tables and local committed heads exist, the absent table yields missing mirror rows instead of table creation. If no committed heads exist, absent mirror tables produce zero mirror rows and no drift.
 
-Full supply-chain policy closure is still blocked by unratified `cargo deny` license policy and uninitialized `cargo vet` metadata. Those are repository-level policy issues already owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`, not new drift-check regressions.
+Full supply-chain policy closure is still blocked by unratified `cargo deny` license policy and uninitialized `cargo vet` metadata. Those are repository-level policy issues already owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`, not new drift-check regressions.

@@ -25,7 +25,7 @@ Record focused `firn-cli` tests for resolved env/file/declarative secrets, missi
 
 ## Explicit exclusions
 
-Do not implement new secret providers, OS keychain integration, destination write behavior, status freshness, inspect run, OTLP export, or package archive. Do not change repository supply-chain policy; that remains owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+Do not implement new secret providers, OS keychain integration, destination write behavior, status freshness, inspect run, OTLP export, or package archive. Do not change repository supply-chain policy; that remains owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 ## Progress and notes
 

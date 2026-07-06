@@ -111,7 +111,7 @@ Also supports the supply-chain requirement for this slice: the previous `parquet
 
 ## Limits
 
-Full `cargo deny check` and `cargo vet` are still blocked by the unratified repository supply-chain policy tracked in `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`; advisory-only deny and cargo-audit passed.
+Full `cargo deny check` and `cargo vet` are still blocked by the unratified repository supply-chain policy tracked in `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`; advisory-only deny and cargo-audit passed.
 
 CodeQL completed successfully, but current Rust extractor coverage still reports unresolved macro expansion warnings. The local wrapper preserves the reusable database at `target/quality/codeql-db-rust` and records zero extraction errors for this run.
 

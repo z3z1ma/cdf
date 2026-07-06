@@ -36,4 +36,4 @@ Pass. The diff matches the ticket and active spec, acceptance criteria map to re
 
 ## Residual risk
 
-Full `cargo deny check` still fails at unratified license policy and `cargo vet` still lacks an initialized `supply-chain/` store; both remain owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`. DuckDB ICU availability remains local-environment dependent by design.
+Full `cargo deny check` still fails at unratified license policy and `cargo vet` still lacks an initialized `supply-chain/` store; both remain owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`. DuckDB ICU availability remains local-environment dependent by design.

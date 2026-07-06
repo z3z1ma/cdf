@@ -22,7 +22,7 @@ Review of the `firn-kernel` implementation in `crates/firn-kernel/**`, its ticke
 
 No blocking findings remain.
 
-Minor residual risk: full `cargo deny check` and `cargo vet` are not passable yet because repository policy is unratified, not because of a kernel defect. `cargo deny check advisories`, `cargo audit`, OSV, Gitleaks, Semgrep, and CodeQL passed with zero findings. Policy adoption is tracked by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+Minor residual risk: full `cargo deny check` and `cargo vet` are not passable yet because repository policy is unratified, not because of a kernel defect. `cargo deny check advisories`, `cargo audit`, OSV, Gitleaks, Semgrep, and CodeQL passed with zero findings. Policy adoption is tracked by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 Minor residual risk: CodeQL's Rust extractor reported diagnostic extraction warnings and macro limitations while still producing successful analysis with zero SARIF results. This is a tool limitation to keep in mind as source complexity grows.
 

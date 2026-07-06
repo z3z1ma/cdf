@@ -1,13 +1,13 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-destination-conformance-suite-foundation.md, .10x/specs/destination-receipts-guarantees.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md
+Relates-To: .10x/tickets/done/2026-07-06-destination-conformance-suite-foundation.md, .10x/specs/destination-receipts-guarantees.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Destination conformance suite foundation evidence
 
 ## What was observed
 
-The destination conformance foundation adds a reusable `firn-conformance::destination` harness and DuckDB/Parquet consumer tests. Parent-observed quality checks support the child ticket acceptance criteria, with two pre-existing supply-chain policy gaps remaining owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+The destination conformance foundation adds a reusable `firn-conformance::destination` harness and DuckDB/Parquet consumer tests. Parent-observed quality checks support the child ticket acceptance criteria, with two pre-existing supply-chain policy gaps remaining owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 ## Procedure and results
 
@@ -36,9 +36,9 @@ The destination conformance foundation adds a reusable `firn-conformance::destin
 - `cargo hack clippy --workspace --all-targets --each-feature --locked -- -D warnings`: passed.
 - `cargo llvm-cov --workspace --all-features --locked --summary-only`: passed. Workspace totals: 76.53% regions, 73.78% functions, 79.31% lines. New `crates/firn-conformance/src/destination/mod.rs`: 96.72% regions, 92.59% functions, 97.31% lines.
 - `cargo audit`: passed, 402 crate dependencies scanned, no vulnerabilities reported.
-- `cargo deny check`: failed only on the known unratified license policy; advisories, bans, and sources were ok. Existing owner: `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo deny check`: failed only on the known unratified license policy; advisories, bans, and sources were ok. Existing owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - `cargo deny check advisories`: passed.
-- `cargo vet`: failed because `supply-chain/` is not initialized. Existing owner: `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo vet`: failed because `supply-chain/` is not initialized. Existing owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - `osv-scanner scan source -r . --format json --output target/quality/osv.json`: passed, 0 results.
 - `gitleaks dir` over the full working directory initially reported generated `target/**` and historical report noise only. A source snapshot excluding `.git`, `target`, and reports passed with empty JSON: `target/quality/gitleaks-dir-source.json`.
 - `gitleaks git --no-banner --redact --report-format json --report-path target/quality/gitleaks-git.json .`: passed with empty JSON.

@@ -47,8 +47,8 @@ Commands and results:
 - Direct source unsafe scan over `crates/firn-cli/src/commands.rs`, `crates/firn-cli/src/tests.rs`, and `crates/firn-cli/tests/doctor_env.rs`: passed, empty report.
 - `jscpd --silent --reporters json --output target/quality/reports/jscpd-doctor-secrets-icu crates/firn-cli/src/commands.rs crates/firn-cli/src/tests.rs crates/firn-cli/tests/doctor_env.rs`: metric recorded 21 exact clones, 198 duplicated lines, 6.55%, 0 new clones.
 - `cargo deny check advisories`: passed earlier in the closure loop.
-- `cargo deny check`: exited 4 with `advisories ok, bans ok, licenses FAILED, sources ok`; license policy remains owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
-- `cargo vet`: exited 255 because `supply-chain/` is not initialized; this remains owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo deny check`: exited 4 with `advisories ok, bans ok, licenses FAILED, sources ok`; license policy remains owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo vet`: exited 255 because `supply-chain/` is not initialized; this remains owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 ## What this supports or challenges
 

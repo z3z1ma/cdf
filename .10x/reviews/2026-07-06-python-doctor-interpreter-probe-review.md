@@ -35,4 +35,4 @@ The remaining mutation miss is the `#[cfg(not(unix))]` `is_executable` fallback 
 
 The CodeQL Rust extractor still reports known macro diagnostics while producing 0 SARIF findings; `.10x/knowledge/quality-gate-execution.md` and `.10x/evidence/2026-07-06-codeql-rust-extractor-coverage.md` describe that local tooling limit.
 
-Full `cargo deny check` and `cargo vet` remain repository-level policy blockers owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`, not this implementation slice.
+Full `cargo deny check` and `cargo vet` remain repository-level policy blockers owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`, not this implementation slice.

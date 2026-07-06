@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
+Relates-To: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
 
 # Project, Python, and destination quality gates
 
@@ -49,8 +49,8 @@ Ran the `QUALITY.md` loop at production depth for this batch: formatting, featur
 
 ## Policy-blocked or limited commands
 
-- `cargo deny check`: failed at license policy because no repository `deny.toml` or license allowlist is ratified. Advisories, bans, and sources passed; licenses failed under the default deny behavior. Owner: `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
-- `cargo vet`: failed because `supply-chain/` metadata does not exist. Owner: `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo deny check`: failed at license policy because no repository `deny.toml` or license allowlist is ratified. Advisories, bans, and sources passed; licenses failed under the default deny behavior. Owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo vet`: failed because `supply-chain/` metadata does not exist. Owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - Raw `gitleaks dir .` over the whole repository reported 64 findings in generated `target/` build output from bundled DuckDB/mbedTLS/Parquet sources. Source-only and git-history scans were clean; no tracked source secret was found.
 - `cargo geiger`: attempted through package and manifest-path modes. This installed version does not accept the virtual workspace root and produced repeated registry package-match diagnostics for the current dependency graph when run per crate; the run was stopped after it exceeded a reasonable sidecar budget. Direct owned-source unsafe search was clean.
 - Miri, cargo-careful, sanitizers, fuzzing, Kani, cargo-udeps, mutation testing, benchmarks, cargo-bloat, and profilers were not run for this batch because they require nightly/project harnesses/performance workloads or are disproportionate to the changed surfaces. No owned unsafe code was introduced.

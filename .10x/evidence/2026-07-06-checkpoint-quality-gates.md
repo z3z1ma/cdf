@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md
+Relates-To: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Checkpoint store quality gates
 
@@ -9,7 +9,7 @@ Relates-To: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/ticket
 
 The checkpoint-store slice passed the current executable gates for formatting, workspace compile, feature combinations, lints, tests, doctests, coverage, mutation testing, semver comparison, dependency hygiene, vulnerability scans, secret scans, Semgrep, and CodeQL. The final source tree included the ratified `CheckpointStore: Send + Sync` shared-receiver trait in `firn-kernel`, the synchronized in-memory store, and the WAL-backed SQLite store.
 
-Two supply-chain policy gates remain intentionally open under `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`: full `cargo deny check` needs a ratified license allowlist, and `cargo vet` needs an adoption decision plus a `supply-chain/` store.
+Two supply-chain policy gates remain intentionally open under `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`: full `cargo deny check` needs a ratified license allowlist, and `cargo vet` needs an adoption decision plus a `supply-chain/` store.
 
 ## Procedure
 
@@ -103,7 +103,7 @@ cargo deny check
 cargo vet
 ```
 
-`cargo deny check` exited 4: advisories, bans, and sources were ok, but licenses failed because the repository still has no `deny.toml` allowlist, so even Apache-2.0/MIT licenses are rejected. `cargo vet` exited 255 because `supply-chain/` has not been initialized. Both are owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+`cargo deny check` exited 4: advisories, bans, and sources were ok, but licenses failed because the repository still has no `deny.toml` allowlist, so even Apache-2.0/MIT licenses are rejected. `cargo vet` exited 255 because `supply-chain/` has not been initialized. Both are owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 Skipped gates:
 
@@ -113,7 +113,7 @@ Nightly-only `cargo +nightly udeps`, Miri, `cargo careful`, and sanitizer runs w
 
 This supports closing the checkpoint-store child ticket: its acceptance criteria are covered by focused tests, workspace regressions stayed green, mutation testing found no surviving checkpoint-store mutants, and security scanners found no actionable finding in the current commit candidate.
 
-This challenges supply-chain closure at the repository level only: the dependency policy cannot be called fully clean until `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md` is executed.
+This challenges supply-chain closure at the repository level only: the dependency policy cannot be called fully clean until `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md` is executed.
 
 ## Limits
 

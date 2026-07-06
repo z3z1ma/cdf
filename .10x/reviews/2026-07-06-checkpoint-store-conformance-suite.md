@@ -34,4 +34,4 @@ Pass. The implementation meets the child ticket acceptance criteria, required ta
 
 ## Residual risk
 
-This review does not cover resource conformance, destination conformance, chaos killpoints, golden-package fixtures, or full parent-plan closure; those remain outside this child ticket's explicit scope. Existing repository supply-chain policy blockers remain owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+This review does not cover resource conformance, destination conformance, chaos killpoints, golden-package fixtures, or full parent-plan closure; those remain outside this child ticket's explicit scope. Existing repository supply-chain policy blockers remain owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.

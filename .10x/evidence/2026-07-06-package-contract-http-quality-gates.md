@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-contract-compiler-normalization.md, .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-05-http-toolkit.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md, .10x/knowledge/quality-gate-execution.md
+Relates-To: .10x/tickets/done/2026-07-05-contract-compiler-normalization.md, .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-05-http-toolkit.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md, .10x/knowledge/quality-gate-execution.md
 
 # Package, contract, and HTTP QUALITY evidence
 
@@ -58,7 +58,7 @@ Challenges the current local quality workflow: CodeQL extraction metrics reporte
 
 ## Limits
 
-Full `cargo deny check` still fails because no ratified `deny.toml` license policy exists; `cargo vet` still fails because `supply-chain/` is absent. These are owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+Full `cargo deny check` still fails because no ratified `deny.toml` license policy exists; `cargo vet` still fails because `supply-chain/` is absent. These are owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 CodeQL reported extraction-warning metrics while still producing 0 findings. The warnings were dominated by generated target artifacts and macro-expansion limits, so this evidence supports security finding absence, not perfect CodeQL database quality.
 

@@ -53,4 +53,4 @@ No live Postgres conformance execution until `.10x/tickets/2026-07-05-postgres-d
 
 ## Blockers
 
-None for the DuckDB/Parquet destination-conformance foundation. Supply-chain policy gaps from `cargo deny check` and `cargo vet` remain separately owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+None for the DuckDB/Parquet destination-conformance foundation. Supply-chain policy gaps from `cargo deny check` and `cargo vet` remain separately owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.

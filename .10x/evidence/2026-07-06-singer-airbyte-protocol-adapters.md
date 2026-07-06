@@ -57,8 +57,8 @@ The existing dirty `.gitignore` remained unrelated and untouched. `Cargo.lock` c
   - `osv-scanner scan source -r .`: passed, no issues.
   - `cargo audit --json > target/quality/reports/cargo-audit-singer-airbyte-final.json`: passed; vulnerabilities `found=false count=0`.
   - `cargo deny check advisories`: passed.
-  - `cargo deny check`: failed only at the existing unratified license allowlist policy; advisories, bans, and sources were ok. Existing owner: `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
-  - `cargo vet`: failed because `supply-chain/` is not initialized. Existing owner: `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+  - `cargo deny check`: failed only at the existing unratified license allowlist policy; advisories, bans, and sources were ok. Existing owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
+  - `cargo vet`: failed because `supply-chain/` is not initialized. Existing owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - Ran `git diff --check -- . ':(exclude).gitignore'`. Result: passed.
 - Inspected `git status --short`. Result: expected edits were the ticket, evidence/review records, `Cargo.lock`, `crates/firn-subprocess/Cargo.toml`, and `crates/firn-subprocess/src/**`; pre-existing `.gitignore` remained dirty.
 
@@ -66,7 +66,7 @@ The existing dirty `.gitignore` remained unrelated and untouched. `Cargo.lock` c
 
 This supports the ticket acceptance criteria for Singer schema/record/state parsing, Airbyte catalog/record/legacy-stream-global state parsing, malformed required-field handling as `Data` errors without raw state leakage, deterministic canonical `ForeignState` hashing, per-stream batch conversion, thin crate-root exports, and package write/replay compatibility through existing package APIs.
 
-The `cargo deny check` and `cargo vet` failures challenge repository policy readiness, not this adapter implementation. They remain governed by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+The `cargo deny check` and `cargo vet` failures challenge repository policy readiness, not this adapter implementation. They remain governed by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 ## Limits
 

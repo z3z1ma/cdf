@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-declarative-resources.md, .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/2026-07-06-parquet-format-source-supply-chain.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md
+Relates-To: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-declarative-resources.md, .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/2026-07-06-parquet-format-source-supply-chain.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Engine, declarative, formats, and subprocess quality gates
 
@@ -55,8 +55,8 @@ Passed:
 
 Blocked or limited:
 
-- `cargo deny check` still fails at the license policy stage because there is no ratified Firn license allowlist or `deny.toml`; this is owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
-- `cargo vet` still fails because `supply-chain/` is not initialized; this is owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo deny check` still fails at the license policy stage because there is no ratified Firn license allowlist or `deny.toml`; this is owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo vet` still fails because `supply-chain/` is not initialized; this is owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - `cargo geiger` does not run successfully from the virtual workspace manifest. A package-manifest run for `firn-kernel` reported no owned unsafe usage before dependency warning noise; direct source search found no Firn-owned unsafe blocks, unsafe impls, unsafe traits, FFI, raw pointer functions, `transmute`, or `MaybeUninit`.
 - CodeQL reported extractor diagnostics: 17 of 17 Rust files scanned for the invocation, with 23 extracted-with-error diagnostic entries and 8 extracted-without-error diagnostic entries. The SARIF security result count was 0.
 - Missing tools from `QUALITY.md` were not installed because the corresponding gates were not applicable to this batch: `tokei`, `scc`, `cargo-expand`, `cargo-flamegraph`, `cargo-insta`, and nightly `miri`.

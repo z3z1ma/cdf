@@ -39,4 +39,4 @@ Pass. The ticket is ready to close.
 
 The adapters intentionally implement only the parser/batch/state slice. They do not define a full subprocess connector lifecycle, Airbyte destination support, state migration UX, or Parquet/package archive behavior.
 
-`cargo deny check` and `cargo vet` remain blocked by unratified repository supply-chain policy, with an existing owner in `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`. CodeQL Rust extraction still has known macro-resolution warnings; SARIF results for this run were 0.
+`cargo deny check` and `cargo vet` remain blocked by unratified repository supply-chain policy, with an existing owner in `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`. CodeQL Rust extraction still has known macro-resolution warnings; SARIF results for this run were 0.

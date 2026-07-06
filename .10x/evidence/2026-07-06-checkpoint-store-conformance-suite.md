@@ -50,7 +50,7 @@ The child ticket acceptance criteria are met for the reusable checkpoint-store c
 
 ## Limits
 
-`cargo deny check` still fails on the repository's existing unratified license policy surface, and `cargo vet` still fails because `supply-chain/` is not initialized. Those are owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md` and were not introduced by this slice.
+`cargo deny check` still fails on the repository's existing unratified license policy surface, and `cargo vet` still fails because `supply-chain/` is not initialized. Those are owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md` and were not introduced by this slice.
 
 `cargo bloat -p firn-conformance --release --crates` is not applicable because `firn-conformance` is library-only. `tokei` and `scc` were not installed. No fuzz, Kani, Loom, Criterion, benchmark, or profiler harness is configured for this repository slice, and this change does not touch production unsafe code or performance-sensitive binaries.
 

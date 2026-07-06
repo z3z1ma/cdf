@@ -27,7 +27,7 @@ Minor residual risk: the probe reports no drift when both mirror tables are abse
 
 Parent integration rechecked the implementation after the worker handoff and reran focused CLI and DuckDB tests plus formatting. No additional findings were identified.
 
-Parent quality review then ran the broader `QUALITY.md` loop: workspace check/clippy feature variants, full tests, doctests, nextest, cargo-hack, semver, coverage, docs, machete, audit/advisories/OSV, CodeQL, Semgrep, gitleaks, rust-code-analysis, jscpd, direct unsafe search, geiger, and bloat. No drift-slice blocking findings were identified. The only nonzero gates were the pre-existing repository-level `cargo deny check` license-policy and `cargo vet` initialization blockers, both owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`, plus the known geiger dependency-warning limitation paired with a clean first-party unsafe search.
+Parent quality review then ran the broader `QUALITY.md` loop: workspace check/clippy feature variants, full tests, doctests, nextest, cargo-hack, semver, coverage, docs, machete, audit/advisories/OSV, CodeQL, Semgrep, gitleaks, rust-code-analysis, jscpd, direct unsafe search, geiger, and bloat. No drift-slice blocking findings were identified. The only nonzero gates were the pre-existing repository-level `cargo deny check` license-policy and `cargo vet` initialization blockers, both owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`, plus the known geiger dependency-warning limitation paired with a clean first-party unsafe search.
 
 ## Verdict
 

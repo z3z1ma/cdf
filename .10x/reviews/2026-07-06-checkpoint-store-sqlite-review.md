@@ -22,7 +22,7 @@ Resolved significant finding: book section 12.5 ratified `trait CheckpointStore:
 
 Resolved significant finding: parent mutation testing initially reported 31 missed checkpoint-store mutants. The test suite was hardened for in-memory/SQLite parity, bad receipt coverage, abandon/head behavior, tuple isolation, rewind validation, branch-lineage packages ahead, SQLite row corruption, timestamp sanity, and unsupported state versions. The final parent rerun reported 111 mutants tested, 74 caught, 37 unviable, and 0 missed.
 
-Minor residual: `cargo deny check` and `cargo vet` are not clean because repository supply-chain policy is not ratified. This is not specific to the checkpoint implementation and is owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+Minor residual: `cargo deny check` and `cargo vet` are not clean because repository supply-chain policy is not ratified. This is not specific to the checkpoint implementation and is owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 
 Minor residual: `jscpd` reports similarity in existing prose and some Rust test/helper patterns. The Rust clone rate is low, and the repeated checkpoint-store tests intentionally exercise the same contract over both store implementations. No refactor is recommended now because abstraction would make the failure cases less legible.
 

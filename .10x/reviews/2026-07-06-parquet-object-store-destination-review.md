@@ -40,4 +40,4 @@ Object-store replace is pointer-atomic, not a multi-object transaction; crash-ma
 
 `jscpd` reported small deliberate duplication between DuckDB and Parquet destination helper/test patterns. No follow-up was opened: extracting shared Arrow-to-DuckDB conversion now would couple separate destination crates for two consumers; revisit only if a third consumer appears or the duplication becomes behaviorally inconsistent.
 
-Full license policy and cargo-vet adoption remain outside this ticket and are already owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`.
+Full license policy and cargo-vet adoption remain outside this ticket and are already owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.

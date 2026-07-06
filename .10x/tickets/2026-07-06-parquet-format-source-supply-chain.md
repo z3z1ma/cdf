@@ -2,7 +2,7 @@ Status: blocked
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-05-contract-compiler-normalization.md, .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md
+Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-05-contract-compiler-normalization.md, .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Implement Parquet file source without violating supply-chain gates
 
@@ -28,6 +28,7 @@ No destination writer or object-store destination behavior. Those remain owned b
 ## Progress and notes
 
 - 2026-07-06: Split from `.10x/tickets/done/2026-07-05-formats-and-subprocess.md`. A direct `parquet = "59.0.0"` implementation worked locally, but `cargo deny check advisories` and OSV reported `RUSTSEC-2024-0436` because arrow-rs `parquet` depends unconditionally on `paste 1.0.15`, which RustSec marks unmaintained. Feature trimming cannot remove `paste`. The direct dependency was removed before committing the formats/subprocess core.
+- 2026-07-06: Supply-chain policy is now ratified by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`. The policy keeps advisory checks enforced with no ignores, so this ticket remains blocked for the direct arrow-rs `parquet -> paste` path unless a later specific advisory exception is ratified or an alternative Parquet reader path avoids the advisory.
 
 ## Blockers
 

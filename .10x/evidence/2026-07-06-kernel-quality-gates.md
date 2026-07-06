@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/2026-07-06-ratify-supply-chain-policy.md
+Relates-To: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Kernel quality gate evidence
 
@@ -89,7 +89,7 @@ cargo vet
 
 `cargo audit`, `cargo deny check advisories`, OSV, Gitleaks, Semgrep, and CodeQL reported zero vulnerability/secret/security findings. CodeQL successfully created and analyzed a Rust database; SARIF had zero results, with extractor diagnostic warnings recorded as a tool limitation. `cargo geiger` could not run against the virtual workspace manifest; the kernel-manifest run reported `firn-kernel` itself as `0/0` unsafe, while transitive Arrow/dependency crates contain unsafe. The direct source search found no unsafe, FFI, raw-pointer, transmute, or manual Send/Sync impls; only `Send` bounds in `BatchStream`/`BoxFuture` matched.
 
-Full `cargo deny check` failed only because no repository `deny.toml` exists, so the default config has no ratified allowed-license list and rejects even Apache-2.0/MIT licenses. `cargo vet` failed because `supply-chain/` is not initialized. These are policy-adoption gaps tracked by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`, not kernel implementation failures. `cargo semver-checks -p firn-kernel` could not run because `firn-kernel` is not published and no semver baseline revision exists.
+Full `cargo deny check` failed only because no repository `deny.toml` exists, so the default config has no ratified allowed-license list and rejects even Apache-2.0/MIT licenses. `cargo vet` failed because `supply-chain/` is not initialized. These are policy-adoption gaps tracked by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`, not kernel implementation failures. `cargo semver-checks -p firn-kernel` could not run because `firn-kernel` is not published and no semver baseline revision exists.
 
 Mutation:
 

@@ -58,7 +58,7 @@ Fast-follow and full-system completion:
 - `.10x/tickets/2026-07-05-cdc-and-streaming-supervisor.md`
 - `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`
 - `.10x/tickets/2026-07-05-lakehouse-warehouse-and-vault.md`
-- `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`
+- `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`
 - `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`
 - `.10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md`
 - `.10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md`
@@ -100,6 +100,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-05-parquet-object-store-destination.md`; `firn-dest-parquet` now implements append/replace package-token Parquet materialization over filesystem/object_store, object manifest and replace-pointer receipts, tamper-aware receipt verification, DuckDB-backed Parquet export without the arrow-rs `parquet`/`paste` advisory path, non-monolithic crate modules, mutation-clean focused tests, and full QUALITY evidence.
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md`; `firn doctor` now has a real configured-Python interpreter probe with version, GIL/free-threaded, no-resource-code-execution, and secret-redaction coverage.
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md`; `firn doctor` now has structured project/environment health, redacted secret-reference details with env/file/declarative coverage, missing-secret failure redaction, and DuckDB ICU safe details.
+- 2026-07-06: Closed supply-chain policy child `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`; `deny.toml` now makes advisory/license/source policy explicit, and `supply-chain/` now initializes cargo-vet so `cargo vet --locked` passes with a current-version exemption backlog.
 
 ## Blockers
 

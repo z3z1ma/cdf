@@ -48,7 +48,7 @@ The rerun wrote `target/quality/reports/mutants-python-doctor-probe-rerun/mutant
 
 ## Limits
 
-Full `cargo deny check` and `cargo vet` still fail for existing repository policy reasons: no ratified license allowlist/`deny.toml` and no initialized `supply-chain/` metadata. This remains owned by `.10x/tickets/2026-07-06-ratify-supply-chain-policy.md`; advisory-only deny, cargo-audit, and OSV passed for this slice.
+Full `cargo deny check` and `cargo vet` still fail for existing repository policy reasons: no ratified license allowlist/`deny.toml` and no initialized `supply-chain/` metadata. This remains owned by `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`; advisory-only deny, cargo-audit, and OSV passed for this slice.
 
 `cargo geiger` was attempted during this closure using a package manifest and normal target output. The tool removed a large amount of Cargo build cache before the run was interrupted. This did not change tracked source or the reusable CodeQL database, but it is not closure authority for this ticket. `.10x/knowledge/quality-gate-execution.md` now records the stronger local rule: avoid non-isolated Geiger runs, and pair any future isolated Geiger run with direct first-party unsafe source search.
 
