@@ -6,3 +6,5 @@ license.workspace = true
 description = "Postgres destination boundary for firn."
 
 [dependencies]
+firn-kernel = { path = "../firn-kernel" }
+serde = { version = "1.0.228", features = ["derive"] }

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-05
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/2026-07-05-parquet-object-store-destination.md, .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md
+Depends-On: .10x/tickets/2026-07-05-parquet-object-store-destination.md, .10x/tickets/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md
 
 # Implement lakehouse, warehouse, and vault-class integrations
 
@@ -33,4 +33,3 @@ Vector-store destinations and UI remain out of scope unless later ratified by ac
 ## Blockers
 
 None.
-

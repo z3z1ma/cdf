@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-05
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-project-format-lockfile-secrets.md
+Depends-On: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md
 
 # Implement observability, doctor, status, and system SQL
 
@@ -33,4 +33,3 @@ No dashboard or UI.
 ## Blockers
 
 None.
-

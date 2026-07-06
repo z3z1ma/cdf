@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-05
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
-Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-parquet-object-store-destination.md, .10x/tickets/2026-07-05-postgres-destination.md
+Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/2026-07-05-parquet-object-store-destination.md, .10x/tickets/2026-07-05-postgres-destination.md
 
 # Implement conformance suites, chaos layer, and golden packages
 
@@ -33,4 +33,3 @@ No new production behavior except test hooks required for chaos.
 ## Blockers
 
 None.
-
