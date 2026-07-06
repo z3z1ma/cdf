@@ -9,11 +9,10 @@ description = "Package builder and reader boundary for firn."
 arrow-array = "59.0.0"
 arrow-ipc = { version = "59.0.0", features = ["lz4"] }
 arrow-schema = "59.0.0"
+duckdb = { version = "1.10504.0", features = ["bundled", "parquet"] }
 firn-kernel = { path = "../firn-kernel" }
 hex = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"
-
-[dev-dependencies]
 tempfile = "3.27.0"

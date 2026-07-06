@@ -532,7 +532,7 @@ fn duplicate_column_names_fail_before_writing_objects() {
     assert!(
         error
             .to_string()
-            .contains("duplicate Parquet destination column name")
+            .contains("duplicate Parquet column name duplicate")
     );
     assert!(
         !dest

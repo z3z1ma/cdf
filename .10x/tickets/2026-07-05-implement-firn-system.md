@@ -101,7 +101,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md`; `firn doctor` now has a real configured-Python interpreter probe with version, GIL/free-threaded, no-resource-code-execution, and secret-redaction coverage.
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md`; `firn doctor` now has structured project/environment health, redacted secret-reference details with env/file/declarative coverage, missing-secret failure redaction, and DuckDB ICU safe details.
 - 2026-07-06: Closed supply-chain policy child `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`; `deny.toml` now makes advisory/license/source policy explicit, and `supply-chain/` now initializes cargo-vet so `cargo vet --locked` passes with a current-version exemption backlog.
-- 2026-07-06: Split the package archive transcode primitive from `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md` into executable child `.10x/tickets/2026-07-06-package-archive-transcode-primitive.md`; this preserves the Singer/Airbyte work already closed and gives the supply-chain-clean archive writer path a focused owner before CLI/manifest archive metadata is wired.
+- 2026-07-06: Closed package archive primitive child `.10x/tickets/done/2026-07-06-package-archive-transcode-primitive.md`; `firn-package` now has a supply-chain-clean IPC-to-Parquet in-memory archive report primitive, `firn-dest-parquet` delegates to the shared writer, and the remaining archive CLI/file-placement/manifest metadata work stays with `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
 
 ## Blockers
 

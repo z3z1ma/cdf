@@ -1,26 +1,31 @@
 use super::*;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs::OpenOptions,
+    fs::{self, OpenOptions},
     io::Write,
     path::Path,
     sync::Arc,
 };
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, Time32SecondArray};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use duckdb::Connection;
 use firn_kernel::{
     CommitCounts, DestinationId, IdempotencyToken, PackageHash, Receipt, ReceiptId, SchemaHash,
     SegmentAck, SegmentId, TargetName, VerifyClause, WriteDisposition,
 };
 
 fn sample_batch() -> RecordBatch {
+    sample_batch_values(vec![1, 2, 3], vec![Some("ada"), Some("grace"), None])
+}
+
+fn sample_batch_values(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("name", DataType::Utf8, true),
     ]));
-    let id: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
-    let name: ArrayRef = Arc::new(StringArray::from(vec![Some("ada"), Some("grace"), None]));
+    let id: ArrayRef = Arc::new(Int64Array::from(ids));
+    let name: ArrayRef = Arc::new(StringArray::from(names));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
 }
 
@@ -99,6 +104,30 @@ fn build_fixture(package_dir: &Path) -> PackageManifest {
     builder.finish().unwrap()
 }
 
+fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
+    let mut builder = PackageBuilder::create(package_dir, "pkg-archive-0001").unwrap();
+    builder.update_status(PackageStatus::Extracting).unwrap();
+    builder
+        .write_json_artifact(
+            "plan/resource_plan.json",
+            &BTreeMap::from([("resource", "orders"), ("partition", "p0")]),
+        )
+        .unwrap();
+    builder
+        .write_segment(
+            SegmentId::new("seg-000001").unwrap(),
+            &[sample_batch_values(vec![1, 2], vec![Some("ada"), None])],
+        )
+        .unwrap();
+    builder
+        .write_segment(
+            SegmentId::new("seg-000002").unwrap(),
+            &[sample_batch_values(vec![3], vec![Some("grace")])],
+        )
+        .unwrap();
+    builder.finish().unwrap()
+}
+
 fn sample_receipt(package_hash: &str) -> Receipt {
     Receipt {
         receipt_id: ReceiptId::new("receipt-1").unwrap(),
@@ -128,6 +157,54 @@ fn sample_receipt(package_hash: &str) -> Receipt {
             parameters: BTreeMap::new(),
         },
     }
+}
+
+fn package_files(package_dir: &Path) -> Vec<String> {
+    fn collect(base: &Path, directory: &Path, files: &mut Vec<String>) {
+        let mut entries = fs::read_dir(directory)
+            .unwrap()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        entries.sort_by_key(|entry| entry.path());
+
+        for entry in entries {
+            let path = entry.path();
+            let file_type = entry.file_type().unwrap();
+            if file_type.is_dir() {
+                collect(base, &path, files);
+            } else if file_type.is_file() {
+                files.push(
+                    path.strip_prefix(base)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/"),
+                );
+            }
+        }
+    }
+
+    let mut files = Vec::new();
+    collect(package_dir, package_dir, &mut files);
+    files.sort();
+    files
+}
+
+fn parquet_rows(bytes: &[u8]) -> usize {
+    let mut temp = tempfile::NamedTempFile::new().unwrap();
+    temp.write_all(bytes).unwrap();
+    temp.flush().unwrap();
+    let path = temp.path().to_str().unwrap();
+    let conn = Connection::open_in_memory().unwrap();
+    conn.query_row(
+        &format!("SELECT count(*) FROM read_parquet({})", sql_string(path)),
+        [],
+        |row| row.get::<_, usize>(0),
+    )
+    .unwrap()
+}
+
+fn sql_string(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
 }
 
 #[test]
@@ -288,4 +365,169 @@ fn tombstone_removes_identity_files_but_preserves_manifest_hashes() {
     );
     assert!(reader.replay_view().is_err());
     assert!(verify_package(temp.path()).is_err());
+}
+
+#[test]
+fn archive_report_records_parquet_bytes_and_preserves_canonical_package() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = build_archive_fixture(temp.path());
+    let manifest_before = fs::read(temp.path().join(MANIFEST_FILE)).unwrap();
+    let files_before = package_files(temp.path());
+
+    let report = archive_package_to_parquet(temp.path()).unwrap();
+
+    assert_eq!(report.package_hash, manifest.package_hash);
+    assert!(
+        report
+            .fidelity_statement
+            .contains("Arrow IPC remains the canonical package data")
+    );
+    assert!(
+        report
+            .fidelity_statement
+            .contains("Parquet bytes are an archive/interchange projection")
+    );
+    assert!(
+        report
+            .fidelity_statement
+            .contains("Arrow field metadata and other Arrow-only semantics")
+    );
+    assert_eq!(report.segments.len(), manifest.identity.segments.len());
+
+    for (archived, source) in report.segments.iter().zip(&manifest.identity.segments) {
+        assert_eq!(archived.segment_id, source.segment_id.as_str());
+        assert_eq!(archived.source_path, source.path);
+        assert_eq!(archived.source_byte_count, source.byte_count);
+        assert_eq!(archived.source_sha256, source.sha256);
+        assert_eq!(archived.source_row_count, source.row_count);
+        assert_eq!(archived.parquet_row_count, source.row_count);
+        assert_eq!(
+            archived.parquet_byte_count,
+            archived.parquet_bytes.len() as u64
+        );
+        assert_eq!(archived.parquet_sha256.len(), 64);
+        assert_eq!(
+            parquet_rows(&archived.parquet_bytes),
+            source.row_count as usize
+        );
+    }
+
+    assert_eq!(
+        fs::read(temp.path().join(MANIFEST_FILE)).unwrap(),
+        manifest_before
+    );
+    assert_eq!(package_files(temp.path()), files_before);
+    assert_eq!(
+        read_manifest(temp.path()).unwrap().lifecycle.status,
+        PackageStatus::Packaged
+    );
+    verify_package(temp.path()).unwrap();
+}
+
+#[test]
+fn archive_transcode_is_deterministic_for_unchanged_package() {
+    let temp = tempfile::tempdir().unwrap();
+    build_archive_fixture(temp.path());
+
+    let first = archive_package_to_parquet(temp.path()).unwrap();
+    let second = archive_package_to_parquet(temp.path()).unwrap();
+
+    assert_eq!(first.package_hash, second.package_hash);
+    assert_eq!(first.segments.len(), second.segments.len());
+    for (first, second) in first.segments.iter().zip(second.segments.iter()) {
+        assert_eq!(first.source_sha256, second.source_sha256);
+        assert_eq!(first.parquet_sha256, second.parquet_sha256);
+        assert_eq!(first.parquet_bytes, second.parquet_bytes);
+    }
+}
+
+#[test]
+fn archive_transcode_keeps_replay_and_read_segment_on_ipc() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = build_archive_fixture(temp.path());
+
+    archive_package_to_parquet(temp.path()).unwrap();
+
+    let reader = PackageReader::open(temp.path()).unwrap();
+    let segment_id = &manifest.identity.segments[0].segment_id;
+    let batches = reader.read_segment(segment_id).unwrap();
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].num_rows(), 2);
+
+    let replay = reader.replay_view().unwrap();
+    assert_eq!(replay.package_hash.as_str(), manifest.package_hash);
+    assert_eq!(replay.segments[0].path, "data/seg-000001.arrow");
+}
+
+#[test]
+fn archive_transcode_refuses_tampered_package_before_report() {
+    let temp = tempfile::tempdir().unwrap();
+    build_archive_fixture(temp.path());
+
+    let segment_path = temp.path().join("data").join("seg-000001.arrow");
+    let mut file = OpenOptions::new().append(true).open(&segment_path).unwrap();
+    file.write_all(b"tamper").unwrap();
+    file.sync_all().unwrap();
+    let files_before = package_files(temp.path());
+    let manifest_before = fs::read(temp.path().join(MANIFEST_FILE)).unwrap();
+
+    let error = archive_package_to_parquet(temp.path()).unwrap_err();
+
+    assert!(error.to_string().contains("package verification failed"));
+    assert!(error.to_string().contains("tampered identity file"));
+    assert_eq!(package_files(temp.path()), files_before);
+    assert_eq!(
+        fs::read(temp.path().join(MANIFEST_FILE)).unwrap(),
+        manifest_before
+    );
+}
+
+#[test]
+fn archive_transcode_reports_unsupported_arrow_types() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut builder = PackageBuilder::create(temp.path(), "pkg-archive-unsupported").unwrap();
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "unsupported_time",
+        DataType::Time32(TimeUnit::Second),
+        false,
+    )]));
+    let batch =
+        RecordBatch::try_new(schema, vec![Arc::new(Time32SecondArray::from(vec![1]))]).unwrap();
+    builder
+        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .unwrap();
+    builder.finish().unwrap();
+
+    let error = archive_package_to_parquet(temp.path()).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not support Arrow type Time32")
+    );
+}
+
+#[test]
+fn archive_transcode_rejects_duplicate_column_names_before_duckdb_ddl() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("duplicate", DataType::Int64, false),
+        Field::new("duplicate", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1])),
+            Arc::new(Int64Array::from(vec![2])),
+        ],
+    )
+    .unwrap();
+
+    let error = transcode_record_batches_to_parquet_bytes(&[batch]).unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate Parquet column name duplicate"),
+        "{error}"
+    );
 }

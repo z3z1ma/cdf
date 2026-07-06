@@ -1611,6 +1611,7 @@ dependencies = [
  "arrow-array 59.0.0",
  "arrow-ipc 59.0.0",
  "arrow-schema 59.0.0",
+ "duckdb",
  "firn-kernel",
  "hex",
  "serde",
