@@ -9,6 +9,7 @@ use arrow_ipc::reader::FileReader;
 use firn_kernel::{FirnError, Receipt, Result};
 
 use crate::{
+    archive::verify_parquet_archive_metadata,
     json::{canonical_json_bytes, json_error, manifest_identity_hash},
     model::{
         FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, RECEIPTS_FILE, TombstoneReport,
@@ -68,6 +69,14 @@ pub fn read_receipts(package_dir: impl AsRef<Path>) -> Result<Vec<Receipt>> {
 }
 
 pub fn verify_package(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {
+    let package_dir = package_dir.as_ref();
+    let mut report = verify_package_identity(package_dir)?;
+    let manifest = read_manifest(package_dir)?;
+    report.checked_archives = verify_parquet_archive_metadata(package_dir, &manifest)?;
+    Ok(report)
+}
+
+pub fn verify_package_identity(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {
     let package_dir = package_dir.as_ref();
     let manifest = read_manifest(package_dir)?;
     let mut failures = Vec::new();
@@ -162,6 +171,7 @@ pub fn verify_package(package_dir: impl AsRef<Path>) -> Result<VerificationRepor
     Ok(VerificationReport {
         package_hash: manifest.package_hash,
         checked_files,
+        checked_archives: Vec::new(),
     })
 }
 

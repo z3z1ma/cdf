@@ -20,7 +20,7 @@ Receipt verification is destination-backed: `verify_receipt` reopens the databas
 
 The merge path avoids an unratified semantic default. Exact duplicate package rows collapse deterministically before commit; conflicting duplicate merge keys fail with a data error instead of choosing first-wins or last-wins behavior that no active record specifies.
 
-The sheet and extended capability report are honest about current limits: direct DuckDB Arrow appender support is not used because `duckdb-rs` is Arrow 58-facing while Firn packages use Arrow 59, and Parquet replay is unsupported until package archive Parquet data exists under `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+The sheet and extended capability report are honest about current limits: direct DuckDB Arrow appender support is not used because `duckdb-rs` is Arrow 58-facing while Firn packages use Arrow 59, and Parquet replay is unsupported until package archive Parquet data exists under `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
 
 ## Verdict
 

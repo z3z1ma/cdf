@@ -531,3 +531,435 @@ fn archive_transcode_rejects_duplicate_column_names_before_duckdb_ddl() {
         "{error}"
     );
 }
+
+#[test]
+fn persisted_archive_writes_sidecars_manifest_metadata_and_fidelity_json() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = build_archive_fixture(temp.path());
+    let original_identity = manifest.identity.clone();
+    let original_hash = manifest.package_hash.clone();
+    let original_signature = manifest.signature.clone();
+    let original_status = manifest.lifecycle.status.clone();
+
+    let report = persist_package_parquet_archive(temp.path(), false).unwrap();
+
+    assert_eq!(report.status, PackageArchiveWriteStatus::Written);
+    assert_eq!(report.package_hash, original_hash);
+    assert_eq!(report.format, "parquet");
+    assert_eq!(report.fidelity_report_path, "archive/parquet/fidelity.json");
+    assert_eq!(report.segments.len(), manifest.identity.segments.len());
+
+    let archived_manifest = read_manifest(temp.path()).unwrap();
+    assert_eq!(archived_manifest.identity, original_identity);
+    assert_eq!(archived_manifest.package_hash, original_hash);
+    assert_eq!(archived_manifest.signature, original_signature);
+    assert_eq!(archived_manifest.lifecycle.status, original_status);
+    let metadata = archived_manifest
+        .archives
+        .as_ref()
+        .and_then(|archives| archives.parquet.as_ref())
+        .unwrap();
+    assert_eq!(metadata.format_version, 1);
+    assert_eq!(metadata.segments, report.segments);
+    for (index, segment) in metadata.segments.iter().enumerate() {
+        assert_eq!(
+            segment.segment_id,
+            manifest.identity.segments[index].segment_id.as_str()
+        );
+        assert_eq!(
+            segment.archive_path,
+            format!("archive/parquet/data/{}.parquet", segment.segment_id)
+        );
+        assert!(temp.path().join(&segment.archive_path).is_file());
+        assert_eq!(
+            parquet_rows(&fs::read(temp.path().join(&segment.archive_path)).unwrap()),
+            segment.archive_row_count as usize
+        );
+    }
+
+    let fidelity_path = temp.path().join("archive/parquet/fidelity.json");
+    let fidelity_bytes = fs::read(&fidelity_path).unwrap();
+    let fidelity: PackageArchiveFidelityReport = serde_json::from_slice(&fidelity_bytes).unwrap();
+    assert_eq!(fidelity.package_hash, original_hash);
+    assert_eq!(fidelity.source_format, "arrow_ipc_lz4");
+    assert_eq!(fidelity.archive_format, "parquet");
+    assert_eq!(fidelity.segments, metadata.segments);
+    assert_eq!(fidelity_bytes, canonical_json_bytes(&fidelity).unwrap());
+
+    let verification = verify_package(temp.path()).unwrap();
+    assert_eq!(verification.checked_archives, metadata.segments);
+    let reader = PackageReader::open(temp.path()).unwrap();
+    assert_eq!(
+        reader.replay_view().unwrap().segments[0].path,
+        "data/seg-000001.arrow"
+    );
+    assert_eq!(
+        reader
+            .read_segment(&SegmentId::new("seg-000001").unwrap())
+            .unwrap()[0]
+            .num_rows(),
+        2
+    );
+}
+
+#[test]
+fn persisted_archive_clean_rerun_skips_and_cleans_stale_temp_paths() {
+    let temp = tempfile::tempdir().unwrap();
+    build_archive_fixture(temp.path());
+    let first = persist_package_parquet_archive(temp.path(), false).unwrap();
+    let first_manifest = fs::read(temp.path().join(MANIFEST_FILE)).unwrap();
+    fs::create_dir_all(temp.path().join("archive/.tmp/stale")).unwrap();
+    fs::write(
+        temp.path().join("archive/.tmp/stale/partial.parquet"),
+        b"stale",
+    )
+    .unwrap();
+
+    let second = persist_package_parquet_archive(temp.path(), false).unwrap();
+
+    assert_eq!(second.status, PackageArchiveWriteStatus::Skipped);
+    assert_eq!(second.segments, first.segments);
+    assert_eq!(
+        fs::read(temp.path().join(MANIFEST_FILE)).unwrap(),
+        first_manifest
+    );
+    assert!(!temp.path().join("archive/.tmp/stale").exists());
+    verify_package(temp.path()).unwrap();
+}
+
+#[test]
+fn persisted_archive_default_fails_on_tamper_and_force_replaces() {
+    let temp = tempfile::tempdir().unwrap();
+    build_archive_fixture(temp.path());
+    persist_package_parquet_archive(temp.path(), false).unwrap();
+    let manifest_before = fs::read(temp.path().join(MANIFEST_FILE)).unwrap();
+
+    let archive_path = temp.path().join("archive/parquet/data/seg-000001.parquet");
+    let mut file = OpenOptions::new().append(true).open(&archive_path).unwrap();
+    file.write_all(b"tamper").unwrap();
+    file.sync_all().unwrap();
+
+    let verify_error = verify_package(temp.path()).unwrap_err();
+    assert!(
+        verify_error
+            .to_string()
+            .contains("tampered archive sidecar archive/parquet/data/seg-000001.parquet"),
+        "{verify_error}"
+    );
+    let default_error = persist_package_parquet_archive(temp.path(), false).unwrap_err();
+    assert!(
+        default_error
+            .to_string()
+            .contains("tampered archive sidecar"),
+        "{default_error}"
+    );
+    assert_eq!(
+        fs::read(temp.path().join(MANIFEST_FILE)).unwrap(),
+        manifest_before
+    );
+
+    let replaced = persist_package_parquet_archive(temp.path(), true).unwrap();
+
+    assert_eq!(replaced.status, PackageArchiveWriteStatus::Replaced);
+    verify_package(temp.path()).unwrap();
+}
+
+#[test]
+fn archive_verification_reports_missing_source_mismatched_orphan_and_bad_fidelity() {
+    let missing = tempfile::tempdir().unwrap();
+    build_archive_fixture(missing.path());
+    persist_package_parquet_archive(missing.path(), false).unwrap();
+    fs::remove_file(
+        missing
+            .path()
+            .join("archive/parquet/data/seg-000001.parquet"),
+    )
+    .unwrap();
+    let error = verify_package(missing.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing archive sidecar archive/parquet/data/seg-000001.parquet"),
+        "{error}"
+    );
+
+    let missing_fidelity = tempfile::tempdir().unwrap();
+    build_archive_fixture(missing_fidelity.path());
+    persist_package_parquet_archive(missing_fidelity.path(), false).unwrap();
+    fs::remove_file(
+        missing_fidelity
+            .path()
+            .join("archive/parquet/fidelity.json"),
+    )
+    .unwrap();
+    let error = verify_package(missing_fidelity.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing archive fidelity report archive/parquet/fidelity.json"),
+        "{error}"
+    );
+
+    let source_mismatch = tempfile::tempdir().unwrap();
+    build_archive_fixture(source_mismatch.path());
+    persist_package_parquet_archive(source_mismatch.path(), false).unwrap();
+    let mut manifest = read_manifest(source_mismatch.path()).unwrap();
+    manifest
+        .archives
+        .as_mut()
+        .unwrap()
+        .parquet
+        .as_mut()
+        .unwrap()
+        .segments[0]
+        .source_sha256 = "not-the-source-hash".to_owned();
+    fs::write(
+        source_mismatch.path().join(MANIFEST_FILE),
+        canonical_json_bytes(&manifest).unwrap(),
+    )
+    .unwrap();
+    let error = verify_package(source_mismatch.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("archive source metadata mismatch for segment seg-000001"),
+        "{error}"
+    );
+
+    let orphan = tempfile::tempdir().unwrap();
+    build_archive_fixture(orphan.path());
+    persist_package_parquet_archive(orphan.path(), false).unwrap();
+    fs::write(
+        orphan.path().join("archive/parquet/data/orphan.parquet"),
+        b"orphan",
+    )
+    .unwrap();
+    let error = verify_package(orphan.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("orphan archive sidecar archive/parquet/data/orphan.parquet"),
+        "{error}"
+    );
+
+    let bad_fidelity = tempfile::tempdir().unwrap();
+    build_archive_fixture(bad_fidelity.path());
+    persist_package_parquet_archive(bad_fidelity.path(), false).unwrap();
+    fs::write(
+        bad_fidelity.path().join("archive/parquet/fidelity.json"),
+        b"{\"package_hash\":\"wrong\"}",
+    )
+    .unwrap();
+    let error = verify_package(bad_fidelity.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("archive fidelity report mismatch"),
+        "{error}"
+    );
+}
+
+#[test]
+fn archive_verification_reports_single_field_archive_metadata_mismatches() {
+    let archive_hash = tempfile::tempdir().unwrap();
+    build_archive_fixture(archive_hash.path());
+    persist_package_parquet_archive(archive_hash.path(), false).unwrap();
+    let mut manifest = read_manifest(archive_hash.path()).unwrap();
+    manifest
+        .archives
+        .as_mut()
+        .unwrap()
+        .parquet
+        .as_mut()
+        .unwrap()
+        .segments[0]
+        .archive_sha256 = "not-the-archive-hash".to_owned();
+    rewrite_manifest_and_fidelity(archive_hash.path(), &manifest);
+    let error = verify_package(archive_hash.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("tampered archive sidecar archive/parquet/data/seg-000001.parquet"),
+        "{error}"
+    );
+
+    let source_byte_count = tempfile::tempdir().unwrap();
+    build_archive_fixture(source_byte_count.path());
+    persist_package_parquet_archive(source_byte_count.path(), false).unwrap();
+    let mut manifest = read_manifest(source_byte_count.path()).unwrap();
+    manifest
+        .archives
+        .as_mut()
+        .unwrap()
+        .parquet
+        .as_mut()
+        .unwrap()
+        .segments[0]
+        .source_byte_count += 1;
+    rewrite_manifest_and_fidelity(source_byte_count.path(), &manifest);
+    let error = verify_package(source_byte_count.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("archive source metadata mismatch for segment seg-000001"),
+        "{error}"
+    );
+
+    let source_row_count = tempfile::tempdir().unwrap();
+    build_archive_fixture(source_row_count.path());
+    persist_package_parquet_archive(source_row_count.path(), false).unwrap();
+    let mut manifest = read_manifest(source_row_count.path()).unwrap();
+    manifest
+        .archives
+        .as_mut()
+        .unwrap()
+        .parquet
+        .as_mut()
+        .unwrap()
+        .segments[0]
+        .source_row_count += 1;
+    rewrite_manifest_and_fidelity(source_row_count.path(), &manifest);
+    let error = verify_package(source_row_count.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("archive source metadata mismatch for segment seg-000001"),
+        "{error}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn archive_verification_distinguishes_unreadable_sidecar_and_fidelity_paths() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let sidecar = tempfile::tempdir().unwrap();
+    build_archive_fixture(sidecar.path());
+    persist_package_parquet_archive(sidecar.path(), false).unwrap();
+    let sidecar_path = sidecar
+        .path()
+        .join("archive/parquet/data/seg-000001.parquet");
+    fs::set_permissions(&sidecar_path, fs::Permissions::from_mode(0o000)).unwrap();
+    let error = verify_package(sidecar.path()).unwrap_err();
+    let _ = fs::set_permissions(&sidecar_path, fs::Permissions::from_mode(0o600));
+    assert!(
+        error
+            .to_string()
+            .contains("archive sidecar archive/parquet/data/seg-000001.parquet could not be read"),
+        "{error}"
+    );
+
+    let fidelity = tempfile::tempdir().unwrap();
+    build_archive_fixture(fidelity.path());
+    persist_package_parquet_archive(fidelity.path(), false).unwrap();
+    let fidelity_path = fidelity.path().join("archive/parquet/fidelity.json");
+    fs::set_permissions(&fidelity_path, fs::Permissions::from_mode(0o000)).unwrap();
+    let error = verify_package(fidelity.path()).unwrap_err();
+    let _ = fs::set_permissions(&fidelity_path, fs::Permissions::from_mode(0o600));
+    assert!(
+        error
+            .to_string()
+            .contains("archive fidelity report archive/parquet/fidelity.json could not be read"),
+        "{error}"
+    );
+}
+
+#[test]
+fn force_archive_reports_replaced_when_manifest_metadata_survives_missing_tree() {
+    let temp = tempfile::tempdir().unwrap();
+    build_archive_fixture(temp.path());
+    persist_package_parquet_archive(temp.path(), false).unwrap();
+    fs::remove_dir_all(temp.path().join("archive/parquet")).unwrap();
+
+    let report = persist_package_parquet_archive(temp.path(), true).unwrap();
+
+    assert_eq!(report.status, PackageArchiveWriteStatus::Replaced);
+    verify_package(temp.path()).unwrap();
+}
+
+#[test]
+fn persisted_archive_rejects_unsafe_manifest_segment_ids() {
+    for segment_id in ["bad/id", "bad\\id", "bad..id", "."] {
+        let temp = tempfile::tempdir().unwrap();
+        build_archive_fixture(temp.path());
+        let mut manifest = read_manifest(temp.path()).unwrap();
+        manifest.identity.segments[0].segment_id = SegmentId::new(segment_id).unwrap();
+        manifest.package_hash = manifest_identity_hash(&manifest.identity).unwrap();
+        manifest.signature.signing_input = manifest.package_hash.clone();
+        fs::write(
+            temp.path().join(MANIFEST_FILE),
+            canonical_json_bytes(&manifest).unwrap(),
+        )
+        .unwrap();
+
+        let error = persist_package_parquet_archive(temp.path(), false).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("segment id cannot be used as an archive file name"),
+            "{segment_id}: {error}"
+        );
+    }
+}
+
+#[test]
+fn persisted_archive_status_gate_allows_only_ratified_statuses() {
+    for status in [
+        PackageStatus::Packaged,
+        PackageStatus::Loaded,
+        PackageStatus::Committed,
+        PackageStatus::Checkpointed,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        build_archive_fixture(temp.path());
+        update_package_status(temp.path(), status.clone()).unwrap();
+        let report = persist_package_parquet_archive(temp.path(), false).unwrap();
+        assert_eq!(report.status, PackageArchiveWriteStatus::Written);
+        assert_eq!(read_manifest(temp.path()).unwrap().lifecycle.status, status);
+    }
+
+    for status in [
+        PackageStatus::Planned,
+        PackageStatus::Extracting,
+        PackageStatus::Validated,
+        PackageStatus::Loading,
+        PackageStatus::Archived,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        build_archive_fixture(temp.path());
+        update_package_status(temp.path(), status.clone()).unwrap();
+        let error = persist_package_parquet_archive(temp.path(), false).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("status {} cannot be archived", status.as_str())),
+            "{error}"
+        );
+    }
+}
+
+fn rewrite_manifest_and_fidelity(package_dir: &Path, manifest: &PackageManifest) {
+    fs::write(
+        package_dir.join(MANIFEST_FILE),
+        canonical_json_bytes(manifest).unwrap(),
+    )
+    .unwrap();
+    let metadata = manifest
+        .archives
+        .as_ref()
+        .and_then(|archives| archives.parquet.as_ref())
+        .unwrap();
+    let fidelity = PackageArchiveFidelityReport {
+        package_hash: manifest.package_hash.clone(),
+        source_format: "arrow_ipc_lz4".to_owned(),
+        archive_format: "parquet".to_owned(),
+        fidelity_statement: metadata.fidelity_statement.clone(),
+        segments: metadata.segments.clone(),
+    };
+    fs::write(
+        package_dir.join("archive/parquet/fidelity.json"),
+        canonical_json_bytes(&fidelity).unwrap(),
+    )
+    .unwrap();
+}

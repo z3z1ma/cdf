@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md
+Parent: .10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md
 Depends-On: .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
 # Implement Singer and Airbyte protocol adapters
@@ -39,7 +39,7 @@ No `firn package archive`, Parquet transcode, Airbyte destination support, full 
 
 ## Progress and notes
 
-- 2026-07-06: Split from `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md` so protocol parsing and `ForeignState` mapping can proceed independently from Parquet archive work.
+- 2026-07-06: Split from `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md` so protocol parsing and `ForeignState` mapping can proceed independently from Parquet archive work.
 - 2026-07-06: Worker subagent started implementation after reading the ticket, referenced research/spec/knowledge records, current `firn-subprocess` files, `firn-formats` read model, kernel batch/position types, and package writer/reader APIs. Existing dirty `.gitignore` is unrelated and must remain untouched.
 - 2026-07-06: Implemented focused `protocol`, `singer`, and `airbyte` modules; added thin exports; added direct JSON/hash dependencies and refreshed `Cargo.lock` metadata required for locked verification; added tests for Singer schema/record/state, Airbyte catalog/record/legacy-stream-global state, malformed required fields without raw state leakage, deterministic state hashes, and package write/replay compatibility.
 - 2026-07-06: Verification evidence recorded in `.10x/evidence/2026-07-06-singer-airbyte-protocol-adapters.md`; closure review recorded in `.10x/reviews/2026-07-06-singer-airbyte-protocol-adapters.md` with verdict `pass`. Worker considers the ticket ready for parent review/closure.

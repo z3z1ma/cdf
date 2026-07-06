@@ -24,7 +24,7 @@ The review also checked the identity risk: adding archive files to `ManifestIden
 
 ## Verdict
 
-Pass. The spec is concrete enough for the implementation child to proceed, and the residual work is owned by `.10x/tickets/2026-07-06-package-archive-persistence-cli.md`.
+Pass. The spec is concrete enough for the implementation child to proceed, and the residual work is owned by `.10x/tickets/done/2026-07-06-package-archive-persistence-cli.md`.
 
 ## Residual risk
 

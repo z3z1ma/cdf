@@ -65,6 +65,7 @@ pub(crate) fn build_manifest(
             signing_input: package_hash,
             value: None,
         },
+        archives: None,
     })
 }
 

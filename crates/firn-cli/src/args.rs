@@ -126,6 +126,14 @@ pub enum PackageCommand {
     Ls { packages_dir: Option<PathBuf> },
     Gc { packages_dir: Option<PathBuf> },
     Verify { package_dir: PathBuf },
+    Archive(PackageArchiveArgs),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageArchiveArgs {
+    pub package_dir: PathBuf,
+    pub format: String,
+    pub force: bool,
 }
 
 impl Cli {
@@ -521,7 +529,9 @@ fn parse_backfill(args: &[String]) -> Result<BackfillArgs, CliError> {
 
 fn parse_package(args: &[String]) -> Result<PackageCommand, CliError> {
     let Some(subcommand) = args.first().map(String::as_str) else {
-        return Err(CliError::usage("package requires one of ls, gc, or verify"));
+        return Err(CliError::usage(
+            "package requires one of ls, gc, verify, or archive",
+        ));
     };
     match subcommand {
         "ls" => Ok(PackageCommand::Ls {
@@ -539,10 +549,42 @@ fn parse_package(args: &[String]) -> Result<PackageCommand, CliError> {
                 package_dir: PathBuf::from(path),
             })
         }
+        "archive" => parse_package_archive(&args[1..]).map(PackageCommand::Archive),
         other => Err(CliError::usage(format!(
             "unknown package subcommand `{other}`"
         ))),
     }
+}
+
+fn parse_package_archive(args: &[String]) -> Result<PackageArchiveArgs, CliError> {
+    let mut package_dir = None;
+    let mut format = "parquet".to_owned();
+    let mut force = false;
+    let mut cursor = Cursor::new(args);
+    while let Some(arg) = cursor.next() {
+        match arg {
+            "--format" => format = cursor.value("--format")?,
+            "--force" => force = true,
+            value if value.starts_with('-') => {
+                return Err(CliError::usage(format!(
+                    "unknown package archive option `{value}`"
+                )));
+            }
+            value => {
+                if package_dir.replace(PathBuf::from(value)).is_some() {
+                    return Err(CliError::usage(
+                        "package archive accepts exactly one package directory",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(PackageArchiveArgs {
+        package_dir: package_dir
+            .ok_or_else(|| CliError::usage("package archive requires a package directory"))?,
+        format,
+        force,
+    })
 }
 
 fn optional_path_arg(command: &str, args: &[String]) -> Result<Option<PathBuf>, CliError> {

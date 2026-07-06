@@ -23,6 +23,8 @@ pub struct PackageManifest {
     pub identity: ManifestIdentity,
     pub lifecycle: LifecycleState,
     pub signature: SignatureSlot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archives: Option<ManifestArchives>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +61,33 @@ pub struct LifecycleState {
 pub struct SignatureSlot {
     pub signing_input: String,
     pub value: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestArchives {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parquet: Option<ParquetArchiveMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ParquetArchiveMetadata {
+    pub format_version: u16,
+    pub fidelity_report_path: String,
+    pub fidelity_statement: String,
+    pub segments: Vec<ArchiveSegmentMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ArchiveSegmentMetadata {
+    pub segment_id: String,
+    pub source_path: String,
+    pub source_byte_count: u64,
+    pub source_sha256: String,
+    pub source_row_count: u64,
+    pub archive_path: String,
+    pub archive_byte_count: u64,
+    pub archive_sha256: String,
+    pub archive_row_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -109,6 +138,13 @@ impl PackageStatus {
         self.rank() >= Self::Packaged.rank() && self != &Self::Archived
     }
 
+    pub fn is_archivable(&self) -> bool {
+        matches!(
+            self,
+            Self::Packaged | Self::Loaded | Self::Committed | Self::Checkpointed
+        )
+    }
+
     fn rank(&self) -> u8 {
         match self {
             Self::Planned => 0,
@@ -135,6 +171,7 @@ impl TryFrom<&str> for PackageStatus {
 pub struct VerificationReport {
     pub package_hash: String,
     pub checked_files: Vec<FileEntry>,
+    pub checked_archives: Vec<ArchiveSegmentMetadata>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

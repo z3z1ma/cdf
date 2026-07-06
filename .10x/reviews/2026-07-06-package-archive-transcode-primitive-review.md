@@ -33,4 +33,4 @@ Pass. Acceptance criteria are covered by focused tests, workspace tests, mutatio
 
 ## Residual risk
 
-The primitive returns Parquet bytes in memory and does not yet define archive file layout, CLI UX, manifest metadata, retention, or lifecycle transitions. That is intentional ticket scope, and the remaining work is still owned by `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+The primitive returns Parquet bytes in memory and does not yet define archive file layout, CLI UX, manifest metadata, retention, or lifecycle transitions. That is intentional ticket scope, and the remaining work is still owned by `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.

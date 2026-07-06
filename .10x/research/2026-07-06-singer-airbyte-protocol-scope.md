@@ -10,7 +10,7 @@ What protocol behavior is sufficiently concrete to implement the first Firn Sing
 
 ## Sources and methods
 
-- Inspected `.10x/specs/resource-authoring-planning-batches.md`, `.10x/specs/checkpoint-state-firn-line.md`, `.10x/specs/package-lifecycle-determinism.md`, and `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+- Inspected `.10x/specs/resource-authoring-planning-batches.md`, `.10x/specs/checkpoint-state-firn-line.md`, `.10x/specs/package-lifecycle-determinism.md`, and `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
 - Checked the current Singer specification at `https://github.com/singer-io/getting-started/blob/master/docs/SPEC.md`.
 - Checked the current Airbyte protocol documentation at `https://docs.airbyte.com/platform/understanding-airbyte/airbyte-protocol`.
 

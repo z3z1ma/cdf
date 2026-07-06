@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md
+Parent: .10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md
 Depends-On: .10x/tickets/done/2026-07-06-package-archive-transcode-primitive.md, .10x/tickets/done/2026-07-06-package-archive-contract-ratification.md
 
 # Implement persisted package archive and CLI
@@ -34,6 +34,9 @@ No Parquet-only replay, archive deletion command, GC policy change, status-to-`a
 ## Progress and notes
 
 - 2026-07-06: Opened after `.10x/tickets/done/2026-07-06-package-archive-contract-ratification.md` made the persisted archive contract executable. A worker should read `.10x/specs/package-lifecycle-determinism.md`, the two dependency tickets, and the current `firn-package`/`firn-cli` code before editing.
+- 2026-07-06: Activated for implementation on main after confirming the worktree only has an unrelated user-owned `.gitignore` modification.
+- 2026-07-06: Implemented persisted archive sidecars, manifest archive metadata, canonical fidelity report verification, status-gated write/skip/replace behavior, CLI archive parsing/output, and focused package/CLI tests. Evidence is recorded in `.10x/evidence/2026-07-06-package-archive-persistence-cli.md`; review is recorded in `.10x/reviews/2026-07-06-package-archive-persistence-cli-review.md`.
+- 2026-07-06: Closed after relevant QUALITY checks passed. `cargo mutants` improved archive mutation coverage but left 7 low-level platform/error-injection guard survivors, recorded as residual risk in the evidence and review.
 
 ## Blockers
 

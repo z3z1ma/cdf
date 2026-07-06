@@ -96,6 +96,7 @@ fn help_lists_required_command_surface() {
         "replay package",
         "backfill",
         "package ls",
+        "package archive",
         "doctor",
         "status",
     ] {
@@ -1155,6 +1156,105 @@ fn package_verify_uses_lower_package_reader() {
     );
 }
 
+#[test]
+fn package_archive_writes_parquet_archive_and_reports_json() {
+    let temp = TempDir::new("firn-cli-package-archive-json");
+    let package_dir = build_archive_cli_package(temp.path(), "pkg-archive-cli-json");
+
+    let result = run([
+        "firn",
+        "--json",
+        "package",
+        "archive",
+        package_dir.to_str().unwrap(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "package archive");
+    assert_eq!(json["result"]["command"], "package archive");
+    assert_eq!(json["result"]["format"], "parquet");
+    assert_eq!(json["result"]["status"], "written");
+    assert_eq!(
+        json["result"]["fidelity_report_path"],
+        "archive/parquet/fidelity.json"
+    );
+    assert_eq!(
+        json["result"]["segments"][0]["archive_path"],
+        "archive/parquet/data/seg-000001.parquet"
+    );
+    assert!(
+        package_dir
+            .join("archive/parquet/data/seg-000001.parquet")
+            .is_file()
+    );
+    assert!(package_dir.join("archive/parquet/fidelity.json").is_file());
+}
+
+#[test]
+fn package_archive_supports_local_json_flag_and_human_output() {
+    let json_temp = TempDir::new("firn-cli-package-archive-local-json");
+    let json_package = build_archive_cli_package(json_temp.path(), "pkg-archive-cli-local-json");
+    let json_result = run([
+        "firn",
+        "package",
+        "archive",
+        json_package.to_str().unwrap(),
+        "--json",
+    ]);
+
+    assert_eq!(json_result.exit_code, 0, "stderr: {}", json_result.stderr);
+    let json = stderr_or_stdout_json(&json_result.stdout);
+    assert_eq!(json["command"], "package archive");
+    assert_eq!(json["result"]["status"], "written");
+
+    let human_temp = TempDir::new("firn-cli-package-archive-human");
+    let human_package = build_archive_cli_package(human_temp.path(), "pkg-archive-cli-human");
+    let human_result = run([
+        "firn",
+        "package",
+        "archive",
+        human_package.to_str().unwrap(),
+    ]);
+
+    assert_eq!(human_result.exit_code, 0, "stderr: {}", human_result.stderr);
+    assert!(human_result.stdout.contains("archived package sha256:"));
+    assert!(human_result.stdout.contains("status written"));
+    assert!(human_result.stdout.contains("1 segment(s)"));
+    assert!(
+        human_result
+            .stdout
+            .contains("fidelity archive/parquet/fidelity.json")
+    );
+}
+
+#[test]
+fn package_archive_rejects_unsupported_format_before_writes() {
+    let temp = TempDir::new("firn-cli-package-archive-format");
+    let package_dir = build_archive_cli_package(temp.path(), "pkg-archive-cli-format");
+
+    let result = run([
+        "firn",
+        "--json",
+        "package",
+        "archive",
+        package_dir.to_str().unwrap(),
+        "--format",
+        "orc",
+    ]);
+
+    assert_eq!(result.exit_code, 2);
+    assert!(!package_dir.join("archive").exists());
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unsupported package archive format `orc`")
+    );
+}
+
 struct SystemSqlFixture {
     package_hash: String,
 }
@@ -1695,6 +1795,28 @@ impl Drop for TempDir {
 
 fn run<const N: usize>(args: [&str; N]) -> crate::InvocationResult {
     invoke(args.into_iter().map(OsString::from))
+}
+
+fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
+    let package_dir = root.join(package_id);
+    let mut builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2_i64])),
+            Arc::new(StringArray::from(vec![Some("ada"), None])),
+        ],
+    )
+    .unwrap();
+    builder
+        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .unwrap();
+    builder.finish_with_status(PackageStatus::Packaged).unwrap();
+    package_dir
 }
 
 fn stderr_or_stdout_json(text: &str) -> Value {

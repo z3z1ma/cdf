@@ -58,4 +58,4 @@ This also supports the supply-chain constraint that this slice does not add the 
 
 ## Limits
 
-This evidence covers only the in-memory archive transcode primitive and shared writer extraction. It does not prove CLI command behavior, archive file placement, manifest archive metadata, retention/GC behavior, package lifecycle status transitions, or tombstone/archive deletion workflows. Those remain owned by `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+This evidence covers only the in-memory archive transcode primitive and shared writer extraction. It does not prove CLI command behavior, archive file placement, manifest archive metadata, retention/GC behavior, package lifecycle status transitions, or tombstone/archive deletion workflows. Those remain owned by `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.

@@ -26,7 +26,7 @@ Record parser round-trip tests, malformed input tests, subprocess supervision te
 
 ## Explicit exclusions
 
-Singer and Airbyte parsers are fast-follow and owned by `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+Singer and Airbyte parsers are fast-follow and owned by `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
 
 Parquet file-source support is split out and blocked under `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md` until the supply-chain policy is ratified or an alternative reader avoids `RUSTSEC-2024-0436`.
 

@@ -22,7 +22,8 @@ use serde_json::json;
 use crate::{
     args::{
         BackfillArgs, Cli, Command, ContractCommand, InitArgs, InspectArgs, InspectNoun,
-        PackageCommand, ReplayPackageArgs, ResumeArgs, RunArgs, ScanArgs, SqlArgs, StateCommand,
+        PackageArchiveArgs, PackageCommand, ReplayPackageArgs, ResumeArgs, RunArgs, ScanArgs,
+        SqlArgs, StateCommand,
     },
     context::{DestinationRuntime, DoctorProbe, ProjectContext, require_lock},
     doctor_drift::{self, DriftStatus},
@@ -470,17 +471,56 @@ fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutput, CliError
             output(
                 "package verify",
                 format!(
-                    "verified package {}: {} file(s)",
+                    "verified package {}: {} file(s), {} archive segment(s)",
                     report.package_hash,
-                    report.checked_files.len()
+                    report.checked_files.len(),
+                    report.checked_archives.len()
                 ),
                 PackageVerifyReport {
                     package_hash: report.package_hash,
                     checked_files: report.checked_files,
+                    checked_archives: report.checked_archives,
                 },
             )
         }
+        PackageCommand::Archive(args) => package_archive(args),
     }
+}
+
+fn package_archive(args: PackageArchiveArgs) -> Result<CommandOutput, CliError> {
+    if args.format != "parquet" {
+        return Err(CliError::usage(format!(
+            "unsupported package archive format `{}`",
+            args.format
+        )));
+    }
+
+    let report = firn_package::persist_package_parquet_archive(&args.package_dir, args.force)?;
+    let archive_byte_count = report
+        .segments
+        .iter()
+        .map(|segment| segment.archive_byte_count)
+        .sum::<u64>();
+    output(
+        "package archive",
+        format!(
+            "archived package {} as parquet: status {}, {} segment(s), {} byte(s), fidelity {}",
+            report.package_hash,
+            package_archive_status(&report.status),
+            report.segments.len(),
+            archive_byte_count,
+            report.fidelity_report_path
+        ),
+        PackageArchiveCliReport {
+            command: "package archive",
+            package_hash: report.package_hash,
+            format: report.format,
+            status: report.status,
+            fidelity_report_path: report.fidelity_report_path,
+            fidelity_statement: report.fidelity_statement,
+            segments: report.segments,
+        },
+    )
 }
 
 fn doctor(cli: &Cli) -> Result<CommandOutput, CliError> {
@@ -1165,6 +1205,18 @@ struct PackageListEntry {
 struct PackageVerifyReport {
     package_hash: String,
     checked_files: Vec<firn_package::FileEntry>,
+    checked_archives: Vec<firn_package::ArchiveSegmentMetadata>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct PackageArchiveCliReport {
+    command: &'static str,
+    package_hash: String,
+    format: String,
+    status: firn_package::PackageArchiveWriteStatus,
+    fidelity_report_path: String,
+    fidelity_statement: String,
+    segments: Vec<firn_package::ArchiveSegmentMetadata>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -1273,6 +1325,15 @@ Commands:
   package ls [DIR]
   package gc [DIR]
   package verify <DIR>
+  package archive <DIR> [--format parquet] [--force]
   doctor
   status
 "#;
+
+fn package_archive_status(status: &firn_package::PackageArchiveWriteStatus) -> &'static str {
+    match status {
+        firn_package::PackageArchiveWriteStatus::Written => "written",
+        firn_package::PackageArchiveWriteStatus::Skipped => "skipped",
+        firn_package::PackageArchiveWriteStatus::Replaced => "replaced",
+    }
+}

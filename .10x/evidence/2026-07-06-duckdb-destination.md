@@ -11,7 +11,7 @@ Relates-To: .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/specs/desti
 
 The implementation commits canonical `firn-package` Arrow IPC segments by reading `PackageReader` replay batches and appending supported Arrow values into DuckDB through the real DuckDB appender API. It supports append, transactional replace, and merge. Merge deduplicates exact duplicate package rows before writing and rejects conflicting duplicate merge keys because no active record ratifies a winner policy.
 
-The destination sheet declares append/replace/merge, atomic-package transactions, package-token idempotency, namecase-v1 identifier rules, migration support, single-writer concurrency, and explicit type mappings. The extended DuckDB capability report declares `arrow_ipc_package_rows` as supported and Parquet scan replay as unsupported in this slice because `firn package archive` Parquet data is owned by `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+The destination sheet declares append/replace/merge, atomic-package transactions, package-token idempotency, namecase-v1 identifier rules, migration support, single-writer concurrency, and explicit type mappings. The extended DuckDB capability report declares `arrow_ipc_package_rows` as supported and Parquet scan replay as unsupported in this slice because `firn package archive` Parquet data is owned by `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
 
 ## Procedure
 
@@ -49,6 +49,6 @@ No evidence challenged local DuckDB driver viability. The first bundled build co
 
 The direct `duckdb-rs` Arrow appender is not used because `duckdb 1.10504.0` exposes Arrow appender APIs over Arrow 58 while Firn package/kernel APIs use Arrow 59. The destination therefore uses the real DuckDB row appender over decoded Firn Arrow IPC package batches to avoid crossing incompatible public Arrow types.
 
-Parquet package replay is declared unsupported in this crate until `firn package archive` produces Parquet package data with a fidelity report. That package/archive work is already owned by `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+Parquet package replay is declared unsupported in this crate until `firn package archive` produces Parquet package data with a fidelity report. That package/archive work is already owned by `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
 
 Timezone-aware timestamp commits remain unsupported; the crate exposes `probe_icu` so the project/CLI doctor layer can report ICU availability. Naive second/millisecond/microsecond timestamps are supported; nanosecond timestamp/time values are rejected when they would lose precision.

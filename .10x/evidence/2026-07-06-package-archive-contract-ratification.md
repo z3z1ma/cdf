@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-package-archive-contract-ratification.md, .10x/specs/package-lifecycle-determinism.md, .10x/tickets/2026-07-06-package-archive-persistence-cli.md
+Relates-To: .10x/tickets/done/2026-07-06-package-archive-contract-ratification.md, .10x/specs/package-lifecycle-determinism.md, .10x/tickets/done/2026-07-06-package-archive-persistence-cli.md
 
 # Package archive contract ratification evidence
 
@@ -16,12 +16,12 @@ Current `PackageManifest` computes `package_hash` from `ManifestIdentity`; lifec
 ## Procedure
 
 - Inspected `.10x/specs/package-lifecycle-determinism.md`.
-- Inspected `.10x/tickets/2026-07-05-singer-airbyte-and-package-archive.md`.
+- Inspected `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
 - Inspected `.10x/tickets/done/2026-07-06-package-archive-transcode-primitive.md`.
 - Inspected `firn-the-book-of-the-system.md` sections and decisions covering D-4, D-10, package layout, package lifecycle, replay, and `firn package archive`.
 - Inspected current `firn-package` model/reader/archive source through parent and subagent reads.
 - Updated `.10x/specs/package-lifecycle-determinism.md` to define archive sidecar placement, `manifest.archives.parquet` metadata, identity/hash/signing participation, status behavior, replay preference, rerun/crash behavior, and CLI contract.
-- Opened `.10x/tickets/2026-07-06-package-archive-persistence-cli.md` as the executable implementation child.
+- Opened `.10x/tickets/done/2026-07-06-package-archive-persistence-cli.md` as the executable implementation child.
 - Ran `rg -n "\\.10x/tickets/2026-07-06-package-archive-contract-ratification\\.md" .10x || true`; it produced no stale references to the moved top-level ticket path.
 - Ran `git diff --check -- .10x` and `git diff --cached --check`; both completed without whitespace errors.
 
