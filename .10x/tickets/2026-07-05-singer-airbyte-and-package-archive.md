@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
 Depends-On: .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
@@ -28,6 +28,7 @@ Airbyte destinations remain out of scope.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-06: Split `.10x/tickets/2026-07-06-singer-airbyte-protocol-adapters.md` for executable Singer/Airbyte protocol parsing and opaque `ForeignState` mapping. `firn package archive` remains intentionally excluded from that child because Parquet transcode intersects the active supply-chain blocker.
 
 ## Blockers
 
