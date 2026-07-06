@@ -99,6 +99,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-singer-airbyte-protocol-adapters.md`; `firn-subprocess` now has focused Singer/Airbyte protocol parser modules, canonical opaque `ForeignState` hashing, stream-scoped batch conversion, package replay compatibility tests, mutation-clean adapter tests, and full QUALITY evidence. The larger Singer/Airbyte/package-archive parent remains open for `firn package archive`.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-05-parquet-object-store-destination.md`; `firn-dest-parquet` now implements append/replace package-token Parquet materialization over filesystem/object_store, object manifest and replace-pointer receipts, tamper-aware receipt verification, DuckDB-backed Parquet export without the arrow-rs `parquet`/`paste` advisory path, non-monolithic crate modules, mutation-clean focused tests, and full QUALITY evidence.
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md`; `firn doctor` now has a real configured-Python interpreter probe with version, GIL/free-threaded, no-resource-code-execution, and secret-redaction coverage.
+- 2026-07-06: Opened observability child `.10x/tickets/2026-07-06-doctor-secrets-duckdb-icu-health.md` for the next doctor hardening slice.
 
 ## Blockers
 

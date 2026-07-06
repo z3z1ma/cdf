@@ -34,6 +34,7 @@ No dashboard or UI.
 - 2026-07-06: Split and closed child `.10x/tickets/done/2026-07-06-duckdb-ledger-mirror-doctor-drift.md` for the first concrete local DuckDB ledger/mirror drift doctor probe. `firn doctor` now reports local DuckDB ledger/mirror drift as skipped, passed, or failed with read-only probes.
 - 2026-07-06: Split child `.10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md` for the next bounded doctor slice: configured Python interpreter health, version, GIL/free-threaded status, and `python.require_free_threaded` compatibility. This keeps the observability work moving without crossing into blocked run/preview/status runtime orchestration.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md`; `firn doctor` now runs a fixed process-based Python interpreter probe, validates version/GIL/free-threaded metadata, enforces `python.require_free_threaded`, fails configured Python resources without an interpreter, and avoids executing project Python resource code.
+- 2026-07-06: Split child `.10x/tickets/2026-07-06-doctor-secrets-duckdb-icu-health.md` for the next bounded doctor slice: closure-grade environment details, secret resolvability/redaction behavior, and DuckDB ICU reporting.
 
 ## Blockers
 
