@@ -1624,6 +1624,108 @@ fn run_sql_resource_resolves_secret_without_leaking_before_cursor_blocker() {
 }
 
 #[test]
+fn run_sql_resource_with_ordered_cursor_commits_checkpoint() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("source_orders");
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"id\" BIGINT NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            );
+            INSERT INTO {} (\"id\", \"updated_at\") VALUES (1, 10), (2, 20)",
+            table, table
+        ))
+        .unwrap();
+
+    let project = TestProject::new();
+    let source_dsn = postgres.url.replacen(
+        "postgresql://cdf@",
+        "postgresql://cdf:source-sql-secret@",
+        1,
+    );
+    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_resource_with_ordered_cursor("secret://file/sql-dsn", &table),
+    )
+    .unwrap();
+
+    let result = run_valid_run_resource_target(
+        &project,
+        "warehouse.orders",
+        "pkg-run-sql-success",
+        "checkpoint-run-sql-success",
+        "orders",
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
+    assert_secret_absent(&result, "source-sql-secret");
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_id"], "warehouse.orders");
+    assert_eq!(report["target"], "orders");
+    assert_eq!(report["destination"]["kind"], "duckdb");
+    assert_eq!(report["destination"]["destination_id"], "duckdb");
+    assert_eq!(report["row_count"], 2);
+    assert_eq!(report["segment_count"], 1);
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
+    assert_eq!(report["receipt"]["segment_ack_count"], 1);
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["checkpoint"]["committed"], true);
+    assert_eq!(report["checkpoint"]["is_head"], true);
+    assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
+    assert_eq!(
+        report["ledger_events"]["events"][9]["kind"],
+        "run_succeeded"
+    );
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let mut statement = conn
+        .prepare("SELECT id, updated_at FROM orders ORDER BY id")
+        .unwrap();
+    let rows = statement
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![(1, 10), (2, 20)]);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("warehouse.orders").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed SQL run head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-run-sql-success"
+    );
+    let SourcePosition::Cursor(cursor) = &head.delta.output_position else {
+        panic!("expected SQL run checkpoint head to use a cursor position");
+    };
+    assert_eq!(cursor.field, "updated_at");
+    assert_eq!(cursor.value, CursorValue::I64(20));
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.as_str(),
+        report["receipt_id"].as_str().unwrap()
+    );
+}
+
+#[test]
 fn run_parquet_destination_writes_filesystem_root() {
     let project = TestProject::new();
     write_project_destination(&project, "parquet://.cdf/parquet");
@@ -4419,6 +4521,28 @@ write_disposition = "append"
 trust = "governed"
 schema = {{ fields = [
   {{ name = "id", type = "int64", nullable = false }},
+] }}
+"#
+    )
+}
+
+fn sql_resource_with_ordered_cursor(connection: &str, table: &str) -> String {
+    format!(
+        r#"
+[source.warehouse]
+kind = "sql"
+connection = "{connection}"
+dialect = "postgres"
+
+[resource.orders]
+table = "{table}"
+primary_key = ["id"]
+cursor = {{ field = "updated_at", ordering = "exact", lag = "0ms" }}
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+  {{ name = "id", type = "int64", nullable = false }},
+  {{ name = "updated_at", type = "int64", nullable = false }},
 ] }}
 "#
     )

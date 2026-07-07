@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
+Parent: .10x/tickets/done/2026-07-07-run-spine-implementation-program.md
 Depends-On: .10x/tickets/done/2026-07-07-duckdb-commit-session-refactor.md, .10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md, .10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md, .10x/tickets/done/2026-07-07-run-ledger-store.md, .10x/tickets/done/2026-07-07-general-run-postgres-destination.md, .10x/tickets/done/2026-07-07-non-duckdb-package-replay-recovery.md, .10x/specs/run-orchestration-ledger.md
 
 # Implement the general project run orchestrator

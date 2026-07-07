@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
+Parent: .10x/tickets/done/2026-07-07-run-spine-implementation-program.md
 Depends-On: .10x/decisions/run-ledger-commit-session-spine.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/destination-receipts-guarantees.md
 
 # Add kernel destination commit-session API

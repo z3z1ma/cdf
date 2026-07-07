@@ -71,8 +71,8 @@ No source edits, no destination refactor, no CLI run widening, no run-ledger sch
 ## Progress and notes
 
 - 2026-07-07: Opened after a user-provided architecture audit and parent source inspection both identified the same gap: the runtime has correct specialized DuckDB/file orchestration, but no ratified general run ledger or driver-neutral commit-session spine. The current SQL source execution child remains in progress separately; this ticket owns the next parent-level architecture decision path.
-- 2026-07-07: Ratified active decision `.10x/decisions/run-ledger-commit-session-spine.md` and active spec `.10x/specs/run-orchestration-ledger.md`. Updated destination and CLI/observability specs to point at the run spine. Opened implementation parent `.10x/tickets/2026-07-07-run-spine-implementation-program.md` and child tickets for kernel API, DuckDB/Parquet/Postgres session refactors, run ledger store, general project orchestrator, and CLI run/resume/replay/inspect wiring.
+- 2026-07-07: Ratified active decision `.10x/decisions/run-ledger-commit-session-spine.md` and active spec `.10x/specs/run-orchestration-ledger.md`. Updated destination and CLI/observability specs to point at the run spine. Opened implementation parent `.10x/tickets/done/2026-07-07-run-spine-implementation-program.md` and child tickets for kernel API, DuckDB/Parquet/Postgres session refactors, run ledger store, general project orchestrator, and CLI run/resume/replay/inspect wiring.
 
 ## Blockers
 
-None. Implementation is owned by `.10x/tickets/2026-07-07-run-spine-implementation-program.md` and its children.
+None. Implementation is owned by `.10x/tickets/done/2026-07-07-run-spine-implementation-program.md` and its children.

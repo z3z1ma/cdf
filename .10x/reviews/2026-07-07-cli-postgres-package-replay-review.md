@@ -26,7 +26,7 @@ The large Postgres destination field is boxed in the internal CLI enum after Cli
 
 The optional local Postgres harness uses `/tmp` for the Unix socket directory to avoid macOS socket path length failures. The data directory remains under the existing CLI test target root. This is test infrastructure only.
 
-The broader CLI spine remains open for `run`, `resume`, and `inspect run`; this review covers only the replay child.
+At the time of this review, the broader CLI spine still needed `run`, `resume`, and `inspect run`; this review covers only the replay child. The aggregate CLI spine parent later closed in `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md`.
 
 ## Verdict
 

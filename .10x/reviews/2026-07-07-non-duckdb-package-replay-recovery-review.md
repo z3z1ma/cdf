@@ -23,4 +23,4 @@ Pass. The child closes the parent audit gap without adding semantic defaults or 
 
 ## Residual risk
 
-CLI resume/replay still needs to route to these public replay functions. That is owned by `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`.
+At the time of this review, CLI resume/replay still needed to route to these public replay functions. That work was owned by `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md`, which later closed.

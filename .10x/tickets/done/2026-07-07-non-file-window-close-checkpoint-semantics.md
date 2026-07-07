@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
+Parent: .10x/tickets/done/2026-07-07-run-spine-implementation-program.md
 Depends-On: .10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/run-orchestration-ledger.md, .10x/decisions/non-file-window-close-checkpoint-semantics.md
 
 # Ratify and implement non-file window-close checkpoint semantics

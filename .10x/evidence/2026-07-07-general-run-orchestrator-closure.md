@@ -40,4 +40,4 @@ Current-tree checks observed for this closure:
 
 ## Limits
 
-CLI `run`, `resume`, `replay package`, and `inspect run` are not closed by this ticket. They are owned by `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`, now unblocked by the general orchestrator closure.
+At the time of this evidence, CLI `run`, `resume`, `replay package`, and `inspect run` were not closed by this ticket. They were owned by `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md`, which later closed as the CLI consumer of the general orchestrator.

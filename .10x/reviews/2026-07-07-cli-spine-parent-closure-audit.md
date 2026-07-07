@@ -1,14 +1,14 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
+Target: .10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md
 Verdict: concerns
 
 # CLI spine parent closure audit
 
 ## Target
 
-Closure audit for `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md` after `run`, `replay package`, `inspect run`, and `resume` child work.
+Closure audit for `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md` after `run`, `replay package`, `inspect run`, and `resume` child work.
 
 ## Findings
 
