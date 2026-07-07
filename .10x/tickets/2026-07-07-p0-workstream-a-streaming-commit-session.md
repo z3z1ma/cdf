@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
@@ -48,6 +48,7 @@ No new destination type, no new package format, no public performance claim, no 
 
 - 2026-07-07: Opened from P0 stop-line. Current source inspection shows `CommitSession::write(&mut self)` takes no data and `DestinationProtocol::begin` has an error-returning default in `crates/cdf-kernel/src/destination.rs`.
 - 2026-07-07: Read-only subagent inventory confirmed eager package materialization paths: `PackageReader::read_all_segments()` in `crates/cdf-package/src/reader.rs`, rows vectors in `crates/cdf-dest-duckdb/src/package.rs` and `crates/cdf-dest-postgres/src/package.rs`, and all-segment Parquet package handling in `crates/cdf-dest-parquet/src/package.rs`.
+- 2026-07-07: Activated and ratified exact API shape in `.10x/decisions/commit-session-segment-write-api.md`: synchronous `write_segment(CommitSegment) -> SegmentAck`, required `begin`, and trait-level `verify`.
 
 ## Blockers
 

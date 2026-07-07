@@ -56,6 +56,7 @@ No implementation is authorized by this parent directly. No new warehouse/lakeho
 ## Progress and notes
 
 - 2026-07-07: Opened from user-ratified P0 structural-debt directive. Workstreams A-C are the stop-line gate. D-F may proceed concurrently in conflict-free lanes.
+- 2026-07-07: Activated Workstream A and ratified `.10x/decisions/commit-session-segment-write-api.md` so implementation workers have a stable kernel session contract.
 
 ## Blockers
 
