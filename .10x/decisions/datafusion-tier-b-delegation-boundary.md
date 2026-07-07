@@ -65,7 +65,7 @@ The current engine MVP remains valid evidence for pushdown vocabulary, no-I/O ne
 
 `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` owns the next D-28 dependency-tuple decision needed before a production adapter.
 
-`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` owns the later adapter implementation and remains blocked until tuple compatibility is settled.
+`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` owns the later adapter implementation and must wait until tuple compatibility is settled.
 
 `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md` owns the completed near-term source/product drift correction where explain/operator metadata named DataFusion nodes that were not actually executed.
 

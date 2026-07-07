@@ -34,4 +34,8 @@ No lower-layer invariant implementation, no UI, no daemon, no distributed schedu
 
 ## Blockers
 
-Blocked until `.10x/tickets/2026-07-07-general-run-orchestrator.md` is done.
+None from user. Execution waits for `.10x/tickets/2026-07-07-general-run-orchestrator.md` to complete enough supported destination/source coverage for CLI wiring.
+
+## Progress and notes
+
+- 2026-07-07: User ratified the outstanding run-spine adjacent decisions. This ticket is open and dependency-gated by the general orchestrator, not waiting on semantic input.

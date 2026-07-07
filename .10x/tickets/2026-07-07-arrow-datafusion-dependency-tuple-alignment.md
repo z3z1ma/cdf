@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/decisions/datafusion-tier-b-delegation-boundary.md
+Depends-On: .10x/decisions/datafusion-tier-b-delegation-boundary.md, .10x/decisions/arrow-datafusion-tuple-policy.md
 
 # Align the Arrow/DataFusion dependency tuple
 
@@ -58,7 +58,8 @@ No generic `TableProvider` adapter, no explain/operator metadata changes, no pre
 ## Progress and notes
 
 - 2026-07-07: Opened from DataFusion delegation triage. The recommended default is no permanent Arrow 58/59 engine hot-path bridge. The execution-critical blocker is whether CDF should wait for DataFusion to align with Arrow 59, repin first-party Arrow to DataFusion's Arrow major after golden-suite proof, or explicitly ratify a temporary bridge.
+- 2026-07-07: User ratified `.10x/decisions/arrow-datafusion-tuple-policy.md` with a hard clarification that DataFusion is mandatory day-zero architecture. This ticket is no longer blocked on product preference; next execution must inspect the current registry/lockfile tuple and choose the smallest same-major-compatible path under that decision.
 
 ## Blockers
 
-Unclear dependency strategy. Confirm or supersede the recommended default before changing dependency versions: no permanent bridge; prefer same-major Arrow/DataFusion alignment through upstream DataFusion, with first-party Arrow repin considered only after golden-package proof.
+None from user. If current registry evidence still lacks a same-major tuple, implementation must either prove a safe CDF Arrow repin with golden-package evidence or return with a focused temporary-bridge/release-wait proposal under `.10x/decisions/arrow-datafusion-tuple-policy.md`.

@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-general-run-orchestrator.md
-Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/destination-receipts-guarantees.md
+Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/destination-receipts-guarantees.md, .10x/decisions/project-run-postgres-destination-inputs.md
 
 # Add Postgres destination support to the general run orchestrator
 
@@ -27,8 +27,7 @@ Owns:
 
 ## Blockers
 
-- Current project-run inputs do not carry enough Postgres-specific semantic data to build `PostgresLoadPlanInput` without guessing: `PostgresTarget`, `PostgresColumn` mappings, merge keys as `PostgresIdentifier`s, merge dedup policy, and existing-table policy.
-- The current ticket has not ratified whether those values should be derived from resource descriptors, package schema, project environment destination URI, destination introspection, or explicit run request fields.
+None from user. `.10x/decisions/project-run-postgres-destination-inputs.md` ratifies explicit destination/run configuration for `PostgresTarget`, existing-table policy, and merge dedup policy; package-schema-derived column mappings; descriptor-derived merge keys only when explicitly present; and no implicit destination-introspection semantics for this slice.
 
 ## Explicit exclusions
 
@@ -41,3 +40,4 @@ Run focused `cdf-project` tests, Postgres destination live tests when the harnes
 ## Progress and notes
 
 - 2026-07-07: Blocked during `.10x/tickets/2026-07-07-general-run-orchestrator.md` continuation. Inspection found `PostgresDestination::plan_load` and `DestinationProtocol::begin` are available, but project-level inputs for safe `PostgresLoadPlanInput` construction are not yet ratified.
+- 2026-07-07: User ratified the first-slice Postgres input contract in `.10x/decisions/project-run-postgres-destination-inputs.md`, while clarifying that future destination introspection remains in scope for the overall product. This ticket is now executable as an explicit-input project-run slice.

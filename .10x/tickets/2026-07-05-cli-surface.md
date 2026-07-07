@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-05
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
+Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md, .10x/tickets/2026-07-07-cli-remaining-command-planners.md
 
 # Implement CLI surface
 
@@ -32,25 +32,19 @@ Business logic belongs in lower crates; CLI must not bypass lower-layer invarian
 - 2026-07-06: Assigned to CLI worker. Worker owns `crates/cdf-cli/**`, its own evidence/review records, and may update `Cargo.lock` only for CLI dependencies. Do not touch `.gitignore`, lower-crate implementation, parent ticket, or unrelated records.
 - 2026-07-06: Implemented the practical CLI surface in `crates/cdf-cli` with split modules for parsing, context loading, command handling, and JSON/error output. Commands use existing lower-crate APIs where exposed and return explicit unsupported exits instead of faking invariant-sensitive writes. Evidence recorded in `.10x/evidence/2026-07-06-cli-surface.md`.
 - 2026-07-06: Implemented the first supported `cdf sql` surface under `.10x/tickets/done/2026-07-06-local-system-sql.md`: read-only local system-history queries over checkpoint and package metadata. `sql` is no longer a blocker for the CLI surface.
-- 2026-07-06: Closed lower-layer child `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`; explicit prepared-package DuckDB replay/recovery into `CheckpointStore::commit` now exists without source contact. CLI plumbing remains blocked on command-level project loading, explicit delta/receipt input handling, and broader run-ledger orchestration rather than on the lower-layer package-to-checkpoint primitive.
-- 2026-07-06: Closed child `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`; `preview` now works for the first safe runtime slice: single-match declarative local file resources using the existing `cdf-formats::FileResource` execution path. Broader CLI acceptance remains blocked on the lower-layer APIs listed below.
+- 2026-07-06: Closed lower-layer child `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`; explicit prepared-package DuckDB replay/recovery into `CheckpointStore::commit` now exists without source contact. At that point, CLI plumbing still waited on command-level project loading, explicit delta/receipt input handling, and broader run-ledger orchestration rather than on the lower-layer package-to-checkpoint primitive.
+- 2026-07-06: Closed child `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`; `preview` now works for the first safe runtime slice: single-match declarative local file resources using the existing `cdf-formats::FileResource` execution path. Broader CLI acceptance is now tracked by the open dependency owners below.
 - 2026-07-06: Closed child `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md` for the first live `run` slice: explicit declarative local file resource to DuckDB destination and SQLite checkpoint with package/destination/checkpoint invariants preserved. It intentionally requires explicit pipeline, target, package id, and checkpoint id inputs so this slice does not invent run-ledger defaults.
 - 2026-07-07: Run-ledger and commit-session semantics were ratified in `.10x/decisions/run-ledger-commit-session-spine.md` and `.10x/specs/run-orchestration-ledger.md`. CLI run/resume/replay/inspect implementation is now owned by `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md` after lower-layer run-spine children complete.
+- 2026-07-07: User ratified the remaining run-spine, Postgres destination, non-file checkpoint, and DataFusion tuple decisions. This parent is no longer a blocked semantic holder; remaining unsupported CLI surfaces are dependency-gated by focused open owners.
 
 ## Blockers
 
-Full acceptance is blocked by missing lower-layer APIs. Exact unsupported surfaces are recorded in `.10x/evidence/2026-07-06-cli-surface.md` and include:
+None from user or unresolved product semantics.
 
-- `init`: no project scaffold/write API.
-- `plan`/`explain` DDL preview: no scan/resource-schema to destination-DDL planning facade.
-- `preview`: the single-match local file resource slice is implemented in `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`. REST and SQL declarative preview runtime paths, Arrow IPC file preview, and multi-file scan semantics remain unsupported below the CLI.
-- `run`: first explicit local file to DuckDB/SQLite orchestration slice is done in `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md`. Broader automatic ids, REST/SQL resources, non-DuckDB destinations, and multi-resource runs are now ratified by the run-spine decision/spec but blocked on implementation children under `.10x/tickets/2026-07-07-run-spine-implementation-program.md`.
-- `contract freeze` and `contract test`: no contract registry/snapshot writer or fixture runner.
-- `state migrate` and `state recover`: no state migration runner or destination mirror recovery API.
-- `resume`: run-ledger/recovery semantics are ratified, but the full run ledger and recovery orchestrator are not implemented.
-- `replay package`: package replay/checkpoint primitive now exists in `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`, and replay semantics are ratified by `.10x/specs/run-orchestration-ledger.md`; CLI command wiring remains blocked on the general orchestrator and destination session children.
-- `backfill`: no backfill planner/orchestrator.
-- `package gc`: no retention planner tied to checkpoint history.
-- `status` for resources with freshness SLOs: no runtime ledger/package receipt timestamps for freshness evaluation.
+Full CLI acceptance is dependency-gated by open implementation owners:
 
-Verification note: `cargo fmt --all -- --check`, `cargo test -p cdf-cli --locked --no-fail-fast`, `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings`, `cargo check -p cdf-cli --all-targets --locked`, and `cargo check --workspace --all-targets --locked` pass after parent integration. Semgrep's initial CLI argv/path findings were resolved by using a source-local test directory and documenting the intentionally non-security CLI argv dispatch boundary with a narrow `nosemgrep` comment. Full acceptance remains blocked by the missing lower-layer APIs listed above.
+- `run`, `resume`, `replay package`, and `inspect run` are owned by `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`.
+- `init`, DDL planning for `plan`/`explain`, broader `preview`, contract registry/fixture commands, state migration/recovery commands, backfill, package GC, and runtime-ledger freshness integration are owned by `.10x/tickets/2026-07-07-cli-remaining-command-planners.md`.
+
+Verification note: `cargo fmt --all -- --check`, `cargo test -p cdf-cli --locked --no-fail-fast`, `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings`, `cargo check -p cdf-cli --all-targets --locked`, and `cargo check --workspace --all-targets --locked` pass after parent integration. Semgrep's initial CLI argv/path findings were resolved by using a source-local test directory and documenting the intentionally non-security CLI argv dispatch boundary with a narrow `nosemgrep` comment. Full acceptance is now dependency-gated by the open owners listed above.

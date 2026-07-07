@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
-Depends-On: .10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/run-orchestration-ledger.md
+Depends-On: .10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/run-orchestration-ledger.md, .10x/decisions/non-file-window-close-checkpoint-semantics.md
 
 # Ratify and implement non-file window-close checkpoint semantics
 
@@ -26,8 +26,7 @@ Owns:
 
 ## Blockers
 
-- Page-token aggregation and mixed source-position semantics are unclear for project-run checkpoint state and need ratification before implementation.
-- Cursor window-close arithmetic needs type-specific rules for supported cursor value kinds before tests can encode it.
+None from user for numeric, timestamp, and date cursor window-close semantics. Page-token-only, mixed page-token/cursor, unsupported cursor value kinds, divergent source-position variants, and incompatible cursor fields remain fail-closed behavior under `.10x/decisions/non-file-window-close-checkpoint-semantics.md`.
 
 ## Explicit Exclusions
 
@@ -40,3 +39,4 @@ Run focused project-runtime tests for cursor aggregation/window-close cases, RES
 ## Progress and Notes
 
 - 2026-07-07: Opened during closure of `.10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md`. That ticket intentionally supports only exact zero-lag non-file cursors and fail-closes inexact, lagged, missing, or divergent non-file positions.
+- 2026-07-07: User ratified `.10x/decisions/non-file-window-close-checkpoint-semantics.md`: implement window-close for numeric/timestamp/date cursors; treat page tokens as pagination transport unless paired with a ratified cursor; fail closed for page-token-only, mixed, unsupported, divergent, or incompatible positions.

@@ -1,4 +1,4 @@
-Status: blocked
+Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -10,7 +10,7 @@ Depends-On: .10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.
 
 Implement the generic internal `cdf-engine` adapter that exposes eligible Tier B `QueryableResource` resources as DataFusion `TableProvider`s while preserving CDF resource semantics, pushdown fidelity, provenance, and package execution constraints.
 
-This ticket is blocked until `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` resolves Arrow/DataFusion type compatibility.
+This ticket must not execute until `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` resolves Arrow/DataFusion type compatibility.
 
 ## Acceptance criteria
 
@@ -45,8 +45,9 @@ No dependency tuple changes, no kernel API DataFusion exposure, no REST-specific
 
 ## Progress and notes
 
-- 2026-07-07: Opened from triage. The adapter is architecturally ratified, but production implementation is blocked by Arrow/DataFusion dependency tuple compatibility.
+- 2026-07-07: Opened from triage. The adapter is architecturally ratified, but production implementation must wait for Arrow/DataFusion dependency tuple compatibility.
+- 2026-07-07: User ratified `.10x/decisions/arrow-datafusion-tuple-policy.md` with the clarification that DataFusion is day-zero mandatory. This ticket is open and dependency-gated by the tuple alignment ticket, not waiting on user semantic input.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`.
+None from user. Execution waits for `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` to complete.
