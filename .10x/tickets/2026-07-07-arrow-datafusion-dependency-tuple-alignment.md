@@ -59,6 +59,7 @@ No generic `TableProvider` adapter, no explain/operator metadata changes, no pre
 
 - 2026-07-07: Opened from DataFusion delegation triage. The recommended default is no permanent Arrow 58/59 engine hot-path bridge. The execution-critical blocker is whether CDF should wait for DataFusion to align with Arrow 59, repin first-party Arrow to DataFusion's Arrow major after golden-suite proof, or explicitly ratify a temporary bridge.
 - 2026-07-07: User ratified `.10x/decisions/arrow-datafusion-tuple-policy.md` with a hard clarification that DataFusion is mandatory day-zero architecture. This ticket is no longer blocked on product preference; next execution must inspect the current registry/lockfile tuple and choose the smallest same-major-compatible path under that decision.
+- 2026-07-07: Recorded current tuple research in `.10x/research/2026-07-07-arrow-datafusion-current-tuple.md`. Parent-observed registry and lockfile evidence shows `datafusion 54.0.0` uses Arrow/Parquet 58.3.0, current CDF first-party crates use Arrow/Parquet 59.0.0, and `pyo3-arrow 0.19.0` is also on Arrow 59. The smallest same-major path under the active policy is a deliberate first-party repin to the Arrow/Parquet 58.3.0 tuple, including Python bridge tuple fallout, followed by golden-package and supply-chain evidence.
 
 ## Blockers
 
