@@ -141,6 +141,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-native-parquet-file-source.md`; `cdf-formats` now reads Parquet file sources through native arrow-rs `parquet 59.0.0`, removes its DuckDB/Arrow 58 Parquet bridge, preserves package replay/source-position/schema-hash behavior, and records explicit scanner evidence for the ratified `RUSTSEC-2024-0436` path through `paste`.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-native-parquet-writer-archive.md`; package archive transcode and the Parquet destination writer now use native arrow-rs `ArrowWriter`, remove the scoped DuckDB writer/export path, preserve IPC package identity and receipt/idempotency behavior, and record explicit scanner evidence for the ratified `RUSTSEC-2024-0436` path through `paste`.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-local-duckdb-lifecycle-chaos-failpoints.md`; local DuckDB/SQLite package/checkpoint lifecycle chaos now has named runtime failpoints, helper-process conformance coverage for the four ratified windows, exact committed-head reuse after checkpoint commit, and mutation-clean guard coverage.
+- 2026-07-07: Opened `.10x/tickets/2026-07-07-declarative-rest-resource-execution.md` to make Tier-0 declarative REST resources openable through explicit `cdf-http` runtime dependencies and deterministic conformance tests. This is the next source-execution step toward the HTTP API and GitHub issues killer-demo path.
 
 ## Blockers
 
