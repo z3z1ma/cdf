@@ -14,6 +14,8 @@ A load package is the durable, hash-addressed evidence of one attempted state tr
 
 Packages MUST contain or reference the plan, observed/output schemas, contract decisions, normalized data, quarantine, stats, lineage, input checkpoint, proposed state delta, destination commit plan, receipts, and trace.
 
+State and destination commit evidence MUST follow `.10x/decisions/package-state-commit-preimage-artifacts.md`: `state/input_checkpoint.json`, `state/proposed_delta.json`, and `destination/commit_plan.json` are identity-participating preimage artifacts. They MUST NOT embed the final package hash or concrete package-hash idempotency token because those values are derived from package identity. Runtime code reconstructs concrete `StateDelta` and destination commit inputs by combining the verified preimages with the finalized manifest package hash.
+
 Canonical package data MUST be Arrow IPC file format with LZ4 framing. Stats, quarantine, and lineage SHOULD be Parquet. Manifests and receipts MUST be canonical JSON.
 
 ## Required layout
@@ -21,6 +23,8 @@ Canonical package data MUST be Arrow IPC file format with LZ4 framing. Stats, qu
 The package layout MUST preserve the book's directories and semantics: `manifest.json`, `plan/`, `schema/`, `data/`, `quarantine/`, `stats/`, `lineage/`, `state/`, `destination/`, and `trace.jsonl`.
 
 `manifest.json` MUST list file path, byte count, and SHA-256 for every package file that participates in identity. It MUST carry lifecycle status and a reserved signature slot with defined signing input.
+
+`destination/receipts.json` MUST remain outside identity because receipts are destination responses appended after destination interaction. State and commit-plan preimages are not receipt-like append-only responses; they are planned evidence and MUST participate in identity.
 
 ## Archive metadata and sidecar layout
 
@@ -55,6 +59,8 @@ Recovery MUST follow the normative crash matrix:
 - Destination commit before checkpoint commit verifies receipt, then commits checkpoint without touching source.
 - After checkpoint commit, the next run reads committed state.
 
+Replay from a packaged artifact MUST derive concrete replay/checkpoint inputs from verified package identity evidence. The finalized package hash supplies the concrete `StateDelta.package_hash` and package-token idempotency value; those concrete values MUST be verified against receipts before crossing the firn line.
+
 Manifest status updates MUST be atomic rename-over or equivalently crash-safe.
 
 `firn package archive` MUST NOT change `lifecycle.status`. The `archived` lifecycle status is reserved for retention/GC tombstone behavior where canonical data may be absent and is not the status used for Parquet sidecar creation. Packages at `packaged`, `loaded`, `committed`, or `checkpointed` status MAY be archived. Packages at `planned`, `extracting`, `validated`, `loading`, or `archived` status MUST be refused by `firn package archive`.
@@ -82,6 +88,7 @@ Upstream dependency upgrades that alter IPC bytes, manifest hash, or plan text M
 ## Acceptance criteria
 
 - A fixed source fixture produces identical package manifest hash across repeated test runs.
+- Package identity includes state input, state-delta preimage, and destination commit-plan preimage artifacts without a package-hash cycle.
 - Recovery tests cover every lifecycle boundary in the crash matrix.
 - Package verification detects tampered files by hash.
 - GC leaves tombstones for collected committed packages and preserves ledger referential integrity.

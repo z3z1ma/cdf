@@ -14,6 +14,8 @@ A destination MUST be a commit protocol, not an unverified sink. It MUST expose 
 
 `plan_commit` MUST be plan-time/dry-runnable and MUST surface migration DDL, target, disposition, and idempotency behavior before data moves.
 
+Package-embedded commit-plan evidence MUST follow `.10x/decisions/package-state-commit-preimage-artifacts.md`. When package-token idempotency uses the finalized package hash, the identity-participating artifact records `idempotency_token_source = "package_hash"` rather than a concrete token value. The concrete destination commit request uses the finalized package hash as the token after package identity is known.
+
 `finalize` MUST return a durable receipt or an error. There is no accepted ambiguous third state.
 
 ## Destination sheets
@@ -74,4 +76,3 @@ Iceberg and Delta are destinations, not package formats. Their transaction metad
 ## Explicit exclusions
 
 This spec does not define resource extraction, package hashing, project-file syntax, or conformance harness implementation details.
-
