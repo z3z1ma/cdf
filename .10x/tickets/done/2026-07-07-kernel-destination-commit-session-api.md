@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
@@ -34,3 +34,9 @@ No DuckDB/Parquet/Postgres refactors, no project runtime changes, no CLI changes
 ## Blockers
 
 None.
+
+## Progress and notes
+
+- 2026-07-07: Added a synchronous `CommitSession` trait and default unsupported `DestinationProtocol::begin` in `cdf-kernel`, with focused fake-session kernel tests proving default unsupported behavior, migration/write/finalize flow, abort, and finalize returning a `Receipt`.
+- 2026-07-07: Verification passed: `cargo fmt --check`; `cargo test -p cdf-kernel`; `cargo clippy -p cdf-kernel --all-targets -- -D warnings`; `cargo semver-checks -p cdf-kernel --baseline-rev HEAD`; `cargo check --workspace`. Direct crates.io semver baseline was not applicable because `cdf-kernel` is not published.
+- 2026-07-07: Parent review and closure verification recorded in `.10x/evidence/2026-07-07-kernel-destination-commit-session-api.md` and `.10x/reviews/2026-07-07-kernel-destination-commit-session-api-review.md`. Broader workspace tests, clippy, docs, supply-chain/security checks, secret scans, and direct unsafe scan passed or matched ratified limits. Closed and moved to done.

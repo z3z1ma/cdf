@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
-Depends-On: .10x/tickets/2026-07-07-kernel-destination-commit-session-api.md, .10x/specs/destination-receipts-guarantees.md
+Depends-On: .10x/tickets/done/2026-07-07-kernel-destination-commit-session-api.md, .10x/specs/destination-receipts-guarantees.md
 
 # Refactor Postgres destination onto commit sessions
 
@@ -32,4 +32,4 @@ No DuckDB or Parquet destination edits, no Postgres source runtime changes unles
 
 ## Blockers
 
-Blocked until `.10x/tickets/2026-07-07-kernel-destination-commit-session-api.md` is done.
+Unblocked by `.10x/tickets/done/2026-07-07-kernel-destination-commit-session-api.md`.

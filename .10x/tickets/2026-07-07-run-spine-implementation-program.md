@@ -12,7 +12,7 @@ Parent plan for P0 run-spine implementation after ratifying `.10x/decisions/run-
 
 Children:
 
-- `.10x/tickets/2026-07-07-kernel-destination-commit-session-api.md`
+- `.10x/tickets/done/2026-07-07-kernel-destination-commit-session-api.md`
 - `.10x/tickets/2026-07-07-duckdb-commit-session-refactor.md`
 - `.10x/tickets/2026-07-07-parquet-commit-session-refactor.md`
 - `.10x/tickets/2026-07-07-postgres-commit-session-refactor.md`
@@ -30,6 +30,7 @@ Children:
 ## Progress and notes
 
 - 2026-07-07: Opened after ratification of the run-ledger and commit-session decision/spec. Parent is not executable; assign child tickets to workers.
+- 2026-07-07: Kernel commit-session API child closed with evidence `.10x/evidence/2026-07-07-kernel-destination-commit-session-api.md` and review `.10x/reviews/2026-07-07-kernel-destination-commit-session-api-review.md`. Destination refactor children are now unblocked on the kernel API dependency.
 
 ## Blockers
 

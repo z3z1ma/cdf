@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    checkpoint::StateSegment,
-    error::Result,
+    checkpoint::{Receipt, StateSegment},
+    error::{CdfError, Result},
     ids::{DestinationId, IdempotencyToken, PackageHash, PlanId, SegmentId, TargetName},
     resource::{CapabilitySupport, WriteDisposition},
 };
@@ -118,9 +118,31 @@ pub struct CommitPlan {
     pub delivery_guarantee: DeliveryGuarantee,
 }
 
+pub trait CommitSession {
+    fn apply_migrations(&mut self) -> Result<()>;
+
+    fn write(&mut self) -> Result<()>;
+
+    fn finalize(self: Box<Self>) -> Result<Receipt>;
+
+    fn abort(self: Box<Self>) -> Result<()>;
+}
+
 pub trait DestinationProtocol {
     fn sheet(&self) -> &DestinationSheet;
+
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan>;
+
+    fn begin(
+        &self,
+        _request: DestinationCommitRequest,
+        _plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        Err(CdfError::destination(format!(
+            "destination {} does not support commit sessions",
+            self.sheet().destination
+        )))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

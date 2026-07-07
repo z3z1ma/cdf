@@ -68,6 +68,233 @@ fn sample_state_delta_and_receipt() -> (StateDelta, Receipt) {
     (delta, receipt)
 }
 
+fn sample_destination_sheet() -> DestinationSheet {
+    DestinationSheet {
+        destination: DestinationId::new("fake-session").unwrap(),
+        supported_dispositions: vec![WriteDisposition::Merge],
+        transactions: TransactionSupport::AtomicPackage,
+        idempotency: IdempotencySupport::PackageToken,
+        type_mappings: vec![TypeMapping {
+            arrow_type: "Int64".to_owned(),
+            destination_type: "BIGINT".to_owned(),
+            fidelity: TypeMappingFidelity::Lossless,
+        }],
+        identifier_rules: IdentifierRules {
+            normalizer: "lowercase".to_owned(),
+            max_length: Some(63),
+            allowed_pattern: Some("^[a-z_][a-z0-9_]*$".to_owned()),
+        },
+        migration_support: CapabilitySupport::Supported,
+        quarantine_tables: CapabilitySupport::Unsupported,
+        concurrency: ConcurrencyLimit {
+            max_writers: Some(1),
+        },
+    }
+}
+
+fn sample_destination_commit_request(delta: &StateDelta) -> DestinationCommitRequest {
+    DestinationCommitRequest {
+        package_hash: delta.package_hash.clone(),
+        target: TargetName::new("orders").unwrap(),
+        disposition: WriteDisposition::Merge,
+        segments: delta.segments.clone(),
+        idempotency_token: IdempotencyToken::new(delta.package_hash.as_str()).unwrap(),
+    }
+}
+
+struct UnsupportedSessionDestination {
+    sheet: DestinationSheet,
+}
+
+impl DestinationProtocol for UnsupportedSessionDestination {
+    fn sheet(&self) -> &DestinationSheet {
+        &self.sheet
+    }
+
+    fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
+        Ok(sample_commit_plan(request))
+    }
+}
+
+struct FakeSessionDestination {
+    sheet: DestinationSheet,
+}
+
+impl DestinationProtocol for FakeSessionDestination {
+    fn sheet(&self) -> &DestinationSheet {
+        &self.sheet
+    }
+
+    fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
+        Ok(sample_commit_plan(request))
+    }
+
+    fn begin(
+        &self,
+        request: DestinationCommitRequest,
+        plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        if plan.target != request.target || plan.disposition != request.disposition {
+            return Err(CdfError::destination(
+                "commit plan does not match destination request",
+            ));
+        }
+        Ok(Box::new(FakeCommitSession {
+            destination: self.sheet.destination.clone(),
+            request,
+            plan,
+            migrations_applied: false,
+            written: false,
+        }))
+    }
+}
+
+fn sample_commit_plan(request: &DestinationCommitRequest) -> CommitPlan {
+    CommitPlan {
+        plan_id: PlanId::new(format!(
+            "fake-plan:{}:{}",
+            request.target.as_str(),
+            request.idempotency_token.as_str()
+        ))
+        .unwrap(),
+        target: request.target.clone(),
+        disposition: request.disposition.clone(),
+        idempotency: IdempotencySupport::PackageToken,
+        migrations: vec![MigrationRecord {
+            migration_id: "migration-1".to_owned(),
+            description: "create target table".to_owned(),
+        }],
+        delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerKey,
+    }
+}
+
+struct FakeCommitSession {
+    destination: DestinationId,
+    request: DestinationCommitRequest,
+    plan: CommitPlan,
+    migrations_applied: bool,
+    written: bool,
+}
+
+impl CommitSession for FakeCommitSession {
+    fn apply_migrations(&mut self) -> Result<()> {
+        self.migrations_applied = true;
+        Ok(())
+    }
+
+    fn write(&mut self) -> Result<()> {
+        if !self.migrations_applied {
+            return Err(CdfError::destination(
+                "migrations must be applied before writing",
+            ));
+        }
+        self.written = true;
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Receipt> {
+        if !self.written {
+            return Err(CdfError::destination(
+                "cannot finalize before package segments are written",
+            ));
+        }
+        let mut parameters = BTreeMap::new();
+        parameters.insert("plan_id".to_owned(), self.plan.plan_id.as_str().to_owned());
+        let rows_written = self
+            .request
+            .segments
+            .iter()
+            .map(|segment| segment.row_count)
+            .sum();
+        Ok(Receipt {
+            receipt_id: ReceiptId::new(format!(
+                "receipt-{}",
+                self.request.idempotency_token.as_str()
+            ))?,
+            destination: self.destination,
+            target: self.request.target,
+            package_hash: self.request.package_hash,
+            segment_acks: self
+                .request
+                .segments
+                .into_iter()
+                .map(|segment| SegmentAck {
+                    segment_id: segment.segment_id,
+                    row_count: segment.row_count,
+                    byte_count: segment.byte_count,
+                })
+                .collect(),
+            disposition: self.plan.disposition,
+            idempotency_token: self.request.idempotency_token,
+            transaction: None,
+            counts: CommitCounts {
+                rows_written,
+                rows_inserted: Some(rows_written),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            schema_hash: SchemaHash::new("schema-sha256").unwrap(),
+            migrations: self.plan.migrations,
+            committed_at_ms: 1_700_000_000_100,
+            verify: VerifyClause {
+                kind: "fake".to_owned(),
+                statement: "verify fake durable receipt".to_owned(),
+                parameters,
+            },
+        })
+    }
+
+    fn abort(self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn destination_protocol_default_begin_returns_unsupported_error() {
+    let destination = UnsupportedSessionDestination {
+        sheet: sample_destination_sheet(),
+    };
+    let (delta, _) = sample_state_delta_and_receipt();
+    let request = sample_destination_commit_request(&delta);
+    let plan = destination.plan_commit(&request).unwrap();
+
+    let error = match destination.begin(request, plan) {
+        Ok(_) => panic!("default begin unexpectedly returned a commit session"),
+        Err(error) => error,
+    };
+
+    assert_eq!(error.kind, ErrorKind::Destination);
+    assert!(error.message.contains("does not support commit sessions"));
+}
+
+#[test]
+fn commit_session_api_finalizes_to_durable_receipt() {
+    let destination = FakeSessionDestination {
+        sheet: sample_destination_sheet(),
+    };
+    let (delta, _) = sample_state_delta_and_receipt();
+    let request = sample_destination_commit_request(&delta);
+    let plan = destination.plan_commit(&request).unwrap();
+
+    let mut session = destination.begin(request, plan).unwrap();
+    session.apply_migrations().unwrap();
+    session.write().unwrap();
+    let receipt = session.finalize().unwrap();
+
+    assert_eq!(receipt.destination, destination.sheet().destination);
+    assert!(receipt.covers_state_delta(&delta));
+    assert_eq!(receipt.segment_acks.len(), delta.segments.len());
+    assert_eq!(receipt.counts.rows_written, 3);
+    assert_eq!(receipt.migrations.len(), 1);
+    assert_eq!(receipt.verify.kind, "fake");
+
+    let request = sample_destination_commit_request(&delta);
+    let plan = destination.plan_commit(&request).unwrap();
+    let mut session = destination.begin(request, plan).unwrap();
+    session.apply_migrations().unwrap();
+    session.abort().unwrap();
+}
+
 #[test]
 fn metadata_helpers_round_trip_cdf_annotations() {
     let field = Field::new("normalized_name", DataType::Utf8, true);
