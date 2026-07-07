@@ -34,6 +34,7 @@ Business logic belongs in lower crates; CLI must not bypass lower-layer invarian
 - 2026-07-06: Implemented the first supported `firn sql` surface under `.10x/tickets/done/2026-07-06-local-system-sql.md`: read-only local system-history queries over checkpoint and package metadata. `sql` is no longer a blocker for the CLI surface.
 - 2026-07-06: Closed lower-layer child `.10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md`; explicit prepared-package DuckDB replay/recovery into `CheckpointStore::commit` now exists without source contact. CLI plumbing remains blocked on command-level project loading, explicit delta/receipt input handling, and broader run-ledger orchestration rather than on the lower-layer package-to-checkpoint primitive.
 - 2026-07-06: Closed child `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`; `preview` now works for the first safe runtime slice: single-match declarative local file resources using the existing `firn-formats::FileResource` execution path. Broader CLI acceptance remains blocked on the lower-layer APIs listed below.
+- 2026-07-06: Opened child `.10x/tickets/2026-07-06-local-file-run-duckdb-checkpoint.md` for the first live `run` slice: explicit declarative local file resource to DuckDB destination and SQLite checkpoint with package/destination/checkpoint invariants preserved. It intentionally requires explicit pipeline, target, package id, and checkpoint id inputs so this slice does not invent run-ledger defaults.
 
 ## Blockers
 
@@ -42,7 +43,7 @@ Full acceptance is blocked by missing lower-layer APIs. Exact unsupported surfac
 - `init`: no project scaffold/write API.
 - `plan`/`explain` DDL preview: no scan/resource-schema to destination-DDL planning facade.
 - `preview`: the single-match local file resource slice is implemented in `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`. REST and SQL declarative preview runtime paths, Arrow IPC file preview, and multi-file scan semantics remain unsupported below the CLI.
-- `run`: no runtime orchestrator that preserves package, destination receipt, and checkpoint commit invariants end to end.
+- `run`: first explicit local file to DuckDB/SQLite orchestration slice is now owned by `.10x/tickets/2026-07-06-local-file-run-duckdb-checkpoint.md`. Broader run-ledger defaults, automatic ids, REST/SQL resources, non-DuckDB destinations, and multi-resource runs remain blocked.
 - `contract freeze` and `contract test`: no contract registry/snapshot writer or fixture runner.
 - `state migrate` and `state recover`: no state migration runner or destination mirror recovery API.
 - `resume`: no run ledger/recovery orchestrator for full run resumption; package-bound receipt recovery now has a lower-layer primitive in `.10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md`.

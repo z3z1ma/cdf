@@ -48,6 +48,7 @@ MVP authoring, destinations, and product surface:
 - `.10x/tickets/done/2026-07-05-postgres-destination.md`
 - `.10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md`
 - `.10x/tickets/2026-07-05-cli-surface.md`
+- `.10x/tickets/2026-07-06-local-file-run-duckdb-checkpoint.md`
 - `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
@@ -119,6 +120,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md`; resource conformance now covers file-source execution/data-completeness for CSV, JSON, NDJSON, and Parquet through a reusable async `ResourceStream` oracle and `firn-formats::FileResource`, without adding the native `parquet`/`paste` advisory path.
 - 2026-07-06: Opened the CLI/product slice now closed at `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`. It connects the closed file-source runtime work to the book-required `firn preview` behavior for single-match declarative local file resources while leaving native Parquet policy and broader run orchestration separate.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`; `firn preview` now executes single-match declarative local file resources for CSV, JSON, NDJSON, and Parquet with no package, destination, or checkpoint writes, while native Parquet policy and broader run orchestration remain separate.
+- 2026-07-06: Opened `.10x/tickets/2026-07-06-local-file-run-duckdb-checkpoint.md` as the next CLI/runtime bridge. It targets the first live `firn run` path from a single explicit local file resource through package creation, DuckDB receipt verification, and SQLite checkpoint commit without ratifying automatic run-ledger defaults.
 
 ## Blockers
 
