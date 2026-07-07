@@ -1,7 +1,7 @@
 Status: open
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md, .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-06-package-archive-persistence-cli.md
 
 # Replace DuckDB Parquet writer and archive path with native Arrow/DataFusion path
@@ -12,16 +12,16 @@ Replace DuckDB-backed Parquet writing in package archive transcode and the files
 
 Expected ownership:
 
-- `crates/firn-package/**` for archive/transcode primitives and fidelity reporting
-- `crates/firn-dest-parquet/**` for destination materialization
-- `crates/firn-cli/**` only if `firn package archive` output needs narrow wording updates
+- `crates/cdf-package/**` for archive/transcode primitives and fidelity reporting
+- `crates/cdf-dest-parquet/**` for destination materialization
+- `crates/cdf-cli/**` only if `cdf package archive` output needs narrow wording updates
 - `Cargo.toml`, `Cargo.lock`, and crate manifests required for the native Parquet dependency
 - `.10x/` evidence/review/ticket records for this child
 
 ## Acceptance criteria
 
-- `firn-package` archive transcode writes Parquet through native Arrow/DataFusion-compatible writer APIs, not DuckDB export.
-- `firn-dest-parquet` append/replace materialization writes Parquet through the native writer path while preserving receipt verification, object manifests, replace pointers, and idempotency behavior.
+- `cdf-package` archive transcode writes Parquet through native Arrow/DataFusion-compatible writer APIs, not DuckDB export.
+- `cdf-dest-parquet` append/replace materialization writes Parquet through the native writer path while preserving receipt verification, object manifests, replace pointers, and idempotency behavior.
 - Existing package identity remains Arrow IPC based; archive Parquet sidecars and archive metadata remain outside identity as currently specified.
 - Existing destination conformance coverage for Parquet still passes, with added or updated tests proving native writer output can be read back and receipts still verify.
 - Fidelity reports remain honest about Arrow-to-Parquet projection limits.
@@ -30,7 +30,7 @@ Expected ownership:
 
 ## Evidence expectations
 
-Run focused `cargo fmt --all -- --check`, `git diff --check`, `cargo test -p firn-package -p firn-dest-parquet --locked --no-fail-fast`, `cargo clippy -p firn-package -p firn-dest-parquet --all-targets --locked -- -D warnings`, destination conformance tests covering Parquet, dependency/advisory scanners, source unsafe scan, and bounded mutation testing over the changed writer/fidelity modules when feasible.
+Run focused `cargo fmt --all -- --check`, `git diff --check`, `cargo test -p cdf-package -p cdf-dest-parquet --locked --no-fail-fast`, `cargo clippy -p cdf-package -p cdf-dest-parquet --all-targets --locked -- -D warnings`, destination conformance tests covering Parquet, dependency/advisory scanners, source unsafe scan, and bounded mutation testing over the changed writer/fidelity modules when feasible.
 
 Before closure, run relevant `QUALITY.md` gates with independent checks parallelized where practical and CodeQL through `tools/codeql-rust-quality.sh`.
 

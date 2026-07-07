@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of `crates/firn-http/**` against `.10x/specs/resource-authoring-planning-batches.md`, `.10x/specs/project-cli-observability-security.md`, and `.10x/tickets/done/2026-07-05-http-toolkit.md`.
+Review of `crates/cdf-http/**` against `.10x/specs/resource-authoring-planning-batches.md`, `.10x/specs/project-cli-observability-security.md`, and `.10x/tickets/done/2026-07-05-http-toolkit.md`.
 
 ## Findings
 

@@ -24,7 +24,7 @@ Resource capabilities MUST describe projection, filters, limits, ordering, parti
 
 Pushdown fidelity MUST be expressed per predicate as `Exact`, `Inexact`, or `Unsupported`. `Exact` allows the engine to drop its own filter. `Inexact` means the source returns a superset and the engine MUST reapply the predicate. API resources default to `Inexact` unless exact semantics are proven.
 
-`firn explain` and `firn plan` MUST show projected fields, pushed predicates with fidelity, unsupported predicates, limits, partitions, estimates, and the derived delivery guarantee.
+`cdf explain` and `cdf plan` MUST show projected fields, pushed predicates with fidelity, unsupported predicates, limits, partitions, estimates, and the derived delivery guarantee.
 
 ## Authoring tiers
 
@@ -32,7 +32,7 @@ Tier 0 declarative resources MUST support REST, SQL, and file shapes through sch
 
 Tier 1 Rust resources MUST be statically linked. Dynamic Rust plugins are rejected.
 
-Tier 2 Python MUST be authoring and interchange only. `firn-python` MAY embed Python, but once data crosses via Arrow PyCapsule/C Data Interface or row batching into Rust, downstream execution is Rust. `firn-sdk` MUST be typed and `py.typed`; examples MUST be pyright-clean. Semantics MUST be identical on GIL and free-threaded builds, with actual parallelism on free-threaded 3.14t+ where available.
+Tier 2 Python MUST be authoring and interchange only. `cdf-python` MAY embed Python, but once data crosses via Arrow PyCapsule/C Data Interface or row batching into Rust, downstream execution is Rust. `cdf-sdk` MUST be typed and `py.typed`; examples MUST be pyright-clean. Semantics MUST be identical on GIL and free-threaded builds, with actual parallelism on free-threaded 3.14t+ where available.
 
 Tier 3 WASM Components MUST target WASI 0.3 with a WIT world exporting `describe`, `negotiate`, and async `open(partition) -> stream<u8>` of Arrow IPC bytes. WASM guests MUST use host-mediated HTTP, secrets, and logs. This tier is post-MVP but its seam MUST be preserved.
 
@@ -40,7 +40,7 @@ Tier 4 subprocess adapters MUST support Arrow IPC and NDJSON at MVP, with Singer
 
 ## HTTP toolkit
 
-`firn-http` MUST provide paginators, token-bucket rate limiting, server-header respect, jittered backoff with budget accounting, auth refresh through `SecretProvider`, connection reuse, and preformatted redacted tracing. Declarative, Python, Rust, and WASM authoring surfaces MUST reuse it where applicable.
+`cdf-http` MUST provide paginators, token-bucket rate limiting, server-header respect, jittered backoff with budget accounting, auth refresh through `SecretProvider`, connection reuse, and preformatted redacted tracing. Declarative, Python, Rust, and WASM authoring surfaces MUST reuse it where applicable.
 
 ## Batch model
 

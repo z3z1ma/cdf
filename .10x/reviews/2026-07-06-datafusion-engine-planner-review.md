@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the MVP `firn-engine` planner/execution implementation in `crates/firn-engine`.
+Review of the MVP `cdf-engine` planner/execution implementation in `crates/cdf-engine`.
 
 ## Assumptions tested
 

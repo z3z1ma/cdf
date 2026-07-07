@@ -7,7 +7,7 @@ Relates-To: .10x/tickets/done/2026-07-06-golden-package-conformance-foundation.m
 
 ## What was observed
 
-The first conformance-owned golden-package harness was implemented under `crates/firn-conformance/src/golden_package/` with a committed expected fixture at `crates/firn-conformance/golden/prepared-orders-v1/expected.json`.
+The first conformance-owned golden-package harness was implemented under `crates/cdf-conformance/src/golden_package/` with a committed expected fixture at `crates/cdf-conformance/golden/prepared-orders-v1/expected.json`.
 
 The committed `prepared-orders-v1` expectation contains:
 
@@ -18,7 +18,7 @@ The committed `prepared-orders-v1` expectation contains:
 - 15 identity file entries with byte counts and SHA-256 values
 - 1 segment entry, `seg-000001`, with 3 rows, 1082 bytes, and SHA-256 `3877d05802f03053efcdc1ba97244cdb449cc2fdcf9e91d051f85e52fef1cdc1`
 
-The harness builds the fixture through public `firn-package` APIs, verifies the package with `PackageReader::verify`, derives evidence from the verified manifest, and compares manifest version, package hash, lifecycle status, signature signing input/value, identity manifest version, identity layout, identity file set/hash/byte count, and segment set/path/row count/byte count/hash.
+The harness builds the fixture through public `cdf-package` APIs, verifies the package with `PackageReader::verify`, derives evidence from the verified manifest, and compares manifest version, package hash, lifecycle status, signature signing input/value, identity manifest version, identity layout, identity file set/hash/byte count, and segment set/path/row count/byte count/hash.
 
 Negative self-tests corrupt committed-evidence fields and prove the harness fails for package hash, missing and extra identity files, file hash, file byte count, segment hash, segment byte count, segment row count, lifecycle status, signing input, and identity layout. A tampered segment test proves the golden assertion path verifies package integrity before comparing evidence.
 
@@ -28,11 +28,11 @@ Focused ticket checks:
 
 - `cargo fmt --all -- --check` passed.
 - `git diff --check` passed.
-- `cargo test -p firn-conformance --locked --no-fail-fast` passed: 27 tests.
-- `cargo clippy -p firn-conformance --all-targets --locked -- -D warnings` passed.
-- `cargo test -p firn-package --locked --no-fail-fast` passed: 13 tests.
+- `cargo test -p cdf-conformance --locked --no-fail-fast` passed: 27 tests.
+- `cargo clippy -p cdf-conformance --all-targets --locked -- -D warnings` passed.
+- `cargo test -p cdf-package --locked --no-fail-fast` passed: 13 tests.
 - Bounded mutation check passed:
-  `cargo mutants --package firn-conformance --file crates/firn-conformance/src/golden_package/mod.rs --test-package firn-conformance --output target/quality/mutants-golden-package --no-shuffle --jobs 4 --timeout 120 -- --locked golden_package`
+  `cargo mutants --package cdf-conformance --file crates/cdf-conformance/src/golden_package/mod.rs --test-package cdf-conformance --output target/quality/mutants-golden-package --no-shuffle --jobs 4 --timeout 120 -- --locked golden_package`
   produced 18 mutants total: 11 caught, 7 unviable, 0 missed, 0 timeouts.
 
 Workspace correctness and feature checks:
@@ -56,7 +56,7 @@ Dependency, supply-chain, and scanner checks:
 - `cargo deny check` passed. It continued to report the known duplicate Arrow 58/59 dependency family as warnings, with advisories, bans, licenses, and sources accepted.
 - `cargo vet` passed: `Vetting Succeeded (385 exempted)`.
 - `cargo machete` passed with no unused dependencies.
-- `CARGO_TARGET_DIR=target/quality/udeps-golden-package-target cargo +nightly udeps -p firn-conformance --all-targets --locked` passed: all deps used, including the new `serde` dependency.
+- `CARGO_TARGET_DIR=target/quality/udeps-golden-package-target cargo +nightly udeps -p cdf-conformance --all-targets --locked` passed: all deps used, including the new `serde` dependency.
 - `cargo metadata --format-version=1 --locked > reports/ai-quality/cargo-metadata-golden-package.json` passed.
 - `cargo tree --workspace --locked > reports/ai-quality/cargo-tree-golden-package.txt` passed.
 - `cargo tree --workspace --locked -d > reports/ai-quality/cargo-tree-duplicates-golden-package.txt` passed and captured the existing duplicate-dependency report.
@@ -68,15 +68,15 @@ Dependency, supply-chain, and scanner checks:
 
 Soundness, coverage, and maintainability checks:
 
-- `cargo llvm-cov --workspace --all-features --locked --summary-only` passed. Workspace totals were 78.44% regions and 81.16% lines. The new `crates/firn-conformance/src/golden_package/mod.rs` measured 89.90% regions and 92.61% lines.
-- `CARGO_TARGET_DIR=target/quality/careful-golden-package-target cargo +nightly careful test -p firn-conformance --all-features --locked` passed: 27 tests and 0 doctests.
-- Direct unsafe/FFI/raw-pointer scan over `crates tools python` found only the existing string literal `crates/firn-http/src/retry.rs:115: "not retrying unsafe unit..."`; no owned `unsafe`, FFI, raw pointer, `MaybeUninit`, `NonNull`, `UnsafeCell`, `from_raw`, `into_raw`, or `transmute` use was introduced by this slice.
-- `rust-code-analysis-cli -p crates/firn-conformance/src/golden_package -m -O json --pr -o reports/ai-quality/rust-code-analysis-golden-package` passed and wrote JSON metrics for `mod.rs` and `tests.rs`.
-- `jscpd crates/firn-conformance/src/golden_package --format rust --reporters console,json --output reports/ai-quality/jscpd-golden-package --min-lines 12 --min-tokens 80 --threshold 0 --exit-code 0 --no-colors` found 0 clones across 2 Rust files, 582 lines, and 3504 tokens.
+- `cargo llvm-cov --workspace --all-features --locked --summary-only` passed. Workspace totals were 78.44% regions and 81.16% lines. The new `crates/cdf-conformance/src/golden_package/mod.rs` measured 89.90% regions and 92.61% lines.
+- `CARGO_TARGET_DIR=target/quality/careful-golden-package-target cargo +nightly careful test -p cdf-conformance --all-features --locked` passed: 27 tests and 0 doctests.
+- Direct unsafe/FFI/raw-pointer scan over `crates tools python` found only the existing string literal `crates/cdf-http/src/retry.rs:115: "not retrying unsafe unit..."`; no owned `unsafe`, FFI, raw pointer, `MaybeUninit`, `NonNull`, `UnsafeCell`, `from_raw`, `into_raw`, or `transmute` use was introduced by this slice.
+- `rust-code-analysis-cli -p crates/cdf-conformance/src/golden_package -m -O json --pr -o reports/ai-quality/rust-code-analysis-golden-package` passed and wrote JSON metrics for `mod.rs` and `tests.rs`.
+- `jscpd crates/cdf-conformance/src/golden_package --format rust --reporters console,json --output reports/ai-quality/jscpd-golden-package --min-lines 12 --min-tokens 80 --threshold 0 --exit-code 0 --no-colors` found 0 clones across 2 Rust files, 582 lines, and 3504 tokens.
 
 ## Limits
 
-`cargo geiger` was not run because `.10x/knowledge/quality-gate-execution.md` records that it can clean normal Cargo build output in this repository and may fail on dependency scan warnings even when firn-owned code has no `unsafe`. The direct source scan plus `cargo careful` covered the relevant owned-code soundness risk for this no-unsafe conformance harness.
+`cargo geiger` was not run because `.10x/knowledge/quality-gate-execution.md` records that it can clean normal Cargo build output in this repository and may fail on dependency scan warnings even when cdf-owned code has no `unsafe`. The direct source scan plus `cargo careful` covered the relevant owned-code soundness risk for this no-unsafe conformance harness.
 
 `cargo miri`, `cargo fuzz`, and `cargo kani` were not run for this slice. The change introduces no unsafe code, no parser or arithmetic core, and no fuzz/Kani harness target; the executable oracle is the deterministic golden-package test suite plus negative self-tests and bounded mutation testing.
 

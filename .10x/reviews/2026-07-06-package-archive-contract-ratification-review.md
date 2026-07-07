@@ -18,7 +18,7 @@ The spec now resolves the previously blocked execution semantics: archive path n
 
 ## Assumptions tested
 
-The review checked the main wrong-premise risk: treating `PackageStatus::Archived` as the result of `firn package archive`. Current source rejects archived packages from replay, while the book says replay prefers IPC when present. The spec avoids that conflict by making Parquet archive creation a status-preserving sidecar operation and reserving `archived` for retention/GC tombstones.
+The review checked the main wrong-premise risk: treating `PackageStatus::Archived` as the result of `cdf package archive`. Current source rejects archived packages from replay, while the book says replay prefers IPC when present. The spec avoids that conflict by making Parquet archive creation a status-preserving sidecar operation and reserving `archived` for retention/GC tombstones.
 
 The review also checked the identity risk: adding archive files to `ManifestIdentity` would change package hash and receipt identity after the package already exists. The spec avoids that by placing `archives.parquet` outside identity while still requiring verification of present archive metadata.
 

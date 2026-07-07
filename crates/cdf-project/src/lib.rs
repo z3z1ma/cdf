@@ -1,0 +1,41 @@
+#![doc = "Project configuration and orchestration boundary for cdf."]
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    env, fmt, fs,
+    path::{Path, PathBuf},
+};
+
+use cdf_contract::NORMALIZER_NAMECASE_V1;
+use cdf_declarative::{
+    CompiledResource, CompiledResourcePlan, DeclarativeDocument, compile_document,
+    compile_document_with_project_root, parse_toml as parse_declarative_toml,
+    parse_yaml as parse_declarative_yaml,
+};
+use cdf_http::{AuthScheme, SecretProvider, SecretUri, SecretValue};
+use cdf_kernel::{
+    CdfError, DestinationSheet, ResourceCapabilities, ResourceDescriptor, Result, SchemaSource,
+};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
+use sha2::{Digest, Sha256};
+
+pub const PROJECT_FILE_NAME: &str = "cdf.toml";
+pub const LOCK_FILE_NAME: &str = "cdf.lock";
+pub const LOCKFILE_VERSION: u16 = 1;
+
+mod internal;
+mod lockfile;
+mod models;
+mod runtime;
+#[cfg(test)]
+mod runtime_tests;
+mod secrets;
+mod sources;
+#[cfg(test)]
+mod tests;
+
+pub use lockfile::*;
+pub use models::*;
+pub use runtime::*;
+pub use secrets::*;
+pub use sources::*;

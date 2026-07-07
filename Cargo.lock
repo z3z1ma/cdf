@@ -611,6 +611,278 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-cli"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-contract",
+ "cdf-declarative",
+ "cdf-dest-duckdb",
+ "cdf-dest-postgres",
+ "cdf-engine",
+ "cdf-kernel",
+ "cdf-package",
+ "cdf-project",
+ "cdf-state-sqlite",
+ "duckdb",
+ "futures-executor",
+ "futures-util",
+ "rusqlite",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cdf-conformance"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-dest-duckdb",
+ "cdf-kernel",
+ "cdf-package",
+ "cdf-project",
+ "cdf-state-sqlite",
+ "futures-executor",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "cdf-contract"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema 59.0.0",
+ "cdf-kernel",
+ "serde",
+ "serde_json",
+ "unicode-normalization",
+]
+
+[[package]]
+name = "cdf-declarative"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema 59.0.0",
+ "cdf-conformance",
+ "cdf-formats",
+ "cdf-http",
+ "cdf-kernel",
+ "futures-executor",
+ "hex",
+ "schemars",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "toml",
+]
+
+[[package]]
+name = "cdf-dest-duckdb"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-conformance",
+ "cdf-kernel",
+ "cdf-package",
+ "duckdb",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "cdf-dest-parquet"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-conformance",
+ "cdf-kernel",
+ "cdf-package",
+ "duckdb",
+ "hex",
+ "object_store",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "cdf-dest-postgres"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-conformance",
+ "cdf-kernel",
+ "cdf-package",
+ "postgres",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "cdf-engine"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "arrow-select 59.0.0",
+ "cdf-contract",
+ "cdf-kernel",
+ "cdf-package",
+ "datafusion",
+ "futures-executor",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+]
+
+[[package]]
+name = "cdf-formats"
+version = "0.1.0"
+dependencies = [
+ "arrow",
+ "arrow-array 59.0.0",
+ "arrow-csv 59.0.0",
+ "arrow-ipc 59.0.0",
+ "arrow-json 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-conformance",
+ "cdf-contract",
+ "cdf-kernel",
+ "cdf-package",
+ "duckdb",
+ "futures-executor",
+ "futures-util",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "cdf-http"
+version = "0.1.0"
+dependencies = [
+ "cdf-kernel",
+]
+
+[[package]]
+name = "cdf-kernel"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "futures-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "cdf-package"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-ipc 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-kernel",
+ "duckdb",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+]
+
+[[package]]
+name = "cdf-project"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-contract",
+ "cdf-declarative",
+ "cdf-dest-duckdb",
+ "cdf-engine",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-package",
+ "cdf-state-sqlite",
+ "futures-executor",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
+name = "cdf-python"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-ipc 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-formats",
+ "cdf-http",
+ "cdf-kernel",
+ "hex",
+ "pyo3",
+ "pyo3-arrow",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "cdf-state-sqlite"
+version = "0.1.0"
+dependencies = [
+ "cdf-conformance",
+ "cdf-kernel",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tempfile",
+]
+
+[[package]]
+name = "cdf-subprocess"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.0.0",
+ "arrow-ipc 59.0.0",
+ "arrow-schema 59.0.0",
+ "cdf-formats",
+ "cdf-kernel",
+ "cdf-package",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "cdf-wasm"
+version = "0.1.0"
+
+[[package]]
 name = "cfg-if"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1513,278 +1785,6 @@ name = "find-msvc-tools"
 version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5baebc0774151f905a1a2cc41989300b1e6fbb29aff0ceffa1064fdd3088d582"
-
-[[package]]
-name = "firn-cli"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "duckdb",
- "firn-contract",
- "firn-declarative",
- "firn-dest-duckdb",
- "firn-dest-postgres",
- "firn-engine",
- "firn-kernel",
- "firn-package",
- "firn-project",
- "firn-state-sqlite",
- "futures-executor",
- "futures-util",
- "rusqlite",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "firn-conformance"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "firn-dest-duckdb",
- "firn-kernel",
- "firn-package",
- "firn-project",
- "firn-state-sqlite",
- "futures-executor",
- "futures-util",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "firn-contract"
-version = "0.1.0"
-dependencies = [
- "arrow-schema 59.0.0",
- "firn-kernel",
- "serde",
- "serde_json",
- "unicode-normalization",
-]
-
-[[package]]
-name = "firn-declarative"
-version = "0.1.0"
-dependencies = [
- "arrow-schema 59.0.0",
- "firn-conformance",
- "firn-formats",
- "firn-http",
- "firn-kernel",
- "futures-executor",
- "hex",
- "schemars",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "toml",
-]
-
-[[package]]
-name = "firn-dest-duckdb"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "duckdb",
- "firn-conformance",
- "firn-kernel",
- "firn-package",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "firn-dest-parquet"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "duckdb",
- "firn-conformance",
- "firn-kernel",
- "firn-package",
- "hex",
- "object_store",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "firn-dest-postgres"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "firn-conformance",
- "firn-kernel",
- "firn-package",
- "postgres",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "firn-engine"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "arrow-select 59.0.0",
- "datafusion",
- "firn-contract",
- "firn-kernel",
- "firn-package",
- "futures-executor",
- "futures-util",
- "serde",
- "serde_json",
- "tempfile",
- "tracing",
-]
-
-[[package]]
-name = "firn-formats"
-version = "0.1.0"
-dependencies = [
- "arrow",
- "arrow-array 59.0.0",
- "arrow-csv 59.0.0",
- "arrow-ipc 59.0.0",
- "arrow-json 59.0.0",
- "arrow-schema 59.0.0",
- "duckdb",
- "firn-conformance",
- "firn-contract",
- "firn-kernel",
- "firn-package",
- "futures-executor",
- "futures-util",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
-name = "firn-http"
-version = "0.1.0"
-dependencies = [
- "firn-kernel",
-]
-
-[[package]]
-name = "firn-kernel"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "futures-core",
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "firn-package"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-ipc 59.0.0",
- "arrow-schema 59.0.0",
- "duckdb",
- "firn-kernel",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
-]
-
-[[package]]
-name = "firn-project"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-schema 59.0.0",
- "firn-contract",
- "firn-declarative",
- "firn-dest-duckdb",
- "firn-engine",
- "firn-http",
- "firn-kernel",
- "firn-package",
- "firn-state-sqlite",
- "futures-executor",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "toml",
-]
-
-[[package]]
-name = "firn-python"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-ipc 59.0.0",
- "arrow-schema 59.0.0",
- "firn-formats",
- "firn-http",
- "firn-kernel",
- "hex",
- "pyo3",
- "pyo3-arrow",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "firn-state-sqlite"
-version = "0.1.0"
-dependencies = [
- "firn-conformance",
- "firn-kernel",
- "rusqlite",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "firn-subprocess"
-version = "0.1.0"
-dependencies = [
- "arrow-array 59.0.0",
- "arrow-ipc 59.0.0",
- "arrow-schema 59.0.0",
- "firn-formats",
- "firn-kernel",
- "firn-package",
- "hex",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tempfile",
- "tokio",
-]
-
-[[package]]
-name = "firn-wasm"
-version = "0.1.0"
 
 [[package]]
 name = "fixedbitset"

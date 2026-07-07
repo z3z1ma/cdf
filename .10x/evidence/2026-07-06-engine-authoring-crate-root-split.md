@@ -12,55 +12,55 @@ The scoped crate roots were split into focused internal modules using ordinary `
 Before root line counts from `HEAD`:
 
 ```text
-crates/firn-engine/src/lib.rs 1314
-crates/firn-declarative/src/lib.rs 1436
-crates/firn-formats/src/lib.rs 646
-crates/firn-subprocess/src/lib.rs 367
+crates/cdf-engine/src/lib.rs 1314
+crates/cdf-declarative/src/lib.rs 1436
+crates/cdf-formats/src/lib.rs 646
+crates/cdf-subprocess/src/lib.rs 367
 ```
 
 After root line counts in the working tree:
 
 ```text
-14 crates/firn-engine/src/lib.rs
-12 crates/firn-declarative/src/lib.rs
-14 crates/firn-formats/src/lib.rs
-12 crates/firn-subprocess/src/lib.rs
+14 crates/cdf-engine/src/lib.rs
+12 crates/cdf-declarative/src/lib.rs
+14 crates/cdf-formats/src/lib.rs
+12 crates/cdf-subprocess/src/lib.rs
 52 total
 ```
 
 Touched scoped module inventory:
 
 ```text
-crates/firn-declarative/src/compiled.rs
-crates/firn-declarative/src/declarations.rs
-crates/firn-declarative/src/lib.rs
-crates/firn-declarative/src/tests.rs
-crates/firn-engine/src/execution.rs
-crates/firn-engine/src/lib.rs
-crates/firn-engine/src/planning.rs
-crates/firn-engine/src/predicates.rs
-crates/firn-engine/src/tests.rs
-crates/firn-engine/src/types.rs
-crates/firn-formats/src/lib.rs
-crates/firn-formats/src/readers.rs
-crates/firn-formats/src/schema.rs
-crates/firn-formats/src/tests.rs
-crates/firn-formats/src/types.rs
-crates/firn-subprocess/src/command.rs
-crates/firn-subprocess/src/lib.rs
-crates/firn-subprocess/src/runner.rs
-crates/firn-subprocess/src/tests.rs
+crates/cdf-declarative/src/compiled.rs
+crates/cdf-declarative/src/declarations.rs
+crates/cdf-declarative/src/lib.rs
+crates/cdf-declarative/src/tests.rs
+crates/cdf-engine/src/execution.rs
+crates/cdf-engine/src/lib.rs
+crates/cdf-engine/src/planning.rs
+crates/cdf-engine/src/predicates.rs
+crates/cdf-engine/src/tests.rs
+crates/cdf-engine/src/types.rs
+crates/cdf-formats/src/lib.rs
+crates/cdf-formats/src/readers.rs
+crates/cdf-formats/src/schema.rs
+crates/cdf-formats/src/tests.rs
+crates/cdf-formats/src/types.rs
+crates/cdf-subprocess/src/command.rs
+crates/cdf-subprocess/src/lib.rs
+crates/cdf-subprocess/src/runner.rs
+crates/cdf-subprocess/src/tests.rs
 ```
 
 ## Procedure
 
-A clean verification overlay was created at `/tmp/firn-engine-authoring-verify.f4uTet` from `HEAD`, then only these scoped source trees were copied into it:
+A clean verification overlay was created at `/tmp/cdf-engine-authoring-verify.f4uTet` from `HEAD`, then only these scoped source trees were copied into it:
 
 ```text
-crates/firn-engine/src/
-crates/firn-declarative/src/
-crates/firn-formats/src/
-crates/firn-subprocess/src/
+crates/cdf-engine/src/
+crates/cdf-declarative/src/
+crates/cdf-formats/src/
+crates/cdf-subprocess/src/
 ```
 
 The requested verification commands were run in that clean overlay.
@@ -72,7 +72,7 @@ cargo fmt --all -- --check
 Result: passed with no formatter output.
 
 ```text
-cargo test -p firn-engine -p firn-declarative -p firn-formats -p firn-subprocess --locked --no-fail-fast
+cargo test -p cdf-engine -p cdf-declarative -p cdf-formats -p cdf-subprocess --locked --no-fail-fast
 ```
 
 Result: passed.
@@ -80,15 +80,15 @@ Result: passed.
 Observed test counts:
 
 ```text
-firn-declarative: 7 passed, 0 failed
-firn-engine: 5 passed, 0 failed
-firn-formats: 6 passed, 0 failed
-firn-subprocess: 5 passed, 0 failed
+cdf-declarative: 7 passed, 0 failed
+cdf-engine: 5 passed, 0 failed
+cdf-formats: 6 passed, 0 failed
+cdf-subprocess: 5 passed, 0 failed
 doc tests for all four crates: 0 passed, 0 failed
 ```
 
 ```text
-cargo clippy -p firn-engine -p firn-declarative -p firn-formats -p firn-subprocess --all-targets --locked -- -D warnings
+cargo clippy -p cdf-engine -p cdf-declarative -p cdf-formats -p cdf-subprocess --all-targets --locked -- -D warnings
 ```
 
 Result: passed.
@@ -103,10 +103,10 @@ Finished `dev` profile [unoptimized + debuginfo] target(s) in 32.54s
 
 The roots preserve public access with re-exports:
 
-- `firn-engine` re-exports `execute_to_package`, `DATAFUSION_TABLE_PROVIDER_KIND`, `Planner`, `datafusion_filter_pushdown`, `negotiate_scan_plan`, and `types::*`.
-- `firn-declarative` re-exports compiled resource types/functions and all declaration types/functions via `declarations::*`.
-- `firn-formats` re-exports reader entry points, schema helpers/constants, and `types::*`.
-- `firn-subprocess` re-exports command/output/supervision types and `run_stdout_adapter`.
+- `cdf-engine` re-exports `execute_to_package`, `DATAFUSION_TABLE_PROVIDER_KIND`, `Planner`, `datafusion_filter_pushdown`, `negotiate_scan_plan`, and `types::*`.
+- `cdf-declarative` re-exports compiled resource types/functions and all declaration types/functions via `declarations::*`.
+- `cdf-formats` re-exports reader entry points, schema helpers/constants, and `types::*`.
+- `cdf-subprocess` re-exports command/output/supervision types and `run_stdout_adapter`.
 
 No dependency files or public API names were intentionally changed by this ticket.
 
@@ -120,7 +120,7 @@ The live working tree has unrelated dirty files outside this ticket's write boun
 
 ## Integration recheck
 
-An integration recheck after this record was first written found a scoped compile failure in `crates/firn-formats/src/types.rs`: `FormatRead` derived `Clone` and `Debug`, but the current `firn-contract::ObservedSchema` did not implement those traits. The scoped fix keeps the public `FormatRead: Clone + Debug` surface by replacing the derive with manual implementations that clone/debug the public `ObservedSchema.fields` data, without touching `firn-contract`.
+An integration recheck after this record was first written found a scoped compile failure in `crates/cdf-formats/src/types.rs`: `FormatRead` derived `Clone` and `Debug`, but the current `cdf-contract::ObservedSchema` did not implement those traits. The scoped fix keeps the public `FormatRead: Clone + Debug` surface by replacing the derive with manual implementations that clone/debug the public `ObservedSchema.fields` data, without touching `cdf-contract`.
 
 Additional live-worktree verification after the fix:
 
@@ -134,10 +134,10 @@ Result: passed with no formatter output.
 cargo check --workspace --all-targets --locked
 ```
 
-Result: initially failed outside this ticket's owned scope in `crates/firn-python/src/bridge.rs`. That parallel dlt/Python blocker was repaired before parent integration closure.
+Result: initially failed outside this ticket's owned scope in `crates/cdf-python/src/bridge.rs`. That parallel dlt/Python blocker was repaired before parent integration closure.
 
 ```text
-cargo test -p firn-engine -p firn-declarative -p firn-formats -p firn-subprocess --locked --no-fail-fast
+cargo test -p cdf-engine -p cdf-declarative -p cdf-formats -p cdf-subprocess --locked --no-fail-fast
 ```
 
 Result: passed.
@@ -145,15 +145,15 @@ Result: passed.
 Observed test counts:
 
 ```text
-firn-declarative: 7 passed, 0 failed
-firn-engine: 5 passed, 0 failed
-firn-formats: 6 passed, 0 failed
-firn-subprocess: 5 passed, 0 failed
+cdf-declarative: 7 passed, 0 failed
+cdf-engine: 5 passed, 0 failed
+cdf-formats: 6 passed, 0 failed
+cdf-subprocess: 5 passed, 0 failed
 doc tests for all four crates: 0 passed, 0 failed
 ```
 
 ```text
-cargo clippy -p firn-engine -p firn-declarative -p firn-formats -p firn-subprocess --all-targets --locked -- -D warnings
+cargo clippy -p cdf-engine -p cdf-declarative -p cdf-formats -p cdf-subprocess --all-targets --locked -- -D warnings
 ```
 
 Result: passed.
@@ -169,8 +169,8 @@ Final parent integration recheck after the Python blocker cleared:
 ```text
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
-cargo test -p firn-engine -p firn-declarative -p firn-formats -p firn-subprocess --locked --no-fail-fast
-cargo clippy -p firn-engine -p firn-declarative -p firn-formats -p firn-subprocess --all-targets --locked -- -D warnings
+cargo test -p cdf-engine -p cdf-declarative -p cdf-formats -p cdf-subprocess --locked --no-fail-fast
+cargo clippy -p cdf-engine -p cdf-declarative -p cdf-formats -p cdf-subprocess --all-targets --locked -- -D warnings
 ```
 
 All commands passed in the live workspace. The targeted test run covered 23 unit tests across the four packages plus 0 doctests.

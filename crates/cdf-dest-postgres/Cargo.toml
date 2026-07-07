@@ -1,0 +1,19 @@
+[package]
+name = "cdf-dest-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Postgres destination boundary for cdf."
+
+[dependencies]
+arrow-array = "59.0.0"
+arrow-schema = "59.0.0"
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-package = { path = "../cdf-package" }
+postgres = "0.19"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+
+[dev-dependencies]
+cdf-conformance = { path = "../cdf-conformance" }
+tempfile = "3.27.0"

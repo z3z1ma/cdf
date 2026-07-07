@@ -1,0 +1,99 @@
+{
+  "package_id": "live-local-file-v1",
+  "checkpoint_id": "checkpoint-live-local-file-v1",
+  "pipeline_id": "pipeline-live-local-file-v1",
+  "resource_id": "local.events",
+  "target": "events",
+  "source_path_suffix": "events.ndjson",
+  "source_sha256": "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
+  "source_size_bytes": 46,
+  "destination_rows": 2,
+  "segment_count": 1,
+  "mirror_load_rows": 1,
+  "mirror_state_rows": 1,
+  "package": {
+    "manifest_version": 1,
+    "package_hash": "sha256:d2c6e84a83a515796d237192920d3ca494c49e0fc348d68f0b1142a337b34375",
+    "package_status": "checkpointed",
+    "signature_signing_input": "sha256:d2c6e84a83a515796d237192920d3ca494c49e0fc348d68f0b1142a337b34375",
+    "signature_value": null,
+    "identity_manifest_version": 1,
+    "identity_layout": [
+      "plan/",
+      "schema/",
+      "data/",
+      "quarantine/",
+      "stats/",
+      "lineage/",
+      "state/",
+      "destination/",
+      "trace.jsonl"
+    ],
+    "identity_files": [
+      {
+        "path": "data/seg-000001.arrow",
+        "byte_count": 1314,
+        "sha256": "32cd1896b86d65b419caa01d354e26714c53ba9bcd50422a296fa0295284a0ab"
+      },
+      {
+        "path": "destination/commit_plan.json",
+        "byte_count": 506,
+        "sha256": "f9230cfd9c43caadc90284ed081aaf7d14a5b3fa9b45e99a0da16838cb611cb1"
+      },
+      {
+        "path": "lineage/lineage.json",
+        "byte_count": 80,
+        "sha256": "4d6f9f95848909b90854652123d237a25d54a54414d0dc886802307550ae1467"
+      },
+      {
+        "path": "plan/explain.json",
+        "byte_count": 975,
+        "sha256": "b33b9d0c4a0b752af29d757f45ce0e4f31fb5e3430dc9f7bead2f39fd06f9869"
+      },
+      {
+        "path": "plan/scan.json",
+        "byte_count": 514,
+        "sha256": "63be11b44f8bd7712d7817b019d5297c3051040090db41151f3bc068f4df4ec8"
+      },
+      {
+        "path": "plan/validation-program.json",
+        "byte_count": 843,
+        "sha256": "dd37435ce7a13d64b8d03159be3bf85732d5635766d339f5da450d8a9851fd0c"
+      },
+      {
+        "path": "schema/output.json",
+        "byte_count": 113,
+        "sha256": "312141629dd4e36c5c29d830a10bd31bb9a570498d935980b4898268689ca8e4"
+      },
+      {
+        "path": "state/input_checkpoint.json",
+        "byte_count": 4,
+        "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+      },
+      {
+        "path": "state/proposed_delta.json",
+        "byte_count": 833,
+        "sha256": "18f5001156dec8f12d300d0863ad01b84323dc94d051d26ca388f8a9c1365b7a"
+      },
+      {
+        "path": "stats/profile.json",
+        "byte_count": 55,
+        "sha256": "15edc81143bcb48d895f097f1ae1bc3ecf01cdc087855bc16c8e4442cc395af0"
+      },
+      {
+        "path": "trace.jsonl",
+        "byte_count": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "seg-000001",
+        "path": "data/seg-000001.arrow",
+        "row_count": 2,
+        "byte_count": 1314,
+        "sha256": "32cd1896b86d65b419caa01d354e26714c53ba9bcd50422a296fa0295284a0ab"
+      }
+    ]
+  }
+}

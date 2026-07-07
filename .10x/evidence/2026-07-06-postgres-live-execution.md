@@ -7,15 +7,15 @@ Relates-To: .10x/tickets/done/2026-07-06-postgres-live-execution.md, .10x/ticket
 
 ## What was observed
 
-`crates/firn-dest-postgres` now has a driver-backed live commit path:
+`crates/cdf-dest-postgres` now has a driver-backed live commit path:
 
 - `PostgresDestination::connect`, `commit_package`, and `verify_receipt` use the synchronous `postgres` driver.
 - Live commits consume the existing `PostgresLoadPlan`; no parallel planning model was introduced.
-- Package loading uses `firn-package::PackageReader`, verifies package identity, checks replay package hash, validates complete segment coverage, enforces one schema across segments, checks Arrow schema and Postgres column plan agreement, and verifies manifest row counts.
-- Rows stage through Postgres `COPY ... FORMAT csv` into a temporary table with `_firn_load`, `_firn_segment`, `_firn_row`, and `_firn_loaded_at_ms` system columns.
+- Package loading uses `cdf-package::PackageReader`, verifies package identity, checks replay package hash, validates complete segment coverage, enforces one schema across segments, checks Arrow schema and Postgres column plan agreement, and verifies manifest row counts.
+- Rows stage through Postgres `COPY ... FORMAT csv` into a temporary table with `_cdf_load`, `_cdf_segment`, `_cdf_row`, and `_cdf_loaded_at_ms` system columns.
 - Append, replace, and merge execute inside one Postgres transaction. Merge uses the existing deterministic `MergeDedupPolicy` behavior.
-- `_firn_loads` and `_firn_state` are created and populated transactionally with the target write. For schema-qualified targets, the transaction sets `search_path` so mirrors live with the target schema instead of leaking into `public`.
-- Duplicate package detection now matches the `_firn_loads` uniqueness key, `(target, package_hash)`, and returns the stored receipt without rewriting target rows.
+- `_cdf_loads` and `_cdf_state` are created and populated transactionally with the target write. For schema-qualified targets, the transaction sets `search_path` so mirrors live with the target schema instead of leaking into `public`.
+- Duplicate package detection now matches the `_cdf_loads` uniqueness key, `(target, package_hash)`, and returns the stored receipt without rewriting target rows.
 - Receipts include xid metadata, counts, segment acknowledgements, schema hash, migrations, idempotency token, and a `postgres_sql` verify clause. Verification succeeds both inside the commit transaction and from a fresh connection.
 - Decimal128 and Decimal256 live row encoding now matches the exact `NUMERIC(p,s)` sheet contract.
 - Package receipt append after a durable DB commit is best-effort in the Postgres API: a package-side recording error returns a committed `PostgresCommitOutcome` with `package_receipt_error`, avoiding a false committed-but-`Err` outcome.
@@ -28,12 +28,12 @@ Focused Postgres checks:
 
 ```text
 cargo fmt --all
-cargo check -p firn-dest-postgres --all-targets --locked
-cargo test -p firn-dest-postgres --locked --no-fail-fast
-cargo clippy -p firn-dest-postgres --all-targets --locked -- -D warnings
+cargo check -p cdf-dest-postgres --all-targets --locked
+cargo test -p cdf-dest-postgres --locked --no-fail-fast
+cargo clippy -p cdf-dest-postgres --all-targets --locked -- -D warnings
 ```
 
-Result: passed. `firn-dest-postgres` ran 17 tests, including live ephemeral Postgres tests for append/duplicate/receipt verification/state mirror, replace delete counts, merge last-row dedup and update counts, Decimal128 exact numeric writes, package receipt append failure after durable DB commit, and rollback after stage copy.
+Result: passed. `cdf-dest-postgres` ran 17 tests, including live ephemeral Postgres tests for append/duplicate/receipt verification/state mirror, replace delete counts, merge last-row dedup and update counts, Decimal128 exact numeric writes, package receipt append failure after durable DB commit, and rollback after stage copy.
 
 Final workspace correctness and feature gates:
 
@@ -62,11 +62,11 @@ cargo audit --deny warnings
 cargo vet --locked --output-format=json
 osv-scanner --lockfile=Cargo.lock --format=json
 cargo machete --with-metadata
-semgrep scan --config=auto --error --json --output target/quality/reports/semgrep-postgres-live-final.json crates/firn-dest-postgres
-gitleaks detect --source crates/firn-dest-postgres --no-git --report-format json --report-path target/quality/reports/gitleaks-postgres-crate-final.json
+semgrep scan --config=auto --error --json --output target/quality/reports/semgrep-postgres-live-final.json crates/cdf-dest-postgres
+gitleaks detect --source crates/cdf-dest-postgres --no-git --report-format json --report-path target/quality/reports/gitleaks-postgres-crate-final.json
 gitleaks detect --source supply-chain --no-git --report-format json --report-path target/quality/reports/gitleaks-supply-chain-final.json
 gitleaks detect --pipe --report-format json --report-path target/quality/reports/gitleaks-cargo-lock-final.json < Cargo.lock
-rg -n "unsafe\b|extern \"|raw pointer|\*const|\*mut|Send for|Sync for" crates/firn-dest-postgres/src crates/firn-dest-postgres/Cargo.toml
+rg -n "unsafe\b|extern \"|raw pointer|\*const|\*mut|Send for|Sync for" crates/cdf-dest-postgres/src crates/cdf-dest-postgres/Cargo.toml
 ```
 
 Result: passed. `cargo vet` initially failed because the new Postgres driver dependency tree was unvetted; `cargo vet regenerate exemptions --locked` added explicit current-version `safe-to-deploy` exemptions in `supply-chain/config.toml`, after which `cargo vet --locked` and JSON output concluded `success`. OSV, Semgrep, gitleaks, and the direct first-party unsafe/FFI scan found no findings.
@@ -82,21 +82,21 @@ Result: passed with SARIF result count 0 at `target/quality/reports/codeql-rust-
 Coverage and compatibility:
 
 ```text
-cargo llvm-cov -p firn-dest-postgres --locked --summary-only
-cargo semver-checks check-release --package firn-dest-postgres --baseline-root .
-rust-code-analysis-cli -m -p crates/firn-dest-postgres/src -O json -o target/quality/reports/rust-code-analysis-postgres-live-final
+cargo llvm-cov -p cdf-dest-postgres --locked --summary-only
+cargo semver-checks check-release --package cdf-dest-postgres --baseline-root .
+rust-code-analysis-cli -m -p crates/cdf-dest-postgres/src -O json -o target/quality/reports/rust-code-analysis-postgres-live-final
 ```
 
-Result: passed. `cargo llvm-cov` reported `firn-dest-postgres` line coverage of 64.88%. `cargo semver-checks` reported 196 checks passed and no semver update required.
+Result: passed. `cargo llvm-cov` reported `cdf-dest-postgres` line coverage of 64.88%. `cargo semver-checks` reported 196 checks passed and no semver update required.
 
 Geiger:
 
 ```text
-cargo geiger --manifest-path /Users/alexanderbut/code_projects/personal/firn/crates/firn-dest-postgres/Cargo.toml --all-targets --locked
-cargo geiger --manifest-path /Users/alexanderbut/code_projects/personal/firn/crates/firn-dest-postgres/Cargo.toml --forbid-only --all-targets --locked
+cargo geiger --manifest-path /Users/alexanderbut/code_projects/personal/cdf/crates/cdf-dest-postgres/Cargo.toml --all-targets --locked
+cargo geiger --manifest-path /Users/alexanderbut/code_projects/personal/cdf/crates/cdf-dest-postgres/Cargo.toml --forbid-only --all-targets --locked
 ```
 
-Result: not used as closure evidence. The full Geiger run fell into a native `libduckdb-sys` build through the existing `firn-package` dependency path and was stopped. The bounded `--forbid-only` run repeatedly hit a third-party `signal-hook-registry` parse failure and was stopped. The closure soundness evidence for this slice is the direct first-party unsafe/FFI scan plus the other static/security gates.
+Result: not used as closure evidence. The full Geiger run fell into a native `libduckdb-sys` build through the existing `cdf-package` dependency path and was stopped. The bounded `--forbid-only` run repeatedly hit a third-party `signal-hook-registry` parse failure and was stopped. The closure soundness evidence for this slice is the direct first-party unsafe/FFI scan plus the other static/security gates.
 
 ## What this supports or challenges
 

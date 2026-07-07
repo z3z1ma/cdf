@@ -8,13 +8,13 @@ Verdict: pass
 
 ## Target
 
-Review of local read-only `firn sql` implementation in `crates/firn-cli/src/system_sql.rs`, CLI wiring, and tests.
+Review of local read-only `cdf sql` implementation in `crates/cdf-cli/src/system_sql.rs`, CLI wiring, and tests.
 
 ## Findings
 
 No blocking findings.
 
-A first worker attempt was shut down without integration. A second worker implemented a mostly CLI-local surface. Parent review removed an unnecessary public `firn-state-sqlite` history API so the lower checkpoint crate surface did not widen.
+A first worker attempt was shut down without integration. A second worker implemented a mostly CLI-local surface. Parent review removed an unnecessary public `cdf-state-sqlite` history API so the lower checkpoint crate surface did not widen.
 
 The read-only boundary is conservative: lexical filtering rejects non-SELECT/WITH and obvious mutating keywords outside comments and string literals, while SQLite's prepared-statement `readonly()` check must also pass. Persistent data is copied into an in-memory database before query execution, and tests prove empty-history and rejected mutating queries do not create the configured state DB or package root.
 

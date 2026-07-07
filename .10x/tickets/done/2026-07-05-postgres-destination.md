@@ -1,14 +1,14 @@
 Status: done
 Created: 2026-07-05
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-05-contract-compiler-normalization.md
 
 # Implement Postgres destination
 
 ## Scope
 
-Implement `firn-dest-postgres`: destination sheet, type mappings, identifier rules, transactional DDL, append/replace/merge with `ON CONFLICT`, xid-bearing receipts, `_firn_loads` and `_firn_state`, receipt verification, and Postgres source-side exercise hooks where appropriate. Owns `crates/firn-dest-postgres/**`.
+Implement `cdf-dest-postgres`: destination sheet, type mappings, identifier rules, transactional DDL, append/replace/merge with `ON CONFLICT`, xid-bearing receipts, `_cdf_loads` and `_cdf_state`, receipt verification, and Postgres source-side exercise hooks where appropriate. Owns `crates/cdf-dest-postgres/**`.
 
 ## Acceptance criteria
 
@@ -29,12 +29,12 @@ No warehouse destinations in this ticket.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
-- 2026-07-06: Assigned to Postgres destination worker. Worker owns `crates/firn-dest-postgres/**` plus its own evidence/review records and this ticket. Do not touch `.gitignore`, parent ticket, other destination crates, or unrelated records.
-- 2026-07-06: Implemented deterministic Postgres destination sheet, exact/widening/lossy/unsupported type mappings, identifier validation/quoting, dry-runnable transactional DDL/DML plans for append/replace/merge, explicit merge dedup policy SQL, xid-bearing receipt construction, `_firn_loads`/`_firn_state` mirror SQL, source-side exercise SQL hooks, and doctor/project drift probe hooks in `crates/firn-dest-postgres`. Evidence recorded in `.10x/evidence/2026-07-06-postgres-destination.md`.
+- 2026-07-06: Assigned to Postgres destination worker. Worker owns `crates/cdf-dest-postgres/**` plus its own evidence/review records and this ticket. Do not touch `.gitignore`, parent ticket, other destination crates, or unrelated records.
+- 2026-07-06: Implemented deterministic Postgres destination sheet, exact/widening/lossy/unsupported type mappings, identifier validation/quoting, dry-runnable transactional DDL/DML plans for append/replace/merge, explicit merge dedup policy SQL, xid-bearing receipt construction, `_cdf_loads`/`_cdf_state` mirror SQL, source-side exercise SQL hooks, and doctor/project drift probe hooks in `crates/cdf-dest-postgres`. Evidence recorded in `.10x/evidence/2026-07-06-postgres-destination.md`.
 - 2026-07-06: Parent integration revalidated package tests, clippy, formatting, `cargo audit`, `cargo deny check advisories`, OSV, and `git diff --check` after Python upgraded to PyO3 0.29 through `pyo3-arrow`. The stale PyO3 advisory blocker is resolved. This ticket remains blocked because the current crate has no live Postgres driver/execution path or live integration evidence for append, replace, merge, receipt verification, or rollback behavior.
-- 2026-07-06: Split the large `crates/firn-dest-postgres/src/lib.rs` into focused files under `crates/firn-dest-postgres/src/` while preserving the crate-root API. Organization evidence recorded in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
+- 2026-07-06: Split the large `crates/cdf-dest-postgres/src/lib.rs` into focused files under `crates/cdf-dest-postgres/src/` while preserving the crate-root API. Organization evidence recorded in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
 - 2026-07-06: Replaced the intermediate `include!` split with ordinary Rust modules under `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`. Final parent quality gates recorded in `.10x/evidence/2026-07-06-project-python-destinations-quality-gates.md`. This ticket remains blocked on live Postgres execution evidence.
-- 2026-07-06: Rechecked the live-execution blocker. Homebrew Postgres binaries are present (`postgres`, `initdb`, `pg_ctl`, `psql`, `pg_isready`), but `crates/firn-dest-postgres` remained a planning/SQL/receipt crate with no driver-backed commit path. Opened child `.10x/tickets/done/2026-07-06-postgres-live-execution.md` for the live driver, package row loading, transaction execution, receipt verification, and ephemeral-server integration evidence. Environment/source evidence is recorded in `.10x/evidence/2026-07-06-postgres-live-execution-scope.md`.
+- 2026-07-06: Rechecked the live-execution blocker. Homebrew Postgres binaries are present (`postgres`, `initdb`, `pg_ctl`, `psql`, `pg_isready`), but `crates/cdf-dest-postgres` remained a planning/SQL/receipt crate with no driver-backed commit path. Opened child `.10x/tickets/done/2026-07-06-postgres-live-execution.md` for the live driver, package row loading, transaction execution, receipt verification, and ephemeral-server integration evidence. Environment/source evidence is recorded in `.10x/evidence/2026-07-06-postgres-live-execution-scope.md`.
 - 2026-07-06: Closed live execution child `.10x/tickets/done/2026-07-06-postgres-live-execution.md`; Postgres destination now has live driver-backed append, replace, merge, duplicate no-op, receipt verification, schema-scoped mirror, rollback, and exact decimal evidence. Closure evidence is `.10x/evidence/2026-07-06-postgres-live-execution.md`; review is `.10x/reviews/2026-07-06-postgres-live-execution-review.md`.
 
 ## Blockers

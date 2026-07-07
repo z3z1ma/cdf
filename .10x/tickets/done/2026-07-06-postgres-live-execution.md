@@ -7,18 +7,18 @@ Parent: .10x/tickets/done/2026-07-05-postgres-destination.md
 
 ## Scope
 
-Implement the live execution slice missing from `crates/firn-dest-postgres`: a driver-backed package commit path that consumes the existing deterministic `PostgresLoadPlan`, loads package rows into a Postgres staging table, executes append/replace/merge transactions, records `_firn_loads` and `_firn_state`, builds xid-bearing receipts, verifies receipts against Postgres, and proves the path against an ephemeral local Postgres server.
+Implement the live execution slice missing from `crates/cdf-dest-postgres`: a driver-backed package commit path that consumes the existing deterministic `PostgresLoadPlan`, loads package rows into a Postgres staging table, executes append/replace/merge transactions, records `_cdf_loads` and `_cdf_state`, builds xid-bearing receipts, verifies receipts against Postgres, and proves the path against an ephemeral local Postgres server.
 
-The worker owns `crates/firn-dest-postgres/**`, any required dependency additions for the Postgres driver, focused integration-test helpers, and this ticket's evidence/review records. It may touch workspace lockfiles only as required by dependency changes.
+The worker owns `crates/cdf-dest-postgres/**`, any required dependency additions for the Postgres driver, focused integration-test helpers, and this ticket's evidence/review records. It may touch workspace lockfiles only as required by dependency changes.
 
 ## Acceptance criteria
 
 - The crate exposes a live commit API analogous to the existing DuckDB/Parquet package commit APIs, using `PostgresLoadPlan` rather than inventing a parallel planning model.
-- The live path reads canonical package IPC segments, validates requested segment coverage, maps package schema to the existing Postgres column plan, and stages rows with `_firn_load`, `_firn_segment`, `_firn_row`, and `_firn_loaded_at_ms` values.
+- The live path reads canonical package IPC segments, validates requested segment coverage, maps package schema to the existing Postgres column plan, and stages rows with `_cdf_load`, `_cdf_segment`, `_cdf_row`, and `_cdf_loaded_at_ms` values.
 - Append, transactional replace, and merge execute against Postgres with deterministic dedup behavior matching the existing plan semantics.
-- Replaying the same package against the same target returns duplicate/no-op behavior from `_firn_loads` and does not rewrite target rows.
+- Replaying the same package against the same target returns duplicate/no-op behavior from `_cdf_loads` and does not rewrite target rows.
 - Receipts include xid metadata, segment acknowledgements, counts, schema hash, migrations, idempotency token, and a `postgres_sql` verify clause that succeeds against the live server.
-- `_firn_loads` and `_firn_state` are populated transactionally with the target write when state delta metadata is present.
+- `_cdf_loads` and `_cdf_state` are populated transactionally with the target write when state delta metadata is present.
 - Rollback/fail-closed behavior is covered by a test that injects or triggers an error inside the transaction and proves no partial target/mirror state is committed.
 - Integration tests run against an ephemeral local Postgres instance started from available `postgres`/`initdb`/`pg_ctl` binaries, or against `TEST_DATABASE_URL` when explicitly provided. Tests MUST NOT require Docker.
 - The implementation preserves the crate organization convention in `.10x/knowledge/rust-crate-organization.md`; do not collapse the crate back into a monolithic `lib.rs`.

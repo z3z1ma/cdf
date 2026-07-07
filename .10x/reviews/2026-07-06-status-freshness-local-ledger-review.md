@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the `firn status` local freshness evaluator implemented under `crates/firn-cli/` for `.10x/tickets/done/2026-07-06-status-freshness-local-ledger.md`.
+Review of the `cdf status` local freshness evaluator implemented under `crates/cdf-cli/` for `.10x/tickets/done/2026-07-06-status-freshness-local-ledger.md`.
 
 ## Findings
 
@@ -18,7 +18,7 @@ No blocking findings.
 
 - The implementation filters to serving resources with declared freshness and ignores governed/non-serving resources without creating a state database.
 - The SQLite state store is opened read-only for status evaluation.
-- Missing database, missing `firn_checkpoints`, missing committed head, and multiple matching pipeline heads are reported as non-evaluable rather than guessed.
+- Missing database, missing `cdf_checkpoints`, missing committed head, and multiple matching pipeline heads are reported as non-evaluable rather than guessed.
 - No pipeline default or selector convention was introduced.
 - Stale resources dominate the exit code; non-evaluable-only resources exit 78.
 - JSON output includes resource id, trust level, state scope, max age, checkpoint identity when evaluable, age, state, and non-evaluable reason.

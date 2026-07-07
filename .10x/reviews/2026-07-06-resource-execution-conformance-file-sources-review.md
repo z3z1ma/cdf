@@ -8,13 +8,13 @@ Verdict: pass
 
 ## Target
 
-Review of the resource execution conformance helper, `firn-formats::FileResource`, file-source consumer tests, dependency changes, and evidence recorded for `.10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md`.
+Review of the resource execution conformance helper, `cdf-formats::FileResource`, file-source consumer tests, dependency changes, and evidence recorded for `.10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md`.
 
 ## Findings
 
 No blocking findings.
 
-The implementation stays within the child scope. `firn-conformance` adds a focused `resource::execution` module and exports the helper from the existing resource namespace. `firn-formats` adds a focused `resource` module and exports `FileResource`; the crate root remains thin.
+The implementation stays within the child scope. `cdf-conformance` adds a focused `resource::execution` module and exports the helper from the existing resource namespace. `cdf-formats` adds a focused `resource` module and exports `FileResource`; the crate root remains thin.
 
 The helper validates the acceptance-critical execution facts through the public `ResourceStream` trait: descriptor/schema coherence, request resource id, partition plan shape, expected partition ids, open/drain behavior, batch resource id, batch partition id, unique non-empty batch id, observed schema hash, `RecordBatch` payload presence, row count, byte count, file-manifest source position, total row count, and optional per-partition row counts.
 

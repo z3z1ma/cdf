@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the `firn-kernel` implementation in `crates/firn-kernel/**`, its ticket/evidence records, and the parent-observed `QUALITY.md` gate run.
+Review of the `cdf-kernel` implementation in `crates/cdf-kernel/**`, its ticket/evidence records, and the parent-observed `QUALITY.md` gate run.
 
 ## Assumptions tested
 
@@ -30,8 +30,8 @@ Minor residual risk: CodeQL's Rust extractor reported diagnostic extraction warn
 
 - `.10x/evidence/2026-07-05-kernel-core-types.md`
 - `.10x/evidence/2026-07-06-kernel-quality-gates.md`
-- `crates/firn-kernel/src/lib.rs`
-- `crates/firn-kernel/Cargo.toml`
+- `crates/cdf-kernel/src/lib.rs`
+- `crates/cdf-kernel/Cargo.toml`
 
 Reviewed evidence maps acceptance criteria to:
 

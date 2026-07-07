@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the reusable destination conformance foundation implemented in `crates/firn-conformance/src/destination/mod.rs`, plus DuckDB/Parquet consumer test integration.
+Review of the reusable destination conformance foundation implemented in `crates/cdf-conformance/src/destination/mod.rs`, plus DuckDB/Parquet consumer test integration.
 
 ## Assumptions tested
 
@@ -28,7 +28,7 @@ During review and verification, two issues were found and repaired before closur
 
 ## Verdict
 
-Pass. The implementation stays within the ticket boundary, keeps `crates/firn-conformance/src/lib.rs` thin, reuses public destination interfaces, retains destination-specific physical receipt coverage, and has mutation evidence showing the new conformance assertions are meaningful.
+Pass. The implementation stays within the ticket boundary, keeps `crates/cdf-conformance/src/lib.rs` thin, reuses public destination interfaces, retains destination-specific physical receipt coverage, and has mutation evidence showing the new conformance assertions are meaningful.
 
 ## Residual risk
 

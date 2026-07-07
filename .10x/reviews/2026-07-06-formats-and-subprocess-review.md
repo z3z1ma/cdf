@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the MVP `firn-formats` and `firn-subprocess` implementation after the Parquet supply-chain split.
+Review of the MVP `cdf-formats` and `cdf-subprocess` implementation after the Parquet supply-chain split.
 
 ## Assumptions tested
 

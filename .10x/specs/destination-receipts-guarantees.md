@@ -22,7 +22,7 @@ Package-embedded commit-plan evidence MUST follow `.10x/decisions/package-state-
 
 A destination sheet MUST declare supported dispositions, transaction support, idempotency mechanism, bulk paths, Arrow-to-destination type mappings with fidelity, identifier rules, migration support, quarantine table support, and concurrency constraints.
 
-Destination sheets MUST be consumed by the planner, falsified by conformance suites, and snapshotted into `firn.lock`.
+Destination sheets MUST be consumed by the planner, falsified by conformance suites, and snapshotted into `cdf.lock`.
 
 ## Dispositions
 
@@ -32,7 +32,7 @@ MVP dispositions are `append`, `replace`, and `merge`.
 
 `merge` MUST use primary or merge keys and deterministic batch deduplication before commit.
 
-`cdc_apply` arrives with log CDC and MUST apply `_firn_op` operations ordered by source position.
+`cdc_apply` arrives with log CDC and MUST apply `_cdf_op` operations ordered by source position.
 
 `scd2` and `snapshot` are excluded from loader dispositions.
 
@@ -58,13 +58,13 @@ Unqualified "exactly-once" MUST NOT appear in product claims.
 
 ## First destinations
 
-DuckDB MUST be the first local-loop destination. Its sheet MUST declare single-writer file constraints and ICU/timezone limitations; `firn doctor` MUST check ICU availability.
+DuckDB MUST be the first local-loop destination. Its sheet MUST declare single-writer file constraints and ICU/timezone limitations; `cdf doctor` MUST check ICU availability.
 
 Parquet/object-store MUST support manifest receipts with key, etag, and sha256 details and act as the seam for Iceberg/Delta destinations.
 
 Postgres MUST be the transactional reference with DDL migration, `ON CONFLICT` merge, xid-bearing receipts, and source-side exercise.
 
-Iceberg and Delta are destinations, not package formats. Their transaction metadata belongs inside firn receipts.
+Iceberg and Delta are destinations, not package formats. Their transaction metadata belongs inside cdf receipts.
 
 ## Acceptance criteria
 

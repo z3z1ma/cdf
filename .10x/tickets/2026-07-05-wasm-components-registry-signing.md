@@ -1,14 +1,14 @@
 Status: open
 Created: 2026-07-05
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-05-http-toolkit.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md
 
 # Implement WASM Components, registry gate, and signing
 
 ## Scope
 
-Implement `firn-wasm` post-MVP tier: WASI 0.3 WIT world, Wasmtime host, host-mediated HTTP/secrets/logs, Arrow IPC stream ingestion, conformance execution against components, package/connector signature support, and registry-admission hooks. Owns `crates/firn-wasm/**`, WIT specs, and signing modules.
+Implement `cdf-wasm` post-MVP tier: WASI 0.3 WIT world, Wasmtime host, host-mediated HTTP/secrets/logs, Arrow IPC stream ingestion, conformance execution against components, package/connector signature support, and registry-admission hooks. Owns `crates/cdf-wasm/**`, WIT specs, and signing modules.
 
 ## Acceptance criteria
 

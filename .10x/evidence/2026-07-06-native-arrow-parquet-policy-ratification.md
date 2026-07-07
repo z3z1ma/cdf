@@ -7,7 +7,7 @@ Relates-To: .10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md, .10x/de
 
 ## What was observed
 
-The user explicitly ratified `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md` on 2026-07-06 after asking why Firn should keep a DuckDB-backed Parquet workaround instead of using native DataFusion/Arrow Parquet or accepting the specific `RUSTSEC-2024-0436` advisory temporarily.
+The user explicitly ratified `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md` on 2026-07-06 after asking why CDF should keep a DuckDB-backed Parquet workaround instead of using native DataFusion/Arrow Parquet or accepting the specific `RUSTSEC-2024-0436` advisory temporarily.
 
 The ratified decision is recorded in `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.
 
@@ -24,8 +24,8 @@ Inspected:
 The current policy state before implementation remains:
 
 - `deny.toml` has `[advisories] ignore = []`.
-- `crates/firn-engine/Cargo.toml` keeps `datafusion = { version = "54.0.0", default-features = false }`.
-- `crates/firn-formats`, `crates/firn-package`, and `crates/firn-dest-parquet` currently use DuckDB-backed Parquet paths where Parquet support exists.
+- `crates/cdf-engine/Cargo.toml` keeps `datafusion = { version = "54.0.0", default-features = false }`.
+- `crates/cdf-formats`, `crates/cdf-package`, and `crates/cdf-dest-parquet` currently use DuckDB-backed Parquet paths where Parquet support exists.
 
 ## What this supports
 

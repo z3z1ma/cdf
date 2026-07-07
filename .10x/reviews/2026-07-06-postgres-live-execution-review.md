@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the live Postgres execution patch in `crates/firn-dest-postgres`, dependency changes in `Cargo.lock` and `crates/firn-dest-postgres/Cargo.toml`, cargo-vet changes in `supply-chain/config.toml`, and evidence in `.10x/evidence/2026-07-06-postgres-live-execution.md`.
+Review of the live Postgres execution patch in `crates/cdf-dest-postgres`, dependency changes in `Cargo.lock` and `crates/cdf-dest-postgres/Cargo.toml`, cargo-vet changes in `supply-chain/config.toml`, and evidence in `.10x/evidence/2026-07-06-postgres-live-execution.md`.
 
 ## Findings
 
@@ -16,7 +16,7 @@ Review of the live Postgres execution patch in `crates/firn-dest-postgres`, depe
 - Resolved: The sheet declared exact decimal support while live row encoding initially did not support Decimal128/Decimal256. `rows.rs` now maps decimals to `NUMERIC(p,s)` and emits exact numeric text; unit and live tests cover Decimal128. Decimal256 schema mapping is covered by unit test; its text formatting uses Arrow's decimal array formatter.
 - Resolved: Mirror tables initially used unqualified names while tests used schema-qualified targets. The transaction sets `search_path` to the target schema, fresh receipt verification applies the stored `target_schema`, and live tests query through the isolated schema.
 - Resolved: Duplicate lookup initially used `(target, package_hash, idempotency_token)` while the mirror uniqueness key was `(target, package_hash)`. The final lookup matches the uniqueness key and live tests cover same package replay with a different token returning duplicate/no-op behavior.
-- Accepted with evidence: The Postgres crate now depends on `firn-package`, which carries an existing DuckDB transitive dependency. This is required to read canonical package IPC segments and is not new DuckDB behavior in the Postgres crate. The dependency expansion is explicit in `Cargo.lock`, cargo-vet exemptions, `cargo deny`, `cargo audit`, OSV, cargo machete, and semver-checks evidence.
+- Accepted with evidence: The Postgres crate now depends on `cdf-package`, which carries an existing DuckDB transitive dependency. This is required to read canonical package IPC segments and is not new DuckDB behavior in the Postgres crate. The dependency expansion is explicit in `Cargo.lock`, cargo-vet exemptions, `cargo deny`, `cargo audit`, OSV, cargo machete, and semver-checks evidence.
 
 ## Verdict
 

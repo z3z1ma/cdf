@@ -8,21 +8,21 @@ Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10
 
 ## Scope
 
-Implement the first supported `firn preview` execution path for Tier 0 declarative file resources by connecting compiled `kind = "files"` resources to the existing `firn-formats::FileResource` runtime.
+Implement the first supported `cdf preview` execution path for Tier 0 declarative file resources by connecting compiled `kind = "files"` resources to the existing `cdf-formats::FileResource` runtime.
 
 Owns the smallest necessary changes in:
 
-- `crates/firn-declarative/**` for lower-layer `ResourceStream::open` support or a focused file-resource runtime adapter.
-- `crates/firn-project/**` only if project-root-relative file resolution must become explicit before declarative resources can safely open local files.
-- `crates/firn-cli/**` only for preview command tests and any command plumbing needed to consume the lower-layer runtime.
+- `crates/cdf-declarative/**` for lower-layer `ResourceStream::open` support or a focused file-resource runtime adapter.
+- `crates/cdf-project/**` only if project-root-relative file resolution must become explicit before declarative resources can safely open local files.
+- `crates/cdf-cli/**` only for preview command tests and any command plumbing needed to consume the lower-layer runtime.
 - Cargo manifests and `Cargo.lock` only for required internal crate wiring.
 
 Keep crate roots thin. Do not grow monolithic `lib.rs` files; follow `.10x/knowledge/rust-crate-organization.md`.
 
 ## Acceptance criteria
 
-- A declarative `kind = "files"` resource with exactly one matching local file can be opened through the lower-layer resource runtime used by `firn preview`.
-- `firn preview <RESOURCE>` for a declarative local file resource succeeds for at least NDJSON, CSV, JSON, and Parquet file formats already supported by `firn-formats::FileResource`.
+- A declarative `kind = "files"` resource with exactly one matching local file can be opened through the lower-layer resource runtime used by `cdf preview`.
+- `cdf preview <RESOURCE>` for a declarative local file resource succeeds for at least NDJSON, CSV, JSON, and Parquet file formats already supported by `cdf-formats::FileResource`.
 - Preview drains at most one batch, reports the previewed resource id, batch id, partition id, row count, byte count, and write effects, and creates no package root, destination database, or checkpoint state.
 - File paths are resolved under the project root or declared file-source root; relative-path behavior is explicit in code and tests.
 - Zero matching files fail closed with an actionable error and no writes.
@@ -37,9 +37,9 @@ Keep crate roots thin. Do not grow monolithic `lib.rs` files; follow `.10x/knowl
 - Focused negative tests prove zero-match and multi-match file globs fail closed without writes.
 - Existing file-source conformance and format tests remain passing.
 - Run, at minimum:
-  - `cargo test -p firn-declarative -p firn-project -p firn-cli --locked --no-fail-fast`
-  - `cargo clippy -p firn-declarative -p firn-project -p firn-cli --all-targets --locked -- -D warnings`
-  - `cargo nextest run -p firn-declarative -p firn-project -p firn-cli --locked`
+  - `cargo test -p cdf-declarative -p cdf-project -p cdf-cli --locked --no-fail-fast`
+  - `cargo clippy -p cdf-declarative -p cdf-project -p cdf-cli --all-targets --locked -- -D warnings`
+  - `cargo nextest run -p cdf-declarative -p cdf-project -p cdf-cli --locked`
   - `cargo fmt --all -- --check`
   - `cargo metadata --locked --format-version 1`
   - `git diff --check`
@@ -48,11 +48,11 @@ Keep crate roots thin. Do not grow monolithic `lib.rs` files; follow `.10x/knowl
 
 ## Explicit exclusions
 
-No `firn run`, no package creation, no destination commits, no checkpoint advancement, no run/resume/replay orchestration, no HTTP or SQL resource execution, no multi-file scan semantics, no project scaffold/init behavior, no native Arrow/DataFusion Parquet policy change, and no broad advisory ignore.
+No `cdf run`, no package creation, no destination commits, no checkpoint advancement, no run/resume/replay orchestration, no HTTP or SQL resource execution, no multi-file scan semantics, no project scaffold/init behavior, no native Arrow/DataFusion Parquet policy change, and no broad advisory ignore.
 
 ## References
 
-- `firn-the-book-of-the-system.md` Chapters 7, 8, and 17.
+- `VISION.md` Chapters 7, 8, and 17.
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/tickets/2026-07-05-cli-surface.md`
@@ -62,10 +62,10 @@ No `firn run`, no package creation, no destination commits, no checkpoint advanc
 
 ## Progress and notes
 
-- 2026-07-06: Opened after file-source execution conformance made `firn-formats::FileResource` available and after inspecting `firn preview`, `CompiledResource::open`, project declarative resource loading, and current CLI preview tests. This child narrows the broad CLI preview blocker to single-match declarative local file resources and intentionally fails closed for zero or multiple glob matches.
+- 2026-07-06: Opened after file-source execution conformance made `cdf-formats::FileResource` available and after inspecting `cdf preview`, `CompiledResource::open`, project declarative resource loading, and current CLI preview tests. This child narrows the broad CLI preview blocker to single-match declarative local file resources and intentionally fails closed for zero or multiple glob matches.
 - 2026-07-06: Marked active for worker implementation. Worker owns the scoped lower-layer file-resource preview runtime and focused CLI tests; parent owns graph coherence, final evidence, review, closure, and commit.
 - 2026-07-06: Worker implemented the lower-layer file runtime adapter and project-root compile path. Parent review hardened partition validation, glob/path traversal, symlink-directory handling, zero/multi-match failures, and CLI preview no-write coverage.
-- 2026-07-06: Closed with evidence in `.10x/evidence/2026-07-06-declarative-file-preview-execution.md` and review in `.10x/reviews/2026-07-06-declarative-file-preview-execution-review.md`. Final checks passed, including mutation testing over `crates/firn-declarative/src/file_runtime.rs`.
+- 2026-07-06: Closed with evidence in `.10x/evidence/2026-07-06-declarative-file-preview-execution.md` and review in `.10x/reviews/2026-07-06-declarative-file-preview-execution-review.md`. Final checks passed, including mutation testing over `crates/cdf-declarative/src/file_runtime.rs`.
 
 ## Blockers
 

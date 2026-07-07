@@ -1,13 +1,13 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-status-freshness-local-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/specs/checkpoint-state-firn-line.md
+Relates-To: .10x/tickets/done/2026-07-06-status-freshness-local-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/specs/checkpoint-state-cdf-line.md
 
 # Status freshness local ledger evidence
 
 ## What was observed
 
-`firn status` now evaluates compiled resources with `trust_level = serving` and a `FreshnessSpec` against the configured local SQLite checkpoint database using read-only inspection. The evaluator lives in `crates/firn-cli/src/status_freshness.rs`, keeping `crates/firn-cli/src/lib.rs` as a small module index and avoiding a monolithic CLI implementation.
+`cdf status` now evaluates compiled resources with `trust_level = serving` and a `FreshnessSpec` against the configured local SQLite checkpoint database using read-only inspection. The evaluator lives in `crates/cdf-cli/src/status_freshness.rs`, keeping `crates/cdf-cli/src/lib.rs` as a small module index and avoiding a monolithic CLI implementation.
 
 The implementation reports:
 
@@ -22,10 +22,10 @@ It does not create missing state databases and does not invent a pipeline defaul
 Focused post-hardening checks:
 
 - `cargo fmt --all -- --check` passed.
-- `cargo test -p firn-cli --locked --no-fail-fast` passed: 43 CLI unit tests, 1 integration test, 0 doctests.
-- `cargo clippy -p firn-cli --all-targets --locked -- -D warnings` passed.
-- `cargo nextest run -p firn-cli --locked` passed: 44 tests run, 44 passed.
-- `cargo mutants -p firn-cli --file crates/firn-cli/src/status_freshness.rs --re "human_summary|age_ms" --test-tool nextest --jobs 2 --timeout 900 --baseline skip --cargo-arg=--locked` passed: 14 mutants tested, 14 caught.
+- `cargo test -p cdf-cli --locked --no-fail-fast` passed: 43 CLI unit tests, 1 integration test, 0 doctests.
+- `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings` passed.
+- `cargo nextest run -p cdf-cli --locked` passed: 44 tests run, 44 passed.
+- `cargo mutants -p cdf-cli --file crates/cdf-cli/src/status_freshness.rs --re "human_summary|age_ms" --test-tool nextest --jobs 2 --timeout 900 --baseline skip --cargo-arg=--locked` passed: 14 mutants tested, 14 caught.
 
 Mutation-test learning:
 
@@ -47,7 +47,7 @@ Workspace and feature-matrix gates observed earlier in the same workstream befor
 - `cargo nextest run --workspace --locked` passed: 202 tests run, 202 passed.
 - `cargo hack check --workspace --all-targets --each-feature --locked` passed.
 - `cargo hack clippy --workspace --all-targets --each-feature --locked -- -D warnings` passed.
-- `cargo llvm-cov --workspace --all-features --locked --summary-only` passed: total line coverage 79.77%; `crates/firn-cli/src/status_freshness.rs` line coverage 91.42%.
+- `cargo llvm-cov --workspace --all-features --locked --summary-only` passed: total line coverage 79.77%; `crates/cdf-cli/src/status_freshness.rs` line coverage 91.42%.
 - `cargo doc --workspace --all-features --no-deps --locked` passed.
 - `cargo semver-checks --workspace --baseline-rev HEAD` passed.
 
@@ -67,12 +67,12 @@ Supply-chain, security, and metrics checks:
 - First-party unsafe marker search over `crates/` found no `unsafe` blocks/impls/traits, FFI markers, raw pointer conversion markers, `transmute`, or `MaybeUninit`.
 - `cargo geiger` with isolated `CARGO_TARGET_DIR=target/quality/geiger-status-target` completed and exited nonzero because dependency crates produced 192 unsafe warnings. This was paired with the first-party unsafe marker search above.
 - `cargo +nightly udeps --workspace --all-targets --locked` passed.
-- `cargo +nightly careful test -p firn-cli --locked` passed: 41 unit tests, 1 integration test, 0 doctests at the time of that run.
-- `cargo bloat --release -p firn-cli --bin firn-cli -n 20` passed; the top symbols were dominated by DuckDB/libduckdb, with `firn_cli::commands::dispatch` the first firn-owned symbol shown.
+- `cargo +nightly careful test -p cdf-cli --locked` passed: 41 unit tests, 1 integration test, 0 doctests at the time of that run.
+- `cargo bloat --release -p cdf-cli --bin cdf-cli -n 20` passed; the top symbols were dominated by DuckDB/libduckdb, with `cdf_cli::commands::dispatch` the first cdf-owned symbol shown.
 - `rust-code-analysis-cli -m -p crates -O json` passed and wrote JSON metrics under `target/quality/reports/rust-code-analysis-status-freshness/`.
 - `jscpd` passed as a metric run and reported 4.10% duplicated lines overall; no status-freshness-specific blocker was identified.
 - `cargo fuzz list` returned no fuzz manifest at `fuzz/Cargo.toml`; there are no repository fuzz targets to run for this slice.
-- `cargo +nightly miri test -p firn-cli --locked status_` was installed and attempted. With default isolation it stopped on `SystemTime::now`; with `MIRIFLAGS=-Zmiri-disable-isolation`, the no-SQLite status test passed and the run then stopped on unsupported macOS Miri foreign function `sqlite3_threadsafe` in `rusqlite`. This is a Miri/native-FFI coverage limit, not evidence of a product defect.
+- `cargo +nightly miri test -p cdf-cli --locked status_` was installed and attempted. With default isolation it stopped on `SystemTime::now`; with `MIRIFLAGS=-Zmiri-disable-isolation`, the no-SQLite status test passed and the run then stopped on unsupported macOS Miri foreign function `sqlite3_threadsafe` in `rusqlite`. This is a Miri/native-FFI coverage limit, not evidence of a product defect.
 - `kani` / `cargo-kani` was not installed and no Kani harness exists in the repository.
 
 ## What this supports

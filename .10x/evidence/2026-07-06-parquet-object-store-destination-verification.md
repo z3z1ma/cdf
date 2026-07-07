@@ -7,7 +7,7 @@ Relates-To: .10x/tickets/done/2026-07-05-parquet-object-store-destination.md
 
 ## What was observed
 
-`firn-dest-parquet` now exposes a real local-filesystem/object_store Parquet destination with dry-run planning, append and replace support, package-token idempotency, object manifest receipts, package receipt recording, and receipt verification for manifest/object hashes, etags where available, counts, and schema hashes.
+`cdf-dest-parquet` now exposes a real local-filesystem/object_store Parquet destination with dry-run planning, append and replace support, package-token idempotency, object manifest receipts, package receipt recording, and receipt verification for manifest/object hashes, etags where available, counts, and schema hashes.
 
 The implementation is split across ordinary Rust modules (`api`, `duckdb_writer`, `manifest`, `package`, `receipts`, `sheet`, `store`, and tests) rather than a monolithic `lib.rs`.
 
@@ -30,13 +30,13 @@ Focused tests cover:
 
 ## Procedure
 
-Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
+Commands run from `/Users/alexanderbut/code_projects/personal/cdf`:
 
 ```text
 cargo fmt --all -- --check
-cargo test -p firn-dest-parquet --locked --no-fail-fast
-cargo clippy -p firn-dest-parquet --all-targets --locked -- -D warnings
-cargo mutants --package firn-dest-parquet --file 'crates/firn-dest-parquet/src/*.rs' --no-shuffle --jobs 4 --timeout 120 --output target/quality/reports/mutants-parquet-destination
+cargo test -p cdf-dest-parquet --locked --no-fail-fast
+cargo clippy -p cdf-dest-parquet --all-targets --locked -- -D warnings
+cargo mutants --package cdf-dest-parquet --file 'crates/cdf-dest-parquet/src/*.rs' --no-shuffle --jobs 4 --timeout 120 --output target/quality/reports/mutants-parquet-destination
 cargo test --workspace --all-targets --locked --no-fail-fast
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo nextest run --workspace --locked
@@ -44,10 +44,10 @@ cargo test --workspace --all-targets --all-features --locked --no-fail-fast
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo deny check advisories
 cargo audit --json > target/quality/reports/cargo-audit-parquet-destination-final.json
-semgrep scan --config p/rust --error --no-git-ignore --json --output target/quality/reports/semgrep-rust-parquet-destination-crate-final.json crates/firn-dest-parquet
+semgrep scan --config p/rust --error --no-git-ignore --json --output target/quality/reports/semgrep-rust-parquet-destination-crate-final.json crates/cdf-dest-parquet
 semgrep scan --config p/rust --error --json --output target/quality/reports/semgrep-rust-parquet-destination-staged-final.json .
 tools/codeql-rust-quality.sh
-tmpdir=$(mktemp -d); rsync -a --exclude .git --exclude target --exclude reports . "$tmpdir/firn"; gitleaks dir "$tmpdir/firn" --no-banner; rc=$?; rm -rf "$tmpdir"; exit $rc
+tmpdir=$(mktemp -d); rsync -a --exclude .git --exclude target --exclude reports . "$tmpdir/cdf"; gitleaks dir "$tmpdir/cdf" --no-banner; rc=$?; rm -rf "$tmpdir"; exit $rc
 git diff --check -- . ':(exclude).gitignore'
 ```
 
@@ -57,13 +57,13 @@ Final required verification results:
 cargo fmt --all -- --check
 exit code: 0
 
-cargo test -p firn-dest-parquet --locked --no-fail-fast
+cargo test -p cdf-dest-parquet --locked --no-fail-fast
 result: 14 passed; 0 failed; 0 ignored; doc-tests 0 passed; exit code 0
 
-cargo clippy -p firn-dest-parquet --all-targets --locked -- -D warnings
+cargo clippy -p cdf-dest-parquet --all-targets --locked -- -D warnings
 exit code: 0
 
-cargo mutants --package firn-dest-parquet ...
+cargo mutants --package cdf-dest-parquet ...
 result: 158 mutants tested in 8m: 128 caught, 30 unviable, 0 missed; exit code 0
 
 cargo test --workspace --all-targets --locked --no-fail-fast
@@ -87,7 +87,7 @@ result: advisories ok; exit code 0
 cargo audit --json > target/quality/reports/cargo-audit-parquet-destination-final.json
 exit code: 0
 
-semgrep scan --config p/rust --error --no-git-ignore ... crates/firn-dest-parquet
+semgrep scan --config p/rust --error --no-git-ignore ... crates/cdf-dest-parquet
 result: 0 findings across 9 Rust targets; exit code 0
 
 semgrep scan --config p/rust --error ... .

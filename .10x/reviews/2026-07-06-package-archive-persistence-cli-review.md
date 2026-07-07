@@ -21,7 +21,7 @@ Review of the package archive persistence and CLI implementation for `.10x/ticke
 
 No blocking findings.
 
-Minor residual risk: final mutation testing left 7 missed mutants in low-level error-injection/platform guards in `crates/firn-package/src/archive.rs`. The surviving cases cover temp-dir collision/cleanup and synthetic missing-file error-string branches. Focused behavior tests cover the user-visible archive contract, and this residual does not block this ticket.
+Minor residual risk: final mutation testing left 7 missed mutants in low-level error-injection/platform guards in `crates/cdf-package/src/archive.rs`. The surviving cases cover temp-dir collision/cleanup and synthetic missing-file error-string branches. Focused behavior tests cover the user-visible archive contract, and this residual does not block this ticket.
 
 Minor residual risk: CodeQL continues to show the known Rust extractor macro-warning profile recorded by earlier CodeQL evidence, but the current SARIF has 0 findings and the reusable database was not gratuitously recreated.
 

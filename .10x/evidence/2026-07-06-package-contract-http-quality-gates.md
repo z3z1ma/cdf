@@ -15,7 +15,7 @@ Generated reports were written under `target/quality/reports/2026-07-06-package-
 
 ## Procedure
 
-Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
+Commands run from `/Users/alexanderbut/code_projects/personal/cdf`:
 
 - `cargo fmt --all -- --check`: passed.
 - `cargo check --workspace --all-targets --locked`: passed.
@@ -41,8 +41,8 @@ Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
 - `semgrep scan --config p/rust --error`: passed; 0 findings.
 - `gitleaks dir --redact` and `gitleaks git --redact`: passed; both reports were empty arrays.
 - `cargo semver-checks --baseline-rev HEAD~1`: passed; no semver update required.
-- `rg` unsafe/source-surface search over `crates/`: no firn-owned `unsafe`, FFI, raw-pointer, transmute, or `MaybeUninit`; matches were `Send`/`Sync` bounds and a plain-text "unsafe unit" message.
-- `cargo geiger` package-local attempt: produced a useful firn-owned `firn-kernel` 0/0 unsafe signal but exited nonzero due dependency scan warnings. Source search is the closure authority for firn-owned unsafe in this batch.
+- `rg` unsafe/source-surface search over `crates/`: no cdf-owned `unsafe`, FFI, raw-pointer, transmute, or `MaybeUninit`; matches were `Send`/`Sync` bounds and a plain-text "unsafe unit" message.
+- `cargo geiger` package-local attempt: produced a useful cdf-owned `cdf-kernel` 0/0 unsafe signal but exited nonzero due dependency scan warnings. Source search is the closure authority for cdf-owned unsafe in this batch.
 - Existing CodeQL DB analysis: passed with 0 SARIF results.
 - Fresh CodeQL DB creation at `target/quality/codeql-db-rust`: passed.
 - Fresh CodeQL analysis: passed with 0 SARIF results.
@@ -62,4 +62,4 @@ Full `cargo deny check` still fails because no ratified `deny.toml` license poli
 
 CodeQL reported extraction-warning metrics while still producing 0 findings. The warnings were dominated by generated target artifacts and macro-expansion limits, so this evidence supports security finding absence, not perfect CodeQL database quality.
 
-No Miri, Kani, fuzzing, or benchmarks were run: this batch added no firn-owned unsafe, no configured fuzz/proof harness exists, and the work did not target performance-sensitive behavior.
+No Miri, Kani, fuzzing, or benchmarks were run: this batch added no cdf-owned unsafe, no configured fuzz/proof harness exists, and the work did not target performance-sensitive behavior.

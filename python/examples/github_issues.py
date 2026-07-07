@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
 
-from firn_sdk import Context, Row, resource
+from cdf_sdk import Context, Row, resource
 
 
 @resource(

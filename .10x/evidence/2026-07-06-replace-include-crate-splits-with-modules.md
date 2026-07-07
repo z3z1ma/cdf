@@ -9,14 +9,14 @@ Relates-To: .10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modul
 
 The four scoped crate roots no longer use `include!` to assemble split source files:
 
-- `crates/firn-project/src/lib.rs`
-- `crates/firn-python/src/lib.rs`
-- `crates/firn-dest-duckdb/src/lib.rs`
-- `crates/firn-dest-postgres/src/lib.rs`
+- `crates/cdf-project/src/lib.rs`
+- `crates/cdf-python/src/lib.rs`
+- `crates/cdf-dest-duckdb/src/lib.rs`
+- `crates/cdf-dest-postgres/src/lib.rs`
 
 Each root now declares ordinary Rust modules with `mod`, and re-exports the prior crate-root public API with `pub use` where needed. Split implementation files use minimal `crate` imports and `pub(crate)` visibility for helpers that are shared across sibling modules.
 
-`rg -n "include!" crates/firn-project/src crates/firn-python/src crates/firn-dest-duckdb/src crates/firn-dest-postgres/src -S` produced no matches.
+`rg -n "include!" crates/cdf-project/src crates/cdf-python/src crates/cdf-dest-duckdb/src crates/cdf-dest-postgres/src -S` produced no matches.
 
 ## Procedure
 
@@ -28,22 +28,22 @@ Each root now declares ordinary Rust modules with `mod`, and re-exports the prio
 ## Command results
 
 - `cargo fmt --all -- --check`: passed.
-- `cargo test -p firn-project -p firn-python -p firn-dest-duckdb -p firn-dest-postgres --locked --no-fail-fast`: passed with 46 unit tests and 0 doctests.
-- `cargo clippy -p firn-project -p firn-python -p firn-dest-duckdb -p firn-dest-postgres --all-targets --locked -- -D warnings`: passed.
+- `cargo test -p cdf-project -p cdf-python -p cdf-dest-duckdb -p cdf-dest-postgres --locked --no-fail-fast`: passed with 46 unit tests and 0 doctests.
+- `cargo clippy -p cdf-project -p cdf-python -p cdf-dest-duckdb -p cdf-dest-postgres --all-targets --locked -- -D warnings`: passed.
 
 CodeQL verification used a temporary source copy excluding `.git`, `target`, and `reports`:
 
 ```text
-codeql database create /tmp/firn-codeql-db-include-modules --language=rust --source-root /tmp/firn-codeql-src-include-modules --overwrite --command "env CARGO_TARGET_DIR=/tmp/firn-codeql-target-include-modules cargo check -p firn-project -p firn-python -p firn-dest-duckdb -p firn-dest-postgres --locked"
+codeql database create /tmp/cdf-codeql-db-include-modules --language=rust --source-root /tmp/cdf-codeql-src-include-modules --overwrite --command "env CARGO_TARGET_DIR=/tmp/cdf-codeql-target-include-modules cargo check -p cdf-project -p cdf-python -p cdf-dest-duckdb -p cdf-dest-postgres --locked"
 ```
 
 The database command completed successfully:
 
 ```text
-Successfully created database at /tmp/firn-codeql-db-include-modules.
+Successfully created database at /tmp/cdf-codeql-db-include-modules.
 ```
 
-`rg -n "macro expansion failed for 'include'|include!" /tmp/firn-codeql-db-include-modules/log /tmp/firn-codeql-src-include-modules/crates/firn-project/src /tmp/firn-codeql-src-include-modules/crates/firn-python/src /tmp/firn-codeql-src-include-modules/crates/firn-dest-duckdb/src /tmp/firn-codeql-src-include-modules/crates/firn-dest-postgres/src -S` produced no output.
+`rg -n "macro expansion failed for 'include'|include!" /tmp/cdf-codeql-db-include-modules/log /tmp/cdf-codeql-src-include-modules/crates/cdf-project/src /tmp/cdf-codeql-src-include-modules/crates/cdf-python/src /tmp/cdf-codeql-src-include-modules/crates/cdf-dest-duckdb/src /tmp/cdf-codeql-src-include-modules/crates/cdf-dest-postgres/src -S` produced no output.
 
 ## What this supports or challenges
 

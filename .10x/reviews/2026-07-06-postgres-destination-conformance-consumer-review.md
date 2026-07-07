@@ -14,7 +14,7 @@ Review of the Postgres destination conformance consumer implementation for `.10x
 
 No blocking findings.
 
-The implementation is scoped to `Cargo.lock`, `crates/firn-dest-postgres/Cargo.toml`, and `crates/firn-dest-postgres/src/tests.rs`. The lockfile change is the expected metadata update for the new local dev-dependency.
+The implementation is scoped to `Cargo.lock`, `crates/cdf-dest-postgres/Cargo.toml`, and `crates/cdf-dest-postgres/src/tests.rs`. The lockfile change is the expected metadata update for the new local dev-dependency.
 
 The new test uses the existing public destination conformance harness and covers append, replace, and merge. It correctly avoids an empty-migration assumption by asking `PostgresDestination::plan_commit` for migrations and passing those expected migrations into the conformance case.
 

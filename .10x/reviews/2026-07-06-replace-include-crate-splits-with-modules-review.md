@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`, which replaced `include!`-based splits in `firn-project`, `firn-python`, `firn-dest-duckdb`, and `firn-dest-postgres` with ordinary Rust modules.
+Review of `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`, which replaced `include!`-based splits in `cdf-project`, `cdf-python`, `cdf-dest-duckdb`, and `cdf-dest-postgres` with ordinary Rust modules.
 
 ## Assumptions tested
 
@@ -23,10 +23,10 @@ None.
 ## Evidence checked
 
 - `.10x/evidence/2026-07-06-replace-include-crate-splits-with-modules.md`
-- `rg -n "include!" crates/firn-project/src crates/firn-python/src crates/firn-dest-duckdb/src crates/firn-dest-postgres/src -S`: no matches.
+- `rg -n "include!" crates/cdf-project/src crates/cdf-python/src crates/cdf-dest-duckdb/src crates/cdf-dest-postgres/src -S`: no matches.
 - `cargo fmt --all -- --check`: passed.
-- `cargo test -p firn-project -p firn-python -p firn-dest-duckdb -p firn-dest-postgres --locked --no-fail-fast`: passed.
-- `cargo clippy -p firn-project -p firn-python -p firn-dest-duckdb -p firn-dest-postgres --all-targets --locked -- -D warnings`: passed.
+- `cargo test -p cdf-project -p cdf-python -p cdf-dest-duckdb -p cdf-dest-postgres --locked --no-fail-fast`: passed.
+- `cargo clippy -p cdf-project -p cdf-python -p cdf-dest-duckdb -p cdf-dest-postgres --all-targets --locked -- -D warnings`: passed.
 - Final parent CodeQL run produced 0 SARIF findings and 0 active-batch `include` macro expansion failures.
 
 ## Verdict

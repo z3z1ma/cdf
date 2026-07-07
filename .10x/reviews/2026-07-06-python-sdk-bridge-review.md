@@ -8,14 +8,14 @@ Verdict: pass
 
 ## Target
 
-Review of the `firn-python` implementation, typed `firn-sdk` files, and verification evidence for `.10x/tickets/done/2026-07-05-python-sdk-bridge.md`.
+Review of the `cdf-python` implementation, typed `cdf-sdk` files, and verification evidence for `.10x/tickets/done/2026-07-05-python-sdk-bridge.md`.
 
 ## Assumptions tested
 
 - Python remains an authoring/interchange boundary and does not move execution semantics into the kernel.
 - Dict rows do not create a new row runtime; they cross into Arrow-backed kernel batches at the boundary.
-- Arrow PyCapsule import uses a maintained bridge dependency rather than firn-owned unsafe FFI.
-- Secret and log surfaces reuse `firn-http` redaction primitives.
+- Arrow PyCapsule import uses a maintained bridge dependency rather than cdf-owned unsafe FFI.
+- Secret and log surfaces reuse `cdf-http` redaction primitives.
 - GIL/free-threaded behavior is modeled conservatively when the local interpreter cannot prove free-threaded runtime behavior.
 - Dependency changes pass advisory scanners.
 
@@ -27,7 +27,7 @@ The first PyCapsule bridge dependency choice (`arrow-pyarrow` with PyO3 0.28.3) 
 
 ## Verdict
 
-Pass. The implementation satisfies the ticket with focused surfaces in `crates/firn-python/**` and typed Python SDK files. Evidence in `.10x/evidence/2026-07-06-python-sdk-bridge.md` maps to the acceptance criteria and records local limits for free-threaded execution and missing `pyarrow`.
+Pass. The implementation satisfies the ticket with focused surfaces in `crates/cdf-python/**` and typed Python SDK files. Evidence in `.10x/evidence/2026-07-06-python-sdk-bridge.md` maps to the acceptance criteria and records local limits for free-threaded execution and missing `pyarrow`.
 
 ## Residual risk
 

@@ -10,9 +10,9 @@ Verdict: pass
 
 Review of the implementation for `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`, including:
 
-- typed package preimage artifacts in `firn-package`;
+- typed package preimage artifacts in `cdf-package`;
 - engine pre-finalization hook support;
-- live local-file package artifact writing and DuckDB artifact replay/recovery in `firn-project`;
+- live local-file package artifact writing and DuckDB artifact replay/recovery in `cdf-project`;
 - conformance/golden updates for prepared and live package artifact replay;
 - mutation-hardened package replay reconstruction validation.
 
@@ -20,7 +20,7 @@ Review of the implementation for `.10x/tickets/done/2026-07-06-package-state-com
 
 None unresolved.
 
-Parent review did find a significant test-hardening gap before closure: `PackageReplayInputs::from_preimages` accepted several malformed preimage combinations without independent negative coverage. Focused tests were added for unsupported state preimage versions, non-committed and non-head input checkpoints, checkpoint tuple mismatches by pipeline/resource/scope, parent checkpoint mismatch, input-position mismatch, null checkpoint references, empty state segment lists, and package-manifest row/byte mismatches. The final bounded mutation pass over `crates/firn-package/src/artifacts.rs` reported 27 mutants tested, 22 caught, 5 unviable, and 0 missed.
+Parent review did find a significant test-hardening gap before closure: `PackageReplayInputs::from_preimages` accepted several malformed preimage combinations without independent negative coverage. Focused tests were added for unsupported state preimage versions, non-committed and non-head input checkpoints, checkpoint tuple mismatches by pipeline/resource/scope, parent checkpoint mismatch, input-position mismatch, null checkpoint references, empty state segment lists, and package-manifest row/byte mismatches. The final bounded mutation pass over `crates/cdf-package/src/artifacts.rs` reported 27 mutants tested, 22 caught, 5 unviable, and 0 missed.
 
 The apparent recovery helper concern around merge keys is not a ticket blocker: artifact replay reconstructs merge keys for the actual destination write path, while recovery verifies a supplied durable receipt and commits checkpoint state without performing a destination write.
 

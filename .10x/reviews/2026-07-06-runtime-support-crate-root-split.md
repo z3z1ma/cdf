@@ -10,8 +10,8 @@ Verdict: pass
 
 Review of the organization-only split for:
 
-- `crates/firn-state-sqlite/src/lib.rs`
-- `crates/firn-http/src/lib.rs`
+- `crates/cdf-state-sqlite/src/lib.rs`
+- `crates/cdf-http/src/lib.rs`
 
 Supporting evidence: `.10x/evidence/2026-07-06-runtime-support-crate-root-split.md`.
 

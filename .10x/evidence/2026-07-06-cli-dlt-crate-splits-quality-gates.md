@@ -14,8 +14,8 @@ The CLI ticket remains blocked on missing lower-layer runtime, SQL, recovery, re
 ## Passing command results
 
 - `git diff --check -- . ':(exclude).gitignore'`: passed.
-- `python3 -m compileall -q python/firn_sdk python/examples`: passed.
-- `uvx pyright python/firn_sdk python/examples`: passed with 0 errors.
+- `python3 -m compileall -q python/cdf_sdk python/examples`: passed.
+- `uvx pyright python/cdf_sdk python/examples`: passed with 0 errors.
 - `cargo fmt --all -- --check`: passed.
 - `cargo check --workspace --all-targets --locked`: passed.
 - `cargo check --workspace --all-targets --all-features --locked`: passed.
@@ -42,8 +42,8 @@ The CLI ticket remains blocked on missing lower-layer runtime, SQL, recovery, re
 - `gitleaks git`: passed with no leaks across 5 commits.
 - `rust-code-analysis-cli -m -p crates -O json`: passed.
 - `jscpd . --reporters json,console --ignore '**/target/**,**/.git/**,**/reports/**'`: exited 0; Rust duplicated lines were 310/24232, 1.28%, and total duplicated lines were 1177/41145, 2.86%.
-- `cargo semver-checks --workspace --baseline-rev HEAD`: passed for all library packages after restoring `ObservedSchema` derives. `firn-cli` was excluded because this batch intentionally added a new library target to a baseline binary-only package, which `cargo-semver-checks` cannot compare as a baseline library.
-- `cargo bloat --release -p firn-cli --bin firn-cli -n 20`: passed. The `.text` section was 28.6 MiB and file size was 45.1 MiB; top symbols were dominated by bundled DuckDB/DataFusion code, with `firn_cli::commands::dispatch` as the first Firn symbol at 44.3 KiB.
+- `cargo semver-checks --workspace --baseline-rev HEAD`: passed for all library packages after restoring `ObservedSchema` derives. `cdf-cli` was excluded because this batch intentionally added a new library target to a baseline binary-only package, which `cargo-semver-checks` cannot compare as a baseline library.
+- `cargo bloat --release -p cdf-cli --bin cdf-cli -n 20`: passed. The `.text` section was 28.6 MiB and file size was 45.1 MiB; top symbols were dominated by bundled DuckDB/DataFusion code, with `cdf_cli::commands::dispatch` as the first CDF symbol at 44.3 KiB.
 - `codeql database create target/quality/codeql-db-rust --language=rust --source-root . --overwrite --command 'env CARGO_TARGET_DIR=target/codeql-cargo-target cargo check --workspace --all-targets --locked' --codescanning-config target/quality/codeql-rust-config.yml`: passed.
 - `codeql database analyze target/quality/codeql-db-rust codeql/rust-queries --format=sarif-latest --output=target/quality/reports/codeql-rust-current-batch.sarif`: passed with 0 non-diagnostic findings.
 
@@ -51,15 +51,15 @@ Final pre-commit focused recheck after record closure and ticket moves:
 
 - `git diff --check -- . ':(exclude).gitignore'`: passed.
 - `cargo fmt --all -- --check`: passed.
-- `python3 -m compileall -q python/firn_sdk python/examples`: passed.
-- `uvx pyright python/firn_sdk python/examples`: passed with 0 errors.
+- `python3 -m compileall -q python/cdf_sdk python/examples`: passed.
+- `uvx pyright python/cdf_sdk python/examples`: passed with 0 errors.
 - `cargo check --workspace --all-targets --locked`: passed.
 - `cargo test --workspace --all-targets --locked --no-fail-fast`: passed, 125 tests.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed.
 
 ## Policy-blocked or limited commands
 
-- `cargo deny check`: failed only at the license policy stage because Firn still has no ratified `deny.toml` license allowlist. Advisories, bans, and sources were ok. Owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
+- `cargo deny check`: failed only at the license policy stage because CDF still has no ratified `deny.toml` license allowlist. Advisories, bans, and sources were ok. Owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - `cargo vet`: failed because `supply-chain/` is not initialized. Owner: `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`.
 - Raw `gitleaks dir` over the entire repository found generated `target/**` artifacts, including prior redacted reports and bundled generated third-party source. Source-only and git-history scans were clean, so no tracked-source secret was found.
 - `cargo geiger --all-features` does not run cleanly from the virtual workspace manifest. A package-mode run was noisy and exceeded a reasonable sidecar budget. Direct first-party source search found no `unsafe`, `unsafe impl`, `unsafe trait`, FFI, raw pointer conversions, `transmute`, or `MaybeUninit`; matches were ordinary `Send`/`Sync` bounds and prose.

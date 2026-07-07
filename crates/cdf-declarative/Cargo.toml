@@ -1,0 +1,23 @@
+[package]
+name = "cdf-declarative"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Declarative resource authoring boundary for cdf."
+
+[dependencies]
+arrow-schema = "59.0.0"
+cdf-http = { path = "../cdf-http" }
+cdf-formats = { path = "../cdf-formats" }
+cdf-kernel = { path = "../cdf-kernel" }
+hex = "0.4.3"
+schemars = { version = "1.2.1", features = ["derive"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+serde_yaml = "0.9.34"
+sha2 = "0.10.9"
+toml = "1.1.2"
+
+[dev-dependencies]
+cdf-conformance = { path = "../cdf-conformance" }
+futures-executor = "0.3.32"

@@ -1,0 +1,23 @@
+[package]
+name = "cdf-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Planning and execution boundary for cdf."
+
+[dependencies]
+arrow-array = "59.0.0"
+arrow-schema = "59.0.0"
+arrow-select = "59.0.0"
+datafusion = { version = "54.0.0", default-features = false }
+cdf-contract = { path = "../cdf-contract" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-package = { path = "../cdf-package" }
+futures-util = "0.3.32"
+serde = { version = "1.0.228", features = ["derive"] }
+tracing = "0.1.44"
+
+[dev-dependencies]
+futures-executor = "0.3.32"
+serde_json = "1.0.150"
+tempfile = "3.27.0"

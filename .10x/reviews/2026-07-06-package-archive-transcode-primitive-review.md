@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the package archive transcode primitive and shared DuckDB-backed Parquet writer extraction in `crates/firn-package` and `crates/firn-dest-parquet`.
+Review of the package archive transcode primitive and shared DuckDB-backed Parquet writer extraction in `crates/cdf-package` and `crates/cdf-dest-parquet`.
 
 ## Assumptions tested
 
@@ -29,7 +29,7 @@ The broad `gitleaks --no-git --source .` scan found generated-artifact hits unde
 
 ## Verdict
 
-Pass. Acceptance criteria are covered by focused tests, workspace tests, mutation testing, coverage, supply-chain/security scans, CodeQL using the reusable database, and parent review. The implementation keeps `firn-package` split into focused modules, centralizes the DuckDB writer without adding `parquet`/`paste`, and leaves the parent archive CLI/placement/manifest work open.
+Pass. Acceptance criteria are covered by focused tests, workspace tests, mutation testing, coverage, supply-chain/security scans, CodeQL using the reusable database, and parent review. The implementation keeps `cdf-package` split into focused modules, centralizes the DuckDB writer without adding `parquet`/`paste`, and leaves the parent archive CLI/placement/manifest work open.
 
 ## Residual risk
 

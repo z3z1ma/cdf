@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Implementation in `crates/firn-dest-parquet/**` plus direct dependency declarations in `crates/firn-dest-parquet/Cargo.toml` and `Cargo.lock`.
+Implementation in `crates/cdf-dest-parquet/**` plus direct dependency declarations in `crates/cdf-dest-parquet/Cargo.toml` and `Cargo.lock`.
 
 ## Findings
 

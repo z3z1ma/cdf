@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Implementation for `.10x/tickets/done/2026-07-06-singer-airbyte-protocol-adapters.md`, covering the new `firn-subprocess` Singer/Airbyte protocol parsing modules, shared protocol helpers, crate-root exports, manifest/lockfile dependency updates, and focused tests.
+Implementation for `.10x/tickets/done/2026-07-06-singer-airbyte-protocol-adapters.md`, covering the new `cdf-subprocess` Singer/Airbyte protocol parsing modules, shared protocol helpers, crate-root exports, manifest/lockfile dependency updates, and focused tests.
 
 ## Findings
 
@@ -18,7 +18,7 @@ Parent review found one significant pre-closure test/design gap: opaque `Foreign
 
 Mutation testing then found 24 missed mutants in parser edge assertions. The tests were hardened rather than accepting weak coverage. The final mutation result was 109 mutants tested, 82 caught, 27 unviable, and 0 missed.
 
-The implementation stays within the intended subprocess adapter surface. It does not modify `.gitignore`, Parquet/archive code, Airbyte destination code, package archive CLI code, or unrelated crates. The root `Cargo.lock` update is directly tied to the permitted `firn-subprocess` dependency additions and was required for `--locked` verification.
+The implementation stays within the intended subprocess adapter surface. It does not modify `.gitignore`, Parquet/archive code, Airbyte destination code, package archive CLI code, or unrelated crates. The root `Cargo.lock` update is directly tied to the permitted `cdf-subprocess` dependency additions and was required for `--locked` verification.
 
 ## Assumptions tested
 

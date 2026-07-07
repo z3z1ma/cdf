@@ -8,14 +8,14 @@ Verdict: pass
 
 ## Target
 
-Review of the `firn-formats` Parquet file-source implementation, tests, dependency changes, and quality evidence for `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`.
+Review of the `cdf-formats` Parquet file-source implementation, tests, dependency changes, and quality evidence for `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`.
 
 ## Assumptions tested
 
 - The implementation avoids the blocked direct arrow-rs `parquet -> paste` dependency path.
 - File-source scope, source position, schema hash, descriptor, and batch behavior match existing CSV/JSON/NDJSON reader conventions.
 - DuckDB Parquet reads do not introduce SQL injection through path handling.
-- Arrow 58 to Arrow 59 conversion is deterministic and does not bypass existing Firn batch-building checks.
+- Arrow 58 to Arrow 59 conversion is deterministic and does not bypass existing CDF batch-building checks.
 - Tests exercise parser success, malformed data, package replay, and mutation-sensitive reader branches.
 
 ## Findings

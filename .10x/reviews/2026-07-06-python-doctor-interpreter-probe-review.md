@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the `firn doctor` Python interpreter probe implemented in `crates/firn-cli/src/commands.rs` with tests in `crates/firn-cli/src/tests.rs`.
+Review of the `cdf doctor` Python interpreter probe implemented in `crates/cdf-cli/src/commands.rs` with tests in `crates/cdf-cli/src/tests.rs`.
 
 ## Findings
 

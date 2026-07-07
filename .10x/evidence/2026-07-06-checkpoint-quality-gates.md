@@ -7,13 +7,13 @@ Relates-To: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/ticket
 
 ## What was observed
 
-The checkpoint-store slice passed the current executable gates for formatting, workspace compile, feature combinations, lints, tests, doctests, coverage, mutation testing, semver comparison, dependency hygiene, vulnerability scans, secret scans, Semgrep, and CodeQL. The final source tree included the ratified `CheckpointStore: Send + Sync` shared-receiver trait in `firn-kernel`, the synchronized in-memory store, and the WAL-backed SQLite store.
+The checkpoint-store slice passed the current executable gates for formatting, workspace compile, feature combinations, lints, tests, doctests, coverage, mutation testing, semver comparison, dependency hygiene, vulnerability scans, secret scans, Semgrep, and CodeQL. The final source tree included the ratified `CheckpointStore: Send + Sync` shared-receiver trait in `cdf-kernel`, the synchronized in-memory store, and the WAL-backed SQLite store.
 
 Two supply-chain policy gates remain intentionally open under `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`: full `cargo deny check` needs a ratified license allowlist, and `cargo vet` needs an adoption decision plus a `supply-chain/` store.
 
 ## Procedure
 
-All commands were run from `/Users/alexanderbut/code_projects/personal/firn` on 2026-07-06 unless a subdirectory is named.
+All commands were run from `/Users/alexanderbut/code_projects/personal/cdf` on 2026-07-06 unless a subdirectory is named.
 
 Core gates passed:
 
@@ -33,7 +33,7 @@ cargo test --workspace --doc --all-features --locked --no-fail-fast
 git diff --check
 ```
 
-The final workspace test run passed with 22 unit tests total: 8 in `firn-kernel`, 14 in `firn-state-sqlite`, and zero failures. The final nextest run passed 22 tests.
+The final workspace test run passed with 22 unit tests total: 8 in `cdf-kernel`, 14 in `cdf-state-sqlite`, and zero failures. The final nextest run passed 22 tests.
 
 Coverage passed:
 
@@ -44,15 +44,15 @@ cargo llvm-cov --workspace --all-features --locked --summary-only
 Summary:
 
 ```text
-firn-kernel/src/lib.rs        87.38% line coverage
-firn-state-sqlite/src/lib.rs  97.03% line coverage
+cdf-kernel/src/lib.rs        87.38% line coverage
+cdf-state-sqlite/src/lib.rs  97.03% line coverage
 TOTAL                         94.61% line coverage
 ```
 
 Mutation testing passed:
 
 ```text
-cargo mutants -p firn-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o /tmp/firn-mutants-checkpoint-parent-final --cargo-arg=--locked
+cargo mutants -p cdf-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o /tmp/cdf-mutants-checkpoint-parent-final --cargo-arg=--locked
 ```
 
 Result: 111 mutants tested, 74 caught, 37 unviable, 0 missed.
@@ -64,8 +64,8 @@ cargo machete
 cargo audit
 cargo deny check advisories
 cargo semver-checks --workspace --baseline-rev HEAD
-osv-scanner scan source -r . --format json --output /tmp/firn-osv-final.json
-jq '(.results // .Results // []) | length' /tmp/firn-osv-final.json
+osv-scanner scan source -r . --format json --output /tmp/cdf-osv-final.json
+jq '(.results // .Results // []) | length' /tmp/cdf-osv-final.json
 ```
 
 `cargo machete` found no unused dependencies. `cargo audit` scanned 99 crate dependencies and exited successfully. `cargo deny check advisories` reported `advisories ok`. `cargo semver-checks` reported no semver update required across the workspace. OSV reported 0 vulnerability records.
@@ -73,13 +73,13 @@ jq '(.results // .Results // []) | length' /tmp/firn-osv-final.json
 Security scanners passed:
 
 ```text
-semgrep scan --config p/rust --error --json --output /tmp/firn-semgrep-rust-final.json .
-semgrep scan --config p/security-audit --error --json --output /tmp/firn-semgrep-security-final.json .
-gitleaks git --no-banner --redact --report-format json --report-path /tmp/firn-gitleaks-git-final.json
-gitleaks dir --no-banner --redact --report-format json --report-path /tmp/firn-gitleaks-dir-final.json .
-codeql database create /tmp/firn-codeql-db-final --language=rust --source-root . --overwrite --command 'cargo check --workspace --all-targets --locked'
-codeql database analyze /tmp/firn-codeql-db-final codeql/rust-queries --format=sarif-latest --output=/tmp/firn-codeql-rust-final.sarif
-jq '.runs[0].results | length' /tmp/firn-codeql-rust-final.sarif
+semgrep scan --config p/rust --error --json --output /tmp/cdf-semgrep-rust-final.json .
+semgrep scan --config p/security-audit --error --json --output /tmp/cdf-semgrep-security-final.json .
+gitleaks git --no-banner --redact --report-format json --report-path /tmp/cdf-gitleaks-git-final.json
+gitleaks dir --no-banner --redact --report-format json --report-path /tmp/cdf-gitleaks-dir-final.json .
+codeql database create /tmp/cdf-codeql-db-final --language=rust --source-root . --overwrite --command 'cargo check --workspace --all-targets --locked'
+codeql database analyze /tmp/cdf-codeql-db-final codeql/rust-queries --format=sarif-latest --output=/tmp/cdf-codeql-rust-final.sarif
+jq '.runs[0].results | length' /tmp/cdf-codeql-rust-final.sarif
 ```
 
 Semgrep Rust and security-audit configs reported 0 findings. `gitleaks git` and the final `gitleaks dir` scan reported 0 findings. CodeQL created and analyzed a Rust database and produced 0 SARIF results; the extractor reported Cargo metadata and macro-expansion warnings and metric data of 19 extracted Rust files with errors and 63 without error.
@@ -88,13 +88,13 @@ Unsafe and complexity probes:
 
 ```text
 rustup toolchain list
-rg -n "\bunsafe\b|unsafe\s+impl|unsafe\s+trait|extern\s+\"C\"|from_raw|into_raw|transmute|MaybeUninit|\bSend\b|\bSync\b" crates/firn-kernel crates/firn-state-sqlite
+rg -n "\bunsafe\b|unsafe\s+impl|unsafe\s+trait|extern\s+\"C\"|from_raw|into_raw|transmute|MaybeUninit|\bSend\b|\bSync\b" crates/cdf-kernel crates/cdf-state-sqlite
 cargo geiger --all-features
-rust-code-analysis-cli -m -p crates -O json -o /tmp/firn-rust-code-analysis-final
-jscpd . --reporters json,console --output /tmp/firn-jscpd-final --ignore "**/target/**,**/.git/**,**/reports/**"
+rust-code-analysis-cli -m -p crates -O json -o /tmp/cdf-rust-code-analysis-final
+jscpd . --reporters json,console --output /tmp/cdf-jscpd-final --ignore "**/target/**,**/.git/**,**/reports/**"
 ```
 
-Only the stable toolchain is installed. Direct source search found no first-party `unsafe`, FFI, raw pointer conversion, transmute, or `MaybeUninit` usage; it found only the intentional `Send` and `Sync` type bounds. `cargo geiger`, run from `crates/firn-state-sqlite`, exited nonzero because of scanner warnings but reported first-party `firn-state-sqlite` and `firn-kernel` as `0/0` unsafe. `rust-code-analysis-cli` exited successfully. `jscpd` reported clones mostly in `QUALITY.md`, existing records, and test/helper repetition; no implementation change was made because the Rust clone rate was low and the repeated checkpoint-store test helpers intentionally exercise the same contract over both stores.
+Only the stable toolchain is installed. Direct source search found no first-party `unsafe`, FFI, raw pointer conversion, transmute, or `MaybeUninit` usage; it found only the intentional `Send` and `Sync` type bounds. `cargo geiger`, run from `crates/cdf-state-sqlite`, exited nonzero because of scanner warnings but reported first-party `cdf-state-sqlite` and `cdf-kernel` as `0/0` unsafe. `rust-code-analysis-cli` exited successfully. `jscpd` reported clones mostly in `QUALITY.md`, existing records, and test/helper repetition; no implementation change was made because the Rust clone rate was low and the repeated checkpoint-store test helpers intentionally exercise the same contract over both stores.
 
 Policy-blocked gates:
 

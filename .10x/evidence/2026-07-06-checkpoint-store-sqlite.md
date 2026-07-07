@@ -7,7 +7,7 @@ Relates-To: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
 ## What was observed
 
-The `firn-kernel` crate now exposes the synchronous runtime-neutral `CheckpointStore` contract and serde-backed checkpoint artifact values: `CHECKPOINT_STATE_VERSION`, `CheckpointStatus`, `Checkpoint`, `RewindRequest`, and `RewindReport`. The `firn-state-sqlite` crate keeps the in-memory implementation and SQLite implementation initialized with WAL mode.
+The `cdf-kernel` crate now exposes the synchronous runtime-neutral `CheckpointStore` contract and serde-backed checkpoint artifact values: `CHECKPOINT_STATE_VERSION`, `CheckpointStatus`, `Checkpoint`, `RewindRequest`, and `RewindReport`. The `cdf-state-sqlite` crate keeps the in-memory implementation and SQLite implementation initialized with WAL mode.
 
 The SQLite schema records checkpoint identity, pipeline/resource/scope, state version, parent, input/output positions, package hash, schema hash, receipt id, status, head marker, timestamps, serialized state delta, serialized receipt, and rewind target marker. A partial unique index enforces at most one committed head for each `(pipeline_id, resource_id, scope_json)` where `is_head = 1`.
 
@@ -17,17 +17,17 @@ State serialization is gated to checkpoint state version `1` and round-trips SQL
 
 ## Procedure
 
-All commands were run from `/Users/alexanderbut/code_projects/personal/firn`.
+All commands were run from `/Users/alexanderbut/code_projects/personal/cdf`.
 
 Dependency refresh and targeted loop:
 
 ```text
-cargo check -p firn-state-sqlite --all-targets
-cargo test -p firn-state-sqlite --locked --no-fail-fast
-cargo tree -p firn-state-sqlite --locked
+cargo check -p cdf-state-sqlite --all-targets
+cargo test -p cdf-state-sqlite --locked --no-fail-fast
+cargo tree -p cdf-state-sqlite --locked
 ```
 
-The first command refreshed `Cargo.lock` for the newly declared state-crate dependencies. The final dependency tree for `firn-state-sqlite` uses `firn-kernel`, `rusqlite` with default features disabled, `serde`, `serde_json`, and dev-only `tempfile`.
+The first command refreshed `Cargo.lock` for the newly declared state-crate dependencies. The final dependency tree for `cdf-state-sqlite` uses `cdf-kernel`, `rusqlite` with default features disabled, `serde`, `serde_json`, and dev-only `tempfile`.
 
 Required worker verification:
 
@@ -35,7 +35,7 @@ Required worker verification:
 cargo fmt --all -- --check
 cargo check --workspace --all-targets --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo test -p firn-state-sqlite --locked --no-fail-fast
+cargo test -p cdf-state-sqlite --locked --no-fail-fast
 ```
 
 All required commands passed. The package test run executed 6 unit tests and 0 doctests with no failures:
@@ -53,9 +53,9 @@ sqlite_round_trips_position_scope_and_state_json ... ok
 
 This supports the ticket acceptance criteria for receipt-gated commits, transactional SQLite head uniqueness, append-only rewind behavior with ahead-of-state package reporting, and position/scope/state serialization round-trips.
 
-This also supports the architecture-layering constraint: the runtime-neutral checkpoint contract now lives in `firn-kernel`, and `firn-state-sqlite` depends downward on it for the in-memory and SQLite implementations.
+This also supports the architecture-layering constraint: the runtime-neutral checkpoint contract now lives in `cdf-kernel`, and `cdf-state-sqlite` depends downward on it for the in-memory and SQLite implementations.
 
-Parent review later found that the runtime-neutral checkpoint contract belonged in `firn-kernel` and that `SqliteCheckpointStore::connection(&self) -> &Connection` exposed a public raw SQL bypass. The repair moved the contract to `firn-kernel`, added a kernel serde round-trip test for checkpoint contract values, and removed the public raw connection accessor. SQLite tests now inspect the private `conn` field from the module test submodule only.
+Parent review later found that the runtime-neutral checkpoint contract belonged in `cdf-kernel` and that `SqliteCheckpointStore::connection(&self) -> &Connection` exposed a public raw SQL bypass. The repair moved the contract to `cdf-kernel`, added a kernel serde round-trip test for checkpoint contract values, and removed the public raw connection accessor. SQLite tests now inspect the private `conn` field from the module test submodule only.
 
 Repair verification on 2026-07-06:
 
@@ -66,37 +66,37 @@ cargo fmt --all -- --check
 Passed with exit code 0.
 
 ```text
-cargo check -p firn-kernel --all-targets --locked
+cargo check -p cdf-kernel --all-targets --locked
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo check -p firn-state-sqlite --all-targets --locked
+cargo check -p cdf-state-sqlite --all-targets --locked
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo clippy -p firn-kernel --all-targets --locked -- -D warnings
+cargo clippy -p cdf-kernel --all-targets --locked -- -D warnings
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo clippy -p firn-state-sqlite --all-targets --locked -- -D warnings
+cargo clippy -p cdf-state-sqlite --all-targets --locked -- -D warnings
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo test -p firn-kernel --locked --no-fail-fast
+cargo test -p cdf-kernel --locked --no-fail-fast
 ```
 
 Passed with exit code 0: 8 unit tests passed, 0 failed; 0 doctests.
 
 ```text
-cargo test -p firn-state-sqlite --locked --no-fail-fast
+cargo test -p cdf-state-sqlite --locked --no-fail-fast
 ```
 
 Passed with exit code 0: 6 unit tests passed, 0 failed; 0 doctests.
@@ -118,37 +118,37 @@ cargo fmt --all -- --check
 Passed with exit code 0.
 
 ```text
-cargo check -p firn-kernel --all-targets --locked
+cargo check -p cdf-kernel --all-targets --locked
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo check -p firn-state-sqlite --all-targets --locked
+cargo check -p cdf-state-sqlite --all-targets --locked
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo clippy -p firn-kernel --all-targets --locked -- -D warnings
+cargo clippy -p cdf-kernel --all-targets --locked -- -D warnings
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo clippy -p firn-state-sqlite --all-targets --locked -- -D warnings
+cargo clippy -p cdf-state-sqlite --all-targets --locked -- -D warnings
 ```
 
 Passed with exit code 0.
 
 ```text
-cargo test -p firn-kernel --locked --no-fail-fast
+cargo test -p cdf-kernel --locked --no-fail-fast
 ```
 
 Passed with exit code 0: 8 unit tests passed, 0 failed; 0 doctests.
 
 ```text
-cargo test -p firn-state-sqlite --locked --no-fail-fast
+cargo test -p cdf-state-sqlite --locked --no-fail-fast
 ```
 
 Passed with exit code 0: 7 unit tests passed, 0 failed; 0 doctests.
@@ -162,7 +162,7 @@ Passed with exit code 0.
 Parent mutation testing then found real test gaps in the checkpoint-store slice. The parent command was:
 
 ```text
-cargo mutants -p firn-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o reports/ai-quality/mutants-checkpoint --cargo-arg=--locked
+cargo mutants -p cdf-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o reports/ai-quality/mutants-checkpoint --cargo-arg=--locked
 ```
 
 Parent reported 111 mutants, 31 missed, 43 caught, and 37 unviable.
@@ -172,7 +172,7 @@ Mutation-hardening changes on 2026-07-06 added in-memory/SQLite parity coverage 
 The first local mutation rerun after the broader test hardening used report output outside the repository:
 
 ```text
-cargo mutants -p firn-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o /tmp/firn-mutants-checkpoint-rerun --cargo-arg=--locked
+cargo mutants -p cdf-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o /tmp/cdf-mutants-checkpoint-rerun --cargo-arg=--locked
 ```
 
 That rerun reduced missed mutants to 2: 111 mutants tested, 2 missed, 72 caught, 37 unviable. The two remaining missed mutants were the SQLite read mapping of `is_head` and the in-memory-visible `validate_state_version` branch.
@@ -186,13 +186,13 @@ cargo fmt --all -- --check
 Passed with exit code 0.
 
 ```text
-cargo test -p firn-state-sqlite --locked --no-fail-fast
+cargo test -p cdf-state-sqlite --locked --no-fail-fast
 ```
 
 Passed with exit code 0: 14 unit tests passed, 0 failed; 0 doctests.
 
 ```text
-cargo clippy -p firn-state-sqlite --all-targets --locked -- -D warnings
+cargo clippy -p cdf-state-sqlite --all-targets --locked -- -D warnings
 ```
 
 Passed with exit code 0.
@@ -206,7 +206,7 @@ Passed with exit code 0.
 The final local mutation rerun wrote reports outside the repository:
 
 ```text
-cargo mutants -p firn-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o /tmp/firn-mutants-checkpoint-rerun-final --cargo-arg=--locked
+cargo mutants -p cdf-state-sqlite --test-tool nextest --timeout 60 --minimum-test-timeout 5 -j 4 -o /tmp/cdf-mutants-checkpoint-rerun-final --cargo-arg=--locked
 ```
 
 Passed with exit code 0: 111 mutants tested, 74 caught, 37 unviable, 0 missed.

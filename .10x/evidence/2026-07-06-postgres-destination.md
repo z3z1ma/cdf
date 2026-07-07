@@ -7,36 +7,36 @@ Relates-To: .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/specs/des
 
 ## What was observed
 
-`crates/firn-dest-postgres` now implements a deterministic Postgres destination planning surface:
+`crates/cdf-dest-postgres` now implements a deterministic Postgres destination planning surface:
 
 - Postgres destination sheet with append, replace, and merge support; atomic package transactions; package-token idempotency; identifier rules; quarantine support; bulk path declarations; and exact/widening/lossy/unsupported Postgres-specific type mappings.
-- Identifier validation and quoting that enforces Postgres' 63-byte identifier limit, rejects NUL, and reserves `_firn_*` for framework columns.
+- Identifier validation and quoting that enforces Postgres' 63-byte identifier limit, rejects NUL, and reserves `_cdf_*` for framework columns.
 - Dry-runnable transactional DDL and DML plans for system tables, target table creation, safe existing-table nullable-column additions, append, transactional truncate-insert replace, and merge.
 - Merge SQL uses explicit `MergeDedupPolicy::{First, Last, Fail}` so the destination applies the contract-provided dedup behavior instead of inventing one. First/last use `ROW_NUMBER()` over merge keys with deterministic segment/row ordering; fail emits a duplicate-key guard expected to return zero rows before `ON CONFLICT`.
-- Receipt construction records Postgres transaction metadata with xid, segment acknowledgements, counts, schema hash, migrations, and a `postgres_sql` verify clause against `_firn_loads`.
-- `_firn_loads` and `_firn_state` mirror DDL/upsert SQL plus doctor/project drift probe SQL hooks are exposed for later project/doctor integration.
+- Receipt construction records Postgres transaction metadata with xid, segment acknowledgements, counts, schema hash, migrations, and a `postgres_sql` verify clause against `_cdf_loads`.
+- `_cdf_loads` and `_cdf_state` mirror DDL/upsert SQL plus doctor/project drift probe SQL hooks are exposed for later project/doctor integration.
 - Postgres source-side exercise SQL hooks expose deterministic snapshot count/page and optional cursor page templates for fixture/source validation against the same server.
 
 No live Postgres integration test was run. `pg_isready` reported `/tmp:5432 - no response`; `TEST_DATABASE_URL` and `DATABASE_URL` were unset; `docker` was not installed. This ticket therefore implemented and tested the deterministic planning, SQL, and receipt surface only.
 
 ## Procedure
 
-Commands run from `/Users/alexanderbut/code_projects/personal/firn` after the final implementation:
+Commands run from `/Users/alexanderbut/code_projects/personal/cdf` after the final implementation:
 
 ```text
-cargo fmt -p firn-dest-postgres
+cargo fmt -p cdf-dest-postgres
 ```
 
 Result: passed.
 
 ```text
-cargo test -p firn-dest-postgres --locked --no-fail-fast
+cargo test -p cdf-dest-postgres --locked --no-fail-fast
 ```
 
 Result: passed. Nine unit tests passed and doc tests ran zero tests. Tests cover sheet fidelity, identifier safety, append/replace/merge transactional SQL, explicit merge dedup policies, xid-bearing receipts and verify clauses, mirror/drift SQL hooks, source exercise SQL hooks, safe existing-table migrations, merge key requirements, and existing primary-key drift rejection.
 
 ```text
-cargo clippy -p firn-dest-postgres --all-targets --locked -- -D warnings
+cargo clippy -p cdf-dest-postgres --all-targets --locked -- -D warnings
 ```
 
 Result: passed.
@@ -52,13 +52,13 @@ cargo audit
 cargo deny check advisories
 ```
 
-Initial result: failed on two advisory findings for `pyo3 0.28.3`: `RUSTSEC-2026-0176` and `RUSTSEC-2026-0177`. The dependency path reported by `cargo deny` was through concurrent `firn-python` work, not `firn-dest-postgres`.
+Initial result: failed on two advisory findings for `pyo3 0.28.3`: `RUSTSEC-2026-0176` and `RUSTSEC-2026-0177`. The dependency path reported by `cargo deny` was through concurrent `cdf-python` work, not `cdf-dest-postgres`.
 
 Parent integration revalidation after the Python dependency change passed:
 
 ```text
-cargo test -p firn-project -p firn-dest-postgres -p firn-dest-duckdb -p firn-python --locked --no-fail-fast
-cargo clippy -p firn-project -p firn-dest-postgres -p firn-dest-duckdb -p firn-python --all-targets --locked -- -D warnings
+cargo test -p cdf-project -p cdf-dest-postgres -p cdf-dest-duckdb -p cdf-python --locked --no-fail-fast
+cargo clippy -p cdf-project -p cdf-dest-postgres -p cdf-dest-duckdb -p cdf-python --all-targets --locked -- -D warnings
 cargo fmt --all -- --check
 cargo audit --json > target/quality/reports/cargo-audit-current-batch.json
 cargo deny check advisories

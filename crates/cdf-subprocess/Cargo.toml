@@ -1,0 +1,22 @@
+[package]
+name = "cdf-subprocess"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Subprocess adapter boundary for cdf."
+
+[dependencies]
+cdf-formats = { path = "../cdf-formats" }
+cdf-kernel = { path = "../cdf-kernel" }
+hex = "0.4.3"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+sha2 = "0.10.9"
+tokio = { version = "1.48.0", features = ["io-util", "macros", "process", "rt", "time"] }
+
+[dev-dependencies]
+arrow-array = "59.0.0"
+arrow-ipc = { version = "59.0.0", features = ["lz4"] }
+arrow-schema = "59.0.0"
+cdf-package = { path = "../cdf-package" }
+tempfile = "3.27.0"

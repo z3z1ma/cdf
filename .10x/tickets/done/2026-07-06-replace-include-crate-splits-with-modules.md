@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/knowledge/rust-crate-organization.md
 
 # Replace include-based crate splits with modules
@@ -10,18 +10,18 @@ Depends-On: .10x/knowledge/rust-crate-organization.md
 
 Replace the `include!`-based crate-root splits in the current project/Python/DuckDB/Postgres batch with ordinary Rust module declarations while preserving the current public crate-root API and behavior. Owns only:
 
-- `crates/firn-project/src/**`
-- `crates/firn-python/src/**`
-- `crates/firn-dest-duckdb/src/**`
-- `crates/firn-dest-postgres/src/**`
+- `crates/cdf-project/src/**`
+- `crates/cdf-python/src/**`
+- `crates/cdf-dest-duckdb/src/**`
+- `crates/cdf-dest-postgres/src/**`
 
 ## Acceptance criteria
 
 - The four crate roots use normal `mod` declarations rather than `include!`.
 - Public items previously available at each crate root remain available at the crate root.
 - `cargo fmt --all -- --check` passes.
-- `cargo test -p firn-project -p firn-python -p firn-dest-duckdb -p firn-dest-postgres --locked --no-fail-fast` passes.
-- `cargo clippy -p firn-project -p firn-python -p firn-dest-duckdb -p firn-dest-postgres --all-targets --locked -- -D warnings` passes.
+- `cargo test -p cdf-project -p cdf-python -p cdf-dest-duckdb -p cdf-dest-postgres --locked --no-fail-fast` passes.
+- `cargo clippy -p cdf-project -p cdf-python -p cdf-dest-duckdb -p cdf-dest-postgres --all-targets --locked -- -D warnings` passes.
 - CodeQL database creation no longer reports `include` macro expansion failures for these four crate roots.
 
 ## Evidence expectations

@@ -19,7 +19,7 @@ Issues found during review and resolved before closure:
 - Partition validation was initially under-tested. A mutation changing `validate_partition` to unconditional success survived the first mutation run. Added `file_runtime_rejects_partition_metadata_that_does_not_match_plan` to prove mismatched partition metadata is rejected before runtime open.
 - Glob and path traversal coverage was initially too narrow. Added tests for zero-match roots, missing literal intermediate paths, wildcard directory components, `?`, `**`, unreadable path errors, symlink-directory loops, and symlink-directory aliases.
 - Recursive glob traversal needed symlink hardening. The final implementation uses symlink metadata to descend only into physical directories and canonicalizes matched files under the source root.
-- The implementation keeps the current supply-chain boundary. It delegates Parquet preview to the existing DuckDB-backed `firn-formats::FileResource` path and does not add native arrow-rs `parquet` or `paste`.
+- The implementation keeps the current supply-chain boundary. It delegates Parquet preview to the existing DuckDB-backed `cdf-formats::FileResource` path and does not add native arrow-rs `parquet` or `paste`.
 
 ## Verdict
 

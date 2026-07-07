@@ -20,7 +20,7 @@ The investigation is recorded in `.10x/research/2026-07-06-package-state-commit-
 
 ## Decision
 
-Firn packages MUST store identity-participating preimage artifacts for state and destination commit evidence.
+CDF packages MUST store identity-participating preimage artifacts for state and destination commit evidence.
 
 `state/input_checkpoint.json` records the committed checkpoint head used as input, or `null`.
 
@@ -34,7 +34,7 @@ These preimage artifacts participate in `manifest.identity`, package verificatio
 
 - Serialize exact `StateDelta` and concrete destination commit request as identity files. Rejected because the final package hash would need to be embedded in files that define that same hash.
 - Store exact runtime structs as non-identity files after finalization. Rejected because state and commit-plan evidence would not be covered by package identity, weakening package replay and golden evidence.
-- Keep omitting state and commit-plan artifacts from live packages. Rejected because it contradicts the book and active package spec and blocks safe `firn replay package` reconstruction.
+- Keep omitting state and commit-plan artifacts from live packages. Rejected because it contradicts the book and active package spec and blocks safe `cdf replay package` reconstruction.
 
 ## Consequences
 

@@ -8,7 +8,7 @@ Verdict: concerns
 
 ## Target
 
-Review of `crates/firn-dest-postgres/**`, `.10x/evidence/2026-07-06-postgres-destination.md`, and `.10x/tickets/done/2026-07-05-postgres-destination.md` against `.10x/specs/destination-receipts-guarantees.md`, `.10x/specs/package-lifecycle-determinism.md`, and `.10x/specs/project-cli-observability-security.md`.
+Review of `crates/cdf-dest-postgres/**`, `.10x/evidence/2026-07-06-postgres-destination.md`, and `.10x/tickets/done/2026-07-05-postgres-destination.md` against `.10x/specs/destination-receipts-guarantees.md`, `.10x/specs/package-lifecycle-determinism.md`, and `.10x/specs/project-cli-observability-security.md`.
 
 ## Findings
 

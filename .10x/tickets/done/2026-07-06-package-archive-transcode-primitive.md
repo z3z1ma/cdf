@@ -8,9 +8,9 @@ Depends-On: .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets
 
 ## Scope
 
-Implement the first executable `firn package archive` slice from the Singer/Airbyte/package-archive parent: load and verify package IPC segments, transcode them to Parquet bytes with a supply-chain-clean writer path, and return an in-memory fidelity report primitive that preserves the canonical IPC package identity.
+Implement the first executable `cdf package archive` slice from the Singer/Airbyte/package-archive parent: load and verify package IPC segments, transcode them to Parquet bytes with a supply-chain-clean writer path, and return an in-memory fidelity report primitive that preserves the canonical IPC package identity.
 
-Owns `crates/firn-package/**`. It may touch `crates/firn-dest-parquet/**` only to extract or reuse the existing DuckDB-backed Parquet writer without changing destination commit semantics. Do not add the direct arrow-rs `parquet` crate or any dependency path that reintroduces `RUSTSEC-2024-0436`.
+Owns `crates/cdf-package/**`. It may touch `crates/cdf-dest-parquet/**` only to extract or reuse the existing DuckDB-backed Parquet writer without changing destination commit semantics. Do not add the direct arrow-rs `parquet` crate or any dependency path that reintroduces `RUSTSEC-2024-0436`.
 
 ## Acceptance criteria
 
@@ -28,11 +28,11 @@ Record focused tests for transcode report content, deterministic rerun behavior,
 
 ## Explicit exclusions
 
-No `firn-cli` command surface, no archive file placement, no manifest archive metadata schema, no Parquet file source implementation, no package GC retention planner, no destination commit changes, no archive deletion/tombstone workflow, no signature population, no CI workflow changes, and no advisory ignore for `RUSTSEC-2024-0436`.
+No `cdf-cli` command surface, no archive file placement, no manifest archive metadata schema, no Parquet file source implementation, no package GC retention planner, no destination commit changes, no archive deletion/tombstone workflow, no signature population, no CI workflow changes, and no advisory ignore for `RUSTSEC-2024-0436`.
 
 ## References
 
-- `firn-the-book-of-the-system.md` Chapter 11 and Decision D-4.
+- `VISION.md` Chapter 11 and Decision D-4.
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/knowledge/rust-crate-organization.md`
@@ -43,8 +43,8 @@ No `firn-cli` command surface, no archive file placement, no manifest archive me
 ## Progress and notes
 
 - 2026-07-06: Split from `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md` after Singer/Airbyte protocol adapters closed. The next no-guess slice is the package archive transcode primitive and fidelity report data model. Existing Parquet destination code already writes Parquet through DuckDB rather than the blocked arrow-rs `parquet -> paste` path; implementation should reuse or extract that path rather than adding a vulnerable direct Parquet dependency. CLI command wiring, archive file placement, and manifest metadata mutation remain with the parent until this primitive is proven.
-- 2026-07-06: Parent activated the ticket for worker implementation. The worker must preserve `.10x/knowledge/rust-crate-organization.md`, keep `crates/firn-package/src/lib.rs` thin, avoid `parquet`/`paste`, and leave unrelated `.gitignore` changes untouched.
-- 2026-07-06: Worker implemented `archive_package_to_parquet` in `firn-package` with in-memory fidelity reports, per-segment Parquet bytes/counts/hashes/rows, verification-before-transcode, manifest/lifecycle no-mutation tests, deterministic rerun tests, replay/read_segment-after-transcode tests, tamper refusal, and unsupported Arrow type coverage. Extracted the DuckDB-backed writer path into `firn-package`; `firn-dest-parquet` now delegates to it without destination commit semantic changes. Focused verification passed: `cargo fmt --all -- --check`; `cargo test -p firn-package --locked --no-fail-fast`; `cargo test -p firn-dest-parquet --locked --no-fail-fast`; `cargo clippy -p firn-package -p firn-dest-parquet --all-targets --locked -- -D warnings`; `cargo deny check advisories`; `git diff --check -- . ':(exclude).gitignore'`; and `rg -n '^name = "(parquet|paste)"' Cargo.lock crates/firn-package/Cargo.toml crates/firn-dest-parquet/Cargo.toml` produced no matches.
+- 2026-07-06: Parent activated the ticket for worker implementation. The worker must preserve `.10x/knowledge/rust-crate-organization.md`, keep `crates/cdf-package/src/lib.rs` thin, avoid `parquet`/`paste`, and leave unrelated `.gitignore` changes untouched.
+- 2026-07-06: Worker implemented `archive_package_to_parquet` in `cdf-package` with in-memory fidelity reports, per-segment Parquet bytes/counts/hashes/rows, verification-before-transcode, manifest/lifecycle no-mutation tests, deterministic rerun tests, replay/read_segment-after-transcode tests, tamper refusal, and unsupported Arrow type coverage. Extracted the DuckDB-backed writer path into `cdf-package`; `cdf-dest-parquet` now delegates to it without destination commit semantic changes. Focused verification passed: `cargo fmt --all -- --check`; `cargo test -p cdf-package --locked --no-fail-fast`; `cargo test -p cdf-dest-parquet --locked --no-fail-fast`; `cargo clippy -p cdf-package -p cdf-dest-parquet --all-targets --locked -- -D warnings`; `cargo deny check advisories`; `git diff --check -- . ':(exclude).gitignore'`; and `rg -n '^name = "(parquet|paste)"' Cargo.lock crates/cdf-package/Cargo.toml crates/cdf-dest-parquet/Cargo.toml` produced no matches.
 - 2026-07-06: Parent review found and fixed one missed mutation around duplicate-column prevalidation. Final evidence is recorded in `.10x/evidence/2026-07-06-package-archive-transcode-primitive.md`; closure review passed in `.10x/reviews/2026-07-06-package-archive-transcode-primitive-review.md`. Remaining archive CLI/file-placement/manifest metadata work stays with the parent ticket.
 
 ## Blockers

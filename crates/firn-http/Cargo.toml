@@ -1,9 +1,0 @@
-[package]
-name = "firn-http"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
-description = "HTTP resource toolkit boundary for firn."
-
-[dependencies]
-firn-kernel = { path = "../firn-kernel" }

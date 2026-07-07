@@ -1,0 +1,31 @@
+[package]
+name = "cdf-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Command-line entry point for cdf."
+
+[[bin]]
+name = "cdf"
+path = "src/main.rs"
+
+[dependencies]
+cdf-contract = { path = "../cdf-contract" }
+cdf-declarative = { path = "../cdf-declarative" }
+cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
+cdf-dest-postgres = { path = "../cdf-dest-postgres" }
+cdf-engine = { path = "../cdf-engine" }
+cdf-kernel = { path = "../cdf-kernel" }
+cdf-package = { path = "../cdf-package" }
+cdf-project = { path = "../cdf-project" }
+cdf-state-sqlite = { path = "../cdf-state-sqlite" }
+futures-executor = "0.3.32"
+futures-util = "0.3.32"
+rusqlite = { version = "0.40.1", default-features = false }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+
+[dev-dependencies]
+arrow-array = "59.0.0"
+arrow-schema = "59.0.0"
+duckdb = { version = "1.10504.0", features = ["bundled"] }

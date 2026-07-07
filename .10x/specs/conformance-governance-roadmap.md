@@ -26,17 +26,17 @@ The project is Apache-2.0, one repository, with crates published under semver. B
 
 Checkpoint schema, package manifest version, capability-sheet format, WIT world, and declarative JSON Schema MUST be independently versioned specs with committed migration paths and fixtures.
 
-Each firn minor release MUST pin one load-bearing dependency tuple. Patch releases MUST NOT move those pins.
+Each cdf minor release MUST pin one load-bearing dependency tuple. Patch releases MUST NOT move those pins.
 
 ## MVP contents
 
 MVP MUST include the kernel, engine, contract compiler, package builder/replayer, SQLite ledger, authoring tiers 0/1/2/4 for Arrow IPC and NDJSON, HTTP toolkit, DuckDB/Parquet/Postgres destinations, HTTP-paginated API/Postgres snapshot-incremental/Parquet-CSV-JSON file sources, append/replace/merge dispositions, CLI except package archive, conformance suites, chaos layer, golden packages, and dlt shim preview.
 
-MVP killer-demo acceptance MUST exercise Tier-0 GitHub issues, plan output, DuckDB load, `firn sql`, contract freeze and drift quarantine, crash between destination commit and checkpoint commit, resume without source contact, replay into a second database, duplicate replay handling, and state history.
+MVP killer-demo acceptance MUST exercise Tier-0 GitHub issues, plan output, DuckDB load, `cdf sql`, contract freeze and drift quarantine, crash between destination commit and checkpoint commit, resume without source contact, replay into a second database, duplicate replay handling, and state history.
 
 ## Fast-follow and beyond MVP
 
-Fast-follow MUST include Singer/Airbyte adapters, `firn package archive`, dlt shim GA, vault-class secret providers, and the first warehouse destination.
+Fast-follow MUST include Singer/Airbyte adapters, `cdf package archive`, dlt shim GA, vault-class secret providers, and the first warehouse destination.
 
 Beyond-MVP scope MUST include distributed execution, streaming supervisor, WASM distribution/registry, and Iceberg/Delta lakehouse destinations. These features MUST reuse packages, partitions, checkpoint store seams, destination receipts, and conformance gates rather than introducing parallel artifact types.
 

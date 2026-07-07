@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the `firn-engine` explicit-run-id package execution tracing slice and its closure evidence.
+Review of the `cdf-engine` explicit-run-id package execution tracing slice and its closure evidence.
 
 ## Findings
 
@@ -24,7 +24,7 @@ Package identity risk is covered by traced/untraced manifest identity, package h
 
 ## Verdict
 
-Pass. Acceptance criteria are met, focused and workspace quality gates passed, and mutation testing is clean for `crates/firn-engine/src/execution.rs`.
+Pass. Acceptance criteria are met, focused and workspace quality gates passed, and mutation testing is clean for `crates/cdf-engine/src/execution.rs`.
 
 ## Residual Risk
 

@@ -17,14 +17,14 @@ Local Postgres binaries are available:
 
 `docker` and `podman` are still unavailable, so live tests should use an ephemeral local Postgres process or an explicitly provided `TEST_DATABASE_URL`.
 
-`crates/firn-dest-postgres` currently depends only on `firn-kernel` and `serde`. It exposes deterministic planning, SQL, receipt construction, mirror SQL, identifier validation, and source exercise hooks, but no Postgres driver dependency, no package row loader, and no live `commit_package` equivalent.
+`crates/cdf-dest-postgres` currently depends only on `cdf-kernel` and `serde`. It exposes deterministic planning, SQL, receipt construction, mirror SQL, identifier validation, and source exercise hooks, but no Postgres driver dependency, no package row loader, and no live `commit_package` equivalent.
 
 ## Procedure
 
 - Ran `command -v postgres`, `initdb`, `pg_ctl`, `psql`, `pg_isready`, `docker`, `podman`, and `brew`.
-- Inspected `crates/firn-dest-postgres/Cargo.toml`.
-- Inspected `crates/firn-dest-postgres/src/api.rs`, `plan.rs`, `dml.rs`, `ddl.rs`, `mirrors.rs`, `lib.rs`, and `tests.rs`.
-- Compared the missing surface to `crates/firn-dest-duckdb/src/api.rs` and `commit.rs`.
+- Inspected `crates/cdf-dest-postgres/Cargo.toml`.
+- Inspected `crates/cdf-dest-postgres/src/api.rs`, `plan.rs`, `dml.rs`, `ddl.rs`, `mirrors.rs`, `lib.rs`, and `tests.rs`.
+- Compared the missing surface to `crates/cdf-dest-duckdb/src/api.rs` and `commit.rs`.
 
 ## What this supports or challenges
 

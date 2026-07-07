@@ -20,10 +20,10 @@ Ran the `QUALITY.md` loop at production depth for this batch: formatting, featur
 - `cargo check --workspace --all-targets --locked`: passed.
 - `cargo check --workspace --all-targets --all-features --locked`: passed before and after the module refactor.
 - `cargo check --workspace --all-targets --no-default-features --locked`: passed before and after the module refactor.
-- `cargo test -p firn-project -p firn-dest-postgres -p firn-dest-duckdb -p firn-python --locked --no-fail-fast`: passed with 46 unit tests and 0 doctests.
+- `cargo test -p cdf-project -p cdf-dest-postgres -p cdf-dest-duckdb -p cdf-python --locked --no-fail-fast`: passed with 46 unit tests and 0 doctests.
 - `cargo test --workspace --all-targets --locked --no-fail-fast`: passed after the final module refactor with 114 unit tests and 0 failures.
 - `cargo test --workspace --all-targets --all-features --locked --no-fail-fast`: passed after the final module refactor with 114 unit tests and 0 failures.
-- `cargo clippy -p firn-project -p firn-dest-postgres -p firn-dest-duckdb -p firn-python --all-targets --locked -- -D warnings`: passed before and after the module refactor.
+- `cargo clippy -p cdf-project -p cdf-dest-postgres -p cdf-dest-duckdb -p cdf-python --all-targets --locked -- -D warnings`: passed before and after the module refactor.
 - `cargo clippy --workspace --all-targets --locked -- -D warnings`: passed after the final module refactor.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`: passed before the final module refactor.
 - `cargo clippy --workspace --all-targets --no-default-features --locked -- -D warnings`: passed before the final module refactor.
@@ -34,7 +34,7 @@ Ran the `QUALITY.md` loop at production depth for this batch: formatting, featur
 - `cargo metadata --format-version=1 --locked`, `cargo tree --workspace --locked`, and `cargo tree --workspace --locked -d`: passed; reports saved under `target/quality/reports/`.
 - `cargo machete`: passed with no unused dependency candidates.
 - `cargo semver-checks --baseline-rev HEAD~1`: passed all workspace packages, no semver update required.
-- `python3 -m compileall -q python/firn_sdk python/examples && uvx pyright python/firn_sdk python/examples`: passed with 0 errors.
+- `python3 -m compileall -q python/cdf_sdk python/examples && uvx pyright python/cdf_sdk python/examples`: passed with 0 errors.
 - `semgrep scan --config p/rust --error --json --output target/quality/reports/semgrep-rust-project-python-destinations.json .`: passed with 0 findings.
 - `cargo audit --json > target/quality/reports/cargo-audit-project-python-destinations-final.json`: passed with 0 vulnerabilities.
 - `cargo deny check advisories`: passed.

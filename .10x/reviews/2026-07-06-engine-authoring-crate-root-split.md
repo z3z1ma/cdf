@@ -10,10 +10,10 @@ Verdict: pass
 
 Review of the organization-only split for:
 
-- `crates/firn-engine/src/lib.rs`
-- `crates/firn-declarative/src/lib.rs`
-- `crates/firn-formats/src/lib.rs`
-- `crates/firn-subprocess/src/lib.rs`
+- `crates/cdf-engine/src/lib.rs`
+- `crates/cdf-declarative/src/lib.rs`
+- `crates/cdf-formats/src/lib.rs`
+- `crates/cdf-subprocess/src/lib.rs`
 
 Supporting evidence: `.10x/evidence/2026-07-06-engine-authoring-crate-root-split.md`.
 
@@ -30,9 +30,9 @@ No blocking findings.
 
 Minor issue found during execution and resolved before review: moving declarative tests out of `lib.rs` mechanically deindented a YAML raw string fixture. The fixture indentation was restored, and the clean-overlay targeted test run then passed.
 
-Internal visibility changes are scoped: `firn-engine::planning::validate_program` was changed from private to `pub(crate)` so `execution` can reuse the same helper after the split. This does not widen the public crate API.
+Internal visibility changes are scoped: `cdf-engine::planning::validate_program` was changed from private to `pub(crate)` so `execution` can reuse the same helper after the split. This does not widen the public crate API.
 
-Integration recheck finding resolved: `FormatRead` could no longer derive `Clone` and `Debug` against the current `ObservedSchema` definition. The fix stays inside `firn-formats` and preserves the public `FormatRead: Clone + Debug` surface with manual implementations.
+Integration recheck finding resolved: `FormatRead` could no longer derive `Clone` and `Debug` against the current `ObservedSchema` definition. The fix stays inside `cdf-formats` and preserves the public `FormatRead: Clone + Debug` surface with manual implementations.
 
 ## Verdict
 
@@ -40,4 +40,4 @@ Pass. The module split satisfies the ticket acceptance criteria under clean-over
 
 ## Residual risk
 
-The earlier out-of-scope `firn-python/src/bridge.rs` lifetime error was repaired by the owning dlt/Python work before parent integration closure. No known scoped residual blocker remains. Public API preservation still relies on crate-root re-exports plus compile/test/clippy evidence rather than a formal API-diff artifact for these four crates.
+The earlier out-of-scope `cdf-python/src/bridge.rs` lifetime error was repaired by the owning dlt/Python work before parent integration closure. No known scoped residual blocker remains. Public API preservation still relies on crate-root re-exports plus compile/test/clippy evidence rather than a formal API-diff artifact for these four crates.

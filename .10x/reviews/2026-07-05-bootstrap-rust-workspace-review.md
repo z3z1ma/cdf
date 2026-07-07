@@ -27,11 +27,11 @@ The parent orchestrator independently ran:
 
 ```text
 cargo check --workspace
-cargo tree -p firn-kernel --edges normal
+cargo tree -p cdf-kernel --edges normal
 rg -n 'TODO|todo!|unimplemented!|panic!' Cargo.toml crates .10x/tickets/done/2026-07-05-bootstrap-rust-workspace.md .10x/evidence/2026-07-05-bootstrap-rust-workspace-check.md
 ```
 
-`cargo check --workspace` passed. `cargo tree -p firn-kernel --edges normal` printed only `firn-kernel`. The placeholder search found only the bootstrap ticket's acceptance text forbidding unbacked TODOs, not implementation placeholders.
+`cargo check --workspace` passed. `cargo tree -p cdf-kernel --edges normal` printed only `cdf-kernel`. The placeholder search found only the bootstrap ticket's acceptance text forbidding unbacked TODOs, not implementation placeholders.
 
 ## Verdict
 

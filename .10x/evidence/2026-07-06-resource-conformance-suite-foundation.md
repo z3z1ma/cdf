@@ -7,9 +7,9 @@ Relates-To: .10x/tickets/done/2026-07-06-resource-conformance-suite-foundation.m
 
 ## What was observed
 
-`firn-conformance` now exposes `firn_conformance::resource`, a reusable planning-level harness for public `ResourceStream` and `QueryableResource` contracts. The harness verifies descriptor/schema coherence, partition-plan identity and scope honesty, declared capability preconditions, request identity preservation, mismatched-resource rejection, and pushed versus unsupported predicate classification.
+`cdf-conformance` now exposes `cdf_conformance::resource`, a reusable planning-level harness for public `ResourceStream` and `QueryableResource` contracts. The harness verifies descriptor/schema coherence, partition-plan identity and scope honesty, declared capability preconditions, request identity preservation, mismatched-resource rejection, and pushed versus unsupported predicate classification.
 
-`crates/firn-declarative` consumes the harness from REST, SQL, and file compiled-resource tests. The REST example expects cursor pushdown as inexact and a non-cursor predicate as unsupported; the SQL example expects exact predicate pushdown; the file example expects unsupported predicate classification.
+`crates/cdf-declarative` consumes the harness from REST, SQL, and file compiled-resource tests. The REST example expects cursor pushdown as inexact and a non-cursor predicate as unsupported; the SQL example expects exact predicate pushdown; the file example expects unsupported predicate classification.
 
 The implementation remains planning-only. It does not call `CompiledResource::open`, read source data, prove partition-union completeness, validate replay suffix behavior, add chaos killpoints, add golden packages, or implement the MVP killer-demo harness.
 
@@ -19,10 +19,10 @@ Focused implementation checks:
 
 - `cargo fmt --all -- --check`: passed.
 - `git diff --check`: passed.
-- `cargo test -p firn-conformance -p firn-declarative --locked --no-fail-fast`: passed.
-- `cargo clippy -p firn-conformance -p firn-declarative --all-targets --locked -- -D warnings`: passed.
-- `cargo nextest run -p firn-conformance -p firn-declarative --locked`: passed, 22 tests.
-- `cargo mutants --package firn-conformance --test-package firn-conformance --test-package firn-declarative --file crates/firn-conformance/src/resource/mod.rs --no-shuffle --jobs 4 --timeout 120 --output target/quality/reports/mutants-resource-conformance -- --locked`: final run passed with 27 mutants tested, 22 caught, and 5 unviable. Earlier missed mutants led to additional negative self-tests before the final run.
+- `cargo test -p cdf-conformance -p cdf-declarative --locked --no-fail-fast`: passed.
+- `cargo clippy -p cdf-conformance -p cdf-declarative --all-targets --locked -- -D warnings`: passed.
+- `cargo nextest run -p cdf-conformance -p cdf-declarative --locked`: passed, 22 tests.
+- `cargo mutants --package cdf-conformance --test-package cdf-conformance --test-package cdf-declarative --file crates/cdf-conformance/src/resource/mod.rs --no-shuffle --jobs 4 --timeout 120 --output target/quality/reports/mutants-resource-conformance -- --locked`: final run passed with 27 mutants tested, 22 caught, and 5 unviable. Earlier missed mutants led to additional negative self-tests before the final run.
 
 Workspace quality checks from `QUALITY.md`:
 
@@ -44,7 +44,7 @@ Workspace quality checks from `QUALITY.md`:
 - `cargo doc --workspace --all-features --no-deps --locked`: passed.
 - `cargo hack check --workspace --all-targets --each-feature --locked`: passed.
 - `cargo hack clippy --workspace --all-targets --each-feature --locked -- -D warnings`: passed.
-- `cargo llvm-cov --workspace --all-features --locked --summary-only`: passed. Total line coverage was 80.47%; `crates/firn-conformance/src/resource/mod.rs` line coverage was 91.11%.
+- `cargo llvm-cov --workspace --all-features --locked --summary-only`: passed. Total line coverage was 80.47%; `crates/cdf-conformance/src/resource/mod.rs` line coverage was 91.11%.
 - `cargo semver-checks --workspace --baseline-rev HEAD`: passed for all workspace crates.
 - `cargo audit`: passed with no vulnerabilities.
 - `cargo deny check advisories`: passed.
@@ -54,16 +54,16 @@ Workspace quality checks from `QUALITY.md`:
 - `semgrep scan --config p/rust --error --json --output target/quality/reports/resource-conformance/semgrep-rust.json .`: passed with 0 findings.
 - `semgrep scan --config p/security-audit --error --json --output target/quality/reports/resource-conformance/semgrep-security.json .`: passed with 0 findings.
 - `gitleaks git --no-banner --redact --report-format json --report-path target/quality/reports/resource-conformance/gitleaks-git.json .`: passed with no leaks.
-- `gitleaks dir --no-banner --redact --report-format json --report-path target/quality/reports/resource-conformance/gitleaks-dir.json /tmp/firn-gitleaks-resource-src`: passed with no leaks. The source snapshot was created from tracked and untracked non-ignored source files to avoid scanning generated `target/` artifacts.
+- `gitleaks dir --no-banner --redact --report-format json --report-path target/quality/reports/resource-conformance/gitleaks-dir.json /tmp/cdf-gitleaks-resource-src`: passed with no leaks. The source snapshot was created from tracked and untracked non-ignored source files to avoid scanning generated `target/` artifacts.
 - `cargo machete`: passed.
 - `cargo +nightly udeps --workspace --all-targets`: passed.
 - `rust-code-analysis-cli -m -p crates -O json -o target/quality/reports/resource-conformance/rust-code-analysis`: passed after using an output directory.
 - `jscpd . --reporters json,console --output target/quality/reports/resource-conformance/jscpd --ignore "**/target/**,**/.git/**,**/reports/**"`: completed. Overall duplication was 4.08%; Rust duplication was 3.51%. Resource-harness clones were reviewed as fixture/test-helper repetition and not abstracted.
 - Direct unsafe inventory with `rg -n "\bunsafe\b|unsafe\s+impl|unsafe\s+trait|extern\s+\"C\"|from_raw|into_raw|transmute|MaybeUninit|Unpin|Send|Sync" crates`: no Rust `unsafe`, FFI, raw-pointer, or transmute usage was found in the changed surface.
 - `tools/codeql-rust-quality.sh`: passed. The reusable CodeQL database at `target/quality/codeql-db-rust` was refreshed because Rust source and lockfile inputs changed. SARIF results in `target/quality/reports/codeql-rust.sarif` contained 0 results.
-- `cargo +nightly miri test -p firn-conformance --locked resource::`: passed.
-- `cargo +nightly careful test -p firn-conformance -p firn-declarative --all-features --locked`: passed. The run warned that `libMainThreadChecker.dylib` was not found due local Xcode CLI tooling, but tests completed successfully.
-- `cargo geiger` with absolute `--manifest-path` for `crates/firn-conformance` and `crates/firn-declarative`: passed. First-party package summaries reported 0 unsafe counts for functions, expressions, impls, and methods.
+- `cargo +nightly miri test -p cdf-conformance --locked resource::`: passed.
+- `cargo +nightly careful test -p cdf-conformance -p cdf-declarative --all-features --locked`: passed. The run warned that `libMainThreadChecker.dylib` was not found due local Xcode CLI tooling, but tests completed successfully.
+- `cargo geiger` with absolute `--manifest-path` for `crates/cdf-conformance` and `crates/cdf-declarative`: passed. First-party package summaries reported 0 unsafe counts for functions, expressions, impls, and methods.
 
 Tool availability notes:
 

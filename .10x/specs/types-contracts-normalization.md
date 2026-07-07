@@ -6,13 +6,13 @@ Updated: 2026-07-05
 
 ## Purpose and scope
 
-This specification governs firn's type fidelity rules, identifier normalization, nested-data policy, contract compiler, validation chain, trust presets, and bounded transforms. It derives from book Chapters 6 and 10 and decisions D-3, D-6, D-9, D-14, and D-15.
+This specification governs cdf's type fidelity rules, identifier normalization, nested-data policy, contract compiler, validation chain, trust presets, and bounded transforms. It derives from book Chapters 6 and 10 and decisions D-3, D-6, D-9, D-14, and D-15.
 
 ## Type system
 
-Arrow is firn's closed canonical type system. firn MUST NOT invent a parallel logical type lattice.
+Arrow is cdf's closed canonical type system. cdf MUST NOT invent a parallel logical type lattice.
 
-Arrow field metadata MUST carry these annotations where applicable: `firn:semantic`, `firn:source_name`, and `firn:null_origin`. Semantic metadata MUST influence policy, redaction, and destination mapping, but MUST NOT require custom physical kernels.
+Arrow field metadata MUST carry these annotations where applicable: `cdf:semantic`, `cdf:source_name`, and `cdf:null_origin`. Semantic metadata MUST influence policy, redaction, and destination mapping, but MUST NOT require custom physical kernels.
 
 Decimals MUST remain Arrow decimal values and MUST NOT silently become floats. Zoned timestamp meaning MUST be preserved: UTC-normalized timestamps retain zone story in metadata when needed; naive timestamps MUST NOT be silently assumed UTC.
 
@@ -22,11 +22,11 @@ Destination type mapping MUST be declared data in destination sheets. Lossy mapp
 
 Source-original names MUST be preserved verbatim in schema metadata. Destination identifiers MUST be derived by versioned normalizer `namecase-v1`: Unicode NFC, lower snake case, destination charset filter, and deterministic truncation/hash suffix for over-length names or collisions. Post-normalization collisions are plan-time hard errors.
 
-Arrow `Struct`, `List`, and `Map` values are first-class. The normalization policy MUST support keep-nested, deterministic child-table expansion, and variant capture into `_firn_variant` tagged as `json`. Promoting a variant to typed columns is a contract-evolution event.
+Arrow `Struct`, `List`, and `Map` values are first-class. The normalization policy MUST support keep-nested, deterministic child-table expansion, and variant capture into `_cdf_variant` tagged as `json`. Promoting a variant to typed columns is a contract-evolution event.
 
 ## Contract compiler
 
-Contracts MUST compile policy plus observed schema into a serializable validation program. The same program MUST be rendered by `firn explain`, executed by `ContractExec`, and stored in packages.
+Contracts MUST compile policy plus observed schema into a serializable validation program. The same program MUST be rendered by `cdf explain`, executed by `ContractExec`, and stored in packages.
 
 The validation program MUST include schema verdicts, column programs, and row dispositions. The verdict lattice MUST be total: every relevant cell/row receives exactly one disposition.
 
@@ -59,7 +59,7 @@ Promotion and demotion MUST be recorded ledger events. New resources run discove
 
 ## Transforms
 
-firn MAY perform only in-flight, per-batch, schema-stable transforms: rename, cast, redact, derive, filter, and nested expansion/variant policy. Cross-resource joins, whole-table modeling, and post-load model graphs belong downstream.
+cdf MAY perform only in-flight, per-batch, schema-stable transforms: rename, cast, redact, derive, filter, and nested expansion/variant policy. Cross-resource joins, whole-table modeling, and post-load model graphs belong downstream.
 
 ## Acceptance criteria
 

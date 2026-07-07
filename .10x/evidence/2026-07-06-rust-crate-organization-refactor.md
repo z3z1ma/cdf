@@ -7,7 +7,7 @@ Relates-To: .10x/knowledge/rust-crate-organization.md, .10x/tickets/done/2026-07
 
 ## What was observed
 
-The large new crate roots for `firn-project`, `firn-python`, `firn-dest-duckdb`, and `firn-dest-postgres` were split into focused source files while preserving the existing public crate-root API.
+The large new crate roots for `cdf-project`, `cdf-python`, `cdf-dest-duckdb`, and `cdf-dest-postgres` were split into focused source files while preserving the existing public crate-root API.
 
 `lib.rs` in each crate now acts as a compact index with crate documentation, shared imports/constants, ordinary `mod` declarations, and crate-root `pub use` exports where needed. Implementation sections moved into files such as `models.rs`, `secrets.rs`, `bridge.rs`, `interpreter.rs`, `api.rs`, `planning.rs`, `receipts.rs`, `ddl.rs`, and `dml.rs`. Tests moved into `tests.rs`.
 
@@ -24,10 +24,10 @@ The durable convention is recorded in `.10x/knowledge/rust-crate-organization.md
 
 - `cargo fmt --all`: passed.
 - `cargo fmt --all -- --check`: passed.
-- `cargo test -p firn-project -p firn-dest-postgres -p firn-dest-duckdb -p firn-python --locked --no-fail-fast`: passed with 46 unit tests and 0 doctests.
-- `cargo clippy -p firn-project -p firn-dest-postgres -p firn-dest-duckdb -p firn-python --all-targets --locked -- -D warnings`: passed.
-- `rg -n "include!" crates/firn-project/src crates/firn-python/src crates/firn-dest-duckdb/src crates/firn-dest-postgres/src -S`: no matches.
-- `python3 -m compileall -q python/firn_sdk python/examples && uvx pyright python/firn_sdk python/examples`: passed with 0 errors.
+- `cargo test -p cdf-project -p cdf-dest-postgres -p cdf-dest-duckdb -p cdf-python --locked --no-fail-fast`: passed with 46 unit tests and 0 doctests.
+- `cargo clippy -p cdf-project -p cdf-dest-postgres -p cdf-dest-duckdb -p cdf-python --all-targets --locked -- -D warnings`: passed.
+- `rg -n "include!" crates/cdf-project/src crates/cdf-python/src crates/cdf-dest-duckdb/src crates/cdf-dest-postgres/src -S`: no matches.
+- `python3 -m compileall -q python/cdf_sdk python/examples && uvx pyright python/cdf_sdk python/examples`: passed with 0 errors.
 - `git diff --check`: passed.
 
 ## What this supports or challenges
@@ -36,4 +36,4 @@ This supports the user's crate-organization preference without changing runtime 
 
 ## Limits
 
-This refactor split the newest large crate roots in the current batch. Older large roots such as `firn-engine`, `firn-declarative`, and `firn-formats` remain candidates for future organization-only refactors when their owning tickets are active or a dedicated refactor ticket is opened.
+This refactor split the newest large crate roots in the current batch. Older large roots such as `cdf-engine`, `cdf-declarative`, and `cdf-formats` remain candidates for future organization-only refactors when their owning tickets are active or a dedicated refactor ticket is opened.

@@ -8,13 +8,13 @@ Depends-On: .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/don
 
 ## Scope
 
-Implement the first reusable `firn-conformance` destination suite over the public destination sheet and dry-run planning contract, and consume it from the MVP local destination crates that are already implemented: DuckDB and Parquet/object-store.
+Implement the first reusable `cdf-conformance` destination suite over the public destination sheet and dry-run planning contract, and consume it from the MVP local destination crates that are already implemented: DuckDB and Parquet/object-store.
 
-Owns `crates/firn-conformance/**` plus the smallest necessary DuckDB/Parquet destination test integration. Keep `crates/firn-conformance/src/lib.rs` thin by adding focused destination modules rather than expanding the crate root.
+Owns `crates/cdf-conformance/**` plus the smallest necessary DuckDB/Parquet destination test integration. Keep `crates/cdf-conformance/src/lib.rs` thin by adding focused destination modules rather than expanding the crate root.
 
 ## Acceptance criteria
 
-- `firn-conformance` exposes a reusable destination conformance harness that accepts a `DestinationProtocol` candidate and representative `DestinationCommitRequest` cases without depending on private destination internals.
+- `cdf-conformance` exposes a reusable destination conformance harness that accepts a `DestinationProtocol` candidate and representative `DestinationCommitRequest` cases without depending on private destination internals.
 - The suite asserts destination sheets tell the truth about supported dispositions by requiring each declared disposition to plan successfully and requiring unsupported MVP dispositions to return an error.
 - The suite asserts `CommitPlan` values preserve request target, disposition, idempotency support, migrations, and mechanically derived delivery guarantees for append, replace, merge, and `cdc_apply` according to `.10x/specs/destination-receipts-guarantees.md`.
 - The suite asserts destination sheets include identifier rules, concurrency limits, migration support, quarantine-table support, and at least one type mapping with explicit fidelity rather than empty folklore.
@@ -25,7 +25,7 @@ Owns `crates/firn-conformance/**` plus the smallest necessary DuckDB/Parquet des
 
 ## Evidence expectations
 
-Record targeted `cargo test -p firn-conformance --locked --no-fail-fast`, `cargo test -p firn-dest-duckdb --locked --no-fail-fast`, `cargo test -p firn-dest-parquet --locked --no-fail-fast`, `cargo clippy -p firn-conformance --all-targets --locked -- -D warnings`, `cargo clippy -p firn-dest-duckdb --all-targets --locked -- -D warnings`, `cargo clippy -p firn-dest-parquet --all-targets --locked -- -D warnings`, `cargo fmt --all -- --check`, and the required `QUALITY.md` closure checks. Mutation testing should include `firn-conformance` plus at least one downstream destination consumer so the reusable harness is part of the mutation oracle.
+Record targeted `cargo test -p cdf-conformance --locked --no-fail-fast`, `cargo test -p cdf-dest-duckdb --locked --no-fail-fast`, `cargo test -p cdf-dest-parquet --locked --no-fail-fast`, `cargo clippy -p cdf-conformance --all-targets --locked -- -D warnings`, `cargo clippy -p cdf-dest-duckdb --all-targets --locked -- -D warnings`, `cargo clippy -p cdf-dest-parquet --all-targets --locked -- -D warnings`, `cargo fmt --all -- --check`, and the required `QUALITY.md` closure checks. Mutation testing should include `cdf-conformance` plus at least one downstream destination consumer so the reusable harness is part of the mutation oracle.
 
 ## Explicit exclusions
 
@@ -33,7 +33,7 @@ No live Postgres conformance execution in this foundation slice; it remains owne
 
 ## References
 
-- `firn-the-book-of-the-system.md` Chapter 13 and Chapter 19.
+- `VISION.md` Chapter 13 and Chapter 19.
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/knowledge/rust-crate-organization.md`
@@ -45,9 +45,9 @@ No live Postgres conformance execution in this foundation slice; it remains owne
 
 ## Progress and notes
 
-- 2026-07-06: Split from the conformance parent after inspecting the book, conformance governance spec, destination receipts spec, current `DestinationProtocol`, existing `firn-conformance` checkpoint-store structure, and active blockers. The common kernel trait currently covers sheet and dry-run planning; destination-specific public APIs still own commit and receipt verification coverage.
+- 2026-07-06: Split from the conformance parent after inspecting the book, conformance governance spec, destination receipts spec, current `DestinationProtocol`, existing `cdf-conformance` checkpoint-store structure, and active blockers. The common kernel trait currently covers sheet and dry-run planning; destination-specific public APIs still own commit and receipt verification coverage.
 - 2026-07-06: Parent marked the child active for worker implementation. The worker owns the scoped conformance harness and DuckDB/Parquet consumer test integration; parent owns final review, quality evidence, closure records, and commit.
-- 2026-07-06: Implemented reusable `firn-conformance::destination` harness in `crates/firn-conformance/src/destination/mod.rs`; `lib.rs` remains a thin module export. DuckDB and Parquet tests consume the harness through dev-dependencies while retaining destination-specific physical commit and receipt verification tests.
+- 2026-07-06: Implemented reusable `cdf-conformance::destination` harness in `crates/cdf-conformance/src/destination/mod.rs`; `lib.rs` remains a thin module export. DuckDB and Parquet tests consume the harness through dev-dependencies while retaining destination-specific physical commit and receipt verification tests.
 - 2026-07-06: Review found and repaired a vacuous migration-support assertion and a clippy duplicate-branch lint in the faulty self-test implementation.
 - 2026-07-06: Closure evidence recorded in `.10x/evidence/2026-07-06-destination-conformance-suite-foundation.md`; review recorded in `.10x/reviews/2026-07-06-destination-conformance-suite-foundation-review.md`.
 

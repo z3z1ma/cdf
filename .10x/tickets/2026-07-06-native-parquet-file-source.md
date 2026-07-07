@@ -1,23 +1,23 @@
 Status: open
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md, .10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md
 
 # Replace DuckDB Parquet file source with native Arrow/DataFusion path
 
 ## Scope
 
-Replace the current DuckDB-backed Parquet file-source reader in `firn-formats` with a native Arrow/DataFusion-aligned Parquet implementation using the ratified dependency path from `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.
+Replace the current DuckDB-backed Parquet file-source reader in `cdf-formats` with a native Arrow/DataFusion-aligned Parquet implementation using the ratified dependency path from `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.
 
 Expected ownership:
 
-- `crates/firn-formats/**`
+- `crates/cdf-formats/**`
 - `Cargo.toml`, `Cargo.lock`, and crate manifests required for the native Parquet dependency
 - focused conformance or package replay tests only where the file-source behavior requires updates
 - `.10x/` evidence/review/ticket records for this child
 
-The implementation should remove the Arrow 58 DuckDB IPC bridge when it is no longer needed by `firn-formats`.
+The implementation should remove the Arrow 58 DuckDB IPC bridge when it is no longer needed by `cdf-formats`.
 
 ## Acceptance criteria
 
@@ -31,7 +31,7 @@ The implementation should remove the Arrow 58 DuckDB IPC bridge when it is no lo
 
 ## Evidence expectations
 
-Run focused `cargo fmt --all -- --check`, `git diff --check`, `cargo test -p firn-formats --locked --no-fail-fast`, `cargo clippy -p firn-formats --all-targets --locked -- -D warnings`, dependency/advisory scanners, source unsafe scan, and bounded mutation testing over the changed Parquet reader path when feasible.
+Run focused `cargo fmt --all -- --check`, `git diff --check`, `cargo test -p cdf-formats --locked --no-fail-fast`, `cargo clippy -p cdf-formats --all-targets --locked -- -D warnings`, dependency/advisory scanners, source unsafe scan, and bounded mutation testing over the changed Parquet reader path when feasible.
 
 Before closure, run relevant `QUALITY.md` gates with independent checks parallelized where practical and CodeQL through `tools/codeql-rust-quality.sh`.
 

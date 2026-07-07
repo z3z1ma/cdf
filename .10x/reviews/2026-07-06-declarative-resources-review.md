@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the MVP `firn-declarative` implementation in `crates/firn-declarative`.
+Review of the MVP `cdf-declarative` implementation in `crates/cdf-declarative`.
 
 ## Assumptions tested
 
@@ -16,7 +16,7 @@ Review of the MVP `firn-declarative` implementation in `crates/firn-declarative`
 - REST cursor predicate pushdown must default to `Inexact` unless exact behavior is explicitly declared.
 - Required cursor/key fields must be validated against declared schemas and samples.
 - SQL and file declarations should compile into resource descriptors without performing I/O.
-- The declarative crate should reuse `firn-kernel` and `firn-http` concepts rather than inventing parallel descriptor or HTTP models.
+- The declarative crate should reuse `cdf-kernel` and `cdf-http` concepts rather than inventing parallel descriptor or HTTP models.
 
 ## Findings
 

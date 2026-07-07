@@ -1,14 +1,14 @@
 Status: open
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
 # Implement scoped RUSTSEC paste exception for native Parquet
 
 ## Scope
 
-Update the local supply-chain policy so Firn may intentionally accept `RUSTSEC-2024-0436` only when `paste 1.0.15` is introduced through the native arrow-rs/DataFusion Parquet dependency path ratified by `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.
+Update the local supply-chain policy so CDF may intentionally accept `RUSTSEC-2024-0436` only when `paste 1.0.15` is introduced through the native arrow-rs/DataFusion Parquet dependency path ratified by `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.
 
 Expected ownership:
 

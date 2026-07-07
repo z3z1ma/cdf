@@ -10,12 +10,12 @@ Verdict: pass
 
 Implementation of `.10x/tickets/done/2026-07-06-duckdb-ledger-mirror-doctor-drift.md`, covering:
 
-- `crates/firn-cli/src/doctor_drift.rs`
-- `crates/firn-cli/src/commands.rs`
-- `crates/firn-cli/src/context.rs`
-- `crates/firn-cli/src/tests.rs`
-- `crates/firn-dest-duckdb/src/api.rs`
-- `crates/firn-dest-duckdb/src/mirrors.rs`
+- `crates/cdf-cli/src/doctor_drift.rs`
+- `crates/cdf-cli/src/commands.rs`
+- `crates/cdf-cli/src/context.rs`
+- `crates/cdf-cli/src/tests.rs`
+- `crates/cdf-dest-duckdb/src/api.rs`
+- `crates/cdf-dest-duckdb/src/mirrors.rs`
 
 ## Findings
 

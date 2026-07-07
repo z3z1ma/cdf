@@ -7,28 +7,28 @@ Relates-To: .10x/tickets/done/2026-07-05-http-toolkit.md
 
 ## What was observed
 
-`firn-http` now provides pure request/response toolkit primitives for pagination, rate limiting, retry classification/budgeting, auth session refresh, egress allowlist checks, redaction, and pagination auto-detection plan summaries.
+`cdf-http` now provides pure request/response toolkit primitives for pagination, rate limiting, retry classification/budgeting, auth session refresh, egress allowlist checks, redaction, and pagination auto-detection plan summaries.
 
-The implementation uses the existing `firn-kernel` `ErrorKind` and `FirnError` taxonomy. No `crates/firn-kernel/**` changes were required.
+The implementation uses the existing `cdf-kernel` `ErrorKind` and `CdfError` taxonomy. No `crates/cdf-kernel/**` changes were required.
 
 ## Procedure
 
 - Read the active HTTP ticket and governing records before editing.
-- Implemented `crates/firn-http/src/lib.rs` against mocked HTTP request/response primitives; no real network I/O was introduced.
-- Added `firn-kernel` as the `firn-http` dependency for shared error taxonomy integration.
-- Ran targeted HTTP tests: `cargo test -p firn-http --lib --locked --no-fail-fast`.
+- Implemented `crates/cdf-http/src/lib.rs` against mocked HTTP request/response primitives; no real network I/O was introduced.
+- Added `cdf-kernel` as the `cdf-http` dependency for shared error taxonomy integration.
+- Ran targeted HTTP tests: `cargo test -p cdf-http --lib --locked --no-fail-fast`.
 - Ran required final checks:
   - `cargo fmt --all -- --check`
-  - `cargo test -p firn-http --locked --no-fail-fast`
-  - `cargo clippy -p firn-http --all-targets --locked -- -D warnings`
+  - `cargo test -p cdf-http --locked --no-fail-fast`
+  - `cargo clippy -p cdf-http --all-targets --locked -- -D warnings`
   - `git diff --check`
 
 ## Results
 
-- `cargo test -p firn-http --lib --locked --no-fail-fast`: passed; 6 unit tests passed.
-- `cargo fmt --all -- --check`: passed after formatting `firn-http` with `cargo fmt --package firn-http`.
-- `cargo test -p firn-http --locked --no-fail-fast`: passed; 6 unit tests passed and 0 doctests ran.
-- `cargo clippy -p firn-http --all-targets --locked -- -D warnings`: passed.
+- `cargo test -p cdf-http --lib --locked --no-fail-fast`: passed; 6 unit tests passed.
+- `cargo fmt --all -- --check`: passed after formatting `cdf-http` with `cargo fmt --package cdf-http`.
+- `cargo test -p cdf-http --locked --no-fail-fast`: passed; 6 unit tests passed and 0 doctests ran.
+- `cargo clippy -p cdf-http --all-targets --locked -- -D warnings`: passed.
 - `git diff --check`: passed.
 
 ## What this supports or challenges

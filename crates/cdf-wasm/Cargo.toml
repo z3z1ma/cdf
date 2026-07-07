@@ -1,0 +1,8 @@
+[package]
+name = "cdf-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "WASM component authoring boundary for cdf."
+
+[dependencies]

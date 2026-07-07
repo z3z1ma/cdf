@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of `crates/firn-package/**` against `.10x/specs/package-lifecycle-determinism.md` and `.10x/tickets/done/2026-07-05-package-builder-reader.md`.
+Review of `crates/cdf-package/**` against `.10x/specs/package-lifecycle-determinism.md` and `.10x/tickets/done/2026-07-05-package-builder-reader.md`.
 
 ## Findings
 

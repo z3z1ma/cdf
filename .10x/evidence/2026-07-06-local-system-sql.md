@@ -7,7 +7,7 @@ Relates-To: .10x/tickets/done/2026-07-06-local-system-sql.md, .10x/tickets/2026-
 
 ## What was observed
 
-`firn sql <query>` now supports the first local system-history SQL surface. The CLI loads the project, builds an in-memory SQLite database, mounts checkpoint rows from the configured SQLite state file when present, scans package manifests and package receipts from the configured package root, and evaluates one read-only query.
+`cdf sql <query>` now supports the first local system-history SQL surface. The CLI loads the project, builds an in-memory SQLite database, mounts checkpoint rows from the configured SQLite state file when present, scans package manifests and package receipts from the configured package root, and evaluates one read-only query.
 
 Queryable tables:
 
@@ -27,7 +27,7 @@ Read-only protection has two layers:
 
 ## Procedure
 
-Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
+Commands run from `/Users/alexanderbut/code_projects/personal/cdf`:
 
 ```text
 cargo fmt --all -- --check
@@ -38,7 +38,7 @@ cargo check --workspace --all-targets --no-default-features --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo clippy --workspace --all-targets --no-default-features --locked -- -D warnings
-cargo test -p firn-cli --locked --no-fail-fast
+cargo test -p cdf-cli --locked --no-fail-fast
 cargo test --workspace --all-targets --locked --no-fail-fast
 cargo test --workspace --all-targets --all-features --locked --no-fail-fast
 cargo test --workspace --doc --all-features --locked --no-fail-fast
@@ -62,8 +62,8 @@ cargo semver-checks --workspace --baseline-rev HEAD
 rust-code-analysis-cli -m -p crates -O json -o target/quality/reports/rust-code-analysis-local-sql
 jscpd . --reporters json,console --output target/quality/reports/jscpd-local-sql --ignore "**/target/**,**/.git/**,**/reports/**"
 rg -n "\bunsafe\b|unsafe\s+impl|unsafe\s+trait|extern\s+\"C\"|from_raw|into_raw|transmute|MaybeUninit|Unpin|Send|Sync" crates
-cargo geiger --manifest-path /Users/alexanderbut/code_projects/personal/firn/crates/firn-cli/Cargo.toml --all-targets --all-features --include-tests --locked
-cargo bloat --release -p firn-cli --bin firn-cli -n 20
+cargo geiger --manifest-path /Users/alexanderbut/code_projects/personal/cdf/crates/cdf-cli/Cargo.toml --all-targets --all-features --include-tests --locked
+cargo bloat --release -p cdf-cli --bin cdf-cli -n 20
 ```
 
 Results:
@@ -72,7 +72,7 @@ Results:
 - Whitespace diff check passed.
 - Workspace `cargo check` passed for default, all-features, and no-default-features.
 - Workspace `cargo clippy` passed for default, all-features, and no-default-features.
-- `cargo test -p firn-cli --locked --no-fail-fast` passed: 12 tests passed, 0 failed, including 4 system-SQL tests.
+- `cargo test -p cdf-cli --locked --no-fail-fast` passed: 12 tests passed, 0 failed, including 4 system-SQL tests.
 - `cargo test --workspace --all-targets --locked --no-fail-fast` passed.
 - `cargo test --workspace --all-targets --all-features --locked --no-fail-fast` passed.
 - `cargo test --workspace --doc --all-features --locked --no-fail-fast` passed.
@@ -80,7 +80,7 @@ Results:
 - `cargo nextest run --workspace --locked` passed: 129 tests passed, 0 skipped.
 - `cargo hack check --workspace --all-targets --each-feature --locked` passed.
 - `cargo hack clippy --workspace --all-targets --each-feature --locked -- -D warnings` passed.
-- `cargo llvm-cov --workspace --all-features --locked --summary-only` passed and reported 71.99% line coverage, 71.76% function coverage, and 75.54% region coverage across the workspace. `crates/firn-cli/src/system_sql.rs` reported 69.27% line coverage and 67.50% function coverage.
+- `cargo llvm-cov --workspace --all-features --locked --summary-only` passed and reported 71.99% line coverage, 71.76% function coverage, and 75.54% region coverage across the workspace. `crates/cdf-cli/src/system_sql.rs` reported 69.27% line coverage and 67.50% function coverage.
 - `cargo machete` passed with no unused dependency candidates.
 - `cargo audit` passed with 0 vulnerabilities. `cargo deny check advisories` passed. OSV reported 0 results.
 - Semgrep Rust and security-audit scans passed with 0 findings.
@@ -90,8 +90,8 @@ Results:
 - `rust-code-analysis-cli` completed and wrote metrics under `target/quality/reports/rust-code-analysis-local-sql`.
 - `jscpd` completed: 117 total clones, 3.02% duplicated lines, and 0 new clones.
 - Direct source unsafe search found no first-party unsafe blocks, unsafe impls, unsafe traits, FFI, raw-pointer conversions, `transmute`, or `MaybeUninit`; matches were existing `Send`/`Sync` bounds and the phrase "unsafe unit" in retry messaging.
-- `cargo geiger` for `firn-cli` with tests included reported `firn-cli 0.1.0` as `0/0` unsafe, then exited nonzero because dependency crates contain unsafe warnings. The added direct `rusqlite` dependency is already present through `firn-state-sqlite`; geiger reports unsafe in `rusqlite` and native dependencies, not in this CLI code.
-- `cargo bloat --release -p firn-cli --bin firn-cli -n 20` passed. The release binary text section is 28.7 MiB and top symbols are dominated by DuckDB/libduckdb, not the local SQL module.
+- `cargo geiger` for `cdf-cli` with tests included reported `cdf-cli 0.1.0` as `0/0` unsafe, then exited nonzero because dependency crates contain unsafe warnings. The added direct `rusqlite` dependency is already present through `cdf-state-sqlite`; geiger reports unsafe in `rusqlite` and native dependencies, not in this CLI code.
+- `cargo bloat --release -p cdf-cli --bin cdf-cli -n 20` passed. The release binary text section is 28.7 MiB and top symbols are dominated by DuckDB/libduckdb, not the local SQL module.
 
 Repository-level policy/tooling limits:
 
@@ -116,6 +116,6 @@ This does not close the full observability parent ticket: destination mirror dri
 
 ## Limits
 
-`firn sql` currently mounts local checkpoint and package metadata only. It does not query live DuckDB/Postgres mirrors, destination drift probes, package trace text, Parquet stats/quarantine/lineage, or remote/object-store package roots. The SQL surface is intentionally read-only and not a general SQLite shell.
+`cdf sql` currently mounts local checkpoint and package metadata only. It does not query live DuckDB/Postgres mirrors, destination drift probes, package trace text, Parquet stats/quarantine/lineage, or remote/object-store package roots. The SQL surface is intentionally read-only and not a general SQLite shell.
 
 This evidence does not ratify supply-chain license policy, cargo-vet adoption, or CodeQL extractor coverage limits; those remain separate active tickets.

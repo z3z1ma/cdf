@@ -6,7 +6,7 @@ config="target/quality/codeql-rust-config.yml"
 report="target/quality/reports/codeql-rust-current.sarif"
 cargo_target="target/codeql-cargo-target"
 metadata="$db/codeql-database.yml"
-fingerprint="$db/firn-codeql-inputs.sha256"
+fingerprint="$db/cdf-codeql-inputs.sha256"
 
 input_fingerprint() {
   find Cargo.toml Cargo.lock crates -type f \( -name '*.rs' -o -name 'Cargo.toml' -o -name 'Cargo.lock' \) -print \

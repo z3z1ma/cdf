@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the initial Firn supply-chain policy implementation: `deny.toml`, `supply-chain/audits.toml`, `supply-chain/config.toml`, `supply-chain/imports.lock`, and the active ticket closure state.
+Review of the initial CDF supply-chain policy implementation: `deny.toml`, `supply-chain/audits.toml`, `supply-chain/config.toml`, `supply-chain/imports.lock`, and the active ticket closure state.
 
 ## Assumptions tested
 

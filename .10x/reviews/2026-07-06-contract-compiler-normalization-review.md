@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of `crates/firn-contract/**` against `.10x/specs/types-contracts-normalization.md` and `.10x/tickets/done/2026-07-05-contract-compiler-normalization.md`.
+Review of `crates/cdf-contract/**` against `.10x/specs/types-contracts-normalization.md` and `.10x/tickets/done/2026-07-05-contract-compiler-normalization.md`.
 
 ## Findings
 

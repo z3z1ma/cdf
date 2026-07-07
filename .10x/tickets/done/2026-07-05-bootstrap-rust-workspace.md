@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-05
 Updated: 2026-07-05
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: None
 
 # Bootstrap Rust workspace and crate skeleton

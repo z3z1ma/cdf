@@ -19,11 +19,11 @@ Added `tools/codeql-rust-quality.sh`, a small local wrapper that:
 
 The first wrapper run refreshed the stale database in place. The wrapper initially misreported the reason as an unknown CodeQL version because of a version-parsing bug, but the stale source/lockfile state had already been established before recreation. The parser was fixed, and a second wrapper run proved the refreshed database was reused without another `codeql database create`.
 
-Parent review later found that mtime-only staleness would still recreate the database after content-preserving touches. The wrapper was tightened to store and compare a content fingerprint at `target/quality/codeql-db-rust/firn-codeql-inputs.sha256` after database creation. Because another worker had active uncommitted Rust edits by then, the parent did not bootstrap a fingerprint for the already-created database; the next wrapper refresh over the final source tree will write it.
+Parent review later found that mtime-only staleness would still recreate the database after content-preserving touches. The wrapper was tightened to store and compare a content fingerprint at `target/quality/codeql-db-rust/cdf-codeql-inputs.sha256` after database creation. Because another worker had active uncommitted Rust edits by then, the parent did not bootstrap a fingerprint for the already-created database; the next wrapper refresh over the final source tree will write it.
 
 ## Procedure
 
-Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
+Commands run from `/Users/alexanderbut/code_projects/personal/cdf`:
 
 ```text
 codeql --version
@@ -89,16 +89,16 @@ Top macro-expansion warning families in `target/quality/reports/codeql-rust-curr
 
 Top files by extraction warning count:
 
-- `crates/firn-state-sqlite/src/tests.rs`: 77.
-- `crates/firn-python/src/tests.rs`: 73.
-- `crates/firn-cli/src/tests.rs`: 65.
-- `crates/firn-dest-postgres/src/tests.rs`: 56.
-- `crates/firn-engine/src/tests.rs`: 54.
-- `crates/firn-cli/src/commands.rs`: 53.
-- `crates/firn-dest-duckdb/src/tests.rs`: 46.
-- `crates/firn-project/src/tests.rs`: 45.
-- `crates/firn-contract/src/tests.rs`: 43.
-- `crates/firn-package/src/tests.rs`: 40.
+- `crates/cdf-state-sqlite/src/tests.rs`: 77.
+- `crates/cdf-python/src/tests.rs`: 73.
+- `crates/cdf-cli/src/tests.rs`: 65.
+- `crates/cdf-dest-postgres/src/tests.rs`: 56.
+- `crates/cdf-engine/src/tests.rs`: 54.
+- `crates/cdf-cli/src/commands.rs`: 53.
+- `crates/cdf-dest-duckdb/src/tests.rs`: 46.
+- `crates/cdf-project/src/tests.rs`: 45.
+- `crates/cdf-contract/src/tests.rs`: 43.
+- `crates/cdf-package/src/tests.rs`: 40.
 
 The fresh database creation log also shows two extractor-side `cargo metadata` warnings before macro warnings:
 
@@ -110,13 +110,13 @@ The stack trace is inside `ra_ap_project_model::cargo_workspace::FetchMetadata::
 
 ## What this supports or challenges
 
-This supports keeping CodeQL as a useful local security query gate for Firn because the refreshed database analyzes current source from the CodeQL slice and still produces 0 SARIF findings and 0 extraction errors. It also supports the workflow change: future local runs can use `tools/codeql-rust-quality.sh` to avoid recreating `target/quality/codeql-db-rust` unless source/dependency input content or CodeQL version makes it stale.
+This supports keeping CodeQL as a useful local security query gate for CDF because the refreshed database analyzes current source from the CodeQL slice and still produces 0 SARIF findings and 0 extraction errors. It also supports the workflow change: future local runs can use `tools/codeql-rust-quality.sh` to avoid recreating `target/quality/codeql-db-rust` unless source/dependency input content or CodeQL version makes it stale.
 
-This challenges treating the local Rust extractor metrics as a repo-code quality failure. The remaining diagnostics are not generated-artifact noise and are not the earlier `include!` issue. They are dominated by ordinary Rust and third-party macros (`format!`, `assert!`, `assert_eq!`, `vec!`, `matches!`, `serde_json::json!`, `rusqlite::params!`) plus a CodeQL extractor/Cargo metadata compatibility warning involving `--lockfile-path`. The current evidence does not identify a minimal Firn source change that would materially improve extraction without rewriting normal Rust idioms or weakening product code.
+This challenges treating the local Rust extractor metrics as a repo-code quality failure. The remaining diagnostics are not generated-artifact noise and are not the earlier `include!` issue. They are dominated by ordinary Rust and third-party macros (`format!`, `assert!`, `assert_eq!`, `vec!`, `matches!`, `serde_json::json!`, `rusqlite::params!`) plus a CodeQL extractor/Cargo metadata compatibility warning involving `--lockfile-path`. The current evidence does not identify a minimal CDF source change that would materially improve extraction without rewriting normal Rust idioms or weakening product code.
 
 ## Limits
 
-The metrics did not materially improve after refreshing the stale database; they changed because one current Rust file was added to the database. The durable local limit is that CodeQL CLI 2.25.6 with local Cargo/Rust 1.96.1 reports unresolved macro diagnostics for normal Firn source while still completing analysis with 0 extraction errors and 0 SARIF findings.
+The metrics did not materially improve after refreshing the stale database; they changed because one current Rust file was added to the database. The durable local limit is that CodeQL CLI 2.25.6 with local Cargo/Rust 1.96.1 reports unresolved macro diagnostics for normal CDF source while still completing analysis with 0 extraction errors and 0 SARIF findings.
 
 The parent did not rerun full CodeQL analysis after the fingerprint hardening because the DuckDB drift worker had active Rust edits in progress. Running the wrapper at that point would either analyze a database that intentionally predates those edits or refresh the expensive database for an unreviewed intermediate tree. The final verification for the next product-code slice should run the wrapper once the source tree is stable.
 

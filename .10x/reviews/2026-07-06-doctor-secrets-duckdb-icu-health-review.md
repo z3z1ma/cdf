@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the scoped doctor hardening change in `crates/firn-cli/src/commands.rs`, `crates/firn-cli/src/tests.rs`, `crates/firn-cli/tests/doctor_env.rs`, and `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md`.
+Review of the scoped doctor hardening change in `crates/cdf-cli/src/commands.rs`, `crates/cdf-cli/src/tests.rs`, `crates/cdf-cli/tests/doctor_env.rs`, and `.10x/tickets/done/2026-07-06-doctor-secrets-duckdb-icu-health.md`.
 
 ## Assumptions tested
 
@@ -27,7 +27,7 @@ Resolved during parent review:
 
 - The initial worker test shape mutated process environment. It was replaced with project-local file-backed secret fixtures and missing env references only, and Semgrep now reports 0 findings.
 - The initial coverage did not prove `lockfile_present == true` or later-failure redaction after successful secret resolution. Focused tests now cover both cases.
-- Parent added `crates/firn-cli/tests/doctor_env.rs` to exercise resolved env secrets through a child process with `Command::env`, avoiding global process environment mutation.
+- Parent added `crates/cdf-cli/tests/doctor_env.rs` to exercise resolved env secrets through a child process with `Command::env`, avoiding global process environment mutation.
 - Semgrep flagged the first integration-test fixture root as an insecure `std::env::temp_dir()` use. The fixture now uses `target/quality/test-projects`, and explicit Semgrep for the new test reports 0 findings.
 
 ## Verdict

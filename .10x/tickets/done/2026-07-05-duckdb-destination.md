@@ -1,14 +1,14 @@
 Status: done
 Created: 2026-07-05
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-implement-firn-system.md
+Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md, .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-05-contract-compiler-normalization.md
 
 # Implement DuckDB destination
 
 ## Scope
 
-Implement `firn-dest-duckdb`: destination sheet, dry-run commit planning, DDL migration, append/replace/merge, Arrow appender/Parquet replay paths, idempotency tokens, `_firn_loads` and `_firn_state` mirrors, receipt verification, single-writer locking, and ICU doctor probe. Owns `crates/firn-dest-duckdb/**`.
+Implement `cdf-dest-duckdb`: destination sheet, dry-run commit planning, DDL migration, append/replace/merge, Arrow appender/Parquet replay paths, idempotency tokens, `_cdf_loads` and `_cdf_state` mirrors, receipt verification, single-writer locking, and ICU doctor probe. Owns `crates/cdf-dest-duckdb/**`.
 
 ## Acceptance criteria
 
@@ -29,11 +29,11 @@ No CLI-specific doctor UI; expose probes for project/CLI ticket.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
-- 2026-07-06: Assigned to DuckDB destination worker. Worker owns `crates/firn-dest-duckdb/**` plus its own evidence/review records and this ticket. Do not touch `.gitignore`, parent ticket, other destination crates, or unrelated records.
-- 2026-07-06: Implemented `firn-dest-duckdb` with real `duckdb` bundled-driver integration, destination sheet/capability report, dry-run package planning, DDL migration planning, append/replace/merge commits from `firn-package` Arrow IPC replay, deterministic exact-row merge dedup with conflicting duplicate-key rejection, package-token idempotency, `_firn_loads`/`_firn_state` mirrors, verifiable receipts, single-writer lockfile, and ICU probe API.
-- 2026-07-06: Direct duckdb-rs Arrow appender is not used because the current DuckDB crate appender API is Arrow 58-facing while Firn packages use Arrow 59; this crate uses the real DuckDB row appender over decoded Firn Arrow IPC package batches. Parquet package replay is declared unsupported until package archive Parquet data exists under `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
-- 2026-07-06: Evidence recorded in `.10x/evidence/2026-07-06-duckdb-destination.md`; closure review recorded in `.10x/reviews/2026-07-06-duckdb-destination-review.md`. `cargo check -p firn-dest-duckdb`, `cargo fmt -p firn-dest-duckdb`, `cargo test -p firn-dest-duckdb --locked --no-fail-fast`, `cargo clippy -p firn-dest-duckdb --all-targets --locked -- -D warnings`, `git diff --check`, `cargo deny check advisories`, and `cargo audit` passed.
-- 2026-07-06: Split the large `crates/firn-dest-duckdb/src/lib.rs` into focused files under `crates/firn-dest-duckdb/src/` while preserving the crate-root API. Organization evidence recorded in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
+- 2026-07-06: Assigned to DuckDB destination worker. Worker owns `crates/cdf-dest-duckdb/**` plus its own evidence/review records and this ticket. Do not touch `.gitignore`, parent ticket, other destination crates, or unrelated records.
+- 2026-07-06: Implemented `cdf-dest-duckdb` with real `duckdb` bundled-driver integration, destination sheet/capability report, dry-run package planning, DDL migration planning, append/replace/merge commits from `cdf-package` Arrow IPC replay, deterministic exact-row merge dedup with conflicting duplicate-key rejection, package-token idempotency, `_cdf_loads`/`_cdf_state` mirrors, verifiable receipts, single-writer lockfile, and ICU probe API.
+- 2026-07-06: Direct duckdb-rs Arrow appender is not used because the current DuckDB crate appender API is Arrow 58-facing while CDF packages use Arrow 59; this crate uses the real DuckDB row appender over decoded CDF Arrow IPC package batches. Parquet package replay is declared unsupported until package archive Parquet data exists under `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
+- 2026-07-06: Evidence recorded in `.10x/evidence/2026-07-06-duckdb-destination.md`; closure review recorded in `.10x/reviews/2026-07-06-duckdb-destination-review.md`. `cargo check -p cdf-dest-duckdb`, `cargo fmt -p cdf-dest-duckdb`, `cargo test -p cdf-dest-duckdb --locked --no-fail-fast`, `cargo clippy -p cdf-dest-duckdb --all-targets --locked -- -D warnings`, `git diff --check`, `cargo deny check advisories`, and `cargo audit` passed.
+- 2026-07-06: Split the large `crates/cdf-dest-duckdb/src/lib.rs` into focused files under `crates/cdf-dest-duckdb/src/` while preserving the crate-root API. Organization evidence recorded in `.10x/evidence/2026-07-06-rust-crate-organization-refactor.md`.
 - 2026-07-06: Replaced the intermediate `include!` split with ordinary Rust modules under `.10x/tickets/done/2026-07-06-replace-include-crate-splits-with-modules.md`. Final parent quality gates recorded in `.10x/evidence/2026-07-06-project-python-destinations-quality-gates.md`.
 
 ## Blockers
