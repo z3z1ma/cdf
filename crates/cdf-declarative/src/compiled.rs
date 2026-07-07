@@ -21,6 +21,9 @@ use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
 use crate::file_runtime::open_file_resource;
+use crate::rest_runtime::{
+    CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA, cursor_pushdown_value,
+};
 
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
@@ -139,8 +142,12 @@ impl ResourceStream for CompiledResource {
         Arc::clone(&self.schema)
     }
 
-    fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        Ok(vec![partition_for_plan(&self.descriptor, &self.plan)?])
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        Ok(vec![partition_for_plan(
+            &self.descriptor,
+            &self.plan,
+            Some(request),
+        )?])
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
@@ -185,7 +192,11 @@ impl QueryableResource for CompiledResource {
         Ok(ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
-            partitions: self.plan_partitions(request)?,
+            partitions: vec![partition_for_plan(
+                &self.descriptor,
+                &self.plan,
+                Some(request),
+            )?],
             pushed_predicates,
             unsupported_predicates,
             estimated_rows: None,
@@ -199,15 +210,7 @@ impl CompiledResource {
     fn predicate_fidelity(&self, expression: &str) -> PushdownFidelity {
         match &self.plan {
             CompiledResourcePlan::Rest(plan) => {
-                let Some(cursor) = &self.descriptor.cursor else {
-                    return PushdownFidelity::Unsupported;
-                };
-                if expression.contains(&cursor.field)
-                    || plan
-                        .cursor_param
-                        .as_ref()
-                        .is_some_and(|param| expression.contains(param))
-                {
+                if cursor_pushdown_value(&self.descriptor, plan, expression).is_some() {
                     plan.cursor_filter_fidelity.clone()
                 } else {
                     PushdownFidelity::Unsupported
@@ -712,6 +715,7 @@ fn partitioning_capabilities(descriptor: &ResourceDescriptor) -> PartitioningCap
 fn partition_for_plan(
     descriptor: &ResourceDescriptor,
     plan: &CompiledResourcePlan,
+    request: Option<&ScanRequest>,
 ) -> Result<PartitionPlan> {
     let (partition_id, scope, mut metadata) = match plan {
         CompiledResourcePlan::Rest(rest) => {
@@ -723,6 +727,15 @@ fn partition_for_plan(
             }
             if let Some(cursor) = &descriptor.cursor {
                 metadata.insert("cursor_field".to_owned(), cursor.field.clone());
+            }
+            if let (Some(request), Some(cursor_param)) = (request, rest.cursor_param.as_ref())
+                && rest.cursor_filter_fidelity != PushdownFidelity::Unsupported
+                && let Some(value) = request.filters.iter().find_map(|predicate| {
+                    cursor_pushdown_value(descriptor, rest, &predicate.expression)
+                })
+            {
+                metadata.insert(CURSOR_QUERY_PARAM_METADATA.to_owned(), cursor_param.clone());
+                metadata.insert(CURSOR_QUERY_VALUE_METADATA.to_owned(), value);
             }
             ("rest".to_owned(), descriptor.state_scope.clone(), metadata)
         }

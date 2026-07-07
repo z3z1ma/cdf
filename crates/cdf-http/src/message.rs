@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, fmt};
 use crate::{redaction::Redactor, support::set_header};
 
 pub type HeaderMap = BTreeMap<String, String>;
+const RESPONSE_BODY_FIELD: &str = "__cdf_response_body";
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct HttpRequest {
@@ -58,6 +59,21 @@ impl HttpResponse {
         self
     }
 
+    pub fn with_body(mut self, body: impl Into<Vec<u8>>) -> Self {
+        self.page.fields.insert(
+            RESPONSE_BODY_FIELD.to_owned(),
+            String::from_utf8_lossy(&body.into()).into_owned(),
+        );
+        self
+    }
+
+    pub fn body(&self) -> Option<&[u8]> {
+        self.page
+            .fields
+            .get(RESPONSE_BODY_FIELD)
+            .map(String::as_bytes)
+    }
+
     pub fn with_field(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
         self.page.fields.insert(name.into(), value.into());
         self
@@ -75,15 +91,29 @@ impl fmt::Debug for HttpResponse {
         f.debug_struct("HttpResponse")
             .field("status", &self.status)
             .field("headers", &redactor.redact_headers(&self.headers))
+            .field("body_len", &self.body().map_or(0, <[u8]>::len))
             .field("page", &self.page)
             .finish()
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default, PartialEq, Eq)]
 pub struct ResponsePage {
     pub fields: BTreeMap<String, String>,
     pub item_count: usize,
+}
+
+impl fmt::Debug for ResponsePage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut fields = self.fields.clone();
+        if let Some(body) = fields.get_mut(RESPONSE_BODY_FIELD) {
+            *body = format!("<{} bytes>", body.len());
+        }
+        f.debug_struct("ResponsePage")
+            .field("fields", &fields)
+            .field("item_count", &self.item_count)
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

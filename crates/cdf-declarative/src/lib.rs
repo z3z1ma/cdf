@@ -3,6 +3,7 @@
 mod compiled;
 mod declarations;
 mod file_runtime;
+mod rest_runtime;
 #[cfg(test)]
 mod tests;
 
@@ -11,3 +12,4 @@ pub use compiled::{
     compile_document, compile_document_with_project_root, validate_document,
 };
 pub use declarations::*;
+pub use rest_runtime::{RestResource, RestRuntimeDependencies};

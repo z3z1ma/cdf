@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -68,7 +68,14 @@ The MVP killer-demo path remains parent scope until this REST resource can be co
 
 - 2026-07-07: Split from the conformance parent after local DuckDB lifecycle chaos closed. Current declarative REST resources compile and negotiate cursor pushdown, and `cdf-http` has pure toolkit primitives, but `CompiledResource::open` still returns an explicit unsupported error for REST/SQL. This child makes REST openable through explicit runtime dependencies and deterministic conformance tests without adding live network or CLI run orchestration.
 - 2026-07-07: Do not implement in the ticket-creation turn. Assign to a worker in a later turn with the bounded write boundary above; parent owns integration review, evidence, and final commit.
+- 2026-07-07: Worker implemented explicit `RestResource` runtime construction in `cdf-declarative`, backed by `cdf-http` transport/allowlist/auth/paginator/retry primitives and deterministic in-memory tests. `CompiledResource::open` remains unsupported for REST without runtime dependencies. Focused verification passed: `cargo fmt --all -- --check`, `cargo test -p cdf-declarative --locked --no-fail-fast`, `cargo test -p cdf-http --locked --no-fail-fast`, and `git diff --check -- . ':(exclude).gitignore'`.
+- 2026-07-07: Parent review hardened the worker implementation after mutation exposed gaps in predicate literal parsing, selector boundaries, scalar coercions, cursor maxima, blank pagination markers, URL host/origin validation, RFC3339/date helpers, and id sanitization. Final focused checks passed, including `cargo test -p cdf-declarative --locked --no-fail-fast` with 42 tests, clippy for touched crates, nextest for declarative/http/conformance with 88 tests, and repaired-helper mutation with 52/52 mutants caught.
+
+## Evidence and review
+
+- Evidence: `.10x/evidence/2026-07-07-declarative-rest-resource-execution.md`
+- Review: `.10x/reviews/2026-07-07-declarative-rest-resource-execution-review.md`
 
 ## Blockers
 
-None for the deterministic declarative REST resource execution slice.
+None.

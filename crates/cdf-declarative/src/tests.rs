@@ -1,11 +1,27 @@
 use super::*;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{Arc, Mutex},
+};
+
+use arrow_array::{
+    Array, BooleanArray, Date32Array, Float64Array, Int64Array, StringArray,
+    TimestampMillisecondArray, UInt64Array,
+};
 use cdf_conformance::resource::{
-    PredicateExpectation, ResourceConformanceCase, assert_queryable_resource_conformance,
+    PredicateExpectation, ResourceConformanceCase, ResourceExecutionConformanceCase,
+    assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
+};
+use cdf_http::{
+    HttpRequest, HttpResponse, HttpTransport, ProviderRefreshHook, RetryPolicy, SecretProvider,
+    SecretUri, SecretValue,
 };
 use cdf_kernel::{
-    CursorOrderingClaim, DeliveryGuarantee, IncrementalShape, PredicateId, PushdownFidelity,
-    QueryableResource, ResourceStream, ScanPredicate, ScanRequest, ScopeKey, SortDirection,
+    CdfError, CursorOrderingClaim, CursorValue, DeliveryGuarantee, ErrorKind, IncrementalShape,
+    PartitionId, PredicateId, PushdownFidelity, QueryableResource, ResourceStream, ScanPredicate,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection, SourcePosition,
 };
+use futures_util::StreamExt;
 
 const BOOK_REST_EXAMPLE: &str = r#"
 [source.github]
@@ -68,7 +84,7 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
         filters: vec![
             ScanPredicate {
                 predicate_id: cursor_predicate_id.clone(),
-                expression: "updated_at >= checkpoint.cursor".to_owned(),
+                expression: "updated_at >= \"2026-07-01T00:00:00Z\"".to_owned(),
             },
             ScanPredicate {
                 predicate_id: unsupported_predicate_id.clone(),
@@ -120,6 +136,1138 @@ fn rest_cursor_pushdown_can_be_explicit_exact() {
         resource.capabilities().filters.default_fidelity,
         PushdownFidelity::Exact
     );
+}
+
+#[test]
+fn rest_runtime_executes_json_pages_with_explicit_dependencies() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    assert_eq!(plan.pushed_predicates.len(), 1);
+    assert_eq!(
+        plan.partitions[0].metadata.get("cursor_query_param"),
+        Some(&"since".to_owned())
+    );
+    assert_eq!(
+        plan.partitions[0].metadata.get("cursor_query_value"),
+        Some(&"2026-07-01T00:00:00Z".to_owned())
+    );
+
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{
+                "items": [
+                    { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 },
+                    { "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": false, "score": null }
+                ],
+                "next_token": "n2"
+            }"#,
+        ),
+        json_response(
+            r#"{
+                "items": [
+                    { "id": 3, "name": "katherine", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 9.25 }
+                ]
+            }"#,
+        ),
+    ]);
+    let dependencies = RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+        StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+    );
+    let rest = resource.to_rest_resource(dependencies).unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[0].header.row_count, 2);
+    assert_eq!(batches[1].header.row_count, 1);
+    assert_eq!(
+        batches[0].header.observed_schema_hash,
+        declared_schema_hash(&resource)
+    );
+
+    let first = batches[0].record_batch().unwrap();
+    let ids = first
+        .column(0)
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    assert_eq!(ids.value(0), 1);
+    assert_eq!(ids.value(1), 2);
+
+    let first_position = cursor_micros(&batches[0].header.source_position);
+    let second_position = cursor_micros(&batches[1].header.source_position);
+    assert!(second_position > first_position);
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].url,
+        "https://api.example.com/v1/items?existing=1&from_path=yes&state=all&since=2026-07-01T00%3A00%3A00Z"
+    );
+    assert_eq!(
+        requests[1].url,
+        "https://api.example.com/v1/items?existing=1&from_path=yes&state=all&since=2026-07-01T00%3A00%3A00Z&page_token=n2"
+    );
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer token-1")
+    );
+}
+
+#[test]
+fn rest_runtime_satisfies_execution_conformance_helper() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{
+                "items": [
+                    { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 },
+                    { "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": false, "score": 2.0 }
+                ],
+                "next_token": "n2"
+            }"#,
+        ),
+        json_response(
+            r#"{
+                "items": [
+                    { "id": 3, "name": "katherine", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 9.25 }
+                ]
+            }"#,
+        ),
+    ]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let partition = PartitionId::new("rest").unwrap();
+    let case = ResourceExecutionConformanceCase::new(
+        request,
+        declared_schema_hash(&resource),
+        [partition.clone()],
+        3,
+    )
+    .with_expected_partition_rows([(partition, 3)]);
+
+    futures_executor::block_on(assert_resource_stream_execution_conformance(&rest, [case]));
+}
+
+#[test]
+fn rest_runtime_forwards_capabilities_and_debugs_dependency_shape() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let dependencies =
+        RestRuntimeDependencies::new(RecordingTransport::new([])).with_secret_provider(
+            StaticSecretProvider::new([("secret://env/API_TOKEN", "debug-secret")]),
+        );
+    let debug = format!("{dependencies:?}");
+    assert!(debug.contains("RestRuntimeDependencies"));
+    assert!(debug.contains("secret_provider"));
+    assert!(debug.contains("true"));
+    assert!(!debug.contains("debug-secret"));
+
+    let rest = resource.to_rest_resource(dependencies).unwrap();
+    assert_eq!(
+        rest.capabilities().filters.default_fidelity,
+        resource.capabilities().filters.default_fidelity
+    );
+    assert_eq!(
+        rest.capabilities().incremental,
+        resource.capabilities().incremental
+    );
+}
+
+#[test]
+fn rest_cursor_pushdown_accepts_only_safe_literal_tokens() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+
+    let plan = resource
+        .negotiate(&rest_cursor_request(&resource, "updated_at >= -20260701.5"))
+        .unwrap();
+    assert_eq!(plan.pushed_predicates.len(), 1);
+    assert_eq!(
+        plan.partitions[0].metadata.get("cursor_query_value"),
+        Some(&"-20260701.5".to_owned())
+    );
+
+    let plan = resource
+        .negotiate(&rest_cursor_request(&resource, "updated_at >= abc123"))
+        .unwrap();
+    assert_eq!(plan.pushed_predicates.len(), 0);
+    assert_eq!(plan.unsupported_predicates.len(), 1);
+    assert!(
+        !plan.partitions[0]
+            .metadata
+            .contains_key("cursor_query_value")
+    );
+}
+
+#[test]
+fn rest_default_open_remains_unsupported_without_runtime_dependencies() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let partition = resource.plan_partitions(&request).unwrap().remove(0);
+
+    let error = expect_open_error(futures_executor::block_on(resource.open(partition)));
+    assert!(error.to_string().contains("outside the MVP compiler crate"));
+}
+
+#[test]
+fn rest_runtime_does_not_smuggle_unsupported_predicates_into_urls() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let predicate_id = PredicateId::new("unsupported").unwrap();
+    let request = ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: vec![ScanPredicate {
+            predicate_id,
+            expression: "id = 2".to_owned(),
+        }],
+        limit: None,
+        order_by: vec![],
+        scope: ScopeKey::Resource,
+    };
+    let plan = resource.negotiate(&request).unwrap();
+    assert_eq!(plan.pushed_predicates.len(), 0);
+    assert_eq!(plan.unsupported_predicates.len(), 1);
+    assert!(
+        !plan.partitions[0]
+            .metadata
+            .contains_key("cursor_query_value")
+    );
+
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [{ "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }] }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+
+    let requests = transport.requests();
+    assert!(!requests[0].url.contains("id=2"));
+    assert!(!requests[0].url.contains("since="));
+
+    let unsupported_cursor_input = REST_RUNTIME_EXAMPLE.replace(
+        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
+        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms", filter_fidelity = "unsupported" }"#,
+    );
+    let unsupported_cursor_resource =
+        compile_document(&parse_toml(&unsupported_cursor_input).unwrap())
+            .unwrap()
+            .remove(0);
+    let unsupported_cursor_plan = unsupported_cursor_resource
+        .negotiate(&rest_cursor_request(
+            &unsupported_cursor_resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    assert_eq!(unsupported_cursor_plan.pushed_predicates.len(), 0);
+    assert_eq!(unsupported_cursor_plan.unsupported_predicates.len(), 1);
+    assert!(
+        !unsupported_cursor_plan.partitions[0]
+            .metadata
+            .contains_key("cursor_query_value")
+    );
+}
+
+#[test]
+fn rest_runtime_does_not_treat_symbolic_cursor_placeholder_as_executable_pushdown() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= checkpoint.cursor");
+    let plan = resource.negotiate(&request).unwrap();
+
+    assert_eq!(plan.pushed_predicates.len(), 0);
+    assert_eq!(plan.unsupported_predicates.len(), 1);
+    assert!(
+        !plan.partitions[0]
+            .metadata
+            .contains_key("cursor_query_value")
+    );
+}
+
+#[test]
+fn rest_runtime_refreshes_auth_once_when_configured() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([
+        HttpResponse::new(401).with_body(r#"{ "message": "expired" }"#),
+        json_response(
+            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
+        ),
+    ]);
+    let provider = RotatingSecretProvider::new(["old-token", "new-token"]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone())
+                .with_secret_provider(provider)
+                .with_auth_refresh_hook(ProviderRefreshHook),
+        )
+        .unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches[0].header.row_count, 1);
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer old-token")
+    );
+    assert_eq!(
+        requests[1].headers.get("authorization").map(String::as_str),
+        Some("Bearer new-token")
+    );
+}
+
+#[test]
+fn rest_runtime_applies_header_auth_without_leaking_secret_in_debug() {
+    let input = REST_RUNTIME_EXAMPLE.replace(
+        r#"auth = { kind = "bearer", token = "secret://env/API_TOKEN" }"#,
+        r#"auth = { kind = "header", name = "X-Api-Key", value = "secret://env/API_TOKEN" }"#,
+    );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
+    )]);
+    let dependencies = RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+        StaticSecretProvider::new([("secret://env/API_TOKEN", "header-secret-value")]),
+    );
+    assert!(!format!("{dependencies:?}").contains("header-secret-value"));
+    let rest = resource.to_rest_resource(dependencies).unwrap();
+
+    drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    let requests = transport.requests();
+    assert_eq!(
+        requests[0].headers.get("x-api-key").map(String::as_str),
+        Some("header-secret-value")
+    );
+    assert!(!format!("{:?}", requests[0]).contains("header-secret-value"));
+}
+
+#[test]
+fn rest_runtime_denies_allowlist_before_transport_use() {
+    let input = REST_RUNTIME_EXAMPLE.replace(
+        r#"base_url = "https://api.example.com/v1?existing=1""#,
+        r#"base_url = "https://blocked.example.net/v1?existing=1""#,
+    );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ));
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert_eq!(transport.requests().len(), 0);
+}
+
+#[test]
+fn rest_runtime_rejects_non_http_url_before_transport_use() {
+    let input = REST_RUNTIME_EXAMPLE.replace(
+        r#"base_url = "https://api.example.com/v1?existing=1""#,
+        r#"base_url = "ftp://api.example.com/v1?existing=1""#,
+    );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ));
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("http or https"));
+    assert_eq!(transport.requests().len(), 0);
+}
+
+#[test]
+fn rest_runtime_rejects_request_urls_with_whitespace_hosts() {
+    let input = REST_RUNTIME_EXAMPLE.replace(
+        r#"base_url = "https://api.example.com/v1?existing=1""#,
+        r#"base_url = "https://api example.com/v1?existing=1""#,
+    );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ));
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("whitespace"));
+    assert_eq!(transport.requests().len(), 0);
+}
+
+#[test]
+fn rest_runtime_fails_closed_for_missing_secret() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let rest = resource
+        .to_rest_resource(RestRuntimeDependencies::new(transport.clone()))
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ));
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert!(error.to_string().contains("SecretProvider"));
+    assert_eq!(transport.requests().len(), 0);
+}
+
+#[test]
+fn rest_runtime_fails_closed_for_non_json_response() {
+    let error = rest_open_error(
+        REST_RUNTIME_EXAMPLE,
+        [HttpResponse::new(200).with_body("not json")],
+    );
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.to_string().contains("not valid JSON"));
+}
+
+#[test]
+fn rest_runtime_fails_closed_for_selector_mismatch() {
+    let error = rest_open_error(REST_RUNTIME_EXAMPLE, [json_response(r#"{ "other": [] }"#)]);
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.to_string().contains("selector target `items`"));
+}
+
+#[test]
+fn rest_runtime_rejects_invalid_record_selectors_before_batching() {
+    for (selector, response) in [
+        (r#"$."#, r#"{ "": [] }"#),
+        (r#"$.items.nested"#, r#"{ "items.nested": [] }"#),
+    ] {
+        let input = REST_RUNTIME_EXAMPLE.replace(
+            r#"records = "$.items""#,
+            &format!(r#"records = "{selector}""#),
+        );
+        let error = rest_open_error(&input, [json_response(response)]);
+        assert_eq!(error.kind, ErrorKind::Data);
+        assert!(error.to_string().contains("supports only one object field"));
+    }
+}
+
+#[test]
+fn rest_runtime_requires_non_nullable_record_fields() {
+    let error = rest_open_error(
+        REST_RUNTIME_EXAMPLE,
+        [json_response(
+            r#"{ "items": [
+                { "id": 1, "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
+            ] }"#,
+        )],
+    );
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.to_string().contains("non-nullable field `name`"));
+}
+
+#[test]
+fn rest_runtime_fails_closed_for_cursor_field_absence() {
+    let input = REST_RUNTIME_EXAMPLE.replace(
+        r#"{ name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" }"#,
+        r#"{ name = "updated_at", type = "timestamp_micros", nullable = true, timezone = "UTC" }"#,
+    );
+    let error = rest_open_error(
+        &input,
+        [json_response(
+            r#"{ "items": [{ "id": 1, "name": "ada", "active": true, "score": 4.5 }] }"#,
+        )],
+    );
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.to_string().contains("cursor field `updated_at`"));
+}
+
+#[test]
+fn rest_runtime_fails_closed_for_schema_coercion_error_without_partial_stream() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }], "next_token": "n2" }"#,
+        ),
+        json_response(
+            r#"{ "items": [{ "id": "not-a-number", "name": "bad", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }] }"#,
+        ),
+    ]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ));
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.to_string().contains("id"));
+    assert_eq!(transport.requests().len(), 2);
+}
+
+#[test]
+fn rest_runtime_terminates_duplicate_token_and_empty_page_pagination() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }], "next_token": "same" }"#,
+        ),
+        json_response(
+            r#"{ "items": [{ "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }], "next_token": "same" }"#,
+        ),
+        json_response(
+            r#"{ "items": [{ "id": 3, "name": "unreached", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 1.0 }] }"#,
+        ),
+    ]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .sum::<u64>(),
+        2
+    );
+    assert_eq!(transport.requests().len(), 2);
+
+    let empty_input = REST_RUNTIME_EXAMPLE.replace(
+        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
+        r#"paginate = { kind = "page_number", query_param = "page", start_page = 1 }"#,
+    );
+    let empty_resource = compile_document(&parse_toml(&empty_input).unwrap())
+        .unwrap()
+        .remove(0);
+    let empty_plan = empty_resource
+        .negotiate(&rest_cursor_request(
+            &empty_resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let empty_transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let empty_rest = empty_resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(empty_transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let batches = drain_batches(
+        futures_executor::block_on(empty_rest.open(empty_plan.partitions[0].clone())).unwrap(),
+    );
+    assert!(batches.is_empty());
+    assert_eq!(empty_transport.requests().len(), 1);
+
+    let blank_token_transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [
+                { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
+            ], "next_token": "   " }"#,
+        ),
+        json_response(
+            r#"{ "items": [
+                { "id": 2, "name": "unreached", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 5.5 }
+            ] }"#,
+        ),
+    ]);
+    let blank_token_rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(blank_token_transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let batches = drain_batches(
+        futures_executor::block_on(blank_token_rest.open(plan.partitions[0].clone())).unwrap(),
+    );
+    assert_eq!(batches.len(), 1);
+    assert_eq!(blank_token_transport.requests().len(), 1);
+}
+
+#[test]
+fn rest_runtime_uses_cursor_and_offset_paginators() {
+    let cursor_input = REST_RUNTIME_EXAMPLE.replace(
+        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
+        r#"paginate = { kind = "cursor_param", query_param = "cursor", response_field = "next_cursor" }"#,
+    );
+    let cursor_resource = compile_document(&parse_toml(&cursor_input).unwrap())
+        .unwrap()
+        .remove(0);
+    let cursor_plan = cursor_resource
+        .negotiate(&rest_cursor_request(
+            &cursor_resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let cursor_transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }], "next_cursor": "c2" }"#,
+        ),
+        json_response(
+            r#"{ "items": [{ "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 5.5 }] }"#,
+        ),
+    ]);
+    let cursor_rest = cursor_resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(cursor_transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    drain_batches(
+        futures_executor::block_on(cursor_rest.open(cursor_plan.partitions[0].clone())).unwrap(),
+    );
+    let cursor_requests = cursor_transport.requests();
+    assert_eq!(cursor_requests.len(), 2);
+    assert!(cursor_requests[1].url.contains("cursor=c2"));
+
+    let offset_input = REST_RUNTIME_EXAMPLE.replace(
+        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
+        r#"paginate = { kind = "offset", offset_param = "offset", limit_param = "limit", start_offset = 0, limit = 2 }"#,
+    );
+    let offset_resource = compile_document(&parse_toml(&offset_input).unwrap())
+        .unwrap()
+        .remove(0);
+    let offset_plan = offset_resource
+        .negotiate(&rest_cursor_request(
+            &offset_resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let offset_transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [
+                { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 },
+                { "id": 2, "name": "grace", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 5.5 }
+            ] }"#,
+        ),
+        json_response(
+            r#"{ "items": [{ "id": 3, "name": "katherine", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 6.5 }] }"#,
+        ),
+    ]);
+    let offset_rest = offset_resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(offset_transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    drain_batches(
+        futures_executor::block_on(offset_rest.open(offset_plan.partitions[0].clone())).unwrap(),
+    );
+    let offset_requests = offset_transport.requests();
+    assert_eq!(offset_requests.len(), 2);
+    assert!(offset_requests[0].url.contains("offset=0"));
+    assert!(offset_requests[0].url.contains("limit=2"));
+    assert!(offset_requests[1].url.contains("offset=2"));
+}
+
+#[test]
+fn rest_runtime_rechecks_allowlist_for_link_header_next_url() {
+    let input = REST_RUNTIME_EXAMPLE.replace(
+        r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
+        r#"paginate = { kind = "link_header" }"#,
+    );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
+    )
+    .with_header(
+        "Link",
+        r#"<https://blocked.example.net/v1/items?page=2>; rel="next""#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ));
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert_eq!(transport.requests().len(), 1);
+}
+
+#[test]
+fn rest_runtime_joins_absolute_paths_against_base_origin() {
+    let input = REST_RUNTIME_EXAMPLE
+        .replace(
+            r#"base_url = "https://api.example.com/v1?existing=1""#,
+            r#"base_url = "https://api.example.com/base/v1?existing=1""#,
+        )
+        .replace(
+            r#"path = "items?from_path=yes""#,
+            r#"path = "/v2/items?from_path=yes""#,
+        );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
+        ] }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(
+        transport.requests()[0].url,
+        "https://api.example.com/v2/items?existing=1&from_path=yes&state=all&since=2026-07-01T00%3A00%3A00Z"
+    );
+}
+
+#[test]
+fn rest_runtime_supports_top_level_array_selector() {
+    let input = REST_RUNTIME_EXAMPLE
+        .replace(r#"records = "$.items""#, r#"records = "$""#)
+        .replace(
+            r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
+            "",
+        );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"[
+            { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
+        ]"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].header.row_count, 1);
+}
+
+#[test]
+fn rest_runtime_materializes_scalar_values_and_timestamp_cursor_max() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [
+                { "id": "42", "name": 123, "updated_at": "2026-07-01T00:00:00Z", "active": "false", "score": "6.25" },
+                { "id": 7, "name": true, "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 9.5 },
+                { "id": 8, "name": { "nested": true }, "updated_at": "2026-07-02T00:00:00Z", "active": "TRUE", "score": null }
+            ], "next_token": "n2" }"#,
+        ),
+        json_response(
+            r#"{ "items": [
+                { "id": 9, "name": "page2", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 1.0 }
+            ] }"#,
+        ),
+    ]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches.len(), 2);
+    assert!(
+        cursor_micros(&batches[0].header.source_position)
+            > cursor_micros(&batches[1].header.source_position)
+    );
+
+    let first = batches[0].record_batch().unwrap();
+    let ids = first
+        .column(0)
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .unwrap();
+    assert_eq!(ids.value(0), 42);
+    assert_eq!(ids.value(1), 7);
+    assert_eq!(ids.value(2), 8);
+
+    let names = first
+        .column(1)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(names.value(0), "123");
+    assert_eq!(names.value(1), "true");
+    assert_eq!(names.value(2), r#"{"nested":true}"#);
+
+    let active = first
+        .column(3)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .unwrap();
+    assert!(!active.value(0));
+    assert!(active.value(1));
+    assert!(active.value(2));
+
+    let scores = first
+        .column(4)
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert!((scores.value(0) - 6.25).abs() < f64::EPSILON);
+    assert!((scores.value(1) - 9.5).abs() < f64::EPSILON);
+    assert!(scores.is_null(2));
+}
+
+#[test]
+fn rest_runtime_materializes_int64_date32_and_timestamp_millis_values() {
+    let input = REST_RUNTIME_EXAMPLE
+        .replace(
+            r#"{ name = "id", type = "u_int64", nullable = false }"#,
+            r#"{ name = "id", type = "int64", nullable = false }"#,
+        )
+        .replace(
+            r#"{ name = "score", type = "float64", nullable = true }"#,
+            r#"{ name = "score", type = "float64", nullable = true },
+    { name = "event_day", type = "date32", nullable = false },
+    { name = "seen_at", type = "timestamp_millis", nullable = false, timezone = "UTC" }"#,
+        );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": "-5", "name": "ada", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0, "event_day": "1970-01-02", "seen_at": "1970-01-01T00:00:01.234Z" },
+            { "id": 7, "name": "grace", "updated_at": "2026-07-02T00:00:00Z", "active": false, "score": 2.0, "event_day": 2, "seen_at": 5678 }
+        ] }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    let first = batches[0].record_batch().unwrap();
+    let ids = first
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(ids.value(0), -5);
+    assert_eq!(ids.value(1), 7);
+
+    let event_days = first
+        .column(5)
+        .as_any()
+        .downcast_ref::<Date32Array>()
+        .unwrap();
+    assert_eq!(event_days.value(0), 1);
+    assert_eq!(event_days.value(1), 2);
+
+    let seen_at = first
+        .column(6)
+        .as_any()
+        .downcast_ref::<TimestampMillisecondArray>()
+        .unwrap();
+    assert_eq!(seen_at.value(0), 1234);
+    assert_eq!(seen_at.value(1), 5678);
+}
+
+#[test]
+fn rest_runtime_uses_type_specific_cursor_maxima() {
+    let string_cursor_input = REST_RUNTIME_EXAMPLE.replace(
+        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
+        r#"cursor = { field = "name", param = "after_name", ordering = "best_effort", lag = "0ms" }"#,
+    );
+    assert_eq!(
+        first_cursor_value(
+            &string_cursor_input,
+            "name >= \"a\"",
+            r#"{ "items": [
+                { "id": 1, "name": "ada", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0 },
+                { "id": 2, "name": "zoe", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
+                { "id": 3, "name": "maria", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 3.0 }
+            ] }"#,
+        ),
+        CursorValue::String("zoe".to_owned())
+    );
+
+    let int_cursor_input = REST_RUNTIME_EXAMPLE
+        .replace(
+            r#"{ name = "id", type = "u_int64", nullable = false }"#,
+            r#"{ name = "id", type = "int64", nullable = false }"#,
+        )
+        .replace(
+            r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
+            r#"cursor = { field = "id", param = "after_id", ordering = "best_effort", lag = "0ms" }"#,
+        );
+    assert_eq!(
+        first_cursor_value(
+            &int_cursor_input,
+            "id >= -10",
+            r#"{ "items": [
+                { "id": -5, "name": "low", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0 },
+                { "id": 7, "name": "high", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
+                { "id": 2, "name": "mid", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 3.0 }
+            ] }"#,
+        ),
+        CursorValue::I64(7)
+    );
+
+    let uint_cursor_input = REST_RUNTIME_EXAMPLE.replace(
+        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
+        r#"cursor = { field = "id", param = "after_id", ordering = "best_effort", lag = "0ms" }"#,
+    );
+    assert_eq!(
+        first_cursor_value(
+            &uint_cursor_input,
+            "id >= 0",
+            r#"{ "items": [
+                { "id": 1, "name": "low", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0 },
+                { "id": 10, "name": "high", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
+                { "id": 5, "name": "mid", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 3.0 }
+            ] }"#,
+        ),
+        CursorValue::U64(10)
+    );
+}
+
+#[test]
+fn rest_runtime_rejects_mismatched_partition_metadata() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let mut partition = plan.partitions[0].clone();
+    partition
+        .metadata
+        .insert("path".to_owned(), "other".to_owned());
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(rest.open(partition)));
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("partition path"));
+    assert_eq!(transport.requests().len(), 0);
+
+    let mut partition = plan.partitions[0].clone();
+    partition.scope = ScopeKey::File {
+        path: "not-rest".to_owned(),
+    };
+    let error = expect_open_error(futures_executor::block_on(rest.open(partition)));
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("partition scope"));
+    assert_eq!(transport.requests().len(), 0);
+}
+
+#[test]
+fn rest_runtime_uses_numeric_float_cursor_max() {
+    let input = REST_RUNTIME_EXAMPLE
+        .replace(
+            r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
+            r#"cursor = { field = "score", param = "min_score", ordering = "best_effort", lag = "0ms" }"#,
+        )
+        .replace(
+            r#"{ name = "score", type = "float64", nullable = true }"#,
+            r#"{ name = "score", type = "float64", nullable = false }"#,
+        );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(&resource, "score >= 0"))
+        .unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": 1, "name": "low", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
+            { "id": 2, "name": "high", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 10.0 },
+            { "id": 3, "name": "mid", "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": 5.0 }
+        ] }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    let Some(SourcePosition::Cursor(position)) = &batches[0].header.source_position else {
+        panic!("expected cursor source position");
+    };
+    assert_eq!(position.value, CursorValue::DecimalString("10".to_owned()));
+}
+
+#[test]
+fn rest_runtime_retries_transient_transport_errors() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let transport = FlakyTransport::new(
+        1,
+        json_response(
+            r#"{ "items": [{ "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }] }"#,
+        ),
+    );
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone())
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/API_TOKEN",
+                    "token-1",
+                )]))
+                .with_retry_policy(RetryPolicy {
+                    max_attempts: 1,
+                    budget_ms: 1_000,
+                    base_delay_ms: 1,
+                    max_delay_ms: 1,
+                }),
+        )
+        .unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches[0].header.row_count, 1);
+    assert_eq!(transport.requests().len(), 2);
 }
 
 #[test]
@@ -337,4 +1485,267 @@ trust = "governed"
     );
     let plan = resource.negotiate(&request).unwrap();
     assert_eq!(plan.pushed_predicates[0].fidelity, PushdownFidelity::Exact);
+}
+
+const REST_RUNTIME_EXAMPLE: &str = r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.com/v1?existing=1"
+auth = { kind = "bearer", token = "secret://env/API_TOKEN" }
+egress_allowlist = ["api.example.com"]
+
+[resource.items]
+path = "items?from_path=yes"
+params = { state = "all" }
+paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }
+records = "$.items"
+primary_key = ["id"]
+cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }
+write_disposition = "merge"
+trust = "governed"
+schema = { fields = [
+    { name = "id", type = "u_int64", nullable = false },
+    { name = "name", type = "string", nullable = false },
+    { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
+    { name = "active", type = "boolean", nullable = false },
+    { name = "score", type = "float64", nullable = true },
+] }
+"#;
+
+#[derive(Clone, Default)]
+struct RecordingTransport {
+    state: Arc<Mutex<RecordingTransportState>>,
+}
+
+#[derive(Default)]
+struct RecordingTransportState {
+    requests: Vec<HttpRequest>,
+    responses: VecDeque<HttpResponse>,
+}
+
+impl RecordingTransport {
+    fn new<I>(responses: I) -> Self
+    where
+        I: IntoIterator<Item = HttpResponse>,
+    {
+        Self {
+            state: Arc::new(Mutex::new(RecordingTransportState {
+                requests: Vec::new(),
+                responses: responses.into_iter().collect(),
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<HttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+}
+
+impl HttpTransport for RecordingTransport {
+    fn send(&mut self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request);
+        state
+            .responses
+            .pop_front()
+            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))
+    }
+}
+
+#[derive(Clone)]
+struct FlakyTransport {
+    state: Arc<Mutex<FlakyTransportState>>,
+}
+
+struct FlakyTransportState {
+    failures_remaining: usize,
+    requests: Vec<HttpRequest>,
+    response: Option<HttpResponse>,
+}
+
+impl FlakyTransport {
+    fn new(failures_remaining: usize, response: HttpResponse) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(FlakyTransportState {
+                failures_remaining,
+                requests: Vec::new(),
+                response: Some(response),
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<HttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+}
+
+impl HttpTransport for FlakyTransport {
+    fn send(&mut self, request: HttpRequest) -> cdf_kernel::Result<HttpResponse> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request);
+        if state.failures_remaining > 0 {
+            state.failures_remaining -= 1;
+            return Err(CdfError::transient("temporary test transport failure"));
+        }
+        state
+            .response
+            .take()
+            .ok_or_else(|| CdfError::internal("test transport exhausted response"))
+    }
+}
+
+struct StaticSecretProvider {
+    values: BTreeMap<String, String>,
+}
+
+impl StaticSecretProvider {
+    fn new<I, K, V>(values: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+}
+
+impl SecretProvider for StaticSecretProvider {
+    fn resolve(&self, uri: &SecretUri) -> cdf_kernel::Result<SecretValue> {
+        self.values
+            .get(uri.as_str())
+            .map(|value| SecretValue::new(value.clone()))
+            .ok_or_else(|| CdfError::auth(format!("missing test secret `{uri}`")))
+    }
+}
+
+struct RotatingSecretProvider {
+    values: Mutex<VecDeque<String>>,
+}
+
+impl RotatingSecretProvider {
+    fn new<I, V>(values: I) -> Self
+    where
+        I: IntoIterator<Item = V>,
+        V: Into<String>,
+    {
+        Self {
+            values: Mutex::new(values.into_iter().map(Into::into).collect()),
+        }
+    }
+}
+
+impl SecretProvider for RotatingSecretProvider {
+    fn resolve(&self, _uri: &SecretUri) -> cdf_kernel::Result<SecretValue> {
+        self.values
+            .lock()
+            .unwrap()
+            .pop_front()
+            .map(SecretValue::new)
+            .ok_or_else(|| CdfError::auth("rotating test secret provider exhausted"))
+    }
+}
+
+fn json_response(body: &str) -> HttpResponse {
+    HttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(body)
+}
+
+fn rest_cursor_request(resource: &CompiledResource, expression: &str) -> ScanRequest {
+    ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: vec![ScanPredicate {
+            predicate_id: PredicateId::new("cursor").unwrap(),
+            expression: expression.to_owned(),
+        }],
+        limit: None,
+        order_by: vec![],
+        scope: ScopeKey::Resource,
+    }
+}
+
+fn rest_open_error<I>(input: &str, responses: I) -> CdfError
+where
+    I: IntoIterator<Item = HttpResponse>,
+{
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new(responses);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ))
+}
+
+fn drain_batches(mut stream: cdf_kernel::BatchStream) -> Vec<cdf_kernel::Batch> {
+    futures_executor::block_on(async move {
+        let mut batches = Vec::new();
+        while let Some(batch) = stream.next().await {
+            batches.push(batch.unwrap());
+        }
+        batches
+    })
+}
+
+fn expect_open_error(result: cdf_kernel::Result<cdf_kernel::BatchStream>) -> CdfError {
+    match result {
+        Ok(_) => panic!("REST open unexpectedly succeeded"),
+        Err(error) => error,
+    }
+}
+
+fn declared_schema_hash(resource: &CompiledResource) -> SchemaHash {
+    match &resource.descriptor().schema_source {
+        SchemaSource::Declared { schema_hash, .. } => schema_hash.clone(),
+        other => panic!("expected declared schema hash, got {other:?}"),
+    }
+}
+
+fn cursor_micros(position: &Option<SourcePosition>) -> i64 {
+    match position {
+        Some(SourcePosition::Cursor(position)) => match &position.value {
+            CursorValue::TimestampMicros { micros, .. } => *micros,
+            other => panic!("expected timestamp cursor position, got {other:?}"),
+        },
+        other => panic!("expected cursor source position, got {other:?}"),
+    }
+}
+
+fn first_cursor_value(input: &str, expression: &str, body: &str) -> CursorValue {
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(&resource, expression))
+        .unwrap();
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(RecordingTransport::new([json_response(body)]))
+                .with_secret_provider(StaticSecretProvider::new([(
+                    "secret://env/API_TOKEN",
+                    "token-1",
+                )])),
+        )
+        .unwrap();
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    match &batches[0].header.source_position {
+        Some(SourcePosition::Cursor(position)) => position.value.clone(),
+        other => panic!("expected cursor source position, got {other:?}"),
+    }
 }

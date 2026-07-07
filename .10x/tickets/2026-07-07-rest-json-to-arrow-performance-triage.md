@@ -53,7 +53,7 @@ No live API benchmark, no selector-language expansion, no streaming parser imple
 ## References
 
 - `.10x/tickets/2026-07-07-performance-investigation-backlog.md`
-- `.10x/tickets/2026-07-07-declarative-rest-resource-execution.md`
+- `.10x/tickets/done/2026-07-07-declarative-rest-resource-execution.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `crates/cdf-declarative/**`
 - `crates/cdf-http/**`

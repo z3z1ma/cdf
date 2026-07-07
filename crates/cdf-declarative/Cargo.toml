@@ -6,10 +6,12 @@ license.workspace = true
 description = "Declarative resource authoring boundary for cdf."
 
 [dependencies]
+arrow-array = "59.0.0"
 arrow-schema = "59.0.0"
 cdf-http = { path = "../cdf-http" }
 cdf-formats = { path = "../cdf-formats" }
 cdf-kernel = { path = "../cdf-kernel" }
+futures-util = "0.3.32"
 hex = "0.4.3"
 schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
