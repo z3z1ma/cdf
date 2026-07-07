@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -61,6 +61,8 @@ No package state/commit artifact schema changes, no CLI `resume` or `replay pack
 
 - 2026-07-06: Split from the conformance parent after live local-file golden conformance closed. Current runtime/conformance already prove the post-receipt/pre-checkpoint window; this child broadens that into named failpoints for the local DuckDB/SQLite crash matrix without waiting on the separate package artifact contract.
 - 2026-07-06: Do not implement in the ticket-creation turn. Assign to a worker in a later turn with a write boundary of `crates/cdf-project/**`, `crates/cdf-conformance/**`, and this ticket's records.
+- 2026-07-07: Activated after native Parquet file-source and writer/archive policy follow-ups closed. Assign implementation to a worker with the ticket's bounded write boundary; parent agent will handle integration, review, closure evidence, and final commit.
+- 2026-07-07: Closed with evidence `.10x/evidence/2026-07-07-local-duckdb-lifecycle-chaos-failpoints.md` and review `.10x/reviews/2026-07-07-local-duckdb-lifecycle-chaos-failpoints-review.md`. Runtime now exposes named local DuckDB lifecycle failpoints, conformance drives all four helper-process crash windows, post-checkpoint/pre-status recovery finalizes from an exact committed head without a second destination write, and mutation hardening proved the committed-head reuse guard requires status, head marker, exact delta, and exact receipt.
 
 ## Blockers
 

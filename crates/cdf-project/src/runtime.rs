@@ -12,10 +12,10 @@ use cdf_engine::{
     EnginePackageDraft, EnginePlan, execute_to_package_with_segment_positions_and_pre_finalize,
 };
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStore,
-    DestinationCommitRequest, IdempotencyToken, PackageHash, PipelineId, Receipt, Result,
-    SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, WriteDisposition,
+    CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
+    CheckpointStore, DestinationCommitRequest, IdempotencyToken, PackageHash, PipelineId, Receipt,
+    Result, SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta,
+    StateSegment, TargetName, WriteDisposition,
 };
 use cdf_package::{
     DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus, ReplayView,
@@ -24,6 +24,16 @@ use cdf_package::{
 use cdf_state_sqlite::SqliteCheckpointStore;
 
 pub type ReceiptVerifiedHook<'a> = &'a dyn Fn(&Receipt) -> Result<()>;
+pub type LocalDuckDbLifecycleFailpointHook<'a> =
+    &'a dyn Fn(LocalDuckDbLifecycleFailpoint, Option<&Receipt>) -> Result<()>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalDuckDbLifecycleFailpoint {
+    AfterPackagedBeforeDestinationWrite,
+    AfterCheckpointProposalBeforeDestinationWrite,
+    AfterReceiptVerifiedBeforeCheckpointCommit,
+    AfterCheckpointCommitBeforePackageStatusCheckpointed,
+}
 
 pub struct PreparedDuckDbReplayRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
@@ -110,6 +120,13 @@ pub struct LocalFileDuckDbRunReport {
 pub async fn run_local_file_to_duckdb_checkpoint(
     request: LocalFileDuckDbRunRequest<'_>,
 ) -> Result<LocalFileDuckDbRunReport> {
+    run_local_file_to_duckdb_checkpoint_with_failpoint(request, None).await
+}
+
+pub async fn run_local_file_to_duckdb_checkpoint_with_failpoint(
+    request: LocalFileDuckDbRunRequest<'_>,
+    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
+) -> Result<LocalFileDuckDbRunReport> {
     validate_local_file_run_resource(request.resource)?;
     validate_run_plan(&request)?;
     validate_explicit_package_id(&request.package_id)?;
@@ -145,12 +162,15 @@ pub async fn run_local_file_to_duckdb_checkpoint(
     let row_count = output.output.profile.output_rows;
     let segment_count = output.output.segments.len();
 
-    let report = replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
-        package_dir: package_dir.clone(),
-        destination: &destination,
-        checkpoint_store: &checkpoint_store,
-        after_receipt_verified: request.after_receipt_verified,
-    })?;
+    let report = replay_duckdb_package_from_artifacts_with_failpoint(
+        PackageArtifactDuckDbReplayRequest {
+            package_dir: package_dir.clone(),
+            destination: &destination,
+            checkpoint_store: &checkpoint_store,
+            after_receipt_verified: request.after_receipt_verified,
+        },
+        lifecycle_failpoint,
+    )?;
 
     Ok(LocalFileDuckDbRunReport {
         package_dir,
@@ -457,6 +477,16 @@ pub fn replay_duckdb_package_from_artifacts<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
+    replay_duckdb_package_from_artifacts_with_failpoint(request, None)
+}
+
+pub fn replay_duckdb_package_from_artifacts_with_failpoint<Store>(
+    request: PackageArtifactDuckDbReplayRequest<'_, Store>,
+    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
     let reader = PackageReader::open(&request.package_dir)?;
     let inputs = DuckDbPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
     replay_duckdb_package_with_inputs(
@@ -466,11 +496,22 @@ where
         request.checkpoint_store,
         inputs,
         request.after_receipt_verified,
+        lifecycle_failpoint,
     )
 }
 
 pub fn recover_duckdb_package_from_artifacts<Store>(
     request: PackageArtifactDuckDbRecoveryRequest<'_, Store>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    recover_duckdb_package_from_artifacts_with_failpoint(request, None)
+}
+
+pub fn recover_duckdb_package_from_artifacts_with_failpoint<Store>(
+    request: PackageArtifactDuckDbRecoveryRequest<'_, Store>,
+    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
 ) -> Result<PreparedDuckDbReplayReport>
 where
     Store: CheckpointStore + ?Sized,
@@ -484,11 +525,22 @@ where
         inputs,
         request.receipt,
         request.after_receipt_verified,
+        lifecycle_failpoint,
     )
 }
 
 pub fn replay_prepared_duckdb_package<Store>(
     request: PreparedDuckDbReplayRequest<'_, Store>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    replay_prepared_duckdb_package_with_failpoint(request, None)
+}
+
+pub fn replay_prepared_duckdb_package_with_failpoint<Store>(
+    request: PreparedDuckDbReplayRequest<'_, Store>,
+    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
 ) -> Result<PreparedDuckDbReplayReport>
 where
     Store: CheckpointStore + ?Sized,
@@ -509,6 +561,7 @@ where
         request.checkpoint_store,
         inputs,
         request.after_receipt_verified,
+        lifecycle_failpoint,
     )
 }
 
@@ -519,16 +572,27 @@ fn replay_duckdb_package_with_inputs<Store>(
     checkpoint_store: &Store,
     inputs: DuckDbPackageReplayInputs,
     after_receipt_verified: Option<ReceiptVerifiedHook<'_>>,
+    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
 ) -> Result<PreparedDuckDbReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
+    trigger_lifecycle_failpoint(
+        lifecycle_failpoint,
+        LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite,
+        None,
+    )?;
     let checkpoint_id = inputs.delta.checkpoint_id.clone();
     checkpoint_store.propose(inputs.delta.clone())?;
     if let Err(error) = reader.update_status(PackageStatus::Loading) {
         let _ = checkpoint_store.abandon(&checkpoint_id);
         return Err(error);
     }
+    trigger_lifecycle_failpoint(
+        lifecycle_failpoint,
+        LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite,
+        None,
+    )?;
 
     let outcome = match destination.commit_package(DuckDbCommitRequest {
         package_dir,
@@ -551,11 +615,21 @@ where
         &inputs.disposition,
         &receipt,
     )?;
+    trigger_lifecycle_failpoint(
+        lifecycle_failpoint,
+        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit,
+        Some(&receipt),
+    )?;
     if let Some(hook) = after_receipt_verified {
         hook(&receipt)?;
     }
 
     let checkpoint = checkpoint_store.commit(&inputs.delta.checkpoint_id, receipt.clone())?;
+    trigger_lifecycle_failpoint(
+        lifecycle_failpoint,
+        LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed,
+        Some(&receipt),
+    )?;
     let package_status = reader
         .update_status(PackageStatus::Checkpointed)?
         .lifecycle
@@ -579,6 +653,16 @@ pub fn recover_prepared_duckdb_package<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
+    recover_prepared_duckdb_package_with_failpoint(request, None)
+}
+
+pub fn recover_prepared_duckdb_package_with_failpoint<Store>(
+    request: PreparedDuckDbRecoveryRequest<'_, Store>,
+    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
     let reader = PackageReader::open(&request.package_dir)?;
     validate_prepared_package(&reader, &request.delta, &request.schema_hash)?;
     let inputs = DuckDbPackageReplayInputs::from_explicit(
@@ -595,6 +679,7 @@ where
         inputs,
         request.receipt,
         request.after_receipt_verified,
+        lifecycle_failpoint,
     )
 }
 
@@ -605,6 +690,7 @@ fn recover_duckdb_package_with_inputs<Store>(
     inputs: DuckDbPackageReplayInputs,
     receipt: Receipt,
     after_receipt_verified: Option<ReceiptVerifiedHook<'_>>,
+    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
 ) -> Result<PreparedDuckDbReplayReport>
 where
     Store: CheckpointStore + ?Sized,
@@ -616,11 +702,22 @@ where
         &inputs.disposition,
         &receipt,
     )?;
+    trigger_lifecycle_failpoint(
+        lifecycle_failpoint,
+        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit,
+        Some(&receipt),
+    )?;
     if let Some(hook) = after_receipt_verified {
         hook(&receipt)?;
     }
 
-    let checkpoint = checkpoint_store.commit(&inputs.delta.checkpoint_id, receipt.clone())?;
+    let checkpoint =
+        commit_or_reuse_committed_checkpoint(checkpoint_store, &inputs.delta, receipt.clone())?;
+    trigger_lifecycle_failpoint(
+        lifecycle_failpoint,
+        LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed,
+        Some(&receipt),
+    )?;
     let package_status = reader
         .update_status(PackageStatus::Checkpointed)?
         .lifecycle
@@ -633,6 +730,46 @@ where
         receipt_source: PreparedReceiptSource::SuppliedDurableReceipt,
         package_status,
     })
+}
+
+fn trigger_lifecycle_failpoint(
+    hook: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
+    failpoint: LocalDuckDbLifecycleFailpoint,
+    receipt: Option<&Receipt>,
+) -> Result<()> {
+    if let Some(hook) = hook {
+        hook(failpoint, receipt)?;
+    }
+    Ok(())
+}
+
+fn commit_or_reuse_committed_checkpoint<Store>(
+    checkpoint_store: &Store,
+    delta: &StateDelta,
+    receipt: Receipt,
+) -> Result<Checkpoint>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    match checkpoint_store.commit(&delta.checkpoint_id, receipt.clone()) {
+        Ok(checkpoint) => Ok(checkpoint),
+        Err(error) => {
+            let Some(head) =
+                checkpoint_store.head(&delta.pipeline_id, &delta.resource_id, &delta.scope)?
+            else {
+                return Err(error);
+            };
+            if head.status == CheckpointStatus::Committed
+                && head.is_head
+                && head.delta == *delta
+                && head.receipt.as_ref() == Some(&receipt)
+            {
+                Ok(head)
+            } else {
+                Err(error)
+            }
+        }
+    }
 }
 
 fn validate_prepared_package(

@@ -387,6 +387,25 @@ pub fn assert_no_second_destination_write(
     );
 }
 
+pub fn assert_no_duckdb_destination_write(snapshot: &DuckDbMirrorSnapshot) {
+    assert!(
+        !snapshot.loads_table_present,
+        "_cdf_loads must not exist before destination write"
+    );
+    assert!(
+        !snapshot.state_table_present,
+        "_cdf_state must not exist before destination write"
+    );
+    assert!(
+        snapshot.loads.is_empty(),
+        "_cdf_loads must contain no rows before destination write"
+    );
+    assert!(
+        snapshot.state.is_empty(),
+        "_cdf_state must contain no rows before destination write"
+    );
+}
+
 pub fn assert_duckdb_mirror_matches_receipt(
     snapshot: &DuckDbMirrorSnapshot,
     case: &PreparedPackageReplayCase,

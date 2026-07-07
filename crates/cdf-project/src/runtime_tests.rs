@@ -28,9 +28,10 @@ use cdf_package::{
 use cdf_state_sqlite::SqliteCheckpointStore;
 
 use crate::{
-    LocalFileDuckDbRunRequest, PackageArtifactDuckDbReplayRequest, PreparedDuckDbRecoveryRequest,
-    PreparedDuckDbReplayRequest, PreparedReceiptSource, recover_prepared_duckdb_package,
-    replay_duckdb_package_from_artifacts, replay_prepared_duckdb_package,
+    LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest, PackageArtifactDuckDbReplayRequest,
+    PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
+    recover_prepared_duckdb_package, replay_duckdb_package_from_artifacts,
+    replay_prepared_duckdb_package, replay_prepared_duckdb_package_with_failpoint,
     run_local_file_to_duckdb_checkpoint, runtime::state_delta_from_run,
 };
 
@@ -346,6 +347,45 @@ fn stage_successful_replay(
     (destination, delta, report.receipt)
 }
 
+fn assert_bad_reuse_head_rejected(
+    package_id: &str,
+    checkpoint_id: &str,
+    mutate_head: impl FnOnce(&mut Checkpoint),
+) {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join(package_id);
+    let db_path = temp.path().join("local.duckdb");
+    let (destination, delta, receipt) =
+        stage_successful_replay(&package_dir, &db_path, checkpoint_id);
+    let mut head = Checkpoint {
+        delta: delta.clone(),
+        status: CheckpointStatus::Committed,
+        receipt: Some(receipt.clone()),
+        is_head: true,
+        created_at_ms: receipt.committed_at_ms,
+        committed_at_ms: Some(receipt.committed_at_ms),
+        rewind_target_checkpoint_id: None,
+    };
+    mutate_head(&mut head);
+    let store = HeadOnlyCommitFailingStore { head };
+
+    let error = recover_prepared_duckdb_package(recovery_request(
+        &package_dir,
+        &destination,
+        &store,
+        delta,
+        receipt,
+    ))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected checkpoint commit failure")
+    );
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+}
+
 #[test]
 fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_recoverable() {
     let temp = tempfile::tempdir().unwrap();
@@ -583,6 +623,56 @@ impl CheckpointStore for CommitFailingStore {
 
     fn rewind(&self, request: RewindRequest) -> Result<RewindReport> {
         self.inner.rewind(request)
+    }
+}
+
+struct HeadOnlyCommitFailingStore {
+    head: Checkpoint,
+}
+
+impl CheckpointStore for HeadOnlyCommitFailingStore {
+    fn propose(&self, _delta: StateDelta) -> Result<Checkpoint> {
+        Err(CdfError::internal("unexpected propose"))
+    }
+
+    fn commit(&self, _checkpoint_id: &CheckpointId, _receipt: Receipt) -> Result<Checkpoint> {
+        Err(CdfError::internal("injected checkpoint commit failure"))
+    }
+
+    fn abandon(&self, _checkpoint_id: &CheckpointId) -> Result<Checkpoint> {
+        Err(CdfError::internal("unexpected abandon"))
+    }
+
+    fn head(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Option<Checkpoint>> {
+        if &self.head.delta.pipeline_id == pipeline_id
+            && &self.head.delta.resource_id == resource_id
+            && &self.head.delta.scope == scope
+        {
+            Ok(Some(self.head.clone()))
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn history(
+        &self,
+        pipeline_id: &PipelineId,
+        resource_id: &ResourceId,
+        scope: &ScopeKey,
+    ) -> Result<Vec<Checkpoint>> {
+        Ok(self
+            .head(pipeline_id, resource_id, scope)?
+            .into_iter()
+            .collect())
+    }
+
+    fn rewind(&self, _request: RewindRequest) -> Result<RewindReport> {
+        Err(CdfError::internal("unexpected rewind"))
     }
 }
 
@@ -895,6 +985,130 @@ fn recovery_verifies_durable_receipt_and_commits_without_new_destination_write()
             .loads
             .len(),
         loads_before
+    );
+}
+
+#[test]
+fn named_failpoint_after_checkpoint_proposal_stops_before_destination_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-after-proposal");
+    let manifest = build_package(&package_dir, "pkg-after-proposal", PackageStatus::Packaged);
+    let delta = delta(&manifest, "checkpoint-after-proposal");
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let hook = |failpoint: LocalDuckDbLifecycleFailpoint, receipt: Option<&Receipt>| {
+        assert!(receipt.is_none());
+        if failpoint == LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite
+        {
+            return Err(CdfError::internal("stop after checkpoint proposal"));
+        }
+        Ok(())
+    };
+
+    let error = replay_prepared_duckdb_package_with_failpoint(
+        replay_request(&package_dir, &destination, &store, delta.clone()),
+        Some(&hook),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("stop after checkpoint proposal"));
+    assert!(!db_path.exists());
+    assert!(package_receipts(&package_dir).is_empty());
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    assert_no_head(&store, &delta);
+    let history = store
+        .history(&delta.pipeline_id, &delta.resource_id, &delta.scope)
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Proposed);
+}
+
+#[test]
+fn named_failpoint_after_checkpoint_commit_allows_status_only_recovery() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-after-checkpoint");
+    let manifest = build_package(
+        &package_dir,
+        "pkg-after-checkpoint",
+        PackageStatus::Packaged,
+    );
+    let delta = delta(&manifest, "checkpoint-after-checkpoint");
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let hook = |failpoint: LocalDuckDbLifecycleFailpoint, receipt: Option<&Receipt>| {
+        if failpoint
+            == LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed
+        {
+            assert!(receipt.is_some());
+            return Err(CdfError::internal("stop after checkpoint commit"));
+        }
+        Ok(())
+    };
+
+    let error = replay_prepared_duckdb_package_with_failpoint(
+        replay_request(&package_dir, &destination, &store, delta.clone()),
+        Some(&hook),
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("stop after checkpoint commit"));
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    let head = assert_head(&store, &delta);
+    assert_eq!(head.status, CheckpointStatus::Committed);
+    assert_eq!(head.delta, delta);
+    let receipts = package_receipts(&package_dir);
+    assert_eq!(receipts.len(), 1);
+    assert!(destination.verify_receipt(&receipts[0]).unwrap().verified);
+    let snapshot_before = destination.read_mirror_snapshot_read_only().unwrap();
+
+    let report = recover_prepared_duckdb_package(recovery_request(
+        &package_dir,
+        &destination,
+        &store,
+        delta.clone(),
+        receipts[0].clone(),
+    ))
+    .unwrap();
+
+    assert_eq!(report.checkpoint, head);
+    assert_eq!(
+        report.receipt_source,
+        PreparedReceiptSource::SuppliedDurableReceipt
+    );
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(
+        destination.read_mirror_snapshot_read_only().unwrap(),
+        snapshot_before
+    );
+}
+
+#[test]
+fn recovery_reuses_only_exact_committed_checkpoint_head() {
+    assert_bad_reuse_head_rejected(
+        "pkg-reuse-proposed-head",
+        "checkpoint-reuse-proposed-head",
+        |head| {
+            head.status = CheckpointStatus::Proposed;
+        },
+    );
+    assert_bad_reuse_head_rejected("pkg-reuse-non-head", "checkpoint-reuse-non-head", |head| {
+        head.is_head = false;
+    });
+    assert_bad_reuse_head_rejected(
+        "pkg-reuse-wrong-delta",
+        "checkpoint-reuse-wrong-delta",
+        |head| {
+            head.delta.checkpoint_id = CheckpointId::new("checkpoint-other-head").unwrap();
+        },
+    );
+    assert_bad_reuse_head_rejected(
+        "pkg-reuse-missing-receipt",
+        "checkpoint-reuse-missing-receipt",
+        |head| {
+            head.receipt = None;
+        },
     );
 }
 

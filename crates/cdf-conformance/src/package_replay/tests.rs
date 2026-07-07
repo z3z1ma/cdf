@@ -12,10 +12,12 @@ use cdf_kernel::{
     PipelineId, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck, SourcePosition,
     StateDelta, TargetName, VerifyClause, WriteDisposition,
 };
+use cdf_project::{LocalDuckDbLifecycleFailpoint, replay_prepared_duckdb_package_with_failpoint};
 
 use super::*;
 
 const HELPER_ENV: &str = "CDF_CONFORMANCE_HELPER_AFTER_RECEIPT_EXIT";
+const HELPER_FAILPOINT_ENV: &str = "CDF_CONFORMANCE_LIFECYCLE_FAILPOINT";
 const HELPER_PACKAGE_DIR_ENV: &str = "CDF_CONFORMANCE_PACKAGE_DIR";
 const HELPER_DUCKDB_PATH_ENV: &str = "CDF_CONFORMANCE_DUCKDB_PATH";
 const HELPER_SQLITE_PATH_ENV: &str = "CDF_CONFORMANCE_SQLITE_PATH";
@@ -108,8 +110,79 @@ fn duplicate_replay_returns_noop_receipt_and_single_destination_load() {
 }
 
 #[test]
+fn helper_process_after_packaged_before_destination_write_leaves_no_destination_or_checkpoint() {
+    let crashed = stage_helper_crash(
+        "pkg-after-packaged",
+        "checkpoint-after-packaged",
+        LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite,
+    );
+
+    assert!(!crashed.db_path.exists());
+    assert_no_duckdb_destination_write(&crashed.snapshot);
+    assert!(crashed.receipt.is_none());
+    assert_no_checkpoint_head(&crashed.store, &crashed.case.delta);
+    assert!(
+        crashed
+            .store
+            .history(
+                &crashed.case.delta.pipeline_id,
+                &crashed.case.delta.resource_id,
+                &crashed.case.delta.scope,
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        PackageReader::open(&crashed.case.package_dir)
+            .unwrap()
+            .manifest()
+            .lifecycle
+            .status,
+        PackageStatus::Packaged
+    );
+}
+
+#[test]
+fn helper_process_after_checkpoint_proposal_leaves_no_destination_or_checkpoint_head() {
+    let crashed = stage_helper_crash(
+        "pkg-after-proposal",
+        "checkpoint-after-proposal",
+        LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite,
+    );
+
+    assert!(!crashed.db_path.exists());
+    assert_no_duckdb_destination_write(&crashed.snapshot);
+    assert!(crashed.receipt.is_none());
+    assert_no_checkpoint_head(&crashed.store, &crashed.case.delta);
+    let history = crashed
+        .store
+        .history(
+            &crashed.case.delta.pipeline_id,
+            &crashed.case.delta.resource_id,
+            &crashed.case.delta.scope,
+        )
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Proposed);
+    assert!(!history[0].is_head);
+    assert_eq!(
+        PackageReader::open(&crashed.case.package_dir)
+            .unwrap()
+            .manifest()
+            .lifecycle
+            .status,
+        PackageStatus::Loading
+    );
+}
+
+#[test]
 fn helper_process_crash_recovers_from_durable_receipt_without_second_load() {
-    let crashed = stage_helper_crash("pkg-helper-recovery", "checkpoint-helper-recovery");
+    let crashed = stage_helper_crash(
+        "pkg-helper-recovery",
+        "checkpoint-helper-recovery",
+        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit,
+    );
+    let receipt = crashed.receipt.clone().expect("durable receipt");
     let history = crashed
         .store
         .history(
@@ -130,8 +203,8 @@ fn helper_process_crash_recovers_from_durable_receipt_without_second_load() {
             .status,
         PackageStatus::Loading
     );
-    assert_package_receipt_durable(&crashed.case.package_dir, &crashed.receipt);
-    assert_duckdb_mirror_matches_receipt(&crashed.snapshot, &crashed.case, &crashed.receipt);
+    assert_package_receipt_durable(&crashed.case.package_dir, &receipt);
+    assert_duckdb_mirror_matches_receipt(&crashed.snapshot, &crashed.case, &receipt);
 
     let snapshot_before = crashed
         .destination
@@ -141,7 +214,7 @@ fn helper_process_crash_recovers_from_durable_receipt_without_second_load() {
         &crashed.case,
         &crashed.destination,
         &crashed.store,
-        crashed.receipt.clone(),
+        receipt.clone(),
     )
     .unwrap();
     let snapshot_after = crashed
@@ -153,7 +226,63 @@ fn helper_process_crash_recovers_from_durable_receipt_without_second_load() {
         &crashed.case,
         &crashed.store,
         &report,
-        &crashed.receipt,
+        &receipt,
+        &snapshot_before,
+        &snapshot_after,
+    );
+    assert_eq!(
+        PackageReader::open(&crashed.case.package_dir)
+            .unwrap()
+            .manifest()
+            .lifecycle
+            .status,
+        PackageStatus::Checkpointed
+    );
+}
+
+#[test]
+fn helper_process_after_checkpoint_commit_finalizes_status_without_second_load() {
+    let crashed = stage_helper_crash(
+        "pkg-after-checkpoint",
+        "checkpoint-after-checkpoint",
+        LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed,
+    );
+    let receipt = crashed.receipt.clone().expect("durable receipt");
+    assert_package_receipt_durable(&crashed.case.package_dir, &receipt);
+    assert_duckdb_mirror_matches_receipt(&crashed.snapshot, &crashed.case, &receipt);
+    let head = assert_checkpoint_head_matches(&crashed.store, &crashed.case.delta);
+    assert_eq!(head.receipt.as_ref(), Some(&receipt));
+    assert_eq!(
+        PackageReader::open(&crashed.case.package_dir)
+            .unwrap()
+            .manifest()
+            .lifecycle
+            .status,
+        PackageStatus::Loading
+    );
+
+    let snapshot_before = crashed
+        .destination
+        .read_mirror_snapshot_read_only()
+        .unwrap();
+    let report = recover_prepared_package_case(
+        &crashed.case,
+        &crashed.destination,
+        &crashed.store,
+        receipt.clone(),
+    )
+    .unwrap();
+    let snapshot_after = crashed
+        .destination
+        .read_mirror_snapshot_read_only()
+        .unwrap();
+
+    assert_eq!(report.checkpoint, head);
+    assert_recovery_committed_from_durable_receipt(
+        &crashed.case,
+        &crashed.store,
+        &report,
+        &receipt,
         &snapshot_before,
         &snapshot_after,
     );
@@ -169,9 +298,14 @@ fn helper_process_crash_recovers_from_durable_receipt_without_second_load() {
 
 #[test]
 fn bad_recovery_inputs_fail_closed_without_checkpoint_head() {
-    let crashed = stage_helper_crash("pkg-bad-recovery", "checkpoint-bad-recovery");
+    let crashed = stage_helper_crash(
+        "pkg-bad-recovery",
+        "checkpoint-bad-recovery",
+        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit,
+    );
+    let receipt = crashed.receipt.clone().expect("durable receipt");
 
-    let mut missing_ack = crashed.receipt.clone();
+    let mut missing_ack = receipt.clone();
     missing_ack.segment_acks.clear();
     let error = recover_prepared_package_case(
         &crashed.case,
@@ -183,7 +317,7 @@ fn bad_recovery_inputs_fail_closed_without_checkpoint_head() {
     assert!(error.to_string().contains("acknowledges 0 segment"));
     assert_no_checkpoint_head(&crashed.store, &crashed.case.delta);
 
-    let mut failed_verification = crashed.receipt.clone();
+    let mut failed_verification = receipt;
     failed_verification.committed_at_ms += 1;
     let error = recover_prepared_package_case(
         &crashed.case,
@@ -261,6 +395,9 @@ fn negative_self_tests_prove_package_replay_harness_checks_required_edges() {
     assert_harness_panics(|| {
         assert_no_second_destination_write(&snapshot, &second_write_snapshot);
     });
+    assert_harness_panics(|| {
+        assert_no_duckdb_destination_write(&snapshot);
+    });
 
     let mut wrong_receipt = report.receipt.clone();
     wrong_receipt.target = TargetName::new("other_orders").unwrap();
@@ -329,25 +466,49 @@ fn committed_before_checkpointed_helper_process() {
     };
     let destination = DuckDbDestination::new(db_path).unwrap();
     let store = SqliteCheckpointStore::open(sqlite_path).unwrap();
-    let hook = |_receipt: &Receipt| -> Result<()> {
-        std::process::exit(HELPER_EXIT_CODE);
+    let selected_failpoint = parse_lifecycle_failpoint(&env::var(HELPER_FAILPOINT_ENV).unwrap());
+    let hook = |failpoint: LocalDuckDbLifecycleFailpoint,
+                receipt: Option<&Receipt>|
+     -> Result<()> {
+        if failpoint == selected_failpoint {
+            match failpoint {
+                LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite
+                | LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite => {
+                    assert!(receipt.is_none());
+                }
+                LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit
+                | LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed => {
+                    assert!(receipt.is_some());
+                }
+            }
+            std::process::exit(HELPER_EXIT_CODE);
+        }
+        Ok(())
     };
 
-    let _ = replay_prepared_duckdb_package(case.replay_request(&destination, &store, Some(&hook)))
-        .unwrap();
-    panic!("helper hook should exit before checkpoint commit");
+    let _ = replay_prepared_duckdb_package_with_failpoint(
+        case.replay_request(&destination, &store, None),
+        Some(&hook),
+    )
+    .unwrap();
+    panic!("helper hook should exit at lifecycle failpoint");
 }
 
 struct CrashedReplay {
     _temp: tempfile::TempDir,
     case: PreparedPackageReplayCase,
+    db_path: PathBuf,
     destination: DuckDbDestination,
     store: SqliteCheckpointStore,
-    receipt: Receipt,
+    receipt: Option<Receipt>,
     snapshot: DuckDbMirrorSnapshot,
 }
 
-fn stage_helper_crash(package_id: &str, checkpoint_id: &str) -> CrashedReplay {
+fn stage_helper_crash(
+    package_id: &str,
+    checkpoint_id: &str,
+    failpoint: LocalDuckDbLifecycleFailpoint,
+) -> CrashedReplay {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join(package_id);
     let fixture = prepared_fixture(&package_dir, package_id);
@@ -362,6 +523,7 @@ fn stage_helper_crash(package_id: &str, checkpoint_id: &str) -> CrashedReplay {
         .arg(HELPER_TEST_NAME)
         .arg("--nocapture")
         .env(HELPER_ENV, "1")
+        .env(HELPER_FAILPOINT_ENV, lifecycle_failpoint_name(failpoint))
         .env(HELPER_PACKAGE_DIR_ENV, &case.package_dir)
         .env(HELPER_DUCKDB_PATH_ENV, &db_path)
         .env(HELPER_SQLITE_PATH_ENV, &sqlite_path)
@@ -386,21 +548,29 @@ fn stage_helper_crash(package_id: &str, checkpoint_id: &str) -> CrashedReplay {
     );
 
     let destination = DuckDbDestination::new(&db_path).unwrap();
-    let snapshot = destination.read_mirror_snapshot_read_only().unwrap();
+    let snapshot = read_mirror_snapshot_if_exists(&destination);
     let receipts = PackageReader::open(&case.package_dir)
         .unwrap()
         .receipts()
         .unwrap();
-    assert_eq!(receipts.len(), 1);
     let store = SqliteCheckpointStore::open(&sqlite_path).unwrap();
 
     CrashedReplay {
         _temp: temp,
         case,
+        db_path,
         destination,
         store,
-        receipt: receipts[0].clone(),
+        receipt: receipts.first().cloned(),
         snapshot,
+    }
+}
+
+fn read_mirror_snapshot_if_exists(destination: &DuckDbDestination) -> DuckDbMirrorSnapshot {
+    if destination.database_path().exists() {
+        destination.read_mirror_snapshot_read_only().unwrap()
+    } else {
+        DuckDbMirrorSnapshot::default()
     }
 }
 
@@ -504,5 +674,40 @@ fn disposition_name_for_test(disposition: &WriteDisposition) -> &'static str {
         WriteDisposition::Replace => "replace",
         WriteDisposition::Merge => "merge",
         WriteDisposition::CdcApply => "cdc_apply",
+    }
+}
+
+fn parse_lifecycle_failpoint(value: &str) -> LocalDuckDbLifecycleFailpoint {
+    match value {
+        "after_packaged_before_destination_write" => {
+            LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite
+        }
+        "after_checkpoint_proposal_before_destination_write" => {
+            LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite
+        }
+        "after_receipt_verified_before_checkpoint_commit" => {
+            LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit
+        }
+        "after_checkpoint_commit_before_package_status_checkpointed" => {
+            LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed
+        }
+        other => panic!("unknown helper lifecycle failpoint {other}"),
+    }
+}
+
+fn lifecycle_failpoint_name(failpoint: LocalDuckDbLifecycleFailpoint) -> &'static str {
+    match failpoint {
+        LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite => {
+            "after_packaged_before_destination_write"
+        }
+        LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite => {
+            "after_checkpoint_proposal_before_destination_write"
+        }
+        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit => {
+            "after_receipt_verified_before_checkpoint_commit"
+        }
+        LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed => {
+            "after_checkpoint_commit_before_package_status_checkpointed"
+        }
     }
 }
