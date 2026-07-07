@@ -10,6 +10,7 @@ use std::{
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use duckdb::Connection as DuckConnection;
 use firn_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use firn_kernel::{
     CHECKPOINT_STATE_VERSION, CheckpointId, CheckpointStore, CommitCounts, CursorPosition,
@@ -557,7 +558,7 @@ fn preview_inaccessible_literal_child_reports_path_inspection_error() {
 }
 
 #[test]
-fn run_returns_unsupported_instead_of_faking_writes() {
+fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
     let project = TestProject::new();
     let result = run([
         "firn",
@@ -565,18 +566,364 @@ fn run_returns_unsupported_instead_of_faking_writes() {
         "--project",
         project.root_str(),
         "run",
+        "--resource",
         "local.events",
+        "--pipeline",
+        "pipeline-run",
+        "--target",
+        "events",
+        "--package-id",
+        "pkg-run-success",
+        "--checkpoint-id",
+        "checkpoint-run-success",
     ]);
 
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(json["command"], "run");
+    assert_eq!(report["command"], "run");
+    assert_eq!(report["resource_id"], "local.events");
+    assert_eq!(report["pipeline_id"], "pipeline-run");
+    assert_eq!(report["target"], "events");
+    assert_eq!(report["package_id"], "pkg-run-success");
+    assert_eq!(report["package_status"], "checkpointed");
+    assert_eq!(report["checkpoint_id"], "checkpoint-run-success");
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["checkpoint"]["committed"], true);
+    assert_eq!(report["checkpoint"]["is_head"], true);
+    assert_eq!(report["receipt_source"]["kind"], "duck_db_commit");
+    assert_eq!(report["receipt_source"]["duplicate"], false);
+    assert_eq!(report["receipt_source"]["no_op"], false);
+    assert_eq!(report["row_count"], 2);
+    assert_eq!(report["segment_count"], 1);
+    assert_eq!(report["writes"]["package"], true);
+    assert_eq!(report["writes"]["destination"], true);
+    assert_eq!(report["writes"]["checkpoint"], true);
+
+    let package_dir = project.root.join(".firn/packages/pkg-run-success");
+    let manifest = PackageReader::open(&package_dir)
+        .unwrap()
+        .manifest()
+        .clone();
+    assert_eq!(manifest.lifecycle.status, PackageStatus::Checkpointed);
+    assert_eq!(report["package_hash"], manifest.package_hash);
+
+    let conn = DuckConnection::open(project.root.join(".firn/dev.duckdb")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+
+    let destination = DuckDbDestination::new(project.root.join(".firn/dev.duckdb")).unwrap();
+    let mirrors = destination.read_mirror_snapshot_read_only().unwrap();
+    assert!(mirrors.loads_table_present);
+    assert!(mirrors.state_table_present);
+    assert_eq!(mirrors.loads.len(), 1);
+    assert_eq!(mirrors.state.len(), 1);
+    assert_eq!(mirrors.loads[0].package_hash, manifest.package_hash);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".firn/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed run head");
+    assert_eq!(head.delta.checkpoint_id.as_str(), "checkpoint-run-success");
+    assert_eq!(head.delta.package_hash.as_str(), manifest.package_hash);
+    assert!(head.delta.schema_hash.as_str().starts_with("sha256:"));
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.as_str(),
+        report["receipt_id"].as_str().unwrap()
+    );
+    assert_eq!(head.delta.segments.len(), 1);
+    assert!(matches!(
+        head.delta.output_position,
+        SourcePosition::FileManifest(_)
+    ));
+}
+
+#[test]
+fn run_human_output_mentions_receipt_verified_firn_line() {
+    let project = TestProject::new();
+    let result = run([
+        "firn",
+        "--project",
+        project.root_str(),
+        "run",
+        "--resource",
+        "local.events",
+        "--pipeline",
+        "pipeline-run",
+        "--target",
+        "events",
+        "--package-id",
+        "pkg-run-human",
+        "--checkpoint-id",
+        "checkpoint-run-human",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(result.stdout.contains("resource local.events"));
+    assert!(result.stdout.contains("target events"));
+    assert!(result.stdout.contains("checkpoint checkpoint-run-human"));
+    assert!(result.stdout.contains("receipt verification"));
+    assert!(result.stdout.contains("firn line"));
+}
+
+#[test]
+fn run_missing_explicit_inputs_fails_before_writes() {
+    for (name, args) in [
+        (
+            "resource",
+            vec![
+                "firn",
+                "--json",
+                "run",
+                "--pipeline",
+                "pipeline-run",
+                "--target",
+                "events",
+                "--package-id",
+                "pkg-run-missing",
+                "--checkpoint-id",
+                "checkpoint-run-missing",
+            ],
+        ),
+        (
+            "pipeline",
+            vec![
+                "firn",
+                "--json",
+                "run",
+                "--resource",
+                "local.events",
+                "--target",
+                "events",
+                "--package-id",
+                "pkg-run-missing",
+                "--checkpoint-id",
+                "checkpoint-run-missing",
+            ],
+        ),
+        (
+            "target",
+            vec![
+                "firn",
+                "--json",
+                "run",
+                "--resource",
+                "local.events",
+                "--pipeline",
+                "pipeline-run",
+                "--package-id",
+                "pkg-run-missing",
+                "--checkpoint-id",
+                "checkpoint-run-missing",
+            ],
+        ),
+        (
+            "package",
+            vec![
+                "firn",
+                "--json",
+                "run",
+                "--resource",
+                "local.events",
+                "--pipeline",
+                "pipeline-run",
+                "--target",
+                "events",
+                "--checkpoint-id",
+                "checkpoint-run-missing",
+            ],
+        ),
+        (
+            "checkpoint",
+            vec![
+                "firn",
+                "--json",
+                "run",
+                "--resource",
+                "local.events",
+                "--pipeline",
+                "pipeline-run",
+                "--target",
+                "events",
+                "--package-id",
+                "pkg-run-missing",
+            ],
+        ),
+    ] {
+        let project = TestProject::new();
+        let mut command = vec![
+            "firn".to_owned(),
+            "--json".to_owned(),
+            "--project".to_owned(),
+            project.root_str().to_owned(),
+        ];
+        command.extend(args.into_iter().skip(2).map(str::to_owned));
+
+        let result = run_dynamic(command);
+
+        assert_eq!(result.exit_code, 2, "case {name}: {}", result.stderr);
+        assert_no_run_writes(&project, "pkg-run-missing");
+        let json = stderr_or_stdout_json(&result.stderr);
+        assert_eq!(json["error"]["kind"], "contract");
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("run requires")
+        );
+    }
+}
+
+#[test]
+fn run_path_package_id_fails_before_writes() {
+    let project = TestProject::new();
+
+    let result = run_valid_run_args(&project, "../pkg-run-escape", "checkpoint-run-escape");
+
+    assert_eq!(result.exit_code, 3);
+    assert!(!project.root.join(".firn/pkg-run-escape").exists());
+    assert!(!project.root.join(".firn/state.db").exists());
+    assert!(!project.root.join(".firn/dev.duckdb").exists());
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("one path component")
+    );
+}
+
+#[test]
+fn run_non_duckdb_destination_fails_before_package_or_destination_writes() {
+    let project = TestProject::new();
+    write_project_destination(&project, "postgres://secret://env/WAREHOUSE");
+
+    let result = run_valid_run_args(&project, "pkg-run-postgres", "checkpoint-run-postgres");
+
     assert_eq!(result.exit_code, 78);
+    assert_no_run_writes(&project, "pkg-run-postgres");
     let json = stderr_or_stdout_json(&result.stderr);
     assert_eq!(json["error"]["not_supported"], true);
     assert!(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("CheckpointStore::commit")
+            .contains("duckdb://")
     );
+}
+
+#[test]
+fn run_rest_resource_fails_before_package_or_destination_writes() {
+    let project = TestProject::new();
+    write_secret_project(
+        &project,
+        "duckdb://.firn/dev.duckdb",
+        Some("secret://env/FIRN_CLI_TOKEN"),
+        None,
+    );
+
+    let result =
+        run_valid_run_resource(&project, "api.items", "pkg-run-rest", "checkpoint-run-rest");
+
+    assert_eq!(result.exit_code, 78);
+    assert_no_run_writes(&project, "pkg-run-rest");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert!(json["error"]["message"].as_str().unwrap().contains("REST"));
+}
+
+#[test]
+fn run_sql_resource_fails_before_package_or_destination_writes() {
+    let project = TestProject::new();
+    write_secret_project(
+        &project,
+        "duckdb://.firn/dev.duckdb",
+        None,
+        Some("secret://env/FIRN_CLI_SQL"),
+    );
+
+    let result = run_valid_run_resource(
+        &project,
+        "warehouse.orders",
+        "pkg-run-sql",
+        "checkpoint-run-sql",
+    );
+
+    assert_eq!(result.exit_code, 78);
+    assert_no_run_writes(&project, "pkg-run-sql");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert!(json["error"]["message"].as_str().unwrap().contains("SQL"));
+}
+
+#[test]
+fn run_existing_package_directory_is_refused_before_destination_or_checkpoint_writes() {
+    let project = TestProject::new();
+    fs::create_dir_all(project.root.join(".firn/packages/pkg-run-existing")).unwrap();
+
+    let result = run_valid_run_args(&project, "pkg-run-existing", "checkpoint-run-existing");
+
+    assert_eq!(result.exit_code, 5);
+    assert!(!project.root.join(".firn/dev.duckdb").exists());
+    assert!(!project.root.join(".firn/state.db").exists());
+    assert!(
+        !project
+            .root
+            .join(".firn/packages/pkg-run-existing/manifest.json")
+            .exists()
+    );
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("package directory already exists")
+    );
+}
+
+#[test]
+fn run_discovered_schema_resource_fails_before_writes() {
+    let project = TestProject::new();
+    write_discovered_schema_resource(&project);
+
+    let result = run_valid_run_args(&project, "pkg-run-discovered", "checkpoint-run-discovered");
+
+    assert_eq!(result.exit_code, 3);
+    assert_no_run_writes(&project, "pkg-run-discovered");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("declared schema")
+    );
+}
+
+#[test]
+fn run_loop_remains_unsupported_without_writes() {
+    let project = TestProject::new();
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "--loop",
+    ]);
+
+    assert_eq!(result.exit_code, 78);
+    assert_no_run_writes(&project, "pkg-run-loop");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert!(json["error"]["message"].as_str().unwrap().contains("loop"));
 }
 
 #[test]
@@ -1713,6 +2060,88 @@ fn assert_no_preview_writes(project: &TestProject) {
     );
 }
 
+fn assert_no_run_writes(project: &TestProject, package_id: &str) {
+    assert!(
+        !project
+            .root
+            .join(".firn/packages")
+            .join(package_id)
+            .exists(),
+        "rejected run must not create package directory {package_id}"
+    );
+    assert!(
+        !project.root.join(".firn/state.db").exists(),
+        "rejected run must not create checkpoint state"
+    );
+    assert!(
+        !project.root.join(".firn/dev.duckdb").exists(),
+        "rejected run must not create destination DB"
+    );
+}
+
+fn run_valid_run_args(
+    project: &TestProject,
+    package_id: &str,
+    checkpoint_id: &str,
+) -> crate::InvocationResult {
+    run_valid_run_resource(project, "local.events", package_id, checkpoint_id)
+}
+
+fn run_valid_run_resource(
+    project: &TestProject,
+    resource_id: &str,
+    package_id: &str,
+    checkpoint_id: &str,
+) -> crate::InvocationResult {
+    run_dynamic(vec![
+        "firn".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "run".to_owned(),
+        "--resource".to_owned(),
+        resource_id.to_owned(),
+        "--pipeline".to_owned(),
+        "pipeline-run".to_owned(),
+        "--target".to_owned(),
+        "events".to_owned(),
+        "--package-id".to_owned(),
+        package_id.to_owned(),
+        "--checkpoint-id".to_owned(),
+        checkpoint_id.to_owned(),
+    ])
+}
+
+fn write_project_destination(project: &TestProject, destination: &str) {
+    fs::write(
+        project.root.join("firn.toml"),
+        PROJECT.replace(
+            "destination = \"duckdb://.firn/dev.duckdb\"",
+            &format!("destination = \"{destination}\""),
+        ),
+    )
+    .unwrap();
+}
+
+fn write_discovered_schema_resource(project: &TestProject) {
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+"#,
+    )
+    .unwrap();
+}
+
 fn write_resource_glob(project: &TestProject, glob: &str) {
     fs::write(
         project.root.join("resources/files.toml"),
@@ -2228,6 +2657,10 @@ impl Drop for TempDir {
 }
 
 fn run<const N: usize>(args: [&str; N]) -> crate::InvocationResult {
+    invoke(args.into_iter().map(OsString::from))
+}
+
+fn run_dynamic(args: Vec<String>) -> crate::InvocationResult {
     invoke(args.into_iter().map(OsString::from))
 }
 

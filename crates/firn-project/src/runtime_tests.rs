@@ -1,27 +1,68 @@
 use std::{
     collections::BTreeMap,
+    fs,
     path::Path,
     sync::atomic::{AtomicBool, Ordering},
 };
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
+use firn_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use firn_dest_duckdb::DuckDbDestination;
+use firn_engine::{
+    EnginePlan, EnginePlanInput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
+    EngineSegmentPosition, ExecutionProfile, LineageSummary, PlanBoundedness, Planner,
+};
 use firn_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
-    CursorPosition, CursorValue, FirnError, IdempotencyToken, PackageHash, PartitionId, PipelineId,
-    Receipt, ResourceId, Result, RewindReport, RewindRequest, SchemaHash, ScopeKey, SourcePosition,
+    CursorPosition, CursorValue, FileManifest, FilePosition, FirnError, IdempotencyToken,
+    PackageHash, PartitionId, PipelineId, Receipt, ResourceId, ResourceStream, Result,
+    RewindReport, RewindRequest, ScanRequest, SchemaHash, ScopeKey, SegmentId, SourcePosition,
     StateDelta, StateSegment, TargetName, WriteDisposition,
 };
 use firn_package::{PackageBuilder, PackageManifest, PackageReader, PackageStatus};
 use firn_state_sqlite::SqliteCheckpointStore;
 
 use crate::{
-    PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
-    recover_prepared_duckdb_package, replay_prepared_duckdb_package,
+    LocalFileDuckDbRunRequest, PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest,
+    PreparedReceiptSource, recover_prepared_duckdb_package, replay_prepared_duckdb_package,
+    run_local_file_to_duckdb_checkpoint, runtime::state_delta_from_run,
 };
 
 const SCHEMA_HASH: &str = "schema-v1";
+const LIVE_FILE_RESOURCE: &str = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
+] }
+"#;
+const REST_RESOURCE: &str = r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.test"
+
+[resource.items]
+id = "api.items"
+path = "/items"
+records = "$"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+] }
+"#;
 
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let schema = std::sync::Arc::new(Schema::new(vec![
@@ -178,6 +219,63 @@ fn package_receipts(package_dir: &Path) -> Vec<Receipt> {
         .unwrap()
 }
 
+fn live_file_resource(root: &Path) -> firn_declarative::CompiledResource {
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(
+        root.join("data/events.ndjson"),
+        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n\
+         {\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n",
+    )
+    .unwrap();
+    let document = firn_declarative::parse_toml(LIVE_FILE_RESOURCE).unwrap();
+    firn_declarative::compile_document_with_project_root(&document, root)
+        .unwrap()
+        .remove(0)
+}
+
+fn rest_resource() -> firn_declarative::CompiledResource {
+    let document = firn_declarative::parse_toml(REST_RESOURCE).unwrap();
+    firn_declarative::compile_document(&document)
+        .unwrap()
+        .remove(0)
+}
+
+fn live_plan(resource: &firn_declarative::CompiledResource, package_id: &str) -> EnginePlan {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
+    Planner::new()
+        .plan_tier_b(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                boundedness: PlanBoundedness::Bounded,
+                package_id: package_id.to_owned(),
+            },
+        )
+        .unwrap()
+}
+
+fn file_position(path: &str) -> SourcePosition {
+    SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: path.to_owned(),
+            size_bytes: 42,
+            etag: None,
+            sha256: Some(format!("sha256:{path}")),
+        }],
+    })
+}
+
 fn stage_successful_replay(
     package_dir: &Path,
     db_path: &Path,
@@ -195,6 +293,188 @@ fn stage_successful_replay(
     ))
     .unwrap();
     (destination, delta, report.receipt)
+}
+
+#[test]
+fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_recoverable() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-live-hook-failure";
+    let package_root = temp.path().join(".firn/packages");
+    let package_dir = package_root.join(package_id);
+    let duckdb_path = temp.path().join(".firn/dev.duckdb");
+    let state_path = temp.path().join(".firn/state.db");
+    let pipeline_id = PipelineId::new("pipeline-live").unwrap();
+    let hook = |_receipt: &Receipt| Err(FirnError::internal("injected live checkpoint failure"));
+
+    let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
+        LocalFileDuckDbRunRequest {
+            resource: &resource,
+            plan: live_plan(&resource, package_id),
+            package_root: package_root.clone(),
+            destination_path: duckdb_path.clone(),
+            state_store_path: state_path.clone(),
+            pipeline_id: pipeline_id.clone(),
+            target: TargetName::new("events").unwrap(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-live-hook-failure").unwrap(),
+            after_receipt_verified: Some(&hook),
+        },
+    ))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("injected live checkpoint failure")
+    );
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    let receipts = package_receipts(&package_dir);
+    assert_eq!(receipts.len(), 1);
+    let destination = destination(&duckdb_path);
+    assert!(destination.verify_receipt(&receipts[0]).unwrap().verified);
+
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let scope = resource.descriptor().state_scope.clone();
+    assert!(
+        store
+            .head(&pipeline_id, &resource.descriptor().resource_id, &scope)
+            .unwrap()
+            .is_none()
+    );
+    let history = store
+        .history(&pipeline_id, &resource.descriptor().resource_id, &scope)
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Proposed);
+    assert!(matches!(
+        history[0].delta.output_position,
+        SourcePosition::FileManifest(_)
+    ));
+}
+
+#[test]
+fn live_file_run_rejects_non_file_resource_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let file_resource = live_file_resource(temp.path());
+    let rest_resource = rest_resource();
+    let package_id = "pkg-live-rest-rejected";
+    let package_root = temp.path().join(".firn/packages");
+    let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
+        LocalFileDuckDbRunRequest {
+            resource: &rest_resource,
+            plan: live_plan(&file_resource, package_id),
+            package_root: package_root.clone(),
+            destination_path: temp.path().join(".firn/dev.duckdb"),
+            state_store_path: temp.path().join(".firn/state.db"),
+            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+            target: TargetName::new("items").unwrap(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-live-rest-rejected").unwrap(),
+            after_receipt_verified: None,
+        },
+    ))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("local file resources"));
+    assert!(!package_root.join(package_id).exists());
+    assert!(!temp.path().join(".firn/dev.duckdb").exists());
+    assert!(!temp.path().join(".firn/state.db").exists());
+}
+
+#[test]
+fn live_file_run_rejects_plan_package_id_mismatch_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_root = temp.path().join(".firn/packages");
+    let error = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
+        LocalFileDuckDbRunRequest {
+            resource: &resource,
+            plan: live_plan(&resource, "pkg-live-plan-id"),
+            package_root: package_root.clone(),
+            destination_path: temp.path().join(".firn/dev.duckdb"),
+            state_store_path: temp.path().join(".firn/state.db"),
+            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+            target: TargetName::new("events").unwrap(),
+            package_id: "pkg-live-request-id".to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-live-plan-id").unwrap(),
+            after_receipt_verified: None,
+        },
+    ))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not match explicit package id")
+    );
+    assert!(!package_root.join("pkg-live-request-id").exists());
+    assert!(!package_root.join("pkg-live-plan-id").exists());
+    assert!(!temp.path().join(".firn/dev.duckdb").exists());
+    assert!(!temp.path().join(".firn/state.db").exists());
+}
+
+#[test]
+fn state_delta_rejects_divergent_segment_source_positions() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_dir = temp.path().join("pkg-state-delta-divergent");
+    let manifest = build_package(
+        &package_dir,
+        "pkg-state-delta-divergent",
+        PackageStatus::Packaged,
+    );
+    let first = manifest.identity.segments[0].clone();
+    let mut second = first.clone();
+    second.segment_id = SegmentId::new("seg-000002").unwrap();
+    second.path = "data/seg-000002.arrow".to_owned();
+    let mut manifest = manifest;
+    manifest.identity.segments = vec![first.clone(), second.clone()];
+    let output = EngineRunOutputWithSegmentPositions {
+        output: EngineRunOutput {
+            manifest,
+            segments: vec![first.clone(), second.clone()],
+            profile: ExecutionProfile::default(),
+            lineage: LineageSummary::default(),
+        },
+        segment_positions: vec![
+            EngineSegmentPosition {
+                segment_id: first.segment_id.clone(),
+                output_position: Some(file_position("/tmp/firn/a.ndjson")),
+            },
+            EngineSegmentPosition {
+                segment_id: second.segment_id.clone(),
+                output_position: Some(file_position("/tmp/firn/b.ndjson")),
+            },
+        ],
+    };
+    let request = LocalFileDuckDbRunRequest {
+        resource: &resource,
+        plan: live_plan(&resource, "pkg-state-delta-divergent"),
+        package_root: temp.path().to_path_buf(),
+        destination_path: temp.path().join("dev.duckdb"),
+        state_store_path: temp.path().join("state.db"),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        target: TargetName::new("events").unwrap(),
+        package_id: "pkg-state-delta-divergent".to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-state-delta-divergent").unwrap(),
+        after_receipt_verified: None,
+    };
+
+    let error = state_delta_from_run(
+        &request,
+        &output,
+        &SchemaHash::new(SCHEMA_HASH).unwrap(),
+        &resource.descriptor().state_scope,
+        None,
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("divergent segment source positions")
+    );
 }
 
 struct CommitFailingStore {

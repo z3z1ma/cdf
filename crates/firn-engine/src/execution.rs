@@ -10,7 +10,8 @@ use serde::{Deserialize, Serialize};
 use tracing::{Instrument, Span, info_span};
 
 use crate::{
-    EnginePlan, EngineRunOutput, ExecutionProfile, LineageSummary, planning::validate_program,
+    EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions, EngineSegmentPosition,
+    ExecutionProfile, LineageSummary, planning::validate_program,
     predicates::apply_residual_filters,
 };
 
@@ -51,7 +52,9 @@ pub async fn execute_to_package<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    execute_to_package_inner(None, plan, resource, package_dir).await
+    Ok(execute_to_package_inner(None, plan, resource, package_dir)
+        .await?
+        .output)
 }
 
 pub async fn execute_to_package_with_run_id<R>(
@@ -64,9 +67,23 @@ where
     R: ResourceStream + ?Sized,
 {
     let trace_context = ExecutionTraceContext::new(run_id, plan);
-    execute_to_package_inner(Some(&trace_context), plan, resource, package_dir)
-        .instrument(package_execution_span(&trace_context))
-        .await
+    Ok(
+        execute_to_package_inner(Some(&trace_context), plan, resource, package_dir)
+            .instrument(package_execution_span(&trace_context))
+            .await?
+            .output,
+    )
+}
+
+pub async fn execute_to_package_with_segment_positions<R>(
+    plan: &EnginePlan,
+    resource: &R,
+    package_dir: impl AsRef<Path>,
+) -> Result<EngineRunOutputWithSegmentPositions>
+where
+    R: ResourceStream + ?Sized,
+{
+    execute_to_package_inner(None, plan, resource, package_dir).await
 }
 
 async fn execute_to_package_inner<R>(
@@ -74,7 +91,7 @@ async fn execute_to_package_inner<R>(
     plan: &EnginePlan,
     resource: &R,
     package_dir: impl AsRef<Path>,
-) -> Result<EngineRunOutput>
+) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
 {
@@ -89,6 +106,7 @@ where
     let mut profile = ExecutionProfile::default();
     let mut lineage = LineageSummary::default();
     let mut segments = Vec::new();
+    let mut segment_positions = Vec::new();
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = None;
 
@@ -131,6 +149,10 @@ where
                 let segment_id = SegmentId::new(format!("seg-{:06}", segments.len() + 1))?;
                 let segment = builder.write_segment(segment_id.clone(), &[output])?;
                 lineage.output_segments.push(segment_id);
+                segment_positions.push(EngineSegmentPosition {
+                    segment_id: segment.segment_id.clone(),
+                    output_position: batch.header.source_position.clone(),
+                });
                 segments.push(segment);
             }
             Ok(())
@@ -154,11 +176,14 @@ where
     builder.update_status(PackageStatus::Validated)?;
     let manifest = builder.finish()?;
 
-    Ok(EngineRunOutput {
-        manifest,
-        segments,
-        profile,
-        lineage,
+    Ok(EngineRunOutputWithSegmentPositions {
+        output: EngineRunOutput {
+            manifest,
+            segments,
+            profile,
+            lineage,
+        },
+        segment_positions,
     })
 }
 

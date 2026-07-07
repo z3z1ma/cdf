@@ -53,6 +53,10 @@ pub struct ScanArgs {
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct RunArgs {
     pub resource_id: Option<String>,
+    pub pipeline_id: Option<String>,
+    pub target: Option<String>,
+    pub package_id: Option<String>,
+    pub checkpoint_id: Option<String>,
     pub loop_mode: bool,
 }
 
@@ -312,6 +316,10 @@ fn parse_run(args: &[String]) -> Result<RunArgs, CliError> {
     while let Some(arg) = cursor.next() {
         match arg {
             "--resource" => run.resource_id = Some(cursor.value("--resource")?),
+            "--pipeline" => run.pipeline_id = Some(cursor.value("--pipeline")?),
+            "--target" => run.target = Some(cursor.value("--target")?),
+            "--package-id" => run.package_id = Some(cursor.value("--package-id")?),
+            "--checkpoint-id" => run.checkpoint_id = Some(cursor.value("--checkpoint-id")?),
             "--loop" => run.loop_mode = true,
             value if value.starts_with('-') => {
                 return Err(CliError::usage(format!("unknown run option `{value}`")));

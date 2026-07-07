@@ -6,14 +6,17 @@ use std::{
 };
 
 use firn_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use firn_declarative::CompiledResourcePlan;
 use firn_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use firn_kernel::{
     CheckpointId, CheckpointStore, FirnError, OrderBy, PartitionPlan, PipelineId, PredicateId,
-    ResourceId, ResourceStream, ScanPredicate, ScanRequest, ScopeKey, SortDirection,
+    ResourceId, ResourceStream, ScanPredicate, ScanRequest, ScopeKey, SortDirection, TargetName,
 };
 use firn_package::{MANIFEST_FILE, PackageReader};
 use firn_project::{
-    FileResourceSourceResolver, ResourceSourceKind, generate_lockfile, validate_project,
+    FileResourceSourceResolver, LocalFileDuckDbRunReport, LocalFileDuckDbRunRequest,
+    PreparedReceiptSource, ResourceSourceKind, generate_lockfile,
+    run_local_file_to_duckdb_checkpoint, validate_project,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -143,15 +146,123 @@ fn plan_or_explain(
 }
 
 fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    if let Some(resource_id) = &args.resource_id {
-        context.resource(resource_id)?;
+    if args.loop_mode {
+        return Err(CliError::not_supported(
+            "run --loop",
+            "the local development loop supervisor is excluded from this explicit one-package run slice",
+            "later loop/streaming supervisor",
+        ));
     }
-    Err(CliError::not_supported(
+    let explicit = explicit_run_args(args)?;
+    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let resource = context.resource(&explicit.resource_id)?;
+    ensure_run_resource_supported(resource.plan())?;
+    let state_store_path = context.state_store_path()?;
+    let destination_path = run_duckdb_destination_path(&context)?;
+    let plan = build_engine_plan(
+        &context,
+        &ScanArgs {
+            resource_id: explicit.resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            package_id: Some(explicit.package_id.clone()),
+        },
+    )?;
+    let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
+        LocalFileDuckDbRunRequest {
+            resource,
+            plan,
+            package_root: context.package_root(),
+            destination_path,
+            state_store_path,
+            pipeline_id: explicit.pipeline_id.clone(),
+            target: explicit.target.clone(),
+            package_id: explicit.package_id.clone(),
+            checkpoint_id: explicit.checkpoint_id.clone(),
+            after_receipt_verified: None,
+        },
+    ))?;
+    let cli_report = RunCliReport::from_report(&report);
+    output(
         "run",
-        "project-level source execution, package commit, destination commit, and checkpoint commit orchestration are not exposed as one lower-layer invariant-preserving API",
-        "runtime orchestrator that combines ResourceStream, PackageBuilder, DestinationProtocol, and CheckpointStore::commit",
-    ))
+        format!(
+            "ran resource {} into package {} for target {}; checkpoint {} committed after DuckDB receipt verification, crossing the firn line",
+            cli_report.resource_id,
+            cli_report.package_hash,
+            cli_report.target,
+            cli_report.checkpoint_id
+        ),
+        cli_report,
+    )
+}
+
+fn explicit_run_args(args: RunArgs) -> Result<ExplicitRunArgs, CliError> {
+    Ok(ExplicitRunArgs {
+        resource_id: required_run_arg(args.resource_id, "--resource")?,
+        pipeline_id: PipelineId::new(required_run_arg(args.pipeline_id, "--pipeline")?)?,
+        target: TargetName::new(required_run_arg(args.target, "--target")?)?,
+        package_id: required_run_arg(args.package_id, "--package-id")?,
+        checkpoint_id: CheckpointId::new(required_run_arg(args.checkpoint_id, "--checkpoint-id")?)?,
+    })
+}
+
+fn required_run_arg(value: Option<String>, name: &str) -> Result<String, CliError> {
+    value.ok_or_else(|| CliError::usage(format!("run requires {name}")))
+}
+
+fn ensure_run_resource_supported(plan: &CompiledResourcePlan) -> Result<(), CliError> {
+    match plan {
+        CompiledResourcePlan::Files(_) => Ok(()),
+        CompiledResourcePlan::Rest(_) => Err(CliError::not_supported(
+            "run",
+            "REST resource execution is excluded from this explicit local file to DuckDB slice",
+            "REST source runtime wired to package/checkpoint orchestration",
+        )),
+        CompiledResourcePlan::Sql(_) => Err(CliError::not_supported(
+            "run",
+            "SQL resource execution is excluded from this explicit local file to DuckDB slice",
+            "SQL source runtime wired to package/checkpoint orchestration",
+        )),
+    }
+}
+
+fn run_duckdb_destination_path(context: &ProjectContext) -> Result<PathBuf, CliError> {
+    let Some(raw_path) = context.environment.destination.strip_prefix("duckdb://") else {
+        return Err(CliError::not_supported(
+            "run",
+            format!(
+                "destination URI `{}` is unsupported for this slice; only local duckdb:// destinations are supported",
+                context.environment.destination
+            ),
+            "local DuckDB destination runtime",
+        ));
+    };
+    if raw_path.trim().is_empty() || raw_path.contains("://") {
+        return Err(CliError::not_supported(
+            "run",
+            format!(
+                "destination URI `{}` is malformed or non-local for this slice; expected duckdb://path",
+                context.environment.destination
+            ),
+            "local DuckDB destination path",
+        ));
+    }
+    let destination_path = context
+        .duckdb_destination_path()
+        .expect("duckdb:// prefix was checked");
+    firn_dest_duckdb::DuckDbDestination::new(&destination_path)?;
+    Ok(destination_path)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ExplicitRunArgs {
+    resource_id: String,
+    pipeline_id: PipelineId,
+    target: TargetName,
+    package_id: String,
+    checkpoint_id: CheckpointId,
 }
 
 fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
@@ -1186,6 +1297,93 @@ struct PreviewReport {
     writes: WriteEffects,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunCliReport {
+    command: &'static str,
+    resource_id: String,
+    pipeline_id: String,
+    target: String,
+    package_id: String,
+    package_dir: String,
+    package_hash: String,
+    package_status: String,
+    checkpoint_id: String,
+    checkpoint: RunCheckpointReport,
+    receipt_id: String,
+    receipt_source: RunReceiptSourceReport,
+    row_count: u64,
+    segment_count: usize,
+    writes: WriteEffects,
+}
+
+impl RunCliReport {
+    fn from_report(report: &LocalFileDuckDbRunReport) -> Self {
+        Self {
+            command: "run",
+            resource_id: report.checkpoint.delta.resource_id.to_string(),
+            pipeline_id: report.checkpoint.delta.pipeline_id.to_string(),
+            target: report.receipt.target.to_string(),
+            package_id: report.package_id.clone(),
+            package_dir: report.package_dir.display().to_string(),
+            package_hash: report.package_hash.to_string(),
+            package_status: report.package_status.as_str().to_owned(),
+            checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
+            checkpoint: RunCheckpointReport {
+                checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
+                status: report.checkpoint.status.as_str().to_owned(),
+                committed: report.checkpoint.committed_at_ms.is_some(),
+                is_head: report.checkpoint.is_head,
+                committed_at_ms: report.checkpoint.committed_at_ms,
+            },
+            receipt_id: report.receipt.receipt_id.to_string(),
+            receipt_source: RunReceiptSourceReport::from(&report.receipt_source),
+            row_count: report.row_count,
+            segment_count: report.segment_count,
+            writes: WriteEffects {
+                package: true,
+                destination: true,
+                checkpoint: true,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunCheckpointReport {
+    checkpoint_id: String,
+    status: String,
+    committed: bool,
+    is_head: bool,
+    committed_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum RunReceiptSourceReport {
+    DuckDbCommit {
+        duplicate: bool,
+        no_op: bool,
+        package_receipt_recorded: bool,
+    },
+    SuppliedDurableReceipt,
+}
+
+impl From<&PreparedReceiptSource> for RunReceiptSourceReport {
+    fn from(source: &PreparedReceiptSource) -> Self {
+        match source {
+            PreparedReceiptSource::DuckDbCommit {
+                duplicate,
+                package_receipt_recorded,
+            } => Self::DuckDbCommit {
+                duplicate: *duplicate,
+                no_op: *duplicate,
+                package_receipt_recorded: *package_receipt_recorded,
+            },
+            PreparedReceiptSource::SuppliedDurableReceipt => Self::SuppliedDurableReceipt,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 struct WriteEffects {
     package: bool,
@@ -1310,7 +1508,7 @@ Commands:
   validate
   plan <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
   explain <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
-  run [RESOURCE] [--loop]
+  run --resource RESOURCE --pipeline ID --target TARGET --package-id ID --checkpoint-id ID [--loop]
   preview <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
   sql <QUERY>
   inspect project|resources|resource <ID>|lock|destinations|package <DIR>

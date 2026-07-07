@@ -12,11 +12,12 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use firn_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use firn_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
-    ContractRef, DeliveryGuarantee, EstimateSupport, FilterCapabilities, FreshnessSpec,
-    IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PredicateId,
-    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKey, TrustLevel, WriteDisposition, source_name,
+    ContractRef, DeliveryGuarantee, EstimateSupport, FileManifest, FilePosition,
+    FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PredicateId, PushdownFidelity, QueryableResource,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, ScanPlan,
+    ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SourcePosition, TrustLevel,
+    WriteDisposition, source_name,
 };
 use firn_package::PackageStatus;
 use futures_executor::block_on;
@@ -81,6 +82,32 @@ fn residual_limit_is_consumed_across_partitions() {
     assert_eq!(output.profile.output_rows, 1);
     assert_eq!(output.profile.output_batches, 1);
     assert_eq!(output.segments.len(), 1);
+}
+
+#[test]
+fn execution_returns_segment_source_position_evidence() {
+    let resource = MockResource::tier_a(vec![batch_with_file_position()]);
+    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package_with_segment_positions(
+        &plan,
+        &resource,
+        temp.path(),
+    ))
+    .unwrap();
+
+    assert_eq!(output.output.segments.len(), 1);
+    assert_eq!(output.segment_positions.len(), 1);
+    assert_eq!(
+        output.segment_positions[0].segment_id,
+        output.output.segments[0].segment_id
+    );
+    let Some(SourcePosition::FileManifest(manifest)) = &output.segment_positions[0].output_position
+    else {
+        panic!("expected file manifest position evidence");
+    };
+    assert_eq!(manifest.files[0].path, "/tmp/firn/events.ndjson");
 }
 
 #[test]
@@ -676,6 +703,26 @@ fn output_name_batches() -> Vec<Batch> {
         vec!["one", "two", "three"],
         vec![false, true, true],
     )]
+}
+
+fn batch_with_file_position() -> Batch {
+    let mut batch = batch_for_partition(
+        "batch-file",
+        "part-0",
+        vec![1, 2],
+        vec!["one", "two"],
+        vec![true, true],
+    );
+    batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "/tmp/firn/events.ndjson".to_owned(),
+            size_bytes: 42,
+            etag: None,
+            sha256: Some("sha256-file".to_owned()),
+        }],
+    }));
+    batch
 }
 
 fn batch_for_partition(

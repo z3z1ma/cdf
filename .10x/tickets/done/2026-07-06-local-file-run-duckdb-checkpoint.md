@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-cli-surface.md
@@ -82,6 +82,11 @@ No REST or SQL resource execution, no Postgres/Parquet/object-store run executio
 ## Progress and notes
 
 - 2026-07-06: Opened after the declarative file preview slice closed. This is the smallest live-run bridge from a real source to a real destination and checkpoint while avoiding unratified run-ledger defaults.
+- 2026-07-06: Marked active for worker implementation. Worker owns the scoped engine/project/CLI implementation and focused tests; parent owns integration review, quality evidence, ticket closure, parent graph updates, and commit.
+- 2026-07-06: Worker implementation complete for the explicit local file resource to local DuckDB/SQLite slice. Added semver-additive engine segment source-position reporting, project run orchestration, bounded CLI run wiring, and focused positive/negative tests. Focused fmt, test, clippy, nextest, metadata, and diff whitespace checks pass.
+- 2026-07-06: Parent review hardened the slice: CLI JSON now reports the explicit package id, path-like package ids fail before writes, non-file resource and plan/package mismatches fail before writes, and divergent engine/package segment source positions fail closed.
+- 2026-07-06: Bounded mutation testing over `crates/firn-project/src/runtime.rs` initially found 3 missed mutants. After targeted tests, rerun result was 45 mutants tested, 36 caught, 9 unviable, 0 missed.
+- 2026-07-06: Closed with evidence in `.10x/evidence/2026-07-06-local-file-run-duckdb-checkpoint.md` and pass review in `.10x/reviews/2026-07-06-local-file-run-duckdb-checkpoint-review.md`.
 
 ## Blockers
 

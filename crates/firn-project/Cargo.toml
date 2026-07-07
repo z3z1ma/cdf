@@ -9,9 +9,11 @@ description = "Project configuration and orchestration boundary for firn."
 firn-contract = { path = "../firn-contract" }
 firn-declarative = { path = "../firn-declarative" }
 firn-dest-duckdb = { path = "../firn-dest-duckdb" }
+firn-engine = { path = "../firn-engine" }
 firn-http = { path = "../firn-http" }
 firn-kernel = { path = "../firn-kernel" }
 firn-package = { path = "../firn-package" }
+firn-state-sqlite = { path = "../firn-state-sqlite" }
 hex = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
@@ -21,5 +23,5 @@ toml = "1.1.2"
 [dev-dependencies]
 arrow-array = "59.0.0"
 arrow-schema = "59.0.0"
-firn-state-sqlite = { path = "../firn-state-sqlite" }
+futures-executor = "0.3.32"
 tempfile = "3.27.0"

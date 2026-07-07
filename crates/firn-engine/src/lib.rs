@@ -7,7 +7,9 @@ mod predicates;
 mod tests;
 mod types;
 
-pub use execution::{execute_to_package, execute_to_package_with_run_id};
+pub use execution::{
+    execute_to_package, execute_to_package_with_run_id, execute_to_package_with_segment_positions,
+};
 pub use planning::{
     DATAFUSION_TABLE_PROVIDER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,
 };

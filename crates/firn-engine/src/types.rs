@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use firn_contract::ValidationProgram;
 use firn_kernel::{
     BatchId, DeliveryGuarantee, EstimateSupport, PushdownFidelity, ResourceId, ScanPlan,
-    ScanPredicate, ScanRequest, SegmentId,
+    ScanPredicate, ScanRequest, SegmentId, SourcePosition,
 };
 use firn_package::{PackageManifest, SegmentEntry};
 use serde::{Deserialize, Serialize};
@@ -111,6 +111,18 @@ pub struct EngineRunOutput {
     pub segments: Vec<SegmentEntry>,
     pub profile: ExecutionProfile,
     pub lineage: LineageSummary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineRunOutputWithSegmentPositions {
+    pub output: EngineRunOutput,
+    pub segment_positions: Vec<EngineSegmentPosition>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EngineSegmentPosition {
+    pub segment_id: SegmentId,
+    pub output_position: Option<SourcePosition>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

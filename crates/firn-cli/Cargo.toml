@@ -24,3 +24,4 @@ serde_json = "1.0.150"
 [dev-dependencies]
 arrow-array = "59.0.0"
 arrow-schema = "59.0.0"
+duckdb = { version = "1.10504.0", features = ["bundled"] }
