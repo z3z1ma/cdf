@@ -1571,8 +1571,10 @@ version = "0.1.0"
 dependencies = [
  "arrow-schema 59.0.0",
  "firn-conformance",
+ "firn-formats",
  "firn-http",
  "firn-kernel",
+ "futures-executor",
  "hex",
  "schemars",
  "serde",

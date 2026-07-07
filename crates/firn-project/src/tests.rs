@@ -1,6 +1,6 @@
 use super::*;
 use crate::internal::*;
-use firn_declarative::{AuthDeclaration, SourceDeclaration};
+use firn_declarative::{AuthDeclaration, CompiledResourcePlan, SourceDeclaration};
 use firn_kernel::{
     CapabilitySupport, ConcurrencyLimit, DestinationId, DestinationSheet, IdempotencySupport,
     IdentifierRules, TransactionSupport, TypeMapping, TypeMappingFidelity, WriteDisposition,
@@ -302,6 +302,52 @@ fn declarative_resource_compilation_hook_uses_firn_declarative() {
     assert_eq!(
         resources[0].descriptor().resource_id.as_str(),
         "github.issues"
+    );
+}
+
+#[test]
+fn declarative_file_roots_resolve_under_project_root_for_runtime_compile() {
+    let temp = tempfile::tempdir().unwrap();
+    fs::create_dir_all(temp.path().join("resources")).unwrap();
+    let project = r#"
+[project]
+name = "files"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.firn/state.db"
+packages = ".firn/packages"
+destination = "duckdb://.firn/dev.duckdb"
+
+[resources."local.*"]
+source = "resources/files.toml"
+"#;
+    let resource = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+"#;
+    fs::write(temp.path().join("resources/files.toml"), resource).unwrap();
+    let config = parse_firn_toml(project).unwrap();
+    let resolver = FileResourceSourceResolver::new(temp.path());
+
+    let resources =
+        compile_project_declarative_resources_with_root(&config, &resolver, temp.path()).unwrap();
+
+    let CompiledResourcePlan::Files(plan) = resources[0].plan() else {
+        panic!("expected file resource plan");
+    };
+    assert_eq!(
+        plan.root,
+        temp.path().join("data").to_str().unwrap().to_owned()
     );
 }
 

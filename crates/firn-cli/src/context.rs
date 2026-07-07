@@ -62,7 +62,9 @@ impl ProjectContext {
         let env_name = env_arg.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(env_name)?;
         let resolver = FileResourceSourceResolver::new(&root);
-        let resources = firn_project::compile_project_declarative_resources(&config, &resolver)?;
+        let resources = firn_project::compile_project_declarative_resources_with_root(
+            &config, &resolver, &root,
+        )?;
         let lock = load_lock(&root)?;
 
         Ok(Self {

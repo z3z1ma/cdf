@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
 Parent: .10x/tickets/2026-07-05-cli-surface.md
@@ -63,6 +63,9 @@ No `firn run`, no package creation, no destination commits, no checkpoint advanc
 ## Progress and notes
 
 - 2026-07-06: Opened after file-source execution conformance made `firn-formats::FileResource` available and after inspecting `firn preview`, `CompiledResource::open`, project declarative resource loading, and current CLI preview tests. This child narrows the broad CLI preview blocker to single-match declarative local file resources and intentionally fails closed for zero or multiple glob matches.
+- 2026-07-06: Marked active for worker implementation. Worker owns the scoped lower-layer file-resource preview runtime and focused CLI tests; parent owns graph coherence, final evidence, review, closure, and commit.
+- 2026-07-06: Worker implemented the lower-layer file runtime adapter and project-root compile path. Parent review hardened partition validation, glob/path traversal, symlink-directory handling, zero/multi-match failures, and CLI preview no-write coverage.
+- 2026-07-06: Closed with evidence in `.10x/evidence/2026-07-06-declarative-file-preview-execution.md` and review in `.10x/reviews/2026-07-06-declarative-file-preview-execution-review.md`. Final checks passed, including mutation testing over `crates/firn-declarative/src/file_runtime.rs`.
 
 ## Blockers
 

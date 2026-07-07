@@ -107,13 +107,34 @@ pub fn compile_project_declarative_resources(
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
 ) -> Result<Vec<CompiledResource>> {
+    compile_project_declarative_resources_inner(config, resolver, None)
+}
+
+pub fn compile_project_declarative_resources_with_root(
+    config: &ProjectConfig,
+    resolver: &dyn ResourceSourceResolver,
+    project_root: impl AsRef<Path>,
+) -> Result<Vec<CompiledResource>> {
+    compile_project_declarative_resources_inner(config, resolver, Some(project_root.as_ref()))
+}
+
+fn compile_project_declarative_resources_inner(
+    config: &ProjectConfig,
+    resolver: &dyn ResourceSourceResolver,
+    project_root: Option<&Path>,
+) -> Result<Vec<CompiledResource>> {
     let mut resources = Vec::new();
     for mapping in config.resources.values() {
         let ResourceSourceKind::DeclarativeFile { path } = mapping.source_kind() else {
             continue;
         };
         let document = parse_resolved_declarative_source(&resolver.resolve(&path)?)?;
-        resources.extend(compile_document(&document)?);
+        match project_root {
+            Some(project_root) => {
+                resources.extend(compile_document_with_project_root(&document, project_root)?);
+            }
+            None => resources.extend(compile_document(&document)?),
+        }
     }
     Ok(resources)
 }

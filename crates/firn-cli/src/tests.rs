@@ -164,9 +164,11 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
 }
 
 #[test]
-fn preview_returns_explicit_unsupported_without_creating_package_root() {
+fn preview_reads_single_ndjson_file_without_creating_runtime_artifacts() {
     let project = TestProject::new();
     let package_root = project.root.join(".firn/packages");
+    let state_path = project.root.join(".firn/state.db");
+    let duckdb_path = project.root.join(".firn/dev.duckdb");
     let result = run([
         "firn",
         "--json",
@@ -176,19 +178,381 @@ fn preview_returns_explicit_unsupported_without_creating_package_root() {
         "local.events",
     ]);
 
-    assert_eq!(result.exit_code, 78);
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(
         !package_root.exists(),
         "preview must not create the package root"
     );
+    assert!(!state_path.exists(), "preview must not create state");
+    assert!(
+        !duckdb_path.exists(),
+        "preview must not create destination data"
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "preview");
+    assert_eq!(json["result"]["resource_id"], "local.events");
+    assert_eq!(json["result"]["partition_id"], "files");
+    assert_eq!(json["result"]["row_count"], 2);
+    assert!(
+        json["result"]["batch_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("local-events-files-")
+    );
+    assert!(json["result"]["byte_count"].as_u64().unwrap() > 0);
+    assert_eq!(json["result"]["writes"]["package"], false);
+    assert_eq!(json["result"]["writes"]["destination"], false);
+    assert_eq!(json["result"]["writes"]["checkpoint"], false);
+}
+
+#[test]
+fn preview_succeeds_for_csv_json_and_parquet_file_resources() {
+    for format in ["csv", "json", "parquet"] {
+        let project = TestProject::new();
+        write_format_fixture(&project, format);
+
+        let result = run([
+            "firn",
+            "--json",
+            "--project",
+            project.root_str(),
+            "preview",
+            "local.events",
+        ]);
+
+        assert_eq!(
+            result.exit_code, 0,
+            "format {format} stderr: {}",
+            result.stderr
+        );
+        let json = stderr_or_stdout_json(&result.stdout);
+        assert_eq!(json["result"]["resource_id"], "local.events");
+        assert_eq!(json["result"]["row_count"], 2, "format {format}");
+        assert!(!project.root.join(".firn/packages").exists());
+        assert!(!project.root.join(".firn/state.db").exists());
+        assert!(!project.root.join(".firn/dev.duckdb").exists());
+    }
+}
+
+#[test]
+fn preview_zero_match_file_glob_fails_closed_without_writes() {
+    let project = TestProject::new();
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 5);
+    assert_no_preview_writes(&project);
     let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["ok"], false);
-    assert_eq!(json["error"]["not_supported"], true);
+    assert_eq!(json["error"]["kind"], "data");
     assert!(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("resource runtime open implementation")
+            .contains("matched no files")
+    );
+}
+
+#[test]
+fn preview_missing_file_source_root_fails_as_zero_match_without_writes() {
+    let project = TestProject::new();
+    fs::remove_dir_all(project.root.join("data")).unwrap();
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 5);
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "data");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("matched no files")
+    );
+}
+
+#[test]
+fn preview_missing_intermediate_literal_directory_fails_as_zero_match_without_writes() {
+    let project = TestProject::new();
+    write_resource_glob(&project, "missing/events.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 5);
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "data");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("matched no files")
+    );
+}
+
+#[test]
+fn preview_multi_match_file_glob_fails_closed_without_writes() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("data/events-extra.ndjson"),
+        "{\"id\":3,\"updated_at\":\"2026-07-06T00:02:00Z\"}\n",
+    )
+    .unwrap();
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 5);
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "data");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("matched 2 files")
+    );
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("multi-file scan semantics are not supported")
+    );
+}
+
+#[test]
+fn preview_wildcard_directory_glob_requires_component_match() {
+    let project = TestProject::new();
+    fs::create_dir_all(project.root.join("data/match-a")).unwrap();
+    fs::create_dir_all(project.root.join("data/other")).unwrap();
+    fs::write(
+        project.root.join("data/match-a/events.ndjson"),
+        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("data/other/events.ndjson"),
+        "{\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n",
+    )
+    .unwrap();
+    write_resource_glob(&project, "match-*/events.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 1);
+    assert_no_preview_writes(&project);
+}
+
+#[test]
+fn preview_question_mark_glob_matches_exactly_one_character() {
+    let project = TestProject::new();
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    fs::write(
+        project.root.join("data/event1.ndjson"),
+        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("data/event12.ndjson"),
+        "{\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n",
+    )
+    .unwrap();
+    write_resource_glob(&project, "event?.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 1);
+    assert_no_preview_writes(&project);
+}
+
+#[test]
+fn preview_double_star_glob_descends_into_physical_nested_directories() {
+    let project = TestProject::new();
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    fs::create_dir_all(project.root.join("data/nested")).unwrap();
+    fs::write(
+        project.root.join("data/nested/events.ndjson"),
+        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+    )
+    .unwrap();
+    write_resource_glob(&project, "**/*.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 1);
+    assert_no_preview_writes(&project);
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_double_star_glob_ignores_symlink_directory_loops() {
+    let project = TestProject::new();
+    std::os::unix::fs::symlink(project.root.join("data"), project.root.join("data/loop")).unwrap();
+    write_resource_glob(&project, "**/*.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 2);
+    assert_no_preview_writes(&project);
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_wildcard_directory_glob_ignores_symlink_directories() {
+    let project = TestProject::new();
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    fs::create_dir_all(project.root.join("data/real")).unwrap();
+    fs::write(
+        project.root.join("data/real/events.ndjson"),
+        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        project.root.join("data/real"),
+        project.root.join("data/alias"),
+    )
+    .unwrap();
+    write_resource_glob(&project, "*/events.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 1);
+    assert_no_preview_writes(&project);
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_unreadable_glob_directory_reports_directory_read_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = TestProject::new();
+    let private = project.root.join("data/private");
+    fs::create_dir_all(&private).unwrap();
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o000)).unwrap();
+    write_resource_glob(&project, "private/*.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(result.exit_code, 5);
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("read file source directory")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_inaccessible_literal_child_reports_path_inspection_error() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let project = TestProject::new();
+    let private = project.root.join("data/private");
+    fs::create_dir_all(&private).unwrap();
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o000)).unwrap();
+    write_resource_glob(&project, "private/child/*.ndjson");
+
+    let result = run([
+        "firn",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+
+    fs::set_permissions(&private, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(result.exit_code, 5);
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("inspect file source path")
     );
 }
 
@@ -1309,9 +1673,18 @@ impl TestProject {
         let temp = TempDir::new("firn-cli-project");
         let root = temp.path().to_path_buf();
         fs::create_dir_all(root.join("resources")).unwrap();
+        fs::create_dir_all(root.join("data")).unwrap();
         fs::create_dir_all(root.join(".firn")).unwrap();
         fs::write(root.join("firn.toml"), PROJECT).unwrap();
         fs::write(root.join("resources/files.toml"), RESOURCE).unwrap();
+        fs::write(
+            root.join("data/events.ndjson"),
+            concat!(
+                "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+                "{\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n"
+            ),
+        )
+        .unwrap();
         let root_string = root.to_str().unwrap().to_owned();
         Self {
             _temp: temp,
@@ -1323,6 +1696,67 @@ impl TestProject {
     fn root_str(&self) -> &str {
         &self.root_string
     }
+}
+
+fn assert_no_preview_writes(project: &TestProject) {
+    assert!(
+        !project.root.join(".firn/packages").exists(),
+        "preview must not create package root"
+    );
+    assert!(
+        !project.root.join(".firn/state.db").exists(),
+        "preview must not create checkpoint state"
+    );
+    assert!(
+        !project.root.join(".firn/dev.duckdb").exists(),
+        "preview must not create destination DB"
+    );
+}
+
+fn write_resource_glob(project: &TestProject, glob: &str) {
+    fs::write(
+        project.root.join("resources/files.toml"),
+        RESOURCE.replace("glob = \"*.ndjson\"", &format!("glob = \"{glob}\"")),
+    )
+    .unwrap();
+}
+
+fn write_format_fixture(project: &TestProject, format: &str) {
+    for entry in fs::read_dir(project.root.join("data")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+
+    let glob = format!("events.{format}");
+    let resource = RESOURCE
+        .replace("glob = \"*.ndjson\"", &format!("glob = \"{glob}\""))
+        .replace("format = \"ndjson\"", &format!("format = \"{format}\""));
+    fs::write(project.root.join("resources/files.toml"), resource).unwrap();
+
+    match format {
+        "csv" => fs::write(
+            project.root.join("data/events.csv"),
+            "id,updated_at\n1,2026-07-06T00:00:00Z\n2,2026-07-06T00:01:00Z\n",
+        )
+        .unwrap(),
+        "json" => fs::write(
+            project.root.join("data/events.json"),
+            r#"[{"id":1,"updated_at":"2026-07-06T00:00:00Z"},{"id":2,"updated_at":"2026-07-06T00:01:00Z"}]"#,
+        )
+        .unwrap(),
+        "parquet" => write_parquet_preview_fixture(project),
+        other => panic!("unsupported format fixture {other}"),
+    }
+}
+
+fn write_parquet_preview_fixture(project: &TestProject) {
+    let temp = TempDir::new("firn-cli-preview-parquet-source");
+    let package_dir = build_archive_cli_package(temp.path(), "pkg-preview-parquet-source");
+    firn_package::persist_package_parquet_archive(&package_dir, false).unwrap();
+    fs::copy(
+        package_dir.join("archive/parquet/data/seg-000001.parquet"),
+        project.root.join("data/events.parquet"),
+    )
+    .unwrap();
 }
 
 fn write_status_resource(project: &TestProject, trust: &str, max_age: &str) {

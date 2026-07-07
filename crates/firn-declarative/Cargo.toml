@@ -8,6 +8,7 @@ description = "Declarative resource authoring boundary for firn."
 [dependencies]
 arrow-schema = "59.0.0"
 firn-http = { path = "../firn-http" }
+firn-formats = { path = "../firn-formats" }
 firn-kernel = { path = "../firn-kernel" }
 hex = "0.4.3"
 schemars = { version = "1.2.1", features = ["derive"] }
@@ -19,3 +20,4 @@ toml = "1.1.2"
 
 [dev-dependencies]
 firn-conformance = { path = "../firn-conformance" }
+futures-executor = "0.3.32"

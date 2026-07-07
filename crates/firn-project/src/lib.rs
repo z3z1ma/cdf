@@ -9,7 +9,8 @@ use std::{
 use firn_contract::NORMALIZER_NAMECASE_V1;
 use firn_declarative::{
     CompiledResource, CompiledResourcePlan, DeclarativeDocument, compile_document,
-    parse_toml as parse_declarative_toml, parse_yaml as parse_declarative_yaml,
+    compile_document_with_project_root, parse_toml as parse_declarative_toml,
+    parse_yaml as parse_declarative_yaml,
 };
 use firn_http::{AuthScheme, SecretProvider, SecretUri, SecretValue};
 use firn_kernel::{

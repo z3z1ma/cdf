@@ -48,7 +48,7 @@ MVP authoring, destinations, and product surface:
 - `.10x/tickets/done/2026-07-05-postgres-destination.md`
 - `.10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md`
 - `.10x/tickets/2026-07-05-cli-surface.md`
-- `.10x/tickets/2026-07-06-declarative-file-preview-execution.md`
+- `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-05-dlt-shim-preview.md`
@@ -117,7 +117,8 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-package-archive-persistence-cli.md` and parent `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`; `firn package archive` now persists Parquet sidecars, canonical fidelity metadata, manifest archive metadata, verification coverage, and CLI output while preserving IPC package identity. Opened `.10x/tickets/2026-07-06-native-arrow-parquet-policy.md` as the separate cross-cutting decision for whether to replace the DuckDB-backed Parquet workaround with native Arrow/DataFusion Parquet and a time-boxed advisory exception.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-postgres-destination-conformance-consumer.md`; the destination conformance suite now covers the Postgres planning/sheet contract alongside DuckDB and Parquet, with live Postgres tests still providing runtime evidence.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md`; resource conformance now covers file-source execution/data-completeness for CSV, JSON, NDJSON, and Parquet through a reusable async `ResourceStream` oracle and `firn-formats::FileResource`, without adding the native `parquet`/`paste` advisory path.
-- 2026-07-06: Opened `.10x/tickets/2026-07-06-declarative-file-preview-execution.md` as the next CLI/product slice. It connects the closed file-source runtime work to the book-required `firn preview` behavior for single-match declarative local file resources while leaving native Parquet policy and broader run orchestration separate.
+- 2026-07-06: Opened the CLI/product slice now closed at `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`. It connects the closed file-source runtime work to the book-required `firn preview` behavior for single-match declarative local file resources while leaving native Parquet policy and broader run orchestration separate.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`; `firn preview` now executes single-match declarative local file resources for CSV, JSON, NDJSON, and Parquet with no package, destination, or checkpoint writes, while native Parquet policy and broader run orchestration remain separate.
 
 ## Blockers
 

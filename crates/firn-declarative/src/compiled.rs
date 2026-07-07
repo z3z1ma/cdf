@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::{Component, Path, PathBuf},
     sync::Arc,
 };
 
@@ -20,6 +21,7 @@ use firn_kernel::{
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
+use crate::file_runtime::open_file_resource;
 
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
@@ -85,6 +87,20 @@ pub struct FileResourcePlan {
 }
 
 pub fn compile_document(document: &DeclarativeDocument) -> Result<Vec<CompiledResource>> {
+    compile_document_inner(document, None)
+}
+
+pub fn compile_document_with_project_root(
+    document: &DeclarativeDocument,
+    project_root: impl AsRef<Path>,
+) -> Result<Vec<CompiledResource>> {
+    compile_document_inner(document, Some(project_root.as_ref()))
+}
+
+fn compile_document_inner(
+    document: &DeclarativeDocument,
+    project_root: Option<&Path>,
+) -> Result<Vec<CompiledResource>> {
     if document.source.is_empty() {
         return Err(FirnError::contract(
             "declarative document must contain at least one source",
@@ -106,7 +122,7 @@ pub fn compile_document(document: &DeclarativeDocument) -> Result<Vec<CompiledRe
                     "resource `{name}` references unknown source `{source_name}`"
                 ))
             })?;
-            compile_resource(name, &source_name, source, resource)
+            compile_resource(name, &source_name, source, resource, project_root)
         })
         .collect()
 }
@@ -128,12 +144,17 @@ impl ResourceStream for CompiledResource {
         Ok(vec![partition_for_plan(&self.descriptor, &self.plan)?])
     }
 
-    fn open(&self, _partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        Box::pin(async {
-            Err(FirnError::internal(
-                "declarative resource execution is outside the MVP compiler crate",
-            ))
-        })
+    fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+        match &self.plan {
+            CompiledResourcePlan::Files(plan) => {
+                open_file_resource(&self.descriptor, plan, partition)
+            }
+            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Box::pin(async {
+                Err(FirnError::internal(
+                    "declarative resource execution is outside the MVP compiler crate",
+                ))
+            }),
+        }
     }
 }
 
@@ -224,6 +245,7 @@ fn compile_resource(
     source_name: &str,
     source: &SourceDeclaration,
     resource: &ResourceDeclaration,
+    project_root: Option<&Path>,
 ) -> Result<CompiledResource> {
     validate_escape_hatch(resource)?;
     validate_fields(name, resource)?;
@@ -277,9 +299,12 @@ fn compile_resource(
         SourceDeclaration::Sql(sql) => {
             CompiledResourcePlan::Sql(compile_sql_plan(source_name, sql, resource)?)
         }
-        SourceDeclaration::Files(files) => {
-            CompiledResourcePlan::Files(compile_file_plan(source_name, files, resource)?)
-        }
+        SourceDeclaration::Files(files) => CompiledResourcePlan::Files(compile_file_plan(
+            source_name,
+            files,
+            resource,
+            project_root,
+        )?),
     };
     let capabilities = capabilities_for(&descriptor, &plan);
 
@@ -448,16 +473,59 @@ fn compile_file_plan(
     source_name: &str,
     source: &FileSourceDeclaration,
     resource: &ResourceDeclaration,
+    project_root: Option<&Path>,
 ) -> Result<FileResourcePlan> {
     Ok(FileResourcePlan {
         source: source_name.to_owned(),
-        root: source.root.clone(),
+        root: compile_file_root(&source.root, project_root)?,
         glob: resource.glob.clone().ok_or_else(|| {
             FirnError::contract("file resources must declare glob before compilation")
         })?,
         format: resource.format.clone().ok_or_else(|| {
             FirnError::contract("file resources must declare format before compilation")
         })?,
+    })
+}
+
+fn compile_file_root(root: &str, project_root: Option<&Path>) -> Result<String> {
+    let root_path = PathBuf::from(root);
+    if root_path.is_absolute() {
+        return path_to_string(&root_path);
+    }
+    if path_contains_parent_dir(&root_path) {
+        return Err(FirnError::contract(
+            "relative file source root must stay under the project root and cannot contain `..`",
+        ));
+    }
+    match project_root {
+        Some(project_root) => path_to_string(&absolute_project_root(project_root)?.join(root_path)),
+        None => Ok(root.to_owned()),
+    }
+}
+
+fn absolute_project_root(project_root: &Path) -> Result<PathBuf> {
+    if project_root.is_absolute() {
+        return Ok(project_root.to_path_buf());
+    }
+    let current_dir = std::env::current_dir().map_err(|error| {
+        FirnError::internal(format!(
+            "resolve current directory for project root: {error}"
+        ))
+    })?;
+    Ok(current_dir.join(project_root))
+}
+
+fn path_contains_parent_dir(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
+}
+
+fn path_to_string(path: &Path) -> Result<String> {
+    path.to_str().map(str::to_owned).ok_or_else(|| {
+        FirnError::contract(format!(
+            "file source root path is not valid UTF-8: {}",
+            path.display()
+        ))
     })
 }
 

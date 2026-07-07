@@ -202,6 +202,48 @@ resource:
 }
 
 #[test]
+fn file_runtime_rejects_partition_metadata_that_does_not_match_plan() {
+    let input = r#"
+[source.local]
+kind = "files"
+root = "/"
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+"#;
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: ScopeKey::Resource,
+    };
+    let mut partition = resource.plan_partitions(&request).unwrap().remove(0);
+    partition
+        .metadata
+        .insert("glob".to_owned(), "other.ndjson".to_owned());
+
+    let error = match futures_executor::block_on(resource.open(partition)) {
+        Ok(_) => panic!("file runtime accepted a mismatched partition"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("declarative file partition glob does not match")
+    );
+}
+
+#[test]
 fn semantic_validation_rejects_missing_declared_schema_key() {
     let input = r#"
 [source.github]
