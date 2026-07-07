@@ -24,6 +24,9 @@ use crate::file_runtime::open_file_resource;
 use crate::rest_runtime::{
     CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA, cursor_pushdown_value,
 };
+use crate::sql_runtime::{
+    sql_capabilities_for, sql_partition_for_plan, sql_predicate_fidelity_for,
+};
 
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
@@ -145,6 +148,7 @@ impl ResourceStream for CompiledResource {
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
         Ok(vec![partition_for_plan(
             &self.descriptor,
+            &self.schema,
             &self.plan,
             Some(request),
         )?])
@@ -194,6 +198,7 @@ impl QueryableResource for CompiledResource {
             request: request.clone(),
             partitions: vec![partition_for_plan(
                 &self.descriptor,
+                &self.schema,
                 &self.plan,
                 Some(request),
             )?],
@@ -216,7 +221,9 @@ impl CompiledResource {
                     PushdownFidelity::Unsupported
                 }
             }
-            CompiledResourcePlan::Sql(_) => PushdownFidelity::Exact,
+            CompiledResourcePlan::Sql(plan) => {
+                sql_predicate_fidelity_for(&self.schema, plan, expression)
+            }
             CompiledResourcePlan::Files(_) => PushdownFidelity::Unsupported,
         }
     }
@@ -655,35 +662,7 @@ fn capabilities_for(
             backpressure: BackpressureSupport::Pausable,
             estimates: EstimateSupport::None,
         },
-        CompiledResourcePlan::Sql(_) => ResourceCapabilities {
-            projection: CapabilitySupport::Supported,
-            filters: FilterCapabilities {
-                default_fidelity: PushdownFidelity::Exact,
-                supported_operators: vec![
-                    "=".to_owned(),
-                    ">".to_owned(),
-                    ">=".to_owned(),
-                    "<".to_owned(),
-                    "<=".to_owned(),
-                ],
-            },
-            limits: CapabilitySupport::Supported,
-            ordering: CapabilitySupport::Supported,
-            partitioning: partitioning_capabilities(descriptor),
-            incremental: if descriptor.cursor.is_some() {
-                IncrementalShape::Cursor
-            } else {
-                IncrementalShape::Full
-            },
-            replay: if descriptor.cursor.is_some() {
-                ReplaySupport::FromPosition
-            } else {
-                ReplaySupport::None
-            },
-            idempotent_reads: true,
-            backpressure: BackpressureSupport::Pausable,
-            estimates: EstimateSupport::Rows,
-        },
+        CompiledResourcePlan::Sql(sql) => sql_capabilities_for(descriptor, sql),
         CompiledResourcePlan::Files(_) => ResourceCapabilities {
             projection: CapabilitySupport::Unsupported,
             filters: FilterCapabilities::default(),
@@ -714,6 +693,7 @@ fn partitioning_capabilities(descriptor: &ResourceDescriptor) -> PartitioningCap
 
 fn partition_for_plan(
     descriptor: &ResourceDescriptor,
+    schema: &SchemaRef,
     plan: &CompiledResourcePlan,
     request: Option<&ScanRequest>,
 ) -> Result<PartitionPlan> {
@@ -740,12 +720,7 @@ fn partition_for_plan(
             ("rest".to_owned(), descriptor.state_scope.clone(), metadata)
         }
         CompiledResourcePlan::Sql(sql) => {
-            let mut metadata = BTreeMap::new();
-            metadata.insert("kind".to_owned(), "sql".to_owned());
-            if let Some(table) = &sql.table {
-                metadata.insert("table".to_owned(), table.clone());
-            }
-            ("sql".to_owned(), descriptor.state_scope.clone(), metadata)
+            return sql_partition_for_plan(descriptor, schema, sql, request);
         }
         CompiledResourcePlan::Files(files) => {
             let mut metadata = BTreeMap::new();

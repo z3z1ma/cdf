@@ -63,6 +63,8 @@ Fast-follow and full-system completion:
 - `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`
 - `.10x/tickets/done/2026-07-06-native-parquet-file-source.md`
 - `.10x/tickets/done/2026-07-06-native-parquet-writer-archive.md`
+- `.10x/tickets/2026-07-07-run-ledger-commit-session-spine-ratification.md`
+- `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md`
 - `.10x/tickets/2026-07-05-wasm-components-registry-signing.md`
 - `.10x/tickets/2026-07-05-cdc-and-streaming-supervisor.md`
 - `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`
@@ -142,7 +144,10 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-native-parquet-writer-archive.md`; package archive transcode and the Parquet destination writer now use native arrow-rs `ArrowWriter`, remove the scoped DuckDB writer/export path, preserve IPC package identity and receipt/idempotency behavior, and record explicit scanner evidence for the ratified `RUSTSEC-2024-0436` path through `paste`.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-local-duckdb-lifecycle-chaos-failpoints.md`; local DuckDB/SQLite package/checkpoint lifecycle chaos now has named runtime failpoints, helper-process conformance coverage for the four ratified windows, exact committed-head reuse after checkpoint commit, and mutation-clean guard coverage.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-declarative-rest-resource-execution.md`; Tier-0 declarative REST resources are now openable through explicit `cdf-http` runtime dependencies with deterministic conformance tests, fail-closed auth/allowlist/schema behavior, cursor pushdown URL effects, and mutation-hardened runtime/parser coverage. This advances the HTTP API and GitHub issues killer-demo path while leaving live API credentials, CLI REST `run`, SQL source execution, and the full killer-demo harness to later children.
-- 2026-07-07: Opened `.10x/tickets/2026-07-07-declarative-postgres-sql-resource-execution.md` as the next bounded source-execution child. It will make table-backed Tier-0 Postgres SQL resources openable as `ResourceStream`s while keeping arbitrary SQL `query` execution and CLI/package orchestration for later ratified slices.
+- 2026-07-07: Opened `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md` as the next bounded source-execution child. It will make table-backed Tier-0 Postgres SQL resources openable as `ResourceStream`s while keeping arbitrary SQL `query` execution and CLI/package orchestration for later ratified slices.
+- 2026-07-07: User architecture audit and parent source inspection identified the missing general run spine as the next highest-leverage architectural blocker after current source execution work. Recorded `.10x/research/2026-07-07-run-spine-gap-map.md` and opened blocked shaping ticket `.10x/tickets/2026-07-07-run-ledger-commit-session-spine-ratification.md` to ratify run-ledger semantics and the destination commit-session abstraction before executable implementation.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md`; table-backed Tier-0 Postgres SQL resources now execute through explicit runtime dependencies with typed pushdown metadata, live Postgres source coverage, cursor source positions, fail-closed unsupported query/dialect/metadata handling, and broad quality evidence. This advances the source breadth lane while leaving SQL-through-CLI/package orchestration to the run-spine work.
+- 2026-07-07: Updated `.10x/knowledge/cdf-product-objective.md` with the falsifiable CDF 1.0 finish line, decision queue, and P0-P7 concurrent program map from the active goal objective.
 
 ## Blockers
 

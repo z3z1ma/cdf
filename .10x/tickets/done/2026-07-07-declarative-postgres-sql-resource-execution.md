@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
@@ -68,10 +68,24 @@ The MVP killer-demo path remains parent scope until SQL and REST sources can be 
 - `.10x/knowledge/quality-gate-execution.md`
 - `.10x/knowledge/rust-crate-organization.md`
 
+## Evidence
+
+- `.10x/evidence/2026-07-07-declarative-postgres-sql-resource-execution.md`
+
+## Review
+
+- `.10x/reviews/2026-07-07-declarative-postgres-sql-resource-execution-review.md`
+
 ## Progress and notes
 
 - 2026-07-07: Split from the conformance parent after REST resource execution closed. Current declarative SQL resources compile and advertise exact pushdown, and the Postgres destination crate already has safe identifier helpers plus live local Postgres infrastructure, but no source-side Postgres `ResourceStream` exists. This child makes table-backed Postgres SQL resources openable through explicit runtime dependencies without adding CLI/package orchestration or arbitrary query-resource execution.
 - 2026-07-07: Do not implement in the ticket-creation turn. Assign to a worker in a later turn with the bounded write boundary above; parent owns integration review, evidence, and final commit.
+- 2026-07-07: Worker execution note before dependency edits: the declarative SQL runtime adapter needs a path dependency from `cdf-declarative` to the new `cdf-dest-postgres` source runtime. If Cargo updates `Cargo.lock`, that lockfile edit is required for the requested `--locked` verification rather than unrelated scope.
+- 2026-07-07: Implemented `cdf-dest-postgres` table-source runtime and `cdf-declarative` SQL runtime adapter. Table scans now carry typed Postgres scan metadata for validated projection, structured exact predicates, ordering, and limit; arbitrary declarative SQL `query` resources and non-Postgres dialects fail closed in the adapter. Runtime opening resolves connection strings only through explicit `SecretProvider` dependencies and keeps default `CompiledResource::open` fail-closed. Added row-to-Arrow conversion for the supported declarative schema subset, cursor source-position emission, partition metadata validation, and fail-closed tests for malformed metadata, missing/empty secrets, empty/unsupported schemas, malformed table names, and unstructured predicates. The existing resource execution conformance helper covers the Postgres table source's execution headers/data in the live local Postgres harness, and the live source test directly asserts cursor source-position emission without changing the public conformance API.
+- 2026-07-07: During package verification, concurrent local ephemeral Postgres startup produced a `pg_ctl start failed` race in an existing live test. Serialized only local cluster startup in the Postgres live test harness, then reran the full package successfully.
+- 2026-07-07: Focused checks run: `cargo fmt --all -- --check` passed; `git diff --check -- . ':(exclude).gitignore'` passed; `cargo test -p cdf-dest-postgres --locked --no-fail-fast` passed with 25 tests including live local Postgres source coverage; `cargo test -p cdf-declarative --locked --no-fail-fast` passed with 48 tests; `cargo test -p cdf-conformance --locked resource -- --nocapture` passed; `cargo clippy -p cdf-dest-postgres -p cdf-declarative -p cdf-conformance --all-targets --locked -- -D warnings` passed.
+- 2026-07-07: Parent review repaired four issues before closure: removed a public conformance API addition after `cargo semver-checks` flagged it; made text/date/timestamp exact predicate pushdown require quoted literals while numeric/bool pushdown requires bare literals; replaced saturating timestamp-millisecond cursor conversion with checked overflow handling; and added `PostgresTableResource` debug redaction for the resolved database URL.
+- 2026-07-07: Closure evidence recorded in `.10x/evidence/2026-07-07-declarative-postgres-sql-resource-execution.md`; closure review passed in `.10x/reviews/2026-07-07-declarative-postgres-sql-resource-execution-review.md`. Full relevant `QUALITY.md` gate set ran with CodeQL intentionally skipped per active goal instruction and `cargo-geiger` recorded as an attempted-but-hanging tool limit. Bounded mutation over the new Postgres source runtime selected 12 mutants: 9 caught, 3 unviable, 0 missed.
 
 ## Blockers
 

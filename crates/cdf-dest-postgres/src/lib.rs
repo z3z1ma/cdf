@@ -36,6 +36,7 @@ mod package;
 mod plan;
 mod rows;
 mod sheet;
+mod source;
 #[cfg(test)]
 mod tests;
 mod validate;
@@ -44,3 +45,4 @@ pub use api::*;
 pub use identifiers::*;
 pub use plan::*;
 pub use sheet::*;
+pub use source::*;

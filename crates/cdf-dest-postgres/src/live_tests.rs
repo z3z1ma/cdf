@@ -3,16 +3,29 @@ use std::{
     net::TcpListener,
     path::{Path, PathBuf},
     process::Command,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
-use arrow_array::{ArrayRef, Decimal128Array, Int64Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, Date32Array, Decimal128Array, Float64Array, Int64Array,
+    RecordBatch, StringArray, TimestampMicrosecondArray,
+};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
+use cdf_conformance::resource::{
+    PredicateExpectation, ResourceConformanceCase, ResourceExecutionConformanceCase,
+    assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
+};
 use cdf_kernel::{
-    CheckpointId, CursorPosition, CursorValue, PartitionId, PipelineId, ScopeKey, SegmentId,
-    SourcePosition,
+    CheckpointId, ContractRef, CursorOrderingClaim, CursorPosition, CursorSpec, CursorValue,
+    PartitionId, PipelineId, PredicateId, QueryableResource, ResourceDescriptor, ResourceStream,
+    ScanPredicate, ScanRequest, SchemaSource, ScopeKey, SegmentId, SortDirection, SourcePosition,
+    TrustLevel,
 };
 use cdf_package::{PackageBuilder, PackageManifest};
+use futures_util::StreamExt;
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
@@ -20,6 +33,7 @@ use super::*;
 use crate::{ddl::target_migrations, identifiers::quote_identifier_unchecked};
 
 static SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LOCAL_POSTGRES_START: Mutex<()> = Mutex::new(());
 
 struct LivePostgres {
     url: String,
@@ -99,6 +113,7 @@ impl Drop for LivePostgres {
 
 impl LocalPostgres {
     fn start() -> Option<Self> {
+        let _guard = LOCAL_POSTGRES_START.lock().unwrap();
         let initdb = find_binary("initdb")?;
         let pg_ctl = find_binary("pg_ctl")?;
         let data_dir = tempfile::tempdir().unwrap();
@@ -346,6 +361,198 @@ fn commit(env: &LivePostgres, package_dir: &Path, plan: PostgresLoadPlan) -> Pos
             plan,
         })
         .unwrap()
+}
+
+#[test]
+fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let target = env.target("source_orders");
+    let mut client = env.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"id\" BIGINT NOT NULL,
+                \"name\" TEXT,
+                \"updated_at\" BIGINT NOT NULL,
+                \"active\" BOOLEAN NOT NULL,
+                \"score\" DOUBLE PRECISION,
+                \"created_on\" DATE,
+                \"touched_at\" TIMESTAMPTZ
+            );
+            INSERT INTO {} (\"id\", \"name\", \"updated_at\", \"active\", \"score\", \"created_on\", \"touched_at\") VALUES
+                (1, 'ada', 10, true, 1.5, DATE '2026-07-01', TIMESTAMPTZ '2026-07-01T00:00:00Z'),
+                (2, 'grace', 20, false, NULL, DATE '2026-07-02', TIMESTAMPTZ '2026-07-02T01:00:00Z'),
+                (3, 'katherine', 30, true, 3.25, DATE '2026-07-03', TIMESTAMPTZ '2026-07-03T02:30:00Z')",
+            target.sql(),
+            target.sql()
+        ))
+        .unwrap();
+
+    let descriptor = postgres_source_descriptor();
+    let schema = postgres_source_schema();
+    let resource =
+        PostgresTableResource::new(env.url.clone(), descriptor.clone(), schema.clone(), target)
+            .unwrap();
+    let predicate_id = PredicateId::new("updated-at").unwrap();
+    let request = ScanRequest {
+        resource_id: descriptor.resource_id.clone(),
+        projection: Some(vec![
+            "id".to_owned(),
+            "name".to_owned(),
+            "updated_at".to_owned(),
+            "active".to_owned(),
+            "score".to_owned(),
+            "created_on".to_owned(),
+            "touched_at".to_owned(),
+        ]),
+        filters: vec![ScanPredicate {
+            predicate_id: predicate_id.clone(),
+            expression: "updated_at >= 20".to_owned(),
+        }],
+        limit: Some(10),
+        order_by: vec![cdf_kernel::OrderBy {
+            field: "updated_at".to_owned(),
+            direction: SortDirection::Asc,
+        }],
+        scope: ScopeKey::Resource,
+    };
+
+    assert_queryable_resource_conformance(
+        &resource,
+        [ResourceConformanceCase::new(request.clone())
+            .with_expected_predicates([PredicateExpectation::exact(predicate_id)])],
+    );
+    let partition = PartitionId::new("sql").unwrap();
+    let execution_case = ResourceExecutionConformanceCase::new(
+        request.clone(),
+        postgres_source_schema_hash(),
+        [partition.clone()],
+        2,
+    )
+    .with_expected_partition_rows([(partition, 2)]);
+    futures_executor::block_on(assert_resource_stream_execution_conformance(
+        &resource,
+        [execution_case],
+    ));
+
+    let plan = resource.negotiate(&request).unwrap();
+    let batches = drain_source_batches(
+        futures_executor::block_on(resource.open(plan.partitions[0].clone())).unwrap(),
+    );
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0].header.observed_schema_hash,
+        postgres_source_schema_hash()
+    );
+    let batch = batches[0].record_batch().unwrap();
+    assert_eq!(
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "id",
+            "name",
+            "updated_at",
+            "active",
+            "score",
+            "created_on",
+            "touched_at",
+        ]
+    );
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(ids.values(), &[2, 3]);
+    let active = batch
+        .column(3)
+        .as_any()
+        .downcast_ref::<BooleanArray>()
+        .unwrap();
+    assert!(!active.value(0));
+    assert!(active.value(1));
+    let score = batch
+        .column(4)
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert!(score.is_null(0));
+    assert_eq!(score.value(1), 3.25);
+    let created_on = batch
+        .column(5)
+        .as_any()
+        .downcast_ref::<Date32Array>()
+        .unwrap();
+    assert!(created_on.value(1) > created_on.value(0));
+    let touched_at = batch
+        .column(6)
+        .as_any()
+        .downcast_ref::<TimestampMicrosecondArray>()
+        .unwrap();
+    assert!(touched_at.value(1) > touched_at.value(0));
+    let Some(SourcePosition::Cursor(cursor)) = &batches[0].header.source_position else {
+        panic!("expected cursor source position");
+    };
+    assert_eq!(cursor.field, "updated_at");
+    assert_eq!(cursor.value, CursorValue::I64(30));
+}
+
+fn postgres_source_descriptor() -> ResourceDescriptor {
+    ResourceDescriptor {
+        resource_id: ResourceId::new("warehouse.source_orders").unwrap(),
+        schema_source: SchemaSource::Declared {
+            schema_hash: postgres_source_schema_hash(),
+            source: "test:postgres-source-live".to_owned(),
+        },
+        primary_key: vec!["id".to_owned()],
+        merge_key: vec!["id".to_owned()],
+        cursor: Some(CursorSpec {
+            field: "updated_at".to_owned(),
+            ordering: CursorOrderingClaim::Exact,
+            lag_tolerance_ms: 0,
+        }),
+        write_disposition: WriteDisposition::Merge,
+        contract: Some(ContractRef::new("orders").unwrap()),
+        state_scope: ScopeKey::Resource,
+        freshness: None,
+        trust_level: TrustLevel::Governed,
+    }
+}
+
+fn postgres_source_schema() -> std::sync::Arc<Schema> {
+    std::sync::Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new("updated_at", DataType::Int64, false),
+        Field::new("active", DataType::Boolean, false),
+        Field::new("score", DataType::Float64, true),
+        Field::new("created_on", DataType::Date32, true),
+        Field::new(
+            "touched_at",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            true,
+        ),
+    ]))
+}
+
+fn postgres_source_schema_hash() -> SchemaHash {
+    SchemaHash::new("sha256:postgres-source-live-schema").unwrap()
+}
+
+fn drain_source_batches(mut stream: cdf_kernel::BatchStream) -> Vec<cdf_kernel::Batch> {
+    futures_executor::block_on(async move {
+        let mut batches = Vec::new();
+        while let Some(batch) = stream.next().await {
+            batches.push(batch.unwrap());
+        }
+        batches
+    })
 }
 
 #[test]

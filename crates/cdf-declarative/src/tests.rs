@@ -1447,19 +1447,7 @@ fn json_schema_artifact_exposes_editor_schema_model() {
 
 #[test]
 fn sql_negotiate_pushes_filters_exactly() {
-    let input = r#"
-[source.warehouse]
-kind = "sql"
-connection = "secret://env/POSTGRES_URL"
-
-[resource.orders]
-table = "public.orders"
-primary_key = ["id"]
-cursor = { field = "updated_at", ordering = "exact", lag = "0ms" }
-write_disposition = "merge"
-trust = "governed"
-"#;
-    let resource = compile_document(&parse_toml(input).unwrap())
+    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
     let predicate_id = PredicateId::new("p1").unwrap();
@@ -1485,7 +1473,200 @@ trust = "governed"
     );
     let plan = resource.negotiate(&request).unwrap();
     assert_eq!(plan.pushed_predicates[0].fidelity, PushdownFidelity::Exact);
+    assert!(
+        plan.partitions[0]
+            .metadata
+            .contains_key("postgres_sql_scan")
+    );
 }
+
+#[test]
+fn sql_negotiate_does_not_smuggle_unstructured_predicates() {
+    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let safe = PredicateId::new("safe").unwrap();
+    let unsafe_predicate = PredicateId::new("unsafe").unwrap();
+    let request = ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: Some(vec!["id".to_owned(), "updated_at".to_owned()]),
+        filters: vec![
+            ScanPredicate {
+                predicate_id: safe.clone(),
+                expression: "updated_at >= 10".to_owned(),
+            },
+            ScanPredicate {
+                predicate_id: unsafe_predicate.clone(),
+                expression: "id = 1 OR 1 = 1".to_owned(),
+            },
+        ],
+        limit: Some(10),
+        order_by: vec![],
+        scope: ScopeKey::Resource,
+    };
+
+    assert_queryable_resource_conformance(
+        &resource,
+        [
+            ResourceConformanceCase::new(request.clone()).with_expected_predicates([
+                PredicateExpectation::exact(safe),
+                PredicateExpectation::unsupported(unsafe_predicate),
+            ]),
+        ],
+    );
+    let plan = resource.negotiate(&request).unwrap();
+    assert_eq!(plan.pushed_predicates.len(), 1);
+    assert_eq!(plan.unsupported_predicates.len(), 1);
+    let scan = plan.partitions[0]
+        .metadata
+        .get("postgres_sql_scan")
+        .unwrap();
+    assert!(scan.contains("updated_at"));
+    assert!(!scan.contains("OR 1"));
+}
+
+#[test]
+fn sql_default_open_remains_unsupported_without_runtime_dependencies() {
+    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let request = ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: ScopeKey::Resource,
+    };
+    let partition = resource.plan_partitions(&request).unwrap().remove(0);
+
+    let error = expect_open_error(futures_executor::block_on(resource.open(partition)));
+    assert!(error.to_string().contains("outside the MVP compiler crate"));
+}
+
+#[test]
+fn sql_runtime_requires_explicit_secret_provider() {
+    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let sql = resource
+        .to_sql_resource(SqlRuntimeDependencies::new())
+        .unwrap();
+    let request = ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: ScopeKey::Resource,
+    };
+    let partition = sql.plan_partitions(&request).unwrap().remove(0);
+    let error = expect_open_error(futures_executor::block_on(sql.open(partition)));
+    assert!(error.to_string().contains("SecretProvider"));
+}
+
+#[test]
+fn sql_runtime_rejects_empty_connection_secret_before_connecting() {
+    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let sql = resource
+        .to_sql_resource(SqlRuntimeDependencies::new().with_secret_provider(
+            StaticSecretProvider::new([("secret://env/POSTGRES_URL", "")]),
+        ))
+        .unwrap();
+    let request = ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: ScopeKey::Resource,
+    };
+    let partition = sql.plan_partitions(&request).unwrap().remove(0);
+    let error = expect_open_error(futures_executor::block_on(sql.open(partition)));
+    assert!(error.to_string().contains("empty value"));
+}
+
+#[test]
+fn sql_runtime_fails_closed_for_query_and_non_postgres_dialect() {
+    let query = SQL_RUNTIME_EXAMPLE.replace(
+        r#"table = "public.orders""#,
+        r#"query = "SELECT * FROM public.orders""#,
+    );
+    let query_resource = compile_document(&parse_toml(&query).unwrap())
+        .unwrap()
+        .remove(0);
+    let error = query_resource
+        .to_sql_resource(SqlRuntimeDependencies::new())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("query resources are not supported")
+    );
+
+    let non_postgres =
+        SQL_RUNTIME_EXAMPLE.replace(r#"dialect = "postgres""#, r#"dialect = "sqlite""#);
+    let non_postgres_resource = compile_document(&parse_toml(&non_postgres).unwrap())
+        .unwrap()
+        .remove(0);
+    let error = non_postgres_resource
+        .to_sql_resource(SqlRuntimeDependencies::new())
+        .unwrap_err();
+    assert!(error.to_string().contains("dialect `postgres`"));
+}
+
+#[test]
+fn sql_runtime_rejects_malformed_table_and_empty_declared_schema() {
+    let malformed = SQL_RUNTIME_EXAMPLE.replace(r#"table = "public.orders""#, r#"table = "a.b.c""#);
+    let malformed_resource = compile_document(&parse_toml(&malformed).unwrap())
+        .unwrap()
+        .remove(0);
+    assert!(
+        malformed_resource
+            .to_sql_resource(SqlRuntimeDependencies::new())
+            .is_err()
+    );
+
+    let empty_schema = r#"
+[source.warehouse]
+kind = "sql"
+connection = "secret://env/POSTGRES_URL"
+dialect = "postgres"
+
+[resource.orders]
+table = "public.orders"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [] }
+"#;
+    let empty_resource = compile_document(&parse_toml(empty_schema).unwrap())
+        .unwrap()
+        .remove(0);
+    let error = empty_resource
+        .to_sql_resource(SqlRuntimeDependencies::new())
+        .unwrap_err();
+    assert!(error.to_string().contains("declared schema"));
+}
+
+const SQL_RUNTIME_EXAMPLE: &str = r#"
+[source.warehouse]
+kind = "sql"
+connection = "secret://env/POSTGRES_URL"
+dialect = "postgres"
+
+[resource.orders]
+table = "public.orders"
+primary_key = ["id"]
+cursor = { field = "updated_at", ordering = "exact", lag = "0ms" }
+write_disposition = "merge"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "updated_at", type = "int64", nullable = false },
+] }
+"#;
 
 const REST_RUNTIME_EXAMPLE: &str = r#"
 [source.api]

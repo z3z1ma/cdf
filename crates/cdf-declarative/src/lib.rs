@@ -4,6 +4,7 @@ mod compiled;
 mod declarations;
 mod file_runtime;
 mod rest_runtime;
+mod sql_runtime;
 #[cfg(test)]
 mod tests;
 
@@ -13,3 +14,4 @@ pub use compiled::{
 };
 pub use declarations::*;
 pub use rest_runtime::{RestResource, RestRuntimeDependencies};
+pub use sql_runtime::{SqlResource, SqlRuntimeDependencies};

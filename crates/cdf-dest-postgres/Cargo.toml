@@ -10,10 +10,12 @@ arrow-array = "59.0.0"
 arrow-schema = "59.0.0"
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
+futures-util = "0.3.32"
 postgres = "0.19"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
+futures-executor = "0.3.32"
 tempfile = "3.27.0"

@@ -225,22 +225,19 @@ fn assert_source_position(
     partition: &PartitionPlan,
     batch: &Batch,
 ) {
-    let requires_file_manifest = case.source_position_requirement
-        == SourcePositionRequirement::FileManifest
+    if case.source_position_requirement == SourcePositionRequirement::FileManifest
         || descriptor.state_scope.kind() == ScopeKind::File
         || partition.scope.kind() == ScopeKind::File
         || matches!(
             &partition.start_position,
             Some(SourcePosition::FileManifest(_))
-        );
-    if !requires_file_manifest {
-        return;
+        )
+    {
+        let Some(SourcePosition::FileManifest(manifest)) = &batch.header.source_position else {
+            panic!("file-scoped resource batches must carry a FileManifest source position");
+        };
+        assert_file_manifest(manifest);
     }
-
-    let Some(SourcePosition::FileManifest(manifest)) = &batch.header.source_position else {
-        panic!("file-scoped resource batches must carry a FileManifest source position");
-    };
-    assert_file_manifest(manifest);
 }
 
 fn assert_file_manifest(manifest: &FileManifest) {
