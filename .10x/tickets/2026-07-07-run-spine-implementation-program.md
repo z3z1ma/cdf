@@ -37,6 +37,7 @@ Children:
 - 2026-07-07: User ratified the remaining Postgres destination and non-file checkpoint semantics. General orchestrator and CLI spine work are open dependency-gated children; no parent-level semantic blocker remains.
 - 2026-07-07: General run Postgres destination child closed with evidence `.10x/evidence/2026-07-07-general-run-postgres-destination.md` and review `.10x/reviews/2026-07-07-general-run-postgres-destination-review.md`. The general orchestrator child now needs a parent closure audit; CLI spine remains an open executable child for the next implementation goal.
 - 2026-07-07: General run orchestrator child closed with evidence `.10x/evidence/2026-07-07-general-run-orchestrator-closure.md` and review `.10x/reviews/2026-07-07-general-run-orchestrator-closure-review.md`. CLI run/resume/replay/inspect is now the remaining open run-spine implementation child.
+- 2026-07-07: Split CLI spine into child tickets for `run`, `replay package`, `resume`, and `inspect run` so execution can proceed without one monolithic CLI patch.
 
 ## Blockers
 
