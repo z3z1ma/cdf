@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-general-run-orchestrator.md
@@ -41,3 +41,5 @@ Run focused `cdf-project` tests, Postgres destination live tests when the harnes
 
 - 2026-07-07: Blocked during `.10x/tickets/2026-07-07-general-run-orchestrator.md` continuation. Inspection found `PostgresDestination::plan_load` and `DestinationProtocol::begin` are available, but project-level inputs for safe `PostgresLoadPlanInput` construction are not yet ratified.
 - 2026-07-07: User ratified the first-slice Postgres input contract in `.10x/decisions/project-run-postgres-destination-inputs.md`, while clarifying that future destination introspection remains in scope for the overall product. This ticket is now executable as an explicit-input project-run slice.
+- 2026-07-07: Implemented and verified Postgres project-run destination support. Evidence recorded in `.10x/evidence/2026-07-07-general-run-postgres-destination.md`. The implementation uses explicit Postgres run inputs, package-schema-derived columns after package finalization, preflight load-plan validation before mutation, destination-owned receipt verification before checkpoint commit, and durable-receipt recovery without source contact. Postgres project-run receipt source metadata is receipt-only because generic `CommitSession::finalize` does not return duplicate/no-op detail.
+- 2026-07-07: Parent review recorded in `.10x/reviews/2026-07-07-general-run-postgres-destination-review.md`. The review found that an initial helper duplicated Postgres Arrow type mapping inside `cdf-project`; that was corrected by exposing `postgres_columns_for_schema` from `cdf-dest-postgres` and using the destination-owned mapping in the runtime.

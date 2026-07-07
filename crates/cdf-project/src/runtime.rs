@@ -7,6 +7,11 @@ use std::{
 use cdf_declarative::{CompiledResource, CompiledResourcePlan, RestResource, SqlResource};
 use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};
+use cdf_dest_postgres::{
+    MergeDedupPolicy, PostgresColumn, PostgresCommitRequest, PostgresDestination,
+    PostgresExistingTable, PostgresIdentifier, PostgresLoadPlan, PostgresLoadPlanInput,
+    PostgresTarget, postgres_columns_for_schema,
+};
 #[cfg(test)]
 use cdf_engine::EngineRunOutputWithSegmentPositions;
 use cdf_engine::{
@@ -14,8 +19,8 @@ use cdf_engine::{
 };
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    CheckpointStore, CursorOrderingClaim, DestinationCommitRequest, DestinationId,
-    DestinationProtocol, IdempotencyToken, PackageHash, PipelineId, PlanId, Receipt,
+    CheckpointStore, CursorOrderingClaim, CursorPosition, CursorValue, DestinationCommitRequest,
+    DestinationId, DestinationProtocol, IdempotencyToken, PackageHash, PipelineId, PlanId, Receipt,
     ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, SchemaHash, SchemaSource,
     ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
 };
@@ -87,6 +92,14 @@ pub struct PackageArtifactParquetRecoveryRequest<'a, Store: CheckpointStore + ?S
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
+pub struct PackageArtifactPostgresRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
+    pub package_dir: PathBuf,
+    pub destination: &'a PostgresDestination,
+    pub checkpoint_store: &'a Store,
+    pub receipt: Receipt,
+    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedDuckDbReplayReport {
     pub checkpoint: Checkpoint,
@@ -110,6 +123,9 @@ pub enum ProjectReceiptSource {
         duplicate: bool,
         package_receipt_recorded: bool,
     },
+    DestinationCommitReceiptOnly {
+        package_receipt_recorded: bool,
+    },
     SuppliedDurableReceipt,
 }
 
@@ -123,6 +139,9 @@ impl ProjectReceiptSource {
                 duplicate,
                 package_receipt_recorded,
             },
+            Self::DestinationCommitReceiptOnly { .. } => {
+                unreachable!("Postgres receipt-only metadata cannot become a DuckDB report")
+            }
             Self::SuppliedDurableReceipt => PreparedReceiptSource::SuppliedDurableReceipt,
         }
     }
@@ -156,7 +175,7 @@ pub struct LocalFileDuckDbRunRequest<'a> {
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ProjectRunDestination {
     DuckDb {
         database_path: PathBuf,
@@ -166,6 +185,44 @@ pub enum ProjectRunDestination {
         root: PathBuf,
         target: TargetName,
     },
+    Postgres {
+        database_url: String,
+        target: PostgresTarget,
+        dedup: MergeDedupPolicy,
+        existing_table: Option<PostgresExistingTable>,
+    },
+}
+
+impl std::fmt::Debug for ProjectRunDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DuckDb {
+                database_path,
+                target,
+            } => f
+                .debug_struct("DuckDb")
+                .field("database_path", database_path)
+                .field("target", target)
+                .finish(),
+            Self::ParquetFilesystem { root, target } => f
+                .debug_struct("ParquetFilesystem")
+                .field("root", root)
+                .field("target", target)
+                .finish(),
+            Self::Postgres {
+                target,
+                dedup,
+                existing_table,
+                ..
+            } => f
+                .debug_struct("Postgres")
+                .field("database_url", &"<redacted>")
+                .field("target", target)
+                .field("dedup", dedup)
+                .field("existing_table", existing_table)
+                .finish(),
+        }
+    }
 }
 
 pub struct ProjectRunRequest<'a> {
@@ -374,6 +431,33 @@ async fn run_project_with_failpoint(
                 }
             }
         }
+        ProjectRunDestination::Postgres { database_url, .. } => {
+            let run_ledger = SqliteRunLedger::open(&request.state_store_path)?;
+            let run = run_ledger.create_run(request.run_id.clone())?;
+            let checkpoint_store = SqliteCheckpointStore::open(&request.state_store_path)?;
+            let destination = PostgresDestination::connect(database_url.clone())?;
+            let recorder = ProjectRunRecorder::new(
+                &run_ledger,
+                run.run_id,
+                recorder_context(
+                    &request,
+                    &package_dir,
+                    destination.sheet().destination.clone(),
+                ),
+            );
+            let execution = ProjectPostgresRunExecution {
+                checkpoint_store: &checkpoint_store,
+                destination: &destination,
+                recorder: &recorder,
+            };
+            match run_project_postgres_inner(&request, schema_hash, package_dir, execution).await {
+                Ok(report) => Ok(report),
+                Err(error) => {
+                    let _ = recorder.append_run_failed();
+                    Err(error)
+                }
+            }
+        }
     }
 }
 
@@ -569,6 +653,98 @@ struct ProjectParquetRunExecution<'a> {
     recorder: &'a ProjectRunRecorder<'a>,
 }
 
+async fn run_project_postgres_inner(
+    request: &ProjectRunRequest<'_>,
+    schema_hash: SchemaHash,
+    package_dir: PathBuf,
+    execution: ProjectPostgresRunExecution<'_>,
+) -> Result<ProjectRunReport> {
+    execution.recorder.append_run_started()?;
+    execution.recorder.append_plan_recorded()?;
+    execution.recorder.append_package_started()?;
+
+    let resource = request.resource.stream();
+    let descriptor = resource.descriptor();
+    let scope = descriptor.state_scope.clone();
+    let head =
+        execution
+            .checkpoint_store
+            .head(&request.pipeline_id, &descriptor.resource_id, &scope)?;
+    let target = postgres_target(request)?;
+
+    let write_state_commit_artifacts =
+        |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
+            write_run_state_commit_artifacts(
+                builder,
+                draft,
+                &StateCommitArtifactContext {
+                    descriptor,
+                    pipeline_id: &request.pipeline_id,
+                    checkpoint_id: &request.checkpoint_id,
+                    target: &target,
+                },
+                &schema_hash,
+                &scope,
+                &head,
+            )
+        };
+    let output = execute_to_package_with_segment_positions_and_pre_finalize(
+        &request.plan,
+        resource,
+        &package_dir,
+        &write_state_commit_artifacts,
+    )
+    .await?;
+
+    let replay_inputs = PackageReader::open(&package_dir)?.replay_inputs()?;
+    let package_hash = replay_inputs.state_delta.package_hash.clone();
+    let row_count = output.output.profile.output_rows;
+    let segment_count = output.output.segments.len();
+    execution
+        .recorder
+        .append_package_finalized(&package_hash, row_count, segment_count)?;
+
+    let stage_hook =
+        |stage: DestinationReplayStage<'_>| execution.recorder.append_replay_stage(stage);
+    let replay_report = replay_postgres_package_with_inputs(
+        PackageReader::open(&package_dir)?,
+        package_dir.clone(),
+        execution.destination,
+        execution.checkpoint_store,
+        PostgresPackageReplayInputs::from_package_artifacts(
+            request,
+            &PackageReader::open(&package_dir)?,
+            replay_inputs,
+        )?,
+        PostgresReplayHooks {
+            after_receipt_verified: request.after_receipt_verified,
+            stage: Some(&stage_hook),
+        },
+    )?;
+    execution.recorder.append_run_succeeded()?;
+    let ledger_snapshot = execution.recorder.snapshot()?;
+
+    Ok(ProjectRunReport {
+        run_id: execution.recorder.run_id.clone(),
+        ledger_snapshot,
+        package_dir,
+        package_id: request.package_id.clone(),
+        package_hash,
+        package_status: replay_report.package_status,
+        checkpoint: replay_report.checkpoint,
+        receipt: replay_report.receipt,
+        receipt_source: replay_report.receipt_source,
+        row_count,
+        segment_count,
+    })
+}
+
+struct ProjectPostgresRunExecution<'a> {
+    checkpoint_store: &'a SqliteCheckpointStore,
+    destination: &'a PostgresDestination,
+    recorder: &'a ProjectRunRecorder<'a>,
+}
+
 fn write_run_state_commit_artifacts(
     builder: &cdf_package::PackageBuilder,
     draft: EnginePackageDraft<'_>,
@@ -631,8 +807,135 @@ fn validate_project_run_request(request: &ProjectRunRequest<'_>) -> Result<()> {
                 )));
             }
         }
+        ProjectRunDestination::Postgres { database_url, .. } => {
+            PostgresDestination::connect(database_url.clone())?;
+            validate_postgres_preflight(request)?;
+        }
     }
     Ok(())
+}
+
+fn validate_postgres_preflight(request: &ProjectRunRequest<'_>) -> Result<()> {
+    let resource = request.resource.stream();
+    let schema_hash = declared_schema_hash(resource)?;
+    let delta = postgres_preflight_delta(resource, &schema_hash)?;
+    let commit = commit_request(
+        &delta,
+        postgres_target(request)?,
+        resource.descriptor().write_disposition.clone(),
+    )?;
+    let replay = PackageReplayInputs {
+        input_checkpoint: None,
+        state_delta: delta,
+        destination_commit: commit,
+        schema_hash,
+        merge_keys: Vec::new(),
+    };
+    let input =
+        postgres_load_plan_input(request, &replay, postgres_columns_from_schema(resource)?)?;
+    PostgresDestination::new().plan_load(input)?;
+    Ok(())
+}
+
+fn postgres_preflight_delta(
+    resource: &dyn ResourceStream,
+    schema_hash: &SchemaHash,
+) -> Result<StateDelta> {
+    let descriptor = resource.descriptor();
+    let segment = StateSegment {
+        segment_id: SegmentId::new("seg-postgres-preflight")?,
+        scope: descriptor.state_scope.clone(),
+        output_position: SourcePosition::Cursor(CursorPosition {
+            version: 1,
+            field: "preflight".to_owned(),
+            value: CursorValue::I64(0),
+        }),
+        row_count: 1,
+        byte_count: 1,
+    };
+    Ok(StateDelta {
+        checkpoint_id: CheckpointId::new("checkpoint-postgres-preflight")?,
+        pipeline_id: PipelineId::new("pipeline-postgres-preflight")?,
+        resource_id: descriptor.resource_id.clone(),
+        scope: descriptor.state_scope.clone(),
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: segment.output_position.clone(),
+        package_hash: PackageHash::new("sha256:postgres-preflight")?,
+        schema_hash: schema_hash.clone(),
+        segments: vec![segment],
+    })
+}
+
+fn postgres_target(request: &ProjectRunRequest<'_>) -> Result<TargetName> {
+    match &request.destination {
+        ProjectRunDestination::Postgres { target, .. } => TargetName::new(target.display_name()),
+        _ => Err(CdfError::internal(
+            "postgres target requested for non-Postgres project destination",
+        )),
+    }
+}
+
+fn postgres_load_plan_input(
+    request: &ProjectRunRequest<'_>,
+    inputs: &PackageReplayInputs,
+    columns: Vec<PostgresColumn>,
+) -> Result<PostgresLoadPlanInput> {
+    let ProjectRunDestination::Postgres {
+        target,
+        dedup,
+        existing_table,
+        ..
+    } = &request.destination
+    else {
+        return Err(CdfError::internal(
+            "postgres load plan requested for non-Postgres project destination",
+        ));
+    };
+    let descriptor = request.resource.descriptor();
+    Ok(PostgresLoadPlanInput {
+        package_hash: inputs.state_delta.package_hash.clone(),
+        idempotency_token: inputs.destination_commit.idempotency_token.clone(),
+        target: target.clone(),
+        disposition: descriptor.write_disposition.clone(),
+        schema_hash: inputs.schema_hash.clone(),
+        segments: inputs.state_delta.segments.clone(),
+        columns,
+        merge_keys: postgres_merge_keys(descriptor)?,
+        dedup: dedup.clone(),
+        existing_table: existing_table.clone(),
+        resource_id: Some(descriptor.resource_id.clone()),
+        state_delta: Some(inputs.state_delta.clone()),
+    })
+}
+
+fn postgres_merge_keys(descriptor: &ResourceDescriptor) -> Result<Vec<PostgresIdentifier>> {
+    if descriptor.write_disposition != WriteDisposition::Merge {
+        return Ok(Vec::new());
+    }
+    descriptor
+        .merge_key
+        .iter()
+        .map(PostgresIdentifier::user)
+        .collect()
+}
+
+fn postgres_columns_from_schema(resource: &dyn ResourceStream) -> Result<Vec<PostgresColumn>> {
+    postgres_columns_for_schema(resource.schema().as_ref())
+}
+
+fn postgres_columns_from_package(reader: &PackageReader) -> Result<Vec<PostgresColumn>> {
+    let segments = reader.read_all_segments()?;
+    let schema = segments
+        .iter()
+        .flat_map(|(_, batches)| batches.iter())
+        .next()
+        .map(|batch| batch.schema())
+        .ok_or_else(|| {
+            CdfError::data("Postgres destination requires at least one package batch")
+        })?;
+    postgres_columns_for_schema(schema.as_ref())
 }
 
 fn validate_checkpointable_source_position(resource: ProjectRunResource<'_>) -> Result<()> {
@@ -1109,6 +1412,33 @@ impl ParquetPackageReplayInputs {
     }
 }
 
+struct PostgresPackageReplayInputs {
+    delta: StateDelta,
+    target: TargetName,
+    disposition: WriteDisposition,
+    load_plan: Option<PostgresLoadPlan>,
+    commit: DestinationCommitRequest,
+}
+
+impl PostgresPackageReplayInputs {
+    fn from_package_artifacts(
+        request: &ProjectRunRequest<'_>,
+        reader: &PackageReader,
+        inputs: PackageReplayInputs,
+    ) -> Result<Self> {
+        let load_input =
+            postgres_load_plan_input(request, &inputs, postgres_columns_from_package(reader)?)?;
+        let load_plan = PostgresDestination::new().plan_load(load_input)?;
+        Ok(Self {
+            target: inputs.destination_commit.target.clone(),
+            disposition: inputs.destination_commit.disposition.clone(),
+            commit: inputs.destination_commit,
+            delta: inputs.state_delta,
+            load_plan: Some(load_plan),
+        })
+    }
+}
+
 pub fn replay_duckdb_package_from_artifacts<Store>(
     request: PackageArtifactDuckDbReplayRequest<'_, Store>,
 ) -> Result<PreparedDuckDbReplayReport>
@@ -1417,6 +1747,39 @@ where
     )
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PreparedPostgresReplayReport {
+    pub checkpoint: Checkpoint,
+    pub receipt: Receipt,
+    pub receipt_source: ProjectReceiptSource,
+    pub package_status: PackageStatus,
+}
+
+pub fn recover_postgres_package_from_artifacts<Store>(
+    request: PackageArtifactPostgresRecoveryRequest<'_, Store>,
+) -> Result<PreparedPostgresReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let reader = PackageReader::open(&request.package_dir)?;
+    let replay_inputs = reader.replay_inputs()?;
+    let inputs = PostgresPackageReplayInputs {
+        target: replay_inputs.destination_commit.target.clone(),
+        disposition: replay_inputs.destination_commit.disposition.clone(),
+        commit: replay_inputs.destination_commit,
+        delta: replay_inputs.state_delta,
+        load_plan: None,
+    };
+    recover_postgres_package_with_inputs(
+        reader,
+        request.destination,
+        request.checkpoint_store,
+        inputs,
+        request.receipt,
+        request.after_receipt_verified,
+    )
+}
+
 fn replay_parquet_package_with_inputs<Store>(
     mut reader: PackageReader,
     package_dir: PathBuf,
@@ -1521,6 +1884,108 @@ where
     })
 }
 
+fn replay_postgres_package_with_inputs<Store>(
+    mut reader: PackageReader,
+    package_dir: PathBuf,
+    destination: &PostgresDestination,
+    checkpoint_store: &Store,
+    inputs: PostgresPackageReplayInputs,
+    hooks: PostgresReplayHooks<'_>,
+) -> Result<PreparedPostgresReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let checkpoint_id = inputs.delta.checkpoint_id.clone();
+    checkpoint_store.propose(inputs.delta.clone())?;
+    if let Err(error) = notify_destination_replay_stage(
+        hooks.stage,
+        DestinationReplayStage::CheckpointProposed {
+            delta: &inputs.delta,
+        },
+    ) {
+        let _ = checkpoint_store.abandon(&checkpoint_id);
+        return Err(error);
+    }
+    if let Err(error) = reader.update_status(PackageStatus::Loading) {
+        let _ = checkpoint_store.abandon(&checkpoint_id);
+        return Err(error);
+    }
+
+    let load_plan = inputs
+        .load_plan
+        .clone()
+        .ok_or_else(|| CdfError::internal("Postgres replay requires a load plan"))?;
+    let request = PostgresCommitRequest {
+        package_dir,
+        plan: load_plan.clone(),
+    };
+    let receipts_before = reader.receipts()?.len();
+    if let Err(error) = notify_destination_replay_stage(
+        hooks.stage,
+        DestinationReplayStage::DestinationCommitStarted {
+            plan_id: &load_plan.kernel.plan_id,
+        },
+    ) {
+        let _ = checkpoint_store.abandon(&checkpoint_id);
+        return Err(error);
+    }
+    let receipt = match commit_postgres_package_through_session(
+        destination,
+        request,
+        inputs.commit.clone(),
+    ) {
+        Ok(receipt) => receipt,
+        Err(error) => {
+            let _ = checkpoint_store.abandon(&checkpoint_id);
+            return Err(error);
+        }
+    };
+
+    let package_receipt_recorded = reader.receipts()?.len() > receipts_before;
+    verify_postgres_receipt_before_checkpoint(
+        destination,
+        &inputs.delta,
+        &inputs.target,
+        &inputs.disposition,
+        &receipt,
+    )?;
+    notify_destination_replay_stage(
+        hooks.stage,
+        DestinationReplayStage::DestinationReceiptRecorded { receipt: &receipt },
+    )?;
+    if let Some(hook) = hooks.after_receipt_verified {
+        hook(&receipt)?;
+    }
+
+    let checkpoint = checkpoint_store.commit(&inputs.delta.checkpoint_id, receipt.clone())?;
+    notify_destination_replay_stage(
+        hooks.stage,
+        DestinationReplayStage::CheckpointCommitted {
+            checkpoint: &checkpoint,
+        },
+    )?;
+    let package_status = reader
+        .update_status(PackageStatus::Checkpointed)?
+        .lifecycle
+        .status
+        .clone();
+    notify_destination_replay_stage(
+        hooks.stage,
+        DestinationReplayStage::PackageStatusUpdated {
+            status: &package_status,
+        },
+    )?;
+
+    Ok(PreparedPostgresReplayReport {
+        checkpoint,
+        receipt,
+        receipt_source: ProjectReceiptSource::DestinationCommitReceiptOnly {
+            package_receipt_recorded,
+        },
+        package_status,
+    })
+}
+
 fn recover_parquet_package_with_inputs<Store>(
     mut reader: PackageReader,
     destination: &ParquetDestination,
@@ -1559,7 +2024,50 @@ where
     })
 }
 
+fn recover_postgres_package_with_inputs<Store>(
+    mut reader: PackageReader,
+    destination: &PostgresDestination,
+    checkpoint_store: &Store,
+    inputs: PostgresPackageReplayInputs,
+    receipt: Receipt,
+    after_receipt_verified: Option<ReceiptVerifiedHook<'_>>,
+) -> Result<PreparedPostgresReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    verify_postgres_receipt_before_checkpoint(
+        destination,
+        &inputs.delta,
+        &inputs.target,
+        &inputs.disposition,
+        &receipt,
+    )?;
+    if let Some(hook) = after_receipt_verified {
+        hook(&receipt)?;
+    }
+
+    let checkpoint =
+        commit_or_reuse_committed_checkpoint(checkpoint_store, &inputs.delta, receipt.clone())?;
+    let package_status = reader
+        .update_status(PackageStatus::Checkpointed)?
+        .lifecycle
+        .status
+        .clone();
+
+    Ok(PreparedPostgresReplayReport {
+        checkpoint,
+        receipt,
+        receipt_source: ProjectReceiptSource::SuppliedDurableReceipt,
+        package_status,
+    })
+}
+
 struct ParquetReplayHooks<'a> {
+    after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+    stage: Option<DestinationReplayStageHook<'a>>,
+}
+
+struct PostgresReplayHooks<'a> {
     after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
     stage: Option<DestinationReplayStageHook<'a>>,
 }
@@ -1570,6 +2078,25 @@ fn commit_parquet_package_through_session(
     plan: cdf_kernel::CommitPlan,
 ) -> Result<Receipt> {
     let mut session = destination.begin(request.commit.clone(), plan)?;
+    if let Err(error) = session.apply_migrations() {
+        let _ = session.abort();
+        return Err(error);
+    }
+    if let Err(error) = session.write() {
+        let _ = session.abort();
+        return Err(error);
+    }
+    session.finalize()
+}
+
+fn commit_postgres_package_through_session(
+    destination: &PostgresDestination,
+    request: PostgresCommitRequest,
+    commit: DestinationCommitRequest,
+) -> Result<Receipt> {
+    let plan = request.plan.kernel.clone();
+    let session_destination = destination.clone().with_commit_request(request);
+    let mut session = session_destination.begin(commit, plan)?;
     if let Err(error) = session.apply_migrations() {
         let _ = session.abort();
         return Err(error);
@@ -1834,6 +2361,27 @@ fn verify_parquet_receipt_before_checkpoint(
     if !verification.verified {
         return Err(CdfError::destination(format!(
             "Parquet receipt {} did not verify: {}",
+            verification.receipt_id,
+            verification
+                .reason
+                .unwrap_or_else(|| "verification returned false".to_owned())
+        )));
+    }
+    Ok(())
+}
+
+fn verify_postgres_receipt_before_checkpoint(
+    destination: &PostgresDestination,
+    delta: &StateDelta,
+    target: &TargetName,
+    disposition: &WriteDisposition,
+    receipt: &Receipt,
+) -> Result<()> {
+    validate_receipt_identity(delta, target, disposition, receipt)?;
+    let verification = destination.verify_receipt(receipt)?;
+    if !verification.verified {
+        return Err(CdfError::destination(format!(
+            "Postgres receipt {} did not verify: {}",
             verification.receipt_id,
             verification
                 .reason

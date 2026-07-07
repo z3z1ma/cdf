@@ -35,6 +35,7 @@ Children:
 - 2026-07-07: SQLite run-ledger store child closed with evidence `.10x/evidence/2026-07-07-sqlite-run-ledger-store.md` and review `.10x/reviews/2026-07-07-sqlite-run-ledger-store-review.md`. The general orchestrator child is now unblocked.
 - 2026-07-07: General run orchestrator child has a verified partial implementation for deterministic local file resources into DuckDB and filesystem Parquet, with evidence `.10x/evidence/2026-07-07-general-run-orchestrator-partial.md` and review `.10x/reviews/2026-07-07-general-run-orchestrator-partial-review.md`. The child is blocked, not closed, on Postgres destination request semantics and non-file resource stream semantics.
 - 2026-07-07: User ratified the remaining Postgres destination and non-file checkpoint semantics. General orchestrator and CLI spine work are open dependency-gated children; no parent-level semantic blocker remains.
+- 2026-07-07: General run Postgres destination child closed with evidence `.10x/evidence/2026-07-07-general-run-postgres-destination.md` and review `.10x/reviews/2026-07-07-general-run-postgres-destination-review.md`. The general orchestrator child now needs a parent closure audit; CLI spine remains an open executable child for the next implementation goal.
 
 ## Blockers
 

@@ -6,7 +6,7 @@ Updated: 2026-07-07
 
 ## Context
 
-`.10x/tickets/2026-07-07-general-run-postgres-destination.md` is blocked because the general project-run request cannot safely construct `PostgresLoadPlanInput` without knowing target identity, column mappings, merge keys, dedup policy, and existing-table policy.
+`.10x/tickets/done/2026-07-07-general-run-postgres-destination.md` was blocked because the general project-run request could not safely construct `PostgresLoadPlanInput` without knowing target identity, column mappings, merge keys, dedup policy, and existing-table policy.
 
 The user ratified the recommended project-run slice on 2026-07-07 and clarified that this is not a rejection of destination introspection as an overall product ambition. The decision here is scoped only to constructing the first general-run Postgres destination request.
 
@@ -37,6 +37,6 @@ Rejected. Explicit inputs are sufficient for the first deterministic run-spine s
 
 ## Consequences
 
-`.10x/tickets/2026-07-07-general-run-postgres-destination.md` is no longer blocked on user input. It can proceed by adding an explicit Postgres destination request shape and mapping package/resource metadata through existing destination rules.
+`.10x/tickets/done/2026-07-07-general-run-postgres-destination.md` was unblocked by this decision and implemented by adding an explicit Postgres destination request shape and mapping package/resource metadata through existing destination rules.
 
 Future destination introspection work needs its own focused spec/ticket and is not precluded by this decision.

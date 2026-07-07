@@ -44,5 +44,6 @@ mod validate;
 pub use api::*;
 pub use identifiers::*;
 pub use plan::*;
+pub use rows::{postgres_columns_for_schema, postgres_type_for_arrow};
 pub use sheet::*;
 pub use source::*;

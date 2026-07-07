@@ -73,6 +73,17 @@ pub(crate) fn validate_schema_matches_plan(
     Ok(())
 }
 
+pub fn postgres_columns_for_schema(schema: &Schema) -> Result<Vec<PostgresColumn>> {
+    schema
+        .fields()
+        .iter()
+        .map(|field| {
+            let data_type = postgres_type_for_arrow(field.data_type())?;
+            PostgresColumn::new(field.name(), &data_type, field.is_nullable())
+        })
+        .collect()
+}
+
 pub(crate) fn batch_row_values(batch: &RecordBatch, row: usize) -> Result<Vec<Option<String>>> {
     batch
         .columns()
@@ -159,7 +170,7 @@ fn typed<'a, T: 'static>(array: &'a dyn Array, data_type: &DataType) -> Result<&
     })
 }
 
-fn postgres_type_for_arrow(data_type: &DataType) -> Result<String> {
+pub fn postgres_type_for_arrow(data_type: &DataType) -> Result<String> {
     let value = match data_type {
         DataType::Boolean => "BOOLEAN".to_owned(),
         DataType::Int8 | DataType::Int16 | DataType::UInt8 => "SMALLINT".to_owned(),
@@ -179,7 +190,7 @@ fn postgres_type_for_arrow(data_type: &DataType) -> Result<String> {
         DataType::Timestamp(TimeUnit::Microsecond, Some(_)) => "TIMESTAMPTZ".to_owned(),
         other => {
             return Err(CdfError::contract(format!(
-                "live Postgres execution does not support Arrow type {other:?}"
+                "Postgres destination does not support Arrow type {other:?}"
             )));
         }
     };

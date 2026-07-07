@@ -15,6 +15,7 @@ use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
+use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
 use cdf_engine::{
     EnginePlan, EnginePlanInput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
     EngineSegmentPosition, ExecutionProfile, LineageSummary, PlanBoundedness, Planner,
@@ -39,10 +40,11 @@ use tempfile::TempDir;
 use crate::{
     LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest, PackageArtifactDuckDbRecoveryRequest,
     PackageArtifactDuckDbReplayRequest, PackageArtifactParquetRecoveryRequest,
-    PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
-    ProjectReceiptSource, ProjectRunDestination, ProjectRunReport, ProjectRunRequest,
-    ProjectRunResource, recover_duckdb_package_from_artifacts,
-    recover_parquet_package_from_artifacts, recover_prepared_duckdb_package,
+    PackageArtifactPostgresRecoveryRequest, PreparedDuckDbRecoveryRequest,
+    PreparedDuckDbReplayRequest, PreparedReceiptSource, ProjectReceiptSource,
+    ProjectRunDestination, ProjectRunReport, ProjectRunRequest, ProjectRunResource,
+    recover_duckdb_package_from_artifacts, recover_parquet_package_from_artifacts,
+    recover_postgres_package_from_artifacts, recover_prepared_duckdb_package,
     replay_duckdb_package_from_artifacts, replay_prepared_duckdb_package,
     replay_prepared_duckdb_package_with_failpoint, run_local_file_to_duckdb_checkpoint,
     run_project, runtime::state_delta_from_run,
@@ -98,6 +100,23 @@ trust = "governed"
 schema = { fields = [
   { name = "id", type = "int64", nullable = false },
   { name = "name", type = "string", nullable = true },
+] }
+"#;
+const POSTGRES_UNSUPPORTED_FILE_RESOURCE: &str = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "seen_at", type = "timestamp_millis", nullable = false, timezone = "UTC" },
 ] }
 "#;
 const REST_RESOURCE: &str = r#"
@@ -480,6 +499,34 @@ fn parquet_project_run_request<'a>(
         destination: ProjectRunDestination::ParquetFilesystem {
             root: parquet_root.to_path_buf(),
             target: TargetName::new("events").unwrap(),
+        },
+        run_id: Some(RunId::new(run_id).unwrap()),
+        after_receipt_verified: None,
+    }
+}
+
+fn postgres_project_run_request<'a>(
+    resource: &'a cdf_declarative::CompiledResource,
+    package_id: &str,
+    package_root: &Path,
+    database_url: &str,
+    target: PostgresTarget,
+    state_path: &Path,
+    run_id: &str,
+) -> ProjectRunRequest<'a> {
+    ProjectRunRequest {
+        resource: ProjectRunResource::LocalFile(resource),
+        plan: live_plan(resource, package_id),
+        package_root: package_root.to_path_buf(),
+        state_store_path: state_path.to_path_buf(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
+        destination: ProjectRunDestination::Postgres {
+            database_url: database_url.to_owned(),
+            target,
+            dedup: MergeDedupPolicy::Last,
+            existing_table: None,
         },
         run_id: Some(RunId::new(run_id).unwrap()),
         after_receipt_verified: None,
@@ -984,6 +1031,78 @@ fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
 }
 
 #[test]
+fn general_project_run_commits_file_resource_to_postgres_with_ledger_order() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-general-postgres";
+    let package_root = temp.path().join(".cdf/packages");
+    let state_path = temp.path().join(".cdf/state.db");
+    let target = PostgresTarget::new(Some(&postgres.schema), "events").unwrap();
+
+    let report = futures_executor::block_on(run_project(postgres_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &postgres.url,
+        target,
+        &state_path,
+        "run-general-postgres",
+    )))
+    .unwrap();
+
+    let kinds = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            RunEventKind::RunStarted,
+            RunEventKind::PlanRecorded,
+            RunEventKind::PackageStarted,
+            RunEventKind::PackageFinalized,
+            RunEventKind::CheckpointProposed,
+            RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::CheckpointCommitted,
+            RunEventKind::PackageStatusUpdated,
+            RunEventKind::RunSucceeded,
+        ]
+    );
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.receipt.destination.as_str(), "postgres");
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
+            package_receipt_recorded: true
+        }
+    );
+    let destination = PostgresDestination::connect(postgres.url.clone()).unwrap();
+    assert!(
+        destination
+            .verify_receipt(&report.receipt)
+            .unwrap()
+            .verified
+    );
+    let mut client = postgres.client();
+    let rows: i64 = client
+        .query_one(
+            &format!("SELECT COUNT(*)::bigint FROM {}", postgres.table("events")),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 2);
+}
+
+#[test]
 fn general_project_run_executes_deterministic_rest_resource_stream() {
     let first_root = tempfile::tempdir().unwrap();
     let second_root = tempfile::tempdir().unwrap();
@@ -1032,6 +1151,56 @@ fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
 }
 
 #[test]
+fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), POSTGRES_UNSUPPORTED_FILE_RESOURCE);
+    let package_id = "pkg-general-postgres-unsupported-schema";
+    let package_root = temp.path().join(".cdf/packages");
+    let state_path = temp.path().join(".cdf/state.db");
+    let target = PostgresTarget::new(Some(&postgres.schema), "events_unsupported").unwrap();
+
+    let error = futures_executor::block_on(run_project(postgres_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &postgres.url,
+        target,
+        &state_path,
+        "run-general-postgres-unsupported-schema",
+    )))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("Postgres destination does not support Arrow type Timestamp(Millisecond"),
+        "{error}"
+    );
+    assert!(!package_root.join(package_id).exists());
+    assert!(!state_path.exists());
+    let mut client = postgres.client();
+    let target_exists: Option<String> = client
+        .query_one(
+            "SELECT to_regclass($1)::text",
+            &[&format!("{}.events_unsupported", postgres.schema)],
+        )
+        .unwrap()
+        .get(0);
+    let loads_exists: Option<String> = client
+        .query_one(
+            "SELECT to_regclass($1)::text",
+            &[&format!("{}._cdf_loads", postgres.schema)],
+        )
+        .unwrap()
+        .get(0);
+    assert!(target_exists.is_none());
+    assert!(loads_exists.is_none());
+}
+
+#[test]
 fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
     let temp = tempfile::tempdir().unwrap();
     let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
@@ -1071,6 +1240,65 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
         report.receipt_source,
         ProjectReceiptSource::SuppliedDurableReceipt
     );
+}
+
+#[test]
+fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_contact() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-general-postgres-recovery";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let state_path = temp.path().join(".cdf/state.db");
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before postgres checkpoint"));
+    let target = PostgresTarget::new(Some(&postgres.schema), "events_recovery").unwrap();
+    let mut request = postgres_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &postgres.url,
+        target,
+        &state_path,
+        "run-general-postgres-recovery",
+    );
+    request.after_receipt_verified = Some(&hook);
+    futures_executor::block_on(run_project(request)).unwrap_err();
+    fs::remove_file(temp.path().join("data/events.ndjson")).unwrap();
+
+    let destination = PostgresDestination::connect(postgres.url.clone()).unwrap();
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let receipts = package_receipts(&package_dir);
+    assert_eq!(receipts.len(), 1);
+    let report = recover_postgres_package_from_artifacts(PackageArtifactPostgresRecoveryRequest {
+        package_dir: package_dir.clone(),
+        destination: &destination,
+        checkpoint_store: &store,
+        receipt: receipts[0].clone(),
+        after_receipt_verified: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::SuppliedDurableReceipt
+    );
+    let mut client = postgres.client();
+    let rows: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {}",
+                postgres.table("events_recovery")
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 2);
 }
 
 #[test]
