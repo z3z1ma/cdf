@@ -10,9 +10,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, SchemaRef, TimeUnit};
 use cdf_http::{
-    AuthRefreshHook, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport, Paginator,
-    RateLimiter, RetryBudget, RetryDecision, RetryPolicy, RetryUnit, SecretProvider,
-    send_with_policy,
+    AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport,
+    Paginator, RateLimiter, RetryBudget, RetryDecision, RetryPolicy, RetryUnit, SecretProvider,
+    SecretUri, send_with_policy,
 };
 use cdf_kernel::{
     Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue, PartitionPlan,
@@ -97,6 +97,44 @@ impl RestResource {
 
     pub fn compiled(&self) -> &CompiledResource {
         &self.compiled
+    }
+
+    pub fn validate_runtime_dependencies(&self) -> Result<()> {
+        let CompiledResourcePlan::Rest(plan) = self.compiled.plan() else {
+            return Err(CdfError::contract(
+                "only compiled REST resources can be opened by RestResource",
+            ));
+        };
+        if plan.auth.is_some() && self.dependencies.secret_provider.is_none() {
+            return Err(CdfError::auth(
+                "REST resource auth requires an explicit SecretProvider runtime dependency",
+            ));
+        }
+        if let Some(auth) = &plan.auth {
+            let provider = self
+                .dependencies
+                .secret_provider
+                .as_deref()
+                .ok_or_else(|| {
+                    CdfError::auth(
+                        "REST resource auth requires an explicit SecretProvider runtime dependency",
+                    )
+                })?;
+            let secret = provider.resolve(auth_secret_uri(auth))?;
+            if secret.as_str()?.trim().is_empty() {
+                return Err(CdfError::auth(
+                    "REST resource auth secret resolved to an empty value",
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+fn auth_secret_uri(auth: &AuthScheme) -> &SecretUri {
+    match auth {
+        AuthScheme::Bearer { token_uri } => token_uri,
+        AuthScheme::Header { value_uri, .. } => value_uri,
     }
 }
 

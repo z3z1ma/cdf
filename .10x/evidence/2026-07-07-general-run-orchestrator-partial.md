@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/2026-07-07-general-run-orchestrator.md, .10x/tickets/2026-07-07-general-run-postgres-destination.md, .10x/tickets/2026-07-07-general-run-non-file-resource-streams.md
+Relates-To: .10x/tickets/2026-07-07-general-run-orchestrator.md, .10x/tickets/2026-07-07-general-run-postgres-destination.md, .10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md
 
 # General Run Orchestrator Partial Verification
 

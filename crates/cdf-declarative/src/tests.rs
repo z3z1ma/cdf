@@ -577,6 +577,41 @@ fn rest_runtime_fails_closed_for_missing_secret() {
 }
 
 #[test]
+fn rest_runtime_dependency_preflight_resolves_auth_secret() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+
+    let valid = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    valid.validate_runtime_dependencies().unwrap();
+
+    let missing = resource
+        .to_rest_resource(RestRuntimeDependencies::new(transport.clone()))
+        .unwrap();
+    let error = missing.validate_runtime_dependencies().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert!(error.to_string().contains("SecretProvider"));
+
+    let empty = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport.clone())
+                .with_secret_provider(StaticSecretProvider::new([("secret://env/API_TOKEN", "")])),
+        )
+        .unwrap();
+    let error = empty.validate_runtime_dependencies().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert!(error.to_string().contains("empty value"));
+    assert_eq!(transport.requests().len(), 0);
+}
+
+#[test]
 fn rest_runtime_fails_closed_for_non_json_response() {
     let error = rest_open_error(
         REST_RUNTIME_EXAMPLE,
@@ -1563,6 +1598,29 @@ fn sql_runtime_requires_explicit_secret_provider() {
     let partition = sql.plan_partitions(&request).unwrap().remove(0);
     let error = expect_open_error(futures_executor::block_on(sql.open(partition)));
     assert!(error.to_string().contains("SecretProvider"));
+}
+
+#[test]
+fn sql_runtime_dependency_preflight_resolves_connection_secret() {
+    let resource = compile_document(&parse_toml(SQL_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+
+    let missing = resource
+        .to_sql_resource(SqlRuntimeDependencies::new())
+        .unwrap();
+    let error = missing.validate_runtime_dependencies().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert!(error.to_string().contains("SecretProvider"));
+
+    let empty = resource
+        .to_sql_resource(SqlRuntimeDependencies::new().with_secret_provider(
+            StaticSecretProvider::new([("secret://env/POSTGRES_URL", "")]),
+        ))
+        .unwrap();
+    let error = empty.validate_runtime_dependencies().unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Auth);
+    assert!(error.to_string().contains("empty value"));
 }
 
 #[test]

@@ -4,7 +4,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use cdf_declarative::{CompiledResource, CompiledResourcePlan};
+use cdf_declarative::{CompiledResource, CompiledResourcePlan, RestResource, SqlResource};
 use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};
 #[cfg(test)]
@@ -14,10 +14,10 @@ use cdf_engine::{
 };
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    CheckpointStore, DestinationCommitRequest, DestinationId, DestinationProtocol,
-    IdempotencyToken, PackageHash, PipelineId, PlanId, Receipt, ResourceId, Result, RunId,
-    SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, WriteDisposition,
+    CheckpointStore, CursorOrderingClaim, DestinationCommitRequest, DestinationId,
+    DestinationProtocol, IdempotencyToken, PackageHash, PipelineId, PlanId, Receipt,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, SchemaHash, SchemaSource,
+    ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
 };
 use cdf_package::{
     DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus, ReplayView,
@@ -169,7 +169,7 @@ pub enum ProjectRunDestination {
 }
 
 pub struct ProjectRunRequest<'a> {
-    pub resource: &'a CompiledResource,
+    pub resource: ProjectRunResource<'a>,
     pub plan: EnginePlan,
     pub package_root: PathBuf,
     pub state_store_path: PathBuf,
@@ -179,6 +179,47 @@ pub struct ProjectRunRequest<'a> {
     pub destination: ProjectRunDestination,
     pub run_id: Option<RunId>,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ProjectRunResource<'a> {
+    LocalFile(&'a CompiledResource),
+    Rest(&'a RestResource),
+    Sql(&'a SqlResource),
+}
+
+impl<'a> ProjectRunResource<'a> {
+    pub fn local_file(resource: &'a CompiledResource) -> Self {
+        Self::LocalFile(resource)
+    }
+
+    pub fn rest(resource: &'a RestResource) -> Self {
+        Self::Rest(resource)
+    }
+
+    pub fn sql(resource: &'a SqlResource) -> Self {
+        Self::Sql(resource)
+    }
+
+    fn stream(self) -> &'a dyn ResourceStream {
+        match self {
+            Self::LocalFile(resource) => resource,
+            Self::Rest(resource) => resource,
+            Self::Sql(resource) => resource,
+        }
+    }
+
+    fn descriptor(self) -> &'a ResourceDescriptor {
+        self.stream().descriptor()
+    }
+
+    fn validate_supported(self) -> Result<()> {
+        match self {
+            Self::LocalFile(resource) => validate_local_file_run_resource(resource),
+            Self::Rest(resource) => resource.validate_runtime_dependencies(),
+            Self::Sql(resource) => resource.validate_runtime_dependencies(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -236,7 +277,7 @@ pub async fn run_local_file_to_duckdb_checkpoint_with_failpoint(
     lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
 ) -> Result<LocalFileDuckDbRunReport> {
     let request = ProjectRunRequest {
-        resource: request.resource,
+        resource: ProjectRunResource::LocalFile(request.resource),
         plan: request.plan,
         package_root: request.package_root,
         state_store_path: request.state_store_path,
@@ -266,7 +307,7 @@ async fn run_project_with_failpoint(
     validate_project_run_request(&request)?;
     validate_explicit_package_id(&request.package_id)?;
 
-    let schema_hash = declared_schema_hash(request.resource)?;
+    let schema_hash = declared_schema_hash(request.resource.stream())?;
     let package_dir = request.package_root.join(&request.package_id);
     refuse_existing_package_dir(&package_dir)?;
     ensure_parent_directory(&request.state_store_path)?;
@@ -362,12 +403,13 @@ async fn run_project_duckdb_inner(
     execution.recorder.append_plan_recorded()?;
     execution.recorder.append_package_started()?;
 
-    let scope = request.resource.descriptor().state_scope.clone();
-    let head = execution.checkpoint_store.head(
-        &request.pipeline_id,
-        &request.resource.descriptor().resource_id,
-        &scope,
-    )?;
+    let resource = request.resource.stream();
+    let descriptor = resource.descriptor();
+    let scope = descriptor.state_scope.clone();
+    let head =
+        execution
+            .checkpoint_store
+            .head(&request.pipeline_id, &descriptor.resource_id, &scope)?;
 
     let write_state_commit_artifacts =
         |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
@@ -375,7 +417,7 @@ async fn run_project_duckdb_inner(
                 builder,
                 draft,
                 &StateCommitArtifactContext {
-                    resource: request.resource,
+                    descriptor,
                     pipeline_id: &request.pipeline_id,
                     checkpoint_id: &request.checkpoint_id,
                     target: execution.target,
@@ -387,7 +429,7 @@ async fn run_project_duckdb_inner(
         };
     let output = execute_to_package_with_segment_positions_and_pre_finalize(
         &request.plan,
-        request.resource,
+        resource,
         &package_dir,
         &write_state_commit_artifacts,
     )
@@ -449,12 +491,13 @@ async fn run_project_parquet_inner(
     execution.recorder.append_plan_recorded()?;
     execution.recorder.append_package_started()?;
 
-    let scope = request.resource.descriptor().state_scope.clone();
-    let head = execution.checkpoint_store.head(
-        &request.pipeline_id,
-        &request.resource.descriptor().resource_id,
-        &scope,
-    )?;
+    let resource = request.resource.stream();
+    let descriptor = resource.descriptor();
+    let scope = descriptor.state_scope.clone();
+    let head =
+        execution
+            .checkpoint_store
+            .head(&request.pipeline_id, &descriptor.resource_id, &scope)?;
 
     let write_state_commit_artifacts =
         |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
@@ -462,7 +505,7 @@ async fn run_project_parquet_inner(
                 builder,
                 draft,
                 &StateCommitArtifactContext {
-                    resource: request.resource,
+                    descriptor,
                     pipeline_id: &request.pipeline_id,
                     checkpoint_id: &request.checkpoint_id,
                     target: execution.target,
@@ -474,7 +517,7 @@ async fn run_project_parquet_inner(
         };
     let output = execute_to_package_with_segment_positions_and_pre_finalize(
         &request.plan,
-        request.resource,
+        resource,
         &package_dir,
         &write_state_commit_artifacts,
     )
@@ -544,8 +587,8 @@ fn write_run_state_commit_artifacts(
     )?;
     let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
         context.target.clone(),
-        context.resource.descriptor().write_disposition.clone(),
-        context.resource.descriptor().merge_key.clone(),
+        context.descriptor.write_disposition.clone(),
+        context.descriptor.merge_key.clone(),
         schema_hash.clone(),
         state_delta.segments.clone(),
     );
@@ -556,8 +599,13 @@ fn write_run_state_commit_artifacts(
 }
 
 fn validate_project_run_request(request: &ProjectRunRequest<'_>) -> Result<()> {
-    validate_local_file_run_resource(request.resource)?;
-    validate_run_plan(request.resource, &request.plan, &request.package_id)?;
+    request.resource.validate_supported()?;
+    validate_checkpointable_source_position(request.resource)?;
+    validate_run_plan(
+        request.resource.stream(),
+        &request.plan,
+        &request.package_id,
+    )?;
     match &request.destination {
         ProjectRunDestination::DuckDb { database_path, .. } => {
             let destination = DuckDbDestination::new(database_path)?;
@@ -587,20 +635,42 @@ fn validate_project_run_request(request: &ProjectRunRequest<'_>) -> Result<()> {
     Ok(())
 }
 
+fn validate_checkpointable_source_position(resource: ProjectRunResource<'_>) -> Result<()> {
+    match resource {
+        ProjectRunResource::LocalFile(_) => Ok(()),
+        ProjectRunResource::Rest(_) | ProjectRunResource::Sql(_) => {
+            let descriptor = resource.descriptor();
+            let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
+                CdfError::contract(format!(
+                    "cdf run requires non-file resource `{}` to declare an exact zero-lag cursor in this slice",
+                    descriptor.resource_id
+                ))
+            })?;
+            if cursor.ordering != CursorOrderingClaim::Exact || cursor.lag_tolerance_ms != 0 {
+                return Err(CdfError::contract(format!(
+                    "cdf run requires non-file resource `{}` to use an exact zero-lag cursor in this slice; inexact ordering or lag requires ratified window-close checkpoint semantics",
+                    descriptor.resource_id
+                )));
+            }
+            Ok(())
+        }
+    }
+}
+
 fn validate_local_file_run_resource(resource: &CompiledResource) -> Result<()> {
     match resource.plan() {
         CompiledResourcePlan::Files(_) => Ok(()),
         CompiledResourcePlan::Rest(_) => Err(CdfError::contract(
-            "cdf run supports only declarative local file resources in this slice; REST execution is excluded",
+            "cdf run local-file resource input supports only declarative local file resources; use RestResource for REST execution",
         )),
         CompiledResourcePlan::Sql(_) => Err(CdfError::contract(
-            "cdf run supports only declarative local file resources in this slice; SQL execution is excluded",
+            "cdf run local-file resource input supports only declarative local file resources; use SqlResource for SQL execution",
         )),
     }
 }
 
 fn validate_run_plan(
-    resource: &CompiledResource,
+    resource: &dyn ResourceStream,
     plan: &EnginePlan,
     package_id: &str,
 ) -> Result<()> {
@@ -625,7 +695,7 @@ fn validate_run_plan(
     Ok(())
 }
 
-fn declared_schema_hash(resource: &CompiledResource) -> Result<SchemaHash> {
+fn declared_schema_hash(resource: &dyn ResourceStream) -> Result<SchemaHash> {
     match &resource.descriptor().schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
         SchemaSource::Discovered { schema_hash: None } => Err(CdfError::contract(
@@ -682,7 +752,7 @@ pub(crate) fn state_delta_from_run(
     head: Option<&Checkpoint>,
 ) -> Result<StateDelta> {
     let context = StateCommitArtifactContext {
-        resource: request.resource,
+        descriptor: request.resource.descriptor(),
         pipeline_id: &request.pipeline_id,
         checkpoint_id: &request.checkpoint_id,
         target: &request.target,
@@ -701,7 +771,7 @@ pub(crate) fn state_delta_from_run(
 }
 
 struct StateCommitArtifactContext<'a> {
-    resource: &'a CompiledResource,
+    descriptor: &'a ResourceDescriptor,
     pipeline_id: &'a PipelineId,
     checkpoint_id: &'a CheckpointId,
     target: &'a TargetName,
@@ -731,21 +801,15 @@ fn state_delta_preimage_from_run_draft(
             .clone()
             .ok_or_else(|| {
                 CdfError::data(format!(
-                    "package segment {} has no source position evidence; local file run cannot checkpoint without a FileManifest position",
+                    "package segment {} has no source position evidence; cdf run cannot checkpoint without source position evidence",
                     segment.segment_id
                 ))
             })?;
-        if !matches!(segment_position, SourcePosition::FileManifest(_)) {
-            return Err(CdfError::data(format!(
-                "package segment {} recorded a non-file source position; local file run requires FileManifest checkpoint evidence",
-                segment.segment_id
-            )));
-        }
-        let segment_position = normalize_file_manifest_position_for_scope(segment_position, scope);
+        let segment_position = normalize_source_position_for_scope(segment_position, scope);
         if let Some(existing) = &output_position {
             if existing != &segment_position {
                 return Err(CdfError::data(
-                    "single local file run produced divergent segment source positions",
+                    "single resource run produced divergent segment source positions",
                 ));
             }
         } else {
@@ -766,7 +830,7 @@ fn state_delta_preimage_from_run_draft(
     Ok(StateDeltaPreimage {
         checkpoint_id: context.checkpoint_id.clone(),
         pipeline_id: context.pipeline_id.clone(),
-        resource_id: context.resource.descriptor().resource_id.clone(),
+        resource_id: context.descriptor.resource_id.clone(),
         scope: scope.clone(),
         state_version: CHECKPOINT_STATE_VERSION,
         parent_checkpoint_id: head.map(|checkpoint| checkpoint.delta.checkpoint_id.clone()),
@@ -777,7 +841,7 @@ fn state_delta_preimage_from_run_draft(
     })
 }
 
-fn normalize_file_manifest_position_for_scope(
+fn normalize_source_position_for_scope(
     position: SourcePosition,
     scope: &ScopeKey,
 ) -> SourcePosition {

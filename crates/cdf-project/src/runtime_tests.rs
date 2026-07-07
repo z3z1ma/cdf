@@ -1,8 +1,13 @@
 use std::{
-    collections::BTreeMap,
-    fs,
-    path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    collections::{BTreeMap, VecDeque},
+    env, fs,
+    net::TcpListener,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
 };
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
@@ -14,6 +19,7 @@ use cdf_engine::{
     EnginePlan, EnginePlanInput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
     EngineSegmentPosition, ExecutionProfile, LineageSummary, PlanBoundedness, Planner,
 };
+use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
     CheckpointStore, CursorPosition, CursorValue, FileManifest, FilePosition, IdempotencyToken,
@@ -27,16 +33,19 @@ use cdf_package::{
     STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, canonical_json_bytes,
 };
 use cdf_state_sqlite::{RunEventKind, SqliteCheckpointStore, SqliteRunLedger};
+use postgres::{Client, NoTls};
+use tempfile::TempDir;
 
 use crate::{
     LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest, PackageArtifactDuckDbRecoveryRequest,
     PackageArtifactDuckDbReplayRequest, PackageArtifactParquetRecoveryRequest,
     PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
-    ProjectReceiptSource, ProjectRunDestination, ProjectRunRequest,
-    recover_duckdb_package_from_artifacts, recover_parquet_package_from_artifacts,
-    recover_prepared_duckdb_package, replay_duckdb_package_from_artifacts,
-    replay_prepared_duckdb_package, replay_prepared_duckdb_package_with_failpoint,
-    run_local_file_to_duckdb_checkpoint, run_project, runtime::state_delta_from_run,
+    ProjectReceiptSource, ProjectRunDestination, ProjectRunReport, ProjectRunRequest,
+    ProjectRunResource, recover_duckdb_package_from_artifacts,
+    recover_parquet_package_from_artifacts, recover_prepared_duckdb_package,
+    replay_duckdb_package_from_artifacts, replay_prepared_duckdb_package,
+    replay_prepared_duckdb_package_with_failpoint, run_local_file_to_duckdb_checkpoint,
+    run_project, runtime::state_delta_from_run,
 };
 
 const SCHEMA_HASH: &str = "schema-v1";
@@ -107,6 +116,47 @@ schema = { fields = [
   { name = "id", type = "int64", nullable = false },
 ] }
 "#;
+const REST_RUNTIME_RESOURCE: &str = r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.test"
+auth = { kind = "bearer", token = "secret://env/API_TOKEN" }
+egress_allowlist = ["api.example.test"]
+
+[resource.items]
+id = "api.items"
+path = "/items"
+records = "$.items"
+primary_key = ["id"]
+cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "updated_at", type = "int64", nullable = false },
+] }
+"#;
+const SQL_RUNTIME_RESOURCE: &str = r#"
+[source.warehouse]
+kind = "sql"
+connection = "secret://env/POSTGRES_URL"
+dialect = "postgres"
+
+[resource.orders]
+id = "postgres.orders"
+table = "public.orders"
+primary_key = ["id"]
+cursor = { field = "updated_at", ordering = "exact", lag = "0ms" }
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "updated_at", type = "int64", nullable = false },
+] }
+"#;
+
+static LIVE_POSTGRES_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LOCAL_POSTGRES_START: Mutex<()> = Mutex::new(());
 
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let schema = std::sync::Arc::new(Schema::new(vec![
@@ -344,6 +394,24 @@ fn rest_resource() -> cdf_declarative::CompiledResource {
         .remove(0)
 }
 
+fn rest_runtime_resource() -> cdf_declarative::CompiledResource {
+    let document = cdf_declarative::parse_toml(REST_RUNTIME_RESOURCE).unwrap();
+    cdf_declarative::compile_document(&document)
+        .unwrap()
+        .remove(0)
+}
+
+fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
+    let document = cdf_declarative::parse_toml(&SQL_RUNTIME_RESOURCE.replace(
+        r#"table = "public.orders""#,
+        &format!(r#"table = "{table}""#),
+    ))
+    .unwrap();
+    cdf_declarative::compile_document(&document)
+        .unwrap()
+        .remove(0)
+}
+
 fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> EnginePlan {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
@@ -377,7 +445,7 @@ fn project_run_request<'a>(
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
     ProjectRunRequest {
-        resource,
+        resource: ProjectRunResource::LocalFile(resource),
         plan: live_plan(resource, package_id),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
@@ -402,7 +470,7 @@ fn parquet_project_run_request<'a>(
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
     ProjectRunRequest {
-        resource,
+        resource: ProjectRunResource::LocalFile(resource),
         plan: live_plan(resource, package_id),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
@@ -428,6 +496,218 @@ fn file_position(path: &str) -> SourcePosition {
             sha256: Some(format!("sha256:{path}")),
         }],
     })
+}
+
+fn json_response(body: &str) -> HttpResponse {
+    HttpResponse::new(200).with_body(body.as_bytes().to_vec())
+}
+
+#[derive(Clone, Default)]
+struct RecordingTransport {
+    state: Arc<Mutex<RecordingTransportState>>,
+}
+
+#[derive(Default)]
+struct RecordingTransportState {
+    requests: Vec<HttpRequest>,
+    responses: VecDeque<HttpResponse>,
+}
+
+impl RecordingTransport {
+    fn new<I>(responses: I) -> Self
+    where
+        I: IntoIterator<Item = HttpResponse>,
+    {
+        Self {
+            state: Arc::new(Mutex::new(RecordingTransportState {
+                requests: Vec::new(),
+                responses: responses.into_iter().collect(),
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<HttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+}
+
+impl HttpTransport for RecordingTransport {
+    fn send(&mut self, request: HttpRequest) -> Result<HttpResponse> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request);
+        state
+            .responses
+            .pop_front()
+            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))
+    }
+}
+
+struct StaticSecretProvider {
+    values: BTreeMap<String, String>,
+}
+
+impl StaticSecretProvider {
+    fn new<I, K, V>(values: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+}
+
+impl SecretProvider for StaticSecretProvider {
+    fn resolve(&self, uri: &SecretUri) -> Result<SecretValue> {
+        self.values
+            .get(uri.as_str())
+            .map(|value| SecretValue::new(value.clone()))
+            .ok_or_else(|| CdfError::auth(format!("missing test secret `{uri}`")))
+    }
+}
+
+struct LivePostgres {
+    url: String,
+    schema: String,
+    _server: Option<LocalPostgres>,
+}
+
+struct LocalPostgres {
+    data_dir: TempDir,
+    _socket_dir: TempDir,
+    pg_ctl: PathBuf,
+}
+
+impl LivePostgres {
+    fn start() -> Option<Self> {
+        let (url, server) = match env::var("TEST_DATABASE_URL") {
+            Ok(url) if !url.trim().is_empty() => (url, None),
+            _ => {
+                let Some(server) = LocalPostgres::start() else {
+                    eprintln!(
+                        "skipping live Postgres test: set TEST_DATABASE_URL or install postgres/initdb/pg_ctl"
+                    );
+                    return None;
+                };
+                (server.url(), Some(server))
+            }
+        };
+        let schema = format!(
+            "cdf_project_live_{}_{}",
+            std::process::id(),
+            LIVE_POSTGRES_SCHEMA_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut client = Client::connect(&url, NoTls).unwrap();
+        client
+            .batch_execute(&format!("CREATE SCHEMA {}", quote_identifier(&schema)))
+            .unwrap();
+        Some(Self {
+            url,
+            schema,
+            _server: server,
+        })
+    }
+
+    fn client(&self) -> Client {
+        Client::connect(&self.url, NoTls).unwrap()
+    }
+
+    fn table(&self, table: &str) -> String {
+        format!("{}.{}", self.schema, table)
+    }
+}
+
+impl Drop for LivePostgres {
+    fn drop(&mut self) {
+        if let Ok(mut client) = Client::connect(&self.url, NoTls) {
+            let _ = client.batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {} CASCADE",
+                quote_identifier(&self.schema)
+            ));
+        }
+    }
+}
+
+impl LocalPostgres {
+    fn start() -> Option<Self> {
+        let _guard = LOCAL_POSTGRES_START.lock().unwrap();
+        let initdb = find_binary("initdb")?;
+        let pg_ctl = find_binary("pg_ctl")?;
+        let data_dir = tempfile::tempdir().unwrap();
+        let socket_dir = tempfile::tempdir().unwrap();
+        let port = free_port();
+
+        let init_status = Command::new(&initdb)
+            .args(["-D", data_dir.path().to_str().unwrap()])
+            .args(["-A", "trust"])
+            .args(["-U", "cdf"])
+            .arg("--no-sync")
+            .status()
+            .unwrap();
+        assert!(init_status.success(), "initdb failed");
+
+        let options = format!("-h 127.0.0.1 -p {port} -k {}", socket_dir.path().display());
+        let log_path = data_dir.path().join("postgres.log");
+        let start_status = Command::new(&pg_ctl)
+            .args(["-D", data_dir.path().to_str().unwrap()])
+            .args(["-l", log_path.to_str().unwrap()])
+            .args(["-o", &options])
+            .args(["-w", "start"])
+            .status()
+            .unwrap();
+        assert!(start_status.success(), "pg_ctl start failed");
+
+        Some(Self {
+            data_dir,
+            _socket_dir: socket_dir,
+            pg_ctl,
+        })
+    }
+
+    fn url(&self) -> String {
+        let port = fs::read_to_string(self.data_dir.path().join("postmaster.pid"))
+            .unwrap()
+            .lines()
+            .nth(3)
+            .unwrap()
+            .to_owned();
+        format!("postgresql://cdf@127.0.0.1:{port}/postgres")
+    }
+}
+
+impl Drop for LocalPostgres {
+    fn drop(&mut self) {
+        let _ = Command::new(&self.pg_ctl)
+            .args(["-D", self.data_dir.path().to_str().unwrap()])
+            .args(["-m", "fast"])
+            .args(["-w", "stop"])
+            .status();
+    }
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn find_binary(name: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|paths| {
+        env::split_paths(&paths)
+            .map(|path| path.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 fn stage_successful_replay(
@@ -486,6 +766,45 @@ fn assert_bad_reuse_head_rejected(
             .contains("injected checkpoint commit failure")
     );
     assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+}
+
+fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTransport) {
+    let compiled = rest_runtime_resource();
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": 1, "updated_at": 10 },
+            { "id": 2, "updated_at": 20 }
+        ] }"#,
+    )]);
+    let resource = compiled
+        .to_rest_resource(
+            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let package_id = "pkg-general-rest-runtime";
+    let package_root = root.join(".cdf/packages");
+    let state_path = root.join(".cdf/state.db");
+    let duckdb_path = root.join(".cdf/dev.duckdb");
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Rest(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root,
+        state_store_path: state_path,
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-runtime").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path,
+            target: TargetName::new("items").unwrap(),
+        },
+        run_id: Some(RunId::new(run_id).unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+    (report, transport)
 }
 
 #[test]
@@ -665,6 +984,29 @@ fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
 }
 
 #[test]
+fn general_project_run_executes_deterministic_rest_resource_stream() {
+    let first_root = tempfile::tempdir().unwrap();
+    let second_root = tempfile::tempdir().unwrap();
+
+    let (first, first_transport) = run_rest_project(first_root.path(), "run-general-rest-runtime");
+    let (second, second_transport) =
+        run_rest_project(second_root.path(), "run-general-rest-runtime");
+
+    assert_eq!(first.row_count, 2);
+    assert_eq!(first.segment_count, 1);
+    assert_eq!(first.package_status, PackageStatus::Checkpointed);
+    assert_eq!(first.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(first.package_hash, second.package_hash);
+    assert_eq!(first_transport.requests().len(), 1);
+    assert_eq!(second_transport.requests().len(), 1);
+    let SourcePosition::Cursor(cursor) = &first.checkpoint.delta.output_position else {
+        panic!("expected REST run to checkpoint a cursor position");
+    };
+    assert_eq!(cursor.field, "updated_at");
+    assert_eq!(cursor.value, CursorValue::I64(20));
+}
+
+#[test]
 fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
     let temp = tempfile::tempdir().unwrap();
     let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
@@ -732,30 +1074,335 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
 }
 
 #[test]
-fn general_project_run_rejects_unsupported_source_before_writes() {
+fn general_project_run_rejects_raw_compiled_rest_before_writes() {
     let temp = tempfile::tempdir().unwrap();
-    let file_resource = live_file_resource(temp.path());
     let rest_resource = rest_resource();
     let package_id = "pkg-general-rest-rejected";
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
-    let mut request = project_run_request(
-        &file_resource,
-        package_id,
-        &package_root,
-        &duckdb_path,
-        &state_path,
-        "run-general-rest-rejected",
-    );
-    request.resource = &rest_resource;
 
-    let error = futures_executor::block_on(run_project(request)).unwrap_err();
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::LocalFile(&rest_resource),
+        plan: live_plan(&rest_resource, package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-rejected").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.clone(),
+            target: TargetName::new("items").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-rest-rejected").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
 
     assert!(error.to_string().contains("local file resources"));
     assert!(!package_root.join(package_id).exists());
     assert!(!duckdb_path.exists());
     assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_rejects_rest_missing_secret_provider_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let compiled = rest_runtime_resource();
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let resource = compiled
+        .to_rest_resource(cdf_declarative::RestRuntimeDependencies::new(
+            transport.clone(),
+        ))
+        .unwrap();
+    let package_id = "pkg-general-rest-missing-secret";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Rest(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-missing-secret").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.clone(),
+            target: TargetName::new("items").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-rest-missing-secret").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("SecretProvider"));
+    assert_eq!(transport.requests().len(), 0);
+    assert!(!package_root.join(package_id).exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let compiled = rest_runtime_resource();
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let resource = compiled
+        .to_rest_resource(
+            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new(std::iter::empty::<(&str, &str)>()),
+            ),
+        )
+        .unwrap();
+    let package_id = "pkg-general-rest-missing-secret-value";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Rest(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-missing-secret-value").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.clone(),
+            target: TargetName::new("items").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-rest-missing-secret-value").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("missing test secret"));
+    assert_eq!(transport.requests().len(), 0);
+    assert!(!package_root.join(package_id).exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_rejects_rest_without_cursor_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let compiled = rest_resource();
+    let transport = RecordingTransport::new([json_response(r#"[{ "id": 1 }]"#)]);
+    let resource = compiled
+        .to_rest_resource(cdf_declarative::RestRuntimeDependencies::new(
+            transport.clone(),
+        ))
+        .unwrap();
+    let package_id = "pkg-general-rest-no-cursor";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Rest(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-no-cursor").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.clone(),
+            target: TargetName::new("items").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-rest-no-cursor").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("exact zero-lag cursor"));
+    assert_eq!(transport.requests().len(), 0);
+    assert!(!package_root.join(package_id).exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_rejects_inexact_rest_cursor_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let document = cdf_declarative::parse_toml(
+        &REST_RUNTIME_RESOURCE.replace(r#"ordering = "exact""#, r#"ordering = "best_effort""#),
+    )
+    .unwrap();
+    let compiled = cdf_declarative::compile_document(&document)
+        .unwrap()
+        .remove(0);
+    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let resource = compiled
+        .to_rest_resource(
+            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let package_id = "pkg-general-rest-inexact-cursor";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Rest(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-inexact-cursor").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.clone(),
+            target: TargetName::new("items").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-rest-inexact-cursor").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("window-close"));
+    assert_eq!(transport.requests().len(), 0);
+    assert!(!package_root.join(package_id).exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_rejects_sql_missing_secret_provider_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let compiled = sql_runtime_resource("public.orders");
+    let resource = compiled
+        .to_sql_resource(cdf_declarative::SqlRuntimeDependencies::new())
+        .unwrap();
+    let package_id = "pkg-general-sql-missing-secret";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Sql(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-sql-missing-secret").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.clone(),
+            target: TargetName::new("orders").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-sql-missing-secret").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("SecretProvider"));
+    assert!(!package_root.join(package_id).exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_rejects_sql_empty_secret_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let compiled = sql_runtime_resource("public.orders");
+    let resource = compiled
+        .to_sql_resource(
+            cdf_declarative::SqlRuntimeDependencies::new().with_secret_provider(
+                StaticSecretProvider::new([("secret://env/POSTGRES_URL", "")]),
+            ),
+        )
+        .unwrap();
+    let package_id = "pkg-general-sql-empty-secret";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Sql(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-sql-empty-secret").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.clone(),
+            target: TargetName::new("orders").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-sql-empty-secret").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("empty value"));
+    assert!(!package_root.join(package_id).exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("source_orders");
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"id\" BIGINT NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            );
+            INSERT INTO {} (\"id\", \"updated_at\") VALUES (1, 10), (2, 20)",
+            table, table
+        ))
+        .unwrap();
+
+    let temp = tempfile::tempdir().unwrap();
+    let compiled = sql_runtime_resource(&table);
+    let resource = compiled
+        .to_sql_resource(
+            cdf_declarative::SqlRuntimeDependencies::new().with_secret_provider(
+                StaticSecretProvider::new([("secret://env/POSTGRES_URL", postgres.url.clone())]),
+            ),
+        )
+        .unwrap();
+    let package_id = "pkg-general-sql-runtime";
+    let package_root = temp.path().join(".cdf/packages");
+    let state_path = temp.path().join(".cdf/state.db");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunResource::Sql(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root,
+        state_store_path: state_path,
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-sql-runtime").unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path,
+            target: TargetName::new("orders").unwrap(),
+        },
+        run_id: Some(RunId::new("run-general-sql-runtime").unwrap()),
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.segment_count, 1);
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    let SourcePosition::Cursor(cursor) = &report.checkpoint.delta.output_position else {
+        panic!("expected SQL run to checkpoint a cursor position");
+    };
+    assert_eq!(cursor.field, "updated_at");
+    assert_eq!(cursor.value, CursorValue::I64(20));
 }
 
 #[test]

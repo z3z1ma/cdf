@@ -20,7 +20,7 @@ Review of the partial general run orchestrator implementation in `crates/cdf-pro
 
 ## Findings
 
-- Significant: `.10x/tickets/2026-07-07-general-run-orchestrator.md` remains incomplete. The implementation supports deterministic local file resources into DuckDB and filesystem Parquet, but not Postgres destinations, REST resource streams, or table-backed SQL resource streams. This is now explicitly owned by `.10x/tickets/2026-07-07-general-run-postgres-destination.md` and `.10x/tickets/2026-07-07-general-run-non-file-resource-streams.md`; the parent ticket is correctly marked blocked, not done.
+- Significant: `.10x/tickets/2026-07-07-general-run-orchestrator.md` remains incomplete. The implementation supports deterministic local file resources into DuckDB and filesystem Parquet, but not Postgres destinations, REST resource streams, or table-backed SQL resource streams. This is now explicitly owned by `.10x/tickets/2026-07-07-general-run-postgres-destination.md` and `.10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md`; the parent ticket is correctly marked blocked, not done.
 - Minor: The public legacy `PreparedReceiptSource::DuckDbCommit` remains DuckDB-specific, while project-level reporting uses `ProjectReceiptSource`. This preserves semver and avoids mislabeling Parquet project reports, but it leaves two receipt-source types for future callers to distinguish.
 - Minor: `run_project` still validates `CompiledResource` as local-file-only. The fail-closed behavior is correct for this slice, but future REST/SQL work must avoid routing through `CompiledResource::open` defaults and must ratify non-file `SourcePosition` checkpoint semantics before implementation.
 

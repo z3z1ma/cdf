@@ -68,6 +68,26 @@ impl SqlResource {
     pub fn compiled(&self) -> &CompiledResource {
         &self.compiled
     }
+
+    pub fn validate_runtime_dependencies(&self) -> Result<()> {
+        let CompiledResourcePlan::Sql(plan) = self.compiled.plan() else {
+            return Err(CdfError::contract(
+                "only compiled SQL resources can be opened by SqlResource",
+            ));
+        };
+        let provider = self.dependencies.secret_provider.as_deref().ok_or_else(|| {
+            CdfError::auth(
+                "Postgres SQL resource connection requires an explicit SecretProvider runtime dependency",
+            )
+        })?;
+        let secret = provider.resolve(&plan.connection)?;
+        if secret.as_str()?.trim().is_empty() {
+            return Err(CdfError::auth(
+                "Postgres source connection string resolved to an empty value",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl CompiledResource {
