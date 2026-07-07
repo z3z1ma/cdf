@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md
 
@@ -43,6 +43,8 @@ No Rust source edits, no `Cargo.toml` or `Cargo.lock` dependency changes, no nat
 ## Progress and notes
 
 - 2026-07-06: Opened after explicit user ratification of the native Arrow/DataFusion Parquet policy. This ticket should land before native Parquet dependency additions so scanner behavior is intentional.
+- 2026-07-07: Activated as the prerequisite for native Parquet reader/writer work. The intended policy edit is limited to a single `deny.toml` advisory ignore for `RUSTSEC-2024-0436`; no dependency graph or cargo-vet metadata change is expected before native Parquet dependencies are added.
+- 2026-07-07: Closed after adding exactly `RUSTSEC-2024-0436` to `deny.toml` advisory ignores with a scoped native-Parquet removal note. `cargo deny`, `cargo audit`, OSV, and `cargo vet` passed; `cargo deny` warns the ignored advisory is not encountered because native Parquet dependencies are not yet in the graph. Evidence is `.10x/evidence/2026-07-07-rustsec-paste-parquet-exception.md`; review passed in `.10x/reviews/2026-07-07-rustsec-paste-parquet-exception-review.md`.
 
 ## Blockers
 

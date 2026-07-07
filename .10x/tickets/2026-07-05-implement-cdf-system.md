@@ -60,7 +60,7 @@ Fast-follow and full-system completion:
 - `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`
 - `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md`
 - `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`
-- `.10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md`
+- `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`
 - `.10x/tickets/2026-07-06-native-parquet-file-source.md`
 - `.10x/tickets/2026-07-06-native-parquet-writer-archive.md`
 - `.10x/tickets/2026-07-05-wasm-components-registry-signing.md`
@@ -137,6 +137,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`; live and prepared packages now include identity-participating state/commit preimage artifacts, package readers reconstruct verified replay inputs, DuckDB artifact replay/recovery no longer needs source contact, conformance/golden fixtures consume the artifacts, and mutation-hardened package preimage validation is recorded in `.10x/evidence/2026-07-07-package-state-commit-artifact-contract.md`.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-mechanical-cdf-identity-rename.md`; repository identity now follows `VISION.md` D-24 mechanically across root book authority, Cargo crates/packages, Rust crate imports, CLI binary target, Python SDK path/imports, package golden identity, tooling fingerprint names, and `.10x/` records. Semantic terminology cleanup for the former line metaphor is split to `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`; `VISION.md`'s commit-gate vocabulary now governs checkpoint/state advancement specs, records, paths, CLI output, and tests. `guarantee line` remains reserved for future `cdf plan` output.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`; `deny.toml` now has a single dormant advisory exception for `RUSTSEC-2024-0436` scoped to native Arrow/DataFusion Parquet, unblocking the native Parquet reader and writer/archive tickets without changing dependencies yet.
 
 ## Blockers
 

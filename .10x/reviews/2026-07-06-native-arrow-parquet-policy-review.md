@@ -29,4 +29,4 @@ Pass. The shaping ticket can close as a ratified policy decision with bounded im
 
 ## Residual risk
 
-The exception will create intentional scanner noise until tool policy is updated to ignore only this advisory. That is owned by `.10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md`.
+The exception will create intentional scanner noise until tool policy is updated to ignore only this advisory. That is now handled by `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`.

@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md, .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-06-package-archive-persistence-cli.md
+Depends-On: .10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md, .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-06-package-archive-persistence-cli.md
 
 # Replace DuckDB Parquet writer and archive path with native Arrow/DataFusion path
 
@@ -51,7 +51,8 @@ No Parquet file-source reader replacement, no package state/commit artifact chan
 ## Progress and notes
 
 - 2026-07-06: Opened after user ratification of native Arrow/DataFusion Parquet. The existing DuckDB-backed writer paths remain the behavioral baseline until this ticket closes.
+- 2026-07-07: Unblocked by `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`. When this ticket adds native Parquet dependencies, it must prove the actual advisory path and scanner behavior rather than relying only on the dormant policy exception.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md`.
+None.

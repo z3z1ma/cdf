@@ -27,7 +27,7 @@ The exception is not a broad permission to ignore unmaintained advisories. It mu
 
 The implementation will proceed through bounded tickets:
 
-- `.10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md`
+- `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`
 - `.10x/tickets/2026-07-06-native-parquet-file-source.md`
 - `.10x/tickets/2026-07-06-native-parquet-writer-archive.md`
 

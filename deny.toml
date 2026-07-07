@@ -1,5 +1,8 @@
 [advisories]
-ignore = []
+# 10x: scoped native-Parquet exception only; remove when arrow-rs/DataFusion no longer depends on paste.
+ignore = [
+    "RUSTSEC-2024-0436",
+]
 
 [licenses]
 allow = [
