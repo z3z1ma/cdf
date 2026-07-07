@@ -7,7 +7,7 @@ Relates-To: .10x/decisions/arrow-datafusion-tuple-policy.md, .10x/decisions/supe
 
 ## What was observed
 
-After recording the user's 2026-07-07 ratifications, `.10x` no longer contains any active `Status: blocked` record in tickets, decisions, or specs.
+At the time of this record-only check after the user's 2026-07-07 ratifications, `.10x` no longer contained any active `Status: blocked` record in tickets, decisions, or specs.
 
 ## Procedure
 
@@ -17,10 +17,12 @@ After recording the user's 2026-07-07 ratifications, `.10x` no longer contains a
 
 ## What this supports or challenges
 
-This supports the claim that the current 10x graph has no status-blocked ticket, decision, or spec after the ratified decisions were recorded and dependency-gated work was moved back to open owners.
+This supports the claim that the 10x graph had no status-blocked ticket, decision, or spec at the time these ratified decisions were recorded and dependency-gated work was moved back to open owners.
 
 ## Limits
 
 This was a record-only pass. No source build, runtime test, generated quality report, CodeQL database creation, or implementation verification was run.
 
 Historical records and progress notes may still mention past blocked states where they were true at the time; those are not active `Status: blocked` records.
+
+Later current-state note: a subsequent side-conversation check found `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` active with `Status: blocked` on separate supply-chain policy findings. That blocker is not part of the Parquet/Postgres destination-policy decision batch.

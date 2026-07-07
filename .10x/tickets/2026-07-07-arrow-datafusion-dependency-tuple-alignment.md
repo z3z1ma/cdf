@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -60,7 +60,13 @@ No generic `TableProvider` adapter, no explain/operator metadata changes, no pre
 - 2026-07-07: Opened from DataFusion delegation triage. The recommended default is no permanent Arrow 58/59 engine hot-path bridge. The execution-critical blocker is whether CDF should wait for DataFusion to align with Arrow 59, repin first-party Arrow to DataFusion's Arrow major after golden-suite proof, or explicitly ratify a temporary bridge.
 - 2026-07-07: User ratified `.10x/decisions/arrow-datafusion-tuple-policy.md` with a hard clarification that DataFusion is mandatory day-zero architecture. This ticket is no longer blocked on product preference; next execution must inspect the current registry/lockfile tuple and choose the smallest same-major-compatible path under that decision.
 - 2026-07-07: Recorded current tuple research in `.10x/research/2026-07-07-arrow-datafusion-current-tuple.md`. Parent-observed registry and lockfile evidence shows `datafusion 54.0.0` uses Arrow/Parquet 58.3.0, current CDF first-party crates use Arrow/Parquet 59.0.0, and `pyo3-arrow 0.19.0` is also on Arrow 59. The smallest same-major path under the active policy is a deliberate first-party repin to the Arrow/Parquet 58.3.0 tuple, including Python bridge tuple fallout, followed by golden-package and supply-chain evidence.
+- 2026-07-07: Worker mechanically repinned first-party Arrow/Parquet manifests and lockfile to the published DataFusion 54 / Arrow 58.3.0 tuple and moved `cdf-python` to `pyo3-arrow 0.17.0` with the PyO3/Numpy 0.28 line. `cargo metadata --locked --format-version 1`, requested `cargo tree` tuple checks, `cargo check --workspace --all-targets --locked`, and `cargo test -p cdf-conformance golden --locked --no-fail-fast` passed in the attempted worktree. Parent verification found unratified supply-chain failures: `cargo audit` reports `RUSTSEC-2026-0176` and `RUSTSEC-2026-0177` for `pyo3 0.28.3`, and OSV reports `GHSA-2f9f-gq7v-9h6m` for `thrift 0.17.0` introduced through `parquet 58.3.0`. Parent reverted the manifest/lockfile attempt from the worktree; do not commit the published-crate Arrow 58 repin without a new policy decision.
+- 2026-07-07: Recorded follow-up supply-chain research in `.10x/research/2026-07-07-arrow-datafusion-git-tuple-supply-chain.md`. A temporary `/tmp` Cargo graph using DataFusion git rev `7ff7278edc1bf7446303bff51e5883a38414bbdf` resolved to Arrow/Parquet 59.1.0, `pyo3 0.29.0`, and `pyo3-arrow 0.19.0`; `cargo audit` and OSV reported only the already-ratified `paste 1.0.15` advisory. This candidate still needs user ratification because it pins an unreleased git source for DataFusion.
 
 ## Blockers
 
-None from user. If current registry evidence still lacks a same-major tuple, implementation must either prove a safe CDF Arrow repin with golden-package evidence or return with a focused temporary-bridge/release-wait proposal under `.10x/decisions/arrow-datafusion-tuple-policy.md`.
+User ratification is needed for the next dependency-source policy:
+
+- Recommended: ratify a time-boxed pinned DataFusion git rev, starting with `7ff7278edc1bf7446303bff51e5883a38414bbdf`, so CDF can keep Arrow/Parquet 59.x and PyO3 0.29 while using DataFusion without an Arrow-major bridge. The pin must be replaced by the next crates.io DataFusion release that publishes the same Arrow tuple, and implementation must pass golden-package, cargo-vet, advisory, CodeQL, and focused compile/test gates.
+- Alternative: ratify narrow temporary exceptions or local patches for the published DataFusion 54 / Arrow 58.3.0 path's `pyo3 0.28.3` and `thrift 0.17.0` findings. This is not recommended.
+- Alternative: wait for a crates.io DataFusion release on Arrow 59.x before implementing the TableProvider adapter. This preserves supply-chain conservatism but blocks day-zero DataFusion execution work.
