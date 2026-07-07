@@ -119,5 +119,5 @@ fn first_schema(segments: &[(SegmentEntry, Vec<RecordBatch>)]) -> Result<SchemaR
 }
 
 pub(crate) fn write_parquet_segment(segment: &LoadedSegment) -> Result<Vec<u8>> {
-    crate::duckdb_writer::write_parquet_segment(segment)
+    cdf_package::transcode_record_batches_to_parquet_bytes(&segment.batches)
 }

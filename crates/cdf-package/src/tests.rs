@@ -7,6 +7,7 @@ use std::{
     sync::Arc,
 };
 
+use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, Time32SecondArray};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
@@ -15,7 +16,6 @@ use cdf_kernel::{
     PipelineId, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck, SegmentId,
     SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause, WriteDisposition,
 };
-use duckdb::Connection;
 
 fn sample_batch() -> RecordBatch {
     sample_batch_values(vec![1, 2, 3], vec![Some("ada"), Some("grace"), None])
@@ -222,18 +222,14 @@ fn parquet_rows(bytes: &[u8]) -> usize {
     let mut temp = tempfile::NamedTempFile::new().unwrap();
     temp.write_all(bytes).unwrap();
     temp.flush().unwrap();
-    let path = temp.path().to_str().unwrap();
-    let conn = Connection::open_in_memory().unwrap();
-    conn.query_row(
-        &format!("SELECT count(*) FROM read_parquet({})", sql_string(path)),
-        [],
-        |row| row.get::<_, usize>(0),
-    )
-    .unwrap()
-}
 
-fn sql_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+    let file = fs::File::open(temp.path()).unwrap();
+    ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap()
+        .map(|batch| batch.unwrap().num_rows())
+        .sum()
 }
 
 #[test]
@@ -956,7 +952,7 @@ fn archive_transcode_reports_unsupported_arrow_types() {
 }
 
 #[test]
-fn archive_transcode_rejects_duplicate_column_names_before_duckdb_ddl() {
+fn archive_transcode_rejects_duplicate_column_names_before_native_write() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("duplicate", DataType::Int64, false),
         Field::new("duplicate", DataType::Int64, false),

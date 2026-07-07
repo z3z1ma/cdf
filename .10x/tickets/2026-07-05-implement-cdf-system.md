@@ -62,7 +62,7 @@ Fast-follow and full-system completion:
 - `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`
 - `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`
 - `.10x/tickets/done/2026-07-06-native-parquet-file-source.md`
-- `.10x/tickets/2026-07-06-native-parquet-writer-archive.md`
+- `.10x/tickets/done/2026-07-06-native-parquet-writer-archive.md`
 - `.10x/tickets/2026-07-05-wasm-components-registry-signing.md`
 - `.10x/tickets/2026-07-05-cdc-and-streaming-supervisor.md`
 - `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`
@@ -139,6 +139,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`; `VISION.md`'s commit-gate vocabulary now governs checkpoint/state advancement specs, records, paths, CLI output, and tests. `guarantee line` remains reserved for future `cdf plan` output.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`; `deny.toml` now has a single dormant advisory exception for `RUSTSEC-2024-0436` scoped to native Arrow/DataFusion Parquet, unblocking the native Parquet reader and writer/archive tickets without changing dependencies yet.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-native-parquet-file-source.md`; `cdf-formats` now reads Parquet file sources through native arrow-rs `parquet 59.0.0`, removes its DuckDB/Arrow 58 Parquet bridge, preserves package replay/source-position/schema-hash behavior, and records explicit scanner evidence for the ratified `RUSTSEC-2024-0436` path through `paste`.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-06-native-parquet-writer-archive.md`; package archive transcode and the Parquet destination writer now use native arrow-rs `ArrowWriter`, remove the scoped DuckDB writer/export path, preserve IPC package identity and receipt/idempotency behavior, and record explicit scanner evidence for the ratified `RUSTSEC-2024-0436` path through `paste`.
 
 ## Blockers
 

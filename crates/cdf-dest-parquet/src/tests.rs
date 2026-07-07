@@ -3,6 +3,7 @@ use super::*;
 use std::io::Write;
 
 use crate::manifest::{ParquetObjectManifest, ReplacePointer, canonical_json_bytes, sha256_hex};
+use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_conformance::destination::{
@@ -13,7 +14,6 @@ use cdf_kernel::{
     SourcePosition,
 };
 use cdf_package::{PackageBuilder, PackageStatus, SegmentEntry};
-use duckdb::Connection;
 use object_store::{memory::InMemory, path::Path as ObjectPath};
 
 #[derive(Clone, Debug)]
@@ -115,18 +115,14 @@ fn parquet_rows(bytes: &[u8]) -> usize {
     let mut temp = tempfile::NamedTempFile::new().unwrap();
     temp.write_all(bytes).unwrap();
     temp.flush().unwrap();
-    let path = temp.path().to_str().unwrap();
-    let conn = Connection::open_in_memory().unwrap();
-    conn.query_row(
-        &format!("SELECT count(*) FROM read_parquet({})", sql_string(path)),
-        [],
-        |row| row.get::<_, usize>(0),
-    )
-    .unwrap()
-}
 
-fn sql_string(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "''"))
+    let file = fs::File::open(temp.path()).unwrap();
+    ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .build()
+        .unwrap()
+        .map(|batch| batch.unwrap().num_rows())
+        .sum()
 }
 
 fn manifest_key(receipt: &Receipt) -> &str {

@@ -51,7 +51,7 @@ CodeQL was skipped per the active goal instruction to skip CodeQL for now and av
 
 This supports closing `.10x/tickets/done/2026-07-06-native-parquet-file-source.md`: Parquet file sources now use the native arrow-rs Parquet reader, tests cover deterministic descriptor/batch behavior, schema hash propagation, source positions, malformed Parquet errors, and package replay compatibility, and the only advisory introduced is the previously ratified `RUSTSEC-2024-0436` path through `paste`.
 
-The evidence challenges no active specification or decision. It replaces the older DuckDB-backed workaround from `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md` only for file-source reads; package archive writer replacement remains separately owned by `.10x/tickets/2026-07-06-native-parquet-writer-archive.md`.
+The evidence challenges no active specification or decision. It replaces the older DuckDB-backed workaround from `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md` only for file-source reads; package archive writer replacement is separately owned by `.10x/tickets/done/2026-07-06-native-parquet-writer-archive.md`.
 
 ## Limits
 

@@ -31,7 +31,6 @@ const MANIFEST_VERSION: u16 = 1;
 const REPLACE_POINTER_VERSION: u16 = 1;
 
 mod api;
-mod duckdb_writer;
 mod manifest;
 mod package;
 mod receipts;
