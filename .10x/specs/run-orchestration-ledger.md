@@ -60,8 +60,8 @@ Given a selected environment, resource set, destination, checkpoint store, packa
 4. The runtime MUST execute `ResourceStream` partitions into a package with state-delta and destination-commit preimage artifacts before finalizing package identity.
 5. The runtime MUST append `package_finalized` with package path and hash after package finalization.
 6. The runtime MUST propose the checkpoint before destination mutation when a state delta is present and append `checkpoint_proposed`.
-7. The runtime MUST commit the package through a destination `CommitSession` and append `destination_receipt_recorded` only after a durable receipt exists.
-8. The runtime MUST verify or structurally accept the destination receipt according to the destination contract before calling `CheckpointStore::commit`.
+7. The runtime MUST feed package segments incrementally through a destination `CommitSession` and append `destination_receipt_recorded` only after a durable receipt exists.
+8. The runtime MUST verify the destination receipt through the destination protocol before calling `CheckpointStore::commit`.
 9. The runtime MUST call `CheckpointStore::commit(checkpoint_id, receipt)` as the only state advancement path and append `checkpoint_committed` after it succeeds.
 10. The runtime MUST update package status to checkpointed after checkpoint commit and append `package_status_updated`.
 11. The runtime MUST append `run_succeeded` only after every selected transition reaches its terminal success condition.
@@ -74,11 +74,11 @@ Destination drivers MUST expose a commit session API equivalent to:
 
 - Begin from a dry-runnable commit plan.
 - Apply migrations when the plan requires them.
-- Write package segments or a package view.
+- Write package segments incrementally and return per-segment acknowledgments.
 - Finalize to either a durable receipt or an error.
 - Abort when possible.
 
-The session API MUST preserve destination-specific receipt verification. A generic runtime MUST NOT synthesize receipts or bypass a destination verify clause.
+The session API MUST preserve destination-specific receipt verification through the destination protocol. A generic runtime MUST NOT synthesize receipts, bypass a destination verify clause, or call destination-specific verification free functions when a trait-level verifier is available.
 
 Destination sessions MUST support duplicate package-token behavior when declared by the destination sheet. Duplicate receipts MUST be recorded and inspected like non-duplicate receipts.
 

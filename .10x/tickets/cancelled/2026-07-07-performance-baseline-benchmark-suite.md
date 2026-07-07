@@ -1,4 +1,4 @@
-Status: open
+Status: cancelled
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
@@ -71,7 +71,9 @@ No benchmark harness implementation, no generated benchmark fixtures committed t
 ## Progress and notes
 
 - 2026-07-07: Opened from qualitative performance discussion. Current claim to validate: CDF should be fast for governed, typed, batch-oriented local data movement, but should not claim to beat DuckDB/DataFusion/Polars in their native hot paths without evidence.
+- 2026-07-07: Activated for triage after the run spine parent closed. Scope remains research/record-only: inspect code paths, classify benchmark candidates, and open a bounded harness ticket if recommended; do not implement benches in this ticket.
+- 2026-07-07: Cancelled before closure because the user-ratified P0 structural-debt directive promoted the benchmark gate directly to implementation. The replacement active owner is `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`.
 
 ## Blockers
 
-None for triage. Implementation of benchmarks remains blocked until this ticket recommends a bounded benchmark harness and the user or an active plan ratifies execution.
+Superseded by `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`.

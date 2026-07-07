@@ -57,6 +57,7 @@ MVP authoring, destinations, and product surface:
 
 Fast-follow and full-system completion:
 
+- `.10x/tickets/2026-07-07-p0-structural-debt-program.md`
 - `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`
 - `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md`
 - `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`
@@ -161,6 +162,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-07: Landed the filesystem Parquet CLI `run` and `replay package` slices under the CLI spine children, with shared evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md` and review `.10x/reviews/2026-07-07-cli-parquet-run-replay-review.md`. CLI REST/Postgres run, Postgres replay, resume, and inspect-run remained open at that point.
 - 2026-07-07: Closed CLI `replay package` at `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`; DuckDB, filesystem Parquet, and Postgres package replay now route through artifact replay APIs with fail-closed Postgres explicit target/dedup policy, source-loss live Postgres replay coverage, and full quality evidence in `.10x/evidence/2026-07-07-cli-postgres-package-replay.md`. At that point, CLI REST/Postgres `run`, `resume`, and `inspect run` remained open; the aggregate CLI spine later closed under `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md`.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-run-spine-implementation-program.md`; kernel `CommitSession`, DuckDB/Parquet/Postgres session refactors, SQLite run ledger, general orchestrator, non-file cursor checkpoint semantics, and CLI run/resume/replay/inspect now have aggregate evidence and review. The full CLI surface and killer-demo/conformance work remain active under their own parent tickets.
+- 2026-07-07: Opened P0 structural-debt stop-line program `.10x/tickets/2026-07-07-p0-structural-debt-program.md`. Until Workstreams A, B, and C close, new destination lanes, new source-archetype lanes, and the streaming supervisor are paused.
 
 ## Blockers
 

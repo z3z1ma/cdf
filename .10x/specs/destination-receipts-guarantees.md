@@ -10,17 +10,23 @@ This specification governs destination commit protocols, destination sheets, dis
 
 ## Destination protocol
 
-A destination MUST be a commit protocol, not an unverified sink. It MUST expose a destination sheet, dry-runnable commit planning, and commit sessions with migration, write, finalize, and abort operations.
+A destination MUST be a commit protocol, not an unverified sink. It MUST expose a destination sheet, dry-runnable commit planning, commit sessions with migration, segment-write, finalize, and abort operations, and trait-level receipt verification.
 
 `plan_commit` MUST be plan-time/dry-runnable and MUST surface migration DDL, target, disposition, and idempotency behavior before data moves.
 
 Package-embedded commit-plan evidence MUST follow `.10x/decisions/package-state-commit-preimage-artifacts.md`. When package-token idempotency uses the finalized package hash, the identity-participating artifact records `idempotency_token_source = "package_hash"` rather than a concrete token value. The concrete destination commit request uses the finalized package hash as the token after package identity is known.
 
-`finalize` MUST return a durable receipt or an error. There is no accepted ambiguous third state.
+`DestinationProtocol::begin` MUST be implemented by every destination protocol implementation. Session support is not optional and MUST NOT be hidden behind an error-returning default implementation. If a destination category cannot support sessions, that category must be modeled explicitly in the destination sheet and active specs before implementation.
+
+`CommitSession` MUST accept package segments incrementally, either as a segment stream or as per-segment writes returning `SegmentAck`. Fully materialized package replay MUST feed recorded package segments through the same API shape as future streaming package-to-destination commits. A session MAY be synchronous for MVP, but the API shape MUST NOT require callers to preload a whole package into the destination session.
+
+`finalize` MUST return a durable receipt over every segment accepted by the session or an error. There is no accepted ambiguous third state.
 
 A commit session MUST NOT synthesize checkpoint commits. It returns receipts; only the checkpoint store opens the commit gate. Destination-specific verification remains owned by the destination driver, even when called by a generic runtime.
 
-The first session API MAY be synchronous if it preserves existing destination behavior. Async, restartable sessions, and streaming segment writes are implementation choices unless a focused runtime/performance ticket ratifies them.
+Destination receipt verification MUST be exposed through the kernel destination protocol or an equivalent trait-level interface. Recovery and replay paths MUST verify receipts through that protocol rather than destination-specific free functions.
+
+Async and restartable sessions remain later implementation choices unless a focused runtime/performance ticket ratifies them.
 
 ## Destination sheets
 

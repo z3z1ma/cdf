@@ -12,7 +12,7 @@ This is a parent planning ticket. It is not executable implementation scope and 
 
 ## Child tickets
 
-- `.10x/tickets/2026-07-07-performance-baseline-benchmark-suite.md`
+- `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`
 - `.10x/tickets/2026-07-07-local-partition-parallelism-triage.md`
 - `.10x/tickets/2026-07-07-package-io-hashing-overhead-triage.md`
 - `.10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md`
@@ -64,6 +64,7 @@ No source edits, dependency changes, benchmark harness implementation, CI change
 
 - 2026-07-07: Opened as a side-conversation backlog after a qualitative performance discussion. The backlog intentionally captures questions for later validation rather than authorizing immediate optimization.
 - 2026-07-07: DataFusion delegation triage closed in `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`. It produced active decision `.10x/decisions/datafusion-tier-b-delegation-boundary.md`, tuple owner `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`, closed first-adapter owner `.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md`, and completed metadata-honesty owner `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`.
+- 2026-07-07: The triage-only baseline benchmark ticket was superseded by P0 Workstream F after the user ratified benchmark implementation as stop-line work. The cancelled record is `.10x/tickets/cancelled/2026-07-07-performance-baseline-benchmark-suite.md`; the single active owner is `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`.
 
 ## Blockers
 
