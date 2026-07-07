@@ -79,6 +79,6 @@ The next durable owners are:
 - `.10x/decisions/datafusion-tier-b-delegation-boundary.md`
 - `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
 - `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
-- `.10x/tickets/2026-07-07-datafusion-execution-honesty.md`
+- `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`
 
 The adapter should initially prove the boundary with a mock or narrowly bounded resource after Arrow/DataFusion type compatibility is settled. It should not replace package execution until it can preserve `BatchHeader` provenance, source positions, package identity, and checkpoint evidence.

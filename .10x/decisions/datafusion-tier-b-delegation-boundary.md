@@ -67,6 +67,6 @@ The current engine MVP remains valid evidence for pushdown vocabulary, no-I/O ne
 
 `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` owns the later adapter implementation and remains blocked until tuple compatibility is settled.
 
-`.10x/tickets/2026-07-07-datafusion-execution-honesty.md` owns the near-term source/product drift where explain/operator metadata names DataFusion nodes that are not actually executed.
+`.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md` owns the completed near-term source/product drift correction where explain/operator metadata named DataFusion nodes that were not actually executed.
 
 Native Arrow/DataFusion Parquet remains governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md`; this decision does not broaden the `RUSTSEC-2024-0436` exception or authorize new advisory ignores.

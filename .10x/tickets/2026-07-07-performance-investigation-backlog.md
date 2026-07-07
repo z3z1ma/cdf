@@ -63,7 +63,7 @@ No source edits, dependency changes, benchmark harness implementation, CI change
 ## Progress and notes
 
 - 2026-07-07: Opened as a side-conversation backlog after a qualitative performance discussion. The backlog intentionally captures questions for later validation rather than authorizing immediate optimization.
-- 2026-07-07: DataFusion delegation triage closed in `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`. It produced active decision `.10x/decisions/datafusion-tier-b-delegation-boundary.md`, blocked tuple owner `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`, blocked adapter owner `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`, and open metadata-honesty owner `.10x/tickets/2026-07-07-datafusion-execution-honesty.md`.
+- 2026-07-07: DataFusion delegation triage closed in `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`. It produced active decision `.10x/decisions/datafusion-tier-b-delegation-boundary.md`, blocked tuple owner `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`, blocked adapter owner `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`, and completed metadata-honesty owner `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`.
 
 ## Blockers
 

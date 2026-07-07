@@ -13,6 +13,6 @@ pub use execution::{
     execute_to_package_with_segment_positions_and_pre_finalize,
 };
 pub use planning::{
-    DATAFUSION_TABLE_PROVIDER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,
+    CDF_NATIVE_RESOURCE_ADAPTER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,
 };
 pub use types::*;

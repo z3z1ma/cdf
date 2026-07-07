@@ -151,6 +151,33 @@ fn tier_b_negotiates_pushdown_fidelity_without_io() {
 }
 
 #[test]
+fn tier_b_explain_serializes_honest_cdf_native_operator_metadata() {
+    let resource = MockResource::tier_b(sample_batches());
+    let input = plan_input(
+        vec!["id > 1", "active = true", "name != 'missing'"],
+        Some(vec!["name".to_owned()]),
+        Some(10),
+        PlanBoundedness::Bounded,
+    );
+    let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+    let explain_json = serde_json::to_value(&plan.explain).unwrap();
+
+    assert_honest_cdf_native_operator_metadata(&plan);
+    assert_explain_carries_required_fields(&explain_json);
+    assert_eq!(plan.explain.pushed_predicates.len(), 2);
+    assert_eq!(plan.explain.inexact_predicates.len(), 1);
+    assert_eq!(plan.explain.unsupported_predicates.len(), 1);
+    assert!(plan.explain.projection_pushed);
+    assert!(plan.explain.limit_pushed);
+    assert_eq!(plan.explain.partitions.len(), 2);
+    assert_eq!(plan.explain.estimates.rows, Some(3));
+    assert_eq!(
+        plan.explain.delivery_guarantee,
+        DeliveryGuarantee::EffectivelyOncePerKey
+    );
+}
+
+#[test]
 fn inexact_and_unsupported_predicates_are_reapplied_during_execution() {
     let resource = MockResource::tier_b(sample_batches());
     let input = plan_input(
@@ -207,12 +234,8 @@ fn explain_and_operator_chain_carry_contract_package_details() {
     let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let explain_json = serde_json::to_value(&plan.explain).unwrap();
 
-    assert!(explain_json.get("pushed_predicates").is_some());
-    assert!(explain_json.get("inexact_predicates").is_some());
-    assert!(explain_json.get("unsupported_predicates").is_some());
-    assert!(explain_json.get("partitions").is_some());
-    assert!(explain_json.get("estimates").is_some());
-    assert!(explain_json.get("delivery_guarantee").is_some());
+    assert_honest_cdf_native_operator_metadata(&plan);
+    assert_explain_carries_required_fields(&explain_json);
     assert!(plan.operator_chain.iter().any(|operator| {
         matches!(
             operator,
@@ -554,6 +577,61 @@ fn assert_span_fields(span: &CapturedSpan, expected: &[(&str, &str)]) {
         "span {} should record the exact field set",
         span.name
     );
+}
+
+fn assert_honest_cdf_native_operator_metadata(plan: &EnginePlan) {
+    let plan_json = serde_json::to_value(plan).unwrap();
+    let plan_text = serde_json::to_string(&plan_json).unwrap();
+    assert!(!plan_text.contains("data_fusion_table_provider"));
+    assert!(!plan_text.contains("data_fusion_scan_exec"));
+    assert!(!plan_text.contains("datafusion_table_provider"));
+
+    assert_cdf_native_operator_kinds(&plan_json["operator_chain"]);
+    assert_cdf_native_operator_kinds(&plan_json["explain"]["operator_chain"]);
+    assert_eq!(
+        plan_json["operator_chain"][0]["adapter_kind"],
+        "cdf_native_resource_adapter"
+    );
+    assert_eq!(
+        plan_json["explain"]["operator_chain"][0]["adapter_kind"],
+        "cdf_native_resource_adapter"
+    );
+}
+
+fn assert_cdf_native_operator_kinds(operator_chain: &serde_json::Value) {
+    let actual = operator_chain
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|operator| operator["kind"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        actual,
+        vec![
+            "cdf_resource_adapter",
+            "cdf_native_scan",
+            "schema_fingerprint_exec",
+            "contract_exec",
+            "normalize_exec",
+            "profile_exec",
+            "lineage_exec",
+            "package_sink",
+        ]
+    );
+}
+
+fn assert_explain_carries_required_fields(explain_json: &serde_json::Value) {
+    for field in [
+        "pushed_predicates",
+        "inexact_predicates",
+        "unsupported_predicates",
+        "partitions",
+        "estimates",
+        "delivery_guarantee",
+        "boundedness",
+    ] {
+        assert!(explain_json.get(field).is_some(), "missing {field}");
+    }
 }
 
 fn plan_input(

@@ -68,7 +68,7 @@ Fast-follow and full-system completion:
 - `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md`
 - `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
 - `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
-- `.10x/tickets/2026-07-07-datafusion-execution-honesty.md`
+- `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`
 - `.10x/tickets/2026-07-05-wasm-components-registry-signing.md`
 - `.10x/tickets/2026-07-05-cdc-and-streaming-supervisor.md`
 - `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`

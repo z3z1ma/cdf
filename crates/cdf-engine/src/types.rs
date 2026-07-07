@@ -43,11 +43,11 @@ pub struct EnginePlan {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OperatorNode {
-    DataFusionTableProvider {
-        provider_kind: String,
+    CdfResourceAdapter {
+        adapter_kind: String,
         resource_id: ResourceId,
     },
-    DataFusionScanExec {
+    CdfNativeScan {
         projection: Option<Vec<String>>,
         residual_predicates: Vec<String>,
         limit: Option<u64>,

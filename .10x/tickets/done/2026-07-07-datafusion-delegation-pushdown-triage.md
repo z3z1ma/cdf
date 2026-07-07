@@ -69,7 +69,7 @@ No query planner rewrite, no broad predicate parser, no join/SQL transformation 
 - 2026-07-07: Opened follow-up owners:
   - `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
   - `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
-  - `.10x/tickets/2026-07-07-datafusion-execution-honesty.md`
+  - `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`
 - 2026-07-07: Closure review recorded in `.10x/reviews/2026-07-07-datafusion-delegation-pushdown-triage-review.md`.
 
 ## Blockers

@@ -12,7 +12,7 @@ use crate::{
     PlanBoundedness, PredicateExplain, predicates::predicate_operator,
 };
 
-pub const DATAFUSION_TABLE_PROVIDER_KIND: &str = "datafusion_table_provider";
+pub const CDF_NATIVE_RESOURCE_ADAPTER_KIND: &str = "cdf_native_resource_adapter";
 
 #[derive(Debug, Default)]
 pub struct Planner;
@@ -191,11 +191,11 @@ fn operator_chain(
     package_id: &str,
 ) -> Vec<OperatorNode> {
     vec![
-        OperatorNode::DataFusionTableProvider {
-            provider_kind: DATAFUSION_TABLE_PROVIDER_KIND.to_owned(),
+        OperatorNode::CdfResourceAdapter {
+            adapter_kind: CDF_NATIVE_RESOURCE_ADAPTER_KIND.to_owned(),
             resource_id: resource_id.clone(),
         },
-        OperatorNode::DataFusionScanExec {
+        OperatorNode::CdfNativeScan {
             projection: projection.clone(),
             residual_predicates: residual_predicates
                 .iter()

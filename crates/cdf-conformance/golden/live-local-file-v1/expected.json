@@ -13,9 +13,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:d2c6e84a83a515796d237192920d3ca494c49e0fc348d68f0b1142a337b34375",
+    "package_hash": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:d2c6e84a83a515796d237192920d3ca494c49e0fc348d68f0b1142a337b34375",
+    "signature_signing_input": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -47,8 +47,8 @@
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 975,
-        "sha256": "b33b9d0c4a0b752af29d757f45ce0e4f31fb5e3430dc9f7bead2f39fd06f9869"
+        "byte_count": 964,
+        "sha256": "dc988fde6826a3fac117c242db1b9b8aeb3da8a7415618ca2e249861936be561"
       },
       {
         "path": "plan/scan.json",

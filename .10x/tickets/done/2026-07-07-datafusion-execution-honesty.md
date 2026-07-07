@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -42,6 +42,13 @@ No generic `TableProvider` adapter, no dependency changes, no predicate-language
 ## Progress and notes
 
 - 2026-07-07: Opened from triage. Current operator metadata includes `DataFusionTableProvider` and `DataFusionScanExec` names even though execution is a CDF-native Arrow loop.
+- 2026-07-07: Activated for worker implementation. The worker owns the narrow metadata-honesty code path and any focused fixture/assertion updates needed because `plan/explain.json` is package evidence.
+- 2026-07-07: Completed. Engine operator metadata now serializes current CDF-native execution as `cdf_resource_adapter` and `cdf_native_scan`; DataFusion pushdown fidelity mapping remains intact and tested. Live local-file golden evidence was updated for the intentional `plan/explain.json` hash change.
+
+## Evidence
+
+- `.10x/evidence/2026-07-07-datafusion-execution-honesty.md`
+- `.10x/reviews/2026-07-07-datafusion-execution-honesty-review.md`
 
 ## Blockers
 

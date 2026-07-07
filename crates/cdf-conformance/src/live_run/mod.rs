@@ -426,12 +426,12 @@ fn live_engine_plan_json(package_id: &str) -> serde_json::Value {
     });
     let operator_chain = json!([
         {
-            "kind": "data_fusion_table_provider",
-            "provider_kind": "datafusion_table_provider",
+            "kind": "cdf_resource_adapter",
+            "adapter_kind": "cdf_native_resource_adapter",
             "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
         },
         {
-            "kind": "data_fusion_scan_exec",
+            "kind": "cdf_native_scan",
             "projection": null,
             "residual_predicates": [],
             "limit": null,
