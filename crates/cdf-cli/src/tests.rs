@@ -921,7 +921,7 @@ fn run_sql_resource_resolves_secret_without_leaking_before_cursor_blocker() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("exact zero-lag cursor")
+            .contains("declare an ordered cursor")
     );
 }
 
@@ -2883,7 +2883,7 @@ default_environment = "dev"
 
 [dependency_tuple]
 cdf = "0.1.0"
-arrow_rs = "59.0.0"
+arrow_rs = "59.1.0"
 "#,
     )
     .unwrap();

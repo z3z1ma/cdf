@@ -185,7 +185,7 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
     let dependency_tuple = DependencyTuple {
         cdf: "0.1.0".to_owned(),
-        arrow_rs: "59.0.0".to_owned(),
+        arrow_rs: "59.1.0".to_owned(),
         datafusion: Some("54.0.0".to_owned()),
         object_store: None,
         duckdb_rs: None,

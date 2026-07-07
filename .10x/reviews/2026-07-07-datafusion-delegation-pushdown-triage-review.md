@@ -28,4 +28,4 @@ Pass. The triage avoids implementation under an unresolved dependency tuple, pre
 
 ## Residual risk
 
-The dependency tuple strategy remains unresolved and is intentionally blocked in `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`. Until that ticket resolves, CDF cannot truthfully claim real DataFusion execution for Tier B resources.
+The dependency tuple strategy remains unresolved and is intentionally blocked in `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`. Until that ticket resolves, CDF cannot truthfully claim real DataFusion execution for Tier B resources.

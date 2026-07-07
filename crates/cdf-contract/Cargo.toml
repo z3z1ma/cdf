@@ -6,7 +6,7 @@ license.workspace = true
 description = "Schema contract compilation boundary for cdf."
 
 [dependencies]
-arrow-schema = "59.0.0"
+arrow-schema = "59.1.0"
 cdf-kernel = { path = "../cdf-kernel" }
 serde = { version = "1.0.228", features = ["derive"] }
 unicode-normalization = "0.1.24"

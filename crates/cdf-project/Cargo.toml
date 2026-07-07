@@ -6,7 +6,7 @@ license.workspace = true
 description = "Project configuration and orchestration boundary for cdf."
 
 [dependencies]
-arrow-schema = "59.0.0"
+arrow-schema = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
@@ -24,7 +24,7 @@ sha2 = "0.10.9"
 toml = "1.1.2"
 
 [dev-dependencies]
-arrow-array = "59.0.0"
+arrow-array = "59.1.0"
 futures-executor = "0.3.32"
 postgres = "0.19"
 tempfile = "3.27.0"

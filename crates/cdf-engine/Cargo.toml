@@ -6,10 +6,10 @@ license.workspace = true
 description = "Planning and execution boundary for cdf."
 
 [dependencies]
-arrow-array = "59.0.0"
-arrow-schema = "59.0.0"
-arrow-select = "59.0.0"
-datafusion = { version = "54.0.0", default-features = false }
+arrow-array = "59.1.0"
+arrow-schema = "59.1.0"
+arrow-select = "59.1.0"
+datafusion = { git = "https://github.com/apache/datafusion.git", rev = "7ff7278edc1bf7446303bff51e5883a38414bbdf", default-features = false }
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }

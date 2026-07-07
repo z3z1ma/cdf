@@ -6,9 +6,9 @@ license.workspace = true
 description = "Optional Python authoring and interchange boundary for cdf."
 
 [dependencies]
-arrow-array = "59.0.0"
-arrow-ipc = { version = "59.0.0", features = ["lz4"] }
-arrow-schema = "59.0.0"
+arrow-array = "59.1.0"
+arrow-ipc = { version = "59.1.0", features = ["lz4"] }
+arrow-schema = "59.1.0"
 cdf-formats = { path = "../cdf-formats" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }

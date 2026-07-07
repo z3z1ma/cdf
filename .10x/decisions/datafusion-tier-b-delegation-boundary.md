@@ -33,7 +33,7 @@ The generic adapter MUST preserve CDF pushdown semantics:
 - It MUST NOT push a limit into the resource request when any inexact pushed filter could make source-side limiting semantically unsafe.
 - It MUST preserve or explicitly carry CDF provenance needed for package execution before it replaces package-producing execution paths.
 
-CDF will not introduce a permanent Arrow 58/59 bridge in the engine hot path to make the adapter compile against the current lockfile. Dependency tuple alignment under D-28 gates production adapter work. Acceptable alignment paths are:
+CDF will not introduce a permanent Arrow-major bridge in the engine hot path. Dependency tuple alignment under D-28 gates production adapter work whenever the current lockfile is not same-major compatible. Acceptable alignment paths are:
 
 - upgrade DataFusion when a compatible release uses the same Arrow major as CDF's first-party Arrow crates;
 - or deliberately repin CDF's first-party Arrow crates to DataFusion's Arrow major after the golden-package suite and artifact compatibility review prove the move safe;
@@ -63,9 +63,9 @@ Rejected. The dependency-tuple gate should be explicit, and drift in current exp
 
 The current engine MVP remains valid evidence for pushdown vocabulary, no-I/O negotiation, residual reapplication, and package output, but it is not proof of DataFusion physical execution.
 
-`.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` owns the next D-28 dependency-tuple decision needed before a production adapter.
+`.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` closed the first D-28 dependency-tuple gate with a time-boxed DataFusion git pin on Arrow 59.1.
 
-`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` owns the later adapter implementation and must wait until tuple compatibility is settled.
+`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` owns the adapter implementation and is no longer blocked by Arrow/DataFusion type compatibility.
 
 `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md` owns the completed near-term source/product drift correction where explain/operator metadata named DataFusion nodes that were not actually executed.
 

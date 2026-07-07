@@ -6,8 +6,8 @@ license.workspace = true
 description = "Postgres destination boundary for cdf."
 
 [dependencies]
-arrow-array = "59.0.0"
-arrow-schema = "59.0.0"
+arrow-array = "59.1.0"
+arrow-schema = "59.1.0"
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
 futures-util = "0.3.32"

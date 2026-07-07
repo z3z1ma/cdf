@@ -25,4 +25,4 @@ This was a record-only pass. No source build, runtime test, generated quality re
 
 Historical records and progress notes may still mention past blocked states where they were true at the time; those are not active `Status: blocked` records.
 
-Later current-state note: a subsequent side-conversation check found `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` active with `Status: blocked` on separate supply-chain policy findings. That blocker is not part of the Parquet/Postgres destination-policy decision batch.
+Later current-state note: a subsequent side-conversation check found `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` active with `Status: blocked` on separate supply-chain policy findings. That blocker is not part of the Parquet/Postgres destination-policy decision batch.

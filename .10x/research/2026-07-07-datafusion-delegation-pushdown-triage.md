@@ -77,7 +77,7 @@ Implementation must be sequenced through dependency-tuple alignment before a pro
 The next durable owners are:
 
 - `.10x/decisions/datafusion-tier-b-delegation-boundary.md`
-- `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
+- `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
 - `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
 - `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`
 

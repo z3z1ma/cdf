@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md, .10x/decisions/datafusion-tier-b-delegation-boundary.md
+Depends-On: .10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md, .10x/decisions/datafusion-tier-b-delegation-boundary.md
 
 # Implement the cdf-engine QueryableResource TableProvider adapter
 
@@ -10,7 +10,7 @@ Depends-On: .10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.
 
 Implement the generic internal `cdf-engine` adapter that exposes eligible Tier B `QueryableResource` resources as DataFusion `TableProvider`s while preserving CDF resource semantics, pushdown fidelity, provenance, and package execution constraints.
 
-This ticket must not execute until `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` resolves Arrow/DataFusion type compatibility.
+This ticket may execute after reading `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`, which resolved Arrow/DataFusion type compatibility through the ratified temporary DataFusion git pin.
 
 ## Acceptance criteria
 
@@ -38,7 +38,7 @@ No dependency tuple changes, no kernel API DataFusion exposure, no REST-specific
 ## References
 
 - `.10x/decisions/datafusion-tier-b-delegation-boundary.md`
-- `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
+- `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
 - `.10x/research/2026-07-07-datafusion-delegation-pushdown-triage.md`
 - `.10x/specs/architecture-layering-runtime.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
@@ -47,7 +47,8 @@ No dependency tuple changes, no kernel API DataFusion exposure, no REST-specific
 
 - 2026-07-07: Opened from triage. The adapter is architecturally ratified, but production implementation must wait for Arrow/DataFusion dependency tuple compatibility.
 - 2026-07-07: User ratified `.10x/decisions/arrow-datafusion-tuple-policy.md` with the clarification that DataFusion is day-zero mandatory. This ticket is open and dependency-gated by the tuple alignment ticket, not waiting on user semantic input.
+- 2026-07-07: Tuple gate closed by `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`; `cdf-engine` now compiles against DataFusion git rev `7ff7278edc1bf7446303bff51e5883a38414bbdf` on Arrow 59.1.0. This ticket is no longer blocked by Arrow/DataFusion type incompatibility.
 
 ## Blockers
 
-None from user. Execution waits for `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` to complete.
+None. Execution must preserve `.10x/decisions/datafusion-tier-b-delegation-boundary.md` and the evidence limits in `.10x/evidence/2026-07-07-datafusion-git-pin-arrow59-tuple.md`.

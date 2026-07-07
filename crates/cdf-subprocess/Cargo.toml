@@ -15,8 +15,8 @@ sha2 = "0.10.9"
 tokio = { version = "1.48.0", features = ["io-util", "macros", "process", "rt", "time"] }
 
 [dev-dependencies]
-arrow-array = "59.0.0"
-arrow-ipc = { version = "59.0.0", features = ["lz4"] }
-arrow-schema = "59.0.0"
+arrow-array = "59.1.0"
+arrow-ipc = { version = "59.1.0", features = ["lz4"] }
+arrow-schema = "59.1.0"
 cdf-package = { path = "../cdf-package" }
 tempfile = "3.27.0"

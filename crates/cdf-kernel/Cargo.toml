@@ -6,8 +6,8 @@ license.workspace = true
 description = "Core types, traits, and artifact contracts for cdf."
 
 [dependencies]
-arrow-array = "59.0.0"
-arrow-schema = "59.0.0"
+arrow-array = "59.1.0"
+arrow-schema = "59.1.0"
 futures-core = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
 

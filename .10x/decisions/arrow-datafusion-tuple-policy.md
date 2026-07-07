@@ -40,8 +40,8 @@ Rejected. Package hashes, Parquet/native Arrow paths, and golden fixtures make A
 
 ## Consequences
 
-`.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` is no longer blocked on user preference. Its next implementation step is to inspect the current registry/lockfile tuple and execute the smallest compatible path under this policy.
+`.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` implemented the smallest compatible path under this policy: the ratified temporary DataFusion git pin on the Arrow 59.1 tuple.
 
-`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` must wait for tuple alignment work before execution.
+`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` no longer waits on Arrow/DataFusion tuple compatibility, though it remains governed by the DataFusion boundary decision.
 
 This decision does not broaden `.10x/decisions/native-arrow-datafusion-parquet-policy.md` or its scoped `RUSTSEC-2024-0436` exception.

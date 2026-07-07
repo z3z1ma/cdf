@@ -6,11 +6,11 @@ Updated: 2026-07-07
 
 ## Question
 
-Under `.10x/decisions/arrow-datafusion-tuple-policy.md`, what same-major Arrow/DataFusion dependency tuple is available on 2026-07-07, and what is the smallest compatible implementation path for `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`?
+Under `.10x/decisions/arrow-datafusion-tuple-policy.md`, what same-major Arrow/DataFusion dependency tuple is available on 2026-07-07, and what is the smallest compatible implementation path for `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`?
 
 ## Sources and methods
 
-- Inspected `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`.
+- Inspected `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`.
 - Inspected `.10x/decisions/arrow-datafusion-tuple-policy.md`.
 - Inspected `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.
 - Ran `cargo info datafusion --verbose`.
@@ -57,4 +57,4 @@ The implementation should keep `.10x/decisions/native-arrow-datafusion-parquet-p
 
 Registry state is time-sensitive. Re-run `cargo info datafusion --verbose` before a future tuple review if this record is reused after 2026-07-07.
 
-This research records the dependency tuple path. It does not implement the repin, prove golden-package byte stability, or close `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`.
+This research records the dependency tuple path. It does not implement the repin, prove golden-package byte stability, or close `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`.

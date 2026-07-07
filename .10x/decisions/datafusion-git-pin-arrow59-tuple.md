@@ -49,7 +49,7 @@ Rejected by `.10x/decisions/arrow-datafusion-tuple-policy.md`.
 
 ## Consequences
 
-`.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` is unblocked for implementation using the pinned DataFusion git rev.
+`.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` implemented this decision using the pinned DataFusion git rev.
 
 The implementation must run golden-package determinism and artifact-compatibility gates because Arrow/Parquet bytes and manifests may change.
 
