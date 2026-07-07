@@ -7,9 +7,9 @@ use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
     FileManifest, FilePosition, ForeignState, IdempotencyToken, LogPosition, MigrationRecord,
-    PackageHash, PageToken, PartitionId, PipelineId, Receipt, ReceiptId, ResourceId, RewindRequest,
-    SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, VerifyClause, WriteDisposition,
+    PackageHash, PageToken, PartitionId, PipelineId, PlanId, Receipt, ReceiptId, ResourceId,
+    RewindRequest, RunId, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
+    StateSegment, TargetName, VerifyClause, WriteDisposition,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -723,6 +723,310 @@ fn sqlite_head_move_remains_transactionally_unique_across_connections() {
             .delta
             .checkpoint_id,
         second_delta.checkpoint_id
+    );
+}
+
+#[test]
+fn sqlite_run_ledger_mints_ids_and_rejects_supplied_collisions() {
+    let ledger = SqliteRunLedger::open_in_memory().unwrap();
+
+    let minted = ledger.create_run(None).unwrap();
+    assert!(minted.run_id.as_str().starts_with("run-"));
+    assert!(ledger.run(&minted.run_id).unwrap().is_some());
+
+    let supplied_id = RunId::new("run-supplied").unwrap();
+    let supplied = ledger.create_run(Some(supplied_id.clone())).unwrap();
+    assert_eq!(supplied.run_id, supplied_id);
+
+    let collision = ledger.create_run(Some(supplied_id)).unwrap_err();
+    assert!(
+        collision.to_string().contains("already exists"),
+        "caller-supplied run id collisions fail closed"
+    );
+}
+
+#[test]
+fn sqlite_run_events_are_per_run_monotonic_and_query_in_sequence_order() {
+    let ledger = SqliteRunLedger::open_in_memory().unwrap();
+    let first = ledger
+        .create_run(Some(RunId::new("run-first").unwrap()))
+        .unwrap();
+    let second = ledger
+        .create_run(Some(RunId::new("run-second").unwrap()))
+        .unwrap();
+
+    let first_started = ledger
+        .append_event(&first.run_id, RunEventAppend::new(RunEventKind::RunStarted))
+        .unwrap();
+    let second_started = ledger
+        .append_event(
+            &second.run_id,
+            RunEventAppend::new(RunEventKind::RunStarted),
+        )
+        .unwrap();
+    let first_plan = ledger
+        .append_event(
+            &first.run_id,
+            RunEventAppend::new(RunEventKind::PlanRecorded),
+        )
+        .unwrap();
+    let first_success = ledger
+        .append_event(
+            &first.run_id,
+            RunEventAppend::new(RunEventKind::RunSucceeded),
+        )
+        .unwrap();
+
+    assert_eq!(first_started.sequence, 1);
+    assert_eq!(second_started.sequence, 1);
+    assert_eq!(first_plan.sequence, 2);
+    assert_eq!(first_success.sequence, 3);
+    assert!(first_started.timestamp_ms > 1_600_000_000_000);
+
+    let events = ledger.events(&first.run_id).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.sequence)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert_eq!(
+        events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        vec![
+            RunEventKind::RunStarted,
+            RunEventKind::PlanRecorded,
+            RunEventKind::RunSucceeded,
+        ]
+    );
+}
+
+#[test]
+fn sqlite_run_ledger_records_are_append_only_below_the_rust_api() {
+    let ledger = SqliteRunLedger::open_in_memory().unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("run-append-only").unwrap()))
+        .unwrap();
+
+    let run_update = ledger.execute_for_test(
+        "UPDATE cdf_runs SET created_at_ms = created_at_ms + 1 WHERE run_id = ?",
+        params![run.run_id.as_str()],
+    );
+    assert!(run_update.unwrap_err().to_string().contains("append-only"));
+
+    let run_delete = ledger.execute_for_test(
+        "DELETE FROM cdf_runs WHERE run_id = ?",
+        params![run.run_id.as_str()],
+    );
+    assert!(run_delete.unwrap_err().to_string().contains("append-only"));
+
+    ledger
+        .append_event(&run.run_id, RunEventAppend::new(RunEventKind::RunStarted))
+        .unwrap();
+
+    let update = ledger.execute_for_test(
+        "UPDATE cdf_run_events SET kind = 'run_failed' WHERE run_id = ?",
+        params![run.run_id.as_str()],
+    );
+    assert!(update.unwrap_err().to_string().contains("append-only"));
+
+    let delete = ledger.execute_for_test(
+        "DELETE FROM cdf_run_events WHERE run_id = ?",
+        params![run.run_id.as_str()],
+    );
+    assert!(delete.unwrap_err().to_string().contains("append-only"));
+
+    let events = ledger.events(&run.run_id).unwrap();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0].kind, RunEventKind::RunStarted);
+}
+
+#[test]
+fn sqlite_run_ledger_serializes_required_event_families_with_secret_refs_only() {
+    let ledger = SqliteRunLedger::open_in_memory().unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("run-event-families").unwrap()))
+        .unwrap();
+    let secret_ref = SecretReference::new("secret://env/API_TOKEN").unwrap();
+
+    for kind in RunEventKind::ALL {
+        let mut append = RunEventAppend::new(kind);
+        append.details =
+            RunEventDetails::new([("api_token", RunEventValue::SecretRef(secret_ref.clone()))]);
+        let event = ledger.append_event(&run.run_id, append).unwrap();
+        let json = serde_json::to_string(&event).unwrap();
+        assert!(json.contains("secret://env/API_TOKEN"));
+        assert!(!json.contains("super-secret-token"));
+    }
+
+    let events = ledger.events(&run.run_id).unwrap();
+    assert_eq!(events.len(), RunEventKind::ALL.len());
+    assert_eq!(
+        events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+        RunEventKind::ALL
+    );
+}
+
+#[test]
+fn sqlite_run_ledger_rejects_secret_values_and_untyped_secret_references() {
+    let ledger = SqliteRunLedger::open_in_memory().unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("run-secret-rejection").unwrap()))
+        .unwrap();
+
+    let mut raw_secret = RunEventAppend::new(RunEventKind::RunStarted);
+    raw_secret.details = RunEventDetails::new([(
+        "token",
+        RunEventValue::String("super-secret-token".to_owned()),
+    )]);
+    assert!(ledger.append_event(&run.run_id, raw_secret).is_err());
+
+    let mut untyped_ref = RunEventAppend::new(RunEventKind::RunStarted);
+    untyped_ref.details = RunEventDetails::new([(
+        "note",
+        RunEventValue::String("secret://env/API_TOKEN".to_owned()),
+    )]);
+    assert!(ledger.append_event(&run.run_id, untyped_ref).is_err());
+
+    let mut typed_ref = RunEventAppend::new(RunEventKind::RunStarted);
+    typed_ref.details = RunEventDetails::new([(
+        "token",
+        RunEventValue::SecretRef(SecretReference::new("secret://env/API_TOKEN").unwrap()),
+    )]);
+    ledger.append_event(&run.run_id, typed_ref).unwrap();
+}
+
+#[test]
+fn sqlite_run_snapshot_carries_inspect_and_resume_pointers_without_source_contact() {
+    let ledger = SqliteRunLedger::open_in_memory().unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("run-query-shape").unwrap()))
+        .unwrap();
+    let scope = partition_scope();
+    let mut plan = RunEventAppend::new(RunEventKind::PlanRecorded);
+    plan.resource_id = Some(resource_id());
+    plan.scope = Some(scope.clone());
+    plan.partition_id = Some(PartitionId::new("p0").unwrap());
+    plan.plan_id = Some(PlanId::new("plan-1").unwrap());
+    plan.details = RunEventDetails::new([("planned_packages", RunEventValue::U64(1))]);
+    ledger.append_event(&run.run_id, plan).unwrap();
+
+    let mut package = RunEventAppend::new(RunEventKind::PackageFinalized);
+    package.package_id = Some("pkg-1".to_owned());
+    package.package_hash = Some(PackageHash::new("package-query-shape").unwrap());
+    package.package_path = Some("packages/pkg-1".to_owned());
+    ledger.append_event(&run.run_id, package).unwrap();
+
+    let mut receipt_event = RunEventAppend::new(RunEventKind::DestinationReceiptRecorded);
+    receipt_event.destination_id = Some(DestinationId::new("duckdb-local").unwrap());
+    receipt_event.receipt_id = Some(ReceiptId::new("receipt-query-shape").unwrap());
+    ledger.append_event(&run.run_id, receipt_event).unwrap();
+
+    let mut checkpoint_event = RunEventAppend::new(RunEventKind::CheckpointCommitted);
+    checkpoint_event.checkpoint_id = Some(CheckpointId::new("checkpoint-query-shape").unwrap());
+    ledger.append_event(&run.run_id, checkpoint_event).unwrap();
+
+    let snapshot = ledger.snapshot(&run.run_id).unwrap().unwrap();
+    assert_eq!(snapshot.run.run_id, run.run_id);
+    assert_eq!(snapshot.events.len(), 4);
+    assert_eq!(snapshot.events[0].resource_id, Some(resource_id()));
+    assert_eq!(snapshot.events[0].scope, Some(scope));
+    assert_eq!(
+        snapshot.events[1].package_hash,
+        Some(PackageHash::new("package-query-shape").unwrap())
+    );
+    assert_eq!(
+        snapshot.events[2].receipt_id,
+        Some(ReceiptId::new("receipt-query-shape").unwrap())
+    );
+    assert_eq!(
+        snapshot.events[3].checkpoint_id,
+        Some(CheckpointId::new("checkpoint-query-shape").unwrap())
+    );
+    assert!(
+        ledger
+            .snapshot(&RunId::new("missing-run").unwrap())
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn sqlite_run_ledger_checkpoint_events_do_not_advance_checkpoint_store() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let checkpoint_store = SqliteCheckpointStore::open(&db_path).unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("run-checkpoint-isolation").unwrap()))
+        .unwrap();
+    let delta = delta(
+        "checkpoint-ledger-only",
+        None,
+        partition_scope(),
+        cursor_position(1),
+        "package-ledger-only",
+    );
+
+    let mut event = RunEventAppend::new(RunEventKind::CheckpointCommitted);
+    event.checkpoint_id = Some(delta.checkpoint_id.clone());
+    ledger.append_event(&run.run_id, event).unwrap();
+
+    assert!(
+        checkpoint_store
+            .head(&delta.pipeline_id, &delta.resource_id, &delta.scope)
+            .unwrap()
+            .is_none(),
+        "run ledger events are not checkpoint-state authority"
+    );
+    assert!(
+        checkpoint_store
+            .history(&delta.pipeline_id, &delta.resource_id, &delta.scope)
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn sqlite_run_ledger_records_schema_version() {
+    let ledger = SqliteRunLedger::open_in_memory().unwrap();
+    let version: i64 = ledger
+        .query_row_for_test(
+            "SELECT version FROM cdf_sqlite_schema_migrations WHERE component = 'run_ledger'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(version, 1);
+}
+
+#[test]
+fn sqlite_run_ledger_rejects_unsupported_schema_version() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("future-run-ledger.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE cdf_sqlite_schema_migrations (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
+        VALUES ('run_ledger', 2, 1);
+        ",
+    )
+    .unwrap();
+    drop(conn);
+
+    let error = match SqliteRunLedger::open(&db_path) {
+        Ok(_) => panic!("future run-ledger schema version must fail closed"),
+        Err(error) => error,
+    };
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported run ledger SQLite schema version 2")
     );
 }
 

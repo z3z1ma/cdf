@@ -44,4 +44,4 @@ No dashboard or UI.
 
 ## Blockers
 
-`inspect run` story assembly semantics are ratified, but implementation remains blocked until `.10x/tickets/2026-07-07-run-ledger-store.md`, `.10x/tickets/2026-07-07-general-run-orchestrator.md`, and `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md` land.
+`inspect run` story assembly semantics are ratified, and the run-ledger store has landed in `.10x/tickets/done/2026-07-07-run-ledger-store.md`; implementation remains blocked until `.10x/tickets/2026-07-07-general-run-orchestrator.md` and `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md` land.

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
-Depends-On: .10x/tickets/done/2026-07-07-duckdb-commit-session-refactor.md, .10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md, .10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md, .10x/tickets/2026-07-07-run-ledger-store.md, .10x/specs/run-orchestration-ledger.md
+Depends-On: .10x/tickets/done/2026-07-07-duckdb-commit-session-refactor.md, .10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md, .10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md, .10x/tickets/done/2026-07-07-run-ledger-store.md, .10x/specs/run-orchestration-ledger.md
 
 # Implement the general project run orchestrator
 
@@ -35,7 +35,8 @@ No CLI command parsing, no `inspect run` presentation, no distributed scheduler,
 ## Design notes
 
 - 2026-07-07: Destination commit-session refactors proved the current portable kernel `DestinationProtocol::begin(request, plan)` inputs are not enough by themselves to commit a package. DuckDB and Parquet require package path/schema/package replay context captured by package-aware planning, and Postgres currently uses `with_commit_request` as a compatibility handoff. This ticket must either route generic runs through package-aware destination planning before `begin`, or explicitly supersede/refine the kernel session input contract so package replay inputs are first-class.
+- 2026-07-07: The run-ledger store exposes per-run event and snapshot queries plus indexed persisted pointers. This orchestrator should use those APIs for run-scoped recovery/inspection and define any broader interrupted-run discovery policy needed by CLI `resume`, rather than pushing that policy into the storage layer.
 
 ## Blockers
 
-Blocked until the run-ledger store is done.
+None.

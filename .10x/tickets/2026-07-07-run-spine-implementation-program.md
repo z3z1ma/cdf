@@ -16,7 +16,7 @@ Children:
 - `.10x/tickets/done/2026-07-07-duckdb-commit-session-refactor.md`
 - `.10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md`
 - `.10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md`
-- `.10x/tickets/2026-07-07-run-ledger-store.md`
+- `.10x/tickets/done/2026-07-07-run-ledger-store.md`
 - `.10x/tickets/2026-07-07-general-run-orchestrator.md`
 - `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`
 
@@ -32,6 +32,7 @@ Children:
 - 2026-07-07: Opened after ratification of the run-ledger and commit-session decision/spec. Parent is not executable; assign child tickets to workers.
 - 2026-07-07: Kernel commit-session API child closed with evidence `.10x/evidence/2026-07-07-kernel-destination-commit-session-api.md` and review `.10x/reviews/2026-07-07-kernel-destination-commit-session-api-review.md`. Destination refactor children are now unblocked on the kernel API dependency.
 - 2026-07-07: DuckDB, Parquet, and Postgres destination commit-session refactor children closed with combined evidence `.10x/evidence/2026-07-07-destination-commit-session-refactors.md` and review `.10x/reviews/2026-07-07-destination-commit-session-refactors-review.md`. The general orchestrator is now blocked on the run-ledger store and must address package-aware session context handoff.
+- 2026-07-07: SQLite run-ledger store child closed with evidence `.10x/evidence/2026-07-07-sqlite-run-ledger-store.md` and review `.10x/reviews/2026-07-07-sqlite-run-ledger-store-review.md`. The general orchestrator child is now unblocked.
 
 ## Blockers
 
