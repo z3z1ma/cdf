@@ -12,6 +12,17 @@ This specification governs the user-facing project format, lockfile, CLI command
 
 `cdf.toml` MUST define project metadata, default environment, normalizer, environments, Python interpreter, defaults, and resource source mappings. Environments MUST overlay inherited settings. Secrets MUST appear only as `secret://provider/key` URIs.
 
+Environment destination URIs MUST use destination-specific schemes. `duckdb://<path>` names a local DuckDB database path. `parquet://<root>` names a filesystem Parquet destination root/prefix, not a single file; commits MAY create multiple Parquet files, manifests, pointers, and receipt-supporting objects below the root.
+
+Environment destination policy MAY declare destination-specific explicit semantic knobs. The first ratified Postgres destination policy shape is:
+
+```toml
+[environments.<name>.destination_policy.postgres]
+merge_dedup = "fail"
+```
+
+`merge_dedup` applies only to `merge` writes when an incoming package/stage contains duplicate merge keys. `fail` MUST abort before target-table mutation when duplicates are detected.
+
 `cdf.lock` MUST lock semantics, not just versions: dependency tuple, resource capability-sheet hashes, destination sheets including type mappings, contract snapshots, schema hashes, and normalizer version.
 
 `cdf validate --env <env>` MUST check schema validity and secret resolvability without printing secret values.
@@ -33,6 +44,8 @@ The required command surface includes `init`, `validate`, `plan`, `explain`, `ru
 `cdf resume` MUST drain interrupted work according to the run spine crash matrix. After package finalization, resume MUST NOT contact the source.
 
 `cdf replay package <pkg> --to <dest>` MUST create a new run, use package replay inputs, and record duplicate receipts as observable facts.
+
+`cdf replay package <pkg> --to postgres://...` MUST require explicit `--target` and `--merge-dedup` inputs. The supplied target MUST match the package destination-commit target. Replay MUST NOT infer target, disposition, merge keys, or merge-dedup policy from destination introspection.
 
 `cdf inspect run <id>` MUST assemble plan, verdict summaries, receipts, transitions, package/checkpoint pointers, duplicate status, and recovery guidance. It MUST show missing artifacts explicitly and MUST redact secrets.
 

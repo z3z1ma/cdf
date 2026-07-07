@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-07
 Updated: 2026-07-07
 
 # Project-Run Postgres Destination Inputs
+
+Superseded-By: .10x/decisions/destination-introspection-package-and-cli-policy.md
 
 ## Context
 

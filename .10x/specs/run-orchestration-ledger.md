@@ -10,6 +10,8 @@ This specification governs the general run runtime, run ledger, run recovery, re
 
 It derives from `VISION.md` Chapters 4, 13, 14, 15, 16, 18, and 23, `.10x/decisions/run-ledger-commit-session-spine.md`, `.10x/specs/checkpoint-state-commit-gate.md`, `.10x/specs/destination-receipts-guarantees.md`, and `.10x/specs/package-lifecycle-determinism.md`.
 
+It is further constrained by `.10x/decisions/destination-introspection-package-and-cli-policy.md` for destination introspection, package scope, Parquet URI semantics, and CLI destination policy.
+
 ## Run identity
 
 Every general orchestration attempt MUST have exactly one `RunId`.
@@ -48,6 +50,8 @@ Event details MUST contain secret references only. Resolved secret values MUST N
 
 ## General run flow
 
+A package MUST represent one resource transition. A multi-resource run MUST create separate resource-scoped packages and tie them together with the same run id and run ledger.
+
 Given a selected environment, resource set, destination, checkpoint store, package root, and run id:
 
 1. The runtime MUST append `run_started`.
@@ -77,6 +81,8 @@ Destination drivers MUST expose a commit session API equivalent to:
 The session API MUST preserve destination-specific receipt verification. A generic runtime MUST NOT synthesize receipts or bypass a destination verify clause.
 
 Destination sessions MUST support duplicate package-token behavior when declared by the destination sheet. Duplicate receipts MUST be recorded and inspected like non-duplicate receipts.
+
+Destination introspection is standard behavior wherever applicable. A destination session SHOULD introspect target state for safety checks, drift detection, planning, receipt verification, and actionable failure messages. Introspection MUST NOT infer missing write semantics such as target identity, write disposition, merge keys, merge-dedup policy, resource identity, or checkpoint semantics.
 
 ## Resume
 
