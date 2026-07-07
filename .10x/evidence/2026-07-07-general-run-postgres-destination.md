@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-general-run-postgres-destination.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/destination-receipts-guarantees.md, .10x/decisions/project-run-postgres-destination-inputs.md
+Relates-To: .10x/tickets/done/2026-07-07-general-run-postgres-destination.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/destination-receipts-guarantees.md, .10x/decisions/superseded/project-run-postgres-destination-inputs.md
 
 # General run Postgres destination evidence
 

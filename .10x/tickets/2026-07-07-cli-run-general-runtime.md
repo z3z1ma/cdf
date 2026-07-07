@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
-Depends-On: .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
+Depends-On: .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/decisions/destination-introspection-package-and-cli-policy.md
 
 # Wire `cdf run` to the general runtime
 
@@ -20,7 +20,7 @@ Owns:
 ## Acceptance criteria
 
 - `cdf run` routes local file, exact zero-lag REST, and table-backed Postgres SQL resources through `ProjectRunRequest`/`run_project` where the lower-layer resource runtime dependencies are available.
-- `cdf run` supports DuckDB and Postgres environment destinations and supports filesystem Parquet once a CLI URI spelling is ratified in this ticket.
+- `cdf run` supports DuckDB, Postgres, and filesystem Parquet environment destinations. Filesystem Parquet uses `parquet://<root>` as a destination root/prefix. Postgres uses explicit `--target` plus `[environments.<name>.destination_policy.postgres] merge_dedup = "fail"` for merge duplicate policy.
 - Unsupported resource/destination/disposition combinations fail before source, package, destination, or checkpoint mutation.
 - JSON output includes run id, package, checkpoint, receipt, destination, receipt source, row/segment counts, and ledger event summary.
 - Existing DuckDB/local-file CLI run behavior remains compatible except for gaining run id/ledger fields.
@@ -36,18 +36,23 @@ No `resume`, no `replay package`, no `inspect run`, no `run --loop`, no arbitrar
 ## Design notes
 
 - Current CLI `run` uses `run_local_file_to_duckdb_checkpoint` and rejects REST/SQL/Postgres/Parquet because the runtime used to be specialized.
-- Existing project config has `duckdb://` and `postgres://` examples. No active record names the filesystem Parquet CLI URI; if implementation needs it, prefer a small recorded decision or explicit blocker before adding user-visible syntax. Candidate spelling is `parquet://path`, mirroring `duckdb://path`.
+- `.10x/decisions/destination-introspection-package-and-cli-policy.md` ratifies `parquet://<root>` as a filesystem Parquet destination root/prefix, not a single file.
+- `.10x/decisions/destination-introspection-package-and-cli-policy.md` ratifies standard destination introspection wherever applicable while forbidding introspection from supplying missing write semantics.
 - Postgres destination credentials must resolve through the existing secret provider without serializing resolved values into reports.
+- Postgres run target remains explicit through the existing `--target` argument. Merge duplicate policy comes from `[environments.<name>.destination_policy.postgres] merge_dedup = "fail"`.
 
 ## Blockers
 
-- REST CLI run routing is blocked by the absence of a production `HttpTransport` adapter in the current crates. `cdf-project` supports dependency-bearing REST resources, but `cdf-cli` has no production transport to supply without expanding lower-layer runtime semantics.
-- Postgres CLI destination routing is blocked by `.10x/decisions/project-run-postgres-destination-inputs.md`: the active decision requires explicit destination/run configuration for existing-table policy and merge dedup policy, and no active CLI/project configuration syntax currently supplies those values.
-- Filesystem Parquet CLI URI spelling must be ratified inside this ticket before enabling Parquet CLI run support.
+None from user.
+
+REST CLI run routing still requires implementation of a production `HttpTransport` adapter. `cdf-project` supports dependency-bearing REST resources, but `cdf-cli` has no production transport registered yet.
+
+Postgres CLI destination routing still requires implementation of the ratified project-config policy shape.
 
 ## Progress and notes
 
 - 2026-07-07: Split from the broad CLI spine ticket after general orchestrator closure.
 - 2026-07-07: Wired `cdf run` through `cdf_project::run_project(ProjectRunRequest)` for local file resources, table-backed SQL resource adapters, and DuckDB destinations. JSON run reports now include the minted run id, destination summary, receipt object, row/segment counts, and run-ledger event summary while preserving existing DuckDB/local-file fields.
-- 2026-07-07: Kept REST fail-closed before run mutation because no production `HttpTransport` exists in the current CLI/lower-layer surface. Kept Postgres destination fail-closed because active decision `.10x/decisions/project-run-postgres-destination-inputs.md` requires explicit existing-table and merge-dedup policy configuration that the CLI/project config does not yet provide. Kept filesystem Parquet fail-closed because no active record ratifies a CLI URI spelling.
+- 2026-07-07: Kept REST fail-closed before run mutation because no production `HttpTransport` exists in the current CLI/lower-layer surface. At implementation time, Postgres and filesystem Parquet were kept fail-closed because `.10x/decisions/superseded/project-run-postgres-destination-inputs.md` and the then-missing Parquet URI spelling left CLI policy inputs unresolved.
 - 2026-07-07: Focused evidence recorded in `.10x/evidence/2026-07-07-cli-run-general-runtime.md`.
+- 2026-07-07: User ratified `.10x/decisions/destination-introspection-package-and-cli-policy.md`: `parquet://<root>` is the filesystem Parquet destination root/prefix; destination introspection is standard wherever applicable but cannot infer missing write semantics; package scope is one resource transition; and Postgres project policy is `[environments.<name>.destination_policy.postgres] merge_dedup = "fail"`. Decision-level blockers for Parquet and Postgres are cleared; implementation wiring remains.

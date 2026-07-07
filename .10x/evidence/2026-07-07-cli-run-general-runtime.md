@@ -11,7 +11,9 @@ Relates-To: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/specs/proje
 
 The CLI routes local file resources directly, wraps table-backed SQL resources with `SqlRuntimeDependencies` using the existing `ProjectContext` secret provider, and supports `duckdb://` destinations.
 
-REST resources remain fail-closed before package, destination, or checkpoint mutation because no production `HttpTransport` exists in the current crates. Postgres destinations remain fail-closed before package, destination, or checkpoint mutation because `.10x/decisions/project-run-postgres-destination-inputs.md` requires explicit existing-table and merge-dedup policy configuration and no active CLI/project config syntax supplies those values. Filesystem Parquet destinations remain fail-closed because no active record ratifies the CLI URI spelling.
+REST resources remain fail-closed before package, destination, or checkpoint mutation because no production `HttpTransport` exists in the current crates. At the time of this observation, Postgres destinations remained fail-closed before package, destination, or checkpoint mutation because `.10x/decisions/superseded/project-run-postgres-destination-inputs.md` required explicit existing-table and merge-dedup policy configuration and no active CLI/project config syntax supplied those values. Filesystem Parquet destinations remained fail-closed because no active record had ratified the CLI URI spelling.
+
+Later decision supersession: `.10x/decisions/destination-introspection-package-and-cli-policy.md` ratified the Parquet URI spelling and replaced the Postgres existing-table policy requirement with standard destination introspection plus explicit `merge_dedup`.
 
 `RunCliReport` now includes `run_id`, destination summary, package fields, checkpoint fields, receipt fields, receipt source, row/segment counts, and a run-ledger event summary.
 

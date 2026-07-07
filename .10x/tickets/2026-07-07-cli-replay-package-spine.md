@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
-Depends-On: .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
+Depends-On: .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/decisions/destination-introspection-package-and-cli-policy.md
 
 # Wire `cdf replay package` to package replay
 
@@ -21,7 +21,7 @@ Owns:
 
 - `cdf replay package <pkg> --to <dest>` is parsed and rejects missing `--to`.
 - DuckDB and filesystem Parquet package replay create/advance checkpoint state through the replay APIs without contacting source resources.
-- Postgres replay requires explicit CLI inputs for the Postgres policy that package artifacts do not own, including target and merge dedup policy, and fails closed before mutation when those inputs are absent or inconsistent.
+- Postgres replay requires explicit `--target` and `--merge-dedup` CLI inputs for semantics package artifacts do not own, and fails closed before mutation when those inputs are absent, inconsistent, or conflict with the package destination-commit target.
 - Duplicate package-token receipts are represented in JSON/human output when the destination exposes duplicate/no-op status.
 - Replay JSON includes package hash, destination id, target, receipt id, checkpoint id/status, receipt source, duplicate status when known, and package status.
 
@@ -36,19 +36,19 @@ No `resume`, no `inspect run`, no new package artifact schema, no source extract
 ## Design notes
 
 - Current parser accepts only `replay package <DIR>` and the command returns not-supported.
-- `cdf_project` now exposes DuckDB, Parquet, and Postgres artifact replay functions. Postgres replay intentionally requires explicit policy input by `.10x/decisions/project-run-postgres-destination-inputs.md`.
+- `cdf_project` now exposes DuckDB, Parquet, and Postgres artifact replay functions. Postgres replay intentionally requires explicit target and merge-dedup input by `.10x/decisions/destination-introspection-package-and-cli-policy.md`.
+- `.10x/decisions/destination-introspection-package-and-cli-policy.md` ratifies `parquet://<root>` as a filesystem Parquet destination root/prefix, not a single file.
 - The command currently does not receive `Cli`; implementation likely needs dispatch to call `replay_package(&cli, args)` so it can use selected project environment state and secret providers.
 
 ## Blockers
 
-Postgres CLI flag shape for explicit target/dedup policy must be settled before enabling Postgres replay.
+None from user.
 
-Filesystem Parquet replay remains blocked at the CLI boundary until active records ratify destination URI spelling/product syntax.
-
-No DuckDB replay blocker remains for the implemented `duckdb://path` slice.
+Parquet and Postgres replay are decision-unblocked by `.10x/decisions/destination-introspection-package-and-cli-policy.md`; implementation wiring remains.
 
 ## Progress and notes
 
 - 2026-07-07: Split from the broad CLI spine ticket after package-artifact replay became available for all current project-run destinations.
-- 2026-07-07: Implemented the DuckDB-only CLI replay slice. `cdf replay package <DIR> --to duckdb://path` now parses, loads the selected environment state store, replays package artifacts through `cdf_project::replay_duckdb_package_from_artifacts`, commits the checkpoint, records a `replay_recorded` run-ledger event, and reports package hash, destination id, target, receipt id, checkpoint id/status, receipt source duplicate/no-op status, and package status. The CLI fails closed before replay mutation for missing `--to`, Postgres policy inputs, unratified Parquet URI spelling, and unknown destination schemes. Evidence: `.10x/evidence/2026-07-07-cli-duckdb-package-replay.md`.
-- 2026-07-07: Parent review added a missing-package non-mutation regression and reran focused quality gates. The DuckDB slice is acceptable progress, but the ticket remains blocked for Parquet URI spelling and Postgres replay CLI policy inputs. Review: `.10x/reviews/2026-07-07-cli-duckdb-package-replay-review.md`.
+- 2026-07-07: Implemented the DuckDB-only CLI replay slice. `cdf replay package <DIR> --to duckdb://path` now parses, loads the selected environment state store, replays package artifacts through `cdf_project::replay_duckdb_package_from_artifacts`, commits the checkpoint, records a `replay_recorded` run-ledger event, and reports package hash, destination id, target, receipt id, checkpoint id/status, receipt source duplicate/no-op status, and package status. At implementation time, the CLI failed closed before replay mutation for missing `--to`, Postgres policy inputs, then-unratified Parquet URI spelling, and unknown destination schemes. Evidence: `.10x/evidence/2026-07-07-cli-duckdb-package-replay.md`.
+- 2026-07-07: Parent review added a missing-package non-mutation regression and reran focused quality gates. The DuckDB slice is acceptable progress. At review time, Parquet URI spelling and Postgres replay CLI policy inputs were still unratified. Review: `.10x/reviews/2026-07-07-cli-duckdb-package-replay-review.md`.
+- 2026-07-07: User ratified `.10x/decisions/destination-introspection-package-and-cli-policy.md`: `parquet://<root>` is the filesystem Parquet destination root/prefix; destination introspection is standard wherever applicable but cannot infer missing write semantics; package scope is one resource transition; and Postgres replay uses explicit `--target` and `--merge-dedup fail`. Decision-level blockers are cleared; implementation wiring remains.

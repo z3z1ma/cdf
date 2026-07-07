@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/decisions/arrow-datafusion-tuple-policy.md, .10x/decisions/project-run-postgres-destination-inputs.md, .10x/decisions/non-file-window-close-checkpoint-semantics.md, .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md
+Relates-To: .10x/decisions/arrow-datafusion-tuple-policy.md, .10x/decisions/superseded/project-run-postgres-destination-inputs.md, .10x/decisions/non-file-window-close-checkpoint-semantics.md, .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md
 
 # Decision Unblock Record Checks
 

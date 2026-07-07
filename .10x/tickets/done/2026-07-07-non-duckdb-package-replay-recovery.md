@@ -2,7 +2,7 @@ Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/done/2026-07-07-general-run-orchestrator.md
-Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/destination-receipts-guarantees.md, .10x/decisions/project-run-postgres-destination-inputs.md, .10x/tickets/done/2026-07-07-general-run-postgres-destination.md
+Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/destination-receipts-guarantees.md, .10x/decisions/superseded/project-run-postgres-destination-inputs.md, .10x/tickets/done/2026-07-07-general-run-postgres-destination.md
 
 # Add non-DuckDB package replay recovery
 
@@ -19,7 +19,7 @@ Owns:
 ## Acceptance criteria
 
 - Parquet packages finalized by `run_project` can be replayed from package artifacts without a supplied receipt, without contacting the source, and finish by recording a destination receipt, committing the checkpoint, and updating package status.
-- Postgres packages finalized by `run_project` can be replayed from package artifacts without a supplied receipt when the caller supplies the explicit Postgres destination inputs required by `.10x/decisions/project-run-postgres-destination-inputs.md`; replay MUST NOT infer target, dedup, existing-table policy, or merge semantics from destination introspection.
+- Postgres packages finalized by `run_project` can be replayed from package artifacts without a supplied receipt when the caller supplies the explicit Postgres destination inputs required by `.10x/decisions/superseded/project-run-postgres-destination-inputs.md`; replay MUST NOT infer target, dedup, existing-table policy, or merge semantics from destination introspection. This historical replay contract was later superseded for CLI/product policy by `.10x/decisions/destination-introspection-package-and-cli-policy.md`.
 - Durable-receipt recovery paths for Parquet and Postgres remain available and continue to verify the receipt before checkpoint commit.
 - Tests simulate post-finalization source loss or absence before replay/recovery, so the evidence proves no source contact after package finalization.
 - Unsupported or under-specified Postgres artifact replay fails closed before destination or checkpoint mutation.
