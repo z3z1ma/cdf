@@ -14,6 +14,7 @@ The parent agent owns sequencing, assignment to subagents, integration, evidence
 
 - `.10x/decisions/firn-system-authority.md`
 - `.10x/decisions/firn-book-decision-register.md`
+- `.10x/knowledge/firn-product-objective.md`
 - `.10x/knowledge/firn-glossary.md`
 - `.10x/specs/architecture-layering-runtime.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
@@ -71,7 +72,7 @@ Fast-follow and full-system completion:
 
 - All child tickets are done or explicitly superseded/cancelled with durable rationale.
 - The MVP killer demo from `.10x/specs/conformance-governance-roadmap.md` passes and has recorded evidence.
-- Fast-follow and beyond-MVP surfaces described by the book are implemented or governed by active superseding records.
+- Fast-follow and beyond-MVP surfaces described by the book are implemented or governed by active superseding records; the Chapter 22 MVP is treated as a milestone, not the project finish line.
 - The book can be removed without losing behavioral authority because active records, source, tests, and docs contain the needed contracts.
 
 ## Evidence expectations
@@ -122,6 +123,8 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`; `firn preview` now executes single-match declarative local file resources for CSV, JSON, NDJSON, and Parquet with no package, destination, or checkpoint writes, while native Parquet policy and broader run orchestration remain separate.
 - 2026-07-06: Opened the CLI/runtime bridge now closed at `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md`. It targets the first live `firn run` path from a single explicit local file resource through package creation, DuckDB receipt verification, and SQLite checkpoint commit without ratifying automatic run-ledger defaults.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md`; `firn run --resource --pipeline --target --package-id --checkpoint-id` now supports the explicit single declarative local file resource to local DuckDB/SQLite slice, with receipt-gated checkpoint commit, recoverable post-receipt failure evidence, mutation-clean runtime tests, and full relevant QUALITY evidence. Broader run-ledger/default-id, REST/SQL, non-DuckDB, multi-resource, `resume`, and package replay CLI work remains with existing parent tickets.
+- 2026-07-06: User clarified that Firn's endpoint is not merely the Chapter 22 MVP but the full production-grade, next-generation, enterprise-scale system optimized for AI-agent management. Recorded in `.10x/knowledge/firn-product-objective.md`; parent acceptance now treats MVP as a milestone rather than the completion definition.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md`; the conformance suite now has a committed golden proof for the live local-file-to-DuckDB/SQLite run path, including 100-run deterministic evidence, verified receipts/checkpoints, recovery without source reread after durable receipt, duplicate/no-op replay, mutation-clean live-run harness checks, and relevant QUALITY evidence.
 
 ## Blockers
 
