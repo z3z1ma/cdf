@@ -23,10 +23,11 @@ use cdf_engine::{
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    CheckpointStore, CursorPosition, CursorValue, FileManifest, FilePosition, IdempotencyToken,
-    PackageHash, PartitionId, PipelineId, Receipt, ResourceId, ResourceStream, Result,
-    RewindReport, RewindRequest, RunId, ScanRequest, SchemaHash, ScopeKey, SegmentId,
-    SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
+    CheckpointStore, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition,
+    IdempotencyToken, LogPosition, PackageHash, PageToken, PartitionId, PipelineId, Receipt,
+    ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunId, ScanRequest,
+    SchemaHash, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
+    WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
@@ -263,6 +264,14 @@ fn position(value: i64) -> SourcePosition {
     })
 }
 
+fn cursor_position(field: &str, value: CursorValue) -> SourcePosition {
+    SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: field.to_owned(),
+        value,
+    })
+}
+
 fn delta(manifest: &PackageManifest, checkpoint_id: &str) -> StateDelta {
     let scope = scope();
     let output_position = position(3);
@@ -429,6 +438,41 @@ fn rest_runtime_resource() -> cdf_declarative::CompiledResource {
         .remove(0)
 }
 
+fn rest_cursor_runtime_resource(
+    cursor_field: &str,
+    cursor_field_decl: &str,
+    ordering: &str,
+    lag: &str,
+) -> cdf_declarative::CompiledResource {
+    let input = format!(
+        r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.test"
+auth = {{ kind = "bearer", token = "secret://env/API_TOKEN" }}
+egress_allowlist = ["api.example.test"]
+
+[resource.items]
+id = "api.items"
+path = "/items"
+paginate = {{ kind = "cursor_param", query_param = "cursor", response_field = "next_cursor" }}
+records = "$.items"
+primary_key = ["id"]
+cursor = {{ field = "{cursor_field}", param = "since", ordering = "{ordering}", lag = "{lag}" }}
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+  {{ name = "id", type = "int64", nullable = false }},
+  {cursor_field_decl},
+] }}
+"#
+    );
+    let document = cdf_declarative::parse_toml(&input).unwrap();
+    cdf_declarative::compile_document(&document)
+        .unwrap()
+        .remove(0)
+}
+
 fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
     let document = cdf_declarative::parse_toml(&SQL_RUNTIME_RESOURCE.replace(
         r#"table = "public.orders""#,
@@ -462,6 +506,79 @@ fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> 
             },
         )
         .unwrap()
+}
+
+fn state_delta_request<'a>(
+    resource: &'a cdf_declarative::CompiledResource,
+    package_id: &str,
+    root: &Path,
+) -> LocalFileDuckDbRunRequest<'a> {
+    LocalFileDuckDbRunRequest {
+        resource,
+        plan: live_plan(resource, package_id),
+        package_root: root.to_path_buf(),
+        destination_path: root.join("dev.duckdb"),
+        state_store_path: root.join("state.db"),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        target: TargetName::new("items").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
+        after_receipt_verified: None,
+    }
+}
+
+fn engine_output_with_positions(
+    package_dir: &Path,
+    package_id: &str,
+    positions: Vec<SourcePosition>,
+) -> EngineRunOutputWithSegmentPositions {
+    let mut manifest = build_package(package_dir, package_id, PackageStatus::Packaged);
+    let template = manifest.identity.segments[0].clone();
+    let segments = positions
+        .iter()
+        .enumerate()
+        .map(|(index, _)| {
+            let mut segment = template.clone();
+            segment.segment_id = SegmentId::new(format!("seg-{:06}", index + 1)).unwrap();
+            segment.path = format!("data/seg-{:06}.arrow", index + 1);
+            segment
+        })
+        .collect::<Vec<_>>();
+    let segment_positions = segments
+        .iter()
+        .zip(positions)
+        .map(|(segment, position)| EngineSegmentPosition {
+            segment_id: segment.segment_id.clone(),
+            output_position: Some(position),
+        })
+        .collect();
+    manifest.identity.segments = segments.clone();
+    EngineRunOutputWithSegmentPositions {
+        output: EngineRunOutput {
+            manifest,
+            segments,
+            profile: ExecutionProfile::default(),
+            lineage: LineageSummary::default(),
+        },
+        segment_positions,
+    }
+}
+
+fn state_delta_for_positions(
+    resource: &cdf_declarative::CompiledResource,
+    root: &Path,
+    package_id: &str,
+    positions: Vec<SourcePosition>,
+) -> Result<StateDelta> {
+    let output = engine_output_with_positions(&root.join(package_id), package_id, positions);
+    let request = state_delta_request(resource, package_id, root);
+    state_delta_from_run(
+        &request,
+        &output,
+        &SchemaHash::new(SCHEMA_HASH).unwrap(),
+        &resource.descriptor().state_scope,
+        None,
+    )
 }
 
 fn project_run_request<'a>(
@@ -1683,7 +1800,7 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
     }))
     .unwrap_err();
 
-    assert!(error.to_string().contains("exact zero-lag cursor"));
+    assert!(error.to_string().contains("ordered cursor"));
     assert_eq!(transport.requests().len(), 0);
     assert!(!package_root.join(package_id).exists());
     assert!(!duckdb_path.exists());
@@ -1691,16 +1808,23 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
 }
 
 #[test]
-fn general_project_run_rejects_inexact_rest_cursor_before_writes() {
+fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
     let temp = tempfile::tempdir().unwrap();
     let document = cdf_declarative::parse_toml(
-        &REST_RUNTIME_RESOURCE.replace(r#"ordering = "exact""#, r#"ordering = "best_effort""#),
+        &REST_RUNTIME_RESOURCE
+            .replace(r#"ordering = "exact""#, r#"ordering = "best_effort""#)
+            .replace(r#"lag = "0ms""#, r#"lag = "5ms""#),
     )
     .unwrap();
     let compiled = cdf_declarative::compile_document(&document)
         .unwrap()
         .remove(0);
-    let transport = RecordingTransport::new([json_response(r#"{ "items": [] }"#)]);
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": 1, "updated_at": 10 },
+            { "id": 2, "updated_at": 20 }
+        ] }"#,
+    )]);
     let resource = compiled
         .to_rest_resource(
             cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
@@ -1708,33 +1832,35 @@ fn general_project_run_rejects_inexact_rest_cursor_before_writes() {
             ),
         )
         .unwrap();
-    let package_id = "pkg-general-rest-inexact-cursor";
+    let package_id = "pkg-general-rest-window-close-numeric";
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
 
-    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunResource::Rest(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-general-rest-inexact-cursor").unwrap(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-window-close-numeric").unwrap(),
         destination: ProjectRunDestination::DuckDb {
             database_path: duckdb_path.clone(),
             target: TargetName::new("items").unwrap(),
         },
-        run_id: Some(RunId::new("run-general-rest-inexact-cursor").unwrap()),
+        run_id: Some(RunId::new("run-general-rest-window-close-numeric").unwrap()),
         after_receipt_verified: None,
     }))
-    .unwrap_err();
+    .unwrap();
 
-    assert!(error.to_string().contains("window-close"));
-    assert_eq!(transport.requests().len(), 0);
-    assert!(!package_root.join(package_id).exists());
-    assert!(!duckdb_path.exists());
-    assert!(!state_path.exists());
+    assert_eq!(transport.requests().len(), 1);
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    let SourcePosition::Cursor(cursor) = &report.checkpoint.delta.output_position else {
+        panic!("expected REST run to checkpoint a cursor position");
+    };
+    assert_eq!(cursor.field, "updated_at");
+    assert_eq!(cursor.value, CursorValue::I64(15));
 }
 
 #[test]
@@ -2100,6 +2226,247 @@ fn state_delta_rejects_divergent_segment_source_positions() {
             .to_string()
             .contains("divergent segment source positions")
     );
+}
+
+#[test]
+fn state_delta_window_closes_timestamp_cursor_positions() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = rest_cursor_runtime_resource(
+        "updated_at",
+        r#"{ name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" }"#,
+        "best_effort",
+        "5m",
+    );
+
+    let delta = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-window-close-timestamp",
+        vec![
+            cursor_position(
+                "updated_at",
+                CursorValue::TimestampMicros {
+                    micros: 60_000_000,
+                    timezone: Some("UTC".to_owned()),
+                },
+            ),
+            cursor_position(
+                "updated_at",
+                CursorValue::TimestampMicros {
+                    micros: 600_000_000,
+                    timezone: Some("UTC".to_owned()),
+                },
+            ),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        delta.output_position,
+        cursor_position(
+            "updated_at",
+            CursorValue::TimestampMicros {
+                micros: 300_000_000,
+                timezone: Some("UTC".to_owned()),
+            },
+        )
+    );
+    assert_eq!(
+        delta.segments[0].output_position,
+        cursor_position(
+            "updated_at",
+            CursorValue::TimestampMicros {
+                micros: 60_000_000,
+                timezone: Some("UTC".to_owned()),
+            },
+        )
+    );
+    assert_eq!(
+        delta.segments[1].output_position,
+        cursor_position(
+            "updated_at",
+            CursorValue::TimestampMicros {
+                micros: 600_000_000,
+                timezone: Some("UTC".to_owned()),
+            },
+        )
+    );
+}
+
+#[test]
+fn state_delta_window_closes_date_cursor_positions() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = rest_cursor_runtime_resource(
+        "event_day",
+        r#"{ name = "event_day", type = "date32", nullable = false }"#,
+        "best_effort",
+        "2d",
+    );
+
+    let delta = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-window-close-date",
+        vec![
+            cursor_position("event_day", CursorValue::I64(3)),
+            cursor_position("event_day", CursorValue::I64(9)),
+        ],
+    )
+    .unwrap();
+
+    assert_eq!(
+        delta.output_position,
+        cursor_position("event_day", CursorValue::I64(7))
+    );
+    assert_eq!(
+        delta.segments[0].output_position,
+        cursor_position("event_day", CursorValue::I64(3))
+    );
+    assert_eq!(
+        delta.segments[1].output_position,
+        cursor_position("event_day", CursorValue::I64(9))
+    );
+}
+
+#[test]
+fn state_delta_rejects_page_token_only_and_mixed_cursor_positions() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = rest_cursor_runtime_resource(
+        "updated_at",
+        r#"{ name = "updated_at", type = "int64", nullable = false }"#,
+        "best_effort",
+        "5ms",
+    );
+
+    let page_token_error = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-page-token-only",
+        vec![SourcePosition::PageToken(PageToken {
+            version: 1,
+            token: "next-page".to_owned(),
+        })],
+    )
+    .unwrap_err();
+    assert!(page_token_error.to_string().contains("page-token-only"));
+
+    let mixed_position = SourcePosition::Composite(CompositePosition {
+        version: 1,
+        positions: BTreeMap::from([
+            (
+                "cursor".to_owned(),
+                cursor_position("updated_at", CursorValue::I64(10)),
+            ),
+            (
+                "page".to_owned(),
+                SourcePosition::PageToken(PageToken {
+                    version: 1,
+                    token: "next-page".to_owned(),
+                }),
+            ),
+        ]),
+    });
+    let mixed_error = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-mixed-cursor-page-token",
+        vec![mixed_position],
+    )
+    .unwrap_err();
+    assert!(mixed_error.to_string().contains("mixed cursor/page-token"));
+}
+
+#[test]
+fn state_delta_rejects_divergent_non_file_source_position_variants() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = rest_cursor_runtime_resource(
+        "updated_at",
+        r#"{ name = "updated_at", type = "int64", nullable = false }"#,
+        "best_effort",
+        "5ms",
+    );
+
+    let error = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-divergent-non-file-variants",
+        vec![
+            cursor_position("updated_at", CursorValue::I64(10)),
+            SourcePosition::Log(LogPosition {
+                version: 1,
+                log: "orders".to_owned(),
+                offset: 11,
+                sequence: None,
+            }),
+        ],
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("divergent source-position variants")
+    );
+}
+
+#[test]
+fn state_delta_rejects_incompatible_cursor_fields_values_and_lag() {
+    let temp = tempfile::tempdir().unwrap();
+    let numeric_resource = rest_cursor_runtime_resource(
+        "updated_at",
+        r#"{ name = "updated_at", type = "int64", nullable = false }"#,
+        "best_effort",
+        "5ms",
+    );
+    let field_error = state_delta_for_positions(
+        &numeric_resource,
+        temp.path(),
+        "pkg-state-delta-incompatible-cursor-field",
+        vec![cursor_position("other", CursorValue::I64(10))],
+    )
+    .unwrap_err();
+    assert!(
+        field_error
+            .to_string()
+            .contains("does not match resource cursor field")
+    );
+
+    let string_resource = rest_cursor_runtime_resource(
+        "name",
+        r#"{ name = "name", type = "string", nullable = false }"#,
+        "best_effort",
+        "0ms",
+    );
+    let value_error = state_delta_for_positions(
+        &string_resource,
+        temp.path(),
+        "pkg-state-delta-unsupported-cursor-value",
+        vec![cursor_position(
+            "name",
+            CursorValue::String("unsupported".to_owned()),
+        )],
+    )
+    .unwrap_err();
+    assert!(
+        value_error
+            .to_string()
+            .contains("unsupported cursor value kind")
+    );
+
+    let unsigned_resource = rest_cursor_runtime_resource(
+        "updated_at",
+        r#"{ name = "updated_at", type = "u_int64", nullable = false }"#,
+        "best_effort",
+        "5ms",
+    );
+    let lag_error = state_delta_for_positions(
+        &unsigned_resource,
+        temp.path(),
+        "pkg-state-delta-incompatible-cursor-lag",
+        vec![cursor_position("updated_at", CursorValue::U64(3))],
+    )
+    .unwrap_err();
+    assert!(lag_error.to_string().contains("incompatible cursor lag"));
 }
 
 struct CommitFailingStore {

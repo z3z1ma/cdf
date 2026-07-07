@@ -18,6 +18,7 @@ Children:
 - `.10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md`
 - `.10x/tickets/done/2026-07-07-run-ledger-store.md`
 - `.10x/tickets/done/2026-07-07-general-run-orchestrator.md`
+- `.10x/tickets/done/2026-07-07-non-file-window-close-checkpoint-semantics.md`
 - `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`
 
 ## Acceptance criteria
@@ -38,6 +39,7 @@ Children:
 - 2026-07-07: General run Postgres destination child closed with evidence `.10x/evidence/2026-07-07-general-run-postgres-destination.md` and review `.10x/reviews/2026-07-07-general-run-postgres-destination-review.md`. The general orchestrator child now needs a parent closure audit; CLI spine remains an open executable child for the next implementation goal.
 - 2026-07-07: General run orchestrator child closed with evidence `.10x/evidence/2026-07-07-general-run-orchestrator-closure.md` and review `.10x/reviews/2026-07-07-general-run-orchestrator-closure-review.md`. CLI run/resume/replay/inspect is now the remaining open run-spine implementation child.
 - 2026-07-07: Split CLI spine into child tickets for `run`, `replay package`, `resume`, and `inspect run` so execution can proceed without one monolithic CLI patch.
+- 2026-07-07: Non-file window-close checkpoint semantics child closed with evidence `.10x/evidence/2026-07-07-non-file-window-close-checkpoint-semantics.md` and review `.10x/reviews/2026-07-07-non-file-window-close-checkpoint-semantics.md`. Project-run checkpoint advancement now supports ratified numeric/timestamp/date cursor window-close semantics and keeps unratified page-token/mixed/unsupported variants fail-closed.
 
 ## Blockers
 

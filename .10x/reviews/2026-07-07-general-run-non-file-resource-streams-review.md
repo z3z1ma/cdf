@@ -22,4 +22,4 @@ Pass. The implementation stays inside the ticket's conservative scope, preserves
 
 ## Residual Risk
 
-The broader Chapter 11/window-close promise for inexact or lagged non-file cursors remains unimplemented. This is not hidden in this closure; it is tracked by `.10x/tickets/2026-07-07-non-file-window-close-checkpoint-semantics.md`.
+The broader Chapter 11/window-close promise for inexact or lagged non-file cursors remains unimplemented in this slice. This is not hidden in this closure; it was tracked by `.10x/tickets/done/2026-07-07-non-file-window-close-checkpoint-semantics.md`.

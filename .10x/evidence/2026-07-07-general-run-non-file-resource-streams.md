@@ -31,4 +31,4 @@ This supports closing the bounded non-file project-run stream ticket: exact zero
 
 ## Limits
 
-This does not prove broader non-file cursor aggregation, page-token aggregation, or window-close checkpoint advancement. Those semantics remain blocked and are now owned by `.10x/tickets/2026-07-07-non-file-window-close-checkpoint-semantics.md`.
+This does not prove broader non-file cursor aggregation, page-token aggregation, or window-close checkpoint advancement. Those semantics were later owned by `.10x/tickets/done/2026-07-07-non-file-window-close-checkpoint-semantics.md`.

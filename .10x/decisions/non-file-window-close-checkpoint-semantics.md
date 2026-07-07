@@ -8,7 +8,7 @@ Updated: 2026-07-07
 
 `.10x/specs/resource-authoring-planning-batches.md` says inexact cursor ordering or nonzero cursor lag must use window-close semantics: committed cursor advances to `max(cursor) - lag`, not the naive maximum.
 
-The first general-run non-file stream slice intentionally supports only exact zero-lag cursor source positions. `.10x/tickets/2026-07-07-non-file-window-close-checkpoint-semantics.md` was opened for inexact, lagged, multi-segment, page-token, and mixed source-position cases.
+The first general-run non-file stream slice intentionally supports only exact zero-lag cursor source positions. `.10x/tickets/done/2026-07-07-non-file-window-close-checkpoint-semantics.md` was opened for inexact, lagged, multi-segment, page-token, and mixed source-position cases.
 
 The user ratified the recommended boundary on 2026-07-07.
 
@@ -42,6 +42,6 @@ Rejected. Lag arithmetic is type-specific and must be explicit before tests enco
 
 ## Consequences
 
-`.10x/tickets/2026-07-07-non-file-window-close-checkpoint-semantics.md` is no longer blocked on user input for numeric/timestamp/date cursor semantics and can proceed within this boundary.
+`.10x/tickets/done/2026-07-07-non-file-window-close-checkpoint-semantics.md` is no longer blocked on user input for numeric/timestamp/date cursor semantics and proceeded within this boundary.
 
 Unsupported cursor kinds and page-token-only checkpointing remain fail-closed behavior, not partially implemented semantics.

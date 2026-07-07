@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
@@ -40,3 +40,5 @@ Run focused project-runtime tests for cursor aggregation/window-close cases, RES
 
 - 2026-07-07: Opened during closure of `.10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md`. That ticket intentionally supports only exact zero-lag non-file cursors and fail-closes inexact, lagged, missing, or divergent non-file positions.
 - 2026-07-07: User ratified `.10x/decisions/non-file-window-close-checkpoint-semantics.md`: implement window-close for numeric/timestamp/date cursors; treat page tokens as pagination transport unless paired with a ratified cursor; fail closed for page-token-only, mixed, unsupported, divergent, or incompatible positions.
+- 2026-07-07: Implemented schema-backed project-run cursor aggregation in `crates/cdf-project/src/runtime.rs`. Supported cursor kinds advance to `max(cursor) - lag` for `int64`, `uint64`, timestamp micros, and `date32` whole-day lag. Page-token-only, mixed cursor/page-token, divergent variants, incompatible cursor fields, unsupported cursor value kinds, unordered cursors, and incompatible lag arithmetic fail closed before checkpoint proposal/commit. Focused tests and workspace checks are recorded in `.10x/evidence/2026-07-07-non-file-window-close-checkpoint-semantics.md`; variant review is recorded in `.10x/reviews/2026-07-07-non-file-window-close-checkpoint-semantics.md`.
+- 2026-07-07: Closed after parent review preserved raw per-segment source-position evidence while using the aggregated window-closed cursor only for the checkpoint delta output position. Full `cdf-project` tests, `cdf-project` nextest, workspace check, targeted clippy, feature check, Semgrep, deny/audit/vet/OSV, direct unsafe scan, and staged hygiene evidence support closure.
