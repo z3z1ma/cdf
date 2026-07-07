@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/2026-07-07-cli-replay-package-spine.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-replay-package-spine.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
 
 # CLI DuckDB Package Replay Evidence
 
@@ -31,7 +31,7 @@ Focused CLI tests also observed that Postgres, Parquet, unknown destination sche
 
 ## What this supports
 
-This supports the DuckDB-only slice of `.10x/tickets/2026-07-07-cli-replay-package-spine.md`:
+This supports the DuckDB-only slice of `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`:
 
 - Parser requires `--to`.
 - DuckDB replay uses package artifacts and does not contact source files after package creation.

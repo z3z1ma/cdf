@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
@@ -42,9 +42,7 @@ No `resume`, no `inspect run`, no new package artifact schema, no source extract
 
 ## Blockers
 
-None from user.
-
-Parquet and Postgres replay are decision-unblocked by `.10x/decisions/destination-introspection-package-and-cli-policy.md`; implementation wiring remains.
+None.
 
 ## Progress and notes
 
@@ -53,3 +51,4 @@ Parquet and Postgres replay are decision-unblocked by `.10x/decisions/destinatio
 - 2026-07-07: Parent review added a missing-package non-mutation regression and reran focused quality gates. The DuckDB slice is acceptable progress. At review time, Parquet URI spelling and Postgres replay CLI policy inputs were still unratified. Review: `.10x/reviews/2026-07-07-cli-duckdb-package-replay-review.md`.
 - 2026-07-07: User ratified `.10x/decisions/destination-introspection-package-and-cli-policy.md`: `parquet://<root>` is the filesystem Parquet destination root/prefix; destination introspection is standard wherever applicable but cannot infer missing write semantics; package scope is one resource transition; and Postgres replay uses explicit `--target` and `--merge-dedup fail`. Decision-level blockers are cleared; implementation wiring remains.
 - 2026-07-07: Implemented the Parquet portion only. `cdf replay package <pkg> --to parquet://<root>` now parses the filesystem root/prefix, replays package artifacts through `cdf_project::replay_parquet_package_from_artifacts`, records `replay_recorded`, and reports destination kind/id/root/target, receipt, checkpoint, package status, and run-ledger summary in JSON. Empty and nested/non-filesystem Parquet URIs fail closed before state, package, or destination mutation. Postgres replay policy parsing remains excluded. Focused success and malformed-URI CLI tests were updated. Evidence: `.10x/evidence/2026-07-07-cli-parquet-run-replay.md`. Review: `.10x/reviews/2026-07-07-cli-parquet-run-replay-review.md`.
+- 2026-07-07: Implemented the Postgres portion and closed the child. `cdf replay package <pkg> --to postgres://... --target schema.table --merge-dedup fail` now resolves plain or secret-backed Postgres destinations, validates the explicit target against the package destination commit target before mutation, replays through `cdf_project::replay_postgres_package_from_artifacts`, records `replay_recorded`, commits checkpoint state, appends a package receipt, and reports the required JSON fields. Missing target, missing merge-dedup, unsupported merge-dedup, and target mismatch fail closed before replay mutation; secret-backed target mismatch redacts the resolved DSN. Evidence: `.10x/evidence/2026-07-07-cli-postgres-package-replay.md`. Review: `.10x/reviews/2026-07-07-cli-postgres-package-replay-review.md`.

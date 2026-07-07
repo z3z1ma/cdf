@@ -13,7 +13,7 @@ Parent plan for wiring the existing CLI command surface to the general run spine
 Children:
 
 - `.10x/tickets/2026-07-07-cli-run-general-runtime.md`
-- `.10x/tickets/2026-07-07-cli-replay-package-spine.md`
+- `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`
 - `.10x/tickets/2026-07-07-cli-resume-spine.md`
 - `.10x/tickets/2026-07-07-cli-inspect-run-spine.md`
 
@@ -48,4 +48,5 @@ None at parent level. Execute the child tickets above; do not implement this par
 - 2026-07-07: User ratified the outstanding run-spine adjacent decisions. This ticket is open and dependency-gated by the general orchestrator, not waiting on semantic input.
 - 2026-07-07: General orchestrator dependency closed in `.10x/tickets/done/2026-07-07-general-run-orchestrator.md`; this CLI spine ticket is now the remaining run-spine executable child.
 - 2026-07-07: Split this broad ticket into executable children for `run`, `replay package`, `resume`, and `inspect run`. The first implementable child is `.10x/tickets/2026-07-07-cli-run-general-runtime.md`; `resume` is intentionally sequenced after run/replay destination parsing.
-- 2026-07-07: The filesystem Parquet portions of `cdf run` and `cdf replay package` landed under child tickets `.10x/tickets/2026-07-07-cli-run-general-runtime.md` and `.10x/tickets/2026-07-07-cli-replay-package-spine.md`, with shared evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md` and review `.10x/reviews/2026-07-07-cli-parquet-run-replay-review.md`. This parent remains open for REST/Postgres run wiring, Postgres replay, resume, and inspect-run.
+- 2026-07-07: The filesystem Parquet portions of `cdf run` and `cdf replay package` landed under child tickets `.10x/tickets/2026-07-07-cli-run-general-runtime.md` and `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`, with shared evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md` and review `.10x/reviews/2026-07-07-cli-parquet-run-replay-review.md`. This parent remained open for REST/Postgres run wiring, Postgres replay, resume, and inspect-run.
+- 2026-07-07: `cdf replay package` child closed at `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md` after Postgres replay wiring landed with evidence `.10x/evidence/2026-07-07-cli-postgres-package-replay.md` and review `.10x/reviews/2026-07-07-cli-postgres-package-replay-review.md`. This parent remains open for REST/Postgres `run`, `resume`, and `inspect run`.

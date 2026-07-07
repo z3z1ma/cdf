@@ -16,6 +16,7 @@ cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-engine = { path = "../cdf-engine" }
+cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
 cdf-project = { path = "../cdf-project" }
@@ -30,3 +31,4 @@ serde_json = "1.0.150"
 arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 duckdb = { version = "1.10504.0", features = ["bundled"] }
+postgres = "0.19"

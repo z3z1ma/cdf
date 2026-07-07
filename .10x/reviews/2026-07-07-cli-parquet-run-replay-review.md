@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/tickets/2026-07-07-cli-replay-package-spine.md
+Target: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md
 Verdict: pass
 
 # CLI Parquet run and replay review
@@ -22,8 +22,8 @@ The CLI report distinguishes the user-facing destination kind `parquet` from the
 
 ## Residual risk
 
-These tickets are not closed by this review. Postgres run/replay policy parsing and production REST transport registration remain outside this Parquet-only slice and are still active work.
+At review time, these tickets were not closed by this review. Postgres run/replay policy parsing and production REST transport registration remained outside this Parquet-only slice and were still active work.
 
 ## Verdict
 
-Pass for the Parquet run/replay slice. Keep `.10x/tickets/2026-07-07-cli-run-general-runtime.md` and `.10x/tickets/2026-07-07-cli-replay-package-spine.md` open for their remaining acceptance criteria.
+Pass for the Parquet run/replay slice. At review time, `.10x/tickets/2026-07-07-cli-run-general-runtime.md` and `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md` still had remaining acceptance criteria.

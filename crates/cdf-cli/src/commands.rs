@@ -10,18 +10,20 @@ use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, SqlResource, SqlRuntimeDependencies,
 };
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
+use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStore, OrderBy, PartitionPlan, PipelineId, PredicateId,
     ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest, ScopeKey, SortDirection,
     TargetName,
 };
-use cdf_package::{MANIFEST_FILE, PackageReader};
+use cdf_package::{MANIFEST_FILE, PackageReader, PackageReplayInputs};
 use cdf_project::{
     FileResourceSourceResolver, PackageArtifactDuckDbReplayRequest,
-    PackageArtifactParquetReplayRequest, ProjectReceiptSource, ProjectRunDestination,
-    ProjectRunReport, ProjectRunRequest, ProjectRunResource, ResourceSourceKind, generate_lockfile,
-    replay_duckdb_package_from_artifacts, replay_parquet_package_from_artifacts, run_project,
-    validate_project,
+    PackageArtifactParquetReplayRequest, PackageArtifactPostgresReplayRequest,
+    ProjectReceiptSource, ProjectRunDestination, ProjectRunReport, ProjectRunRequest,
+    ProjectRunResource, ResourceSourceKind, generate_lockfile,
+    replay_duckdb_package_from_artifacts, replay_parquet_package_from_artifacts,
+    replay_postgres_package_from_artifacts, run_project, validate_project,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, RunLedgerSnapshot,
@@ -322,20 +324,13 @@ fn replay_duckdb_destination_path(
     context: &ProjectContext,
     uri: &str,
 ) -> Result<PathBuf, CliError> {
-    if uri.starts_with("postgres://") {
-        return Err(CliError::not_supported(
-            "replay package",
-            "Postgres package replay requires explicit CLI inputs for target, merge dedup policy, and existing-table policy before cdf-cli may replay package artifacts; this DuckDB-only slice fails closed before destination or checkpoint mutation",
-            "ratified Postgres replay target and merge dedup policy CLI",
-        ));
-    }
     let Some(raw_path) = uri.strip_prefix("duckdb://") else {
         return Err(CliError::not_supported(
             "replay package",
             format!(
-                "destination URI `{uri}` is unsupported for this DuckDB-only slice; only local duckdb://path replay destinations are supported"
+                "destination URI `{uri}` is unsupported for package replay; supported destinations are duckdb://path, parquet://root, and postgres://..."
             ),
-            "local DuckDB artifact replay destination",
+            "artifact replay destination",
         ));
     };
     if raw_path.trim().is_empty() || raw_path.contains("://") {
@@ -354,8 +349,18 @@ fn replay_duckdb_destination_path(
 }
 
 enum ReplayDestination {
-    DuckDb { path: PathBuf },
-    Parquet { root: PathBuf },
+    DuckDb {
+        path: PathBuf,
+    },
+    Parquet {
+        root: PathBuf,
+    },
+    Postgres {
+        destination: Box<cdf_dest_postgres::PostgresDestination>,
+        target: cdf_dest_postgres::PostgresTarget,
+        dedup: cdf_dest_postgres::MergeDedupPolicy,
+        secret_backed: bool,
+    },
 }
 
 impl ReplayDestination {
@@ -388,6 +393,22 @@ impl ReplayDestination {
                 })
                 .map(PreparedReplayReport::Parquet)
             }
+            Self::Postgres {
+                destination,
+                target,
+                dedup,
+                secret_backed,
+            } => replay_postgres_package_from_artifacts(PackageArtifactPostgresReplayRequest {
+                package_dir: package_dir.to_path_buf(),
+                destination,
+                checkpoint_store: store,
+                target: target.clone(),
+                dedup: dedup.clone(),
+                existing_table: None,
+                after_receipt_verified: None,
+            })
+            .map(PreparedReplayReport::Postgres)
+            .map_err(|error| redact_postgres_replay_error(error, destination, *secret_backed)),
         };
         match result {
             Ok(report) => Ok(report),
@@ -407,6 +428,7 @@ impl ReplayDestination {
             Self::Parquet { root } => {
                 RunDestinationReport::parquet(root.display().to_string(), target)
             }
+            Self::Postgres { .. } => RunDestinationReport::postgres(target),
         }
     }
 
@@ -414,13 +436,28 @@ impl ReplayDestination {
         match self {
             Self::DuckDb { .. } => "duckdb",
             Self::Parquet { .. } => "parquet",
+            Self::Postgres { .. } => "postgres",
         }
+    }
+
+    fn validate_package_inputs(&self, inputs: &PackageReplayInputs) -> Result<(), CliError> {
+        if let Self::Postgres { target, .. } = self {
+            let explicit = target.display_name();
+            if explicit != inputs.destination_commit.target.as_str() {
+                return Err(CliError::from(CdfError::contract(format!(
+                    "explicit Postgres replay target {explicit} does not match package destination commit target {}",
+                    inputs.destination_commit.target
+                ))));
+            }
+        }
+        Ok(())
     }
 }
 
 enum PreparedReplayReport {
     DuckDb(cdf_project::PreparedDuckDbReplayReport),
     Parquet(cdf_project::PreparedParquetReplayReport),
+    Postgres(cdf_project::PreparedPostgresReplayReport),
 }
 
 impl PreparedReplayReport {
@@ -433,6 +470,12 @@ impl PreparedReplayReport {
                 package_status: &report.package_status,
             },
             Self::Parquet(report) => PreparedReplayReportRef {
+                checkpoint: &report.checkpoint,
+                receipt: &report.receipt,
+                receipt_source: report.receipt_source.clone(),
+                package_status: &report.package_status,
+            },
+            Self::Postgres(report) => PreparedReplayReportRef {
                 checkpoint: &report.checkpoint,
                 receipt: &report.receipt,
                 receipt_source: report.receipt_source.clone(),
@@ -451,8 +494,12 @@ struct PreparedReplayReportRef<'a> {
 
 fn build_replay_destination(
     context: &ProjectContext,
-    uri: &str,
+    args: &ReplayPackageArgs,
 ) -> Result<ReplayDestination, CliError> {
+    let uri = &args.destination_uri;
+    if uri.starts_with("postgres://") {
+        return build_postgres_replay_destination(context, args);
+    }
     if uri.starts_with("parquet://") {
         return Ok(ReplayDestination::Parquet {
             root: parquet_filesystem_root(context, uri, "replay package")?,
@@ -461,6 +508,88 @@ fn build_replay_destination(
     Ok(ReplayDestination::DuckDb {
         path: replay_duckdb_destination_path(context, uri)?,
     })
+}
+
+fn build_postgres_replay_destination(
+    context: &ProjectContext,
+    args: &ReplayPackageArgs,
+) -> Result<ReplayDestination, CliError> {
+    let target = args.target.as_deref().ok_or_else(|| {
+        CliError::usage("replay package to Postgres requires --target schema.table")
+    })?;
+    if target.split('.').count() != 2 {
+        return Err(CliError::usage(
+            "replay package to Postgres requires --target schema.table",
+        ));
+    }
+    let target = cdf_dest_postgres::PostgresTarget::parse(target)?;
+    let dedup = match args.merge_dedup.as_deref() {
+        Some("fail") => cdf_dest_postgres::MergeDedupPolicy::Fail,
+        Some(value) => {
+            return Err(CliError::usage(format!(
+                "unsupported Postgres replay --merge-dedup `{value}`; supported value is `fail`"
+            )));
+        }
+        None => {
+            return Err(CliError::usage(
+                "replay package to Postgres requires --merge-dedup fail",
+            ));
+        }
+    };
+    let (destination, secret_backed) = postgres_replay_destination(context, &args.destination_uri)?;
+    Ok(ReplayDestination::Postgres {
+        destination: Box::new(destination),
+        target,
+        dedup,
+        secret_backed,
+    })
+}
+
+fn postgres_replay_destination(
+    context: &ProjectContext,
+    uri: &str,
+) -> Result<(cdf_dest_postgres::PostgresDestination, bool), CliError> {
+    let Some(raw) = uri.strip_prefix("postgres://") else {
+        return Err(CliError::not_supported(
+            "replay package",
+            format!("destination URI `{uri}` is unsupported; expected postgres://..."),
+            "Postgres artifact replay destination",
+        ));
+    };
+    if raw.trim().is_empty() {
+        return Err(CliError::not_supported(
+            "replay package",
+            "Postgres replay destination URI is malformed; expected postgres://database-url or postgres://secret://provider/key",
+            "Postgres database URL",
+        ));
+    }
+    if raw.starts_with("secret://") {
+        let secret = cdf_project::SecretRef::new(raw.to_owned())?;
+        let provider = context.secret_provider();
+        let value = provider.resolve(&secret.to_secret_uri()?)?;
+        return Ok((
+            cdf_dest_postgres::PostgresDestination::connect(value.as_str()?.to_owned())?,
+            true,
+        ));
+    }
+    Ok((
+        cdf_dest_postgres::PostgresDestination::connect(uri.to_owned())?,
+        false,
+    ))
+}
+
+fn redact_postgres_replay_error(
+    mut error: CdfError,
+    destination: &cdf_dest_postgres::PostgresDestination,
+    secret_backed: bool,
+) -> CdfError {
+    if secret_backed
+        && let Some(database_url) = destination.database_url()
+        && !database_url.is_empty()
+    {
+        error.message = error.message.replace(database_url, "[REDACTED]");
+    }
+    error
 }
 
 fn parquet_filesystem_root(
@@ -770,10 +899,11 @@ fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliError> {
 
 fn replay_package(cli: &Cli, args: ReplayPackageArgs) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    let replay_destination = build_replay_destination(&context, &args.destination_uri)?;
+    let replay_destination = build_replay_destination(&context, &args)?;
     let reader = PackageReader::open(&args.package_dir)?;
     let package_id = reader.manifest().identity.package_id.clone();
     let replay_inputs = reader.replay_inputs()?;
+    replay_destination.validate_package_inputs(&replay_inputs)?;
     let package_hash = replay_inputs.state_delta.package_hash.clone();
     let state_store_path = context.state_store_path()?;
     ensure_parent_directory(&state_store_path)?;
@@ -1766,6 +1896,16 @@ impl RunDestinationReport {
             target,
             database_path: None,
             root: Some(root),
+        }
+    }
+
+    fn postgres(target: String) -> Self {
+        Self {
+            kind: "postgres",
+            destination_id: None,
+            target,
+            database_path: None,
+            root: None,
         }
     }
 

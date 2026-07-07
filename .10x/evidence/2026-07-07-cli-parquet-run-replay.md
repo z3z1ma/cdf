@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/tickets/2026-07-07-cli-replay-package-spine.md, .10x/decisions/destination-introspection-package-and-cli-policy.md, .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md
+Relates-To: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md, .10x/decisions/destination-introspection-package-and-cli-policy.md, .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md
 
 # CLI filesystem Parquet run and replay
 
@@ -44,12 +44,12 @@ Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
 This supports the filesystem Parquet portions of:
 
 - `.10x/tickets/2026-07-07-cli-run-general-runtime.md`
-- `.10x/tickets/2026-07-07-cli-replay-package-spine.md`
+- `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`
 
 It proves the ratified `parquet://<root>` CLI spelling is now wired for run and replay, with no source contact during package replay and no mutation for malformed Parquet destination URIs.
 
 ## Limits
 
-The CLI run ticket remains open because REST still lacks a production `HttpTransport` adapter and Postgres still needs project destination-policy parsing. The CLI replay ticket remains open because Postgres replay still requires `--target` and `--merge-dedup` parser/wiring.
+At recording time, the CLI run ticket remained open because REST still lacked a production `HttpTransport` adapter and Postgres still needed project destination-policy parsing. The CLI replay ticket also remained open at recording time because Postgres replay still required `--target` and `--merge-dedup` parser/wiring.
 
 `gitleaks detect --no-banner --redact` over full repository history reported two pre-existing historical leaks. This does not prove a new staged leak; staged-only `gitleaks protect --staged --no-banner` remains the commit gate.

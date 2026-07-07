@@ -1,9 +1,13 @@
 use std::{
     collections::BTreeMap,
+    env,
     ffi::OsString,
     fs,
+    net::TcpListener,
     path::{Path, PathBuf},
+    process::Command,
     sync::Arc,
+    sync::Mutex,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -21,6 +25,7 @@ use cdf_kernel::{
 use cdf_package::{PackageBuilder, PackageReader, PackageStatus};
 use cdf_state_sqlite::SqliteCheckpointStore;
 use duckdb::Connection as DuckConnection;
+use postgres::{Client, NoTls};
 use rusqlite::Connection;
 use serde_json::Value;
 use serde_json::json;
@@ -28,6 +33,8 @@ use serde_json::json;
 use crate::invoke;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LIVE_POSTGRES_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
+static LOCAL_POSTGRES_START: Mutex<()> = Mutex::new(());
 
 const PROJECT: &str = r#"
 [project]
@@ -1289,17 +1296,255 @@ fn replay_package_postgres_destination_fails_closed_before_mutation() {
         "postgres://secret://file/destination-dsn",
     );
 
-    assert_eq!(result.exit_code, 78);
+    assert_eq!(result.exit_code, 2);
     assert_secret_absent(&result, "destination-secret");
     assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
     let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], true);
+    assert_eq!(json["error"]["kind"], "contract");
     assert!(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("target, merge dedup policy")
+            .contains("requires --target schema.table")
     );
+}
+
+#[test]
+fn replay_package_postgres_missing_merge_dedup_fails_closed_before_mutation() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        "postgres://user:destination-secret@localhost/db\n",
+    )
+    .unwrap();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-postgres-missing-dedup",
+        "checkpoint-replay-postgres-missing-dedup",
+    );
+    let receipts = package_receipt_count(&package_dir);
+    let status = package_status(&package_dir);
+
+    let result = replay_package_command_with_postgres_options(
+        &project,
+        &package_dir,
+        "postgres://secret://file/destination-dsn",
+        Some("public.events"),
+        None,
+    );
+
+    assert_eq!(result.exit_code, 2);
+    assert_secret_absent(&result, "destination-secret");
+    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires --merge-dedup fail")
+    );
+}
+
+#[test]
+fn replay_package_postgres_unsupported_merge_dedup_fails_closed_before_mutation() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        "postgres://user:destination-secret@localhost/db\n",
+    )
+    .unwrap();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-postgres-unsupported-dedup",
+        "checkpoint-replay-postgres-unsupported-dedup",
+    );
+    let receipts = package_receipt_count(&package_dir);
+    let status = package_status(&package_dir);
+
+    let result = replay_package_command_with_postgres_options(
+        &project,
+        &package_dir,
+        "postgres://secret://file/destination-dsn",
+        Some("public.events"),
+        Some("last"),
+    );
+
+    assert_eq!(result.exit_code, 2);
+    assert_secret_absent(&result, "destination-secret");
+    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("supported value is `fail`")
+    );
+}
+
+#[test]
+fn replay_package_postgres_target_mismatch_fails_closed_before_state_creation() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-postgres-target-mismatch",
+        "checkpoint-replay-postgres-target-mismatch",
+    );
+    let receipts = package_receipt_count(&package_dir);
+    let status = package_status(&package_dir);
+
+    let result = replay_package_command_with_postgres_options(
+        &project,
+        &package_dir,
+        "postgres://localhost/cdf",
+        Some("public.events"),
+        Some("fail"),
+    );
+
+    assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
+    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not match package destination commit target")
+    );
+}
+
+#[test]
+fn replay_package_postgres_secret_backed_uri_redacts_resolved_dsn_on_target_mismatch() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        "postgres://user:destination-secret@localhost/db\n",
+    )
+    .unwrap();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-postgres-secret-target-mismatch",
+        "checkpoint-replay-postgres-secret-target-mismatch",
+    );
+    let receipts = package_receipt_count(&package_dir);
+    let status = package_status(&package_dir);
+
+    let result = replay_package_command_with_postgres_options(
+        &project,
+        &package_dir,
+        "postgres://secret://file/destination-dsn",
+        Some("public.events"),
+        Some("fail"),
+    );
+
+    assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "destination-secret");
+    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("does not match package destination commit target")
+    );
+}
+
+#[test]
+fn replay_package_postgres_replays_from_artifacts_without_source_contact() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        format!("{}\n", postgres.url),
+    )
+    .unwrap();
+    let target = format!("{}.events_cli_replay", postgres.schema);
+    let package_dir = create_replay_package_fixture_with_target(
+        &project,
+        "pkg-replay-postgres-success",
+        "checkpoint-replay-postgres-success",
+        &target,
+    );
+    let manifest = PackageReader::open(&package_dir)
+        .unwrap()
+        .manifest()
+        .clone();
+    let receipts_before = package_receipt_count(&package_dir);
+
+    let result = replay_package_command_with_postgres_options(
+        &project,
+        &package_dir,
+        "postgres://secret://file/destination-dsn",
+        Some(&target),
+        Some("fail"),
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &postgres.url);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(json["command"], "replay package");
+    assert_eq!(report["command"], "replay package");
+    assert_eq!(report["package_id"], "pkg-replay-postgres-success");
+    assert_eq!(report["package_hash"], manifest.package_hash);
+    assert_eq!(report["destination"]["kind"], "postgres");
+    assert_eq!(report["destination"]["destination_id"], "postgres");
+    assert_eq!(report["destination"]["target"], target);
+    assert_eq!(report["target"], target);
+    assert_eq!(report["receipt"]["destination_id"], "postgres");
+    assert_eq!(report["receipt"]["target"], target);
+    assert_eq!(report["receipt"]["package_hash"], manifest.package_hash);
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
+    assert_eq!(
+        report["receipt_source"]["kind"],
+        "destination_commit_receipt_only"
+    );
+    assert_eq!(report["receipt_source"]["package_receipt_recorded"], true);
+    assert_eq!(
+        report["checkpoint_id"],
+        "checkpoint-replay-postgres-success"
+    );
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["package_status"], "checkpointed");
+    assert_eq!(report["ledger_events"]["event_count"], 1);
+    assert_eq!(report["ledger_events"]["terminal_kind"], "replay_recorded");
+    assert_eq!(report["ledger_events"]["kinds"]["replay_recorded"], 1);
+    assert_eq!(package_receipt_count(&package_dir), receipts_before + 1);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("replay checkpoint head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-replay-postgres-success"
+    );
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.as_str(),
+        report["receipt_id"].as_str().unwrap()
+    );
+
+    let mut client = postgres.client();
+    let rows: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {}",
+                postgres.table("events_cli_replay")
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 2);
 }
 
 #[test]
@@ -1415,7 +1660,7 @@ fn replay_package_unknown_destination_scheme_fails_closed_before_mutation() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("only local duckdb://path")
+            .contains("supported destinations are duckdb://path, parquet://root, and postgres://")
     );
 }
 
@@ -2596,6 +2841,31 @@ fn run_valid_run_resource(
     ])
 }
 
+fn run_valid_run_target(
+    project: &TestProject,
+    package_id: &str,
+    checkpoint_id: &str,
+    target: &str,
+) -> crate::InvocationResult {
+    run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "run".to_owned(),
+        "--resource".to_owned(),
+        "local.events".to_owned(),
+        "--pipeline".to_owned(),
+        "pipeline-run".to_owned(),
+        "--target".to_owned(),
+        target.to_owned(),
+        "--package-id".to_owned(),
+        package_id.to_owned(),
+        "--checkpoint-id".to_owned(),
+        checkpoint_id.to_owned(),
+    ])
+}
+
 fn create_replay_package_fixture(
     project: &TestProject,
     package_id: &str,
@@ -2608,12 +2878,35 @@ fn create_replay_package_fixture(
     project.root.join(".cdf/packages").join(package_id)
 }
 
+fn create_replay_package_fixture_with_target(
+    project: &TestProject,
+    package_id: &str,
+    checkpoint_id: &str,
+    target: &str,
+) -> PathBuf {
+    let result = run_valid_run_target(project, package_id, checkpoint_id, target);
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    remove_state_store(project);
+    project.root.join(".cdf/packages").join(package_id)
+}
+
 fn replay_package_command(
     project: &TestProject,
     package_dir: &Path,
     destination_uri: &str,
 ) -> crate::InvocationResult {
-    run_dynamic(vec![
+    replay_package_command_with_postgres_options(project, package_dir, destination_uri, None, None)
+}
+
+fn replay_package_command_with_postgres_options(
+    project: &TestProject,
+    package_dir: &Path,
+    destination_uri: &str,
+    target: Option<&str>,
+    merge_dedup: Option<&str>,
+) -> crate::InvocationResult {
+    let mut command = vec![
         "cdf".to_owned(),
         "--json".to_owned(),
         "--project".to_owned(),
@@ -2623,7 +2916,16 @@ fn replay_package_command(
         package_dir.to_str().unwrap().to_owned(),
         "--to".to_owned(),
         destination_uri.to_owned(),
-    ])
+    ];
+    if let Some(target) = target {
+        command.push("--target".to_owned());
+        command.push(target.to_owned());
+    }
+    if let Some(merge_dedup) = merge_dedup {
+        command.push("--merge-dedup".to_owned());
+        command.push(merge_dedup.to_owned());
+    }
+    run_dynamic(command)
 }
 
 fn remove_state_store(project: &TestProject) {
@@ -2674,6 +2976,146 @@ fn assert_no_replay_mutation(
             path.display()
         );
     }
+}
+
+struct LivePostgres {
+    url: String,
+    schema: String,
+    _server: Option<LocalPostgres>,
+}
+
+struct LocalPostgres {
+    data_dir: TempDir,
+    _socket_dir: TempDir,
+    pg_ctl: PathBuf,
+}
+
+impl LivePostgres {
+    fn start() -> Option<Self> {
+        let (url, server) = match env::var("TEST_DATABASE_URL") {
+            Ok(url) if !url.trim().is_empty() => (url, None),
+            _ => {
+                let Some(server) = LocalPostgres::start() else {
+                    eprintln!(
+                        "skipping live Postgres test: set TEST_DATABASE_URL or install postgres/initdb/pg_ctl"
+                    );
+                    return None;
+                };
+                (server.url(), Some(server))
+            }
+        };
+        let schema = format!(
+            "cdf_cli_live_{}_{}",
+            std::process::id(),
+            LIVE_POSTGRES_SCHEMA_COUNTER.fetch_add(1, Ordering::Relaxed)
+        );
+        let mut client = Client::connect(&url, NoTls).unwrap();
+        client
+            .batch_execute(&format!("CREATE SCHEMA {}", quote_identifier(&schema)))
+            .unwrap();
+        Some(Self {
+            url,
+            schema,
+            _server: server,
+        })
+    }
+
+    fn client(&self) -> Client {
+        Client::connect(&self.url, NoTls).unwrap()
+    }
+
+    fn table(&self, table: &str) -> String {
+        format!("{}.{}", self.schema, table)
+    }
+}
+
+impl Drop for LivePostgres {
+    fn drop(&mut self) {
+        if let Ok(mut client) = Client::connect(&self.url, NoTls) {
+            let _ = client.batch_execute(&format!(
+                "DROP SCHEMA IF EXISTS {} CASCADE",
+                quote_identifier(&self.schema)
+            ));
+        }
+    }
+}
+
+impl LocalPostgres {
+    fn start() -> Option<Self> {
+        let _guard = LOCAL_POSTGRES_START.lock().unwrap();
+        let initdb = find_binary("initdb")?;
+        let pg_ctl = find_binary("pg_ctl")?;
+        let data_dir = TempDir::new("cdf-cli-postgres-data");
+        let socket_dir = TempDir::new_short("cdfpgs");
+        let port = free_port();
+
+        let init_status = Command::new(&initdb)
+            .args(["-D", data_dir.path().to_str().unwrap()])
+            .args(["-A", "trust"])
+            .args(["-U", "cdf"])
+            .arg("--no-sync")
+            .status()
+            .unwrap();
+        assert!(init_status.success(), "initdb failed");
+
+        let socket_path = socket_dir.path().canonicalize().unwrap();
+        let options = format!("-h 127.0.0.1 -p {port} -k {}", socket_path.display());
+        let log_path = data_dir.path().join("postgres.log");
+        let start_status = Command::new(&pg_ctl)
+            .args(["-D", data_dir.path().to_str().unwrap()])
+            .args(["-l", log_path.to_str().unwrap()])
+            .args(["-o", &options])
+            .args(["-w", "start"])
+            .status()
+            .unwrap();
+        assert!(start_status.success(), "pg_ctl start failed");
+
+        Some(Self {
+            data_dir,
+            _socket_dir: socket_dir,
+            pg_ctl,
+        })
+    }
+
+    fn url(&self) -> String {
+        let port = fs::read_to_string(self.data_dir.path().join("postmaster.pid"))
+            .unwrap()
+            .lines()
+            .nth(3)
+            .unwrap()
+            .to_owned();
+        format!("postgresql://cdf@127.0.0.1:{port}/postgres")
+    }
+}
+
+impl Drop for LocalPostgres {
+    fn drop(&mut self) {
+        let _ = Command::new(&self.pg_ctl)
+            .args(["-D", self.data_dir.path().to_str().unwrap()])
+            .args(["-m", "fast"])
+            .args(["-w", "stop"])
+            .status();
+    }
+}
+
+fn quote_identifier(value: &str) -> String {
+    format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn find_binary(name: &str) -> Option<PathBuf> {
+    env::var_os("PATH").and_then(|paths| {
+        env::split_paths(&paths)
+            .map(|path| path.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 fn write_project_destination(project: &TestProject, destination: &str) {
@@ -3205,6 +3647,21 @@ impl TempDir {
             std::process::id()
         ));
         fs::create_dir_all(&parent).unwrap();
+        fs::create_dir(&path).unwrap();
+        Self { path }
+    }
+
+    fn new_short(prefix: &str) -> Self {
+        let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let parent = PathBuf::from("/tmp");
+        let path = parent.join(format!(
+            "{prefix}-{}-{counter}-{unique}",
+            std::process::id()
+        ));
         fs::create_dir(&path).unwrap();
         Self { path }
     }

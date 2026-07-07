@@ -119,6 +119,8 @@ pub struct ResumeArgs {
 pub struct ReplayPackageArgs {
     pub package_dir: PathBuf,
     pub destination_uri: String,
+    pub target: Option<String>,
+    pub merge_dedup: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -510,10 +512,14 @@ fn parse_replay(args: &[String]) -> Result<Command, CliError> {
 fn parse_replay_package(args: &[String]) -> Result<ReplayPackageArgs, CliError> {
     let mut package_dir = None;
     let mut destination_uri = None;
+    let mut target = None;
+    let mut merge_dedup = None;
     let mut cursor = Cursor::new(args);
     while let Some(arg) = cursor.next() {
         match arg {
             "--to" => destination_uri = Some(cursor.value("--to")?),
+            "--target" => target = Some(cursor.value("--target")?),
+            "--merge-dedup" => merge_dedup = Some(cursor.value("--merge-dedup")?),
             value if value.starts_with('-') => {
                 return Err(CliError::usage(format!(
                     "unknown replay package option `{value}`"
@@ -533,6 +539,8 @@ fn parse_replay_package(args: &[String]) -> Result<ReplayPackageArgs, CliError> 
             .ok_or_else(|| CliError::usage("replay package requires a package directory"))?,
         destination_uri: destination_uri
             .ok_or_else(|| CliError::usage("replay package requires --to"))?,
+        target,
+        merge_dedup,
     })
 }
 
