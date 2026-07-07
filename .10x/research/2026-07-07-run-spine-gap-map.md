@@ -33,4 +33,4 @@ What high-leverage architectural gap most directly blocks broader `cdf run`, `re
 
 The highest-leverage next architectural shaping item is the run spine: ratify run-ledger semantics, define a kernel/project commit-session abstraction, and then open executable implementation tickets to generalize runtime orchestration while preserving the existing DuckDB/file wrappers as compatibility facades.
 
-This research does not itself ratify the exact run-ledger contract. The unresolved semantics are owned by `.10x/tickets/2026-07-07-run-ledger-commit-session-spine-ratification.md`.
+This research does not itself ratify the exact run-ledger contract. The semantics were later ratified and closed by `.10x/tickets/done/2026-07-07-run-ledger-commit-session-spine-ratification.md`.

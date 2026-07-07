@@ -40,7 +40,8 @@ No dashboard or UI.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-status-freshness-local-ledger.md`; `cdf status` now evaluates serving freshness SLOs from existing committed SQLite checkpoint heads, reports fresh/stale/non-evaluable states with structured details, keeps missing or ambiguous local state non-evaluable, and preserves concise scheduler-friendly human output.
 - 2026-07-06: Opened child `.10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md` for the next bounded observability slice: engine package-execution spans with caller-supplied `RunId`, resource, partition, and package identifiers. Read-only exploration found `inspect run` is blocked until run-ledger and run-to-artifact semantics are ratified.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md`; `cdf-engine` now exposes additive `execute_to_package_with_run_id`, emits exact package and partition tracing fields, preserves the existing untraced API and package identity, and has mutation-clean execution tests with full relevant `QUALITY.md` evidence.
+- 2026-07-07: Run-ledger and inspect-run semantics were ratified in `.10x/decisions/run-ledger-commit-session-spine.md` and `.10x/specs/run-orchestration-ledger.md`. Implementation is now blocked on the run ledger store, general orchestrator, and CLI inspect-run child tickets rather than semantic ratification.
 
 ## Blockers
 
-`inspect run` story assembly remains blocked until run-id minting, run ledger ownership, run-to-package/checkpoint/receipt mapping, multi-resource and multi-package run bounds, transition ordering storage, and verdict-summary ownership are ratified.
+`inspect run` story assembly semantics are ratified, but implementation remains blocked until `.10x/tickets/2026-07-07-run-ledger-store.md`, `.10x/tickets/2026-07-07-general-run-orchestrator.md`, and `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md` land.

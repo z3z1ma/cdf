@@ -1,12 +1,12 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-07
 
 # Destinations, receipts, and delivery guarantees
 
 ## Purpose and scope
 
-This specification governs destination commit protocols, destination sheets, dispositions, receipts, idempotency, replay, guarantee derivation, and first destinations. It derives from book Chapter 13 and decisions D-5, D-16, D-27, and D-28.
+This specification governs destination commit protocols, destination sheets, dispositions, receipts, idempotency, replay, guarantee derivation, and first destinations. It derives from book Chapter 13 and decisions D-5, D-16, D-27, and D-28. General run composition is governed by `.10x/specs/run-orchestration-ledger.md`.
 
 ## Destination protocol
 
@@ -17,6 +17,10 @@ A destination MUST be a commit protocol, not an unverified sink. It MUST expose 
 Package-embedded commit-plan evidence MUST follow `.10x/decisions/package-state-commit-preimage-artifacts.md`. When package-token idempotency uses the finalized package hash, the identity-participating artifact records `idempotency_token_source = "package_hash"` rather than a concrete token value. The concrete destination commit request uses the finalized package hash as the token after package identity is known.
 
 `finalize` MUST return a durable receipt or an error. There is no accepted ambiguous third state.
+
+A commit session MUST NOT synthesize checkpoint commits. It returns receipts; only the checkpoint store opens the commit gate. Destination-specific verification remains owned by the destination driver, even when called by a generic runtime.
+
+The first session API MAY be synchronous if it preserves existing destination behavior. Async, restartable sessions, and streaming segment writes are implementation choices unless a focused runtime/performance ticket ratifies them.
 
 ## Destination sheets
 

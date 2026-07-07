@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-07
 
 # Project format, CLI, observability, and security
 
@@ -28,6 +28,14 @@ The required command surface includes `init`, `validate`, `plan`, `explain`, `ru
 
 `cdf run --loop` MAY exist only for local development and MUST NOT make the kernel a scheduler.
 
+`cdf run` MUST route supported resource/destination/disposition combinations through the general run spine defined by `.10x/specs/run-orchestration-ledger.md`. It MUST mint a run id when one is not supplied and MUST fail closed on caller-supplied run-id collision.
+
+`cdf resume` MUST drain interrupted work according to the run spine crash matrix. After package finalization, resume MUST NOT contact the source.
+
+`cdf replay package <pkg> --to <dest>` MUST create a new run, use package replay inputs, and record duplicate receipts as observable facts.
+
+`cdf inspect run <id>` MUST assemble plan, verdict summaries, receipts, transitions, package/checkpoint pointers, duplicate status, and recovery guidance. It MUST show missing artifacts explicitly and MUST redact secrets.
+
 ## Errors and retries
 
 All tiers and crates MUST use one taxonomy: `Transient`, `RateLimited`, `Auth`, `Contract`, `Data`, `Destination`, and `Internal`.
@@ -36,7 +44,7 @@ Retries MUST occur at the smallest safe unit under a run-level retry budget. Con
 
 ## Observability
 
-cdf's primary observability surface MUST be its own queryable artifacts: ledger, packages, receipts, and mirrors. `cdf sql` MUST query system history where practical.
+cdf's primary observability surface MUST be its own queryable artifacts: ledger, run ledger, packages, receipts, and mirrors. `cdf sql` MUST query system history where practical.
 
 `tracing` MUST include run, resource, partition, and package IDs. OTLP export MAY be feature-gated.
 
@@ -64,4 +72,3 @@ Supply-chain gates SHOULD include `cargo deny`, `cargo vet`, committed lockfiles
 ## Explicit exclusions
 
 This spec does not define package file internals, destination commit internals, or resource capability truth-testing beyond CLI exposure.
-
