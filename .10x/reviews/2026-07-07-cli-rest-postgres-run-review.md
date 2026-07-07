@@ -30,4 +30,4 @@ Pass. The child ticket acceptance criteria are satisfied for this slice, and the
 
 ## Residual risk
 
-`commands.rs` remains a broad command module with high aggregate complexity even after the run extraction. This is tracked separately in `.10x/tickets/2026-07-07-cli-command-module-architecture.md`; it does not block closing the run child because the run-specific vertical code is no longer in the command dispatcher file.
+`commands.rs` remains a broad command module with high aggregate complexity even after the run extraction. This was tracked separately and later closed in `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`; it does not block closing the run child because the run-specific vertical code is no longer in the command dispatcher file.

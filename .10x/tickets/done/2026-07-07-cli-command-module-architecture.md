@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-remaining-command-planners.md
@@ -35,3 +35,5 @@ None.
 ## Progress and notes
 
 - 2026-07-07: Opened after the `cdf run` extraction reduced `commands.rs` from 2414 SLOC / cyclomatic 461 / cognitive 108 to 2078 SLOC / cyclomatic 370 / cognitive 85, while leaving `state`, replay/reporting, dispatch, and other command families as remaining hotspots. The `cdf run` slice is closed separately under `.10x/tickets/done/2026-07-07-cli-run-general-runtime.md`.
+- 2026-07-07: Split command-family implementation into noun-owned modules plus shared `reports.rs`; `commands.rs` is now a dispatcher/output helper surface.
+- 2026-07-07: Quality gates passed and metrics recorded in `.10x/evidence/2026-07-07-cli-command-module-architecture.md`; closure review recorded in `.10x/reviews/2026-07-07-cli-command-module-architecture-review.md`.

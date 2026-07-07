@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md, .10x/tickets/2026-07-07-cli-command-module-architecture.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-command-module-architecture.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
 
 # CLI REST/Postgres run quality evidence
 
@@ -57,6 +57,6 @@ It also supports the architectural claim that this slice reduced `commands.rs` c
 
 ## Limits
 
-`commands.rs` remains too large and still owns unrelated command families. This evidence supports the run extraction only. The remaining CLI module split is owned by `.10x/tickets/2026-07-07-cli-command-module-architecture.md`.
+`commands.rs` remains too large and still owns unrelated command families. This evidence supports the run extraction only. The remaining CLI module split was later closed by `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`.
 
 CodeQL was intentionally not run for this slice per the active goal/user instruction to avoid recreating or churning the reusable database for low-value local runs.

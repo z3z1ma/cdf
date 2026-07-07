@@ -14,7 +14,7 @@ This is a planning parent, not an executable implementation ticket. Before imple
 
 ## Command families to split
 
-- Cross-cutting command module architecture: split `commands.rs` into noun-owned modules while preserving behavior.
+- Cross-cutting command module architecture: done in `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`.
 - `cdf init`: project scaffold/write API and fixture-backed default project shape.
 - `cdf plan` and `cdf explain`: scan/resource-schema to destination-DDL planning facade, including pushdown fidelity, delivery guarantee, and state-advancement preview.
 - `cdf preview`: REST declarative preview, SQL declarative preview, Arrow IPC preview, and multi-file scan semantics without package, destination, or checkpoint writes.
@@ -46,4 +46,5 @@ None from user. This ticket exists to split remaining implementation work after 
 ## Progress and notes
 
 - 2026-07-07: Opened while clearing stale CLI blocked status after user ratified the pending run-spine, DataFusion tuple, Postgres destination, and non-file checkpoint decisions. This ticket replaces a prose-only blocker list in `.10x/tickets/2026-07-05-cli-surface.md`.
-- 2026-07-07: Added executable architecture child `.10x/tickets/2026-07-07-cli-command-module-architecture.md` after `cdf run` extraction metrics showed `commands.rs` remains too broad even though the run path moved out.
+- 2026-07-07: Added executable architecture child, now closed as `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`, after `cdf run` extraction metrics showed `commands.rs` remains too broad even though the run path moved out.
+- 2026-07-07: Closed architecture child as `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`; remaining command-family bullets are still lower-layer behavior/planner work.

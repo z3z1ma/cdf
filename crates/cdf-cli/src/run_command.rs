@@ -9,11 +9,13 @@ use cdf_project::{ProjectRunDestination, ProjectRunRequest, ProjectRunResource, 
 
 use crate::{
     args::{Cli, RunArgs, ScanArgs},
-    commands::{RunCliReport, RunDestinationReport, build_engine_plan, output},
+    commands::output,
     context::ProjectContext,
     destination_uri::{parquet_filesystem_root, postgres_database_url, redact_error_value},
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
+    reports::{RunCliReport, RunDestinationReport},
+    scan_command::build_engine_plan,
 };
 
 pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
