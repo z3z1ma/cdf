@@ -16,7 +16,7 @@ No blocking findings.
 
 The prior significant concern in `.10x/reviews/2026-07-07-cli-spine-parent-closure-audit.md` was missing direct CLI table-backed SQL success evidence. The new child `.10x/tickets/done/2026-07-07-cli-sql-run-success.md` closes that exact gap with a live CLI `cdf run` test that proves secret-backed Postgres SQL source execution, DuckDB destination writes, receipt recording, ledger success, and checkpoint head cursor advancement.
 
-The review also checked that the user-raised `commands.rs` architecture concern has an existing closed owner: `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`. Current `rust-code-analysis-cli` metrics keep `commands.rs` at SLOC 107, cognitive 2, and cyclomatic 30. Remaining CLI command-family planning is still durably owned by `.10x/tickets/2026-07-07-cli-remaining-command-planners.md`, so this parent closure does not claim the full CLI surface is done.
+The review also checked that the user-raised `commands.rs` architecture concern has an existing closed owner: `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`. Current `rust-code-analysis-cli` metrics keep `commands.rs` at SLOC 107, cognitive 2, and cyclomatic 30. Remaining CLI command-family planning was later split by `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`, so this parent closure does not claim the full CLI surface is done.
 
 ## Verdict
 

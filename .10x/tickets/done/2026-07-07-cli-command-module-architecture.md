@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-cli-remaining-command-planners.md
+Parent: .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md
 Depends-On: .10x/specs/project-cli-observability-security.md
 
 # Split CLI command modules by noun

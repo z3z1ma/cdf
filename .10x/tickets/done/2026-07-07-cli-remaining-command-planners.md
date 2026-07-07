@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-cli-surface.md
@@ -15,14 +15,14 @@ This is a planning parent, not an executable implementation ticket. Before imple
 ## Command families to split
 
 - Cross-cutting command module architecture: done in `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`.
-- `cdf init`: project scaffold/write API and fixture-backed default project shape.
-- `cdf plan` and `cdf explain`: scan/resource-schema to destination-DDL planning facade, including pushdown fidelity, delivery guarantee, and state-advancement preview.
-- `cdf preview`: REST declarative preview, SQL declarative preview, Arrow IPC preview, and multi-file scan semantics without package, destination, or checkpoint writes.
-- `cdf contract freeze` and `cdf contract test`: contract registry/snapshot writer, drift fixture runner, and fail-closed behavior for missing registry state.
-- `cdf state migrate` and `cdf state recover`: explicit state migration runner, fixture-backed migration gates, and destination mirror recovery API.
-- `cdf backfill`: bounded backfill planner/orchestrator with run-ledger ownership and checkpoint-safe slicing.
-- `cdf package gc`: retention planner tied to checkpoint history and package manifest reachability.
-- `cdf status`: integration of runtime-ledger/package receipt timestamps for freshness cases not covered by the local committed-head implementation.
+- `cdf init`: `.10x/tickets/2026-07-07-cli-init-scaffold.md`.
+- `cdf plan` and `cdf explain`: `.10x/tickets/2026-07-07-cli-plan-explain-ddl-guarantee.md`.
+- `cdf preview`: `.10x/tickets/2026-07-07-cli-preview-resource-breadth.md`.
+- `cdf contract freeze` and `cdf contract test`: `.10x/tickets/2026-07-07-cli-contract-registry-freeze-test.md`.
+- `cdf state migrate` and `cdf state recover`: `.10x/tickets/2026-07-07-cli-state-migrate-recover.md`.
+- `cdf backfill`: `.10x/tickets/2026-07-07-cli-backfill-planner.md`.
+- `cdf package gc`: `.10x/tickets/2026-07-07-cli-package-gc-retention.md`.
+- `cdf status`: `.10x/tickets/2026-07-07-cli-status-runtime-ledger-freshness.md`.
 
 ## Acceptance criteria
 
@@ -41,10 +41,19 @@ No source edits, no command implementation, no CLI snapshots, no dependency chan
 
 ## Blockers
 
-None from user. This ticket exists to split remaining implementation work after the next goal is chosen.
+None.
+
+## Evidence
+
+- `.10x/evidence/2026-07-07-cli-remaining-command-planner-split.md`
+
+## Review
+
+- `.10x/reviews/2026-07-07-cli-remaining-command-planner-split-review.md`
 
 ## Progress and notes
 
 - 2026-07-07: Opened while clearing stale CLI blocked status after user ratified the pending run-spine, DataFusion tuple, Postgres destination, and non-file checkpoint decisions. This ticket replaces a prose-only blocker list in `.10x/tickets/2026-07-05-cli-surface.md`.
 - 2026-07-07: Added executable architecture child, now closed as `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`, after `cdf run` extraction metrics showed `commands.rs` remains too broad even though the run path moved out.
 - 2026-07-07: Closed architecture child as `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`; remaining command-family bullets are still lower-layer behavior/planner work.
+- 2026-07-07: Split all remaining command families into direct children of `.10x/tickets/2026-07-05-cli-surface.md`. Evidence recorded in `.10x/evidence/2026-07-07-cli-remaining-command-planner-split.md`; review passed in `.10x/reviews/2026-07-07-cli-remaining-command-planner-split-review.md`.

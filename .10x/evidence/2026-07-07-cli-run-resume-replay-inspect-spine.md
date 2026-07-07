@@ -51,6 +51,6 @@ This supports the parent acceptance criteria:
 
 ## Limits
 
-This evidence closes the CLI run/resume/replay/inspect spine parent only. It does not close the broader CLI surface parent `.10x/tickets/2026-07-05-cli-surface.md`; remaining non-run-spine command-family lower layers are still owned by `.10x/tickets/2026-07-07-cli-remaining-command-planners.md`.
+This evidence closes the CLI run/resume/replay/inspect spine parent only. It does not close the broader CLI surface parent `.10x/tickets/2026-07-05-cli-surface.md`; remaining non-run-spine command-family lower layers were later split by `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`.
 
 The final SQL success test uses the established live Postgres harness and skips when neither `TEST_DATABASE_URL` nor local Postgres binaries are available.

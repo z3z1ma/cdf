@@ -51,4 +51,4 @@ This supports the run-spine parent acceptance criteria:
 
 ## Limits
 
-This parent closure does not close the full CDF system, the full CLI surface, or the MVP killer-demo harness. Remaining owners include `.10x/tickets/2026-07-05-cli-surface.md`, `.10x/tickets/2026-07-07-cli-remaining-command-planners.md`, and `.10x/tickets/2026-07-05-conformance-chaos-golden.md`.
+This parent closure does not close the full CDF system, the full CLI surface, or the MVP killer-demo harness. Remaining owners include `.10x/tickets/2026-07-05-cli-surface.md`, its command-family child tickets split by `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`, and `.10x/tickets/2026-07-05-conformance-chaos-golden.md`.

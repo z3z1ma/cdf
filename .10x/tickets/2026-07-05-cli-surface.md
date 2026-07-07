@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-05
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md, .10x/tickets/2026-07-07-cli-remaining-command-planners.md
+Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md, .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md, .10x/tickets/2026-07-07-cli-init-scaffold.md, .10x/tickets/2026-07-07-cli-plan-explain-ddl-guarantee.md, .10x/tickets/2026-07-07-cli-preview-resource-breadth.md, .10x/tickets/2026-07-07-cli-contract-registry-freeze-test.md, .10x/tickets/2026-07-07-cli-state-migrate-recover.md, .10x/tickets/2026-07-07-cli-backfill-planner.md, .10x/tickets/2026-07-07-cli-package-gc-retention.md, .10x/tickets/2026-07-07-cli-status-runtime-ledger-freshness.md
 
 # Implement CLI surface
 
@@ -45,6 +45,6 @@ None from user or unresolved product semantics.
 Full CLI acceptance is dependency-gated by open implementation owners:
 
 - `run`, `resume`, `replay package`, and `inspect run` slices are closed under `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md`; direct CLI table-backed SQL `run` success-path evidence is closed under `.10x/tickets/done/2026-07-07-cli-sql-run-success.md`.
-- `init`, DDL planning for `plan`/`explain`, broader `preview`, contract registry/fixture commands, state migration/recovery commands, backfill, package GC, and runtime-ledger freshness integration are owned by `.10x/tickets/2026-07-07-cli-remaining-command-planners.md`.
+- Remaining non-run-spine command families were split by `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md` and are now owned by `.10x/tickets/2026-07-07-cli-init-scaffold.md`, `.10x/tickets/2026-07-07-cli-plan-explain-ddl-guarantee.md`, `.10x/tickets/2026-07-07-cli-preview-resource-breadth.md`, `.10x/tickets/2026-07-07-cli-contract-registry-freeze-test.md`, `.10x/tickets/2026-07-07-cli-state-migrate-recover.md`, `.10x/tickets/2026-07-07-cli-backfill-planner.md`, `.10x/tickets/2026-07-07-cli-package-gc-retention.md`, and `.10x/tickets/2026-07-07-cli-status-runtime-ledger-freshness.md`.
 
 Verification note: `cargo fmt --all -- --check`, `cargo test -p cdf-cli --locked --no-fail-fast`, `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings`, `cargo check -p cdf-cli --all-targets --locked`, and `cargo check --workspace --all-targets --locked` pass after parent integration. Semgrep's initial CLI argv/path findings were resolved by using a source-local test directory and documenting the intentionally non-security CLI argv dispatch boundary with a narrow `nosemgrep` comment. Full acceptance is now dependency-gated by the open owners listed above.
