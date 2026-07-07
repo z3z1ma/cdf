@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Target: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 Verdict: pass
 
@@ -16,7 +16,7 @@ None blocking remain.
 
 Resolved significant finding: the first worker implementation placed the runtime-neutral checkpoint contract in `cdf-state-sqlite`. This violated `.10x/specs/architecture-layering-runtime.md` because higher runtime and CLI crates need the contract without depending on the SQLite implementation. The contract and checkpoint value types now live in `cdf-kernel`; `cdf-state-sqlite` depends downward on them.
 
-Resolved significant finding: `SqliteCheckpointStore::connection(&self) -> &Connection` exposed a public bypass around the cdf-line invariant. The public accessor was removed. SQLite tests inspect the private connection only from the module test submodule.
+Resolved significant finding: `SqliteCheckpointStore::connection(&self) -> &Connection` exposed a public bypass around the commit-gate invariant. The public accessor was removed. SQLite tests inspect the private connection only from the module test submodule.
 
 Resolved significant finding: book section 12.5 ratified `trait CheckpointStore: Send + Sync` with shared receivers. The trait now uses shared receivers, both stores hide mutation behind `Mutex` or SQLite transactions, and tests assert both store types satisfy `CheckpointStore + Send + Sync`.
 
@@ -30,7 +30,7 @@ Minor residual: `jscpd` reports similarity in existing prose and some Rust test/
 
 - `.10x/evidence/2026-07-06-checkpoint-store-sqlite.md`
 - `.10x/evidence/2026-07-06-checkpoint-quality-gates.md`
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `VISION.md` section 12.5
 - `crates/cdf-kernel/src/lib.rs`
 - `crates/cdf-state-sqlite/src/lib.rs`
@@ -41,4 +41,4 @@ Pass. The ticket acceptance criteria are implemented and covered by recorded evi
 
 ## Residual Risk
 
-The checkpoint conformance suite is not yet a reusable cross-store harness; that broader work remains owned by `.10x/tickets/2026-07-05-conformance-chaos-golden.md`. Destination mirror recovery is outside this ticket and remains governed by `.10x/specs/checkpoint-state-cdf-line.md` and future destination/CLI tickets.
+The checkpoint conformance suite is not yet a reusable cross-store harness; that broader work remains owned by `.10x/tickets/2026-07-05-conformance-chaos-golden.md`. Destination mirror recovery is outside this ticket and remains governed by `.10x/specs/checkpoint-state-commit-gate.md` and future destination/CLI tickets.

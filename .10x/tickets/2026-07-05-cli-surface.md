@@ -1,6 +1,6 @@
 Status: blocked
 Created: 2026-07-05
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
@@ -32,7 +32,7 @@ Business logic belongs in lower crates; CLI must not bypass lower-layer invarian
 - 2026-07-06: Assigned to CLI worker. Worker owns `crates/cdf-cli/**`, its own evidence/review records, and may update `Cargo.lock` only for CLI dependencies. Do not touch `.gitignore`, lower-crate implementation, parent ticket, or unrelated records.
 - 2026-07-06: Implemented the practical CLI surface in `crates/cdf-cli` with split modules for parsing, context loading, command handling, and JSON/error output. Commands use existing lower-crate APIs where exposed and return explicit unsupported exits instead of faking invariant-sensitive writes. Evidence recorded in `.10x/evidence/2026-07-06-cli-surface.md`.
 - 2026-07-06: Implemented the first supported `cdf sql` surface under `.10x/tickets/done/2026-07-06-local-system-sql.md`: read-only local system-history queries over checkpoint and package metadata. `sql` is no longer a blocker for the CLI surface.
-- 2026-07-06: Closed lower-layer child `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`; explicit prepared-package DuckDB replay/recovery into `CheckpointStore::commit` now exists without source contact. CLI plumbing remains blocked on command-level project loading, explicit delta/receipt input handling, and broader run-ledger orchestration rather than on the lower-layer package-to-checkpoint primitive.
+- 2026-07-06: Closed lower-layer child `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`; explicit prepared-package DuckDB replay/recovery into `CheckpointStore::commit` now exists without source contact. CLI plumbing remains blocked on command-level project loading, explicit delta/receipt input handling, and broader run-ledger orchestration rather than on the lower-layer package-to-checkpoint primitive.
 - 2026-07-06: Closed child `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`; `preview` now works for the first safe runtime slice: single-match declarative local file resources using the existing `cdf-formats::FileResource` execution path. Broader CLI acceptance remains blocked on the lower-layer APIs listed below.
 - 2026-07-06: Closed child `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md` for the first live `run` slice: explicit declarative local file resource to DuckDB destination and SQLite checkpoint with package/destination/checkpoint invariants preserved. It intentionally requires explicit pipeline, target, package id, and checkpoint id inputs so this slice does not invent run-ledger defaults.
 
@@ -46,8 +46,8 @@ Full acceptance is blocked by missing lower-layer APIs. Exact unsupported surfac
 - `run`: first explicit local file to DuckDB/SQLite orchestration slice is done in `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md`. Broader run-ledger defaults, automatic ids, REST/SQL resources, non-DuckDB destinations, and multi-resource runs remain blocked.
 - `contract freeze` and `contract test`: no contract registry/snapshot writer or fixture runner.
 - `state migrate` and `state recover`: no state migration runner or destination mirror recovery API.
-- `resume`: no run ledger/recovery orchestrator for full run resumption; package-bound receipt recovery now has a lower-layer primitive in `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`.
-- `replay package`: package replay/checkpoint primitive now exists in `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`, but CLI command wiring still has no ratified/project-backed way to load the explicit `StateDelta`, target, disposition, schema hash, merge keys, DuckDB destination, or supplied receipt inputs.
+- `resume`: no run ledger/recovery orchestrator for full run resumption; package-bound receipt recovery now has a lower-layer primitive in `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`.
+- `replay package`: package replay/checkpoint primitive now exists in `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`, but CLI command wiring still has no ratified/project-backed way to load the explicit `StateDelta`, target, disposition, schema hash, merge keys, DuckDB destination, or supplied receipt inputs.
 - `backfill`: no backfill planner/orchestrator.
 - `package gc`: no retention planner tied to checkpoint history.
 - `status` for resources with freshness SLOs: no runtime ledger/package receipt timestamps for freshness evaluation.

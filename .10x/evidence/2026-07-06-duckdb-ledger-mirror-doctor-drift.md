@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-duckdb-ledger-mirror-doctor-drift.md, .10x/specs/checkpoint-state-cdf-line.md, .10x/specs/project-cli-observability-security.md, .10x/specs/destination-receipts-guarantees.md
+Updated: 2026-07-07
+Relates-To: .10x/tickets/done/2026-07-06-duckdb-ledger-mirror-doctor-drift.md, .10x/specs/checkpoint-state-commit-gate.md, .10x/specs/project-cli-observability-security.md, .10x/specs/destination-receipts-guarantees.md
 
 # DuckDB Ledger Mirror Doctor Drift Evidence
 

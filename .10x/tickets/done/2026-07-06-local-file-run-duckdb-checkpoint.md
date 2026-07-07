@@ -1,14 +1,14 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-cli-surface.md
-Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md, .10x/tickets/done/2026-07-06-declarative-file-preview-execution.md
+Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md, .10x/tickets/done/2026-07-06-declarative-file-preview-execution.md
 
 # Implement local file run to DuckDB and checkpoint
 
 ## Scope
 
-Implement the first live `cdf run` slice that preserves the cdf-line invariant end to end:
+Implement the first live `cdf run` slice that preserves the commit-gate invariant end to end:
 
 1. Open exactly one compiled declarative local file resource.
 2. Execute it through `cdf-engine` into a package under the selected environment package root.
@@ -36,7 +36,7 @@ Keep crate roots thin and follow `.10x/knowledge/rust-crate-organization.md`.
 - Destination handling is explicit. This first slice MUST support only local `duckdb://` destinations and MUST return the existing explicit unsupported style for Postgres, Parquet/object-store, external, or malformed destinations.
 - `--loop` remains unsupported for this slice.
 - JSON output includes command, resource id, pipeline id, target, package id, package directory, package hash, package status, checkpoint id, checkpoint committed/head status, receipt id, receipt source including duplicate/no-op details, row count, segment count, and write effects.
-- Human output states the resource, package hash, destination target, checkpoint id, and that the cdf line was crossed after receipt verification.
+- Human output states the resource, package hash, destination target, checkpoint id, and that the commit gate was crossed after receipt verification.
 - Existing `plan`, `explain`, `preview`, package archive, doctor, status, and state commands remain compatible.
 
 ## Evidence expectations
@@ -52,7 +52,7 @@ Keep crate roots thin and follow `.10x/knowledge/rust-crate-organization.md`.
   - `cargo metadata --locked --format-version 1`
   - `git diff --check`
 - If manifests or `Cargo.lock` change, run applicable `QUALITY.md` supply-chain/security gates in parallel where possible, including `cargo deny`, `cargo audit`, OSV, `cargo vet`, `cargo machete`, `cargo udeps` when available, Semgrep, gitleaks, direct first-party unsafe scan, and `tools/codeql-rust-quality.sh` using the reusable database.
-- Run bounded mutation testing over the new live-run orchestration path if feasible; otherwise record the exact limit and compensate with negative tests around cdf-line ordering and no-write failures.
+- Run bounded mutation testing over the new live-run orchestration path if feasible; otherwise record the exact limit and compensate with negative tests around commit-gate ordering and no-write failures.
 
 ## Explicit exclusions
 
@@ -60,7 +60,7 @@ No REST or SQL resource execution, no Postgres/Parquet/object-store run executio
 
 ## Assumption provenance
 
-- Record-backed: the cdf-line invariant, receipt-gated checkpoint commit, DuckDB receipt verification, and SQLite checkpoint behavior are governed by `.10x/specs/checkpoint-state-cdf-line.md`, `.10x/specs/destination-receipts-guarantees.md`, and `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`.
+- Record-backed: the commit-gate invariant, receipt-gated checkpoint commit, DuckDB receipt verification, and SQLite checkpoint behavior are governed by `.10x/specs/checkpoint-state-commit-gate.md`, `.10x/specs/destination-receipts-guarantees.md`, and `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`.
 - Record-backed: declarative local file resource runtime support is closed in `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`.
 - Record-backed: `run` is currently blocked on an invariant-preserving orchestration API in `.10x/tickets/2026-07-05-cli-surface.md`; this ticket narrows that blocker to the first explicit local DuckDB slice.
 - Source-observed but not generalized: local tests already use `pipeline-1` and target names such as `events`, but this ticket does not ratify any project-wide default for them. They must be explicit command inputs in this slice.
@@ -69,12 +69,12 @@ No REST or SQL resource execution, no Postgres/Parquet/object-store run executio
 
 - `VISION.md` Chapters 11, 12, 13, 17, 19, and 22.
 - `.10x/specs/package-lifecycle-determinism.md`
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/tickets/2026-07-05-cli-surface.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
-- `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`
+- `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
 - `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`

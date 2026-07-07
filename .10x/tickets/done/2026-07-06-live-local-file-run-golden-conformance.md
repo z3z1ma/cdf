@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md, .10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md, .10x/tickets/done/2026-07-06-golden-package-conformance-foundation.md, .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md
 
@@ -16,7 +16,7 @@ The implementation should consume the existing public `cdf-project::run_local_fi
 
 - A conformance-owned live local-file fixture builds a declarative file resource, executes it through `run_local_file_to_duckdb_checkpoint`, and proves the run produces a verified package, a verified DuckDB receipt, a committed SQLite checkpoint, and the expected destination rows.
 - The fixture records committed golden evidence for the live run package and proves deterministic package evidence across 100 local rebuilds using explicit package ids, checkpoint ids, resource ids, pipeline ids, file contents, and target names.
-- The conformance harness proves the cdf-line invariant for the live run committed-before-checkpoint window: after an injected failure immediately after receipt verification, the destination receipt is durable and verifies, the checkpoint head is not committed, and recovery can commit the checkpoint without touching or re-opening the source file.
+- The conformance harness proves the commit-gate invariant for the live run committed-before-checkpoint window: after an injected failure immediately after receipt verification, the destination receipt is durable and verifies, the checkpoint head is not committed, and recovery can commit the checkpoint without touching or re-opening the source file.
 - The harness proves duplicate replay safety for the live package by re-driving the produced package into the same DuckDB destination and asserting duplicate/no-op receipt behavior and unchanged destination/mirror row counts.
 - Negative self-tests prove the harness catches corrupted expected evidence, missing checkpoint commit, missing receipt durability, and wrong destination row counts.
 - The implementation does not add native arrow-rs `parquet`/`paste`, does not change the current supply-chain policy, and does not edit production runtime behavior unless the existing public API cannot express an acceptance criterion.

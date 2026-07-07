@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Target: .10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md
 Verdict: pass
 
@@ -14,7 +14,7 @@ Closure review for `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-arch
 
 No blocking findings.
 
-The Singer/Airbyte protocol adapter child covers Singer `SCHEMA`/`RECORD`/`STATE`, Airbyte catalog/state parsing, scoped opaque `ForeignState` mapping, cdf-line state hashing, parser tests, package write/replay compatibility, mutation evidence, and quality evidence.
+The Singer/Airbyte protocol adapter child covers Singer `SCHEMA`/`RECORD`/`STATE`, Airbyte catalog/state parsing, scoped opaque `ForeignState` mapping, commit-gate state hashing, parser tests, package write/replay compatibility, mutation evidence, and quality evidence.
 
 The package archive transcode primitive child covers the supply-chain-clean IPC-to-Parquet primitive, fidelity report data model, DuckDB-backed Parquet bytes, destination writer reuse, mutation-clean focused tests, and quality evidence.
 

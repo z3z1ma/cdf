@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-checkpoint-store-conformance-suite.md, .10x/specs/checkpoint-state-cdf-line.md, .10x/specs/conformance-governance-roadmap.md
+Updated: 2026-07-07
+Relates-To: .10x/tickets/done/2026-07-06-checkpoint-store-conformance-suite.md, .10x/specs/checkpoint-state-commit-gate.md, .10x/specs/conformance-governance-roadmap.md
 
 # Checkpoint store conformance suite evidence
 

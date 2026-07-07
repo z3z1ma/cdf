@@ -61,6 +61,6 @@ This supports closing the mechanical CDF identity rename ticket: in-scope source
 
 ## Limits
 
-This evidence does not claim semantic terminology cleanup. Mechanically transformed "CDF line" wording remains intentionally out of this ticket's scope and is owned by `.10x/tickets/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
+This evidence does not claim semantic terminology cleanup. Mechanically transformed line-metaphor wording was intentionally out of this ticket's scope and was later handled by `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
 
 The first full-tree gitleaks attempt was interrupted because it scanned generated `target/**` vendor output and produced only generated-file noise; the recorded secret-scanning evidence is the later tracked-candidate scan.

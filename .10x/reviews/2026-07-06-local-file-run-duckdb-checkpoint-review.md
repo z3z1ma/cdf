@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Target: .10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md
 Verdict: pass
 
@@ -25,7 +25,7 @@ Resolved during parent review:
 
 - Explicit ids remain explicit: pipeline id, target, package id, and checkpoint id come from command inputs and are not inferred from filenames, project names, or destination names.
 - No-write failures happen before durable writes for omitted ids, unsupported resource kinds, unsupported destinations, existing package dirs, path-like package ids, and discovered-schema resources.
-- The cdf-line invariant holds: SQLite head is committed only after the destination receipt verifies, and the post-receipt/pre-checkpoint window is recoverable.
+- The commit-gate invariant holds: SQLite head is committed only after the destination receipt verifies, and the post-receipt/pre-checkpoint window is recoverable.
 - Source-position evidence used for checkpoint output position comes from engine-observed file manifest segment positions and fails closed on divergence.
 - The implementation does not broaden native Parquet policy, advisory ignores, run-ledger semantics, multi-resource runs, `resume`, or package replay CLI behavior.
 

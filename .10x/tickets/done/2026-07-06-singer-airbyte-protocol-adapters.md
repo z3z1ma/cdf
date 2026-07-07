@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md
 Depends-On: .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
@@ -34,7 +34,7 @@ No `cdf package archive`, Parquet transcode, Airbyte destination support, full c
 
 - `.10x/research/2026-07-06-singer-airbyte-protocol-scope.md`
 - `.10x/specs/resource-authoring-planning-batches.md`
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/knowledge/rust-crate-organization.md`
 
 ## Progress and notes

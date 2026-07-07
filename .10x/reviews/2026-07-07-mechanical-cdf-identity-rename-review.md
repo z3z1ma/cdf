@@ -13,7 +13,7 @@ Mechanical repository identity rename to CDF under `VISION.md` D-24.
 ## Findings
 
 - No significant findings. Residual in-scope legacy identity scans are clean, Cargo metadata resolves, the CLI binary target is `cdf`, Python import is `cdf_sdk`, and full Rust/Python verification passed.
-- Minor residual risk: the mechanically transformed line metaphor remains semantically suspect under `VISION.md`, which prefers commit-gate language and separately mentions a guarantee line in the demo. This was explicitly outside the mechanical rename scope and is now owned by `.10x/tickets/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
+- Minor residual risk resolved by `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`: the mechanically transformed line metaphor has been replaced with `commit gate` / `commit-gate` where it refers to checkpoint/state advancement, while `guarantee line` remains scoped to future `cdf plan` output.
 - Minor process risk: `.gitignore` is dirty from pre-existing user work. It was not modified for this ticket and must remain unstaged for this commit.
 
 ## Verdict

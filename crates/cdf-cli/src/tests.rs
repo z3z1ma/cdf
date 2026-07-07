@@ -641,7 +641,7 @@ fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
 }
 
 #[test]
-fn run_human_output_mentions_receipt_verified_cdf_line() {
+fn run_human_output_mentions_receipt_verified_commit_gate() {
     let project = TestProject::new();
     let result = run([
         "cdf",
@@ -665,7 +665,7 @@ fn run_human_output_mentions_receipt_verified_cdf_line() {
     assert!(result.stdout.contains("target events"));
     assert!(result.stdout.contains("checkpoint checkpoint-run-human"));
     assert!(result.stdout.contains("receipt verification"));
-    assert!(result.stdout.contains("cdf line"));
+    assert!(result.stdout.contains("commit gate"));
 }
 
 #[test]

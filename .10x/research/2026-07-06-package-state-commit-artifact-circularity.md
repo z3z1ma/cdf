@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 
 # Package state and commit artifact circularity
 
@@ -11,7 +11,7 @@ How should CDF satisfy the book/spec requirement that packages contain `state/pr
 ## Sources and methods
 
 - Read `VISION.md` Chapter 11, especially the package layout and hashing sections.
-- Read `.10x/specs/package-lifecycle-determinism.md`, `.10x/specs/checkpoint-state-cdf-line.md`, and `.10x/specs/destination-receipts-guarantees.md`.
+- Read `.10x/specs/package-lifecycle-determinism.md`, `.10x/specs/checkpoint-state-commit-gate.md`, and `.10x/specs/destination-receipts-guarantees.md`.
 - Inspected `crates/cdf-package/src/storage.rs`, `crates/cdf-package/src/builder.rs`, `crates/cdf-package/src/model.rs`, and package tests.
 - Inspected `crates/cdf-engine/src/execution.rs` for current engine-produced package artifacts.
 - Inspected `crates/cdf-project/src/runtime.rs` for runtime `StateDelta` and DuckDB commit construction.

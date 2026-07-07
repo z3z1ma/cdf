@@ -1,8 +1,8 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
-Depends-On: .10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
+Depends-On: .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
 # Implement prepared-package chaos conformance foundation
 
@@ -12,7 +12,7 @@ Implement the first reusable chaos/recovery conformance slice for the normative 
 
 Own `crates/cdf-conformance/**` for the reusable harness and focused self-tests. The expected home is a focused module such as `crates/cdf-conformance/src/package_replay/` exported from the thin `cdf-conformance` crate root. The worker may add scoped conformance dependencies on `cdf-project`, `cdf-package`, `cdf-dest-duckdb`, `cdf-state-sqlite`, Arrow test crates, and `tempfile` as needed to exercise the public runtime primitive. The worker must not modify production runtime behavior unless the existing public API cannot express the invariant; any such need must be recorded as a blocker before editing outside `crates/cdf-conformance/**`.
 
-This child intentionally uses the `PreparedDuckDbReplayRequest::after_receipt_verified` hook from `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md` to simulate the committed-before-checkpointed crash window. A narrow test helper subprocess that exits or is killed at that hook is in scope so the harness exercises durable package, DuckDB, and SQLite state across a process boundary. A general process-kill chaos runner is out of scope.
+This child intentionally uses the `PreparedDuckDbReplayRequest::after_receipt_verified` hook from `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md` to simulate the committed-before-checkpointed crash window. A narrow test helper subprocess that exits or is killed at that hook is in scope so the harness exercises durable package, DuckDB, and SQLite state across a process boundary. A general process-kill chaos runner is out of scope.
 
 ## Acceptance criteria
 
@@ -30,7 +30,7 @@ This child intentionally uses the `PreparedDuckDbReplayRequest::after_receipt_ve
 
 Record focused `cargo fmt --all -- --check`, `cargo test -p cdf-conformance --locked --no-fail-fast`, `cargo clippy -p cdf-conformance --all-targets --locked -- -D warnings`, `cargo test -p cdf-project --locked --no-fail-fast`, and `git diff --check`.
 
-Because this is a reusable conformance harness for a cdf-line invariant, run bounded mutation testing over the new conformance module when feasible, with `cdf-conformance` as the test oracle and downstream runtime/project tests included if practical. If mutation tooling is structurally blocked or too slow, record the exact limit and harden with negative self-tests before closure.
+Because this is a reusable conformance harness for a commit-gate invariant, run bounded mutation testing over the new conformance module when feasible, with `cdf-conformance` as the test oracle and downstream runtime/project tests included if practical. If mutation tooling is structurally blocked or too slow, record the exact limit and harden with negative self-tests before closure.
 
 Significant closure must follow `QUALITY.md`. Reuse the CodeQL database path from `.10x/knowledge/quality-gate-execution.md` and parallelize independent checks where practical.
 
@@ -42,17 +42,17 @@ The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still o
 
 ## References
 
-- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 cdf-line invariant, Chapter 13 receipt verification/replay idempotency, Chapter 19 chaos/replay identity, and Chapter 22 MVP killer demo.
+- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 commit-gate invariant, Chapter 13 receipt verification/replay idempotency, Chapter 19 chaos/replay identity, and Chapter 22 MVP killer demo.
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/specs/package-lifecycle-determinism.md`
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
-- `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`
-- `.10x/evidence/2026-07-06-package-replay-cdf-line-runtime.md`
-- `.10x/reviews/2026-07-06-package-replay-cdf-line-runtime-review.md`
+- `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
+- `.10x/evidence/2026-07-06-package-replay-commit-gate-runtime.md`
+- `.10x/reviews/2026-07-06-package-replay-commit-gate-runtime-review.md`
 - `.10x/evidence/2026-07-06-prepared-package-chaos-conformance.md`
 - `.10x/reviews/2026-07-06-prepared-package-chaos-conformance-review.md`
 

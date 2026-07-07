@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-05
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-formats-and-subprocess.md, .10x/tickets/done/2026-07-05-package-builder-reader.md
 
@@ -14,7 +14,7 @@ Implement fast-follow Singer and Airbyte source adapters over the subprocess mac
 
 - Singer `SCHEMA`, `RECORD`, and `STATE` map to descriptors, batches, and scoped `ForeignState`.
 - Airbyte catalog and per-stream state map cleanly into descriptors and positions where possible.
-- Foreign state is committed only under the cdf-line invariant.
+- Foreign state is committed only under the commit-gate invariant.
 - `package archive` transcodes IPC data to Parquet with fidelity report while preserving canonical IPC identity rules.
 
 ## Evidence expectations

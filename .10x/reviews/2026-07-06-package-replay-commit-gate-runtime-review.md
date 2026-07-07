@@ -1,10 +1,10 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Target: .10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md
+Target: .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md
 Verdict: pass
 
-# Prepared package cdf-line runtime review
+# Prepared package commit-gate runtime review
 
 ## Target
 

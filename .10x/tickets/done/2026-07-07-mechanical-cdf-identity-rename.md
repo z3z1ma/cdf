@@ -48,7 +48,7 @@ No semantic redesign, no native Parquet implementation, no commit-gate terminolo
 ## Progress and Notes
 
 - 2026-07-07: Opened after user directed the project rename to CDF and confirmed `VISION.md` is the new comprehensive book. The first pass should be mechanical and behavior-preserving; semantic metaphor cleanup can follow after the renamed workspace builds.
-- 2026-07-07: Mechanically renamed first-party crate/package paths, Rust crate imports, CLI binary target, Python SDK path/imports, root book authority, generated golden identity hashes, tool-script fingerprint naming, and `.10x/` CDF identity references. Closure evidence is `.10x/evidence/2026-07-07-mechanical-cdf-identity-rename.md`; closure review is `.10x/reviews/2026-07-07-mechanical-cdf-identity-rename-review.md`. Semantic terminology cleanup is deliberately split to `.10x/tickets/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
+- 2026-07-07: Mechanically renamed first-party crate/package paths, Rust crate imports, CLI binary target, Python SDK path/imports, root book authority, generated golden identity hashes, tool-script fingerprint naming, and `.10x/` CDF identity references. Closure evidence is `.10x/evidence/2026-07-07-mechanical-cdf-identity-rename.md`; closure review is `.10x/reviews/2026-07-07-mechanical-cdf-identity-rename-review.md`. Semantic terminology cleanup was deliberately split and later closed at `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
 
 ## Blockers
 

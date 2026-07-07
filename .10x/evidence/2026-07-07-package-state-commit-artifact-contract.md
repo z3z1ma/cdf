@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md, .10x/decisions/package-state-commit-preimage-artifacts.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/destination-receipts-guarantees.md, .10x/specs/checkpoint-state-cdf-line.md
+Relates-To: .10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md, .10x/decisions/package-state-commit-preimage-artifacts.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/destination-receipts-guarantees.md, .10x/specs/checkpoint-state-commit-gate.md
 
 # Package state and commit artifact contract evidence
 

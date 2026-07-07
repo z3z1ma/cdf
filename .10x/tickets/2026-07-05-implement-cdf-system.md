@@ -20,7 +20,7 @@ The parent agent owns sequencing, assignment to subagents, integration, evidence
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/types-contracts-normalization.md`
 - `.10x/specs/package-lifecycle-determinism.md`
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/specs/conformance-governance-roadmap.md`
@@ -35,7 +35,7 @@ MVP foundation:
 - `.10x/tickets/done/2026-07-05-package-builder-reader.md`
 - `.10x/tickets/done/2026-07-05-contract-compiler-normalization.md`
 - `.10x/tickets/done/2026-07-05-datafusion-engine-planner.md`
-- `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`
+- `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
 
 MVP authoring, destinations, and product surface:
 
@@ -72,7 +72,7 @@ Fast-follow and full-system completion:
 - `.10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md`
 - `.10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md`
 - `.10x/tickets/done/2026-07-07-mechanical-cdf-identity-rename.md`
-- `.10x/tickets/2026-07-07-semantic-commit-gate-terminology-cleanup.md`
+- `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`
 
 ## Acceptance criteria
 
@@ -114,8 +114,8 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed supply-chain policy child `.10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md`; `deny.toml` now makes advisory/license/source policy explicit, and `supply-chain/` now initializes cargo-vet so `cargo vet --locked` passes with a current-version exemption backlog.
 - 2026-07-06: Closed package archive primitive child `.10x/tickets/done/2026-07-06-package-archive-transcode-primitive.md`; `cdf-package` now has a supply-chain-clean IPC-to-Parquet in-memory archive report primitive, `cdf-dest-parquet` delegates to the shared writer, and the remaining archive CLI/file-placement/manifest metadata work stays with `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`.
 - 2026-07-06: Closed Parquet file-source child `.10x/tickets/done/2026-07-06-parquet-format-source-supply-chain.md`; `cdf-formats` now reads Parquet sources through DuckDB's bundled reader and an Arrow IPC bridge without adding the blocked direct arrow-rs `parquet`/`paste` path, with parser, malformed-input, package replay, mutation, and QUALITY evidence.
-- 2026-07-06: Split child now closed at `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md` for the missing lower-layer prepared-package DuckDB/SQLite replay/checkpoint runtime primitive. This is the smallest shared unblocking step for CLI `resume`/`replay package`, chaos recovery, golden replay gates, and the MVP crash-window demo without solving live source extraction in the same slice.
-- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`; `cdf-project` now exposes a receipt-verified prepared-package DuckDB/SQLite replay and recovery runtime primitive with focused tests, mutation coverage, full relevant `QUALITY.md` evidence, and closure review. CLI command wiring, broader run/resume orchestration, chaos killpoints, golden fixtures, and full MVP demo remain with their existing active tickets.
+- 2026-07-06: Split child now closed at `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md` for the missing lower-layer prepared-package DuckDB/SQLite replay/checkpoint runtime primitive. This is the smallest shared unblocking step for CLI `resume`/`replay package`, chaos recovery, golden replay gates, and the MVP crash-window demo without solving live source extraction in the same slice.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`; `cdf-project` now exposes a receipt-verified prepared-package DuckDB/SQLite replay and recovery runtime primitive with focused tests, mutation coverage, full relevant `QUALITY.md` evidence, and closure review. CLI command wiring, broader run/resume orchestration, chaos killpoints, golden fixtures, and full MVP demo remain with their existing active tickets.
 - 2026-07-06: Opened `.10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md` as the next conformance child. It will consume the prepared-package runtime to prove the first deterministic chaos/replay identity scenarios before broader process-kill chaos, golden fixtures, or MVP demo work.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-golden-package-conformance-foundation.md`; `cdf-conformance` now owns a reusable golden-package evidence harness with committed prepared-orders expected evidence, 100 local regeneration proof, verification-before-comparison, negative self-tests, mutation evidence, and full QUALITY evidence. Broader live-run golden gates and MVP demo work remain with `.10x/tickets/2026-07-05-conformance-chaos-golden.md`.
 - 2026-07-06: Closed observability child `.10x/tickets/done/2026-07-06-engine-execution-tracing-spans.md`; `cdf-engine` now has an additive explicit-run-id tracing entry point with exact run/resource/package/partition span fields, preserved package identity, and mutation-clean execution tests. `inspect run` remains blocked under `.10x/tickets/2026-07-05-observability-doctor-status-sql.md` until run-ledger semantics are ratified.
@@ -135,7 +135,8 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Opened `.10x/tickets/2026-07-06-local-duckdb-lifecycle-chaos-failpoints.md` as the next executable conformance slice. It targets named local DuckDB/SQLite runtime failpoints for the package/checkpoint crash matrix while leaving the separate package artifact contract implementation to its own ticket.
 - 2026-07-06: User explicitly ratified `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md`. Active decision `.10x/decisions/native-arrow-datafusion-parquet-policy.md` now supersedes the DuckDB-backed Parquet workaround as the target architecture and opens bounded follow-ups for the scoped `RUSTSEC-2024-0436` exception, native Parquet file-source reads, and native Parquet writer/archive replacement.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`; live and prepared packages now include identity-participating state/commit preimage artifacts, package readers reconstruct verified replay inputs, DuckDB artifact replay/recovery no longer needs source contact, conformance/golden fixtures consume the artifacts, and mutation-hardened package preimage validation is recorded in `.10x/evidence/2026-07-07-package-state-commit-artifact-contract.md`.
-- 2026-07-07: Closed `.10x/tickets/done/2026-07-07-mechanical-cdf-identity-rename.md`; repository identity now follows `VISION.md` D-24 mechanically across root book authority, Cargo crates/packages, Rust crate imports, CLI binary target, Python SDK path/imports, package golden identity, tooling fingerprint names, and `.10x/` records. Semantic terminology cleanup for the former line metaphor is split to `.10x/tickets/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-07-mechanical-cdf-identity-rename.md`; repository identity now follows `VISION.md` D-24 mechanically across root book authority, Cargo crates/packages, Rust crate imports, CLI binary target, Python SDK path/imports, package golden identity, tooling fingerprint names, and `.10x/` records. Semantic terminology cleanup for the former line metaphor is split to `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-07-semantic-commit-gate-terminology-cleanup.md`; `VISION.md`'s commit-gate vocabulary now governs checkpoint/state advancement specs, records, paths, CLI output, and tests. `guarantee line` remains reserved for future `cdf plan` output.
 
 ## Blockers
 

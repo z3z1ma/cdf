@@ -1,10 +1,10 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-07
 
 # cdf glossary
 
-`cdf` is the CLI binary and crate prefix; cdf in prose is the project.
+`cdf` is the CLI binary and crate prefix; CDF in prose is the project.
 
 Resource: the smallest stateful extraction unit. It declares schema, keys, cursor, state scope, disposition, contract, trust, and capabilities, and produces Arrow record batches.
 
@@ -22,7 +22,7 @@ Receipt: a destination's durable, independently verifiable acknowledgment that a
 
 Checkpoint: a typed, append-only state transition committed only after receipt verification.
 
-CDF line: the commit boundary enforced by `CheckpointStore::commit`; a source cursor may advance only after all data represented by the cursor is durably committed and the destination receipt is recorded.
+Commit gate: the commit boundary enforced by `CheckpointStore::commit`; a source cursor may advance only after all data represented by the cursor is durably committed and the destination receipt is recorded.
 
 Scope: a sub-resource state key such as a partition, window, file, stream, schema-contract, or destination-load scope.
 
@@ -37,4 +37,3 @@ Ice: committed state in the checkpoint ledger.
 Snowfall: raw extraction batches before validation and packaging.
 
 CDF: a load package: compacted evidence that can still melt if it never commits.
-

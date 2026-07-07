@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Relates-To: .10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md
 
 # Local file run to DuckDB checkpoint evidence
@@ -28,7 +28,7 @@ The implementation is scoped to:
 Acceptance-specific test coverage includes:
 
 - Successful CLI run writes package, DuckDB rows, `_cdf_loads` / `_cdf_state` mirror evidence, and SQLite checkpoint head.
-- Human output mentions receipt verification and crossing the cdf line.
+- Human output mentions receipt verification and crossing the commit gate.
 - JSON output includes explicit command/resource/pipeline/target/package/checkpoint/receipt/write-effect fields.
 - Missing explicit inputs, non-DuckDB destinations, REST resources, SQL resources, existing package dirs, path-like package ids, discovered-schema resources, and `--loop` fail before package/destination/checkpoint writes.
 - Project-level tests reject non-file resources, mismatched plan package ids, divergent segment source positions, bad receipts, missing segment acknowledgements, and premature checkpoint commits.

@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-05
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md
 
@@ -8,7 +8,7 @@ Depends-On: .10x/tickets/done/2026-07-05-kernel-core-types.md
 
 ## Scope
 
-Implement the `CheckpointStore` trait contract, in-memory store, SQLite WAL store, checkpoint schema, propose/commit/abandon/history/rewind operations, state-versioned position serialization, and receipt-gated cdf-line invariant. Owns checkpoint trait extensions in `cdf-kernel` only when needed and `crates/cdf-state-sqlite/**`.
+Implement the `CheckpointStore` trait contract, in-memory store, SQLite WAL store, checkpoint schema, propose/commit/abandon/history/rewind operations, state-versioned position serialization, and receipt-gated commit-gate invariant. Owns checkpoint trait extensions in `cdf-kernel` only when needed and `crates/cdf-state-sqlite/**`.
 
 ## Acceptance criteria
 

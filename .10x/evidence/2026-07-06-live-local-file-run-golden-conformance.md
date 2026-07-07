@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-cdf-line.md, .10x/specs/destination-receipts-guarantees.md
+Updated: 2026-07-07
+Relates-To: .10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-commit-gate.md, .10x/specs/destination-receipts-guarantees.md
 
 # Live local-file run golden conformance evidence
 
@@ -49,7 +49,7 @@ Workspace and `QUALITY.md` gates:
 
 ## What this supports
 
-This supports closing `.10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md`: the conformance suite now covers the first live local-file execution path end to end, records deterministic golden package evidence, verifies receipts and checkpoint state, proves the CDF-line committed-before-checkpoint recovery window without rereading the source file, proves duplicate/no-op replay behavior, and has negative and mutation evidence that the harness catches material gaps.
+This supports closing `.10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md`: the conformance suite now covers the first live local-file execution path end to end, records deterministic golden package evidence, verifies receipts and checkpoint state, proves the post-receipt/pre-checkpoint recovery window without rereading the source file, proves duplicate/no-op replay behavior, and has negative and mutation evidence that the harness catches material gaps.
 
 The evidence also supports the user's CodeQL reuse requirement for this slice: the wrapper reused `target/quality/codeql-db-rust`, and a post-Geiger directory check confirmed the reusable database remained present.
 

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-status-freshness-local-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/specs/checkpoint-state-cdf-line.md
+Updated: 2026-07-07
+Relates-To: .10x/tickets/done/2026-07-06-status-freshness-local-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/specs/checkpoint-state-commit-gate.md
 
 # Status freshness local ledger evidence
 

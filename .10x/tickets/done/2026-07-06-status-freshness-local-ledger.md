@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-observability-doctor-status-sql.md
 Depends-On: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-06-local-system-sql.md
 
@@ -37,7 +37,7 @@ No pipeline selector or project-to-pipeline-id convention. No run orchestration,
 
 - `VISION.md` Chapter 15 and Chapter 17
 - `.10x/specs/project-cli-observability-security.md`
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
 - `.10x/evidence/2026-07-06-local-system-sql.md`
 

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-06
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
-Depends-On: .10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md, .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md, .10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md
+Depends-On: .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md, .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md, .10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md
 
 # Mechanize local DuckDB lifecycle chaos failpoints
 
@@ -46,11 +46,11 @@ No package state/commit artifact schema changes, no CLI `resume` or `replay pack
 
 ## References
 
-- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 cdf-line invariant, Chapter 19 chaos layer, and Chapter 22 killer demo.
+- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 commit-gate invariant, Chapter 19 chaos layer, and Chapter 22 killer demo.
 - `.10x/specs/package-lifecycle-determinism.md`
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/conformance-governance-roadmap.md`
-- `.10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md`
+- `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
 - `.10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md`
 - `.10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md`
 - `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`

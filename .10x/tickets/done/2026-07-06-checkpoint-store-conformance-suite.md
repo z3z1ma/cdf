@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
@@ -8,7 +8,7 @@ Depends-On: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
 ## Scope
 
-Implement the first reusable `cdf-conformance` suite: a public checkpoint-store conformance harness that future store implementations can run against the same cdf-line contract as the MVP in-memory and SQLite stores.
+Implement the first reusable `cdf-conformance` suite: a public checkpoint-store conformance harness that future store implementations can run against the same commit-gate contract as the MVP in-memory and SQLite stores.
 
 Owns `crates/cdf-conformance/**`, the smallest necessary `crates/cdf-state-sqlite/**` test integration, and its own evidence/review records. Keep `src/lib.rs` thin by splitting conformance support into focused modules.
 
@@ -33,7 +33,7 @@ No resource conformance suite, destination conformance suite, chaos killpoints, 
 
 ## References
 
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md`

@@ -188,7 +188,7 @@ fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     output(
         "run",
         format!(
-            "ran resource {} into package {} for target {}; checkpoint {} committed after DuckDB receipt verification, crossing the cdf line",
+            "ran resource {} into package {} for target {}; checkpoint {} committed after DuckDB receipt verification, crossing the commit gate",
             cli_report.resource_id,
             cli_report.package_hash,
             cli_report.target,

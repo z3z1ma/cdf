@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-06
+Updated: 2026-07-07
 
 # Packages, lifecycle, and determinism
 
@@ -59,7 +59,7 @@ Recovery MUST follow the normative crash matrix:
 - Destination commit before checkpoint commit verifies receipt, then commits checkpoint without touching source.
 - After checkpoint commit, the next run reads committed state.
 
-Replay from a packaged artifact MUST derive concrete replay/checkpoint inputs from verified package identity evidence. The finalized package hash supplies the concrete `StateDelta.package_hash` and package-token idempotency value; those concrete values MUST be verified against receipts before crossing the cdf line.
+Replay from a packaged artifact MUST derive concrete replay/checkpoint inputs from verified package identity evidence. The finalized package hash supplies the concrete `StateDelta.package_hash` and package-token idempotency value; those concrete values MUST be verified against receipts before crossing the commit gate.
 
 Manifest status updates MUST be atomic rename-over or equivalently crash-safe.
 

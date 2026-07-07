@@ -1,6 +1,6 @@
 Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-observability-doctor-status-sql.md
 Depends-On: .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-06-local-system-sql.md
 
@@ -33,7 +33,7 @@ No Postgres live drift implementation. No destination recovery, checkpoint mutat
 
 ## References
 
-- `.10x/specs/checkpoint-state-cdf-line.md`
+- `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/project-cli-observability-security.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`

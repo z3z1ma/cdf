@@ -1,4 +1,4 @@
-Status: blocked
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -8,7 +8,7 @@ Depends-On: .10x/tickets/done/2026-07-07-mechanical-cdf-identity-rename.md
 
 ## Scope
 
-Review mechanically transformed "CDF line" terminology against `VISION.md` and update source, `.10x/` records, CLI output, tests, and specifications to the ratified semantic vocabulary.
+Review the mechanically transformed former line-metaphor terminology against `VISION.md` and update source, `.10x/` records, CLI output, tests, and specifications to the ratified semantic vocabulary.
 
 Candidate vocabulary from `VISION.md`:
 
@@ -40,7 +40,9 @@ No behavior changes beyond terminology unless a governing spec is superseded fir
 ## Progress and Notes
 
 - 2026-07-07: Opened during mechanical CDF identity rename closure because the mechanical pass intentionally did not choose the semantic replacement for the former line metaphor.
+- 2026-07-07: `VISION.md` now explicitly defines the state-advancement boundary as the "commit gate" in the preface, transition calculus, Chapter 13, MVP demo, review checklist, and glossary. The prior line metaphor is therefore record-backed as `commit gate` / `commit-gate` in checkpoint/state advancement contexts. "Guarantee line" remains scoped to future `cdf plan` output language and does not apply to checkpoint commit paths.
+- 2026-07-07: Closed after rewriting source, tests, active specs, tickets, evidence, reviews, research, knowledge, and path slugs to `commit gate` / `commit-gate`; residual old-term scans returned no matches. Evidence is `.10x/evidence/2026-07-07-semantic-commit-gate-terminology-cleanup.md`; closure review passed in `.10x/reviews/2026-07-07-semantic-commit-gate-terminology-cleanup-review.md`.
 
 ## Blockers
 
-The exact mapping is unclear: implementation would invent whether each occurrence should become "commit gate", "guarantee line", or another CDF term.
+None.

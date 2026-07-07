@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
-Relates-To: .10x/tickets/2026-07-05-cli-surface.md, .10x/specs/project-cli-observability-security.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-cdf-line.md
+Updated: 2026-07-07
+Relates-To: .10x/tickets/2026-07-05-cli-surface.md, .10x/specs/project-cli-observability-security.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-commit-gate.md
 
 # CLI surface evidence
 

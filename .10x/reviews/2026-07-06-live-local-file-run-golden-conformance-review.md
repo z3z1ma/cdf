@@ -1,6 +1,6 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Target: .10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md
 Verdict: pass
 
@@ -18,7 +18,7 @@ No blocking findings.
 - The crate root remains thin and the new live-run logic is split into `live_run/mod.rs` and `live_run/tests.rs`, matching the current crate-organization convention.
 - The golden fixture is deterministic and anchored by explicit package, checkpoint, pipeline, resource, target, source path, source hash, source size, row count, and package evidence values. The 100-run test compares regenerated package evidence to the committed fixture.
 - Receipt, checkpoint, and destination assertions cover the high-risk state transitions: package status, durable package receipt, verified DuckDB receipt, committed SQLite checkpoint head, destination mirror loads/state, segment row counts, and source-position metadata.
-- The post-receipt failure test covers the cdf-line window at the live-run level: after receipt verification but before checkpoint commit, the source file can be removed and recovery still commits from the durable receipt.
+- The post-receipt failure test covers the commit-gate window at the live-run level: after receipt verification but before checkpoint commit, the source file can be removed and recovery still commits from the durable receipt.
 - Duplicate replay reuses the prepared-package conformance assertions and verifies no second destination write or mirror-row inflation.
 - Negative self-tests and mutation testing reduce the risk that the harness passes while skipping material checks. The mutation run over `live_run/mod.rs` had 0 missed mutants.
 - The change does not alter native Parquet policy or add a dependency path to `parquet`/`paste`.

@@ -1,9 +1,9 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-package-replay-cdf-line-runtime.md
+Relates-To: .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md
 
-# Prepared package cdf-line runtime verification
+# Prepared package commit-gate runtime verification
 
 ## What was observed
 

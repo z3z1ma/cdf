@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
-Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-cdf-line.md, .10x/specs/destination-receipts-guarantees.md
+Updated: 2026-07-07
+Relates-To: .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/specs/conformance-governance-roadmap.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-commit-gate.md, .10x/specs/destination-receipts-guarantees.md
 
 # Prepared-package chaos conformance evidence
 

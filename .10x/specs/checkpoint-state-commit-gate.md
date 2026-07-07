@@ -1,8 +1,8 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-06
+Updated: 2026-07-07
 
-# Checkpoints, state, and the cdf line
+# Checkpoints, state, and the commit gate
 
 ## Purpose and scope
 
@@ -18,7 +18,7 @@ Checkpoint rows MUST include checkpoint id, pipeline id, resource id, scope, sta
 
 Statuses MUST include `proposed`, `committed`, `abandoned`, and `rewound`.
 
-## CDF-line invariant
+## Commit-gate invariant
 
 The only path from proposed to committed MUST be `CheckpointStore::commit(checkpoint_id, receipt)` or its moral equivalent. Commit MUST structurally verify that the receipt covers the package hash and every segment represented by the state delta.
 
@@ -38,7 +38,7 @@ Scopes MUST support partition, window, file, stream, schema-contract, and destin
 
 The store trait MUST support head lookup, propose, commit, abandon, history, and rewind. SQLite and in-memory stores ship at MVP. Future stores MUST pass the same conformance contract.
 
-The public checkpoint store trait MUST be `Send + Sync` and use shared receivers so a runtime can hold one store handle across workers. Store implementations MUST hide mutation behind implementation-owned synchronization or transactional storage and MUST NOT expose raw write handles that bypass the cdf-line invariant.
+The public checkpoint store trait MUST be `Send + Sync` and use shared receivers so a runtime can hold one store handle across workers. Store implementations MUST hide mutation behind implementation-owned synchronization or transactional storage and MUST NOT expose raw write handles that bypass the commit-gate invariant.
 
 Rewind MUST append history or markers and move the head without deleting old transitions. Rewind output MUST report committed packages that are now ahead of state.
 
