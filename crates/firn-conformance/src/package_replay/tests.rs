@@ -58,6 +58,24 @@ fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status
 }
 
 #[test]
+fn package_artifacts_replay_commits_destination_receipt_checkpoint_and_status() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-artifact-success");
+    let fixture = prepared_fixture(&package_dir, "pkg-artifact-success");
+    let destination = DuckDbDestination::new(temp.path().join("local.duckdb")).unwrap();
+    let store = SqliteCheckpointStore::open(temp.path().join("state.sqlite")).unwrap();
+
+    let report = replay_package_artifacts(&package_dir, &destination, &store).unwrap();
+    let case = fixture.replay_case(report.checkpoint.delta.clone());
+
+    assert_packaged_replay_committed_without_source_contact(&case, &destination, &store, &report);
+    assert_eq!(
+        report.receipt.idempotency_token.as_str(),
+        report.checkpoint.delta.package_hash.as_str()
+    );
+}
+
+#[test]
 fn duplicate_replay_returns_noop_receipt_and_single_destination_load() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-duplicate");
@@ -190,6 +208,9 @@ fn negative_self_tests_prove_package_replay_harness_checks_required_edges() {
     .unwrap();
     assert_eq!(commit_plan["target"], DEFAULT_PREPARED_TARGET);
     assert_eq!(commit_plan["disposition"], "append");
+    assert_eq!(commit_plan["idempotency_token_source"], "package_hash");
+    assert!(commit_plan.get("idempotency_token").is_none());
+    assert!(commit_plan.get("package_hash").is_none());
 
     let missing_receipt = fake_receipt(&case);
     assert_harness_panics(|| assert_package_receipt_durable(&case.package_dir, &missing_receipt));

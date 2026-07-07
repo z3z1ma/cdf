@@ -119,6 +119,14 @@ pub struct EngineRunOutputWithSegmentPositions {
     pub segment_positions: Vec<EngineSegmentPosition>,
 }
 
+#[derive(Clone, Copy, Debug)]
+pub struct EnginePackageDraft<'a> {
+    pub segments: &'a [SegmentEntry],
+    pub profile: &'a ExecutionProfile,
+    pub lineage: &'a LineageSummary,
+    pub segment_positions: &'a [EngineSegmentPosition],
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EngineSegmentPosition {
     pub segment_id: SegmentId,

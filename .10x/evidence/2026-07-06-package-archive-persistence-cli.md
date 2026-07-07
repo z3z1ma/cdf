@@ -58,4 +58,4 @@ The mutation survivors challenge total confidence in rare platform/error-injecti
 
 ## Limits
 
-The current archive implementation keeps the DuckDB-backed Parquet workaround required by the active no-advisory-ignore policy. The architectural question of replacing it with native Arrow/DataFusion Parquet, and potentially accepting `RUSTSEC-2024-0436`, is owned by `.10x/tickets/2026-07-06-native-arrow-parquet-policy.md`.
+At this evidence point, the archive implementation kept the DuckDB-backed Parquet workaround required by the active no-advisory-ignore policy. The architectural question of replacing it with native Arrow/DataFusion Parquet, and potentially accepting `RUSTSEC-2024-0436`, was owned by `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md` and later ratified by `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.

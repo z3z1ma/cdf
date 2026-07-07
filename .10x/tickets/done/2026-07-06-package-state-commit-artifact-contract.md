@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-firn-system.md
 Depends-On: .10x/tickets/done/2026-07-05-package-builder-reader.md, .10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md, .10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md
 
@@ -57,6 +57,8 @@ No run-ledger default id semantics, no generic destination finalization trait, n
 
 - 2026-07-06: Opened after parent inspection found the package evidence contract blocks safe `firn replay package` CLI progress and reveals drift between current live-run packages and the active package spec. This ticket is blocked until the artifact schema is ratified in active specs or by user confirmation.
 - 2026-07-06: Ratified `.10x/decisions/package-state-commit-preimage-artifacts.md` and updated active package/destination specs. The ticket is now executable and should be assigned to a worker in a later turn. Do not implement in the ratification turn.
+- 2026-07-07: Implemented typed package preimage artifacts and replay reconstruction. `firn-package` now owns `StateDeltaPreimage`, `DestinationCommitPlanPreimage`, and `PackageReader::replay_inputs()`. Engine package execution has a pre-finalization hook consumed by live local-file runs to write `state/input_checkpoint.json`, `state/proposed_delta.json`, and `destination/commit_plan.json` before manifest finalization. `firn-project` exposes DuckDB replay/recovery from verified package artifacts and normalizes live file-manifest state paths to the resource file scope so package identity stays deterministic across temp roots. `firn-conformance` fixtures and goldens now consume the artifacts and prove artifact-based prepared/live replay and recovery. Focused evidence is recorded in `.10x/evidence/2026-07-07-package-state-commit-artifact-contract.md`.
+- 2026-07-07: Parent review hardened package artifact reconstruction validation after bounded mutation testing exposed missed negative cases. Final evidence is recorded in `.10x/evidence/2026-07-07-package-state-commit-artifact-contract.md`; closure review passed in `.10x/reviews/2026-07-07-package-state-commit-artifact-contract-review.md`.
 
 ## Blockers
 

@@ -11,8 +11,10 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, Time32SecondAr
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use duckdb::Connection;
 use firn_kernel::{
-    CommitCounts, DestinationId, IdempotencyToken, PackageHash, Receipt, ReceiptId, SchemaHash,
-    SegmentAck, SegmentId, TargetName, VerifyClause, WriteDisposition,
+    CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CommitCounts,
+    CursorPosition, CursorValue, DestinationId, IdempotencyToken, PackageHash, PartitionId,
+    PipelineId, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck, SegmentId,
+    SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause, WriteDisposition,
 };
 
 fn sample_batch() -> RecordBatch {
@@ -78,30 +80,57 @@ fn build_fixture(package_dir: &Path) -> PackageManifest {
         .write_lineage_artifact("batches.parquet", b"lineage-fixture")
         .unwrap();
     builder
-        .write_json_artifact(
-            "state/input_checkpoint.json",
-            &BTreeMap::from([("cursor", "before")]),
-        )
-        .unwrap();
-    builder
-        .write_json_artifact(
-            "state/proposed_delta.json",
-            &BTreeMap::from([("cursor", "after")]),
-        )
-        .unwrap();
-    builder
-        .write_json_artifact(
-            "destination/commit_plan.json",
-            &BTreeMap::from([("target", "orders"), ("disposition", "append")]),
-        )
-        .unwrap();
-    builder
         .append_trace_event(&BTreeMap::from([("event", "fixture-start")]))
         .unwrap();
-    builder
+    let segment = builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[sample_batch()])
         .unwrap();
+    write_state_commit_artifacts(&builder, segment);
     builder.finish().unwrap()
+}
+
+fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry) {
+    let scope = ScopeKey::Partition {
+        partition_id: PartitionId::new("p0").unwrap(),
+    };
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(3),
+    });
+    let segments = vec![StateSegment {
+        segment_id: segment.segment_id,
+        scope: scope.clone(),
+        output_position: output_position.clone(),
+        row_count: segment.row_count,
+        byte_count: segment.byte_count,
+    }];
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-fixture").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-fixture").unwrap(),
+        resource_id: ResourceId::new("orders").unwrap(),
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position,
+        schema_hash: SchemaHash::new("schema-fixture").unwrap(),
+        segments: segments.clone(),
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new("schema-fixture").unwrap(),
+        segments,
+    );
+    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_state_delta_preimage_artifact(&state_delta)
+        .unwrap();
+    builder
+        .write_commit_plan_preimage_artifact(&commit_plan)
+        .unwrap();
 }
 
 fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
@@ -260,7 +289,7 @@ fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     assert_eq!(first_manifest.package_hash, second_manifest.package_hash);
     assert_eq!(
         first_manifest.package_hash,
-        "sha256:87789e563e66acd0cec0f0edcb4b5f54052e7695440cdc66d5512b5007b24adf"
+        "sha256:0272e47dd0bb79bf977c1f861276da9d9f325747588612388c8c39e9108896ce"
     );
 }
 
@@ -278,6 +307,363 @@ fn arrow_ipc_segments_round_trip_for_replay() {
     let replay = reader.replay_view().unwrap();
     assert_eq!(replay.package_hash.as_str(), manifest.package_hash);
     assert_eq!(replay.segments.len(), 1);
+}
+
+#[test]
+fn replay_inputs_reconstruct_state_delta_and_commit_request_from_verified_preimages() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = build_fixture(temp.path());
+    let reader = PackageReader::open(temp.path()).unwrap();
+
+    let inputs = reader.replay_inputs().unwrap();
+
+    assert_eq!(inputs.input_checkpoint, None);
+    assert_eq!(
+        inputs.state_delta.package_hash.as_str(),
+        manifest.package_hash
+    );
+    assert_eq!(
+        inputs.destination_commit.package_hash.as_str(),
+        manifest.package_hash
+    );
+    assert_eq!(
+        inputs.destination_commit.idempotency_token.as_str(),
+        manifest.package_hash
+    );
+    assert_eq!(inputs.destination_commit.target.as_str(), "orders");
+    assert_eq!(inputs.schema_hash.as_str(), "schema-fixture");
+    assert_eq!(
+        inputs.state_delta.segments,
+        inputs.destination_commit.segments
+    );
+
+    let state_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(STATE_PROPOSED_DELTA_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert!(state_json.get("package_hash").is_none());
+
+    let commit_json: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(temp.path().join(DESTINATION_COMMIT_PLAN_FILE)).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(commit_json["idempotency_token_source"], "package_hash");
+    assert!(commit_json.get("idempotency_token").is_none());
+    assert!(commit_json.get("package_hash").is_none());
+}
+
+#[test]
+fn replay_inputs_rejects_invalid_state_preimage_semantics() {
+    let package_hash =
+        PackageHash::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap();
+    let segment = SegmentEntry {
+        segment_id: SegmentId::new("seg-000001").unwrap(),
+        path: "data/seg-000001.arrow".to_owned(),
+        row_count: 3,
+        byte_count: 99,
+        sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_owned(),
+    };
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-next").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-1").unwrap(),
+        resource_id: ResourceId::new("orders").unwrap(),
+        scope: ScopeKey::Partition {
+            partition_id: PartitionId::new("p0").unwrap(),
+        },
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: Some(CheckpointId::new("checkpoint-prev").unwrap()),
+        input_position: Some(SourcePosition::Cursor(CursorPosition {
+            version: CHECKPOINT_STATE_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(2),
+        })),
+        output_position: SourcePosition::Cursor(CursorPosition {
+            version: CHECKPOINT_STATE_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(3),
+        }),
+        schema_hash: SchemaHash::new("schema-fixture").unwrap(),
+        segments: vec![StateSegment {
+            segment_id: segment.segment_id.clone(),
+            scope: ScopeKey::Partition {
+                partition_id: PartitionId::new("p0").unwrap(),
+            },
+            output_position: SourcePosition::Cursor(CursorPosition {
+                version: CHECKPOINT_STATE_VERSION,
+                field: "id".to_owned(),
+                value: CursorValue::I64(3),
+            }),
+            row_count: segment.row_count,
+            byte_count: segment.byte_count,
+        }],
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new("schema-fixture").unwrap(),
+        state_delta.segments.clone(),
+    );
+    let valid_input_checkpoint = Checkpoint {
+        delta: StateDelta {
+            checkpoint_id: CheckpointId::new("checkpoint-prev").unwrap(),
+            pipeline_id: state_delta.pipeline_id.clone(),
+            resource_id: ResourceId::new("orders").unwrap(),
+            scope: ScopeKey::Partition {
+                partition_id: PartitionId::new("p0").unwrap(),
+            },
+            state_version: CHECKPOINT_STATE_VERSION,
+            parent_checkpoint_id: None,
+            input_position: None,
+            output_position: state_delta.input_position.clone().unwrap(),
+            package_hash: package_hash.clone(),
+            schema_hash: SchemaHash::new("schema-fixture").unwrap(),
+            segments: state_delta.segments.clone(),
+        },
+        receipt: None,
+        status: CheckpointStatus::Committed,
+        is_head: true,
+        created_at_ms: 1,
+        committed_at_ms: Some(2),
+        rewind_target_checkpoint_id: None,
+    };
+
+    let mut non_committed_checkpoint = valid_input_checkpoint.clone();
+    non_committed_checkpoint.status = CheckpointStatus::Proposed;
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(non_committed_checkpoint),
+        state_delta.clone(),
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state input checkpoint must be the committed head"),
+        "{error}"
+    );
+
+    let mut non_head_checkpoint = valid_input_checkpoint.clone();
+    non_head_checkpoint.is_head = false;
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(non_head_checkpoint),
+        state_delta.clone(),
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state input checkpoint must be the committed head"),
+        "{error}"
+    );
+
+    let mut input_checkpoint = valid_input_checkpoint.clone();
+    input_checkpoint.delta.pipeline_id = PipelineId::new("different-pipeline").unwrap();
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(input_checkpoint),
+        state_delta.clone(),
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state input checkpoint tuple does not match state delta tuple"),
+        "{error}"
+    );
+
+    let mut input_checkpoint = valid_input_checkpoint.clone();
+    input_checkpoint.delta.resource_id = ResourceId::new("different-resource").unwrap();
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(input_checkpoint),
+        state_delta.clone(),
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state input checkpoint tuple does not match state delta tuple"),
+        "{error}"
+    );
+
+    let mut input_checkpoint = valid_input_checkpoint.clone();
+    input_checkpoint.delta.scope = ScopeKey::Resource;
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(input_checkpoint),
+        state_delta.clone(),
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state input checkpoint tuple does not match state delta tuple"),
+        "{error}"
+    );
+
+    let mut mismatched_parent = state_delta.clone();
+    mismatched_parent.parent_checkpoint_id = Some(CheckpointId::new("different-parent").unwrap());
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(valid_input_checkpoint.clone()),
+        mismatched_parent,
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state delta parent checkpoint does not match input checkpoint"),
+        "{error}"
+    );
+
+    let mut mismatched_input_position = state_delta.clone();
+    mismatched_input_position.input_position = Some(SourcePosition::Cursor(CursorPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(1),
+    }));
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(valid_input_checkpoint.clone()),
+        mismatched_input_position,
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state delta input position does not match input checkpoint output position"),
+        "{error}"
+    );
+
+    let mut parent_without_checkpoint = state_delta.clone();
+    parent_without_checkpoint.input_position = None;
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        None,
+        parent_without_checkpoint,
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "state delta cannot reference an input checkpoint when input checkpoint artifact is null"
+        ),
+        "{error}"
+    );
+
+    let mut input_without_checkpoint = state_delta.clone();
+    input_without_checkpoint.parent_checkpoint_id = None;
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        None,
+        input_without_checkpoint,
+        commit_plan.clone(),
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error.to_string().contains(
+            "state delta cannot reference an input checkpoint when input checkpoint artifact is null"
+        ),
+        "{error}"
+    );
+
+    let mut empty_segments = state_delta.clone();
+    empty_segments.segments.clear();
+    let empty_commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new("schema-fixture").unwrap(),
+        empty_segments.segments.clone(),
+    );
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(valid_input_checkpoint.clone()),
+        empty_segments,
+        empty_commit_plan,
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("state delta preimage must include at least one state segment"),
+        "{error}"
+    );
+
+    let mut row_mismatch = state_delta.clone();
+    row_mismatch.segments[0].row_count += 1;
+    let row_mismatch_commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new("schema-fixture").unwrap(),
+        row_mismatch.segments.clone(),
+    );
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(valid_input_checkpoint.clone()),
+        row_mismatch,
+        row_mismatch_commit_plan,
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("rows/"), "{error}");
+
+    let mut byte_mismatch = state_delta.clone();
+    byte_mismatch.segments[0].byte_count += 1;
+    let byte_mismatch_commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new("schema-fixture").unwrap(),
+        byte_mismatch.segments.clone(),
+    );
+    let error = PackageReplayInputs::from_preimages(
+        package_hash.clone(),
+        Some(valid_input_checkpoint),
+        byte_mismatch,
+        byte_mismatch_commit_plan,
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("rows/"), "{error}");
+
+    let mut unsupported = state_delta;
+    unsupported.state_version = CHECKPOINT_STATE_VERSION + 1;
+    let error = PackageReplayInputs::from_preimages(
+        package_hash,
+        None,
+        unsupported,
+        commit_plan,
+        std::slice::from_ref(&segment),
+    )
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported state delta preimage version"),
+        "{error}"
+    );
 }
 
 #[test]
@@ -313,6 +699,68 @@ fn verification_detects_tampered_identity_file() {
             .to_string()
             .contains("tampered identity file data/seg-000001.arrow"),
         "{error}"
+    );
+}
+
+#[test]
+fn verification_detects_tampered_or_missing_state_and_commit_preimages() {
+    for path in [
+        STATE_INPUT_CHECKPOINT_FILE,
+        STATE_PROPOSED_DELTA_FILE,
+        DESTINATION_COMMIT_PLAN_FILE,
+    ] {
+        let tampered = tempfile::tempdir().unwrap();
+        build_fixture(tampered.path());
+        let artifact_path = tampered.path().join(path);
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&artifact_path)
+            .unwrap();
+        file.write_all(b"tamper").unwrap();
+        file.sync_all().unwrap();
+        let error = verify_package(tampered.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("tampered identity file {path}")),
+            "{path}: {error}"
+        );
+
+        let missing = tempfile::tempdir().unwrap();
+        build_fixture(missing.path());
+        fs::remove_file(missing.path().join(path)).unwrap();
+        let error = verify_package(missing.path()).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing identity file {path}")),
+            "{path}: {error}"
+        );
+    }
+}
+
+#[test]
+fn replay_inputs_reject_manifest_package_hash_mismatch_before_reconstruction() {
+    let temp = tempfile::tempdir().unwrap();
+    build_fixture(temp.path());
+    let mut manifest = read_manifest(temp.path()).unwrap();
+    manifest.package_hash = "sha256:wrong-package".to_owned();
+    manifest.signature.signing_input = manifest.package_hash.clone();
+    fs::write(
+        temp.path().join(MANIFEST_FILE),
+        canonical_json_bytes(&manifest).unwrap(),
+    )
+    .unwrap();
+
+    let error = PackageReader::open(temp.path())
+        .unwrap()
+        .replay_inputs()
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("manifest identity hash mismatch")
     );
 }
 

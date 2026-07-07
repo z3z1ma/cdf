@@ -1,12 +1,15 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::{Component, Path, PathBuf},
 };
 
 use firn_declarative::{CompiledResource, CompiledResourcePlan};
 use firn_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
+#[cfg(test)]
+use firn_engine::EngineRunOutputWithSegmentPositions;
 use firn_engine::{
-    EnginePlan, EngineRunOutputWithSegmentPositions, execute_to_package_with_segment_positions,
+    EnginePackageDraft, EnginePlan, execute_to_package_with_segment_positions_and_pre_finalize,
 };
 use firn_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStore, DestinationCommitRequest,
@@ -14,7 +17,10 @@ use firn_kernel::{
     SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
     WriteDisposition,
 };
-use firn_package::{PackageReader, PackageStatus, ReplayView, SegmentEntry};
+use firn_package::{
+    DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus, ReplayView,
+    SegmentEntry, StateDeltaPreimage,
+};
 use firn_state_sqlite::SqliteCheckpointStore;
 
 pub type ReceiptVerifiedHook<'a> = &'a dyn Fn(&Receipt) -> Result<()>;
@@ -39,6 +45,21 @@ pub struct PreparedDuckDbRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
     pub target: TargetName,
     pub disposition: WriteDisposition,
     pub schema_hash: SchemaHash,
+    pub receipt: Receipt,
+    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+}
+
+pub struct PackageArtifactDuckDbReplayRequest<'a, Store: CheckpointStore + ?Sized> {
+    pub package_dir: PathBuf,
+    pub destination: &'a DuckDbDestination,
+    pub checkpoint_store: &'a Store,
+    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+}
+
+pub struct PackageArtifactDuckDbRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
+    pub package_dir: PathBuf,
+    pub destination: &'a DuckDbDestination,
+    pub checkpoint_store: &'a Store,
     pub receipt: Receipt,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
@@ -96,11 +117,8 @@ pub async fn run_local_file_to_duckdb_checkpoint(
     let schema_hash = declared_schema_hash(request.resource)?;
     let package_dir = request.package_root.join(&request.package_id);
     refuse_existing_package_dir(&package_dir)?;
-
-    let output =
-        execute_to_package_with_segment_positions(&request.plan, request.resource, &package_dir)
-            .await?;
-
+    ensure_parent_directory(&request.state_store_path)?;
+    ensure_parent_directory(&request.destination_path)?;
     let checkpoint_store = SqliteCheckpointStore::open(&request.state_store_path)?;
     let destination = DuckDbDestination::new(&request.destination_path)?;
     let scope = request.resource.descriptor().state_scope.clone();
@@ -109,20 +127,28 @@ pub async fn run_local_file_to_duckdb_checkpoint(
         &request.resource.descriptor().resource_id,
         &scope,
     )?;
-    let delta = state_delta_from_run(&request, &output, &schema_hash, &scope, head.as_ref())?;
-    let package_hash = delta.package_hash.clone();
+
+    let write_state_commit_artifacts =
+        |builder: &firn_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
+            write_run_state_commit_artifacts(builder, draft, &request, &schema_hash, &scope, &head)
+        };
+    let output = execute_to_package_with_segment_positions_and_pre_finalize(
+        &request.plan,
+        request.resource,
+        &package_dir,
+        &write_state_commit_artifacts,
+    )
+    .await?;
+
+    let replay_inputs = PackageReader::open(&package_dir)?.replay_inputs()?;
+    let package_hash = replay_inputs.state_delta.package_hash.clone();
     let row_count = output.output.profile.output_rows;
     let segment_count = output.output.segments.len();
 
-    let report = replay_prepared_duckdb_package(PreparedDuckDbReplayRequest {
+    let report = replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
         package_dir: package_dir.clone(),
         destination: &destination,
         checkpoint_store: &checkpoint_store,
-        delta,
-        target: request.target,
-        disposition: request.resource.descriptor().write_disposition.clone(),
-        merge_keys: request.resource.descriptor().merge_key.clone(),
-        schema_hash,
         after_receipt_verified: request.after_receipt_verified,
     })?;
 
@@ -137,6 +163,35 @@ pub async fn run_local_file_to_duckdb_checkpoint(
         row_count,
         segment_count,
     })
+}
+
+fn write_run_state_commit_artifacts(
+    builder: &firn_package::PackageBuilder,
+    draft: EnginePackageDraft<'_>,
+    request: &LocalFileDuckDbRunRequest<'_>,
+    schema_hash: &SchemaHash,
+    scope: &ScopeKey,
+    head: &Option<Checkpoint>,
+) -> Result<()> {
+    let state_delta = state_delta_preimage_from_run_draft(
+        request,
+        draft.segments,
+        draft.segment_positions,
+        schema_hash,
+        scope,
+        head.as_ref(),
+    )?;
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        request.target.clone(),
+        request.resource.descriptor().write_disposition.clone(),
+        request.resource.descriptor().merge_key.clone(),
+        schema_hash.clone(),
+        state_delta.segments.clone(),
+    );
+    builder.write_input_checkpoint_artifact(head)?;
+    builder.write_state_delta_preimage_artifact(&state_delta)?;
+    builder.write_commit_plan_preimage_artifact(&commit_plan)?;
+    Ok(())
 }
 
 fn validate_local_file_run_resource(resource: &CompiledResource) -> Result<()> {
@@ -200,6 +255,15 @@ fn refuse_existing_package_dir(package_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ensure_parent_directory(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            FirnError::internal(format!("create {}: {error}", parent.display()))
+        })?;
+    }
+    Ok(())
+}
+
 fn validate_explicit_package_id(package_id: &str) -> Result<()> {
     if package_id.trim().is_empty() {
         return Err(FirnError::contract("run package id cannot be empty"));
@@ -213,6 +277,7 @@ fn validate_explicit_package_id(package_id: &str) -> Result<()> {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn state_delta_from_run(
     request: &LocalFileDuckDbRunRequest<'_>,
     output: &EngineRunOutputWithSegmentPositions,
@@ -220,11 +285,32 @@ pub(crate) fn state_delta_from_run(
     scope: &ScopeKey,
     head: Option<&Checkpoint>,
 ) -> Result<StateDelta> {
-    let positions = segment_positions_by_id(output)?;
-    let mut state_segments = Vec::with_capacity(output.output.segments.len());
+    let preimage = state_delta_preimage_from_run_draft(
+        request,
+        &output.output.segments,
+        &output.segment_positions,
+        schema_hash,
+        scope,
+        head,
+    )?;
+    Ok(preimage.into_state_delta(PackageHash::new(
+        output.output.manifest.package_hash.clone(),
+    )?))
+}
+
+fn state_delta_preimage_from_run_draft(
+    request: &LocalFileDuckDbRunRequest<'_>,
+    segments: &[SegmentEntry],
+    segment_positions: &[firn_engine::EngineSegmentPosition],
+    schema_hash: &SchemaHash,
+    scope: &ScopeKey,
+    head: Option<&Checkpoint>,
+) -> Result<StateDeltaPreimage> {
+    let positions = segment_positions_by_id(segments, segment_positions)?;
+    let mut state_segments = Vec::with_capacity(segments.len());
     let mut output_position = None;
 
-    for segment in &output.output.segments {
+    for segment in segments {
         let segment_position = positions
             .get(&segment.segment_id)
             .ok_or_else(|| {
@@ -246,6 +332,7 @@ pub(crate) fn state_delta_from_run(
                 segment.segment_id
             )));
         }
+        let segment_position = normalize_file_manifest_position_for_scope(segment_position, scope);
         if let Some(existing) = &output_position {
             if existing != &segment_position {
                 return Err(FirnError::data(
@@ -267,7 +354,7 @@ pub(crate) fn state_delta_from_run(
     let output_position = output_position.ok_or_else(|| {
         FirnError::data("package execution produced no output segments to checkpoint")
     })?;
-    Ok(StateDelta {
+    Ok(StateDeltaPreimage {
         checkpoint_id: request.checkpoint_id.clone(),
         pipeline_id: request.pipeline_id.clone(),
         resource_id: request.resource.descriptor().resource_id.clone(),
@@ -276,34 +363,129 @@ pub(crate) fn state_delta_from_run(
         parent_checkpoint_id: head.map(|checkpoint| checkpoint.delta.checkpoint_id.clone()),
         input_position: head.map(|checkpoint| checkpoint.delta.output_position.clone()),
         output_position,
-        package_hash: PackageHash::new(output.output.manifest.package_hash.clone())?,
         schema_hash: schema_hash.clone(),
         segments: state_segments,
     })
 }
 
+fn normalize_file_manifest_position_for_scope(
+    position: SourcePosition,
+    scope: &ScopeKey,
+) -> SourcePosition {
+    match (scope, position) {
+        (ScopeKey::File { path }, SourcePosition::FileManifest(mut manifest)) => {
+            for file in &mut manifest.files {
+                file.path = path.clone();
+            }
+            SourcePosition::FileManifest(manifest)
+        }
+        (_, position) => position,
+    }
+}
+
 fn segment_positions_by_id(
-    output: &EngineRunOutputWithSegmentPositions,
-) -> Result<BTreeMap<&SegmentId, Option<SourcePosition>>> {
-    if output.segment_positions.len() != output.output.segments.len() {
+    segments: &[SegmentEntry],
+    segment_positions: &[firn_engine::EngineSegmentPosition],
+) -> Result<BTreeMap<SegmentId, Option<SourcePosition>>> {
+    if segment_positions.len() != segments.len() {
         return Err(FirnError::internal(format!(
             "engine output has {} segment(s) but {} segment source position record(s)",
-            output.output.segments.len(),
-            output.segment_positions.len()
+            segments.len(),
+            segment_positions.len()
         )));
     }
 
-    let positions = output
-        .segment_positions
+    let positions = segment_positions
         .iter()
-        .map(|position| (&position.segment_id, position.output_position.clone()))
+        .map(|position| {
+            (
+                position.segment_id.clone(),
+                position.output_position.clone(),
+            )
+        })
         .collect::<BTreeMap<_, _>>();
-    if positions.len() != output.segment_positions.len() {
+    if positions.len() != segment_positions.len() {
         return Err(FirnError::internal(
             "engine output contains duplicate segment source position records",
         ));
     }
     Ok(positions)
+}
+
+struct DuckDbPackageReplayInputs {
+    delta: StateDelta,
+    target: TargetName,
+    disposition: WriteDisposition,
+    merge_keys: Vec<String>,
+    schema_hash: SchemaHash,
+    commit: DestinationCommitRequest,
+}
+
+impl DuckDbPackageReplayInputs {
+    fn from_package_artifacts(inputs: PackageReplayInputs) -> Self {
+        Self {
+            target: inputs.destination_commit.target.clone(),
+            disposition: inputs.destination_commit.disposition.clone(),
+            merge_keys: inputs.merge_keys,
+            schema_hash: inputs.schema_hash,
+            commit: inputs.destination_commit,
+            delta: inputs.state_delta,
+        }
+    }
+
+    fn from_explicit(
+        delta: StateDelta,
+        target: TargetName,
+        disposition: WriteDisposition,
+        merge_keys: Vec<String>,
+        schema_hash: SchemaHash,
+    ) -> Result<Self> {
+        let commit = commit_request(&delta, target.clone(), disposition.clone())?;
+        Ok(Self {
+            delta,
+            target,
+            disposition,
+            merge_keys,
+            schema_hash,
+            commit,
+        })
+    }
+}
+
+pub fn replay_duckdb_package_from_artifacts<Store>(
+    request: PackageArtifactDuckDbReplayRequest<'_, Store>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let reader = PackageReader::open(&request.package_dir)?;
+    let inputs = DuckDbPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
+    replay_duckdb_package_with_inputs(
+        reader,
+        request.package_dir,
+        request.destination,
+        request.checkpoint_store,
+        inputs,
+        request.after_receipt_verified,
+    )
+}
+
+pub fn recover_duckdb_package_from_artifacts<Store>(
+    request: PackageArtifactDuckDbRecoveryRequest<'_, Store>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let reader = PackageReader::open(&request.package_dir)?;
+    let inputs = DuckDbPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
+    recover_duckdb_package_with_inputs(
+        reader,
+        request.destination,
+        request.checkpoint_store,
+        inputs,
+        request.receipt,
+        request.after_receipt_verified,
+    )
 }
 
 pub fn replay_prepared_duckdb_package<Store>(
@@ -312,49 +494,69 @@ pub fn replay_prepared_duckdb_package<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    let mut reader = PackageReader::open(&request.package_dir)?;
+    let reader = PackageReader::open(&request.package_dir)?;
     validate_prepared_package(&reader, &request.delta, &request.schema_hash)?;
+    let inputs = DuckDbPackageReplayInputs::from_explicit(
+        request.delta,
+        request.target,
+        request.disposition,
+        request.merge_keys,
+        request.schema_hash,
+    )?;
+    replay_duckdb_package_with_inputs(
+        reader,
+        request.package_dir,
+        request.destination,
+        request.checkpoint_store,
+        inputs,
+        request.after_receipt_verified,
+    )
+}
 
-    let checkpoint_id = request.delta.checkpoint_id.clone();
-    request.checkpoint_store.propose(request.delta.clone())?;
+fn replay_duckdb_package_with_inputs<Store>(
+    mut reader: PackageReader,
+    package_dir: PathBuf,
+    destination: &DuckDbDestination,
+    checkpoint_store: &Store,
+    inputs: DuckDbPackageReplayInputs,
+    after_receipt_verified: Option<ReceiptVerifiedHook<'_>>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let checkpoint_id = inputs.delta.checkpoint_id.clone();
+    checkpoint_store.propose(inputs.delta.clone())?;
     if let Err(error) = reader.update_status(PackageStatus::Loading) {
-        let _ = request.checkpoint_store.abandon(&checkpoint_id);
+        let _ = checkpoint_store.abandon(&checkpoint_id);
         return Err(error);
     }
 
-    let commit = commit_request(
-        &request.delta,
-        request.target.clone(),
-        request.disposition.clone(),
-    )?;
-    let outcome = match request.destination.commit_package(DuckDbCommitRequest {
-        package_dir: request.package_dir,
-        commit,
-        schema_hash: request.schema_hash.clone(),
-        merge_keys: request.merge_keys,
+    let outcome = match destination.commit_package(DuckDbCommitRequest {
+        package_dir,
+        commit: inputs.commit.clone(),
+        schema_hash: inputs.schema_hash.clone(),
+        merge_keys: inputs.merge_keys.clone(),
     }) {
         Ok(outcome) => outcome,
         Err(error) => {
-            let _ = request.checkpoint_store.abandon(&checkpoint_id);
+            let _ = checkpoint_store.abandon(&checkpoint_id);
             return Err(error);
         }
     };
 
     let receipt = outcome.receipt;
     verify_receipt_before_checkpoint(
-        request.destination,
-        &request.delta,
-        &request.target,
-        &request.disposition,
+        destination,
+        &inputs.delta,
+        &inputs.target,
+        &inputs.disposition,
         &receipt,
     )?;
-    if let Some(hook) = request.after_receipt_verified {
+    if let Some(hook) = after_receipt_verified {
         hook(&receipt)?;
     }
 
-    let checkpoint = request
-        .checkpoint_store
-        .commit(&request.delta.checkpoint_id, receipt.clone())?;
+    let checkpoint = checkpoint_store.commit(&inputs.delta.checkpoint_id, receipt.clone())?;
     let package_status = reader
         .update_status(PackageStatus::Checkpointed)?
         .lifecycle
@@ -378,22 +580,48 @@ pub fn recover_prepared_duckdb_package<Store>(
 where
     Store: CheckpointStore + ?Sized,
 {
-    let mut reader = PackageReader::open(&request.package_dir)?;
+    let reader = PackageReader::open(&request.package_dir)?;
     validate_prepared_package(&reader, &request.delta, &request.schema_hash)?;
-    verify_receipt_before_checkpoint(
-        request.destination,
-        &request.delta,
-        &request.target,
-        &request.disposition,
-        &request.receipt,
+    let inputs = DuckDbPackageReplayInputs::from_explicit(
+        request.delta,
+        request.target,
+        request.disposition,
+        Vec::new(),
+        request.schema_hash,
     )?;
-    if let Some(hook) = request.after_receipt_verified {
-        hook(&request.receipt)?;
+    recover_duckdb_package_with_inputs(
+        reader,
+        request.destination,
+        request.checkpoint_store,
+        inputs,
+        request.receipt,
+        request.after_receipt_verified,
+    )
+}
+
+fn recover_duckdb_package_with_inputs<Store>(
+    mut reader: PackageReader,
+    destination: &DuckDbDestination,
+    checkpoint_store: &Store,
+    inputs: DuckDbPackageReplayInputs,
+    receipt: Receipt,
+    after_receipt_verified: Option<ReceiptVerifiedHook<'_>>,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    verify_receipt_before_checkpoint(
+        destination,
+        &inputs.delta,
+        &inputs.target,
+        &inputs.disposition,
+        &receipt,
+    )?;
+    if let Some(hook) = after_receipt_verified {
+        hook(&receipt)?;
     }
 
-    let checkpoint = request
-        .checkpoint_store
-        .commit(&request.delta.checkpoint_id, request.receipt.clone())?;
+    let checkpoint = checkpoint_store.commit(&inputs.delta.checkpoint_id, receipt.clone())?;
     let package_status = reader
         .update_status(PackageStatus::Checkpointed)?
         .lifecycle
@@ -402,7 +630,7 @@ where
 
     Ok(PreparedDuckDbReplayReport {
         checkpoint,
-        receipt: request.receipt,
+        receipt,
         receipt_source: PreparedReceiptSource::SuppliedDurableReceipt,
         package_status,
     })

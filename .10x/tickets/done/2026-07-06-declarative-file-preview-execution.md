@@ -69,4 +69,4 @@ No `firn run`, no package creation, no destination commits, no checkpoint advanc
 
 ## Blockers
 
-None for the single-match declarative local file preview slice. Native Arrow/DataFusion Parquet policy remains separately blocked in `.10x/tickets/2026-07-06-native-arrow-parquet-policy.md` and is not required for this ticket.
+None for the single-match declarative local file preview slice. At closure time, native Arrow/DataFusion Parquet policy remained separately blocked in `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md` and was not required for this ticket. It was later ratified by `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-06
+Updated: 2026-07-07
 
 # Implement the firn system
 
@@ -58,7 +58,11 @@ MVP authoring, destinations, and product surface:
 Fast-follow and full-system completion:
 
 - `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`
-- `.10x/tickets/2026-07-06-native-arrow-parquet-policy.md`
+- `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md`
+- `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`
+- `.10x/tickets/2026-07-06-rustsec-paste-parquet-exception.md`
+- `.10x/tickets/2026-07-06-native-parquet-file-source.md`
+- `.10x/tickets/2026-07-06-native-parquet-writer-archive.md`
 - `.10x/tickets/2026-07-05-wasm-components-registry-signing.md`
 - `.10x/tickets/2026-07-05-cdc-and-streaming-supervisor.md`
 - `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`
@@ -116,7 +120,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed package archive contract ratification at `.10x/tickets/done/2026-07-06-package-archive-contract-ratification.md`; the active package spec now defines persisted archive layout, non-identity metadata, status-preserving lifecycle behavior, rerun/crash policy, and CLI contract. Opened `.10x/tickets/done/2026-07-06-package-archive-persistence-cli.md` as the executable source slice.
 - 2026-07-06: Rechecked the Postgres destination blocker and found local Postgres binaries are available while the crate remains planning-only. Opened `.10x/tickets/done/2026-07-06-postgres-live-execution.md` to implement the live driver-backed commit path and integration evidence needed by Postgres destination and downstream conformance work.
 - 2026-07-06: Closed Postgres destination and its live execution child. `firn-dest-postgres` now has driver-backed package commits, ephemeral local Postgres integration coverage for append/replace/merge/duplicate/receipt verification/mirrors/rollback/decimals, schema-scoped mirrors, and full relevant QUALITY evidence in `.10x/evidence/2026-07-06-postgres-live-execution.md`.
-- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-package-archive-persistence-cli.md` and parent `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`; `firn package archive` now persists Parquet sidecars, canonical fidelity metadata, manifest archive metadata, verification coverage, and CLI output while preserving IPC package identity. Opened `.10x/tickets/2026-07-06-native-arrow-parquet-policy.md` as the separate cross-cutting decision for whether to replace the DuckDB-backed Parquet workaround with native Arrow/DataFusion Parquet and a time-boxed advisory exception.
+- 2026-07-06: Closed `.10x/tickets/done/2026-07-06-package-archive-persistence-cli.md` and parent `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`; `firn package archive` now persists Parquet sidecars, canonical fidelity metadata, manifest archive metadata, verification coverage, and CLI output while preserving IPC package identity. Opened the now-closed `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md` as the separate cross-cutting decision for whether to replace the DuckDB-backed Parquet workaround with native Arrow/DataFusion Parquet and a time-boxed advisory exception.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-postgres-destination-conformance-consumer.md`; the destination conformance suite now covers the Postgres planning/sheet contract alongside DuckDB and Parquet, with live Postgres tests still providing runtime evidence.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md`; resource conformance now covers file-source execution/data-completeness for CSV, JSON, NDJSON, and Parquet through a reusable async `ResourceStream` oracle and `firn-formats::FileResource`, without adding the native `parquet`/`paste` advisory path.
 - 2026-07-06: Opened the CLI/product slice now closed at `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`. It connects the closed file-source runtime work to the book-required `firn preview` behavior for single-match declarative local file resources while leaving native Parquet policy and broader run orchestration separate.
@@ -125,8 +129,10 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md`; `firn run --resource --pipeline --target --package-id --checkpoint-id` now supports the explicit single declarative local file resource to local DuckDB/SQLite slice, with receipt-gated checkpoint commit, recoverable post-receipt failure evidence, mutation-clean runtime tests, and full relevant QUALITY evidence. Broader run-ledger/default-id, REST/SQL, non-DuckDB, multi-resource, `resume`, and package replay CLI work remains with existing parent tickets.
 - 2026-07-06: User clarified that Firn's endpoint is not merely the Chapter 22 MVP but the full production-grade, next-generation, enterprise-scale system optimized for AI-agent management. Recorded in `.10x/knowledge/firn-product-objective.md`; parent acceptance now treats MVP as a milestone rather than the completion definition.
 - 2026-07-06: Closed `.10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md`; the conformance suite now has a committed golden proof for the live local-file-to-DuckDB/SQLite run path, including 100-run deterministic evidence, verified receipts/checkpoints, recovery without source reread after durable receipt, duplicate/no-op replay, mutation-clean live-run harness checks, and relevant QUALITY evidence.
-- 2026-07-06: Parent inspection found package evidence drift that blocks safe `firn replay package`: current live packages do not contain the state/commit evidence required by the book/spec, while exact `StateDelta` and concrete commit-request artifacts would be package-hash circular. Recorded research in `.10x/research/2026-07-06-package-state-commit-artifact-circularity.md`, ratified `.10x/decisions/package-state-commit-preimage-artifacts.md`, updated package/destination specs, and opened executable ticket `.10x/tickets/2026-07-06-package-state-commit-artifact-contract.md`.
+- 2026-07-06: Parent inspection found package evidence drift that blocks safe `firn replay package`: current live packages do not contain the state/commit evidence required by the book/spec, while exact `StateDelta` and concrete commit-request artifacts would be package-hash circular. Recorded research in `.10x/research/2026-07-06-package-state-commit-artifact-circularity.md`, ratified `.10x/decisions/package-state-commit-preimage-artifacts.md`, updated package/destination specs, and opened executable ticket `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`.
 - 2026-07-06: Opened `.10x/tickets/2026-07-06-local-duckdb-lifecycle-chaos-failpoints.md` as the next executable conformance slice. It targets named local DuckDB/SQLite runtime failpoints for the package/checkpoint crash matrix while leaving the separate package artifact contract implementation to its own ticket.
+- 2026-07-06: User explicitly ratified `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md`. Active decision `.10x/decisions/native-arrow-datafusion-parquet-policy.md` now supersedes the DuckDB-backed Parquet workaround as the target architecture and opens bounded follow-ups for the scoped `RUSTSEC-2024-0436` exception, native Parquet file-source reads, and native Parquet writer/archive replacement.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`; live and prepared packages now include identity-participating state/commit preimage artifacts, package readers reconstruct verified replay inputs, DuckDB artifact replay/recovery no longer needs source contact, conformance/golden fixtures consume the artifacts, and mutation-hardened package preimage validation is recorded in `.10x/evidence/2026-07-07-package-state-commit-artifact-contract.md`.
 
 ## Blockers
 

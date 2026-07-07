@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-06
 
 # firn book decision register
 
@@ -47,3 +47,4 @@ The following decisions govern implementation unless superseded by a later activ
 
 Implementation may use examples in the book as normative for semantics and shape, but not as an excuse to overbuild beyond the chosen milestone. Residual open items named by the book remain revisit triggers rather than blockers: D-6 telemetry, whether `ForeignState` needs a dedicated migration tool, and the future default flip for free-threaded Python.
 
+Later active decisions refine this register where explicitly stated. `.10x/decisions/native-arrow-datafusion-parquet-policy.md` refines D-1, D-4, and D-28 for Parquet surfaces: DuckDB-backed Parquet is now a temporary workaround, and native Arrow/DataFusion Parquet is the ratified target even though it requires a narrow temporary `RUSTSEC-2024-0436` exception.

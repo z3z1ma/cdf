@@ -20,12 +20,17 @@ use firn_kernel::{
     RewindReport, RewindRequest, ScanRequest, SchemaHash, ScopeKey, SegmentId, SourcePosition,
     StateDelta, StateSegment, TargetName, WriteDisposition,
 };
-use firn_package::{PackageBuilder, PackageManifest, PackageReader, PackageStatus};
+use firn_package::{
+    DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
+    PackageManifest, PackageReader, PackageStatus, STATE_INPUT_CHECKPOINT_FILE,
+    STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, canonical_json_bytes,
+};
 use firn_state_sqlite::SqliteCheckpointStore;
 
 use crate::{
-    LocalFileDuckDbRunRequest, PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest,
-    PreparedReceiptSource, recover_prepared_duckdb_package, replay_prepared_duckdb_package,
+    LocalFileDuckDbRunRequest, PackageArtifactDuckDbReplayRequest, PreparedDuckDbRecoveryRequest,
+    PreparedDuckDbReplayRequest, PreparedReceiptSource, recover_prepared_duckdb_package,
+    replay_duckdb_package_from_artifacts, replay_prepared_duckdb_package,
     run_local_file_to_duckdb_checkpoint, runtime::state_delta_from_run,
 };
 
@@ -83,13 +88,7 @@ fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) ->
             &BTreeMap::from([("schema_hash", SCHEMA_HASH)]),
         )
         .unwrap();
-    builder
-        .write_json_artifact(
-            "destination/commit_plan.json",
-            &BTreeMap::from([("target", "orders"), ("disposition", "append")]),
-        )
-        .unwrap();
-    builder
+    let segment = builder
         .write_segment(
             firn_kernel::SegmentId::new("seg-000001").unwrap(),
             &[sample_batch(
@@ -98,7 +97,46 @@ fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) ->
             )],
         )
         .unwrap();
+    write_state_commit_artifacts(&builder, &segment);
     builder.finish_with_status(status).unwrap()
+}
+
+fn write_state_commit_artifacts(builder: &PackageBuilder, segment: &firn_package::SegmentEntry) {
+    let scope = scope();
+    let output_position = position(3);
+    let segments = vec![StateSegment {
+        segment_id: segment.segment_id.clone(),
+        scope: scope.clone(),
+        output_position: output_position.clone(),
+        row_count: segment.row_count,
+        byte_count: segment.byte_count,
+    }];
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-artifact").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-1").unwrap(),
+        resource_id: ResourceId::new("orders").unwrap(),
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position,
+        schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+        segments: segments.clone(),
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        SchemaHash::new(SCHEMA_HASH).unwrap(),
+        segments,
+    );
+    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_state_delta_preimage_artifact(&state_delta)
+        .unwrap();
+    builder
+        .write_commit_plan_preimage_artifact(&commit_plan)
+        .unwrap();
 }
 
 fn scope() -> ScopeKey {
@@ -163,6 +201,19 @@ fn replay_request<'a, Store: CheckpointStore + ?Sized>(
         disposition: WriteDisposition::Append,
         merge_keys: Vec::new(),
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+        after_receipt_verified: None,
+    }
+}
+
+fn artifact_replay_request<'a, Store: CheckpointStore + ?Sized>(
+    package_dir: &Path,
+    destination: &'a DuckDbDestination,
+    checkpoint_store: &'a Store,
+) -> PackageArtifactDuckDbReplayRequest<'a, Store> {
+    PackageArtifactDuckDbReplayRequest {
+        package_dir: package_dir.to_path_buf(),
+        destination,
+        checkpoint_store,
         after_receipt_verified: None,
     }
 }
@@ -326,7 +377,8 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
     assert!(
         error
             .to_string()
-            .contains("injected live checkpoint failure")
+            .contains("injected live checkpoint failure"),
+        "{error}"
     );
     assert_eq!(package_status(&package_dir), PackageStatus::Loading);
     let receipts = package_receipts(&package_dir);
@@ -582,6 +634,180 @@ fn replay_commits_duckdb_receipt_then_checkpoint_and_marks_package_checkpointed(
             package_receipt_recorded: true
         }
     );
+}
+
+#[test]
+fn artifact_replay_reconstructs_delta_and_commit_request_from_package_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-artifact-success");
+    let manifest = build_package(
+        &package_dir,
+        "pkg-artifact-success",
+        PackageStatus::Packaged,
+    );
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+
+    let report = replay_duckdb_package_from_artifacts(artifact_replay_request(
+        &package_dir,
+        &destination,
+        &store,
+    ))
+    .unwrap();
+
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(
+        report.checkpoint.delta.checkpoint_id.as_str(),
+        "checkpoint-artifact"
+    );
+    assert_eq!(
+        report.checkpoint.delta.package_hash.as_str(),
+        manifest.package_hash
+    );
+    assert_eq!(
+        report.receipt.idempotency_token.as_str(),
+        manifest.package_hash
+    );
+    assert_head(&store, &report.checkpoint.delta);
+    assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
+}
+
+#[test]
+fn artifact_replay_rejects_corrupted_or_missing_preimages_before_mutation() {
+    for path in [
+        STATE_INPUT_CHECKPOINT_FILE,
+        STATE_PROPOSED_DELTA_FILE,
+        DESTINATION_COMMIT_PLAN_FILE,
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp
+            .path()
+            .join(format!("pkg-artifact-tampered-{}", path.replace('/', "-")));
+        build_package(
+            &package_dir,
+            "pkg-artifact-tampered",
+            PackageStatus::Packaged,
+        );
+        fs::write(package_dir.join(path), b"{\"tampered\":true}").unwrap();
+        let db_path = temp.path().join("local.duckdb");
+        let duckdb = destination(&db_path);
+        let store = SqliteCheckpointStore::open_in_memory().unwrap();
+
+        let error = replay_duckdb_package_from_artifacts(artifact_replay_request(
+            &package_dir,
+            &duckdb,
+            &store,
+        ))
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("tampered identity file {path}")),
+            "{path}: {error}"
+        );
+        assert!(
+            store
+                .history(
+                    &PipelineId::new("pipeline-1").unwrap(),
+                    &ResourceId::new("orders").unwrap(),
+                    &scope()
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!db_path.exists());
+
+        let temp = tempfile::tempdir().unwrap();
+        let package_dir = temp
+            .path()
+            .join(format!("pkg-artifact-missing-{}", path.replace('/', "-")));
+        build_package(
+            &package_dir,
+            "pkg-artifact-missing",
+            PackageStatus::Packaged,
+        );
+        fs::remove_file(package_dir.join(path)).unwrap();
+        let db_path = temp.path().join("local.duckdb");
+        let duckdb = destination(&db_path);
+        let store = SqliteCheckpointStore::open_in_memory().unwrap();
+
+        let error = replay_duckdb_package_from_artifacts(artifact_replay_request(
+            &package_dir,
+            &duckdb,
+            &store,
+        ))
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("missing identity file {path}")),
+            "{path}: {error}"
+        );
+        assert!(
+            store
+                .history(
+                    &PipelineId::new("pipeline-1").unwrap(),
+                    &ResourceId::new("orders").unwrap(),
+                    &scope()
+                )
+                .unwrap()
+                .is_empty()
+        );
+        assert!(!db_path.exists());
+    }
+}
+
+#[test]
+fn artifact_replay_rejects_manifest_package_hash_mismatch_before_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-artifact-hash-mismatch");
+    build_package(
+        &package_dir,
+        "pkg-artifact-hash-mismatch",
+        PackageStatus::Packaged,
+    );
+    let mut manifest = PackageReader::open(&package_dir)
+        .unwrap()
+        .manifest()
+        .clone();
+    manifest.package_hash = "sha256:wrong-package".to_owned();
+    manifest.signature.signing_input = manifest.package_hash.clone();
+    fs::write(
+        package_dir.join(MANIFEST_FILE),
+        canonical_json_bytes(&manifest).unwrap(),
+    )
+    .unwrap();
+    let db_path = temp.path().join("local.duckdb");
+    let destination = destination(&db_path);
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+
+    let error = replay_duckdb_package_from_artifacts(artifact_replay_request(
+        &package_dir,
+        &destination,
+        &store,
+    ))
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("manifest identity hash mismatch")
+    );
+    assert!(
+        store
+            .history(
+                &PipelineId::new("pipeline-1").unwrap(),
+                &ResourceId::new("orders").unwrap(),
+                &scope()
+            )
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!db_path.exists());
 }
 
 #[test]

@@ -7,14 +7,19 @@ use std::{
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use firn_kernel::{
-    Checkpoint, CheckpointStatus, CheckpointStore, FirnError, PackageHash, Receipt, Result,
-    SchemaHash, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
-    WriteDisposition,
+    CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
+    CursorPosition, CursorValue, FirnError, PackageHash, PartitionId, PipelineId, Receipt,
+    ResourceId, Result, SchemaHash, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TargetName, WriteDisposition,
 };
-use firn_package::{PackageManifest, PackageStatus, SegmentEntry};
+use firn_package::{
+    DestinationCommitPlanPreimage, PackageManifest, PackageStatus, SegmentEntry, StateDeltaPreimage,
+};
 use firn_project::{
+    PackageArtifactDuckDbRecoveryRequest, PackageArtifactDuckDbReplayRequest,
     PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, ReceiptVerifiedHook,
-    recover_prepared_duckdb_package, replay_prepared_duckdb_package,
+    recover_duckdb_package_from_artifacts, recover_prepared_duckdb_package,
+    replay_duckdb_package_from_artifacts, replay_prepared_duckdb_package,
 };
 
 pub use firn_dest_duckdb::{DuckDbDestination, DuckDbMirrorSnapshot};
@@ -156,20 +161,15 @@ impl PreparedPackageReplayCase {
 pub fn build_prepared_package_fixture(
     spec: PreparedPackageFixtureSpec,
 ) -> Result<PreparedPackageFixture> {
-    let mut builder = PackageBuilder::create(&spec.package_dir, spec.package_id)?;
+    let mut builder = PackageBuilder::create(&spec.package_dir, spec.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact(
         "schema/output.arrow.json",
         &BTreeMap::from([("schema_hash", spec.schema_hash.as_str())]),
     )?;
-    builder.write_json_artifact(
-        "destination/commit_plan.json",
-        &BTreeMap::from([
-            ("target", spec.target.as_str()),
-            ("disposition", disposition_name(&spec.disposition)),
-        ]),
-    )?;
-    builder.write_segment(spec.segment_id, &[deterministic_orders_batch()?])?;
+    let segment =
+        builder.write_segment(spec.segment_id.clone(), &[deterministic_orders_batch()?])?;
+    write_prepared_state_commit_artifacts(&builder, &spec, segment)?;
     let manifest = builder.finish_with_status(spec.status)?;
 
     Ok(PreparedPackageFixture {
@@ -192,6 +192,22 @@ where
     replay_prepared_duckdb_package(case.replay_request(destination, checkpoint_store, None))
 }
 
+pub fn replay_package_artifacts<Store>(
+    package_dir: impl AsRef<Path>,
+    destination: &DuckDbDestination,
+    checkpoint_store: &Store,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
+        package_dir: package_dir.as_ref().to_path_buf(),
+        destination,
+        checkpoint_store,
+        after_receipt_verified: None,
+    })
+}
+
 pub fn recover_prepared_package_case<Store>(
     case: &PreparedPackageReplayCase,
     destination: &DuckDbDestination,
@@ -207,6 +223,24 @@ where
         receipt,
         None,
     ))
+}
+
+pub fn recover_package_artifacts<Store>(
+    package_dir: impl AsRef<Path>,
+    destination: &DuckDbDestination,
+    checkpoint_store: &Store,
+    receipt: Receipt,
+) -> Result<PreparedDuckDbReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    recover_duckdb_package_from_artifacts(PackageArtifactDuckDbRecoveryRequest {
+        package_dir: package_dir.as_ref().to_path_buf(),
+        destination,
+        checkpoint_store,
+        receipt,
+        after_receipt_verified: None,
+    })
 }
 
 pub fn assert_packaged_replay_committed_without_source_contact<Store>(
@@ -493,13 +527,49 @@ fn deterministic_orders_batch() -> Result<RecordBatch> {
     RecordBatch::try_new(schema, vec![id, name]).map_err(|error| FirnError::data(error.to_string()))
 }
 
-fn disposition_name(disposition: &WriteDisposition) -> &'static str {
-    match disposition {
-        WriteDisposition::Append => "append",
-        WriteDisposition::Replace => "replace",
-        WriteDisposition::Merge => "merge",
-        WriteDisposition::CdcApply => "cdc_apply",
-    }
+fn write_prepared_state_commit_artifacts(
+    builder: &PackageBuilder,
+    spec: &PreparedPackageFixtureSpec,
+    segment: SegmentEntry,
+) -> Result<()> {
+    let scope = ScopeKey::Partition {
+        partition_id: PartitionId::new("p0")?,
+    };
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(3),
+    });
+    let segments = vec![StateSegment {
+        segment_id: segment.segment_id,
+        scope: scope.clone(),
+        output_position: output_position.clone(),
+        row_count: segment.row_count,
+        byte_count: segment.byte_count,
+    }];
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-prepared-artifact")?,
+        pipeline_id: PipelineId::new("pipeline-1")?,
+        resource_id: ResourceId::new("orders")?,
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position,
+        schema_hash: spec.schema_hash.clone(),
+        segments: segments.clone(),
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        spec.target.clone(),
+        spec.disposition.clone(),
+        Vec::new(),
+        spec.schema_hash.clone(),
+        segments,
+    );
+    builder.write_input_checkpoint_artifact(&None)?;
+    builder.write_state_delta_preimage_artifact(&state_delta)?;
+    builder.write_commit_plan_preimage_artifact(&commit_plan)?;
+    Ok(())
 }
 
 #[cfg(test)]

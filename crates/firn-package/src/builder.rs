@@ -6,10 +6,14 @@ use std::{
 };
 
 use arrow_array::RecordBatch;
-use firn_kernel::{FirnError, Result, SegmentId};
+use firn_kernel::{Checkpoint, FirnError, Result, SegmentId};
 use serde::Serialize;
 
 use crate::{
+    artifacts::{
+        DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, STATE_INPUT_CHECKPOINT_FILE,
+        STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
+    },
     json::canonical_json_bytes,
     model::{FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, SegmentEntry, TRACE_FILE},
     ops::update_package_status,
@@ -78,6 +82,27 @@ impl PackageBuilder {
     ) -> Result<FileEntry> {
         let bytes = canonical_json_bytes(value)?;
         self.write_identity_artifact(relative_path, &bytes)
+    }
+
+    pub fn write_input_checkpoint_artifact(
+        &self,
+        checkpoint: &Option<Checkpoint>,
+    ) -> Result<FileEntry> {
+        self.write_json_artifact(STATE_INPUT_CHECKPOINT_FILE, checkpoint)
+    }
+
+    pub fn write_state_delta_preimage_artifact(
+        &self,
+        preimage: &StateDeltaPreimage,
+    ) -> Result<FileEntry> {
+        self.write_json_artifact(STATE_PROPOSED_DELTA_FILE, preimage)
+    }
+
+    pub fn write_commit_plan_preimage_artifact(
+        &self,
+        preimage: &DestinationCommitPlanPreimage,
+    ) -> Result<FileEntry> {
+        self.write_json_artifact(DESTINATION_COMMIT_PLAN_FILE, preimage)
     }
 
     pub fn write_identity_artifact(

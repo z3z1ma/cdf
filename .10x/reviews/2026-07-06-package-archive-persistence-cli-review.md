@@ -25,7 +25,7 @@ Minor residual risk: final mutation testing left 7 missed mutants in low-level e
 
 Minor residual risk: CodeQL continues to show the known Rust extractor macro-warning profile recorded by earlier CodeQL evidence, but the current SARIF has 0 findings and the reusable database was not gratuitously recreated.
 
-Architectural follow-up: the direct native Arrow/DataFusion Parquet question remains unresolved by design and is tracked by `.10x/tickets/2026-07-06-native-arrow-parquet-policy.md`. This is not a blocker for this ticket because the active acceptance criteria explicitly preserve the current no-`parquet`/`paste` supply-chain constraint.
+Architectural follow-up at review time: the direct native Arrow/DataFusion Parquet question was unresolved by design and tracked by `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md`. It was later ratified by `.10x/decisions/native-arrow-datafusion-parquet-policy.md`. This was not a blocker for this ticket because the active acceptance criteria explicitly preserved the then-current no-`parquet`/`paste` supply-chain constraint.
 
 ## Verdict
 

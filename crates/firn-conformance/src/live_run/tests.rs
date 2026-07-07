@@ -4,13 +4,13 @@ use std::{
 };
 
 use firn_kernel::{CheckpointStatus, CheckpointStore, ReceiptId, ResourceId, ScopeKey};
-use firn_project::{PreparedReceiptSource, recover_prepared_duckdb_package};
+use firn_project::PreparedReceiptSource;
 
 use super::*;
 use crate::package_replay::{
     assert_duplicate_replay_identity, assert_no_checkpoint_head,
     assert_no_second_destination_write, assert_recovery_committed_from_durable_receipt,
-    replay_prepared_package_case,
+    recover_package_artifacts, replay_package_artifacts,
 };
 
 #[test]
@@ -76,14 +76,13 @@ fn committed_before_checkpoint_recovers_without_source_file() {
     assert_no_checkpoint_head(&store, &history[0].delta);
 
     fs::remove_file(temp.path().join(LIVE_LOCAL_FILE_V1_SOURCE_PATH)).unwrap();
-    let case = live_replay_case(&package_dir, history[0].delta.clone(), spec.target.clone());
-    let report = recover_prepared_duckdb_package(case.recovery_request(
-        &destination,
-        &store,
-        receipt.clone(),
-        None,
-    ))
-    .unwrap();
+    let report =
+        recover_package_artifacts(&package_dir, &destination, &store, receipt.clone()).unwrap();
+    let case = live_replay_case(
+        &package_dir,
+        report.checkpoint.delta.clone(),
+        spec.target.clone(),
+    );
     let snapshot_after = destination.read_mirror_snapshot_read_only().unwrap();
 
     assert_recovery_committed_from_durable_receipt(
@@ -124,9 +123,11 @@ fn duplicate_live_package_replay_is_noop_for_destination_and_mirrors() {
         SqliteCheckpointStore::open(temp.path().join(".firn/duplicate-state.sqlite")).unwrap();
 
     let duplicate_report =
-        replay_prepared_package_case(&case, &destination, &duplicate_store).unwrap();
+        replay_package_artifacts(&fixture.report.package_dir, &destination, &duplicate_store)
+            .unwrap();
     let snapshot_after = destination.read_mirror_snapshot_read_only().unwrap();
 
+    assert_eq!(duplicate_report.checkpoint.delta, case.delta);
     assert_duplicate_replay_identity(
         &case,
         &duplicate_report,

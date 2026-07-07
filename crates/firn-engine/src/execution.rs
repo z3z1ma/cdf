@@ -10,10 +10,13 @@ use serde::{Deserialize, Serialize};
 use tracing::{Instrument, Span, info_span};
 
 use crate::{
-    EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions, EngineSegmentPosition,
-    ExecutionProfile, LineageSummary, planning::validate_program,
+    EnginePackageDraft, EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions,
+    EngineSegmentPosition, ExecutionProfile, LineageSummary, planning::validate_program,
     predicates::apply_residual_filters,
 };
+
+pub type PackagePreFinalizeHook<'a> =
+    dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SchemaArtifact {
@@ -52,9 +55,11 @@ pub async fn execute_to_package<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    Ok(execute_to_package_inner(None, plan, resource, package_dir)
-        .await?
-        .output)
+    Ok(
+        execute_to_package_inner(None, plan, resource, package_dir, None)
+            .await?
+            .output,
+    )
 }
 
 pub async fn execute_to_package_with_run_id<R>(
@@ -68,7 +73,7 @@ where
 {
     let trace_context = ExecutionTraceContext::new(run_id, plan);
     Ok(
-        execute_to_package_inner(Some(&trace_context), plan, resource, package_dir)
+        execute_to_package_inner(Some(&trace_context), plan, resource, package_dir, None)
             .instrument(package_execution_span(&trace_context))
             .await?
             .output,
@@ -83,7 +88,19 @@ pub async fn execute_to_package_with_segment_positions<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    execute_to_package_inner(None, plan, resource, package_dir).await
+    execute_to_package_inner(None, plan, resource, package_dir, None).await
+}
+
+pub async fn execute_to_package_with_segment_positions_and_pre_finalize<R>(
+    plan: &EnginePlan,
+    resource: &R,
+    package_dir: impl AsRef<Path>,
+    pre_finalize: &PackagePreFinalizeHook<'_>,
+) -> Result<EngineRunOutputWithSegmentPositions>
+where
+    R: ResourceStream + ?Sized,
+{
+    execute_to_package_inner(None, plan, resource, package_dir, Some(pre_finalize)).await
 }
 
 async fn execute_to_package_inner<R>(
@@ -91,6 +108,7 @@ async fn execute_to_package_inner<R>(
     plan: &EnginePlan,
     resource: &R,
     package_dir: impl AsRef<Path>,
+    pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
@@ -174,6 +192,17 @@ where
         &firn_package::canonical_json_bytes(&lineage)?,
     )?;
     builder.update_status(PackageStatus::Validated)?;
+    if let Some(pre_finalize) = pre_finalize {
+        pre_finalize(
+            &builder,
+            EnginePackageDraft {
+                segments: &segments,
+                profile: &profile,
+                lineage: &lineage,
+                segment_positions: &segment_positions,
+            },
+        )?;
+    }
     let manifest = builder.finish()?;
 
     Ok(EngineRunOutputWithSegmentPositions {

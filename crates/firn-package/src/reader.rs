@@ -1,9 +1,14 @@
 use std::path::{Path, PathBuf};
 
 use arrow_array::RecordBatch;
-use firn_kernel::{FirnError, PackageHash, Receipt, Result, SegmentId};
+use firn_kernel::{Checkpoint, FirnError, PackageHash, Receipt, Result, SegmentId};
 
 use crate::{
+    artifacts::{
+        DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, PackageReplayInputs,
+        STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
+        read_json_artifact,
+    },
     model::{
         PackageManifest, PackageStatus, ReplayView, SegmentEntry, TombstoneReport,
         VerificationReport,
@@ -64,6 +69,30 @@ impl PackageReader {
             segments: self.manifest.identity.segments.clone(),
             receipts: self.receipts()?,
         })
+    }
+
+    pub fn input_checkpoint(&self) -> Result<Option<Checkpoint>> {
+        read_json_artifact(&self.package_dir, STATE_INPUT_CHECKPOINT_FILE)
+    }
+
+    pub fn state_delta_preimage(&self) -> Result<StateDeltaPreimage> {
+        read_json_artifact(&self.package_dir, STATE_PROPOSED_DELTA_FILE)
+    }
+
+    pub fn destination_commit_plan_preimage(&self) -> Result<DestinationCommitPlanPreimage> {
+        read_json_artifact(&self.package_dir, DESTINATION_COMMIT_PLAN_FILE)
+    }
+
+    pub fn replay_inputs(&self) -> Result<PackageReplayInputs> {
+        self.verify()?;
+        let replay = self.replay_view()?;
+        PackageReplayInputs::from_preimages(
+            replay.package_hash,
+            self.input_checkpoint()?,
+            self.state_delta_preimage()?,
+            self.destination_commit_plan_preimage()?,
+            &replay.segments,
+        )
     }
 
     pub fn read_segment(&self, segment_id: &SegmentId) -> Result<Vec<RecordBatch>> {

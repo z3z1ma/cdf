@@ -6,8 +6,16 @@ use std::{
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use firn_kernel::{FirnError, Result, SegmentId};
-use firn_package::{PackageBuilder, PackageManifest, PackageReader, PackageStatus};
+use firn_kernel::FirnError;
+use firn_kernel::{
+    CHECKPOINT_STATE_VERSION, CheckpointId, CursorPosition, CursorValue, PartitionId, PipelineId,
+    ResourceId, Result, SchemaHash, ScopeKey, SegmentId, SourcePosition, StateSegment, TargetName,
+    WriteDisposition,
+};
+use firn_package::{
+    DestinationCommitPlanPreimage, PackageBuilder, PackageManifest, PackageReader, PackageStatus,
+    SegmentEntry, StateDeltaPreimage,
+};
 use serde::{Deserialize, Serialize};
 
 pub const PREPARED_ORDERS_V1_EXPECTED_JSON: &str =
@@ -96,20 +104,10 @@ pub fn build_prepared_orders_golden_package(
     builder.write_stats_artifact("quality.parquet", b"quality-prepared-orders-v1")?;
     builder.write_quarantine_artifact("part-000001.parquet", b"quarantine-prepared-orders-v1")?;
     builder.write_lineage_artifact("batches.parquet", b"lineage-prepared-orders-v1")?;
-    builder.write_json_artifact(
-        "state/input_checkpoint.json",
-        &BTreeMap::from([("cursor", "before")]),
-    )?;
-    builder.write_json_artifact(
-        "state/proposed_delta.json",
-        &BTreeMap::from([("cursor", "after")]),
-    )?;
-    builder.write_json_artifact(
-        "destination/commit_plan.json",
-        &BTreeMap::from([("target", "orders"), ("disposition", "append")]),
-    )?;
     builder.append_trace_event(&BTreeMap::from([("event", "prepared-orders-v1")]))?;
-    builder.write_segment(SegmentId::new("seg-000001")?, &[prepared_orders_batch()?])?;
+    let segment =
+        builder.write_segment(SegmentId::new("seg-000001")?, &[prepared_orders_batch()?])?;
+    write_prepared_orders_state_commit_artifacts(&builder, segment)?;
     builder.finish_with_status(spec.status)?;
 
     let evidence = read_verified_golden_package_evidence(&spec.package_dir)?;
@@ -374,6 +372,51 @@ fn prepared_orders_batch() -> Result<RecordBatch> {
     let id: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
     let name: ArrayRef = Arc::new(StringArray::from(vec![Some("ada"), Some("grace"), None]));
     RecordBatch::try_new(schema, vec![id, name]).map_err(|error| FirnError::data(error.to_string()))
+}
+
+fn write_prepared_orders_state_commit_artifacts(
+    builder: &PackageBuilder,
+    segment: SegmentEntry,
+) -> Result<()> {
+    let schema_hash = SchemaHash::new("schema-prepared-orders-v1")?;
+    let scope = ScopeKey::Partition {
+        partition_id: PartitionId::new("p0")?,
+    };
+    let output_position = SourcePosition::Cursor(CursorPosition {
+        version: CHECKPOINT_STATE_VERSION,
+        field: "id".to_owned(),
+        value: CursorValue::I64(3),
+    });
+    let segments = vec![StateSegment {
+        segment_id: segment.segment_id,
+        scope: scope.clone(),
+        output_position: output_position.clone(),
+        row_count: segment.row_count,
+        byte_count: segment.byte_count,
+    }];
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-prepared-orders-v1")?,
+        pipeline_id: PipelineId::new("pipeline-prepared-orders-v1")?,
+        resource_id: ResourceId::new("orders")?,
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position,
+        schema_hash: schema_hash.clone(),
+        segments: segments.clone(),
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders")?,
+        WriteDisposition::Append,
+        Vec::new(),
+        schema_hash,
+        segments,
+    );
+    builder.write_input_checkpoint_artifact(&None)?;
+    builder.write_state_delta_preimage_artifact(&state_delta)?;
+    builder.write_commit_plan_preimage_artifact(&commit_plan)?;
+    Ok(())
 }
 
 #[cfg(test)]

@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-06
-Updated: 2026-07-06
+Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-conformance-chaos-golden.md
 Depends-On: .10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md, .10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md, .10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md
 
@@ -32,7 +32,7 @@ The implementation must keep crate roots thin and place new code in focused modu
 - The post-receipt/pre-checkpoint failpoint continues to prove durable receipt recovery without source contact and no second destination write.
 - The post-checkpoint/pre-status failpoint proves the ledger head is committed, the destination receipt verifies, and recovery/finalization makes package status `checkpointed` without reloading destination data or moving the source cursor.
 - Negative self-tests prove the chaos harness fails if it skips destination-no-write, checkpoint-head, receipt durability, or package-status assertions.
-- The implementation does not change the package state/commit artifact contract tracked by `.10x/tickets/2026-07-06-package-state-commit-artifact-contract.md`, does not implement CLI `resume`, and does not broaden native Parquet policy.
+- The implementation does not change the package state/commit artifact contract tracked by `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`, does not implement CLI `resume`, and does not broaden native Parquet policy.
 
 ## Evidence expectations
 
@@ -53,7 +53,7 @@ No package state/commit artifact schema changes, no CLI `resume` or `replay pack
 - `.10x/tickets/done/2026-07-06-package-replay-firn-line-runtime.md`
 - `.10x/tickets/done/2026-07-06-prepared-package-chaos-conformance.md`
 - `.10x/tickets/done/2026-07-06-live-local-file-run-golden-conformance.md`
-- `.10x/tickets/2026-07-06-package-state-commit-artifact-contract.md`
+- `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`
 - `.10x/knowledge/quality-gate-execution.md`
 - `.10x/knowledge/rust-crate-organization.md`
 

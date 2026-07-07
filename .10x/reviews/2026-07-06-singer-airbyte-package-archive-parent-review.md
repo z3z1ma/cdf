@@ -20,7 +20,7 @@ The package archive transcode primitive child covers the supply-chain-clean IPC-
 
 The package archive persistence/CLI child covers persisted sidecars, manifest archive metadata, canonical fidelity JSON, full verification behavior, status gates, write/skip/force replacement behavior, CLI parsing/help/human/JSON output, package/CLI tests, and relevant quality evidence.
 
-The direct native Arrow/DataFusion Parquet policy question is not part of this parent acceptance contract. It is now tracked separately by `.10x/tickets/2026-07-06-native-arrow-parquet-policy.md` because it can supersede backend choices across file sources, destinations, and package archives without changing whether this implementation parent satisfied its current active contract.
+The direct native Arrow/DataFusion Parquet policy question was not part of this parent acceptance contract. It was tracked separately by `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md` because it could supersede backend choices across file sources, destinations, and package archives without changing whether this implementation parent satisfied its current active contract. It was later ratified by `.10x/decisions/native-arrow-datafusion-parquet-policy.md`.
 
 ## Verdict
 

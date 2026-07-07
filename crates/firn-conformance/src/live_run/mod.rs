@@ -36,6 +36,7 @@ pub const LIVE_LOCAL_FILE_V1_PIPELINE_ID: &str = "pipeline-live-local-file-v1";
 pub const LIVE_LOCAL_FILE_V1_RESOURCE_ID: &str = "local.events";
 pub const LIVE_LOCAL_FILE_V1_TARGET: &str = "events";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_PATH: &str = "data/events.ndjson";
+pub const LIVE_LOCAL_FILE_V1_SOURCE_POSITION_PATH: &str = "events.ndjson";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_SHA256: &str =
     "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES: u64 = 46;
@@ -259,6 +260,19 @@ pub fn assert_live_run_matches_expected(
     let store = SqliteCheckpointStore::open(&fixture.spec.state_store_path).unwrap();
     assert_checkpoint_head_matches(&store, &fixture.report.checkpoint.delta);
     assert_package_receipt_durable(&fixture.report.package_dir, &fixture.report.receipt);
+    let replay_inputs = PackageReader::open(&fixture.report.package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap();
+    assert_eq!(replay_inputs.state_delta, fixture.report.checkpoint.delta);
+    assert_eq!(
+        replay_inputs.destination_commit.package_hash,
+        fixture.report.package_hash
+    );
+    assert_eq!(
+        replay_inputs.destination_commit.idempotency_token.as_str(),
+        fixture.report.package_hash.as_str()
+    );
 
     let destination = DuckDbDestination::new(&fixture.spec.destination_path).unwrap();
     assert!(
@@ -311,7 +325,7 @@ pub fn live_run_expected_from_fixture(fixture: &LiveLocalFileFixture) -> LiveRun
             .as_str()
             .to_owned(),
         target: fixture.report.receipt.target.as_str().to_owned(),
-        source_path_suffix: LIVE_LOCAL_FILE_V1_SOURCE_PATH.to_owned(),
+        source_path_suffix: LIVE_LOCAL_FILE_V1_SOURCE_POSITION_PATH.to_owned(),
         source_sha256: LIVE_LOCAL_FILE_V1_SOURCE_SHA256.to_owned(),
         source_size_bytes: LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES,
         destination_rows: fixture.report.row_count,

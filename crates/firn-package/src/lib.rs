@@ -1,6 +1,7 @@
 #![doc = "Package builder and reader boundary for firn."]
 
 mod archive;
+mod artifacts;
 mod builder;
 mod json;
 mod model;
@@ -10,6 +11,7 @@ mod reader;
 mod storage;
 
 pub use archive::*;
+pub use artifacts::*;
 pub use builder::*;
 pub use json::*;
 pub use model::*;

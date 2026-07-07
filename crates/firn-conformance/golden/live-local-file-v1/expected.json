@@ -4,7 +4,7 @@
   "pipeline_id": "pipeline-live-local-file-v1",
   "resource_id": "local.events",
   "target": "events",
-  "source_path_suffix": "data/events.ndjson",
+  "source_path_suffix": "events.ndjson",
   "source_sha256": "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
   "source_size_bytes": 46,
   "destination_rows": 2,
@@ -13,9 +13,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:9024e4ab551f0fe0be7d0c8bf9b00e4c801bb4c0a9ac056ecd6a1ac0fc8d8d96",
+    "package_hash": "sha256:160dce476a18ec21c394680ce2d4cbadeabd6abf6d971a682334e8ac71637a48",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:9024e4ab551f0fe0be7d0c8bf9b00e4c801bb4c0a9ac056ecd6a1ac0fc8d8d96",
+    "signature_signing_input": "sha256:160dce476a18ec21c394680ce2d4cbadeabd6abf6d971a682334e8ac71637a48",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -34,6 +34,11 @@
         "path": "data/seg-000001.arrow",
         "byte_count": 1314,
         "sha256": "ea5112ea3d19c73c0d189b8a99b9598be8b843974023a7a490e304871fc16807"
+      },
+      {
+        "path": "destination/commit_plan.json",
+        "byte_count": 506,
+        "sha256": "f9230cfd9c43caadc90284ed081aaf7d14a5b3fa9b45e99a0da16838cb611cb1"
       },
       {
         "path": "lineage/lineage.json",
@@ -59,6 +64,16 @@
         "path": "schema/output.json",
         "byte_count": 113,
         "sha256": "312141629dd4e36c5c29d830a10bd31bb9a570498d935980b4898268689ca8e4"
+      },
+      {
+        "path": "state/input_checkpoint.json",
+        "byte_count": 4,
+        "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+      },
+      {
+        "path": "state/proposed_delta.json",
+        "byte_count": 833,
+        "sha256": "18f5001156dec8f12d300d0863ad01b84323dc94d051d26ca388f8a9c1365b7a"
       },
       {
         "path": "stats/profile.json",
