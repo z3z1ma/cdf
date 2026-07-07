@@ -2084,11 +2084,26 @@ fn commit_duckdb_package_through_session(
         let _ = session.abort();
         return Err(error);
     }
-    if let Err(error) = session.write() {
+    if let Err(error) =
+        write_package_segments_to_session(session.as_mut(), &request.package_dir, &request.commit)
+    {
         let _ = session.abort();
         return Err(error);
     }
     session.finalize()
+}
+
+fn write_package_segments_to_session(
+    session: &mut dyn cdf_kernel::CommitSession,
+    package_dir: &Path,
+    commit: &DestinationCommitRequest,
+) -> Result<()> {
+    let reader = PackageReader::open(package_dir)?;
+    reader.verify()?;
+    for segment in reader.read_commit_segments(&commit.segments)? {
+        session.write_segment(segment)?;
+    }
+    Ok(())
 }
 
 fn duckdb_has_duplicate_receipt(
@@ -2519,7 +2534,9 @@ fn commit_parquet_package_through_session(
         let _ = session.abort();
         return Err(error);
     }
-    if let Err(error) = session.write() {
+    if let Err(error) =
+        write_package_segments_to_session(session.as_mut(), &request.package_dir, &request.commit)
+    {
         let _ = session.abort();
         return Err(error);
     }
@@ -2532,13 +2549,14 @@ fn commit_postgres_package_through_session(
     commit: DestinationCommitRequest,
 ) -> Result<Receipt> {
     let plan = request.plan.kernel.clone();
+    let package_dir = request.package_dir.clone();
     let session_destination = destination.clone().with_commit_request(request);
-    let mut session = session_destination.begin(commit, plan)?;
+    let mut session = session_destination.begin(commit.clone(), plan)?;
     if let Err(error) = session.apply_migrations() {
         let _ = session.abort();
         return Err(error);
     }
-    if let Err(error) = session.write() {
+    if let Err(error) = write_package_segments_to_session(session.as_mut(), &package_dir, &commit) {
         let _ = session.abort();
         return Err(error);
     }
@@ -2773,7 +2791,7 @@ fn verify_receipt_before_checkpoint(
     receipt: &Receipt,
 ) -> Result<()> {
     validate_receipt_identity(delta, target, disposition, receipt)?;
-    let verification = destination.verify_receipt(receipt)?;
+    let verification = DestinationProtocol::verify(destination, receipt)?;
     if !verification.verified {
         return Err(CdfError::destination(format!(
             "DuckDB receipt {} did not verify: {}",
@@ -2794,7 +2812,7 @@ fn verify_parquet_receipt_before_checkpoint(
     receipt: &Receipt,
 ) -> Result<()> {
     validate_receipt_identity(delta, target, disposition, receipt)?;
-    let verification = destination.verify_receipt(receipt)?;
+    let verification = DestinationProtocol::verify(destination, receipt)?;
     if !verification.verified {
         return Err(CdfError::destination(format!(
             "Parquet receipt {} did not verify: {}",
@@ -2815,7 +2833,7 @@ fn verify_postgres_receipt_before_checkpoint(
     receipt: &Receipt,
 ) -> Result<()> {
     validate_receipt_identity(delta, target, disposition, receipt)?;
-    let verification = destination.verify_receipt(receipt)?;
+    let verification = DestinationProtocol::verify(destination, receipt)?;
     if !verification.verified {
         return Err(CdfError::destination(format!(
             "Postgres receipt {} did not verify: {}",

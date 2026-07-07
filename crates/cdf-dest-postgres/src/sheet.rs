@@ -72,7 +72,18 @@ impl DestinationProtocol for PostgresDestination {
             )
         })?;
         validate_session_begin_inputs(&request, &plan, &pending.plan)?;
-        Ok(Box::new(self.begin_commit_session(pending.clone())?))
+        Ok(Box::new(
+            self.begin_commit_session(pending.clone(), Some(request))?,
+        ))
+    }
+
+    fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        let verification = self.verify_receipt(receipt)?;
+        Ok(ReceiptVerification {
+            verified: verification.verified,
+            receipt_id: verification.receipt_id,
+            reason: verification.reason,
+        })
     }
 }
 

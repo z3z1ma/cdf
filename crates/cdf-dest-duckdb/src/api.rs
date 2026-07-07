@@ -46,7 +46,16 @@ struct DuckDbCommitSession<'a> {
     destination: &'a DuckDbDestination,
     request: DuckDbCommitRequest,
     migrations_applied: bool,
-    outcome: Option<DuckDbCommitOutcome>,
+    expected_segments: BTreeMap<cdf_kernel::SegmentId, ExpectedSegment>,
+    expected_order: Vec<cdf_kernel::SegmentId>,
+    accepted_segments: BTreeSet<cdf_kernel::SegmentId>,
+    staged_segments: Vec<CommitSegment>,
+}
+
+#[derive(Clone, Debug)]
+struct ExpectedSegment {
+    state: StateSegment,
+    package_byte_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,12 +74,7 @@ pub struct DuckDbCommitOutcome {
     pub package_receipt_recorded: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ReceiptVerification {
-    pub verified: bool,
-    pub receipt_id: ReceiptId,
-    pub reason: Option<String>,
-}
+pub type ReceiptVerification = cdf_kernel::ReceiptVerification;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IcuProbe {
@@ -230,15 +234,21 @@ impl DuckDbDestination {
     }
 
     pub fn commit_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
-        let mut session = DuckDbCommitSession::new(self, request);
+        let reader = PackageReader::open(&request.package_dir)?;
+        reader.verify()?;
+        let commit_segments = reader.read_commit_segments(&request.commit.segments)?;
+        let mut session = DuckDbCommitSession::new(self, request)?;
         session.apply_migrations()?;
-        session.write()?;
+        for segment in commit_segments {
+            session.write_segment(segment)?;
+        }
         session.finalize_outcome()
     }
 
     fn commit_package_immediate(
         &self,
         request: DuckDbCommitRequest,
+        package: PackageData,
     ) -> Result<DuckDbCommitOutcome> {
         let lock = self.acquire_writer_lock()?;
         let mut conn = self.open_connection()?;
@@ -246,7 +256,6 @@ impl DuckDbDestination {
 
         if let Some(receipt) = find_duplicate_receipt(&conn, &request.commit)? {
             let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
-            let package = load_package_data(&request.package_dir)?;
             let plan = self.plan_loaded_package(Some(&conn), &request, &package)?;
             drop(lock);
             return Ok(DuckDbCommitOutcome {
@@ -257,7 +266,6 @@ impl DuckDbDestination {
             });
         }
 
-        let package = load_package_data(&request.package_dir)?;
         validate_requested_segments(&request.commit.segments, &package)?;
         let plan = self.plan_loaded_package(Some(&conn), &request, &package)?;
         let segment_acks = segment_acks(&request.commit.segments, &package);
@@ -510,49 +518,89 @@ impl DuckDbCommitSession<'_> {
     fn new(
         destination: &DuckDbDestination,
         request: DuckDbCommitRequest,
-    ) -> DuckDbCommitSession<'_> {
-        DuckDbCommitSession {
+    ) -> Result<DuckDbCommitSession<'_>> {
+        let (expected_segments, expected_order) = expected_segments_for_request(&request)?;
+        Ok(DuckDbCommitSession {
             destination,
             request,
             migrations_applied: false,
-            outcome: None,
-        }
+            expected_segments,
+            expected_order,
+            accepted_segments: BTreeSet::new(),
+            staged_segments: Vec::new(),
+        })
     }
 
     fn finalize_outcome(self) -> Result<DuckDbCommitOutcome> {
-        self.outcome.ok_or_else(|| {
-            CdfError::destination("cannot finalize DuckDB commit session before write")
-        })
+        if !self.migrations_applied {
+            return Err(CdfError::destination(
+                "DuckDB migrations must be applied before finalize",
+            ));
+        }
+        if self.accepted_segments.len() != self.expected_segments.len() {
+            return Err(CdfError::destination(format!(
+                "cannot finalize DuckDB commit session before all segments are written: accepted {} of {}",
+                self.accepted_segments.len(),
+                self.expected_segments.len()
+            )));
+        }
+
+        let mut staged_by_id = BTreeMap::new();
+        for segment in self.staged_segments {
+            staged_by_id.insert(segment.state.segment_id.clone(), segment);
+        }
+        let mut ordered_segments = Vec::with_capacity(self.expected_order.len());
+        for segment_id in &self.expected_order {
+            let segment = staged_by_id.remove(segment_id).ok_or_else(|| {
+                CdfError::internal(format!(
+                    "accepted DuckDB segment {} is missing from staged payloads",
+                    segment_id.as_str()
+                ))
+            })?;
+            ordered_segments.push(segment);
+        }
+
+        let package = package_data_from_commit_segments(ordered_segments)?;
+        self.destination
+            .commit_package_immediate(self.request, package)
     }
 }
 
 impl CommitSession for DuckDbCommitSession<'_> {
     fn apply_migrations(&mut self) -> Result<()> {
-        if self.outcome.is_some() {
-            return Err(CdfError::destination(
-                "cannot apply DuckDB migrations after write",
-            ));
-        }
         self.migrations_applied = true;
         Ok(())
     }
 
-    fn write(&mut self) -> Result<()> {
+    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
                 "DuckDB migrations must be applied before writing",
             ));
         }
-        if self.outcome.is_some() {
-            return Err(CdfError::destination(
-                "DuckDB commit session already wrote the package",
-            ));
+        let segment_id = segment.state.segment_id.clone();
+        let expected = self.expected_segments.get(&segment_id).ok_or_else(|| {
+            CdfError::data(format!(
+                "DuckDB commit segment {} is not in the planned package request",
+                segment_id.as_str()
+            ))
+        })?;
+        if self.accepted_segments.contains(&segment_id) {
+            return Err(CdfError::data(format!(
+                "DuckDB commit session received duplicate segment {}",
+                segment_id.as_str()
+            )));
         }
-        self.outcome = Some(
-            self.destination
-                .commit_package_immediate(self.request.clone())?,
-        );
-        Ok(())
+        validate_commit_segment(&segment, expected)?;
+
+        let ack = SegmentAck {
+            segment_id: expected.state.segment_id.clone(),
+            row_count: expected.state.row_count,
+            byte_count: expected.state.byte_count,
+        };
+        self.accepted_segments.insert(segment_id);
+        self.staged_segments.push(segment);
+        Ok(ack)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
@@ -560,11 +608,6 @@ impl CommitSession for DuckDbCommitSession<'_> {
     }
 
     fn abort(self: Box<Self>) -> Result<()> {
-        if self.outcome.is_some() {
-            return Err(CdfError::destination(
-                "cannot abort DuckDB commit session after write committed",
-            ));
-        }
         Ok(())
     }
 }
@@ -612,8 +655,127 @@ impl DestinationProtocol for DuckDbDestination {
     ) -> Result<Box<dyn CommitSession + '_>> {
         validate_session_plan(&request, &plan)?;
         let request = self.take_session_context(&plan.plan_id, &request)?;
-        Ok(Box::new(DuckDbCommitSession::new(self, request)))
+        Ok(Box::new(DuckDbCommitSession::new(self, request)?))
     }
+
+    fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        self.verify_receipt(receipt)
+    }
+}
+
+fn expected_segments_for_request(
+    request: &DuckDbCommitRequest,
+) -> Result<(
+    BTreeMap<cdf_kernel::SegmentId, ExpectedSegment>,
+    Vec<cdf_kernel::SegmentId>,
+)> {
+    let reader = PackageReader::open(&request.package_dir)?;
+    let mut manifest_by_id = BTreeMap::new();
+    let mut expected_order = Vec::new();
+    for segment in &reader.manifest().identity.segments {
+        if manifest_by_id
+            .insert(segment.segment_id.clone(), segment)
+            .is_some()
+        {
+            return Err(CdfError::data(format!(
+                "package manifest contains duplicate segment {}",
+                segment.segment_id.as_str()
+            )));
+        }
+        expected_order.push(segment.segment_id.clone());
+    }
+
+    let mut request_by_id = BTreeMap::new();
+    for state in &request.commit.segments {
+        if request_by_id
+            .insert(state.segment_id.clone(), state)
+            .is_some()
+        {
+            return Err(CdfError::data(format!(
+                "destination commit request contains duplicate segment {}",
+                state.segment_id.as_str()
+            )));
+        }
+    }
+
+    let mut expected_segments = BTreeMap::new();
+    for (segment_id, manifest_segment) in &manifest_by_id {
+        let state = request_by_id.get(segment_id).ok_or_else(|| {
+            CdfError::data(format!(
+                "package manifest segment {} is missing from destination commit request",
+                segment_id.as_str()
+            ))
+        })?;
+        if state.row_count != manifest_segment.row_count {
+            return Err(CdfError::data(format!(
+                "destination commit request segment {} has {} rows but package manifest has {} rows",
+                segment_id.as_str(),
+                state.row_count,
+                manifest_segment.row_count
+            )));
+        }
+        expected_segments.insert(
+            segment_id.clone(),
+            ExpectedSegment {
+                state: (*state).clone(),
+                package_byte_count: manifest_segment.byte_count,
+            },
+        );
+    }
+
+    for segment_id in request_by_id.keys() {
+        if !manifest_by_id.contains_key(segment_id) {
+            return Err(CdfError::data(format!(
+                "destination commit request segment {} is not present in the package manifest",
+                segment_id.as_str()
+            )));
+        }
+    }
+
+    Ok((expected_segments, expected_order))
+}
+
+fn validate_commit_segment(segment: &CommitSegment, expected: &ExpectedSegment) -> Result<()> {
+    if segment.state != expected.state {
+        return Err(CdfError::data(format!(
+            "DuckDB commit segment {} state does not match destination commit request",
+            segment.state.segment_id.as_str()
+        )));
+    }
+    if segment.package_byte_count != expected.package_byte_count {
+        return Err(CdfError::data(format!(
+            "DuckDB commit segment {} package byte count {} differs from manifest {}",
+            segment.state.segment_id.as_str(),
+            segment.package_byte_count,
+            expected.package_byte_count
+        )));
+    }
+    if segment.batches.is_empty() {
+        return Err(CdfError::data(format!(
+            "DuckDB commit segment {} contains no record batches",
+            segment.state.segment_id.as_str()
+        )));
+    }
+    let schema = segment.batches[0].schema();
+    let mut row_count = 0_u64;
+    for batch in &segment.batches {
+        if batch.schema().as_ref() != schema.as_ref() {
+            return Err(CdfError::data(format!(
+                "DuckDB commit segment {} contains mixed schemas",
+                segment.state.segment_id.as_str()
+            )));
+        }
+        row_count += batch.num_rows() as u64;
+    }
+    if row_count != expected.state.row_count {
+        return Err(CdfError::data(format!(
+            "DuckDB commit segment {} has {} payload rows but request expects {}",
+            segment.state.segment_id.as_str(),
+            row_count,
+            expected.state.row_count
+        )));
+    }
+    Ok(())
 }
 
 fn validate_session_plan(request: &DestinationCommitRequest, plan: &CommitPlan) -> Result<()> {

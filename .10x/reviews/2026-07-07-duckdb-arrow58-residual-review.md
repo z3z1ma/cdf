@@ -1,14 +1,14 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/2026-07-07-p0-workstream-d-dependency-tuple-residual.md, .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md, .10x/decisions/duckdb-arrow58-private-driver-residual.md, .10x/knowledge/datafusion-cratesio-arrow59-tripwire.md, .10x/specs/conformance-governance-roadmap.md, deny.toml, supply-chain/config.toml
+Target: .10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md, .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md, .10x/decisions/duckdb-arrow58-private-driver-residual.md, .10x/knowledge/datafusion-cratesio-arrow59-tripwire.md, .10x/specs/conformance-governance-roadmap.md, deny.toml, supply-chain/config.toml
 Verdict: concerns
 
 # DuckDB Arrow 58 residual review
 
 ## Findings
 
-Significant: Workstream D is not closure-ready while the target tickets still carry an explicit blocker. Both `.10x/tickets/2026-07-07-p0-workstream-d-dependency-tuple-residual.md` and `.10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md` state that terminal closure/move is deferred because active-path references outside the workstream's owned write scope still need repair. This review does not clear that blocker. Closure needs either broader reference repair or an explicit record-backed decision that these active-path references are acceptable without moving the ticket.
+Significant: Workstream D is not closure-ready while the target tickets still carry an explicit blocker. Both `.10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md` and `.10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md` state that terminal closure/move is deferred because active-path references outside the workstream's owned write scope still need repair. This review does not clear that blocker. Closure needs either broader reference repair or an explicit record-backed decision that these active-path references are acceptable without moving the ticket.
 
 Significant: The governance publication constraint is record-backed but not mechanically enforced. `.10x/specs/conformance-governance-roadmap.md` says CDF MUST NOT publish crates.io releases while the DataFusion git pin remains, and the tripwire records the migration path. However, inspection found no `publish = false` guard in `Cargo.toml` or crate manifests, no `.github` release workflow to block, and no release automation/procedure that checks this stop-line. Cargo will naturally reject publishing crates that contain disallowed git/path dependency shapes, but lower-level crates that do not depend on the git-pinned engine can still be independently publishable. If Workstream D's closure claim is "publication constraint is recorded", the record satisfies it; if the claim is "accidental crates.io release is prevented", this is still a closure blocker or requires explicit residual-risk acceptance.
 

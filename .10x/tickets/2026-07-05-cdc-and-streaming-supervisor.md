@@ -2,7 +2,7 @@ Status: blocked
 Created: 2026-07-05
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+Depends-On: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 
 # Implement CDC and streaming supervisor
 

@@ -133,6 +133,31 @@ fn write_state_commit_artifacts(builder: &PackageBuilder, segment: SegmentEntry)
         .unwrap();
 }
 
+fn state_segment_for_entry(segment: &SegmentEntry, byte_count: u64) -> StateSegment {
+    StateSegment {
+        segment_id: segment.segment_id.clone(),
+        scope: ScopeKey::Partition {
+            partition_id: PartitionId::new("p0").unwrap(),
+        },
+        output_position: SourcePosition::Cursor(CursorPosition {
+            version: CHECKPOINT_STATE_VERSION,
+            field: "id".to_owned(),
+            value: CursorValue::I64(segment.row_count as i64),
+        }),
+        row_count: segment.row_count,
+        byte_count,
+    }
+}
+
+fn state_segments_for_manifest(manifest: &PackageManifest) -> Vec<StateSegment> {
+    manifest
+        .identity
+        .segments
+        .iter()
+        .map(|segment| state_segment_for_entry(segment, segment.byte_count))
+        .collect()
+}
+
 fn build_archive_fixture(package_dir: &Path) -> PackageManifest {
     let mut builder = PackageBuilder::create(package_dir, "pkg-archive-0001").unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
@@ -346,6 +371,105 @@ fn replay_inputs_reconstruct_state_delta_and_commit_request_from_verified_preima
     assert_eq!(commit_json["idempotency_token_source"], "package_hash");
     assert!(commit_json.get("idempotency_token").is_none());
     assert!(commit_json.get("package_hash").is_none());
+}
+
+#[test]
+fn read_commit_segments_preserves_requested_and_package_byte_counts() {
+    let temp = tempfile::tempdir().unwrap();
+    let manifest = build_archive_fixture(temp.path());
+    let reader = PackageReader::open(temp.path()).unwrap();
+    let mut state_segments = state_segments_for_manifest(&manifest);
+    state_segments[0].byte_count = manifest.identity.segments[0].byte_count + 100;
+
+    let commit_segments = reader.read_commit_segments(&state_segments).unwrap();
+
+    assert_eq!(commit_segments.len(), state_segments.len());
+    assert_eq!(commit_segments[0].state, state_segments[0]);
+    assert_eq!(
+        commit_segments[0].state.byte_count,
+        manifest.identity.segments[0].byte_count + 100
+    );
+    assert_eq!(
+        commit_segments[0].package_byte_count,
+        manifest.identity.segments[0].byte_count
+    );
+    assert_eq!(commit_segments[0].batches[0].num_rows(), 2);
+    assert_eq!(commit_segments[1].batches[0].num_rows(), 1);
+}
+
+#[test]
+fn read_commit_segments_rejects_bad_segment_requests_and_row_counts() {
+    let duplicate = tempfile::tempdir().unwrap();
+    let duplicate_manifest = build_archive_fixture(duplicate.path());
+    let duplicate_reader = PackageReader::open(duplicate.path()).unwrap();
+    let mut duplicate_segments = state_segments_for_manifest(&duplicate_manifest);
+    duplicate_segments.push(duplicate_segments[0].clone());
+    let error = duplicate_reader
+        .read_commit_segments(&duplicate_segments)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("contains duplicate segment"),
+        "{error}"
+    );
+
+    let unknown = tempfile::tempdir().unwrap();
+    let unknown_manifest = build_archive_fixture(unknown.path());
+    let unknown_reader = PackageReader::open(unknown.path()).unwrap();
+    let mut unknown_segments = state_segments_for_manifest(&unknown_manifest);
+    unknown_segments[0].segment_id = SegmentId::new("seg-unknown").unwrap();
+    let error = unknown_reader
+        .read_commit_segments(&unknown_segments)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("is not present in the package manifest"),
+        "{error}"
+    );
+
+    let missing = tempfile::tempdir().unwrap();
+    let missing_manifest = build_archive_fixture(missing.path());
+    let missing_reader = PackageReader::open(missing.path()).unwrap();
+    let mut missing_segments = state_segments_for_manifest(&missing_manifest);
+    missing_segments.pop();
+    let error = missing_reader
+        .read_commit_segments(&missing_segments)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("is missing from destination commit request"),
+        "{error}"
+    );
+
+    let requested_row_mismatch = tempfile::tempdir().unwrap();
+    let requested_row_mismatch_manifest = build_archive_fixture(requested_row_mismatch.path());
+    let requested_row_mismatch_reader = PackageReader::open(requested_row_mismatch.path()).unwrap();
+    let mut requested_row_mismatch_segments =
+        state_segments_for_manifest(&requested_row_mismatch_manifest);
+    requested_row_mismatch_segments[0].row_count += 1;
+    let error = requested_row_mismatch_reader
+        .read_commit_segments(&requested_row_mismatch_segments)
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("but package manifest has"),
+        "{error}"
+    );
+
+    let package_row_mismatch = tempfile::tempdir().unwrap();
+    let mut package_row_mismatch_manifest = build_archive_fixture(package_row_mismatch.path());
+    package_row_mismatch_manifest.identity.segments[0].row_count += 1;
+    fs::write(
+        package_row_mismatch.path().join(MANIFEST_FILE),
+        canonical_json_bytes(&package_row_mismatch_manifest).unwrap(),
+    )
+    .unwrap();
+    let package_row_mismatch_reader = PackageReader::open(package_row_mismatch.path()).unwrap();
+    let package_row_mismatch_segments = state_segments_for_manifest(&package_row_mismatch_manifest);
+    let error = package_row_mismatch_reader
+        .read_commit_segments(&package_row_mismatch_segments)
+        .unwrap_err();
+    assert!(error.to_string().contains("manifest row count"), "{error}");
 }
 
 #[test]

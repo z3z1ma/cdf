@@ -21,11 +21,12 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSession, ConcurrencyLimit,
-    DeliveryGuarantee, DestinationCommitRequest, DestinationId, DestinationProtocol,
-    DestinationSheet, IdempotencySupport, IdentifierRules, MigrationRecord, PlanId, Receipt,
-    ReceiptId, Result, SchemaHash, SegmentAck, StateSegment, TargetName, TransactionMetadata,
-    TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
+    ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
+    DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules, MigrationRecord,
+    PlanId, Receipt, ReceiptId, Result, SchemaHash, SegmentAck, StateSegment, TargetName,
+    TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
+    WriteDisposition,
 };
 use cdf_package::{PackageReader, SegmentEntry};
 use duckdb::{

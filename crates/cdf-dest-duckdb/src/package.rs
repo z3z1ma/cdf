@@ -5,6 +5,34 @@ pub(crate) fn load_package_data(package_dir: &Path) -> Result<PackageData> {
     let reader = PackageReader::open(package_dir)?;
     reader.verify()?;
     let segments = reader.read_all_segments()?;
+    package_data_from_segments(segments, false)
+}
+
+pub(crate) fn package_data_from_commit_segments(
+    segments: Vec<CommitSegment>,
+) -> Result<PackageData> {
+    let segments = segments
+        .into_iter()
+        .map(|segment| {
+            (
+                SegmentEntry {
+                    segment_id: segment.state.segment_id,
+                    path: String::new(),
+                    row_count: segment.state.row_count,
+                    byte_count: segment.package_byte_count,
+                    sha256: String::new(),
+                },
+                segment.batches,
+            )
+        })
+        .collect::<Vec<_>>();
+    package_data_from_segments(segments, true)
+}
+
+fn package_data_from_segments(
+    segments: Vec<(SegmentEntry, Vec<RecordBatch>)>,
+    validate_entry_rows: bool,
+) -> Result<PackageData> {
     if segments.is_empty() {
         return Err(CdfError::data(
             "DuckDB destination requires at least one package segment",
@@ -31,6 +59,14 @@ pub(crate) fn load_package_data(package_dir: &Path) -> Result<PackageData> {
             }
             row_count += batch.num_rows() as u64;
             rows.extend(batch_rows(&batch)?);
+        }
+        if validate_entry_rows && row_count != entry.row_count {
+            return Err(CdfError::data(format!(
+                "DuckDB commit segment {} has {} payload rows but segment metadata has {}",
+                entry.segment_id.as_str(),
+                row_count,
+                entry.row_count
+            )));
         }
         loaded_segments.push(LoadedSegment { entry, row_count });
     }

@@ -2,7 +2,7 @@ Status: blocked
 Created: 2026-07-05
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+Depends-On: .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 
 # Implement lakehouse, warehouse, and vault-class integrations
 

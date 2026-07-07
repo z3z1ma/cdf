@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
@@ -49,7 +49,10 @@ No new destination type, no new package format, no public performance claim, no 
 - 2026-07-07: Opened from P0 stop-line. Current source inspection shows `CommitSession::write(&mut self)` takes no data and `DestinationProtocol::begin` has an error-returning default in `crates/cdf-kernel/src/destination.rs`.
 - 2026-07-07: Read-only subagent inventory confirmed eager package materialization paths: `PackageReader::read_all_segments()` in `crates/cdf-package/src/reader.rs`, rows vectors in `crates/cdf-dest-duckdb/src/package.rs` and `crates/cdf-dest-postgres/src/package.rs`, and all-segment Parquet package handling in `crates/cdf-dest-parquet/src/package.rs`.
 - 2026-07-07: Activated and ratified exact API shape in `.10x/decisions/commit-session-segment-write-api.md`: synchronous `write_segment(CommitSegment) -> SegmentAck`, required `begin`, and trait-level `verify`.
+- 2026-07-07: Implemented the segment-write API in `cdf-kernel`, package segment replay helper in `cdf-package`, DuckDB/Parquet/Postgres segment-session refactors, and `cdf-project` runtime segment feeding plus trait-level receipt verification.
+- 2026-07-07: Verification recorded in `.10x/evidence/2026-07-07-streaming-commit-session-api.md`: formatting, workspace check, focused clippy, focused tests across kernel/package/destinations/project/conformance, diff whitespace, old-API scan, jscpd, scc, and rust-code-analysis.
+- 2026-07-07: Adversarial review recorded in `.10x/reviews/2026-07-07-streaming-commit-session-api-review.md`. The review found no code defect blocking Workstream A closure. Its process concern is resolved by recording and committing the evidence/review; its residual package-identity caller-boundary concern is assigned to Workstream B and Workstream C.
 
 ## Blockers
 
-None. The exact API shape decision is owned by this ticket and MUST be written before implementation edits.
+None.

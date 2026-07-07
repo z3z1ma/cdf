@@ -24,7 +24,7 @@ use cdf_kernel::{
     ScanPredicate, ScanRequest, SchemaSource, ScopeKey, SegmentId, SortDirection, SourcePosition,
     TrustLevel,
 };
-use cdf_package::{PackageBuilder, PackageManifest};
+use cdf_package::{PackageBuilder, PackageManifest, PackageReader};
 use futures_util::StreamExt;
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
@@ -389,7 +389,16 @@ fn session_commit(
         });
     let mut session = destination.begin(request, kernel_plan).unwrap();
     session.apply_migrations().unwrap();
-    session.write().unwrap();
+    let segments = PackageReader::open(package_dir)
+        .unwrap()
+        .read_commit_segments(&state_segments(manifest))
+        .unwrap();
+    for segment in segments {
+        let ack = session.write_segment(segment).unwrap();
+        assert!(manifest.identity.segments.iter().any(|entry| {
+            ack.segment_id == entry.segment_id && ack.row_count == entry.row_count
+        }));
+    }
     session.finalize().unwrap()
 }
 

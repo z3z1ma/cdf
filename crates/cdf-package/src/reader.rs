@@ -1,7 +1,12 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+};
 
 use arrow_array::RecordBatch;
-use cdf_kernel::{CdfError, Checkpoint, PackageHash, Receipt, Result, SegmentId};
+use cdf_kernel::{
+    CdfError, Checkpoint, CommitSegment, PackageHash, Receipt, Result, SegmentId, StateSegment,
+};
 
 use crate::{
     artifacts::{
@@ -123,6 +128,74 @@ impl PackageReader {
                 ))
             })
             .collect()
+    }
+
+    pub fn read_commit_segments(
+        &self,
+        state_segments: &[StateSegment],
+    ) -> Result<Vec<CommitSegment>> {
+        let mut manifest_by_id = BTreeMap::new();
+        for segment in &self.manifest.identity.segments {
+            if manifest_by_id
+                .insert(segment.segment_id.clone(), segment)
+                .is_some()
+            {
+                return Err(CdfError::data(format!(
+                    "package manifest contains duplicate segment {}",
+                    segment.segment_id
+                )));
+            }
+        }
+
+        let mut requested_ids = BTreeSet::new();
+        let mut commit_segments = Vec::with_capacity(state_segments.len());
+        for state in state_segments {
+            if !requested_ids.insert(state.segment_id.clone()) {
+                return Err(CdfError::data(format!(
+                    "destination commit request contains duplicate segment {}",
+                    state.segment_id
+                )));
+            }
+            let manifest_segment = manifest_by_id.get(&state.segment_id).ok_or_else(|| {
+                CdfError::data(format!(
+                    "destination commit request segment {} is not present in the package manifest",
+                    state.segment_id
+                ))
+            })?;
+            let batches = read_segment_file(&self.package_dir, &manifest_segment.path)?;
+            let batch_rows = batches
+                .iter()
+                .map(|batch| batch.num_rows() as u64)
+                .sum::<u64>();
+            if batch_rows != manifest_segment.row_count {
+                return Err(CdfError::data(format!(
+                    "segment {} manifest row count {} differs from package data {}",
+                    state.segment_id, manifest_segment.row_count, batch_rows
+                )));
+            }
+            if state.row_count != manifest_segment.row_count {
+                return Err(CdfError::data(format!(
+                    "destination commit request segment {} has {} rows but package manifest has {} rows",
+                    state.segment_id, state.row_count, manifest_segment.row_count
+                )));
+            }
+            commit_segments.push(CommitSegment {
+                state: state.clone(),
+                package_byte_count: manifest_segment.byte_count,
+                batches,
+            });
+        }
+
+        for segment_id in manifest_by_id.keys() {
+            if !requested_ids.contains(segment_id) {
+                return Err(CdfError::data(format!(
+                    "package manifest segment {} is missing from destination commit request",
+                    segment_id
+                )));
+            }
+        }
+
+        Ok(commit_segments)
     }
 
     pub fn tombstone(&mut self) -> Result<TombstoneReport> {

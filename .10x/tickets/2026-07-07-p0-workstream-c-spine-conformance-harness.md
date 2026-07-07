@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
-Depends-On: .10x/tickets/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
+Depends-On: .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 
 # P0 Workstream C: Make harnesses catch the run spine
 

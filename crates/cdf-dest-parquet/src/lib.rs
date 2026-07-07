@@ -1,7 +1,7 @@
 #![doc = "Parquet object-store destination boundary for cdf."]
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -11,11 +11,12 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_schema::SchemaRef;
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSession, ConcurrencyLimit,
-    DeliveryGuarantee, DestinationCommitRequest, DestinationId, DestinationProtocol,
-    DestinationSheet, IdempotencySupport, IdentifierRules, PlanId, Receipt, ReceiptId, Result,
-    SchemaHash, SegmentAck, StateSegment, TargetName, TransactionMetadata, TransactionSupport,
-    TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
+    ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
+    DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules, PlanId, Receipt,
+    ReceiptId, Result, SchemaHash, SegmentAck, SegmentId, StateSegment, TargetName,
+    TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
+    WriteDisposition,
 };
 use cdf_package::{PackageReader, SegmentEntry};
 use object_store::{

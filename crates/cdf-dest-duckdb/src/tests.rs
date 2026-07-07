@@ -7,8 +7,8 @@ use cdf_conformance::destination::{
     DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
 };
 use cdf_kernel::{
-    CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentId,
-    SourcePosition,
+    CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentAck,
+    SegmentId, SourcePosition,
 };
 use cdf_package::{PackageBuilder, PackageStatus};
 
@@ -23,6 +23,18 @@ fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
 }
 
 fn build_package(package_dir: &Path, package_id: &str, batches: &[RecordBatch]) -> PackageHash {
+    build_package_segments(
+        package_dir,
+        package_id,
+        &[(SegmentId::new("seg-000001").unwrap(), batches.to_vec())],
+    )
+}
+
+fn build_package_segments(
+    package_dir: &Path,
+    package_id: &str,
+    segments: &[(SegmentId, Vec<RecordBatch>)],
+) -> PackageHash {
     let mut builder = PackageBuilder::create(package_dir, package_id).unwrap();
     builder.update_status(PackageStatus::Extracting).unwrap();
     builder
@@ -43,23 +55,27 @@ fn build_package(package_dir: &Path, package_id: &str, batches: &[RecordBatch]) 
             &BTreeMap::from([("target", "orders")]),
         )
         .unwrap();
-    builder
-        .write_segment(SegmentId::new("seg-000001").unwrap(), batches)
-        .unwrap();
+    for (segment_id, batches) in segments {
+        builder.write_segment(segment_id.clone(), batches).unwrap();
+    }
     let manifest = builder.finish().unwrap();
     PackageHash::new(manifest.package_hash).unwrap()
 }
 
 fn state_segment(rows: u64) -> StateSegment {
+    state_segment_for("seg-000001", rows, 3)
+}
+
+fn state_segment_for(segment_id: &str, rows: u64, cursor: i64) -> StateSegment {
     StateSegment {
-        segment_id: SegmentId::new("seg-000001").unwrap(),
+        segment_id: SegmentId::new(segment_id).unwrap(),
         scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
         },
         output_position: SourcePosition::Cursor(CursorPosition {
             version: 1,
             field: "id".to_owned(),
-            value: CursorValue::I64(3),
+            value: CursorValue::I64(cursor),
         }),
         row_count: rows,
         byte_count: rows * 16,
@@ -73,13 +89,29 @@ fn request(
     merge_keys: Vec<String>,
     rows: u64,
 ) -> DuckDbCommitRequest {
+    request_with_segments(
+        package_dir,
+        package_hash,
+        disposition,
+        merge_keys,
+        vec![state_segment(rows)],
+    )
+}
+
+fn request_with_segments(
+    package_dir: &Path,
+    package_hash: PackageHash,
+    disposition: WriteDisposition,
+    merge_keys: Vec<String>,
+    segments: Vec<StateSegment>,
+) -> DuckDbCommitRequest {
     DuckDbCommitRequest {
         package_dir: package_dir.to_path_buf(),
         commit: DestinationCommitRequest {
             package_hash: package_hash.clone(),
             target: TargetName::new("orders").unwrap(),
             disposition,
-            segments: vec![state_segment(rows)],
+            segments,
             idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
         },
         schema_hash: SchemaHash::new("schema-v1").unwrap(),
@@ -97,7 +129,18 @@ fn finalize_session(dest: &DuckDbDestination, request: &DuckDbCommitRequest) -> 
         .begin(request.commit.clone(), plan.kernel.clone())
         .unwrap();
     session.apply_migrations().unwrap();
-    session.write().unwrap();
+    let segments = PackageReader::open(&request.package_dir)
+        .unwrap()
+        .read_commit_segments(&request.commit.segments)
+        .unwrap();
+    for segment in segments {
+        let ack = session.write_segment(segment).unwrap();
+        assert!(request.commit.segments.iter().any(|state| {
+            ack.segment_id == state.segment_id
+                && ack.row_count == state.row_count
+                && ack.byte_count == state.byte_count
+        }));
+    }
     session.finalize().unwrap()
 }
 
@@ -164,23 +207,32 @@ fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
 }
 
 #[test]
-fn begin_session_flow_returns_wrapper_receipt_shape_and_verifies() {
+fn segment_session_flow_returns_wrapper_receipt_shape_and_verifies() {
     let temp = tempfile::tempdir().unwrap();
     let package = temp.path().join("pkg-session");
-    let package_hash = build_package(
+    let package_hash = build_package_segments(
         &package,
         "pkg-session",
-        &[sample_batch(
-            vec![1, 2, 3],
-            vec![Some("ada"), Some("grace"), None],
-        )],
+        &[
+            (
+                SegmentId::new("seg-000001").unwrap(),
+                vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
+            ),
+            (
+                SegmentId::new("seg-000002").unwrap(),
+                vec![sample_batch(vec![3], vec![None])],
+            ),
+        ],
     );
-    let request = request(
+    let request = request_with_segments(
         &package,
         package_hash,
         WriteDisposition::Append,
         Vec::new(),
-        3,
+        vec![
+            state_segment_for("seg-000001", 2, 2),
+            state_segment_for("seg-000002", 1, 3),
+        ],
     );
     let wrapper_dest = destination(&temp.path().join("wrapper.duckdb"));
     let wrapper = wrapper_dest.commit_package(request.clone()).unwrap();
@@ -190,7 +242,68 @@ fn begin_session_flow_returns_wrapper_receipt_shape_and_verifies() {
     let receipt = finalize_session(&session_dest, &request);
 
     assert_same_receipt_shape(&receipt, &wrapper.receipt);
+    assert_eq!(
+        receipt.segment_acks,
+        vec![
+            SegmentAck {
+                segment_id: SegmentId::new("seg-000001").unwrap(),
+                row_count: 2,
+                byte_count: 32,
+            },
+            SegmentAck {
+                segment_id: SegmentId::new("seg-000002").unwrap(),
+                row_count: 1,
+                byte_count: 16,
+            },
+        ]
+    );
     assert!(session_dest.verify_receipt(&receipt).unwrap().verified);
+    let protocol: &dyn DestinationProtocol = &session_dest;
+    assert!(protocol.verify(&receipt).unwrap().verified);
+}
+
+#[test]
+fn session_finalize_rejects_missing_segments() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-session-missing-segments");
+    let package_hash = build_package_segments(
+        &package,
+        "pkg-session-missing-segments",
+        &[
+            (
+                SegmentId::new("seg-000001").unwrap(),
+                vec![sample_batch(vec![1], vec![Some("ada")])],
+            ),
+            (
+                SegmentId::new("seg-000002").unwrap(),
+                vec![sample_batch(vec![2], vec![Some("grace")])],
+            ),
+        ],
+    );
+    let request = request_with_segments(
+        &package,
+        package_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        vec![
+            state_segment_for("seg-000001", 1, 1),
+            state_segment_for("seg-000002", 1, 2),
+        ],
+    );
+    let dest = destination(&temp.path().join("local.duckdb"));
+    let plan = dest.plan_package_commit(&request).unwrap();
+    let mut session = dest
+        .begin(request.commit.clone(), plan.kernel.clone())
+        .unwrap();
+    session.apply_migrations().unwrap();
+    let mut segments = PackageReader::open(&request.package_dir)
+        .unwrap()
+        .read_commit_segments(&request.commit.segments)
+        .unwrap();
+    session.write_segment(segments.remove(0)).unwrap();
+
+    let error = session.finalize().unwrap_err();
+    assert!(error.to_string().contains("accepted 1 of 2"), "{error}");
 }
 
 #[test]

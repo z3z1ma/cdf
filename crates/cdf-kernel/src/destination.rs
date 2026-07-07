@@ -1,19 +1,34 @@
 use std::collections::BTreeMap;
 
+use arrow_array::RecordBatch;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     checkpoint::{Receipt, StateSegment},
-    error::{CdfError, Result},
-    ids::{DestinationId, IdempotencyToken, PackageHash, PlanId, SegmentId, TargetName},
+    error::Result,
+    ids::{DestinationId, IdempotencyToken, PackageHash, PlanId, ReceiptId, SegmentId, TargetName},
     resource::{CapabilitySupport, WriteDisposition},
 };
+
+#[derive(Clone, Debug)]
+pub struct CommitSegment {
+    pub state: StateSegment,
+    pub package_byte_count: u64,
+    pub batches: Vec<RecordBatch>,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SegmentAck {
     pub segment_id: SegmentId,
     pub row_count: u64,
     pub byte_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceiptVerification {
+    pub verified: bool,
+    pub receipt_id: ReceiptId,
+    pub reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -121,7 +136,7 @@ pub struct CommitPlan {
 pub trait CommitSession {
     fn apply_migrations(&mut self) -> Result<()>;
 
-    fn write(&mut self) -> Result<()>;
+    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck>;
 
     fn finalize(self: Box<Self>) -> Result<Receipt>;
 
@@ -135,14 +150,11 @@ pub trait DestinationProtocol {
 
     fn begin(
         &self,
-        _request: DestinationCommitRequest,
-        _plan: CommitPlan,
-    ) -> Result<Box<dyn CommitSession + '_>> {
-        Err(CdfError::destination(format!(
-            "destination {} does not support commit sessions",
-            self.sheet().destination
-        )))
-    }
+        request: DestinationCommitRequest,
+        plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>>;
+
+    fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -18,6 +18,38 @@ pub(crate) fn load_package_data(package_dir: &Path) -> Result<PackageData> {
     let reader = PackageReader::open(package_dir)?;
     reader.verify()?;
     let segments = reader.read_all_segments()?;
+    package_data_from_segments(segments)
+}
+
+pub(crate) fn package_data_from_commit_segments(
+    segments: Vec<CommitSegment>,
+) -> Result<PackageData> {
+    let segments = segments
+        .into_iter()
+        .map(|segment| {
+            let CommitSegment {
+                state,
+                package_byte_count,
+                batches,
+            } = segment;
+            (
+                SegmentEntry {
+                    segment_id: state.segment_id,
+                    path: String::new(),
+                    row_count: state.row_count,
+                    byte_count: package_byte_count,
+                    sha256: String::new(),
+                },
+                batches,
+            )
+        })
+        .collect::<Vec<_>>();
+    package_data_from_segments(segments)
+}
+
+fn package_data_from_segments(
+    segments: Vec<(SegmentEntry, Vec<RecordBatch>)>,
+) -> Result<PackageData> {
     if segments.is_empty() {
         return Err(CdfError::data(
             "Parquet destination requires at least one package segment",

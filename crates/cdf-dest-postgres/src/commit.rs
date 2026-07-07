@@ -1,11 +1,12 @@
 use std::{
+    collections::{BTreeMap, BTreeSet},
     io::Write,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use postgres::{Client, NoTls, Row};
 
-use crate::{dml::*, package::*, validate::*, *};
+use crate::{dml::*, package::*, rows::validate_schema_matches_plan, validate::*, *};
 
 impl PostgresDestination {
     pub fn connect(database_url: impl Into<String>) -> Result<Self> {
@@ -25,28 +26,36 @@ impl PostgresDestination {
     }
 
     pub fn commit_package(&self, request: PostgresCommitRequest) -> Result<PostgresCommitOutcome> {
-        self.begin_commit_session(request)?.run_to_outcome()
+        self.begin_commit_session(request, None)?.run_to_outcome()
     }
 
     pub(crate) fn begin_commit_session(
         &self,
         request: PostgresCommitRequest,
+        commit_request: Option<DestinationCommitRequest>,
     ) -> Result<PostgresCommitSession> {
         let database_url = self.database_url.as_deref().ok_or_else(|| {
             CdfError::contract(
                 "PostgresDestination::commit_package requires PostgresDestination::connect",
             )
         })?;
-        let package = load_package_for_plan(&request.package_dir, &request.plan)?;
+        let session_segments = expected_segments_for_session(
+            &request.package_dir,
+            &request.plan,
+            commit_request.as_ref(),
+        )?;
         Ok(PostgresCommitSession {
             database_url: database_url.to_owned(),
             package_dir: request.package_dir,
             plan: request.plan,
-            package,
             client: None,
             phase: PostgresCommitSessionPhase::Begun,
             duplicate_receipt: None,
             receipt: None,
+            expected_segments: session_segments.expected,
+            expected_order: session_segments.order,
+            accepted_segments: BTreeSet::new(),
+            staged_segments: Vec::new(),
         })
     }
 
@@ -77,11 +86,14 @@ pub(crate) struct PostgresCommitSession {
     database_url: String,
     package_dir: std::path::PathBuf,
     plan: PostgresLoadPlan,
-    package: PostgresPackageData,
     client: Option<Client>,
     phase: PostgresCommitSessionPhase,
     duplicate_receipt: Option<Receipt>,
     receipt: Option<Receipt>,
+    expected_segments: BTreeMap<SegmentId, PostgresExpectedSegment>,
+    expected_order: Vec<SegmentId>,
+    accepted_segments: BTreeSet<SegmentId>,
+    staged_segments: Vec<CommitSegment>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -93,16 +105,21 @@ enum PostgresCommitSessionPhase {
 
 impl PostgresCommitSession {
     fn run_to_outcome(mut self) -> Result<PostgresCommitOutcome> {
+        let segments = read_commit_segments_for_plan(&self.package_dir, &self.plan)?;
         self.apply_migrations()?;
-        self.write()?;
+        for segment in segments {
+            self.write_segment(segment)?;
+        }
         self.finalize_outcome()
     }
 
     fn finalize_outcome(mut self) -> Result<PostgresCommitOutcome> {
         if self.phase != PostgresCommitSessionPhase::Written {
-            return Err(CdfError::destination(
-                "cannot finalize Postgres commit session before write",
-            ));
+            return Err(CdfError::destination(format!(
+                "cannot finalize Postgres commit session before all segments are written: accepted {} of {}",
+                self.accepted_segments.len(),
+                self.expected_segments.len()
+            )));
         }
         let duplicate = self.duplicate_receipt.is_some();
         let receipt = self
@@ -142,6 +159,61 @@ impl PostgresCommitSession {
             .batch_execute("ROLLBACK")
             .map_err(|error| postgres_error("abort Postgres transaction", error))
     }
+
+    fn write_accepted_segments(&mut self) -> Result<()> {
+        if self.duplicate_receipt.is_some() {
+            self.phase = PostgresCommitSessionPhase::Written;
+            return Ok(());
+        }
+
+        let package =
+            package_data_from_commit_segments(self.ordered_staged_segments()?, &self.plan)?;
+        let mut client = self
+            .client
+            .take()
+            .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
+        execute_statements(&mut client, &self.plan.target_ddl)?;
+        let xid = query_xid(&mut client, &self.plan)?;
+        let committed_at_ms = now_ms()?;
+        let counts = apply_write_plan(&mut client, &self.plan, &package, committed_at_ms)?;
+        let receipt = build_receipt(
+            &self.plan,
+            PostgresReceiptInput {
+                receipt_id: receipt_id(&self.plan)?,
+                xid,
+                committed_at_ms,
+                counts,
+                duplicate: false,
+            },
+        )?;
+        insert_load_mirror(&mut client, &self.plan, &receipt)?;
+        if let Some(delta) = &self.plan.state_delta {
+            upsert_state_mirror(&mut client, &self.plan, &receipt, delta)?;
+        }
+        verify_receipt_in_transaction(&mut client, &receipt)?;
+        self.receipt = Some(receipt);
+        self.client = Some(client);
+        self.phase = PostgresCommitSessionPhase::Written;
+        Ok(())
+    }
+
+    fn ordered_staged_segments(&self) -> Result<Vec<CommitSegment>> {
+        let mut staged_by_id = BTreeMap::new();
+        for segment in &self.staged_segments {
+            staged_by_id.insert(segment.state.segment_id.clone(), segment);
+        }
+        let mut ordered = Vec::with_capacity(self.expected_order.len());
+        for segment_id in &self.expected_order {
+            let segment = staged_by_id.get(segment_id).ok_or_else(|| {
+                CdfError::internal(format!(
+                    "accepted Postgres segment {} is missing from staged payloads",
+                    segment_id.as_str()
+                ))
+            })?;
+            ordered.push((*segment).clone());
+        }
+        Ok(ordered)
+    }
 }
 
 impl CommitSession for PostgresCommitSession {
@@ -164,44 +236,44 @@ impl CommitSession for PostgresCommitSession {
         Ok(())
     }
 
-    fn write(&mut self) -> Result<()> {
-        if self.phase != PostgresCommitSessionPhase::MigrationsApplied {
+    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+        if self.phase == PostgresCommitSessionPhase::Written {
             return Err(CdfError::destination(
-                "Postgres commit session must apply migrations before write",
+                "Postgres commit session has already accepted all segments",
             ));
         }
-        if self.duplicate_receipt.is_some() {
-            self.phase = PostgresCommitSessionPhase::Written;
-            return Ok(());
+        if self.phase != PostgresCommitSessionPhase::MigrationsApplied {
+            return Err(CdfError::destination(
+                "Postgres commit session must apply migrations before writing",
+            ));
         }
 
-        let mut client = self
-            .client
-            .take()
-            .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
-        execute_statements(&mut client, &self.plan.target_ddl)?;
-        let xid = query_xid(&mut client, &self.plan)?;
-        let committed_at_ms = now_ms()?;
-        let counts = apply_write_plan(&mut client, &self.plan, &self.package, committed_at_ms)?;
-        let receipt = build_receipt(
-            &self.plan,
-            PostgresReceiptInput {
-                receipt_id: receipt_id(&self.plan)?,
-                xid,
-                committed_at_ms,
-                counts,
-                duplicate: false,
-            },
-        )?;
-        insert_load_mirror(&mut client, &self.plan, &receipt)?;
-        if let Some(delta) = &self.plan.state_delta {
-            upsert_state_mirror(&mut client, &self.plan, &receipt, delta)?;
+        let segment_id = segment.state.segment_id.clone();
+        let expected = self.expected_segments.get(&segment_id).ok_or_else(|| {
+            CdfError::data(format!(
+                "Postgres commit segment {} is not in the planned package request",
+                segment_id.as_str()
+            ))
+        })?;
+        if self.accepted_segments.contains(&segment_id) {
+            return Err(CdfError::data(format!(
+                "Postgres commit session received duplicate segment {}",
+                segment_id.as_str()
+            )));
         }
-        verify_receipt_in_transaction(&mut client, &receipt)?;
-        self.receipt = Some(receipt);
-        self.client = Some(client);
-        self.phase = PostgresCommitSessionPhase::Written;
-        Ok(())
+        validate_commit_segment(&segment, expected, &self.plan)?;
+
+        let ack = SegmentAck {
+            segment_id: expected.state.segment_id.clone(),
+            row_count: expected.state.row_count,
+            byte_count: expected.state.byte_count,
+        };
+        self.accepted_segments.insert(segment_id);
+        self.staged_segments.push(segment);
+        if self.accepted_segments.len() == self.expected_segments.len() {
+            self.write_accepted_segments()?;
+        }
+        Ok(ack)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
@@ -211,6 +283,55 @@ impl CommitSession for PostgresCommitSession {
     fn abort(mut self: Box<Self>) -> Result<()> {
         self.rollback_open_transaction()
     }
+}
+
+fn validate_commit_segment(
+    segment: &CommitSegment,
+    expected: &PostgresExpectedSegment,
+    plan: &PostgresLoadPlan,
+) -> Result<()> {
+    if segment.state != expected.state {
+        return Err(CdfError::data(format!(
+            "Postgres commit segment {} state does not match destination commit request",
+            segment.state.segment_id.as_str()
+        )));
+    }
+    if segment.package_byte_count != expected.package_byte_count {
+        return Err(CdfError::data(format!(
+            "Postgres commit segment {} package byte count {} differs from manifest {}",
+            segment.state.segment_id.as_str(),
+            segment.package_byte_count,
+            expected.package_byte_count
+        )));
+    }
+
+    let mut row_count = 0_u64;
+    let mut schema: Option<arrow_schema::SchemaRef> = None;
+    for batch in &segment.batches {
+        if let Some(expected_schema) = &schema {
+            if batch.schema().as_ref() != expected_schema.as_ref() {
+                return Err(CdfError::data(format!(
+                    "Postgres commit segment {} contains mixed schemas",
+                    segment.state.segment_id.as_str()
+                )));
+            }
+        } else {
+            schema = Some(batch.schema());
+        }
+        row_count += batch.num_rows() as u64;
+    }
+    if let Some(schema) = &schema {
+        validate_schema_matches_plan(schema.as_ref(), &plan.columns)?;
+    }
+    if row_count != expected.state.row_count {
+        return Err(CdfError::data(format!(
+            "Postgres commit segment {} has {} payload rows but request expects {}",
+            segment.state.segment_id.as_str(),
+            row_count,
+            expected.state.row_count
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn validate_session_begin_inputs(

@@ -240,8 +240,8 @@ mod tests {
     use std::panic::{AssertUnwindSafe, catch_unwind};
 
     use cdf_kernel::{
-        CdfError, ConcurrencyLimit, DestinationId, IdentifierRules, PlanId, Result,
-        TransactionSupport, TypeMapping,
+        CdfError, CommitSession, ConcurrencyLimit, DestinationId, IdentifierRules, PlanId, Receipt,
+        ReceiptVerification, Result, TransactionSupport, TypeMapping,
     };
 
     use super::*;
@@ -419,6 +419,24 @@ mod tests {
                 idempotency,
                 migrations,
                 delivery_guarantee,
+            })
+        }
+
+        fn begin(
+            &self,
+            _request: DestinationCommitRequest,
+            _plan: CommitPlan,
+        ) -> Result<Box<dyn CommitSession + '_>> {
+            Err(CdfError::destination(
+                "faulty conformance destination does not execute commit sessions",
+            ))
+        }
+
+        fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+            Ok(ReceiptVerification {
+                verified: receipt.destination == self.sheet.destination,
+                receipt_id: receipt.receipt_id.clone(),
+                reason: None,
             })
         }
     }

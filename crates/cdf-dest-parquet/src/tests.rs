@@ -10,8 +10,8 @@ use cdf_conformance::destination::{
     DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
 };
 use cdf_kernel::{
-    CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentId,
-    SourcePosition,
+    CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentAck,
+    SegmentId, SourcePosition,
 };
 use cdf_package::{PackageBuilder, PackageStatus, SegmentEntry};
 use object_store::{memory::InMemory, path::Path as ObjectPath};
@@ -223,9 +223,48 @@ fn commit_with_session(
     let mut session = DestinationProtocol::begin(dest, commit.commit.clone(), plan.kernel.clone())
         .expect("begin Parquet commit session");
     session.apply_migrations().unwrap();
-    session.write().unwrap();
+    let segments = PackageReader::open(&commit.package_dir)
+        .unwrap()
+        .read_commit_segments(&commit.commit.segments)
+        .unwrap();
+    for segment in segments {
+        let ack = session.write_segment(segment).unwrap();
+        assert!(commit.commit.segments.iter().any(|state| {
+            ack.segment_id == state.segment_id
+                && ack.row_count == state.row_count
+                && ack.byte_count == state.byte_count
+        }));
+    }
     let receipt = session.finalize().unwrap();
     (plan, receipt)
+}
+
+fn assert_same_receipt_identity(left: &Receipt, right: &Receipt) {
+    assert_eq!(left.receipt_id, right.receipt_id);
+    assert_eq!(left.destination, right.destination);
+    assert_eq!(left.target, right.target);
+    assert_eq!(left.package_hash, right.package_hash);
+    assert_eq!(left.segment_acks, right.segment_acks);
+    assert_eq!(left.disposition, right.disposition);
+    assert_eq!(left.idempotency_token, right.idempotency_token);
+    assert_eq!(left.counts, right.counts);
+    assert_eq!(left.schema_hash, right.schema_hash);
+    assert_eq!(left.migrations, right.migrations);
+    assert_eq!(left.verify.kind, right.verify.kind);
+    assert_eq!(left.verify.statement, right.verify.statement);
+    assert_eq!(
+        left.transaction
+            .as_ref()
+            .map(|transaction| transaction.system.as_str()),
+        Some("object_store")
+    );
+    assert_eq!(
+        right
+            .transaction
+            .as_ref()
+            .map(|transaction| transaction.system.as_str()),
+        Some("object_store")
+    );
 }
 
 #[test]
@@ -414,6 +453,149 @@ fn begin_session_flow_materializes_verifiable_manifest_receipt() {
         .receipts()
         .unwrap();
     assert_eq!(receipts, vec![receipt]);
+}
+
+#[test]
+fn segment_session_flow_matches_commit_package_receipt_shape() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-session-equivalence");
+    let built = build_package(
+        &package_dir,
+        "pkg-session-equivalence",
+        vec![
+            (
+                "seg-000001",
+                vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
+            ),
+            ("seg-000002", vec![sample_batch(vec![3], vec![None])]),
+        ],
+    );
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let wrapper_dest =
+        ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let wrapper = wrapper_dest.commit_package(commit.clone()).unwrap();
+    assert!(!wrapper.duplicate);
+
+    let session_dest =
+        ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let (_session_plan, session_receipt) = commit_with_session(&session_dest, &commit);
+    let session_manifest = load_manifest(&session_dest, manifest_key(&session_receipt));
+
+    assert_same_receipt_identity(&session_receipt, &wrapper.receipt);
+    assert_eq!(
+        session_manifest.manifest_version,
+        wrapper.object_manifest.manifest_version
+    );
+    assert_eq!(
+        session_manifest.destination,
+        wrapper.object_manifest.destination
+    );
+    assert_eq!(session_manifest.target, wrapper.object_manifest.target);
+    assert_eq!(
+        session_manifest.package_hash,
+        wrapper.object_manifest.package_hash
+    );
+    assert_eq!(
+        session_manifest.idempotency_token,
+        wrapper.object_manifest.idempotency_token
+    );
+    assert_eq!(
+        session_manifest.disposition,
+        wrapper.object_manifest.disposition
+    );
+    assert_eq!(
+        session_manifest.schema_hash,
+        wrapper.object_manifest.schema_hash
+    );
+    assert_eq!(
+        session_manifest.total_rows,
+        wrapper.object_manifest.total_rows
+    );
+    assert_eq!(
+        session_receipt.segment_acks,
+        vec![
+            SegmentAck {
+                segment_id: SegmentId::new("seg-000001").unwrap(),
+                row_count: 2,
+                byte_count: 32,
+            },
+            SegmentAck {
+                segment_id: SegmentId::new("seg-000002").unwrap(),
+                row_count: 1,
+                byte_count: 16,
+            },
+        ]
+    );
+    assert_eq!(
+        session_manifest.objects.len(),
+        wrapper.object_manifest.objects.len()
+    );
+    for (session_object, wrapper_object) in session_manifest
+        .objects
+        .iter()
+        .zip(wrapper.object_manifest.objects.iter())
+    {
+        assert_eq!(session_object.segment_id, wrapper_object.segment_id);
+        assert_eq!(session_object.key, wrapper_object.key);
+        assert_eq!(session_object.row_count, wrapper_object.row_count);
+        assert_eq!(session_object.byte_count, wrapper_object.byte_count);
+        assert_eq!(
+            session_object.package_byte_count,
+            wrapper_object.package_byte_count
+        );
+        assert_eq!(
+            session_object.parquet_byte_count,
+            wrapper_object.parquet_byte_count
+        );
+        assert_eq!(session_object.sha256, wrapper_object.sha256);
+        assert_eq!(session_object.schema_hash, wrapper_object.schema_hash);
+        assert_ne!(session_object.byte_count, session_object.package_byte_count);
+    }
+    assert!(
+        session_dest
+            .verify_receipt(&session_receipt)
+            .unwrap()
+            .verified
+    );
+    let protocol: &dyn DestinationProtocol = &session_dest;
+    assert!(protocol.verify(&session_receipt).unwrap().verified);
+}
+
+#[test]
+fn session_finalize_rejects_missing_segments() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-session-missing-segments");
+    let built = build_package(
+        &package_dir,
+        "pkg-session-missing-segments",
+        vec![
+            ("seg-000001", vec![sample_batch(vec![1], vec![Some("ada")])]),
+            (
+                "seg-000002",
+                vec![sample_batch(vec![2], vec![Some("grace")])],
+            ),
+        ],
+    );
+    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let plan = dest.plan_package_commit(&commit).unwrap();
+    let mut session = DestinationProtocol::begin(&dest, commit.commit.clone(), plan.kernel.clone())
+        .expect("begin Parquet commit session");
+    session.apply_migrations().unwrap();
+    let mut segments = PackageReader::open(&commit.package_dir)
+        .unwrap()
+        .read_commit_segments(&commit.commit.segments)
+        .unwrap();
+    session.write_segment(segments.remove(0)).unwrap();
+
+    let error = session.finalize().unwrap_err();
+    assert!(error.to_string().contains("accepted 1 of 2"), "{error}");
+    assert!(
+        !dest
+            .store()
+            .exists(dest.runtime(), &plan.manifest_key)
+            .unwrap()
+    );
 }
 
 #[test]

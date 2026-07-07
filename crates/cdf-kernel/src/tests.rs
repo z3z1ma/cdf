@@ -102,20 +102,6 @@ fn sample_destination_commit_request(delta: &StateDelta) -> DestinationCommitReq
     }
 }
 
-struct UnsupportedSessionDestination {
-    sheet: DestinationSheet,
-}
-
-impl DestinationProtocol for UnsupportedSessionDestination {
-    fn sheet(&self) -> &DestinationSheet {
-        &self.sheet
-    }
-
-    fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
-        Ok(sample_commit_plan(request))
-    }
-}
-
 struct FakeSessionDestination {
     sheet: DestinationSheet,
 }
@@ -144,8 +130,21 @@ impl DestinationProtocol for FakeSessionDestination {
             request,
             plan,
             migrations_applied: false,
-            written: false,
+            accepted_segments: Vec::new(),
         }))
+    }
+
+    fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        let verified = receipt.destination == self.sheet.destination;
+        Ok(ReceiptVerification {
+            verified,
+            receipt_id: receipt.receipt_id.clone(),
+            reason: if verified {
+                None
+            } else {
+                Some("receipt destination does not match verifier".to_owned())
+            },
+        })
     }
 }
 
@@ -173,7 +172,7 @@ struct FakeCommitSession {
     request: DestinationCommitRequest,
     plan: CommitPlan,
     migrations_applied: bool,
-    written: bool,
+    accepted_segments: Vec<SegmentAck>,
 }
 
 impl CommitSession for FakeCommitSession {
@@ -182,20 +181,63 @@ impl CommitSession for FakeCommitSession {
         Ok(())
     }
 
-    fn write(&mut self) -> Result<()> {
+    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
         if !self.migrations_applied {
             return Err(CdfError::destination(
                 "migrations must be applied before writing",
             ));
         }
-        self.written = true;
-        Ok(())
+        if self
+            .accepted_segments
+            .iter()
+            .any(|ack| ack.segment_id == segment.state.segment_id)
+        {
+            return Err(CdfError::destination(format!(
+                "segment {} was already written",
+                segment.state.segment_id
+            )));
+        }
+        let requested = self
+            .request
+            .segments
+            .iter()
+            .find(|requested| requested.segment_id == segment.state.segment_id)
+            .ok_or_else(|| {
+                CdfError::destination(format!(
+                    "segment {} is not part of the destination request",
+                    segment.state.segment_id
+                ))
+            })?;
+        if requested != &segment.state {
+            return Err(CdfError::destination(format!(
+                "segment {} state does not match destination request",
+                segment.state.segment_id
+            )));
+        }
+        let batch_rows = segment
+            .batches
+            .iter()
+            .map(|batch| batch.num_rows() as u64)
+            .sum::<u64>();
+        if batch_rows != segment.state.row_count {
+            return Err(CdfError::destination(format!(
+                "segment {} has {} batch rows but request expects {}",
+                segment.state.segment_id, batch_rows, segment.state.row_count
+            )));
+        }
+        let ack = SegmentAck {
+            segment_id: segment.state.segment_id,
+            row_count: segment.state.row_count,
+            byte_count: segment.state.byte_count,
+        };
+        self.accepted_segments.push(ack.clone());
+        Ok(ack)
     }
 
     fn finalize(self: Box<Self>) -> Result<Receipt> {
-        if !self.written {
+        if self.accepted_segments.len() != self.request.segments.len() {
             return Err(CdfError::destination(
-                "cannot finalize before package segments are written",
+                "cannot finalize before all package segments are written",
             ));
         }
         let mut parameters = BTreeMap::new();
@@ -214,16 +256,7 @@ impl CommitSession for FakeCommitSession {
             destination: self.destination,
             target: self.request.target,
             package_hash: self.request.package_hash,
-            segment_acks: self
-                .request
-                .segments
-                .into_iter()
-                .map(|segment| SegmentAck {
-                    segment_id: segment.segment_id,
-                    row_count: segment.row_count,
-                    byte_count: segment.byte_count,
-                })
-                .collect(),
+            segment_acks: self.accepted_segments,
             disposition: self.plan.disposition,
             idempotency_token: self.request.idempotency_token,
             transaction: None,
@@ -250,25 +283,7 @@ impl CommitSession for FakeCommitSession {
 }
 
 #[test]
-fn destination_protocol_default_begin_returns_unsupported_error() {
-    let destination = UnsupportedSessionDestination {
-        sheet: sample_destination_sheet(),
-    };
-    let (delta, _) = sample_state_delta_and_receipt();
-    let request = sample_destination_commit_request(&delta);
-    let plan = destination.plan_commit(&request).unwrap();
-
-    let error = match destination.begin(request, plan) {
-        Ok(_) => panic!("default begin unexpectedly returned a commit session"),
-        Err(error) => error,
-    };
-
-    assert_eq!(error.kind, ErrorKind::Destination);
-    assert!(error.message.contains("does not support commit sessions"));
-}
-
-#[test]
-fn commit_session_api_finalizes_to_durable_receipt() {
+fn commit_session_api_writes_segments_and_finalizes_to_durable_receipt() {
     let destination = FakeSessionDestination {
         sheet: sample_destination_sheet(),
     };
@@ -278,7 +293,18 @@ fn commit_session_api_finalizes_to_durable_receipt() {
 
     let mut session = destination.begin(request, plan).unwrap();
     session.apply_migrations().unwrap();
-    session.write().unwrap();
+    let segment = delta.segments[0].clone();
+    let ack = session
+        .write_segment(sample_commit_segment(segment.clone()))
+        .unwrap();
+    assert_eq!(
+        ack,
+        SegmentAck {
+            segment_id: segment.segment_id,
+            row_count: segment.row_count,
+            byte_count: segment.byte_count,
+        }
+    );
     let receipt = session.finalize().unwrap();
 
     assert_eq!(receipt.destination, destination.sheet().destination);
@@ -288,11 +314,29 @@ fn commit_session_api_finalizes_to_durable_receipt() {
     assert_eq!(receipt.migrations.len(), 1);
     assert_eq!(receipt.verify.kind, "fake");
 
+    let protocol: &dyn DestinationProtocol = &destination;
+    let verification = protocol.verify(&receipt).unwrap();
+    assert!(verification.verified);
+    assert_eq!(verification.receipt_id, receipt.receipt_id);
+    assert_eq!(verification.reason, None);
+
     let request = sample_destination_commit_request(&delta);
     let plan = destination.plan_commit(&request).unwrap();
     let mut session = destination.begin(request, plan).unwrap();
     session.apply_migrations().unwrap();
     session.abort().unwrap();
+}
+
+fn sample_commit_segment(state: StateSegment) -> CommitSegment {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let values = (0..state.row_count as i64).collect::<Vec<_>>();
+    let column: ArrayRef = Arc::new(Int64Array::from(values));
+    let batch = RecordBatch::try_new(schema, vec![column]).unwrap();
+    CommitSegment {
+        state,
+        package_byte_count: 96,
+        batches: vec![batch],
+    }
 }
 
 #[test]
