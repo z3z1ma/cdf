@@ -16,11 +16,15 @@ use cdf_kernel::{
 };
 use cdf_package::{MANIFEST_FILE, PackageReader};
 use cdf_project::{
-    FileResourceSourceResolver, ProjectReceiptSource, ProjectRunDestination, ProjectRunReport,
-    ProjectRunRequest, ProjectRunResource, ResourceSourceKind, generate_lockfile, run_project,
+    FileResourceSourceResolver, PackageArtifactDuckDbReplayRequest, ProjectReceiptSource,
+    ProjectRunDestination, ProjectRunReport, ProjectRunRequest, ProjectRunResource,
+    ResourceSourceKind, generate_lockfile, replay_duckdb_package_from_artifacts, run_project,
     validate_project,
 };
-use cdf_state_sqlite::RunLedgerSnapshot;
+use cdf_state_sqlite::{
+    RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, RunLedgerSnapshot,
+    SqliteRunLedger,
+};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -99,7 +103,7 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Contract(command) => contract(command),
         Command::State(command) => state(&cli, command),
         Command::Resume(args) => resume(&cli, args),
-        Command::ReplayPackage(args) => replay_package(args),
+        Command::ReplayPackage(args) => replay_package(&cli, args),
         Command::Backfill(args) => backfill(&cli, args),
         Command::Package(command) => package(&cli, command),
         Command::Doctor => doctor(&cli),
@@ -307,6 +311,63 @@ fn run_duckdb_destination_path(context: &ProjectContext) -> Result<PathBuf, CliE
         .expect("duckdb:// prefix was checked");
     cdf_dest_duckdb::DuckDbDestination::new(&destination_path)?;
     Ok(destination_path)
+}
+
+fn replay_duckdb_destination_path(
+    context: &ProjectContext,
+    uri: &str,
+) -> Result<PathBuf, CliError> {
+    if uri.starts_with("postgres://") {
+        return Err(CliError::not_supported(
+            "replay package",
+            "Postgres package replay requires explicit CLI inputs for target, merge dedup policy, and existing-table policy before cdf-cli may replay package artifacts; this DuckDB-only slice fails closed before destination or checkpoint mutation",
+            "ratified Postgres replay target and merge dedup policy CLI",
+        ));
+    }
+    if uri.starts_with("parquet://") {
+        return Err(CliError::not_supported(
+            "replay package",
+            "filesystem Parquet package replay is available in cdf-project, but the CLI destination URI spelling is not ratified in active records",
+            "ratified filesystem Parquet destination URI spelling",
+        ));
+    }
+    let Some(raw_path) = uri.strip_prefix("duckdb://") else {
+        return Err(CliError::not_supported(
+            "replay package",
+            format!(
+                "destination URI `{uri}` is unsupported for this DuckDB-only slice; only local duckdb://path replay destinations are supported"
+            ),
+            "local DuckDB artifact replay destination",
+        ));
+    };
+    if raw_path.trim().is_empty() || raw_path.contains("://") {
+        return Err(CliError::not_supported(
+            "replay package",
+            format!("destination URI `{uri}` is malformed or non-local; expected duckdb://path"),
+            "local DuckDB destination path",
+        ));
+    }
+    let path = PathBuf::from(raw_path);
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        context.root.join(path)
+    })
+}
+
+fn ensure_parent_directory(path: &Path) -> Result<(), CliError> {
+    let Some(parent) = path.parent() else {
+        return Err(CliError::from(CdfError::internal(format!(
+            "{} has no parent directory",
+            path.display()
+        ))));
+    };
+    fs::create_dir_all(parent).map_err(|error| {
+        CliError::from(CdfError::data(format!(
+            "create {}: {error}",
+            parent.display()
+        )))
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -572,17 +633,85 @@ fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliError> {
     ))
 }
 
-fn replay_package(args: ReplayPackageArgs) -> Result<CommandOutput, CliError> {
+fn replay_package(cli: &Cli, args: ReplayPackageArgs) -> Result<CommandOutput, CliError> {
+    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let destination_path = replay_duckdb_destination_path(&context, &args.destination_uri)?;
     let reader = PackageReader::open(&args.package_dir)?;
-    let view = reader.replay_view()?;
-    Err(CliError::not_supported(
+    let package_id = reader.manifest().identity.package_id.clone();
+    let replay_inputs = reader.replay_inputs()?;
+    let package_hash = replay_inputs.state_delta.package_hash.clone();
+    ensure_parent_directory(&destination_path)?;
+    let destination = cdf_dest_duckdb::DuckDbDestination::new(&destination_path)?;
+    let state_store_path = context.state_store_path()?;
+    ensure_parent_directory(&state_store_path)?;
+    let run_ledger = SqliteRunLedger::open(&state_store_path)?;
+    let run = run_ledger.create_run(None)?;
+    let store = context.state_store()?;
+
+    let report = match replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
+        package_dir: args.package_dir.clone(),
+        destination: &destination,
+        checkpoint_store: &store,
+        after_receipt_verified: None,
+    }) {
+        Ok(report) => report,
+        Err(error) => {
+            let _ =
+                run_ledger.append_event(&run.run_id, RunEventAppend::new(RunEventKind::RunFailed));
+            return Err(error.into());
+        }
+    };
+
+    let receipt_source = ProjectReceiptSource::from(report.receipt_source.clone());
+    let mut event = RunEventAppend::new(RunEventKind::ReplayRecorded);
+    event.resource_id = Some(replay_inputs.state_delta.resource_id.clone());
+    event.scope = Some(replay_inputs.state_delta.scope.clone());
+    event.package_id = Some(package_id.clone());
+    event.package_hash = Some(package_hash.clone());
+    event.package_path = Some(args.package_dir.display().to_string());
+    event.checkpoint_id = Some(report.checkpoint.delta.checkpoint_id.clone());
+    event.receipt_id = Some(report.receipt.receipt_id.clone());
+    event.destination_id = Some(report.receipt.destination.clone());
+    event.details = replay_event_details(&receipt_source, "duckdb", report.package_status.as_str());
+    run_ledger.append_event(&run.run_id, event)?;
+    let ledger_snapshot = run_ledger
+        .snapshot(&run.run_id)?
+        .ok_or_else(|| CdfError::internal("created replay run is absent from run ledger"))?;
+
+    let destination_report = RunDestinationReport::duckdb(
+        destination_path.display().to_string(),
+        report.receipt.target.to_string(),
+    )
+    .with_receipt_destination(report.receipt.destination.to_string());
+    let cli_report = ReplayPackageCliReport::from_report(
+        run.run_id.to_string(),
+        package_id,
+        args.package_dir,
+        &report,
+        receipt_source,
+        destination_report,
+        &ledger_snapshot,
+    );
+    let source = receipt_source_summary(&cli_report.receipt_source);
+    output(
         "replay package",
         format!(
-            "package {} is replayable, but destination/checkpoint replay orchestration is not exposed",
-            view.package_hash
+            "replayed package {} into destination {} target {}; receipt {} from {}; checkpoint {} status {}; package status {}",
+            cli_report.package_hash,
+            cli_report
+                .destination
+                .destination_id
+                .as_deref()
+                .unwrap_or("unknown"),
+            cli_report.target,
+            cli_report.receipt_id,
+            source,
+            cli_report.checkpoint_id,
+            cli_report.checkpoint.status,
+            cli_report.package_status
         ),
-        "destination replay API that records receipts and commits checkpoints",
-    ))
+        cli_report,
+    )
 }
 
 fn backfill(cli: &Cli, args: BackfillArgs) -> Result<CommandOutput, CliError> {
@@ -1415,6 +1544,66 @@ impl RunCliReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ReplayPackageCliReport {
+    command: &'static str,
+    run_id: String,
+    package_id: String,
+    package_dir: String,
+    package_hash: String,
+    destination: RunDestinationReport,
+    target: String,
+    package_status: String,
+    checkpoint_id: String,
+    checkpoint: RunCheckpointReport,
+    receipt_id: String,
+    receipt: RunReceiptReport,
+    receipt_source: RunReceiptSourceReport,
+    ledger_events: RunLedgerSummary,
+    writes: WriteEffects,
+}
+
+impl ReplayPackageCliReport {
+    fn from_report(
+        run_id: String,
+        package_id: String,
+        package_dir: PathBuf,
+        report: &cdf_project::PreparedDuckDbReplayReport,
+        receipt_source: ProjectReceiptSource,
+        destination: RunDestinationReport,
+        ledger_snapshot: &RunLedgerSnapshot,
+    ) -> Self {
+        let destination_kind = destination.kind;
+        Self {
+            command: "replay package",
+            run_id,
+            package_id,
+            package_dir: package_dir.display().to_string(),
+            package_hash: report.receipt.package_hash.to_string(),
+            destination,
+            target: report.receipt.target.to_string(),
+            package_status: report.package_status.as_str().to_owned(),
+            checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
+            checkpoint: RunCheckpointReport {
+                checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
+                status: report.checkpoint.status.as_str().to_owned(),
+                committed: report.checkpoint.committed_at_ms.is_some(),
+                is_head: report.checkpoint.is_head,
+                committed_at_ms: report.checkpoint.committed_at_ms,
+            },
+            receipt_id: report.receipt.receipt_id.to_string(),
+            receipt: RunReceiptReport::from_receipt(&report.receipt),
+            receipt_source: RunReceiptSourceReport::from_project(&receipt_source, destination_kind),
+            ledger_events: RunLedgerSummary::from_snapshot(ledger_snapshot),
+            writes: WriteEffects {
+                package: true,
+                destination: true,
+                checkpoint: true,
+            },
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct RunCheckpointReport {
     checkpoint_id: String,
     status: String,
@@ -1462,15 +1651,19 @@ struct RunReceiptReport {
 
 impl RunReceiptReport {
     fn from_report(report: &ProjectRunReport) -> Self {
+        Self::from_receipt(&report.receipt)
+    }
+
+    fn from_receipt(receipt: &cdf_kernel::Receipt) -> Self {
         Self {
-            receipt_id: report.receipt.receipt_id.to_string(),
-            destination_id: report.receipt.destination.to_string(),
-            target: report.receipt.target.to_string(),
-            package_hash: report.receipt.package_hash.to_string(),
-            disposition: write_disposition_name(&report.receipt.disposition).to_owned(),
-            committed_at_ms: report.receipt.committed_at_ms,
-            segment_ack_count: report.receipt.segment_acks.len(),
-            counts: report.receipt.counts.clone(),
+            receipt_id: receipt.receipt_id.to_string(),
+            destination_id: receipt.destination.to_string(),
+            target: receipt.target.to_string(),
+            package_hash: receipt.package_hash.to_string(),
+            disposition: write_disposition_name(&receipt.disposition).to_owned(),
+            committed_at_ms: receipt.committed_at_ms,
+            segment_ack_count: receipt.segment_acks.len(),
+            counts: receipt.counts.clone(),
         }
     }
 }
@@ -1529,6 +1722,93 @@ impl RunReceiptSourceReport {
             },
             ProjectReceiptSource::SuppliedDurableReceipt => Self::SuppliedDurableReceipt,
         }
+    }
+
+    fn duplicate_no_op(&self) -> Option<(bool, bool)> {
+        match self {
+            Self::DuckDbCommit {
+                duplicate, no_op, ..
+            }
+            | Self::DestinationCommit {
+                duplicate, no_op, ..
+            } => Some((*duplicate, *no_op)),
+            Self::DestinationCommitReceiptOnly { .. } | Self::SuppliedDurableReceipt => None,
+        }
+    }
+
+    fn kind_name(&self) -> &'static str {
+        match self {
+            Self::DuckDbCommit { .. } => "duck_db_commit",
+            Self::DestinationCommit { .. } => "destination_commit",
+            Self::DestinationCommitReceiptOnly { .. } => "destination_commit_receipt_only",
+            Self::SuppliedDurableReceipt => "supplied_durable_receipt",
+        }
+    }
+}
+
+fn replay_event_details(
+    source: &ProjectReceiptSource,
+    destination_kind: &str,
+    package_status: &str,
+) -> RunEventDetails {
+    let mut attributes = BTreeMap::from([(
+        "package_status".to_owned(),
+        RunEventValue::String(package_status.to_owned()),
+    )]);
+    match source {
+        ProjectReceiptSource::DestinationCommit {
+            duplicate,
+            package_receipt_recorded,
+        } => {
+            let receipt_source = if destination_kind == "duckdb" {
+                "duck_db_commit"
+            } else {
+                "destination_commit"
+            };
+            attributes.insert(
+                "receipt_source".to_owned(),
+                RunEventValue::String(receipt_source.to_owned()),
+            );
+            attributes.insert("duplicate".to_owned(), RunEventValue::Bool(*duplicate));
+            attributes.insert("no_op".to_owned(), RunEventValue::Bool(*duplicate));
+            attributes.insert(
+                "package_receipt_recorded".to_owned(),
+                RunEventValue::Bool(*package_receipt_recorded),
+            );
+        }
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
+            package_receipt_recorded,
+        } => {
+            attributes.insert(
+                "receipt_source".to_owned(),
+                RunEventValue::String("destination_commit_receipt_only".to_owned()),
+            );
+            attributes.insert(
+                "package_receipt_recorded".to_owned(),
+                RunEventValue::Bool(*package_receipt_recorded),
+            );
+        }
+        ProjectReceiptSource::SuppliedDurableReceipt => {
+            attributes.insert(
+                "receipt_source".to_owned(),
+                RunEventValue::String("supplied_durable_receipt".to_owned()),
+            );
+        }
+    }
+    RunEventDetails { attributes }
+}
+
+fn receipt_source_summary(source: &RunReceiptSourceReport) -> String {
+    match source.duplicate_no_op() {
+        Some((duplicate, no_op)) => {
+            format!(
+                "{} duplicate={} no_op={}",
+                source.kind_name(),
+                duplicate,
+                no_op
+            )
+        }
+        None => source.kind_name().to_owned(),
     }
 }
 

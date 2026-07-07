@@ -118,6 +118,7 @@ pub struct ResumeArgs {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayPackageArgs {
     pub package_dir: PathBuf,
+    pub destination_uri: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -501,17 +502,38 @@ fn parse_resume(args: &[String]) -> Result<ResumeArgs, CliError> {
 
 fn parse_replay(args: &[String]) -> Result<Command, CliError> {
     match args.first().map(String::as_str) {
-        Some("package") => {
-            let path = args
-                .get(1)
-                .ok_or_else(|| CliError::usage("replay package requires a package directory"))?;
-            no_extra_args("replay package", &args[2..])?;
-            Ok(Command::ReplayPackage(ReplayPackageArgs {
-                package_dir: PathBuf::from(path),
-            }))
-        }
+        Some("package") => parse_replay_package(&args[1..]).map(Command::ReplayPackage),
         _ => Err(CliError::usage("replay requires subcommand `package`")),
     }
+}
+
+fn parse_replay_package(args: &[String]) -> Result<ReplayPackageArgs, CliError> {
+    let mut package_dir = None;
+    let mut destination_uri = None;
+    let mut cursor = Cursor::new(args);
+    while let Some(arg) = cursor.next() {
+        match arg {
+            "--to" => destination_uri = Some(cursor.value("--to")?),
+            value if value.starts_with('-') => {
+                return Err(CliError::usage(format!(
+                    "unknown replay package option `{value}`"
+                )));
+            }
+            value => {
+                if package_dir.replace(PathBuf::from(value)).is_some() {
+                    return Err(CliError::usage(
+                        "replay package accepts exactly one package directory",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(ReplayPackageArgs {
+        package_dir: package_dir
+            .ok_or_else(|| CliError::usage("replay package requires a package directory"))?,
+        destination_uri: destination_uri
+            .ok_or_else(|| CliError::usage("replay package requires --to"))?,
+    })
 }
 
 fn parse_backfill(args: &[String]) -> Result<BackfillArgs, CliError> {

@@ -1047,6 +1047,261 @@ fn run_loop_remains_unsupported_without_writes() {
 }
 
 #[test]
+fn replay_package_missing_to_rejects_before_writes() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "replay",
+        "package",
+        "missing-package",
+    ]);
+
+    assert_eq!(result.exit_code, 2);
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires --to")
+    );
+}
+
+#[test]
+fn replay_package_missing_package_rejects_before_duckdb_parent_creation() {
+    let project = TestProject::new();
+    let package_dir = project.root.join(".cdf/packages/missing-package");
+    let destination_parent = project.root.join(".cdf/new-replay-parent");
+    let result = replay_package_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/new-replay-parent/replay.duckdb",
+    );
+
+    assert_ne!(result.exit_code, 0);
+    assert!(
+        !destination_parent.exists(),
+        "missing package replay must not create destination parent"
+    );
+    assert!(
+        !project.root.join(".cdf/state.db").exists(),
+        "missing package replay must not create checkpoint state"
+    );
+}
+
+#[test]
+fn replay_package_duckdb_replays_from_artifacts_without_source_contact() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-replay-duckdb", "checkpoint-replay-duckdb");
+    let manifest = PackageReader::open(&package_dir)
+        .unwrap()
+        .manifest()
+        .clone();
+
+    let result = replay_package_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/replay-success.duckdb",
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(json["command"], "replay package");
+    assert_eq!(report["command"], "replay package");
+    assert!(!report["run_id"].as_str().unwrap().is_empty());
+    assert_eq!(report["package_id"], "pkg-replay-duckdb");
+    assert_eq!(report["package_hash"], manifest.package_hash);
+    assert_eq!(report["destination"]["kind"], "duckdb");
+    assert_eq!(report["destination"]["destination_id"], "duckdb");
+    assert!(
+        report["destination"]["database_path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".cdf/replay-success.duckdb")
+    );
+    assert_eq!(report["target"], "events");
+    assert_eq!(report["receipt"]["destination_id"], "duckdb");
+    assert_eq!(report["receipt"]["target"], "events");
+    assert_eq!(report["receipt"]["package_hash"], manifest.package_hash);
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
+    assert!(!report["receipt_id"].as_str().unwrap().is_empty());
+    assert_eq!(report["checkpoint_id"], "checkpoint-replay-duckdb");
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["checkpoint"]["committed"], true);
+    assert_eq!(report["checkpoint"]["is_head"], true);
+    assert_eq!(report["receipt_source"]["kind"], "duck_db_commit");
+    assert_eq!(report["receipt_source"]["duplicate"], false);
+    assert_eq!(report["receipt_source"]["no_op"], false);
+    assert_eq!(report["package_status"], "checkpointed");
+    assert_eq!(report["ledger_events"]["event_count"], 1);
+    assert_eq!(report["ledger_events"]["terminal_kind"], "replay_recorded");
+    assert_eq!(report["ledger_events"]["kinds"]["replay_recorded"], 1);
+    assert_eq!(report["writes"]["package"], true);
+    assert_eq!(report["writes"]["destination"], true);
+    assert_eq!(report["writes"]["checkpoint"], true);
+
+    let conn = DuckConnection::open(project.root.join(".cdf/replay-success.duckdb")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("replay checkpoint head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-replay-duckdb"
+    );
+    assert_eq!(head.delta.package_hash.as_str(), manifest.package_hash);
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.as_str(),
+        report["receipt_id"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn replay_package_duckdb_duplicate_reports_no_op() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-duplicate",
+        "checkpoint-replay-duplicate",
+    );
+    let first = replay_package_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/replay-duplicate.duckdb",
+    );
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+
+    remove_state_store(&project);
+    let second = replay_package_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/replay-duplicate.duckdb",
+    );
+
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+    let json = stderr_or_stdout_json(&second.stdout);
+    let report = &json["result"];
+    assert_eq!(report["receipt_source"]["kind"], "duck_db_commit");
+    assert_eq!(report["receipt_source"]["duplicate"], true);
+    assert_eq!(report["receipt_source"]["no_op"], true);
+    assert_eq!(report["package_status"], "checkpointed");
+
+    let conn = DuckConnection::open(project.root.join(".cdf/replay-duplicate.duckdb")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+    let destination =
+        DuckDbDestination::new(project.root.join(".cdf/replay-duplicate.duckdb")).unwrap();
+    let mirrors = destination.read_mirror_snapshot_read_only().unwrap();
+    assert_eq!(mirrors.loads.len(), 1);
+    assert_eq!(mirrors.state.len(), 1);
+}
+
+#[test]
+fn replay_package_postgres_destination_fails_closed_before_mutation() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        "postgres://user:destination-secret@localhost/db\n",
+    )
+    .unwrap();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-postgres",
+        "checkpoint-replay-postgres",
+    );
+    let receipts = package_receipt_count(&package_dir);
+    let status = package_status(&package_dir);
+
+    let result = replay_package_command(
+        &project,
+        &package_dir,
+        "postgres://secret://file/destination-dsn",
+    );
+
+    assert_eq!(result.exit_code, 78);
+    assert_secret_absent(&result, "destination-secret");
+    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("target, merge dedup policy")
+    );
+}
+
+#[test]
+fn replay_package_parquet_destination_fails_closed_until_spelling_is_ratified() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-replay-parquet", "checkpoint-replay-parquet");
+    let receipts = package_receipt_count(&package_dir);
+    let status = package_status(&package_dir);
+    let parquet_root = project.root.join(".cdf/replay-parquet");
+
+    let result = replay_package_command(&project, &package_dir, "parquet://.cdf/replay-parquet");
+
+    assert_eq!(result.exit_code, 78);
+    assert_no_replay_mutation(
+        &project,
+        &package_dir,
+        receipts,
+        status,
+        Some(&parquet_root),
+    );
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("URI spelling is not ratified")
+    );
+}
+
+#[test]
+fn replay_package_unknown_destination_scheme_fails_closed_before_mutation() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-replay-s3", "checkpoint-replay-s3");
+    let receipts = package_receipt_count(&package_dir);
+    let status = package_status(&package_dir);
+
+    let result = replay_package_command(&project, &package_dir, "s3://bucket/replay");
+
+    assert_eq!(result.exit_code, 78);
+    assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("only local duckdb://path")
+    );
+}
+
+#[test]
 fn status_ignores_non_serving_freshness_resources() {
     let project = TestProject::new();
     write_status_resource(&project, "governed", "1h");
@@ -2221,6 +2476,86 @@ fn run_valid_run_resource(
         "--checkpoint-id".to_owned(),
         checkpoint_id.to_owned(),
     ])
+}
+
+fn create_replay_package_fixture(
+    project: &TestProject,
+    package_id: &str,
+    checkpoint_id: &str,
+) -> PathBuf {
+    let result = run_valid_run_args(project, package_id, checkpoint_id);
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    remove_state_store(project);
+    project.root.join(".cdf/packages").join(package_id)
+}
+
+fn replay_package_command(
+    project: &TestProject,
+    package_dir: &Path,
+    destination_uri: &str,
+) -> crate::InvocationResult {
+    run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "replay".to_owned(),
+        "package".to_owned(),
+        package_dir.to_str().unwrap().to_owned(),
+        "--to".to_owned(),
+        destination_uri.to_owned(),
+    ])
+}
+
+fn remove_state_store(project: &TestProject) {
+    for suffix in ["", "-wal", "-shm"] {
+        let path = project.root.join(format!(".cdf/state.db{suffix}"));
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("remove {}: {error}", path.display()),
+        }
+    }
+}
+
+fn package_receipt_count(package_dir: &Path) -> usize {
+    PackageReader::open(package_dir)
+        .unwrap()
+        .receipts()
+        .unwrap()
+        .len()
+}
+
+fn package_status(package_dir: &Path) -> PackageStatus {
+    PackageReader::open(package_dir)
+        .unwrap()
+        .manifest()
+        .lifecycle
+        .status
+        .clone()
+}
+
+fn assert_no_replay_mutation(
+    project: &TestProject,
+    package_dir: &Path,
+    receipt_count: usize,
+    status: PackageStatus,
+    local_destination_path: Option<&Path>,
+) {
+    assert!(
+        !project.root.join(".cdf/state.db").exists(),
+        "rejected replay must not create checkpoint state"
+    );
+    assert_eq!(package_receipt_count(package_dir), receipt_count);
+    assert_eq!(package_status(package_dir), status);
+    if let Some(path) = local_destination_path {
+        assert!(
+            !path.exists(),
+            "rejected replay must not create {}",
+            path.display()
+        );
+    }
 }
 
 fn write_project_destination(project: &TestProject, destination: &str) {

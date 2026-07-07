@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
@@ -41,8 +41,14 @@ No `resume`, no `inspect run`, no new package artifact schema, no source extract
 
 ## Blockers
 
-Postgres CLI flag shape for explicit target/dedup policy must be settled in this ticket before enabling Postgres replay. DuckDB replay can proceed without that decision.
+Postgres CLI flag shape for explicit target/dedup policy must be settled before enabling Postgres replay.
+
+Filesystem Parquet replay remains blocked at the CLI boundary until active records ratify destination URI spelling/product syntax.
+
+No DuckDB replay blocker remains for the implemented `duckdb://path` slice.
 
 ## Progress and notes
 
 - 2026-07-07: Split from the broad CLI spine ticket after package-artifact replay became available for all current project-run destinations.
+- 2026-07-07: Implemented the DuckDB-only CLI replay slice. `cdf replay package <DIR> --to duckdb://path` now parses, loads the selected environment state store, replays package artifacts through `cdf_project::replay_duckdb_package_from_artifacts`, commits the checkpoint, records a `replay_recorded` run-ledger event, and reports package hash, destination id, target, receipt id, checkpoint id/status, receipt source duplicate/no-op status, and package status. The CLI fails closed before replay mutation for missing `--to`, Postgres policy inputs, unratified Parquet URI spelling, and unknown destination schemes. Evidence: `.10x/evidence/2026-07-07-cli-duckdb-package-replay.md`.
+- 2026-07-07: Parent review added a missing-package non-mutation regression and reran focused quality gates. The DuckDB slice is acceptable progress, but the ticket remains blocked for Parquet URI spelling and Postgres replay CLI policy inputs. Review: `.10x/reviews/2026-07-07-cli-duckdb-package-replay-review.md`.
