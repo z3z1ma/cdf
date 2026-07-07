@@ -70,7 +70,7 @@ pub fn plan_postgres_load(
     })
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostgresCommitRequest {
     pub package_dir: PathBuf,
     pub plan: PostgresLoadPlan,

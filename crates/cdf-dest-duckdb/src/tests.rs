@@ -91,6 +91,38 @@ fn destination(path: &Path) -> DuckDbDestination {
     DuckDbDestination::new(path).unwrap()
 }
 
+fn finalize_session(dest: &DuckDbDestination, request: &DuckDbCommitRequest) -> Receipt {
+    let plan = dest.plan_package_commit(request).unwrap();
+    let mut session = dest
+        .begin(request.commit.clone(), plan.kernel.clone())
+        .unwrap();
+    session.apply_migrations().unwrap();
+    session.write().unwrap();
+    session.finalize().unwrap()
+}
+
+fn assert_same_receipt_shape(left: &Receipt, right: &Receipt) {
+    assert_eq!(left.receipt_id, right.receipt_id);
+    assert_eq!(left.destination, right.destination);
+    assert_eq!(left.target, right.target);
+    assert_eq!(left.package_hash, right.package_hash);
+    assert_eq!(left.segment_acks, right.segment_acks);
+    assert_eq!(left.disposition, right.disposition);
+    assert_eq!(left.idempotency_token, right.idempotency_token);
+    assert_eq!(left.counts, right.counts);
+    assert_eq!(left.schema_hash, right.schema_hash);
+    assert_eq!(left.migrations, right.migrations);
+    assert_eq!(left.verify, right.verify);
+    assert_eq!(
+        left.transaction.as_ref().map(|tx| tx.system.as_str()),
+        Some("duckdb")
+    );
+    assert_eq!(
+        right.transaction.as_ref().map(|tx| tx.system.as_str()),
+        Some("duckdb")
+    );
+}
+
 #[test]
 fn sheet_declares_duckdb_destination_contract() {
     let temp = tempfile::tempdir().unwrap();
@@ -128,6 +160,83 @@ fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
             )),
             DestinationConformanceCase::new(representative_commit_request(WriteDisposition::Merge)),
         ],
+    );
+}
+
+#[test]
+fn begin_session_flow_returns_wrapper_receipt_shape_and_verifies() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-session");
+    let package_hash = build_package(
+        &package,
+        "pkg-session",
+        &[sample_batch(
+            vec![1, 2, 3],
+            vec![Some("ada"), Some("grace"), None],
+        )],
+    );
+    let request = request(
+        &package,
+        package_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        3,
+    );
+    let wrapper_dest = destination(&temp.path().join("wrapper.duckdb"));
+    let wrapper = wrapper_dest.commit_package(request.clone()).unwrap();
+    assert!(!wrapper.duplicate);
+
+    let session_dest = destination(&temp.path().join("session.duckdb"));
+    let receipt = finalize_session(&session_dest, &request);
+
+    assert_same_receipt_shape(&receipt, &wrapper.receipt);
+    assert!(session_dest.verify_receipt(&receipt).unwrap().verified);
+}
+
+#[test]
+fn begin_session_duplicate_returns_existing_receipt_without_extra_rows() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-session-duplicate");
+    let package_hash = build_package(
+        &package,
+        "pkg-session-duplicate",
+        &[sample_batch(
+            vec![1, 2, 3],
+            vec![Some("ada"), Some("grace"), None],
+        )],
+    );
+    let db_path = temp.path().join("local.duckdb");
+    let dest = destination(&db_path);
+    let request = request(
+        &package,
+        package_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        3,
+    );
+
+    let first = finalize_session(&dest, &request);
+    let duplicate = finalize_session(&dest, &request);
+
+    assert_same_receipt_shape(&duplicate, &first);
+    assert!(dest.verify_receipt(&duplicate).unwrap().verified);
+
+    let conn = Connection::open(db_path).unwrap();
+    let target_rows: u64 = conn
+        .query_row("SELECT count(*) FROM orders", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(target_rows, 3);
+
+    let mirror = dest.read_mirror_snapshot_read_only().unwrap();
+    assert_eq!(mirror.loads.len(), 1);
+    assert_eq!(mirror.state.len(), 1);
+    assert_eq!(
+        PackageReader::open(&package)
+            .unwrap()
+            .receipts()
+            .unwrap()
+            .len(),
+        1
     );
 }
 

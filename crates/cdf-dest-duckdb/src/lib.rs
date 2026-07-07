@@ -4,7 +4,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -18,11 +21,11 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CommitCounts, CommitPlan, ConcurrencyLimit, DeliveryGuarantee,
-    DestinationCommitRequest, DestinationId, DestinationProtocol, DestinationSheet,
-    IdempotencySupport, IdentifierRules, MigrationRecord, PlanId, Receipt, ReceiptId, Result,
-    SchemaHash, SegmentAck, StateSegment, TargetName, TransactionMetadata, TransactionSupport,
-    TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
+    CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSession, ConcurrencyLimit,
+    DeliveryGuarantee, DestinationCommitRequest, DestinationId, DestinationProtocol,
+    DestinationSheet, IdempotencySupport, IdentifierRules, MigrationRecord, PlanId, Receipt,
+    ReceiptId, Result, SchemaHash, SegmentAck, StateSegment, TargetName, TransactionMetadata,
+    TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
 use cdf_package::{PackageReader, SegmentEntry};
 use duckdb::{

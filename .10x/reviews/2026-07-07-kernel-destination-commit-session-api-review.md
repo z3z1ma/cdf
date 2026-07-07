@@ -31,4 +31,4 @@ Pass. The API is additive, synchronous as allowed by `.10x/specs/destination-rec
 
 ## Residual risk
 
-Concrete destinations still return unsupported sessions until `.10x/tickets/2026-07-07-duckdb-commit-session-refactor.md`, `.10x/tickets/2026-07-07-parquet-commit-session-refactor.md`, and `.10x/tickets/2026-07-07-postgres-commit-session-refactor.md` land.
+Concrete destinations remained unsupported until `.10x/tickets/done/2026-07-07-duckdb-commit-session-refactor.md`, `.10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md`, and `.10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md` landed.

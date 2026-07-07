@@ -363,6 +363,36 @@ fn commit(env: &LivePostgres, package_dir: &Path, plan: PostgresLoadPlan) -> Pos
         .unwrap()
 }
 
+fn commit_request(manifest: &PackageManifest, plan: &PostgresLoadPlan) -> DestinationCommitRequest {
+    DestinationCommitRequest {
+        package_hash: PackageHash::new(manifest.package_hash.clone()).unwrap(),
+        target: plan.kernel.target.clone(),
+        disposition: plan.kernel.disposition.clone(),
+        segments: state_segments(manifest),
+        idempotency_token: IdempotencyToken::new(manifest.package_hash.clone()).unwrap(),
+    }
+}
+
+fn session_commit(
+    env: &LivePostgres,
+    package_dir: &Path,
+    manifest: &PackageManifest,
+    plan: PostgresLoadPlan,
+) -> Receipt {
+    let request = commit_request(manifest, &plan);
+    let kernel_plan = plan.kernel.clone();
+    let destination = env
+        .destination()
+        .with_commit_request(PostgresCommitRequest {
+            package_dir: package_dir.to_path_buf(),
+            plan,
+        });
+    let mut session = destination.begin(request, kernel_plan).unwrap();
+    session.apply_migrations().unwrap();
+    session.write().unwrap();
+    session.finalize().unwrap()
+}
+
 #[test]
 fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
     let Some(env) = LivePostgres::start() else {
@@ -501,6 +531,105 @@ fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
     };
     assert_eq!(cursor.field, "updated_at");
     assert_eq!(cursor.value, CursorValue::I64(30));
+}
+
+#[test]
+fn live_begin_session_returns_verifiable_receipt_and_preserves_duplicate_noop() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let package_dir = tempfile::tempdir().unwrap();
+    let manifest = build_package(
+        package_dir.path(),
+        "pkg-live-session-append",
+        vec![("seg-000001", batch(&[(1, Some("ada")), (2, Some("grace"))]))],
+    );
+    let plan = plan(
+        &env,
+        "orders_session_append",
+        &manifest,
+        WriteDisposition::Append,
+        MergeDedupPolicy::Last,
+        Some(state_delta(&manifest, "chk-live-session-append")),
+    );
+
+    let receipt = session_commit(&env, package_dir.path(), &manifest, plan.clone());
+    assert_eq!(receipt.counts.rows_written, 2);
+    assert!(env.destination().verify_receipt(&receipt).unwrap().verified);
+    assert_eq!(
+        cdf_package::PackageReader::open(package_dir.path())
+            .unwrap()
+            .receipts()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let duplicate = session_commit(&env, package_dir.path(), &manifest, plan);
+    assert_eq!(duplicate.receipt_id, receipt.receipt_id);
+    assert_eq!(
+        cdf_package::PackageReader::open(package_dir.path())
+            .unwrap()
+            .receipts()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let mut client = env.client();
+    let target_count: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {}",
+                env.target("orders_session_append").sql()
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(target_count, 2);
+}
+
+#[test]
+fn live_begin_session_abort_rolls_back_system_migrations() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let package_dir = tempfile::tempdir().unwrap();
+    let manifest = build_package(
+        package_dir.path(),
+        "pkg-live-session-abort",
+        vec![("seg-000001", batch(&[(1, Some("ada"))]))],
+    );
+    let plan = plan(
+        &env,
+        "orders_session_abort",
+        &manifest,
+        WriteDisposition::Append,
+        MergeDedupPolicy::Last,
+        None,
+    );
+    let request = commit_request(&manifest, &plan);
+    let kernel_plan = plan.kernel.clone();
+    let destination = env
+        .destination()
+        .with_commit_request(PostgresCommitRequest {
+            package_dir: package_dir.path().to_path_buf(),
+            plan,
+        });
+    let mut session = destination.begin(request, kernel_plan).unwrap();
+    session.apply_migrations().unwrap();
+    session.abort().unwrap();
+
+    let mut client = env.client();
+    let loads_exists: bool = client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = '_cdf_loads')",
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert!(!loads_exists);
 }
 
 fn postgres_source_descriptor() -> ResourceDescriptor {

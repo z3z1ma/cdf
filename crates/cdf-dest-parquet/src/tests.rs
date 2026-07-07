@@ -215,6 +215,19 @@ fn receipt_with_pointer_store(receipt: &Receipt, pointer: StoredJson) -> Receipt
     receipt
 }
 
+fn commit_with_session(
+    dest: &ParquetDestination,
+    commit: &ParquetCommitRequest,
+) -> (ParquetCommitPlan, Receipt) {
+    let plan = dest.plan_package_commit(commit).unwrap();
+    let mut session = DestinationProtocol::begin(dest, commit.commit.clone(), plan.kernel.clone())
+        .expect("begin Parquet commit session");
+    session.apply_migrations().unwrap();
+    session.write().unwrap();
+    let receipt = session.finalize().unwrap();
+    (plan, receipt)
+}
+
 #[test]
 fn unsupported_arrow_types_fail_before_writing_objects() {
     let temp = tempfile::tempdir().unwrap();
@@ -356,6 +369,125 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         .unwrap();
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].receipt_id, outcome.receipt.receipt_id);
+}
+
+#[test]
+fn begin_session_flow_materializes_verifiable_manifest_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-session");
+    let built = build_package(
+        &package_dir,
+        "pkg-session",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
+        )],
+    );
+    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+
+    let (plan, receipt) = commit_with_session(&dest, &commit);
+
+    assert!(!plan.duplicate);
+    assert_eq!(receipt.destination.as_str(), DESTINATION_ID);
+    assert_eq!(
+        receipt.receipt_id.as_str(),
+        format!(
+            "parquet:orders:{}",
+            commit.commit.idempotency_token.as_str()
+        )
+    );
+    assert_eq!(receipt.package_hash, commit.commit.package_hash);
+    assert_eq!(receipt.schema_hash.as_str(), "schema-v1");
+    assert_eq!(receipt.segment_acks.len(), 1);
+    assert_eq!(receipt.counts.rows_written, 2);
+    assert!(dest.verify_receipt(&receipt).unwrap().verified);
+
+    let manifest = load_manifest(&dest, manifest_key(&receipt));
+    assert_eq!(manifest.objects.len(), 1);
+    assert_eq!(manifest.objects[0].key, plan.object_keys[0]);
+    assert_eq!(manifest.objects[0].row_count, 2);
+    assert_eq!(manifest.objects[0].schema_hash, "schema-v1");
+
+    let receipts = PackageReader::open(&package_dir)
+        .unwrap()
+        .receipts()
+        .unwrap();
+    assert_eq!(receipts, vec![receipt]);
+}
+
+#[test]
+fn begin_session_duplicate_replay_preserves_existing_manifest() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-session-duplicate");
+    let built = build_package(
+        &package_dir,
+        "pkg-session-duplicate",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
+        )],
+    );
+    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+
+    let first = dest.commit_package(commit.clone()).unwrap();
+    let manifest_before = dest
+        .store()
+        .get_required(dest.runtime(), &first.plan.manifest_key)
+        .unwrap();
+    let (duplicate_plan, duplicate_receipt) = commit_with_session(&dest, &commit);
+    let manifest_after = dest
+        .store()
+        .get_required(dest.runtime(), &first.plan.manifest_key)
+        .unwrap();
+
+    assert!(duplicate_plan.duplicate);
+    assert_eq!(first.receipt.receipt_id, duplicate_receipt.receipt_id);
+    assert_eq!(manifest_before, manifest_after);
+    assert!(dest.verify_receipt(&duplicate_receipt).unwrap().verified);
+
+    let receipts = PackageReader::open(&package_dir)
+        .unwrap()
+        .receipts()
+        .unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert_eq!(receipts[0].receipt_id, first.receipt.receipt_id);
+}
+
+#[test]
+fn begin_session_abort_before_write_leaves_manifest_unwritten() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-session-abort");
+    let built = build_package(
+        &package_dir,
+        "pkg-session-abort",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1], vec![Some("abort")])],
+        )],
+    );
+    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let commit = request(&package_dir, &built, WriteDisposition::Append);
+    let plan = dest.plan_package_commit(&commit).unwrap();
+
+    let session = DestinationProtocol::begin(&dest, commit.commit.clone(), plan.kernel.clone())
+        .expect("begin Parquet commit session");
+    session.abort().unwrap();
+
+    assert!(
+        !dest
+            .store()
+            .exists(dest.runtime(), &plan.manifest_key)
+            .unwrap()
+    );
+    assert!(
+        PackageReader::open(&package_dir)
+            .unwrap()
+            .receipts()
+            .unwrap()
+            .is_empty()
+    );
 }
 
 #[test]

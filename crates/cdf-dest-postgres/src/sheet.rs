@@ -1,3 +1,4 @@
+use crate::commit::validate_session_begin_inputs;
 use crate::*;
 use crate::{api::*, ddl::*, validate::*};
 
@@ -6,6 +7,8 @@ pub struct PostgresDestination {
     pub(crate) sheet: PostgresDestinationSheet,
     #[serde(skip)]
     pub(crate) database_url: Option<String>,
+    #[serde(skip)]
+    pub(crate) pending_commit: Option<PostgresCommitRequest>,
 }
 
 impl Default for PostgresDestination {
@@ -13,6 +16,7 @@ impl Default for PostgresDestination {
         Self {
             sheet: postgres_destination_sheet(),
             database_url: None,
+            pending_commit: None,
         }
     }
 }
@@ -28,6 +32,11 @@ impl PostgresDestination {
 
     pub fn plan_load(&self, input: PostgresLoadPlanInput) -> Result<PostgresLoadPlan> {
         plan_postgres_load(input, &self.sheet)
+    }
+
+    pub fn with_commit_request(mut self, request: PostgresCommitRequest) -> Self {
+        self.pending_commit = Some(request);
+        self
     }
 }
 
@@ -50,6 +59,20 @@ impl DestinationProtocol for PostgresDestination {
             migrations: system_table_migrations(),
             delivery_guarantee: delivery_guarantee(&request.disposition),
         })
+    }
+
+    fn begin(
+        &self,
+        request: DestinationCommitRequest,
+        plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        let pending = self.pending_commit.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "PostgresDestination::begin requires PostgresDestination::with_commit_request",
+            )
+        })?;
+        validate_session_begin_inputs(&request, &plan, &pending.plan)?;
+        Ok(Box::new(self.begin_commit_session(pending.clone())?))
     }
 }
 

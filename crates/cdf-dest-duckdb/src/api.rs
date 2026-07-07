@@ -7,6 +7,8 @@ use crate::{
 pub struct DuckDbDestination {
     database_path: PathBuf,
     sheet: DestinationSheet,
+    // 10x: kernel begin lacks DuckDB package inputs; remove this handoff once begin carries package replay inputs.
+    pending_sessions: Arc<Mutex<BTreeMap<PlanId, DuckDbCommitRequest>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -37,6 +39,14 @@ pub struct DuckDbCommitRequest {
     pub commit: DestinationCommitRequest,
     pub schema_hash: SchemaHash,
     pub merge_keys: Vec<String>,
+}
+
+#[derive(Debug)]
+struct DuckDbCommitSession<'a> {
+    destination: &'a DuckDbDestination,
+    request: DuckDbCommitRequest,
+    migrations_applied: bool,
+    outcome: Option<DuckDbCommitOutcome>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -186,6 +196,7 @@ impl DuckDbDestination {
         Ok(Self {
             database_path,
             sheet: duckdb_sheet()?,
+            pending_sessions: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -208,15 +219,27 @@ impl DuckDbDestination {
 
     pub fn plan_package_commit(&self, request: &DuckDbCommitRequest) -> Result<DuckDbCommitPlan> {
         let package = load_package_data(&request.package_dir)?;
-        if self.database_path.exists() {
+        let plan = if self.database_path.exists() {
             let conn = self.open_connection()?;
             self.plan_loaded_package(Some(&conn), request, &package)
         } else {
             self.plan_loaded_package(None, request, &package)
-        }
+        }?;
+        self.remember_session_context(&plan.kernel.plan_id, request)?;
+        Ok(plan)
     }
 
     pub fn commit_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
+        let mut session = DuckDbCommitSession::new(self, request);
+        session.apply_migrations()?;
+        session.write()?;
+        session.finalize_outcome()
+    }
+
+    fn commit_package_immediate(
+        &self,
+        request: DuckDbCommitRequest,
+    ) -> Result<DuckDbCommitOutcome> {
         let lock = self.acquire_writer_lock()?;
         let mut conn = self.open_connection()?;
         ensure_mirror_tables(&conn)?;
@@ -445,6 +468,105 @@ impl DuckDbDestination {
             target_exists: table_plan.target_exists,
         })
     }
+
+    fn remember_session_context(
+        &self,
+        plan_id: &PlanId,
+        request: &DuckDbCommitRequest,
+    ) -> Result<()> {
+        let mut pending = self
+            .pending_sessions
+            .lock()
+            .map_err(|_| CdfError::internal("DuckDB commit-session context cache is poisoned"))?;
+        pending.insert(plan_id.clone(), request.clone());
+        Ok(())
+    }
+
+    fn take_session_context(
+        &self,
+        plan_id: &PlanId,
+        request: &DestinationCommitRequest,
+    ) -> Result<DuckDbCommitRequest> {
+        let mut pending = self
+            .pending_sessions
+            .lock()
+            .map_err(|_| CdfError::internal("DuckDB commit-session context cache is poisoned"))?;
+        let Some(duckdb_request) = pending.get(plan_id).cloned() else {
+            return Err(CdfError::contract(
+                "DuckDB DestinationProtocol::begin requires a prior plan_package_commit for the same package plan",
+            ));
+        };
+        if duckdb_request.commit != *request {
+            return Err(CdfError::contract(
+                "DuckDB DestinationProtocol::begin request does not match the planned package commit",
+            ));
+        }
+        pending.remove(plan_id);
+        Ok(duckdb_request)
+    }
+}
+
+impl DuckDbCommitSession<'_> {
+    fn new(
+        destination: &DuckDbDestination,
+        request: DuckDbCommitRequest,
+    ) -> DuckDbCommitSession<'_> {
+        DuckDbCommitSession {
+            destination,
+            request,
+            migrations_applied: false,
+            outcome: None,
+        }
+    }
+
+    fn finalize_outcome(self) -> Result<DuckDbCommitOutcome> {
+        self.outcome.ok_or_else(|| {
+            CdfError::destination("cannot finalize DuckDB commit session before write")
+        })
+    }
+}
+
+impl CommitSession for DuckDbCommitSession<'_> {
+    fn apply_migrations(&mut self) -> Result<()> {
+        if self.outcome.is_some() {
+            return Err(CdfError::destination(
+                "cannot apply DuckDB migrations after write",
+            ));
+        }
+        self.migrations_applied = true;
+        Ok(())
+    }
+
+    fn write(&mut self) -> Result<()> {
+        if !self.migrations_applied {
+            return Err(CdfError::destination(
+                "DuckDB migrations must be applied before writing",
+            ));
+        }
+        if self.outcome.is_some() {
+            return Err(CdfError::destination(
+                "DuckDB commit session already wrote the package",
+            ));
+        }
+        self.outcome = Some(
+            self.destination
+                .commit_package_immediate(self.request.clone())?,
+        );
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Receipt> {
+        Ok(self.finalize_outcome()?.receipt)
+    }
+
+    fn abort(self: Box<Self>) -> Result<()> {
+        if self.outcome.is_some() {
+            return Err(CdfError::destination(
+                "cannot abort DuckDB commit session after write committed",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl DestinationProtocol for DuckDbDestination {
@@ -482,4 +604,28 @@ impl DestinationProtocol for DuckDbDestination {
             },
         })
     }
+
+    fn begin(
+        &self,
+        request: DestinationCommitRequest,
+        plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        validate_session_plan(&request, &plan)?;
+        let request = self.take_session_context(&plan.plan_id, &request)?;
+        Ok(Box::new(DuckDbCommitSession::new(self, request)))
+    }
+}
+
+fn validate_session_plan(request: &DestinationCommitRequest, plan: &CommitPlan) -> Result<()> {
+    if plan.target != request.target || plan.disposition != request.disposition {
+        return Err(CdfError::destination(
+            "DuckDB commit plan does not match destination request",
+        ));
+    }
+    if plan.idempotency != IdempotencySupport::PackageToken {
+        return Err(CdfError::destination(
+            "DuckDB commit plan must use package-token idempotency",
+        ));
+    }
+    Ok(())
 }

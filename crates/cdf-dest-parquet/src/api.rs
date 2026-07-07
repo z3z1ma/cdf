@@ -14,6 +14,7 @@ pub struct ParquetDestination {
     store: StoreClient,
     runtime: Runtime,
     sheet: DestinationSheet,
+    pending_sessions: Mutex<BTreeMap<PlanId, ParquetSessionContext>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +86,7 @@ impl ParquetDestination {
             store,
             runtime,
             sheet: parquet_sheet()?,
+            pending_sessions: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -100,7 +102,9 @@ impl ParquetDestination {
     pub fn plan_package_commit(&self, request: &ParquetCommitRequest) -> Result<ParquetCommitPlan> {
         let package = load_package_data(&request.package_dir)?;
         validate_requested_segments(&request.commit.segments, &package)?;
-        self.plan_loaded_package(request, &package)
+        let plan = self.plan_loaded_package(request, &package)?;
+        self.remember_session_context(request, &plan)?;
+        Ok(plan)
     }
 
     pub fn commit_package(&self, request: ParquetCommitRequest) -> Result<ParquetCommitOutcome> {
@@ -380,6 +384,49 @@ impl ParquetDestination {
             replace_pointer: None,
         }))
     }
+
+    fn remember_session_context(
+        &self,
+        request: &ParquetCommitRequest,
+        plan: &ParquetCommitPlan,
+    ) -> Result<()> {
+        // Kernel begin currently carries only portable commit metadata; Parquet keeps
+        // package path/schema context from its package-aware dry run and consumes it at begin.
+        let mut pending = self
+            .pending_sessions
+            .lock()
+            .map_err(|_| CdfError::internal("Parquet commit session context lock was poisoned"))?;
+        pending.insert(
+            plan.kernel.plan_id.clone(),
+            ParquetSessionContext {
+                request: request.clone(),
+                plan: plan.clone(),
+            },
+        );
+        Ok(())
+    }
+
+    fn take_session_context(
+        &self,
+        request: &DestinationCommitRequest,
+        plan: &CommitPlan,
+    ) -> Result<ParquetSessionContext> {
+        let mut pending = self
+            .pending_sessions
+            .lock()
+            .map_err(|_| CdfError::internal("Parquet commit session context lock was poisoned"))?;
+        let context = pending.remove(&plan.plan_id).ok_or_else(|| {
+            CdfError::destination(
+                "Parquet commit sessions require package context from plan_package_commit",
+            )
+        })?;
+        if &context.request.commit != request || &context.plan.kernel != plan {
+            return Err(CdfError::destination(
+                "Parquet commit session context does not match destination request and plan",
+            ));
+        }
+        Ok(context)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -387,6 +434,75 @@ struct LoadedManifest {
     manifest: ParquetObjectManifest,
     manifest_etag: Option<String>,
     replace_pointer: Option<ParquetReplacePointerReceipt>,
+}
+
+#[derive(Clone, Debug)]
+struct ParquetSessionContext {
+    request: ParquetCommitRequest,
+    plan: ParquetCommitPlan,
+}
+
+struct ParquetCommitSession<'a> {
+    destination: &'a ParquetDestination,
+    request: ParquetCommitRequest,
+    plan: ParquetCommitPlan,
+    migrations_applied: bool,
+    outcome: Option<ParquetCommitOutcome>,
+}
+
+impl<'a> ParquetCommitSession<'a> {
+    fn new(destination: &'a ParquetDestination, context: ParquetSessionContext) -> Self {
+        Self {
+            destination,
+            request: context.request,
+            plan: context.plan,
+            migrations_applied: false,
+            outcome: None,
+        }
+    }
+}
+
+impl CommitSession for ParquetCommitSession<'_> {
+    fn apply_migrations(&mut self) -> Result<()> {
+        if !self.plan.kernel.migrations.is_empty() {
+            return Err(CdfError::destination(
+                "Parquet destination does not support migrations",
+            ));
+        }
+        self.migrations_applied = true;
+        Ok(())
+    }
+
+    fn write(&mut self) -> Result<()> {
+        if !self.migrations_applied {
+            return Err(CdfError::destination(
+                "migrations must be applied before writing",
+            ));
+        }
+        if self.outcome.is_some() {
+            return Err(CdfError::destination(
+                "Parquet commit session has already written this package",
+            ));
+        }
+        self.outcome = Some(self.destination.commit_package(self.request.clone())?);
+        Ok(())
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Receipt> {
+        let outcome = self.outcome.ok_or_else(|| {
+            CdfError::destination("cannot finalize before package segments are written")
+        })?;
+        Ok(outcome.receipt)
+    }
+
+    fn abort(self: Box<Self>) -> Result<()> {
+        if self.outcome.is_some() {
+            return Err(CdfError::destination(
+                "cannot abort Parquet commit session after package write completed",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl DestinationProtocol for ParquetDestination {
@@ -425,5 +541,20 @@ impl DestinationProtocol for ParquetDestination {
                 }
             },
         })
+    }
+
+    fn begin(
+        &self,
+        request: DestinationCommitRequest,
+        plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        let expected = self.plan_commit(&request)?;
+        if expected != plan {
+            return Err(CdfError::destination(
+                "commit plan does not match destination request",
+            ));
+        }
+        let context = self.take_session_context(&request, &plan)?;
+        Ok(Box::new(ParquetCommitSession::new(self, context)))
     }
 }
