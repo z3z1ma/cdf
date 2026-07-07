@@ -66,6 +66,9 @@ Fast-follow and full-system completion:
 - `.10x/tickets/done/2026-07-07-run-ledger-commit-session-spine-ratification.md`
 - `.10x/tickets/2026-07-07-run-spine-implementation-program.md`
 - `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md`
+- `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
+- `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
+- `.10x/tickets/2026-07-07-datafusion-execution-honesty.md`
 - `.10x/tickets/2026-07-05-wasm-components-registry-signing.md`
 - `.10x/tickets/2026-07-05-cdc-and-streaming-supervisor.md`
 - `.10x/tickets/2026-07-05-distributed-execution-and-remote-state.md`
@@ -150,6 +153,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md`; table-backed Tier-0 Postgres SQL resources now execute through explicit runtime dependencies with typed pushdown metadata, live Postgres source coverage, cursor source positions, fail-closed unsupported query/dialect/metadata handling, and broad quality evidence. This advances the source breadth lane while leaving SQL-through-CLI/package orchestration to the run-spine work.
 - 2026-07-07: Updated `.10x/knowledge/cdf-product-objective.md` with the falsifiable CDF 1.0 finish line, decision queue, and P0-P7 concurrent program map from the active goal objective.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-run-ledger-commit-session-spine-ratification.md`; run identity, append-only run ledger ownership, run-to-artifact mapping, resume/replay behavior, inspect-run ownership, and destination commit-session semantics are now ratified by `.10x/decisions/run-ledger-commit-session-spine.md` and `.10x/specs/run-orchestration-ledger.md`. Opened `.10x/tickets/2026-07-07-run-spine-implementation-program.md` with parallelizable children for the kernel API, per-destination session refactors, run ledger store, general orchestrator, and CLI wiring.
+- 2026-07-07: Closed DataFusion delegation triage at `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`; `.10x/decisions/datafusion-tier-b-delegation-boundary.md` keeps VISION D-1 deep DataFusion delegation as the target while making the current CDF-native loop a temporary fallback. Opened tuple, adapter, and execution-metadata honesty owners so the system stops silently drifting between DataFusion-shaped metadata and actual DataFusion execution.
 
 ## Blockers
 

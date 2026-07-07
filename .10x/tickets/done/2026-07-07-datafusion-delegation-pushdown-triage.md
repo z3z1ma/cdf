@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
@@ -9,7 +9,7 @@ Parent: .10x/tickets/2026-07-07-performance-investigation-backlog.md
 
 Investigate whether CDF delegates enough query/filter/projection/sort/limit work to DataFusion and source pushdown layers, or whether current engine-side loops leave performance on the table for workloads DataFusion can optimize.
 
-This ticket is triage only. It does not authorize planner rewrites, DataFusion `TableProvider` additions, predicate-language expansion, or changes to pushdown fidelity semantics.
+This ticket was triage only. It did not authorize planner rewrites, DataFusion `TableProvider` additions, predicate-language expansion, or changes to pushdown fidelity semantics.
 
 ## Current hypothesis
 
@@ -64,7 +64,14 @@ No query planner rewrite, no broad predicate parser, no join/SQL transformation 
 ## Progress and notes
 
 - 2026-07-07: Opened from performance discussion. CDF should not claim DataFusion-level speed for paths that do not actually delegate work to DataFusion.
+- 2026-07-07: Completed read-only triage in `.10x/research/2026-07-07-datafusion-delegation-pushdown-triage.md`. The current source uses DataFusion fidelity vocabulary and DataFusion-shaped operator metadata, but no current production path executes CDF resources through real DataFusion `TableProvider`s or physical plans.
+- 2026-07-07: Ratified the architectural boundary in `.10x/decisions/datafusion-tier-b-delegation-boundary.md`: CDF will implement VISION D-1 deep DataFusion delegation, but production adapter work is gated on Arrow/DataFusion dependency tuple compatibility and must preserve CDF pushdown semantics.
+- 2026-07-07: Opened follow-up owners:
+  - `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
+  - `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
+  - `.10x/tickets/2026-07-07-datafusion-execution-honesty.md`
+- 2026-07-07: Closure review recorded in `.10x/reviews/2026-07-07-datafusion-delegation-pushdown-triage-review.md`.
 
 ## Blockers
 
-None for investigation. Implementation is blocked on source-path inventory and pushdown-fidelity constraints.
+None for triage closure. Implementation follow-up blockers are owned by `.10x/tickets/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` and `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`.
