@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
@@ -10,12 +10,21 @@ Depends-On: .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-sessio
 
 Refactor `cdf-project` so orchestration, replay, recovery, and chaos paths are generic over kernel traits and driver registration rather than closed resource/destination enums and destination-specialized wrapper families.
 
+This ticket is a parent plan. Child tickets own executable implementation slices.
+
 Owns:
 
 - `crates/cdf-project/src/runtime.rs` split into focused modules.
 - `cdf-project` registry/factory/resolution code for project config and URI schemes.
 - Caller migration in CLI, conformance, golden, and chaos tests.
 - Deletion of temporary specialized replay/recover wrappers after all callers migrate.
+
+## Child tickets
+
+- `.10x/tickets/2026-07-07-p0-b1-runtime-registry-foundation.md`
+- `.10x/tickets/2026-07-07-p0-b2-generic-package-replay-recovery.md`
+- `.10x/tickets/2026-07-07-p0-b3-generic-project-run-resolution.md`
+- `.10x/tickets/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`
 
 ## Required outcome
 
@@ -46,7 +55,9 @@ No new destination implementation, no new source archetype, no distributed sched
 
 - 2026-07-07: Opened from P0 stop-line. Current inspection shows closed enums `ProjectRunDestination` and `ProjectRunResource` plus a 2,913-line `crates/cdf-project/src/runtime.rs` with public specialized replay/recover families.
 - 2026-07-07: Read-only subagent inventory confirmed `crates/cdf-project/src/runtime_tests.rs` is also a 3,290-line hotspot, and that prior run-spine records intentionally preserved compatibility wrappers rather than owning their deletion.
+- 2026-07-07: Read-only subagents inventoried public APIs/callers, module split candidates, and the smallest generic adapter shape. API decision recorded in `.10x/decisions/project-destination-driver-registry.md`.
+- 2026-07-07: Split Workstream B into four executable children: B1 runtime registry/module foundation, B2 generic package replay/recovery, B3 generic project run/resolution, and B4 caller migration/wrapper deletion/closure.
 
 ## Blockers
 
-Depends on Workstream A because the generic replay/recovery shape should target the required segment-streaming session API rather than migrating callers twice.
+None. Workstream A is closed at `.10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md`; child tickets now own executable scope and dependencies.
