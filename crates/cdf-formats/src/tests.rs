@@ -223,7 +223,9 @@ fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
     let source = FileSource::new(
         &parquet_path,
         FileFormat::Parquet,
-        options("orders_parquet", "file"),
+        options("orders_parquet", "file")
+            .with_batch_size(2)
+            .unwrap(),
     );
     let read = read_file_source(&source).unwrap();
 
@@ -241,31 +243,55 @@ fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
             .sum::<u64>(),
         3
     );
+    assert_eq!(read.batches.len(), 2);
+    assert_eq!(read.batches[0].header.row_count, 2);
+    assert_eq!(read.batches[1].header.row_count, 1);
+    assert_eq!(
+        read.batches[0].header.batch_id.as_str(),
+        "orders_parquet-file-000001"
+    );
+    assert_eq!(
+        read.batches[1].header.batch_id.as_str(),
+        "orders_parquet-file-000002"
+    );
     assert_eq!(
         read.batches[0].header.observed_schema_hash,
         read.schema_hash
     );
 
-    let batch = read.batches[0].record_batch().unwrap();
-    assert_eq!(batch.num_columns(), 2);
-    assert_eq!(batch.schema().field(0).name(), "id");
-    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int64);
-    assert_eq!(batch.schema().field(1).name(), "name");
-    assert_eq!(batch.schema().field(1).data_type(), &DataType::Utf8);
-    let ids = batch
+    let first_batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(first_batch.num_columns(), 2);
+    assert_eq!(first_batch.schema().field(0).name(), "id");
+    assert_eq!(first_batch.schema().field(0).data_type(), &DataType::Int64);
+    assert_eq!(first_batch.schema().field(1).name(), "name");
+    assert_eq!(first_batch.schema().field(1).data_type(), &DataType::Utf8);
+    let first_ids = first_batch
         .column(0)
         .as_any()
         .downcast_ref::<Int64Array>()
         .unwrap();
-    let names = batch
+    let first_names = first_batch
         .column(1)
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap();
-    assert_eq!([ids.value(0), ids.value(1), ids.value(2)], [1, 2, 3]);
-    assert_eq!(names.value(0), "ada");
-    assert!(names.is_null(1));
-    assert_eq!(names.value(2), "grace");
+    assert_eq!([first_ids.value(0), first_ids.value(1)], [1, 2]);
+    assert_eq!(first_names.value(0), "ada");
+    assert!(first_names.is_null(1));
+
+    let second_batch = read.batches[1].record_batch().unwrap();
+    let second_ids = second_batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    let second_names = second_batch
+        .column(1)
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(second_ids.value(0), 3);
+    assert_eq!(second_names.value(0), "grace");
 
     let SourcePosition::FileManifest(manifest) =
         read.batches[0].header.source_position.as_ref().unwrap()
@@ -317,7 +343,7 @@ fn malformed_inputs_map_to_data_errors() {
     ))
     .unwrap_err();
     assert_eq!(error.kind, ErrorKind::Data);
-    assert!(error.message.contains("read DuckDB Parquet file"));
+    assert!(error.message.contains("read Parquet file metadata"));
 }
 
 #[test]

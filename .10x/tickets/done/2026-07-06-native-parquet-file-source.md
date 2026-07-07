@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -50,6 +50,9 @@ No Parquet destination writer replacement, no package archive writer replacement
 
 - 2026-07-06: Opened after user ratification of native Arrow/DataFusion Parquet. The previous DuckDB-backed implementation remains the behavioral baseline until this ticket closes.
 - 2026-07-07: Unblocked by `.10x/tickets/done/2026-07-06-rustsec-paste-parquet-exception.md`. When this ticket adds native Parquet dependencies, it must prove the actual advisory path and scanner behavior rather than relying only on the dormant policy exception.
+- 2026-07-07: Activated for implementation. Current `cdf-formats` Parquet reader uses DuckDB `read_parquet(?)` plus an Arrow 58 IPC bridge in `crates/cdf-formats/src/readers.rs`; this ticket replaces that with a native Arrow-aligned Parquet reader while preserving existing CSV/JSON/NDJSON behavior.
+- 2026-07-07: Code portion implemented in `cdf-formats`: removed the crate's DuckDB/Arrow 58 Parquet reader bridge, added direct `parquet 59.0.0` native Arrow reader usage, updated malformed Parquet expectations, and kept package replay coverage passing. Focused checks passed: `cargo fmt --all -- --check`, `cargo test -p cdf-formats --locked --no-fail-fast`, `cargo clippy -p cdf-formats --all-targets --locked -- -D warnings`, `git diff --check`, and dependency inverse checks for `paste`/`parquet`.
+- 2026-07-07: Closed with evidence `.10x/evidence/2026-07-07-native-parquet-file-source.md` and review `.10x/reviews/2026-07-07-native-parquet-file-source-review.md`. Full workspace check, clippy, test, focused nextest, docs, deny, audit, vet, OSV, Semgrep, gitleaks, dependency graph, and unsafe-scan evidence support closure. CodeQL was skipped per active goal instruction; OSV/cargo-audit report only the ratified `RUSTSEC-2024-0436` `paste` advisory path.
 
 ## Blockers
 

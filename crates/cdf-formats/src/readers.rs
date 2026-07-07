@@ -15,11 +15,7 @@ use cdf_kernel::{
     Batch, BatchId, CdfError, FileManifest, FilePosition, ResourceDescriptor, Result, SchemaSource,
     ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
 };
-use duckdb::Connection;
-use duckdb_arrow::{
-    datatypes::SchemaRef as DuckSchemaRef, ipc::writer::StreamWriter as DuckStreamWriter,
-    record_batch::RecordBatch as DuckRecordBatch,
-};
+use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -168,44 +164,17 @@ fn read_parquet_file_with_scope(
     scope: ScopeKey,
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
-    let (schema, record_batches) = read_duckdb_parquet_batches(path)?;
-    let ipc_bytes = duckdb_arrow_batches_to_ipc(schema, &record_batches)?;
-    read_arrow_ipc_stream_with_scope(Cursor::new(ipc_bytes), options, scope, position)
-}
-
-fn read_duckdb_parquet_batches(path: &Path) -> Result<(DuckSchemaRef, Vec<DuckRecordBatch>)> {
-    let path = path_string(path)?;
-    let conn = Connection::open_in_memory()
-        .map_err(|error| duckdb_data_error("open in-memory DuckDB Parquet reader", error))?;
-    let mut statement = conn
-        .prepare("SELECT * FROM read_parquet(?)")
-        .map_err(|error| duckdb_data_error("prepare DuckDB Parquet reader", error))?;
-    let mut arrow = statement
-        .query_arrow([path.as_str()])
-        .map_err(|error| duckdb_data_error("read DuckDB Parquet file", error))?;
-    let schema = arrow.get_schema();
-    let record_batches = arrow.by_ref().collect();
-    Ok((schema, record_batches))
-}
-
-fn duckdb_arrow_batches_to_ipc(
-    schema: DuckSchemaRef,
-    record_batches: &[DuckRecordBatch],
-) -> Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    {
-        let mut writer = DuckStreamWriter::try_new(&mut bytes, schema.as_ref())
-            .map_err(|error| duckdb_arrow_data_error("create DuckDB Arrow IPC stream", error))?;
-        for record_batch in record_batches {
-            writer
-                .write(record_batch)
-                .map_err(|error| duckdb_arrow_data_error("write DuckDB Arrow IPC stream", error))?;
-        }
-        writer
-            .finish()
-            .map_err(|error| duckdb_arrow_data_error("finish DuckDB Arrow IPC stream", error))?;
-    }
-    Ok(bytes)
+    let file = fs::File::open(path)
+        .map_err(|error| io_data_error(format!("open {}", path.display()), error))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|error| parquet_data_error("read Parquet file metadata", error))?
+        .with_batch_size(options.batch_size);
+    let schema = builder.schema().clone();
+    let mut reader = builder
+        .build()
+        .map_err(|error| parquet_data_error("create Parquet record batch reader", error))?;
+    let record_batches = collect_record_batches(&mut reader)?;
+    build_output(schema, record_batches, options, scope, position)
 }
 
 fn build_output(
@@ -330,11 +299,7 @@ fn io_data_error(context: impl Into<String>, error: std::io::Error) -> CdfError 
     CdfError::data(format!("{}: {error}", context.into()))
 }
 
-fn duckdb_data_error(context: impl Into<String>, error: duckdb::Error) -> CdfError {
-    CdfError::data(format!("{}: {error}", context.into()))
-}
-
-fn duckdb_arrow_data_error(context: impl Into<String>, error: impl std::fmt::Display) -> CdfError {
+fn parquet_data_error(context: impl Into<String>, error: impl std::fmt::Display) -> CdfError {
     CdfError::data(format!("{}: {error}", context.into()))
 }
 
