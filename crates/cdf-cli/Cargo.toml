@@ -13,6 +13,7 @@ path = "src/main.rs"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
+cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-kernel = { path = "../cdf-kernel" }

@@ -68,10 +68,10 @@ No query planner rewrite, no broad predicate parser, no join/SQL transformation 
 - 2026-07-07: Ratified the architectural boundary in `.10x/decisions/datafusion-tier-b-delegation-boundary.md`: CDF will implement VISION D-1 deep DataFusion delegation, but production adapter work is gated on Arrow/DataFusion dependency tuple compatibility and must preserve CDF pushdown semantics.
 - 2026-07-07: Opened follow-up owners:
   - `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
-  - `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
+  - `.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md`
   - `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`
 - 2026-07-07: Closure review recorded in `.10x/reviews/2026-07-07-datafusion-delegation-pushdown-triage-review.md`.
 
 ## Blockers
 
-None for triage closure. Implementation follow-up blockers are owned by `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` and `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`.
+None for triage closure. The implementation follow-ups opened by this triage are now terminal records at `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`, `.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md`, and `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`.

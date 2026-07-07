@@ -40,6 +40,7 @@ Children:
 - 2026-07-07: General run orchestrator child closed with evidence `.10x/evidence/2026-07-07-general-run-orchestrator-closure.md` and review `.10x/reviews/2026-07-07-general-run-orchestrator-closure-review.md`. CLI run/resume/replay/inspect is now the remaining open run-spine implementation child.
 - 2026-07-07: Split CLI spine into child tickets for `run`, `replay package`, `resume`, and `inspect run` so execution can proceed without one monolithic CLI patch.
 - 2026-07-07: Non-file window-close checkpoint semantics child closed with evidence `.10x/evidence/2026-07-07-non-file-window-close-checkpoint-semantics.md` and review `.10x/reviews/2026-07-07-non-file-window-close-checkpoint-semantics.md`. Project-run checkpoint advancement now supports ratified numeric/timestamp/date cursor window-close semantics and keeps unratified page-token/mixed/unsupported variants fail-closed.
+- 2026-07-07: CLI filesystem Parquet `run` and `replay package` slices landed through the general run/replay spine with evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md`. The CLI spine parent remains open for REST/Postgres run wiring, Postgres replay, resume, and inspect-run.
 
 ## Blockers
 

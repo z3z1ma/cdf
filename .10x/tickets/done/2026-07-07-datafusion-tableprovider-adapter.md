@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -48,6 +48,7 @@ No dependency tuple changes, no kernel API DataFusion exposure, no REST-specific
 - 2026-07-07: Opened from triage. The adapter is architecturally ratified, but production implementation must wait for Arrow/DataFusion dependency tuple compatibility.
 - 2026-07-07: User ratified `.10x/decisions/arrow-datafusion-tuple-policy.md` with the clarification that DataFusion is day-zero mandatory. This ticket is open and dependency-gated by the tuple alignment ticket, not waiting on user semantic input.
 - 2026-07-07: Tuple gate closed by `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`; `cdf-engine` now compiles against DataFusion git rev `7ff7278edc1bf7446303bff51e5883a38414bbdf` on Arrow 59.1.0. This ticket is no longer blocked by Arrow/DataFusion type incompatibility.
+- 2026-07-07: Implemented the first generic internal `cdf-engine` `QueryableResource` -> DataFusion `TableProvider` adapter slice in `crates/cdf-engine/src/table_provider.rs`, with `crates/cdf-engine/src/lib.rs` kept to a module declaration and re-export. The adapter translates only simple column/literal binary predicates, delegates classification and scan planning to `QueryableResource::negotiate`, maps exact/inexact/unsupported fidelity to DataFusion pushdown responses, leaves unsupported expressions unsupported/residual, executes negotiated partitions through a real DataFusion `ExecutionPlan`, applies projection on the scan output, and suppresses source-side limit pushdown when an inexact pushed filter is present. Focused tests were added in `crates/cdf-engine/src/tests.rs` for direct `TableProvider` classification, registered-provider scan execution, unsupported expression handling, projection, exact/inexact/unsupported mapping, and inexact-limit suppression. Evidence: `.10x/evidence/2026-07-07-datafusion-tableprovider-adapter.md`. Review: `.10x/reviews/2026-07-07-datafusion-tableprovider-adapter-review.md`.
 
 ## Blockers
 

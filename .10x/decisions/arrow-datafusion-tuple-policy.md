@@ -42,6 +42,6 @@ Rejected. Package hashes, Parquet/native Arrow paths, and golden fixtures make A
 
 `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` implemented the smallest compatible path under this policy: the ratified temporary DataFusion git pin on the Arrow 59.1 tuple.
 
-`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` no longer waits on Arrow/DataFusion tuple compatibility, though it remains governed by the DataFusion boundary decision.
+`.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md` used the compatible tuple to close the first generic `QueryableResource` to DataFusion `TableProvider` adapter slice, while deeper runtime delegation remains governed by the DataFusion boundary decision.
 
 This decision does not broaden `.10x/decisions/native-arrow-datafusion-parquet-policy.md` or its scoped `RUSTSEC-2024-0436` exception.

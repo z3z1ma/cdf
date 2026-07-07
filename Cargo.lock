@@ -661,6 +661,7 @@ dependencies = [
  "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",
+ "cdf-dest-parquet",
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-kernel",

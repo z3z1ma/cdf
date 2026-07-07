@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use arrow_array::{ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
+use arrow_array::{Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_kernel::{
@@ -20,6 +20,9 @@ use cdf_kernel::{
     WriteDisposition, source_name,
 };
 use cdf_package::PackageStatus;
+use datafusion::{
+    catalog::TableProvider, physical_plan::common::collect as collect_stream, prelude::*,
+};
 use futures_executor::block_on;
 use futures_util::stream;
 use tempfile::TempDir;
@@ -373,6 +376,110 @@ fn traced_execution_preserves_manifest_identity_hash() {
     assert_eq!(traced.manifest.signature, untraced.manifest.signature);
 }
 
+#[test]
+fn datafusion_table_provider_pushdown_classification_delegates_to_resource() {
+    let resource = Arc::new(DataFusionMockResource::new());
+    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let filters = [
+        col("id").gt(lit(1_i32)),
+        col("active").eq(lit(true)),
+        col("name").not_eq(lit("three")),
+        col("id").add(lit(1_i32)).gt(lit(2_i32)),
+    ];
+    let filter_refs = filters.iter().collect::<Vec<_>>();
+
+    let pushdown = provider.supports_filters_pushdown(&filter_refs).unwrap();
+
+    assert_eq!(resource.negotiate_count.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        pushdown,
+        vec![
+            datafusion::logical_expr::TableProviderFilterPushDown::Exact,
+            datafusion::logical_expr::TableProviderFilterPushDown::Inexact,
+            datafusion::logical_expr::TableProviderFilterPushDown::Unsupported,
+            datafusion::logical_expr::TableProviderFilterPushDown::Unsupported,
+        ]
+    );
+    let requests = resource.requests.lock().unwrap();
+    assert_eq!(requests[0].filters.len(), 3);
+    assert_eq!(requests[0].filters[0].expression, "id > 1");
+    assert_eq!(requests[0].filters[1].expression, "active = true");
+    assert_eq!(requests[0].filters[2].expression, "name != 'three'");
+}
+
+#[test]
+fn datafusion_registered_table_executes_with_residuals_and_projection() {
+    let resource = Arc::new(DataFusionMockResource::new());
+    let provider = queryable_resource_table_provider(resource.clone(), ScopeKey::Resource);
+    let ctx = SessionContext::new();
+    ctx.register_table("orders", provider).unwrap();
+
+    let batches = block_on(async {
+        let provider = ctx.table_provider("orders").await.unwrap();
+        let projection = vec![1];
+        let filters = vec![col("id").gt(lit(1_i32))];
+        let plan = provider
+            .scan(&ctx.state(), Some(&projection), &filters, None)
+            .await
+            .unwrap();
+        collect_execution_plan_partitions(plan, ctx.task_ctx()).await
+    });
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        batch_strings(&batches, "name"),
+        vec!["two", "three", "two", "three"]
+    );
+    assert_eq!(batches[0].schema().fields().len(), 1);
+    assert_eq!(batches[0].schema().field(0).name(), "name");
+}
+
+#[test]
+fn datafusion_unsupported_expression_stays_residual() {
+    let resource = Arc::new(DataFusionMockResource::new());
+    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let unsupported = col("id").add(lit(1_i32)).gt(lit(2_i32));
+    let filter_refs = vec![&unsupported];
+    let pushdown = provider.supports_filters_pushdown(&filter_refs).unwrap();
+
+    assert_eq!(
+        pushdown,
+        vec![datafusion::logical_expr::TableProviderFilterPushDown::Unsupported]
+    );
+    let requests = resource.requests.lock().unwrap();
+    assert!(requests.iter().all(|request| request.filters.is_empty()));
+}
+
+#[test]
+fn datafusion_limit_pushdown_is_disabled_for_inexact_filters() {
+    let resource = Arc::new(DataFusionMockResource::new());
+    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let ctx = SessionContext::new();
+    let filters = vec![col("active").eq(lit(true))];
+
+    let _plan = block_on(provider.scan(&ctx.state(), None, &filters, Some(1))).unwrap();
+
+    let requests = resource.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].limit, None);
+    assert_eq!(requests[1].limit, None);
+}
+
+#[test]
+fn datafusion_limit_pushdown_remains_enabled_for_exact_filters() {
+    let resource = Arc::new(DataFusionMockResource::new());
+    let provider = QueryableResourceTableProvider::new(resource.clone(), ScopeKey::Resource);
+    let ctx = SessionContext::new();
+    let filters = vec![col("id").gt(lit(1_i32))];
+
+    let _plan = block_on(provider.scan(&ctx.state(), None, &filters, Some(1))).unwrap();
+
+    let requests = resource.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].limit, None);
+    assert_eq!(requests[1].limit, Some(1));
+}
+
 #[derive(Clone)]
 struct MockResource {
     descriptor: ResourceDescriptor,
@@ -381,6 +488,140 @@ struct MockResource {
     tier_b: bool,
     negotiate_count: Arc<AtomicUsize>,
     open_count: Arc<AtomicUsize>,
+}
+
+#[derive(Clone)]
+struct DataFusionMockResource {
+    descriptor: ResourceDescriptor,
+    schema: SchemaRef,
+    batches: Vec<Batch>,
+    negotiate_count: Arc<AtomicUsize>,
+    open_count: Arc<AtomicUsize>,
+    requests: Arc<Mutex<Vec<ScanRequest>>>,
+}
+
+impl DataFusionMockResource {
+    fn new() -> Self {
+        Self {
+            descriptor: descriptor(),
+            schema: sample_schema(),
+            batches: sample_batches(),
+            negotiate_count: Arc::new(AtomicUsize::new(0)),
+            open_count: Arc::new(AtomicUsize::new(0)),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+impl ResourceStream for DataFusionMockResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> SchemaRef {
+        self.schema.clone()
+    }
+
+    fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        unreachable!("DataFusion adapter must use QueryableResource::negotiate")
+    }
+
+    fn open(&self, partition: PartitionPlan) -> cdf_kernel::BoxFuture<'_, Result<BatchStream>> {
+        self.open_count.fetch_add(1, Ordering::SeqCst);
+        let exact_filters = partition
+            .metadata
+            .get("exact_filters")
+            .map(|filters| filters.split('\n').map(str::to_owned).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let batches = self
+            .batches
+            .iter()
+            .filter(|batch| batch.header.partition_id == partition.partition_id)
+            .map(|batch| apply_mock_exact_filters(batch.clone(), &exact_filters))
+            .collect::<Result<Vec<_>>>();
+        Box::pin(
+            async move { Ok(Box::pin(stream::iter(batches?.into_iter().map(Ok))) as BatchStream) },
+        )
+    }
+}
+
+impl QueryableResource for DataFusionMockResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        static CAPABILITIES: std::sync::OnceLock<ResourceCapabilities> = std::sync::OnceLock::new();
+        CAPABILITIES.get_or_init(|| ResourceCapabilities {
+            projection: CapabilitySupport::Supported,
+            filters: FilterCapabilities {
+                default_fidelity: PushdownFidelity::Unsupported,
+                supported_operators: vec![">".to_owned(), "=".to_owned(), "!=".to_owned()],
+            },
+            limits: CapabilitySupport::Supported,
+            ordering: CapabilitySupport::Unsupported,
+            partitioning: PartitioningCapabilities {
+                parallel_partitions: true,
+                supported_scopes: vec![cdf_kernel::ScopeKind::Partition],
+            },
+            incremental: IncrementalShape::Full,
+            replay: cdf_kernel::ReplaySupport::ExactRecordedBatches,
+            idempotent_reads: true,
+            backpressure: BackpressureSupport::Pausable,
+            estimates: EstimateSupport::Rows,
+        })
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
+        self.negotiate_count.fetch_add(1, Ordering::SeqCst);
+        self.requests.lock().unwrap().push(request.clone());
+
+        let mut pushed_predicates = Vec::new();
+        let mut unsupported_predicates = Vec::new();
+        for predicate in &request.filters {
+            match predicate.expression.as_str() {
+                "id > 1" => pushed_predicates.push(cdf_kernel::PushedPredicate {
+                    predicate: predicate.clone(),
+                    fidelity: PushdownFidelity::Exact,
+                }),
+                "active = true" => pushed_predicates.push(cdf_kernel::PushedPredicate {
+                    predicate: predicate.clone(),
+                    fidelity: PushdownFidelity::Inexact,
+                }),
+                _ => unsupported_predicates.push(predicate.clone()),
+            }
+        }
+
+        let exact_filters = pushed_predicates
+            .iter()
+            .filter(|pushed| pushed.fidelity == PushdownFidelity::Exact)
+            .map(|pushed| pushed.predicate.expression.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let partitions = ["part-0", "part-1"]
+            .into_iter()
+            .map(|partition| {
+                let partition_id = PartitionId::new(partition)?;
+                Ok(PartitionPlan {
+                    partition_id: partition_id.clone(),
+                    scope: ScopeKey::Partition { partition_id },
+                    start_position: None,
+                    metadata: BTreeMap::from([("exact_filters".to_owned(), exact_filters.clone())]),
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+
+        Ok(ScanPlan {
+            plan_id: cdf_kernel::PlanId::new(format!(
+                "df-plan-{}-{}",
+                request.resource_id.as_str(),
+                self.negotiate_count.load(Ordering::SeqCst)
+            ))?,
+            request: request.clone(),
+            partitions,
+            pushed_predicates,
+            unsupported_predicates,
+            estimated_rows: Some(6),
+            estimated_bytes: None,
+            delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerKey,
+        })
+    }
 }
 
 impl MockResource {
@@ -632,6 +873,69 @@ fn assert_explain_carries_required_fields(explain_json: &serde_json::Value) {
     ] {
         assert!(explain_json.get(field).is_some(), "missing {field}");
     }
+}
+
+fn batch_strings(batches: &[RecordBatch], column: &str) -> Vec<String> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            let index = batch.schema().index_of(column).unwrap();
+            let array = batch
+                .column(index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            (0..array.len())
+                .map(|row| array.value(row).to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+async fn collect_execution_plan_partitions(
+    plan: Arc<dyn datafusion::physical_plan::ExecutionPlan>,
+    task_ctx: Arc<datafusion::execution::TaskContext>,
+) -> Vec<RecordBatch> {
+    let mut batches = Vec::new();
+    for partition in 0..plan.properties().partitioning.partition_count() {
+        let stream = plan.execute(partition, Arc::clone(&task_ctx)).unwrap();
+        batches.extend(collect_stream(stream).await.unwrap());
+    }
+    batches
+}
+
+fn apply_mock_exact_filters(batch: Batch, filters: &[String]) -> Result<Batch> {
+    if filters.is_empty() {
+        return Ok(batch);
+    }
+    let Some(record_batch) = batch.record_batch() else {
+        return Ok(batch);
+    };
+    let mut keep = vec![true; record_batch.num_rows()];
+    for filter in filters {
+        if filter == "id > 1" {
+            let id_index = record_batch.schema().index_of("id").unwrap();
+            let ids = record_batch
+                .column(id_index)
+                .as_any()
+                .downcast_ref::<Int32Array>()
+                .unwrap();
+            for (row, keep_row) in keep.iter_mut().enumerate().take(ids.len()) {
+                *keep_row &= ids.value(row) > 1;
+            }
+        }
+    }
+    let filtered =
+        arrow_select::filter::filter_record_batch(record_batch, &BooleanArray::from(keep))
+            .map_err(cdf_kernel::CdfError::from)?;
+    Ok(Batch {
+        header: BatchHeader {
+            row_count: filtered.num_rows() as u64,
+            byte_count: filtered.get_array_memory_size() as u64,
+            ..batch.header
+        },
+        payload: cdf_kernel::BatchPayload::RecordBatch(filtered),
+    })
 }
 
 fn plan_input(

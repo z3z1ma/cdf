@@ -12,18 +12,20 @@ use cdf_declarative::{
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStore, OrderBy, PartitionPlan, PipelineId, PredicateId,
-    ResourceId, ResourceStream, ScanPredicate, ScanRequest, ScopeKey, SortDirection, TargetName,
+    ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest, ScopeKey, SortDirection,
+    TargetName,
 };
 use cdf_package::{MANIFEST_FILE, PackageReader};
 use cdf_project::{
-    FileResourceSourceResolver, PackageArtifactDuckDbReplayRequest, ProjectReceiptSource,
-    ProjectRunDestination, ProjectRunReport, ProjectRunRequest, ProjectRunResource,
-    ResourceSourceKind, generate_lockfile, replay_duckdb_package_from_artifacts, run_project,
+    FileResourceSourceResolver, PackageArtifactDuckDbReplayRequest,
+    PackageArtifactParquetReplayRequest, ProjectReceiptSource, ProjectRunDestination,
+    ProjectRunReport, ProjectRunRequest, ProjectRunResource, ResourceSourceKind, generate_lockfile,
+    replay_duckdb_package_from_artifacts, replay_parquet_package_from_artifacts, run_project,
     validate_project,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, RunLedgerSnapshot,
-    SqliteRunLedger,
+    SqliteCheckpointStore, SqliteRunLedger,
 };
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -268,10 +270,13 @@ fn build_project_run_destination(
     }
 
     if context.environment.destination.starts_with("parquet://") {
-        return Err(CliError::not_supported(
-            "run",
-            "filesystem Parquet destination execution is available in cdf-project, but the CLI destination URI spelling is not ratified in active records",
-            "ratified filesystem Parquet destination URI spelling",
+        let root = parquet_filesystem_root(context, &context.environment.destination, "run")?;
+        return Ok((
+            ProjectRunDestination::ParquetFilesystem {
+                root: root.clone(),
+                target: target.clone(),
+            },
+            RunDestinationReport::parquet(root.display().to_string(), target.to_string()),
         ));
     }
 
@@ -324,13 +329,6 @@ fn replay_duckdb_destination_path(
             "ratified Postgres replay target and merge dedup policy CLI",
         ));
     }
-    if uri.starts_with("parquet://") {
-        return Err(CliError::not_supported(
-            "replay package",
-            "filesystem Parquet package replay is available in cdf-project, but the CLI destination URI spelling is not ratified in active records",
-            "ratified filesystem Parquet destination URI spelling",
-        ));
-    }
     let Some(raw_path) = uri.strip_prefix("duckdb://") else {
         return Err(CliError::not_supported(
             "replay package",
@@ -352,6 +350,143 @@ fn replay_duckdb_destination_path(
         path
     } else {
         context.root.join(path)
+    })
+}
+
+enum ReplayDestination {
+    DuckDb { path: PathBuf },
+    Parquet { root: PathBuf },
+}
+
+impl ReplayDestination {
+    fn replay(
+        &self,
+        package_dir: &Path,
+        store: &SqliteCheckpointStore,
+        run_ledger: &SqliteRunLedger,
+        run_id: &RunId,
+    ) -> Result<PreparedReplayReport, CliError> {
+        let result = match self {
+            Self::DuckDb { path } => {
+                ensure_parent_directory(path)?;
+                let destination = cdf_dest_duckdb::DuckDbDestination::new(path)?;
+                replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
+                    package_dir: package_dir.to_path_buf(),
+                    destination: &destination,
+                    checkpoint_store: store,
+                    after_receipt_verified: None,
+                })
+                .map(PreparedReplayReport::DuckDb)
+            }
+            Self::Parquet { root } => {
+                let destination = cdf_dest_parquet::ParquetDestination::new_filesystem(root)?;
+                replay_parquet_package_from_artifacts(PackageArtifactParquetReplayRequest {
+                    package_dir: package_dir.to_path_buf(),
+                    destination: &destination,
+                    checkpoint_store: store,
+                    after_receipt_verified: None,
+                })
+                .map(PreparedReplayReport::Parquet)
+            }
+        };
+        match result {
+            Ok(report) => Ok(report),
+            Err(error) => {
+                let _ =
+                    run_ledger.append_event(run_id, RunEventAppend::new(RunEventKind::RunFailed));
+                Err(error.into())
+            }
+        }
+    }
+
+    fn report(&self, target: String) -> RunDestinationReport {
+        match self {
+            Self::DuckDb { path } => {
+                RunDestinationReport::duckdb(path.display().to_string(), target)
+            }
+            Self::Parquet { root } => {
+                RunDestinationReport::parquet(root.display().to_string(), target)
+            }
+        }
+    }
+
+    fn kind(&self) -> &'static str {
+        match self {
+            Self::DuckDb { .. } => "duckdb",
+            Self::Parquet { .. } => "parquet",
+        }
+    }
+}
+
+enum PreparedReplayReport {
+    DuckDb(cdf_project::PreparedDuckDbReplayReport),
+    Parquet(cdf_project::PreparedParquetReplayReport),
+}
+
+impl PreparedReplayReport {
+    fn report(&self) -> PreparedReplayReportRef<'_> {
+        match self {
+            Self::DuckDb(report) => PreparedReplayReportRef {
+                checkpoint: &report.checkpoint,
+                receipt: &report.receipt,
+                receipt_source: ProjectReceiptSource::from(report.receipt_source.clone()),
+                package_status: &report.package_status,
+            },
+            Self::Parquet(report) => PreparedReplayReportRef {
+                checkpoint: &report.checkpoint,
+                receipt: &report.receipt,
+                receipt_source: report.receipt_source.clone(),
+                package_status: &report.package_status,
+            },
+        }
+    }
+}
+
+struct PreparedReplayReportRef<'a> {
+    checkpoint: &'a cdf_kernel::Checkpoint,
+    receipt: &'a cdf_kernel::Receipt,
+    receipt_source: ProjectReceiptSource,
+    package_status: &'a cdf_package::PackageStatus,
+}
+
+fn build_replay_destination(
+    context: &ProjectContext,
+    uri: &str,
+) -> Result<ReplayDestination, CliError> {
+    if uri.starts_with("parquet://") {
+        return Ok(ReplayDestination::Parquet {
+            root: parquet_filesystem_root(context, uri, "replay package")?,
+        });
+    }
+    Ok(ReplayDestination::DuckDb {
+        path: replay_duckdb_destination_path(context, uri)?,
+    })
+}
+
+fn parquet_filesystem_root(
+    context: &ProjectContext,
+    uri: &str,
+    command: &'static str,
+) -> Result<PathBuf, CliError> {
+    let Some(raw_root) = uri.strip_prefix("parquet://") else {
+        return Err(CliError::not_supported(
+            command,
+            format!("destination URI `{uri}` is unsupported; expected parquet://root"),
+            "filesystem Parquet destination root",
+        ));
+    };
+    if raw_root.trim().is_empty() || raw_root.contains("://") {
+        return Err(CliError::not_supported(
+            command,
+            format!("destination URI `{uri}` is malformed or non-local; expected parquet://root"),
+            "filesystem Parquet destination root",
+        ));
+    }
+    let root = PathBuf::from(raw_root);
+    Ok(if root.is_absolute() {
+        root
+    } else {
+        context.root.join(root)
     })
 }
 
@@ -635,34 +770,22 @@ fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliError> {
 
 fn replay_package(cli: &Cli, args: ReplayPackageArgs) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    let destination_path = replay_duckdb_destination_path(&context, &args.destination_uri)?;
+    let replay_destination = build_replay_destination(&context, &args.destination_uri)?;
     let reader = PackageReader::open(&args.package_dir)?;
     let package_id = reader.manifest().identity.package_id.clone();
     let replay_inputs = reader.replay_inputs()?;
     let package_hash = replay_inputs.state_delta.package_hash.clone();
-    ensure_parent_directory(&destination_path)?;
-    let destination = cdf_dest_duckdb::DuckDbDestination::new(&destination_path)?;
     let state_store_path = context.state_store_path()?;
     ensure_parent_directory(&state_store_path)?;
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
     let run = run_ledger.create_run(None)?;
     let store = context.state_store()?;
 
-    let report = match replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
-        package_dir: args.package_dir.clone(),
-        destination: &destination,
-        checkpoint_store: &store,
-        after_receipt_verified: None,
-    }) {
-        Ok(report) => report,
-        Err(error) => {
-            let _ =
-                run_ledger.append_event(&run.run_id, RunEventAppend::new(RunEventKind::RunFailed));
-            return Err(error.into());
-        }
-    };
+    let replay_report =
+        replay_destination.replay(&args.package_dir, &store, &run_ledger, &run.run_id)?;
+    let report = replay_report.report();
 
-    let receipt_source = ProjectReceiptSource::from(report.receipt_source.clone());
+    let receipt_source = report.receipt_source.clone();
     let mut event = RunEventAppend::new(RunEventKind::ReplayRecorded);
     event.resource_id = Some(replay_inputs.state_delta.resource_id.clone());
     event.scope = Some(replay_inputs.state_delta.scope.clone());
@@ -672,22 +795,24 @@ fn replay_package(cli: &Cli, args: ReplayPackageArgs) -> Result<CommandOutput, C
     event.checkpoint_id = Some(report.checkpoint.delta.checkpoint_id.clone());
     event.receipt_id = Some(report.receipt.receipt_id.clone());
     event.destination_id = Some(report.receipt.destination.clone());
-    event.details = replay_event_details(&receipt_source, "duckdb", report.package_status.as_str());
+    event.details = replay_event_details(
+        &receipt_source,
+        replay_destination.kind(),
+        report.package_status.as_str(),
+    );
     run_ledger.append_event(&run.run_id, event)?;
     let ledger_snapshot = run_ledger
         .snapshot(&run.run_id)?
         .ok_or_else(|| CdfError::internal("created replay run is absent from run ledger"))?;
 
-    let destination_report = RunDestinationReport::duckdb(
-        destination_path.display().to_string(),
-        report.receipt.target.to_string(),
-    )
-    .with_receipt_destination(report.receipt.destination.to_string());
+    let destination_report = replay_destination
+        .report(report.receipt.target.to_string())
+        .with_receipt_destination(report.receipt.destination.to_string());
     let cli_report = ReplayPackageCliReport::from_report(
         run.run_id.to_string(),
         package_id,
         args.package_dir,
-        &report,
+        report,
         receipt_source,
         destination_report,
         &ledger_snapshot,
@@ -1567,7 +1692,7 @@ impl ReplayPackageCliReport {
         run_id: String,
         package_id: String,
         package_dir: PathBuf,
-        report: &cdf_project::PreparedDuckDbReplayReport,
+        report: PreparedReplayReportRef<'_>,
         receipt_source: ProjectReceiptSource,
         destination: RunDestinationReport,
         ledger_snapshot: &RunLedgerSnapshot,
@@ -1591,7 +1716,7 @@ impl ReplayPackageCliReport {
                 committed_at_ms: report.checkpoint.committed_at_ms,
             },
             receipt_id: report.receipt.receipt_id.to_string(),
-            receipt: RunReceiptReport::from_receipt(&report.receipt),
+            receipt: RunReceiptReport::from_receipt(report.receipt),
             receipt_source: RunReceiptSourceReport::from_project(&receipt_source, destination_kind),
             ledger_events: RunLedgerSummary::from_snapshot(ledger_snapshot),
             writes: WriteEffects {
@@ -1619,6 +1744,8 @@ struct RunDestinationReport {
     target: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     database_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root: Option<String>,
 }
 
 impl RunDestinationReport {
@@ -1628,6 +1755,17 @@ impl RunDestinationReport {
             destination_id: None,
             target,
             database_path: Some(database_path),
+            root: None,
+        }
+    }
+
+    fn parquet(root: String, target: String) -> Self {
+        Self {
+            kind: "parquet",
+            destination_id: None,
+            target,
+            database_path: None,
+            root: Some(root),
         }
     }
 

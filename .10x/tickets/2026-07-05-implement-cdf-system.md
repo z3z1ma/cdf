@@ -67,7 +67,7 @@ Fast-follow and full-system completion:
 - `.10x/tickets/2026-07-07-run-spine-implementation-program.md`
 - `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md`
 - `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`
-- `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md`
+- `.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md`
 - `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md`
 - `.10x/tickets/2026-07-05-wasm-components-registry-signing.md`
 - `.10x/tickets/2026-07-05-cdc-and-streaming-supervisor.md`
@@ -154,7 +154,9 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-07: Updated `.10x/knowledge/cdf-product-objective.md` with the falsifiable CDF 1.0 finish line, decision queue, and P0-P7 concurrent program map from the active goal objective.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-run-ledger-commit-session-spine-ratification.md`; run identity, append-only run ledger ownership, run-to-artifact mapping, resume/replay behavior, inspect-run ownership, and destination commit-session semantics are now ratified by `.10x/decisions/run-ledger-commit-session-spine.md` and `.10x/specs/run-orchestration-ledger.md`. Opened `.10x/tickets/2026-07-07-run-spine-implementation-program.md` with parallelizable children for the kernel API, per-destination session refactors, run ledger store, general orchestrator, and CLI wiring.
 - 2026-07-07: Closed DataFusion delegation triage at `.10x/tickets/done/2026-07-07-datafusion-delegation-pushdown-triage.md`; `.10x/decisions/datafusion-tier-b-delegation-boundary.md` keeps VISION D-1 deep DataFusion delegation as the target while making the current CDF-native loop a temporary fallback. Opened tuple, adapter, and execution-metadata honesty owners so the system stops silently drifting between DataFusion-shaped metadata and actual DataFusion execution.
-- 2026-07-07: Closed `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`; `cdf-engine` now uses the ratified temporary DataFusion git pin on Arrow 59.1.0, first-party Arrow/Parquet crates are on 59.1.0, Python remains on PyO3 0.29 / pyo3-arrow 0.19, golden and supply-chain gates passed, and `.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` is no longer dependency-gated by Arrow/DataFusion type incompatibility. The unrelated DuckDB Arrow 58 residual is tracked by `.10x/tickets/2026-07-07-duckdb-arrow58-transitive-residual.md`.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md`; `cdf-engine` now uses the ratified temporary DataFusion git pin on Arrow 59.1.0, first-party Arrow/Parquet crates are on 59.1.0, Python remains on PyO3 0.29 / pyo3-arrow 0.19, golden and supply-chain gates passed, and `.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md` is no longer dependency-gated by Arrow/DataFusion type incompatibility. The unrelated DuckDB Arrow 58 residual is tracked by `.10x/tickets/2026-07-07-duckdb-arrow58-transitive-residual.md`.
+- 2026-07-07: Closed `.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md`; `cdf-engine` now has the first generic `QueryableResource` to DataFusion `TableProvider` adapter slice with simple predicate translation, exact/inexact/unsupported pushdown classification, residual safety, projection, and inexact-limit suppression tests. The broader package-producing runtime delegation remains governed by `.10x/decisions/datafusion-tier-b-delegation-boundary.md`.
+- 2026-07-07: Landed the filesystem Parquet CLI `run` and `replay package` slices under the CLI spine children, with shared evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md` and review `.10x/reviews/2026-07-07-cli-parquet-run-replay-review.md`. CLI REST/Postgres run, Postgres replay, resume, and inspect-run remain open.
 
 ## Blockers
 

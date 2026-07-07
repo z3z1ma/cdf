@@ -65,7 +65,7 @@ The current engine MVP remains valid evidence for pushdown vocabulary, no-I/O ne
 
 `.10x/tickets/done/2026-07-07-arrow-datafusion-dependency-tuple-alignment.md` closed the first D-28 dependency-tuple gate with a time-boxed DataFusion git pin on Arrow 59.1.
 
-`.10x/tickets/2026-07-07-datafusion-tableprovider-adapter.md` owns the adapter implementation and is no longer blocked by Arrow/DataFusion type compatibility.
+`.10x/tickets/done/2026-07-07-datafusion-tableprovider-adapter.md` closed the first generic `QueryableResource` to DataFusion `TableProvider` adapter slice. Replacing package-producing execution paths with DataFusion physical execution remains future work under this decision.
 
 `.10x/tickets/done/2026-07-07-datafusion-execution-honesty.md` owns the completed near-term source/product drift correction where explain/operator metadata named DataFusion nodes that were not actually executed.
 

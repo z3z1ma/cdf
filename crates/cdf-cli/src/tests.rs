@@ -926,22 +926,74 @@ fn run_sql_resource_resolves_secret_without_leaking_before_cursor_blocker() {
 }
 
 #[test]
-fn run_parquet_destination_uri_fails_closed_until_spelling_is_ratified() {
+fn run_parquet_destination_writes_filesystem_root() {
     let project = TestProject::new();
     write_project_destination(&project, "parquet://.cdf/parquet");
 
     let result = run_valid_run_args(&project, "pkg-run-parquet", "checkpoint-run-parquet");
 
-    assert_eq!(result.exit_code, 78);
-    assert_no_run_writes(&project, "pkg-run-parquet");
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], true);
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["destination"]["kind"], "parquet");
+    assert_eq!(
+        report["destination"]["destination_id"],
+        "parquet_object_store"
+    );
     assert!(
-        json["error"]["message"]
+        report["destination"]["root"]
             .as_str()
             .unwrap()
-            .contains("URI spelling is not ratified")
+            .ends_with(".cdf/parquet")
     );
+    assert_eq!(report["target"], "events");
+    assert_eq!(report["receipt"]["destination_id"], "parquet_object_store");
+    assert_eq!(report["receipt"]["target"], "events");
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
+    assert_eq!(report["receipt_source"]["kind"], "destination_commit");
+    assert_eq!(report["receipt_source"]["duplicate"], false);
+    assert_eq!(report["receipt_source"]["no_op"], false);
+    assert_eq!(report["package_status"], "checkpointed");
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
+    assert!(project.root.join(".cdf/parquet").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed Parquet run head");
+    assert_eq!(head.delta.checkpoint_id.as_str(), "checkpoint-run-parquet");
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.as_str(),
+        report["receipt_id"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn run_parquet_malformed_uri_fails_before_writes() {
+    for uri in ["parquet://", "parquet://s3://bucket"] {
+        let project = TestProject::new();
+        write_project_destination(&project, uri);
+
+        let result = run_valid_run_args(&project, "pkg-run-parquet-bad", "checkpoint-run-bad");
+
+        assert_eq!(result.exit_code, 78, "uri {uri}: {}", result.stderr);
+        assert_no_run_writes(&project, "pkg-run-parquet-bad");
+        let json = stderr_or_stdout_json(&result.stderr);
+        assert_eq!(json["error"]["not_supported"], true);
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("malformed or non-local")
+        );
+    }
 }
 
 #[test]
@@ -1251,32 +1303,98 @@ fn replay_package_postgres_destination_fails_closed_before_mutation() {
 }
 
 #[test]
-fn replay_package_parquet_destination_fails_closed_until_spelling_is_ratified() {
+fn replay_package_parquet_replays_from_artifacts_without_source_contact() {
     let project = TestProject::new();
     let package_dir =
         create_replay_package_fixture(&project, "pkg-replay-parquet", "checkpoint-replay-parquet");
-    let receipts = package_receipt_count(&package_dir);
-    let status = package_status(&package_dir);
+    let manifest = PackageReader::open(&package_dir)
+        .unwrap()
+        .manifest()
+        .clone();
+    let receipts_before = package_receipt_count(&package_dir);
     let parquet_root = project.root.join(".cdf/replay-parquet");
 
     let result = replay_package_command(&project, &package_dir, "parquet://.cdf/replay-parquet");
 
-    assert_eq!(result.exit_code, 78);
-    assert_no_replay_mutation(
-        &project,
-        &package_dir,
-        receipts,
-        status,
-        Some(&parquet_root),
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(json["command"], "replay package");
+    assert_eq!(report["command"], "replay package");
+    assert_eq!(report["package_id"], "pkg-replay-parquet");
+    assert_eq!(report["package_hash"], manifest.package_hash);
+    assert_eq!(report["destination"]["kind"], "parquet");
+    assert_eq!(
+        report["destination"]["destination_id"],
+        "parquet_object_store"
     );
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], true);
     assert!(
-        json["error"]["message"]
+        report["destination"]["root"]
             .as_str()
             .unwrap()
-            .contains("URI spelling is not ratified")
+            .ends_with(".cdf/replay-parquet")
     );
+    assert_eq!(report["target"], "events");
+    assert_eq!(report["receipt"]["destination_id"], "parquet_object_store");
+    assert_eq!(report["receipt"]["target"], "events");
+    assert_eq!(report["receipt"]["package_hash"], manifest.package_hash);
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
+    assert_eq!(report["receipt_source"]["kind"], "destination_commit");
+    assert_eq!(report["receipt_source"]["duplicate"], false);
+    assert_eq!(report["receipt_source"]["no_op"], false);
+    assert_eq!(report["checkpoint_id"], "checkpoint-replay-parquet");
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["package_status"], "checkpointed");
+    assert_eq!(report["ledger_events"]["event_count"], 1);
+    assert_eq!(report["ledger_events"]["terminal_kind"], "replay_recorded");
+    assert_eq!(report["ledger_events"]["kinds"]["replay_recorded"], 1);
+    assert!(parquet_root.exists());
+    assert_eq!(package_receipt_count(&package_dir), receipts_before + 1);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("replay checkpoint head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-replay-parquet"
+    );
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.as_str(),
+        report["receipt_id"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn replay_package_parquet_malformed_uri_fails_before_mutation() {
+    for uri in ["parquet://", "parquet://s3://bucket"] {
+        let project = TestProject::new();
+        let package_dir = create_replay_package_fixture(
+            &project,
+            "pkg-replay-parquet-bad",
+            "checkpoint-replay-parquet-bad",
+        );
+        let receipts = package_receipt_count(&package_dir);
+        let status = package_status(&package_dir);
+
+        let result = replay_package_command(&project, &package_dir, uri);
+
+        assert_eq!(result.exit_code, 78, "uri {uri}: {}", result.stderr);
+        assert_no_replay_mutation(&project, &package_dir, receipts, status, None);
+        let json = stderr_or_stdout_json(&result.stderr);
+        assert_eq!(json["error"]["not_supported"], true);
+        assert!(
+            json["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("malformed or non-local")
+        );
+    }
 }
 
 #[test]
