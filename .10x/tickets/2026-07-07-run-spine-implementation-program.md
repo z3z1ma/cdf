@@ -43,6 +43,7 @@ Children:
 - 2026-07-07: CLI filesystem Parquet `run` and `replay package` slices landed through the general run/replay spine with evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md`. The CLI spine parent remained open for REST/Postgres run wiring, Postgres replay, resume, and inspect-run.
 - 2026-07-07: CLI `replay package` child closed at `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md` after Postgres artifact replay wiring landed. The CLI spine parent remains open for REST/Postgres `run`, `resume`, and `inspect run`.
 - 2026-07-07: CLI `inspect run` child closed at `.10x/tickets/done/2026-07-07-cli-inspect-run-spine.md` with read-only run-ledger reporting evidence. The CLI spine parent now remains open for `resume`.
+- 2026-07-07: CLI `resume` child closed at `.10x/tickets/done/2026-07-07-cli-resume-spine.md`, including DuckDB, filesystem Parquet, and Postgres finalized-package/no-receipt replay without source contact. CLI spine parent remains open after closure audit for `.10x/tickets/2026-07-07-cli-sql-run-success.md`.
 
 ## Blockers
 

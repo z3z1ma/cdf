@@ -44,7 +44,7 @@ None from user or unresolved product semantics.
 
 Full CLI acceptance is dependency-gated by open implementation owners:
 
-- `resume` remains owned by `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`; `run`, `replay package`, and `inspect run` are closed under that parent.
+- `run`, `resume`, `replay package`, and `inspect run` slices are closed under `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`, but that parent remains open for direct CLI table-backed SQL `run` success-path evidence in `.10x/tickets/2026-07-07-cli-sql-run-success.md`.
 - `init`, DDL planning for `plan`/`explain`, broader `preview`, contract registry/fixture commands, state migration/recovery commands, backfill, package GC, and runtime-ledger freshness integration are owned by `.10x/tickets/2026-07-07-cli-remaining-command-planners.md`.
 
 Verification note: `cargo fmt --all -- --check`, `cargo test -p cdf-cli --locked --no-fail-fast`, `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings`, `cargo check -p cdf-cli --all-targets --locked`, and `cargo check --workspace --all-targets --locked` pass after parent integration. Semgrep's initial CLI argv/path findings were resolved by using a source-local test directory and documenting the intentionally non-security CLI argv dispatch boundary with a narrow `nosemgrep` comment. Full acceptance is now dependency-gated by the open owners listed above.

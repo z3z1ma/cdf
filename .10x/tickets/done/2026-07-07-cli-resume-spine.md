@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
@@ -46,3 +46,7 @@ Depends on CLI run and replay package wiring so the command can reuse destinatio
 ## Progress and notes
 
 - 2026-07-07: Split from the broad CLI spine ticket. This is intentionally sequenced after run/replay wiring.
+- 2026-07-07: Activated after CLI run, replay package, and inspect-run children closed. Worker lane owns `resume_command.rs` assembly and focused tests; keep `commands.rs` dispatch-only and reuse existing `cdf-project` recovery/replay primitives instead of creating a specialized recovery path.
+- 2026-07-07: Implemented run-id-scoped `cdf resume` over run ledger, package artifacts, receipts, and checkpoint rows. Resume now covers terminal no-op, no finalized package fail-closed guidance, finalized package/no durable receipt replay for DuckDB, filesystem Parquet, and Postgres without source contact, durable-receipt/uncommitted-checkpoint recovery, and committed-checkpoint/stale-package-status repair. Status-only repair is guarded by exact current committed head, exact state delta, and exact durable receipt before mutating package status.
+- 2026-07-07: Split resume implementation out of a monolithic file into `resume_command/{attempt,destination,events,model,report}.rs`; `commands.rs` remains dispatch-only and unchanged by this child.
+- 2026-07-07: Closure evidence recorded in `.10x/evidence/2026-07-07-cli-resume-spine.md`; closure review recorded in `.10x/reviews/2026-07-07-cli-resume-spine-review.md`.

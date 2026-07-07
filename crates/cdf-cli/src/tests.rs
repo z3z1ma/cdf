@@ -18,13 +18,14 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CheckpointId, CheckpointStore, CommitCounts, CursorPosition,
-    CursorValue, DestinationCommitRequest, DestinationId, IdempotencyToken, PackageHash,
-    PartitionId, PipelineId, Receipt, ReceiptId, ResourceId, RunId, SchemaHash, ScopeKey,
-    SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
-    WriteDisposition,
+    CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus, CheckpointStore,
+    CommitCounts, CursorPosition, CursorValue, DestinationCommitRequest, DestinationId,
+    IdempotencyToken, PackageHash, PartitionId, PipelineId, Receipt, ReceiptId, ResourceId, RunId,
+    SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TargetName, VerifyClause, WriteDisposition,
 };
 use cdf_package::{PackageBuilder, PackageReader, PackageStatus};
+use cdf_project::{PackageArtifactDuckDbReplayRequest, replay_duckdb_package_from_artifacts};
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
     SqliteCheckpointStore, SqliteRunLedger,
@@ -975,6 +976,358 @@ fn inspect_run_reports_duplicate_replay_status() {
     assert_eq!(
         json["result"]["events"][0]["details"]["attributes"]["receipt_source"]["value"],
         "duck_db_commit"
+    );
+}
+
+#[test]
+fn resume_requires_run_id_and_accepts_positional_terminal_noop() {
+    let missing = run(["cdf", "--json", "resume"]);
+
+    assert_eq!(missing.exit_code, 2);
+    let missing_json = stderr_or_stdout_json(&missing.stderr);
+    assert!(
+        missing_json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("resume requires --run")
+    );
+
+    let project = TestProject::new();
+    let run_result = run_valid_run_args(&project, "pkg-resume-noop", "checkpoint-resume-noop");
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    let run_id = run_json["result"]["run_id"].as_str().unwrap();
+
+    let result = resume_command(&project, run_id, false);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "resume");
+    assert_eq!(json["result"]["state"], "terminal_success");
+    assert_eq!(json["result"]["action"], "no_op");
+    assert_eq!(json["result"]["source_contact"], false);
+    assert_eq!(json["result"]["mutation_required"], false);
+    assert_eq!(json["result"]["mutated"], false);
+}
+
+#[test]
+fn resume_no_finalized_package_fails_closed_with_guidance() {
+    let project = TestProject::new();
+    let run_id = RunId::new("run-resume-no-package").unwrap();
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    ledger
+        .append_event(&run_id, RunEventAppend::new(RunEventKind::RunStarted))
+        .unwrap();
+    ledger
+        .append_event(&run_id, RunEventAppend::new(RunEventKind::RunFailed))
+        .unwrap();
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["state"], "no_finalized_package");
+    assert_eq!(
+        json["result"]["action"],
+        "rerun_extraction_from_last_committed_checkpoint"
+    );
+    assert_eq!(json["result"]["recovery"]["result"], "failed_closed");
+    assert!(
+        json["result"]["recovery"]["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("no finalized package")
+    );
+}
+
+#[test]
+fn resume_finalized_package_without_receipt_replays_without_source_contact() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-resume-replay", "checkpoint-resume-replay");
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    reader.update_status(PackageStatus::Packaged).unwrap();
+    remove_package_receipts(&package_dir);
+    let run_id = create_resume_run_with_package(
+        &project,
+        "run-resume-replay",
+        &package_dir,
+        &[RunEventKind::PackageFinalized, RunEventKind::RunFailed],
+    );
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["state"], "package_finalized_without_receipt");
+    assert_eq!(json["result"]["action"], "replay_package");
+    assert_eq!(json["result"]["source_contact"], false);
+    assert_eq!(json["result"]["mutation_required"], true);
+    assert_eq!(json["result"]["mutated"], true);
+    assert_eq!(json["result"]["package"]["status"], "checkpointed");
+    assert_eq!(json["result"]["checkpoint"]["status"], "committed");
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(package_receipt_count(&package_dir), 1);
+}
+
+#[test]
+fn resume_finalized_postgres_package_without_receipt_replays_without_source_contact() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        format!("{}\n", postgres.url),
+    )
+    .unwrap();
+    let target = format!("{}.events_cli_resume", postgres.schema);
+    let package_dir = create_replay_package_fixture_with_target(
+        &project,
+        "pkg-resume-postgres-replay",
+        "checkpoint-resume-postgres-replay",
+        &target,
+    );
+    write_project_destination_with_postgres_policy(
+        &project,
+        "postgres://secret://file/destination-dsn",
+        "fail",
+    );
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    reader.update_status(PackageStatus::Packaged).unwrap();
+    remove_package_receipts(&package_dir);
+    let run_id = create_resume_run_with_package(
+        &project,
+        "run-resume-postgres-replay",
+        &package_dir,
+        &[RunEventKind::PackageFinalized, RunEventKind::RunFailed],
+    );
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &postgres.url);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["state"], "package_finalized_without_receipt");
+    assert_eq!(report["action"], "replay_package");
+    assert_eq!(report["source_contact"], false);
+    assert_eq!(report["mutated"], true);
+    assert_eq!(report["package"]["status"], "checkpointed");
+    assert_eq!(report["package"]["receipt_count"], 1);
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["receipt"]["destination_id"], "postgres");
+    assert_eq!(report["receipt"]["target"], target);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(package_receipt_count(&package_dir), 1);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("resume Postgres checkpoint head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-resume-postgres-replay"
+    );
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.as_str(),
+        report["receipt"]["receipt_id"].as_str().unwrap()
+    );
+
+    let mut client = postgres.client();
+    let rows: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {}",
+                postgres.table("events_cli_resume")
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 2);
+}
+
+#[test]
+fn resume_durable_receipt_commits_uncommitted_checkpoint_without_source_contact() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-resume-receipt", "checkpoint-resume-receipt");
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    reader.update_status(PackageStatus::Packaged).unwrap();
+    remove_package_receipts(&package_dir);
+    let run_id =
+        seed_resume_receipt_before_checkpoint(&project, &package_dir, "run-resume-receipt");
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        json["result"]["state"],
+        "receipt_recorded_without_checkpoint_commit"
+    );
+    assert_eq!(
+        json["result"]["action"],
+        "verify_receipt_then_commit_checkpoint"
+    );
+    assert_eq!(json["result"]["source_contact"], false);
+    assert_eq!(json["result"]["mutated"], true);
+    assert_eq!(json["result"]["checkpoint"]["status"], "committed");
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+}
+
+#[test]
+fn resume_committed_checkpoint_updates_stale_package_status_only() {
+    let project = TestProject::new();
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-resume-stale-status",
+        "checkpoint-resume-stale-status",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    let package_dir = project.root.join(".cdf/packages/pkg-resume-stale-status");
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    reader.update_status(PackageStatus::Loading).unwrap();
+    let run_id = create_resume_run_with_package(
+        &project,
+        "run-resume-stale-status",
+        &package_dir,
+        &[
+            RunEventKind::PackageFinalized,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::CheckpointCommitted,
+            RunEventKind::RunFailed,
+        ],
+    );
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        json["result"]["state"],
+        "checkpoint_committed_with_stale_package_status"
+    );
+    assert_eq!(json["result"]["action"], "update_package_status");
+    assert_eq!(json["result"]["mutated"], true);
+    assert_eq!(json["result"]["package"]["status"], "checkpointed");
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+}
+
+#[test]
+fn resume_stale_package_status_fails_closed_when_current_head_is_different() {
+    let project = TestProject::new();
+    let first = run_valid_run_args(
+        &project,
+        "pkg-resume-wrong-head-old",
+        "checkpoint-resume-wrong-head-old",
+    );
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    let second = run_valid_run_args(
+        &project,
+        "pkg-resume-wrong-head-current",
+        "checkpoint-resume-wrong-head-current",
+    );
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    let package_dir = project.root.join(".cdf/packages/pkg-resume-wrong-head-old");
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    reader.update_status(PackageStatus::Loading).unwrap();
+    let run_id = create_resume_run_with_package(
+        &project,
+        "run-resume-wrong-head",
+        &package_dir,
+        &[
+            RunEventKind::PackageFinalized,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::CheckpointCommitted,
+            RunEventKind::RunFailed,
+        ],
+    );
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        json["result"]["state"],
+        "checkpoint_committed_head_not_exact"
+    );
+    assert_eq!(json["result"]["action"], "inspect_missing_artifacts");
+    assert_eq!(json["result"]["mutated"], false);
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+}
+
+#[test]
+fn resume_stale_package_status_fails_closed_when_selected_receipt_differs_from_head() {
+    let project = TestProject::new();
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-resume-wrong-receipt",
+        "checkpoint-resume-wrong-receipt",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
+    let package_dir = project.root.join(".cdf/packages/pkg-resume-wrong-receipt");
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    let mut wrong_receipt = reader.receipts().unwrap()[0].clone();
+    wrong_receipt.receipt_id = ReceiptId::new("receipt-resume-wrong").unwrap();
+    reader.append_receipt(wrong_receipt).unwrap();
+    reader.update_status(PackageStatus::Loading).unwrap();
+    let run_id = create_resume_run_with_package(
+        &project,
+        "run-resume-wrong-receipt",
+        &package_dir,
+        &[
+            RunEventKind::PackageFinalized,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::CheckpointCommitted,
+            RunEventKind::RunFailed,
+        ],
+    );
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        json["result"]["state"],
+        "checkpoint_committed_head_not_exact"
+    );
+    assert_eq!(json["result"]["mutated"], false);
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+}
+
+#[test]
+fn resume_missing_package_artifact_fails_closed_with_guidance() {
+    let project = TestProject::new();
+    let missing_package = project.root.join(".cdf/packages/pkg-resume-missing");
+    let run_id = create_resume_run_with_missing_package(
+        &project,
+        "run-resume-missing-package",
+        &missing_package,
+    );
+
+    let result = resume_command(&project, run_id.as_str(), true);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["state"], "missing_package_artifact");
+    assert_eq!(json["result"]["action"], "inspect_missing_artifacts");
+    assert_eq!(json["result"]["recovery"]["result"], "failed_closed");
+    assert!(
+        json["result"]["recovery"]["guidance"]
+            .as_str()
+            .unwrap()
+            .contains("does not exist")
     );
 }
 
@@ -3381,6 +3734,125 @@ fn replay_package_command_with_postgres_options(
     run_dynamic(command)
 }
 
+fn resume_command(
+    project: &TestProject,
+    run_id: &str,
+    use_run_flag: bool,
+) -> crate::InvocationResult {
+    let mut command = vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "resume".to_owned(),
+    ];
+    if use_run_flag {
+        command.push("--run".to_owned());
+    }
+    command.push(run_id.to_owned());
+    run_dynamic(command)
+}
+
+fn create_resume_run_with_package(
+    project: &TestProject,
+    run_id: &str,
+    package_dir: &Path,
+    kinds: &[RunEventKind],
+) -> RunId {
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let run_id = RunId::new(run_id).unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    for kind in kinds {
+        let event = resume_package_event(*kind, package_dir);
+        ledger.append_event(&run_id, event).unwrap();
+    }
+    run_id
+}
+
+fn create_resume_run_with_missing_package(
+    project: &TestProject,
+    run_id: &str,
+    package_dir: &Path,
+) -> RunId {
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let run_id = RunId::new(run_id).unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    let mut event = RunEventAppend::new(RunEventKind::PackageFinalized);
+    event.package_id = Some("pkg-resume-missing".to_owned());
+    event.package_path = Some(package_dir.display().to_string());
+    ledger.append_event(&run_id, event).unwrap();
+    run_id
+}
+
+fn seed_resume_receipt_before_checkpoint(
+    project: &TestProject,
+    package_dir: &Path,
+    run_id: &str,
+) -> RunId {
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let run_id = RunId::new(run_id).unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before resume checkpoint"));
+    let error = replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
+        package_dir: package_dir.to_path_buf(),
+        destination: &destination,
+        checkpoint_store: &store,
+        after_receipt_verified: Some(&hook),
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("stop before resume checkpoint"));
+    let reader = PackageReader::open(package_dir).unwrap();
+    assert_eq!(reader.receipts().unwrap().len(), 1);
+    assert_eq!(reader.manifest().lifecycle.status, PackageStatus::Loading);
+    let inputs = reader.replay_inputs().unwrap();
+    let history = store
+        .history(
+            &inputs.state_delta.pipeline_id,
+            &inputs.state_delta.resource_id,
+            &inputs.state_delta.scope,
+        )
+        .unwrap();
+    assert!(history.iter().any(|checkpoint| {
+        checkpoint.delta.checkpoint_id == inputs.state_delta.checkpoint_id
+            && checkpoint.status == CheckpointStatus::Proposed
+    }));
+    for kind in [
+        RunEventKind::PackageFinalized,
+        RunEventKind::CheckpointProposed,
+        RunEventKind::DestinationReceiptRecorded,
+        RunEventKind::RunFailed,
+    ] {
+        let event = resume_package_event(kind, package_dir);
+        ledger.append_event(&run_id, event).unwrap();
+    }
+    run_id
+}
+
+fn resume_package_event(kind: RunEventKind, package_dir: &Path) -> RunEventAppend {
+    let reader = PackageReader::open(package_dir).unwrap();
+    let inputs = reader.replay_inputs().unwrap();
+    let receipts = reader.receipts().unwrap();
+    let receipt = receipts.last();
+    let mut event = RunEventAppend::new(kind);
+    event.resource_id = Some(inputs.state_delta.resource_id.clone());
+    event.scope = Some(inputs.state_delta.scope.clone());
+    event.package_id = Some(reader.manifest().identity.package_id.clone());
+    event.package_hash = Some(PackageHash::new(reader.manifest().package_hash.clone()).unwrap());
+    event.package_path = Some(package_dir.display().to_string());
+    event.checkpoint_id = Some(inputs.state_delta.checkpoint_id.clone());
+    if matches!(
+        kind,
+        RunEventKind::DestinationReceiptRecorded | RunEventKind::CheckpointCommitted
+    ) && let Some(receipt) = receipt
+    {
+        event.receipt_id = Some(receipt.receipt_id.clone());
+        event.destination_id = Some(receipt.destination.clone());
+    }
+    event
+}
+
 fn remove_state_store(project: &TestProject) {
     for suffix in ["", "-wal", "-shm"] {
         let path = project.root.join(format!(".cdf/state.db{suffix}"));
@@ -3398,6 +3870,13 @@ fn package_receipt_count(package_dir: &Path) -> usize {
         .receipts()
         .unwrap()
         .len()
+}
+
+fn remove_package_receipts(package_dir: &Path) {
+    let path = package_dir.join(cdf_package::RECEIPTS_FILE);
+    if path.exists() {
+        fs::remove_file(path).unwrap();
+    }
 }
 
 fn package_status(package_dir: &Path) -> PackageStatus {
