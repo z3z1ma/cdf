@@ -78,6 +78,7 @@ pub enum InspectNoun {
     Lock,
     Destinations,
     Package(PathBuf),
+    Run(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -380,6 +381,13 @@ fn parse_inspect(args: &[String]) -> Result<InspectArgs, CliError> {
                 .ok_or_else(|| CliError::usage("inspect package requires a package directory"))?;
             no_extra_args("inspect package", &args[2..])?;
             InspectNoun::Package(PathBuf::from(path))
+        }
+        "run" => {
+            let id = args
+                .get(1)
+                .ok_or_else(|| CliError::usage("inspect run requires a run id"))?;
+            no_extra_args("inspect run", &args[2..])?;
+            InspectNoun::Run(id.clone())
         }
         other => return Err(CliError::usage(format!("unknown inspect noun `{other}`"))),
     };

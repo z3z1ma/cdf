@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
@@ -40,8 +40,11 @@ No resume mutation, no replay mutation, no UI, no broad observability dashboard.
 
 ## Blockers
 
-Depends on CLI run wiring for an end-to-end run ledger fixture. Additional synthetic fixtures may be used if they preserve redaction and artifact-missing semantics.
+None.
 
 ## Progress and notes
 
 - 2026-07-07: Split from the broad CLI spine ticket after general orchestrator closure.
+- 2026-07-07: Activated for implementation after `cdf run` and `cdf replay package` CLI children closed. Worker lane owns parser/report/test implementation for `cdf inspect run`; resume mutation remains excluded.
+- 2026-07-07: Implemented `cdf inspect run <id>` as a read-only run-ledger report with stable JSON, redacted event details, package/receipt/checkpoint availability, duplicate status, and recovery guidance. Added read-only SQLite run-ledger opening so inspection never initializes missing state or mutates schema/data.
+- 2026-07-07: Verification recorded in `.10x/evidence/2026-07-07-cli-inspect-run-spine.md`; closure review recorded in `.10x/reviews/2026-07-07-cli-inspect-run-spine-review.md`.

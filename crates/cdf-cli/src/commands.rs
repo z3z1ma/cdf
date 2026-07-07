@@ -89,7 +89,7 @@ Commands:
   run --resource RESOURCE --pipeline ID --target TARGET --package-id ID --checkpoint-id ID [--loop]
   preview <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
   sql <QUERY>
-  inspect project|resources|resource <ID>|lock|destinations|package <DIR>
+  inspect project|resources|resource <ID>|lock|destinations|package <DIR>|run <ID>
   diff schema
   contract freeze|show|test
   state show|history --pipeline ID --resource ID [--scope-json JSON]

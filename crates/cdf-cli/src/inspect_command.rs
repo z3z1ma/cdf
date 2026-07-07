@@ -68,6 +68,7 @@ pub(crate) fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, Cli
                         }),
                     )
                 }
+                InspectNoun::Run(id) => crate::inspect_run_command::inspect_run(&context, id),
                 InspectNoun::Package(_) => unreachable!("package noun handled before project load"),
             }
         }

@@ -42,6 +42,7 @@ Children:
 - 2026-07-07: Non-file window-close checkpoint semantics child closed with evidence `.10x/evidence/2026-07-07-non-file-window-close-checkpoint-semantics.md` and review `.10x/reviews/2026-07-07-non-file-window-close-checkpoint-semantics.md`. Project-run checkpoint advancement now supports ratified numeric/timestamp/date cursor window-close semantics and keeps unratified page-token/mixed/unsupported variants fail-closed.
 - 2026-07-07: CLI filesystem Parquet `run` and `replay package` slices landed through the general run/replay spine with evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md`. The CLI spine parent remained open for REST/Postgres run wiring, Postgres replay, resume, and inspect-run.
 - 2026-07-07: CLI `replay package` child closed at `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md` after Postgres artifact replay wiring landed. The CLI spine parent remains open for REST/Postgres `run`, `resume`, and `inspect run`.
+- 2026-07-07: CLI `inspect run` child closed at `.10x/tickets/done/2026-07-07-cli-inspect-run-spine.md` with read-only run-ledger reporting evidence. The CLI spine parent now remains open for `resume`.
 
 ## Blockers
 

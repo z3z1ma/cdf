@@ -15,7 +15,7 @@ Children:
 - `.10x/tickets/done/2026-07-07-cli-run-general-runtime.md`
 - `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`
 - `.10x/tickets/2026-07-07-cli-resume-spine.md`
-- `.10x/tickets/2026-07-07-cli-inspect-run-spine.md`
+- `.10x/tickets/done/2026-07-07-cli-inspect-run-spine.md`
 
 Owns:
 
@@ -51,3 +51,4 @@ None at parent level. Execute the child tickets above; do not implement this par
 - 2026-07-07: The filesystem Parquet portions of `cdf run` and `cdf replay package` landed under child tickets `.10x/tickets/done/2026-07-07-cli-run-general-runtime.md` and `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`, with shared evidence `.10x/evidence/2026-07-07-cli-parquet-run-replay.md` and review `.10x/reviews/2026-07-07-cli-parquet-run-replay-review.md`. This parent remained open for REST/Postgres run wiring, Postgres replay, resume, and inspect-run.
 - 2026-07-07: `cdf replay package` child closed at `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md` after Postgres replay wiring landed with evidence `.10x/evidence/2026-07-07-cli-postgres-package-replay.md` and review `.10x/reviews/2026-07-07-cli-postgres-package-replay-review.md`. This parent remains open for REST/Postgres `run`, `resume`, and `inspect run`.
 - 2026-07-07: `cdf run` child closed at `.10x/tickets/done/2026-07-07-cli-run-general-runtime.md` after REST and Postgres destination wiring landed with evidence `.10x/evidence/2026-07-07-cli-rest-postgres-run-quality.md` and review `.10x/reviews/2026-07-07-cli-rest-postgres-run-review.md`. This parent remains open for `resume` and `inspect run`.
+- 2026-07-07: `cdf inspect run` child closed at `.10x/tickets/done/2026-07-07-cli-inspect-run-spine.md` after read-only run-ledger inspection, redacted JSON/human output, artifact status reporting, and quality metrics landed with evidence `.10x/evidence/2026-07-07-cli-inspect-run-spine.md` and review `.10x/reviews/2026-07-07-cli-inspect-run-spine-review.md`. This parent remains open for `resume`.

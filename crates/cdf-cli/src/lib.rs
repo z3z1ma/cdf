@@ -12,6 +12,7 @@ mod doctor_command;
 mod doctor_drift;
 mod http_transport;
 mod inspect_command;
+mod inspect_run_command;
 mod output;
 mod package_command;
 mod project_command;

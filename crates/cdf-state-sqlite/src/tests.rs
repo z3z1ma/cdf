@@ -952,6 +952,81 @@ fn sqlite_run_snapshot_carries_inspect_and_resume_pointers_without_source_contac
 }
 
 #[test]
+fn sqlite_run_ledger_open_read_only_reads_without_initializing_missing_database() {
+    let dir = tempdir().unwrap();
+    let missing_path = dir.path().join("missing-state.db");
+    let error = match SqliteRunLedger::open_read_only(&missing_path) {
+        Ok(_) => panic!("read-only open unexpectedly created missing run ledger"),
+        Err(error) => error,
+    };
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(
+        !missing_path.exists(),
+        "read-only open must not create a missing database"
+    );
+
+    let db_path = dir.path().join("state.db");
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let run = ledger
+        .create_run(Some(RunId::new("run-read-only").unwrap()))
+        .unwrap();
+    let mut event = RunEventAppend::new(RunEventKind::RunStarted);
+    event.resource_id = Some(resource_id());
+    ledger.append_event(&run.run_id, event).unwrap();
+    drop(ledger);
+
+    let read_only = SqliteRunLedger::open_read_only(&db_path).unwrap();
+    let snapshot = read_only.snapshot(&run.run_id).unwrap().unwrap();
+    assert_eq!(snapshot.run.run_id, run.run_id);
+    assert_eq!(snapshot.events.len(), 1);
+    assert_eq!(snapshot.events[0].kind, RunEventKind::RunStarted);
+    assert!(
+        read_only
+            .create_run(Some(RunId::new("run-write").unwrap()))
+            .is_err(),
+        "read-only ledger handle must not allow writes"
+    );
+}
+
+#[test]
+fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "
+        CREATE TABLE cdf_sqlite_schema_migrations (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at_ms INTEGER NOT NULL
+        );
+        INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
+        VALUES ('run_ledger', 2, 1);
+        ",
+    )
+    .unwrap();
+    drop(conn);
+
+    for error in [
+        match SqliteRunLedger::open_read_only(&db_path) {
+            Ok(_) => panic!("read-only open accepted unsupported run ledger schema version"),
+            Err(error) => error,
+        },
+        match SqliteRunLedger::open(&db_path) {
+            Ok(_) => panic!("mutating open accepted unsupported run ledger schema version"),
+            Err(error) => error,
+        },
+    ] {
+        assert_eq!(error.kind, cdf_kernel::ErrorKind::Internal);
+        assert!(
+            error
+                .message
+                .contains("unsupported run ledger SQLite schema version 2")
+        );
+    }
+}
+
+#[test]
 fn sqlite_run_ledger_checkpoint_events_do_not_advance_checkpoint_store() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("state.db");

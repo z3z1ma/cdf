@@ -10,7 +10,8 @@ use cdf_kernel::{
     Result, RunId, ScopeKey,
 };
 use rusqlite::{
-    Connection, ErrorCode, OptionalExtension, Row, Transaction, TransactionBehavior, params,
+    Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
+    params,
 };
 use serde::{Deserialize, Serialize};
 
@@ -265,6 +266,22 @@ impl SqliteRunLedger {
         })
     }
 
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let path = path.as_ref();
+        if !path.exists() {
+            return Err(CdfError::data(format!(
+                "run ledger state database {} is missing",
+                path.display()
+            )));
+        }
+        let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(sqlite_error)?;
+        validate_run_schema_version(&conn)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(sqlite_error)?;
         initialize_run_schema(&conn)?;
@@ -380,21 +397,7 @@ fn initialize_run_schema(conn: &Connection) -> Result<()> {
     )
     .map_err(sqlite_error)?;
 
-    let existing_version = conn
-        .query_row(
-            "SELECT version FROM cdf_sqlite_schema_migrations WHERE component = 'run_ledger'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(sqlite_error)?;
-    if let Some(version) = existing_version
-        && version != RUN_LEDGER_SCHEMA_VERSION
-    {
-        return Err(CdfError::internal(format!(
-            "unsupported run ledger SQLite schema version {version}"
-        )));
-    }
+    let existing_version = validate_run_schema_version(conn)?;
 
     conn.execute_batch(
         "
@@ -489,6 +492,38 @@ fn initialize_run_schema(conn: &Connection) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn validate_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
+    let migration_table_exists = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cdf_sqlite_schema_migrations'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .is_some();
+    if !migration_table_exists {
+        return Ok(None);
+    }
+
+    let existing_version = conn
+        .query_row(
+            "SELECT version FROM cdf_sqlite_schema_migrations WHERE component = 'run_ledger'",
+            [],
+            |row| row.get::<_, i64>(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?;
+    if let Some(version) = existing_version
+        && version != RUN_LEDGER_SCHEMA_VERSION
+    {
+        return Err(CdfError::internal(format!(
+            "unsupported run ledger SQLite schema version {version}"
+        )));
+    }
+    Ok(existing_version)
 }
 
 fn insert_supplied_run(
