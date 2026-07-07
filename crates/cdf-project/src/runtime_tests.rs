@@ -9,6 +9,7 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_dest_duckdb::DuckDbDestination;
+use cdf_dest_parquet::ParquetDestination;
 use cdf_engine::{
     EnginePlan, EnginePlanInput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
     EngineSegmentPosition, ExecutionProfile, LineageSummary, PlanBoundedness, Planner,
@@ -17,22 +18,25 @@ use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
     CheckpointStore, CursorPosition, CursorValue, FileManifest, FilePosition, IdempotencyToken,
     PackageHash, PartitionId, PipelineId, Receipt, ResourceId, ResourceStream, Result,
-    RewindReport, RewindRequest, ScanRequest, SchemaHash, ScopeKey, SegmentId, SourcePosition,
-    StateDelta, StateSegment, TargetName, WriteDisposition,
+    RewindReport, RewindRequest, RunId, ScanRequest, SchemaHash, ScopeKey, SegmentId,
+    SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
     PackageManifest, PackageReader, PackageStatus, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, canonical_json_bytes,
 };
-use cdf_state_sqlite::SqliteCheckpointStore;
+use cdf_state_sqlite::{RunEventKind, SqliteCheckpointStore, SqliteRunLedger};
 
 use crate::{
-    LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest, PackageArtifactDuckDbReplayRequest,
+    LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest, PackageArtifactDuckDbRecoveryRequest,
+    PackageArtifactDuckDbReplayRequest, PackageArtifactParquetRecoveryRequest,
     PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
+    ProjectReceiptSource, ProjectRunDestination, ProjectRunRequest,
+    recover_duckdb_package_from_artifacts, recover_parquet_package_from_artifacts,
     recover_prepared_duckdb_package, replay_duckdb_package_from_artifacts,
     replay_prepared_duckdb_package, replay_prepared_duckdb_package_with_failpoint,
-    run_local_file_to_duckdb_checkpoint, runtime::state_delta_from_run,
+    run_local_file_to_duckdb_checkpoint, run_project, runtime::state_delta_from_run,
 };
 
 const SCHEMA_HASH: &str = "schema-v1";
@@ -51,6 +55,40 @@ trust = "governed"
 schema = { fields = [
   { name = "id", type = "int64", nullable = false },
   { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
+] }
+"#;
+const SIMPLE_FILE_RESOURCE_APPEND: &str = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "name", type = "string", nullable = true },
+] }
+"#;
+const SIMPLE_FILE_RESOURCE_MERGE: &str = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "merge"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "name", type = "string", nullable = true },
 ] }
 "#;
 const REST_RESOURCE: &str = r#"
@@ -285,6 +323,20 @@ fn live_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
         .remove(0)
 }
 
+fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::CompiledResource {
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(
+        root.join("data/events.ndjson"),
+        "{\"id\":1,\"name\":\"ada\"}\n\
+         {\"id\":2,\"name\":\"grace\"}\n",
+    )
+    .unwrap();
+    let document = cdf_declarative::parse_toml(document).unwrap();
+    cdf_declarative::compile_document_with_project_root(&document, root)
+        .unwrap()
+        .remove(0)
+}
+
 fn rest_resource() -> cdf_declarative::CompiledResource {
     let document = cdf_declarative::parse_toml(REST_RESOURCE).unwrap();
     cdf_declarative::compile_document(&document)
@@ -314,6 +366,56 @@ fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> 
             },
         )
         .unwrap()
+}
+
+fn project_run_request<'a>(
+    resource: &'a cdf_declarative::CompiledResource,
+    package_id: &str,
+    package_root: &Path,
+    duckdb_path: &Path,
+    state_path: &Path,
+    run_id: &str,
+) -> ProjectRunRequest<'a> {
+    ProjectRunRequest {
+        resource,
+        plan: live_plan(resource, package_id),
+        package_root: package_root.to_path_buf(),
+        state_store_path: state_path.to_path_buf(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
+        destination: ProjectRunDestination::DuckDb {
+            database_path: duckdb_path.to_path_buf(),
+            target: TargetName::new("events").unwrap(),
+        },
+        run_id: Some(RunId::new(run_id).unwrap()),
+        after_receipt_verified: None,
+    }
+}
+
+fn parquet_project_run_request<'a>(
+    resource: &'a cdf_declarative::CompiledResource,
+    package_id: &str,
+    package_root: &Path,
+    parquet_root: &Path,
+    state_path: &Path,
+    run_id: &str,
+) -> ProjectRunRequest<'a> {
+    ProjectRunRequest {
+        resource,
+        plan: live_plan(resource, package_id),
+        package_root: package_root.to_path_buf(),
+        state_store_path: state_path.to_path_buf(),
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
+        destination: ProjectRunDestination::ParquetFilesystem {
+            root: parquet_root.to_path_buf(),
+            target: TargetName::new("events").unwrap(),
+        },
+        run_id: Some(RunId::new(run_id).unwrap()),
+        after_receipt_verified: None,
+    }
 }
 
 fn file_position(path: &str) -> SourcePosition {
@@ -443,6 +545,324 @@ fn live_file_run_post_receipt_failure_keeps_checkpoint_uncommitted_and_receipt_r
         history[0].delta.output_position,
         SourcePosition::FileManifest(_)
     ));
+}
+
+#[test]
+fn general_project_run_records_ledger_events_in_commit_gate_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-general-ledger-order";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let report = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-ledger-order",
+    )))
+    .unwrap();
+
+    let kinds = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            RunEventKind::RunStarted,
+            RunEventKind::PlanRecorded,
+            RunEventKind::PackageStarted,
+            RunEventKind::PackageFinalized,
+            RunEventKind::CheckpointProposed,
+            RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::CheckpointCommitted,
+            RunEventKind::PackageStatusUpdated,
+            RunEventKind::RunSucceeded,
+        ]
+    );
+    for (index, event) in report.ledger_snapshot.events.iter().enumerate() {
+        assert_eq!(event.sequence, u64::try_from(index + 1).unwrap());
+        assert_eq!(event.run_id, report.run_id);
+    }
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(report.row_count, 2);
+    assert_eq!(
+        report.ledger_snapshot.events[3].package_hash,
+        Some(report.package_hash.clone())
+    );
+    assert_eq!(
+        report.ledger_snapshot.events[6].receipt_id,
+        Some(report.receipt.receipt_id.clone())
+    );
+}
+
+#[test]
+fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-general-parquet";
+    let package_root = temp.path().join(".cdf/packages");
+    let parquet_root = temp.path().join(".cdf/lake");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let report = futures_executor::block_on(run_project(parquet_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &parquet_root,
+        &state_path,
+        "run-general-parquet",
+    )))
+    .unwrap();
+
+    let kinds = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            RunEventKind::RunStarted,
+            RunEventKind::PlanRecorded,
+            RunEventKind::PackageStarted,
+            RunEventKind::PackageFinalized,
+            RunEventKind::CheckpointProposed,
+            RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::CheckpointCommitted,
+            RunEventKind::PackageStatusUpdated,
+            RunEventKind::RunSucceeded,
+        ]
+    );
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.receipt.destination.as_str(), "parquet_object_store");
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
+            package_receipt_recorded: true
+        }
+    );
+    let destination = ParquetDestination::new_filesystem(&parquet_root).unwrap();
+    assert!(
+        destination
+            .verify_receipt(&report.receipt)
+            .unwrap()
+            .verified
+    );
+}
+
+#[test]
+fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
+    let package_id = "pkg-general-parquet-merge-rejected";
+    let package_root = temp.path().join(".cdf/packages");
+    let parquet_root = temp.path().join(".cdf/lake");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let error = futures_executor::block_on(run_project(parquet_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &parquet_root,
+        &state_path,
+        "run-general-parquet-merge-rejected",
+    )))
+    .unwrap_err();
+
+    assert!(error.to_string().contains("Parquet destination"));
+    assert!(!package_root.join(package_id).exists());
+    assert!(!parquet_root.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-general-parquet-recovery";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let parquet_root = temp.path().join(".cdf/lake");
+    let state_path = temp.path().join(".cdf/state.db");
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before parquet checkpoint"));
+    let mut request = parquet_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &parquet_root,
+        &state_path,
+        "run-general-parquet-recovery",
+    );
+    request.after_receipt_verified = Some(&hook);
+    futures_executor::block_on(run_project(request)).unwrap_err();
+
+    let destination = ParquetDestination::new_filesystem(&parquet_root).unwrap();
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let receipts = package_receipts(&package_dir);
+    assert_eq!(receipts.len(), 1);
+    let report = recover_parquet_package_from_artifacts(PackageArtifactParquetRecoveryRequest {
+        package_dir: package_dir.clone(),
+        destination: &destination,
+        checkpoint_store: &store,
+        receipt: receipts[0].clone(),
+        after_receipt_verified: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::SuppliedDurableReceipt
+    );
+}
+
+#[test]
+fn general_project_run_rejects_unsupported_source_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let file_resource = live_file_resource(temp.path());
+    let rest_resource = rest_resource();
+    let package_id = "pkg-general-rest-rejected";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut request = project_run_request(
+        &file_resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-rest-rejected",
+    );
+    request.resource = &rest_resource;
+
+    let error = futures_executor::block_on(run_project(request)).unwrap_err();
+
+    assert!(error.to_string().contains("local file resources"));
+    assert!(!package_root.join(package_id).exists());
+    assert!(!duckdb_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn general_project_run_records_failure_after_durable_receipt_without_advancing_state() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-general-run-failed";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("injected general failure"));
+    let mut request = project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-failed",
+    );
+    request.after_receipt_verified = Some(&hook);
+
+    let error = futures_executor::block_on(run_project(request)).unwrap_err();
+
+    assert!(error.to_string().contains("injected general failure"));
+    let ledger = SqliteRunLedger::open(&state_path).unwrap();
+    let snapshot = ledger
+        .snapshot(&RunId::new("run-general-failed").unwrap())
+        .unwrap()
+        .unwrap();
+    let kinds = snapshot
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        kinds,
+        vec![
+            RunEventKind::RunStarted,
+            RunEventKind::PlanRecorded,
+            RunEventKind::PackageStarted,
+            RunEventKind::PackageFinalized,
+            RunEventKind::CheckpointProposed,
+            RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::RunFailed,
+        ]
+    );
+
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let scope = resource.descriptor().state_scope.clone();
+    assert!(
+        store
+            .head(
+                &PipelineId::new("pipeline-live").unwrap(),
+                &resource.descriptor().resource_id,
+                &scope
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    let receipts = package_receipts(&package_dir);
+    assert_eq!(receipts.len(), 1);
+    let destination = destination(&duckdb_path);
+    assert!(destination.verify_receipt(&receipts[0]).unwrap().verified);
+}
+
+#[test]
+fn package_artifact_recovery_after_general_run_failure_does_not_need_source() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-general-recovery";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before checkpoint"));
+    let mut request = project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-recovery",
+    );
+    request.after_receipt_verified = Some(&hook);
+    futures_executor::block_on(run_project(request)).unwrap_err();
+
+    let destination = destination(&duckdb_path);
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let receipts = package_receipts(&package_dir);
+    let report = recover_duckdb_package_from_artifacts(PackageArtifactDuckDbRecoveryRequest {
+        package_dir: package_dir.clone(),
+        destination: &destination,
+        checkpoint_store: &store,
+        receipt: receipts[0].clone(),
+        after_receipt_verified: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        PreparedReceiptSource::SuppliedDurableReceipt
+    );
 }
 
 #[test]

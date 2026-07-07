@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
@@ -39,4 +39,17 @@ No CLI command parsing, no `inspect run` presentation, no distributed scheduler,
 
 ## Blockers
 
-None.
+- Postgres destination support is split to `.10x/tickets/2026-07-07-general-run-postgres-destination.md` because the current project-run input does not ratify how to construct `PostgresLoadPlanInput` values such as `PostgresTarget`, column mappings, merge keys, dedup policy, and existing-table policy.
+- REST and table-backed SQL resource stream support is split to `.10x/tickets/2026-07-07-general-run-non-file-resource-streams.md` because `ProjectRunRequest` currently accepts `CompiledResource`, `CompiledResource::open` intentionally does not execute REST/SQL, and non-file state-delta source-position semantics are not ratified here.
+
+## Progress and notes
+
+- 2026-07-07: Implemented the first general project-run facade in `crates/cdf-project/src/runtime.rs` for deterministic local file resources into DuckDB. Existing local-file-to-DuckDB compatibility functions now delegate through `ProjectRunRequest`/`run_project` while preserving their public report shape. The run ledger uses the existing `SqliteRunLedger` API from `cdf-state-sqlite`; no storage API change was needed.
+- 2026-07-07: The project runtime records `run_started`, `plan_recorded`, `package_started`, `package_finalized`, `checkpoint_proposed`, `destination_commit_started`, `destination_receipt_recorded`, `checkpoint_committed`, `package_status_updated`, `run_succeeded`, and `run_failed` around the existing package/checkpoint flow. The ledger remains observational only; checkpoint advancement is still only through `CheckpointStore::commit(checkpoint_id, receipt)`.
+- 2026-07-07: DuckDB package replay now plans package-aware commits, then begins and drives the kernel `DestinationProtocol::begin` commit session. Compatibility duplicate/package-receipt report fields are preserved by inspecting public DuckDB mirror/package receipt evidence around the session commit.
+- 2026-07-07: Added focused `cdf-project` tests for run-ledger event ordering, unsupported-source fail-closed behavior before package/destination/state DB creation, post-receipt failure recording without checkpoint advancement, and package/receipt recovery after a general run failure without a source handle.
+- 2026-07-07: Verification passed: `cargo fmt --all -- --check`; `cargo test -p cdf-project --locked --no-fail-fast`; `cargo clippy -p cdf-project --all-targets --locked -- -D warnings`; `cargo test -p cdf-conformance --locked --no-fail-fast`; targeted `cargo test -p cdf-cli --locked run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint`; `cargo check --workspace --all-targets --locked`; `git diff --check`.
+- 2026-07-07: Continued after parent review. Added filesystem Parquet as a second deterministic `ProjectRunDestination`, using package replay inputs, `ParquetDestination::plan_package_commit`, and `DestinationProtocol::begin`. Added Parquet run tests for commit-session ledger ordering, unsupported `merge` fail-closed behavior before state/package/destination mutation, and post-receipt artifact recovery without source contact. `Cargo.lock` was refreshed for the new direct `cdf-project -> cdf-dest-parquet` workspace dependency.
+- 2026-07-07: Split remaining unratified scope into `.10x/tickets/2026-07-07-general-run-postgres-destination.md` and `.10x/tickets/2026-07-07-general-run-non-file-resource-streams.md`; this parent remains blocked and not closable until those blockers are resolved or the parent scope is superseded.
+- 2026-07-07: Verification after Parquet continuation passed: `cargo fmt --all -- --check`; `cargo clippy -p cdf-project --all-targets --locked -- -D warnings`; `cargo test -p cdf-project --locked --no-fail-fast` with 42 unit tests and 0 doc tests; `cargo nextest run -p cdf-project --locked` with 42 passed; `cargo test -p cdf-dest-parquet --locked --no-fail-fast` with 18 unit tests and 0 doc tests; `cargo test -p cdf-conformance --locked --no-fail-fast` with 40 unit tests and 0 doc tests; targeted `cargo test -p cdf-cli --locked run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint` with 1 matched test passing; `cargo check --workspace --all-targets --locked`; `git diff --check`.
+- 2026-07-07: Parent verification recorded in `.10x/evidence/2026-07-07-general-run-orchestrator-partial.md` and adversarial review recorded in `.10x/reviews/2026-07-07-general-run-orchestrator-partial-review.md`. The implemented slice is usable for local file resources into DuckDB and filesystem Parquet, but this ticket is not done.
