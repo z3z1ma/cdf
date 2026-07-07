@@ -17,7 +17,7 @@ Children:
 - `.10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md`
 - `.10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md`
 - `.10x/tickets/done/2026-07-07-run-ledger-store.md`
-- `.10x/tickets/2026-07-07-general-run-orchestrator.md`
+- `.10x/tickets/done/2026-07-07-general-run-orchestrator.md`
 - `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md`
 
 ## Acceptance criteria
@@ -36,6 +36,7 @@ Children:
 - 2026-07-07: General run orchestrator child has a verified partial implementation for deterministic local file resources into DuckDB and filesystem Parquet, with evidence `.10x/evidence/2026-07-07-general-run-orchestrator-partial.md` and review `.10x/reviews/2026-07-07-general-run-orchestrator-partial-review.md`. The child is blocked, not closed, on Postgres destination request semantics and non-file resource stream semantics.
 - 2026-07-07: User ratified the remaining Postgres destination and non-file checkpoint semantics. General orchestrator and CLI spine work are open dependency-gated children; no parent-level semantic blocker remains.
 - 2026-07-07: General run Postgres destination child closed with evidence `.10x/evidence/2026-07-07-general-run-postgres-destination.md` and review `.10x/reviews/2026-07-07-general-run-postgres-destination-review.md`. The general orchestrator child now needs a parent closure audit; CLI spine remains an open executable child for the next implementation goal.
+- 2026-07-07: General run orchestrator child closed with evidence `.10x/evidence/2026-07-07-general-run-orchestrator-closure.md` and review `.10x/reviews/2026-07-07-general-run-orchestrator-closure-review.md`. CLI run/resume/replay/inspect is now the remaining open run-spine implementation child.
 
 ## Blockers
 

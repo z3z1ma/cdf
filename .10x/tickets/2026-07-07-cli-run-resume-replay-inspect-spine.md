@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
-Depends-On: .10x/tickets/2026-07-07-general-run-orchestrator.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
+Depends-On: .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
 
 # Wire CLI run, resume, replay, and inspect-run to the spine
 
@@ -34,8 +34,9 @@ No lower-layer invariant implementation, no UI, no daemon, no distributed schedu
 
 ## Blockers
 
-None from user. Execution waits for `.10x/tickets/2026-07-07-general-run-orchestrator.md` to complete enough supported destination/source coverage for CLI wiring.
+None. The general orchestrator dependency is done, so this ticket is executable.
 
 ## Progress and notes
 
 - 2026-07-07: User ratified the outstanding run-spine adjacent decisions. This ticket is open and dependency-gated by the general orchestrator, not waiting on semantic input.
+- 2026-07-07: General orchestrator dependency closed in `.10x/tickets/done/2026-07-07-general-run-orchestrator.md`; this CLI spine ticket is now the remaining run-spine executable child.

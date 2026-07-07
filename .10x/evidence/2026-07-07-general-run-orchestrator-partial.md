@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/2026-07-07-general-run-orchestrator.md, .10x/tickets/done/2026-07-07-general-run-postgres-destination.md, .10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md
+Relates-To: .10x/tickets/done/2026-07-07-general-run-orchestrator.md, .10x/tickets/done/2026-07-07-general-run-postgres-destination.md, .10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md
 
 # General Run Orchestrator Partial Verification
 
@@ -53,6 +53,6 @@ The run ledger records ordered events around package finalization, checkpoint pr
 
 ## Limits
 
-- This does not prove the full `.10x/tickets/2026-07-07-general-run-orchestrator.md` acceptance criteria because Postgres destinations and non-file REST/SQL source streams remain blocked.
+- This did not prove the full `.10x/tickets/done/2026-07-07-general-run-orchestrator.md` acceptance criteria because Postgres destinations and non-file REST/SQL source streams remained blocked at the time.
 - CodeQL was refreshed once because the reusable database had no fingerprint; future runs should reuse the `target/quality/codeql-db-rust` database unless inputs change.
 - `cargo geiger`, Miri, cargo-careful, fuzzing, Kani, cargo-mutants, llvm-cov, and benchmarks were not run for this slice. Geiger was substituted with a direct first-party unsafe scan per `.10x/knowledge/quality-gate-execution.md`; the other tools are not proportionate closure gates for this deterministic orchestration refactor.

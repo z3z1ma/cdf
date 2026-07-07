@@ -92,11 +92,28 @@ pub struct PackageArtifactParquetRecoveryRequest<'a, Store: CheckpointStore + ?S
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
+pub struct PackageArtifactParquetReplayRequest<'a, Store: CheckpointStore + ?Sized> {
+    pub package_dir: PathBuf,
+    pub destination: &'a ParquetDestination,
+    pub checkpoint_store: &'a Store,
+    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+}
+
 pub struct PackageArtifactPostgresRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
     pub destination: &'a PostgresDestination,
     pub checkpoint_store: &'a Store,
     pub receipt: Receipt,
+    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
+}
+
+pub struct PackageArtifactPostgresReplayRequest<'a, Store: CheckpointStore + ?Sized> {
+    pub package_dir: PathBuf,
+    pub destination: &'a PostgresDestination,
+    pub checkpoint_store: &'a Store,
+    pub target: PostgresTarget,
+    pub dedup: MergeDedupPolicy,
+    pub existing_table: Option<PostgresExistingTable>,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
@@ -910,6 +927,43 @@ fn postgres_load_plan_input(
     })
 }
 
+fn postgres_load_plan_input_from_artifacts(
+    inputs: &PackageReplayInputs,
+    target: PostgresTarget,
+    dedup: MergeDedupPolicy,
+    existing_table: Option<PostgresExistingTable>,
+    columns: Vec<PostgresColumn>,
+) -> Result<PostgresLoadPlanInput> {
+    validate_postgres_replay_target(&target, &inputs.destination_commit.target)?;
+    Ok(PostgresLoadPlanInput {
+        package_hash: inputs.state_delta.package_hash.clone(),
+        idempotency_token: inputs.destination_commit.idempotency_token.clone(),
+        target,
+        disposition: inputs.destination_commit.disposition.clone(),
+        schema_hash: inputs.schema_hash.clone(),
+        segments: inputs.state_delta.segments.clone(),
+        columns,
+        merge_keys: postgres_merge_keys_from_artifacts(&inputs.merge_keys)?,
+        dedup,
+        existing_table,
+        resource_id: Some(inputs.state_delta.resource_id.clone()),
+        state_delta: Some(inputs.state_delta.clone()),
+    })
+}
+
+fn validate_postgres_replay_target(
+    target: &PostgresTarget,
+    package_target: &TargetName,
+) -> Result<()> {
+    let explicit = target.display_name();
+    if explicit != package_target.as_str() {
+        return Err(CdfError::contract(format!(
+            "explicit Postgres replay target {explicit} does not match package destination commit target {package_target}"
+        )));
+    }
+    Ok(())
+}
+
 fn postgres_merge_keys(descriptor: &ResourceDescriptor) -> Result<Vec<PostgresIdentifier>> {
     if descriptor.write_disposition != WriteDisposition::Merge {
         return Ok(Vec::new());
@@ -919,6 +973,10 @@ fn postgres_merge_keys(descriptor: &ResourceDescriptor) -> Result<Vec<PostgresId
         .iter()
         .map(PostgresIdentifier::user)
         .collect()
+}
+
+fn postgres_merge_keys_from_artifacts(keys: &[String]) -> Result<Vec<PostgresIdentifier>> {
+    keys.iter().map(PostgresIdentifier::user).collect()
 }
 
 fn postgres_columns_from_schema(resource: &dyn ResourceStream) -> Result<Vec<PostgresColumn>> {
@@ -1437,6 +1495,30 @@ impl PostgresPackageReplayInputs {
             load_plan: Some(load_plan),
         })
     }
+
+    fn from_explicit_artifact_replay(
+        reader: &PackageReader,
+        inputs: PackageReplayInputs,
+        target: PostgresTarget,
+        dedup: MergeDedupPolicy,
+        existing_table: Option<PostgresExistingTable>,
+    ) -> Result<Self> {
+        let load_input = postgres_load_plan_input_from_artifacts(
+            &inputs,
+            target,
+            dedup,
+            existing_table,
+            postgres_columns_from_package(reader)?,
+        )?;
+        let load_plan = PostgresDestination::new().plan_load(load_input)?;
+        Ok(Self {
+            target: inputs.destination_commit.target.clone(),
+            disposition: inputs.destination_commit.disposition.clone(),
+            commit: inputs.destination_commit,
+            delta: inputs.state_delta,
+            load_plan: Some(load_plan),
+        })
+    }
 }
 
 pub fn replay_duckdb_package_from_artifacts<Store>(
@@ -1747,6 +1829,27 @@ where
     )
 }
 
+pub fn replay_parquet_package_from_artifacts<Store>(
+    request: PackageArtifactParquetReplayRequest<'_, Store>,
+) -> Result<PreparedParquetReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let reader = PackageReader::open(&request.package_dir)?;
+    let inputs = ParquetPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
+    replay_parquet_package_with_inputs(
+        reader,
+        request.package_dir,
+        request.destination,
+        request.checkpoint_store,
+        inputs,
+        ParquetReplayHooks {
+            after_receipt_verified: request.after_receipt_verified,
+            stage: None,
+        },
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PreparedPostgresReplayReport {
     pub checkpoint: Checkpoint,
@@ -1777,6 +1880,33 @@ where
         inputs,
         request.receipt,
         request.after_receipt_verified,
+    )
+}
+
+pub fn replay_postgres_package_from_artifacts<Store>(
+    request: PackageArtifactPostgresReplayRequest<'_, Store>,
+) -> Result<PreparedPostgresReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    let reader = PackageReader::open(&request.package_dir)?;
+    let inputs = PostgresPackageReplayInputs::from_explicit_artifact_replay(
+        &reader,
+        reader.replay_inputs()?,
+        request.target,
+        request.dedup,
+        request.existing_table,
+    )?;
+    replay_postgres_package_with_inputs(
+        reader,
+        request.package_dir,
+        request.destination,
+        request.checkpoint_store,
+        inputs,
+        PostgresReplayHooks {
+            after_receipt_verified: request.after_receipt_verified,
+            stage: None,
+        },
     )
 }
 

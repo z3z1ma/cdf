@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-run-spine-implementation-program.md
-Depends-On: .10x/tickets/done/2026-07-07-duckdb-commit-session-refactor.md, .10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md, .10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md, .10x/tickets/done/2026-07-07-run-ledger-store.md, .10x/tickets/done/2026-07-07-general-run-postgres-destination.md, .10x/specs/run-orchestration-ledger.md
+Depends-On: .10x/tickets/done/2026-07-07-duckdb-commit-session-refactor.md, .10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md, .10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md, .10x/tickets/done/2026-07-07-run-ledger-store.md, .10x/tickets/done/2026-07-07-general-run-postgres-destination.md, .10x/tickets/done/2026-07-07-non-duckdb-package-replay-recovery.md, .10x/specs/run-orchestration-ledger.md
 
 # Implement the general project run orchestrator
 
@@ -39,7 +39,7 @@ No CLI command parsing, no `inspect run` presentation, no distributed scheduler,
 
 ## Blockers
 
-None from user. The Postgres destination child is done. Parent completion now needs a closure audit that maps all accepted resource/destination/crash-window scenarios to evidence and review.
+None.
 
 ## Progress and notes
 
@@ -56,3 +56,5 @@ None from user. The Postgres destination child is done. Parent completion now ne
 - 2026-07-07: User ratified `.10x/decisions/project-run-postgres-destination-inputs.md`; the parent now waits only on the open Postgres implementation child, not on semantic input ambiguity.
 - 2026-07-07: Current state clarified: this ticket is open and dependency-gated by the Postgres implementation child. No unresolved user decision blocks orchestration work.
 - 2026-07-07: Postgres implementation child closed with evidence `.10x/evidence/2026-07-07-general-run-postgres-destination.md` and review `.10x/reviews/2026-07-07-general-run-postgres-destination-review.md`. This parent has no user-level blockers; leave it open until an explicit parent closure audit reconciles the full acceptance criteria.
+- 2026-07-07: Parent closure audit found a runtime gap rather than a bookkeeping gap: finalized-package/no-durable-receipt recovery was public for DuckDB, while Parquet and Postgres recovery required a supplied durable receipt. Opened `.10x/tickets/done/2026-07-07-non-duckdb-package-replay-recovery.md` and marked this parent blocked on that child before final closure evidence/review.
+- 2026-07-07: Closed non-DuckDB replay recovery child `.10x/tickets/done/2026-07-07-non-duckdb-package-replay-recovery.md`. Parent closure evidence recorded in `.10x/evidence/2026-07-07-general-run-orchestrator-closure.md`; closure review recorded in `.10x/reviews/2026-07-07-general-run-orchestrator-closure-review.md`.

@@ -30,7 +30,7 @@ use cdf_kernel::{
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
-    PackageManifest, PackageReader, PackageStatus, STATE_INPUT_CHECKPOINT_FILE,
+    PackageManifest, PackageReader, PackageStatus, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
     STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, canonical_json_bytes,
 };
 use cdf_state_sqlite::{RunEventKind, SqliteCheckpointStore, SqliteRunLedger};
@@ -40,12 +40,14 @@ use tempfile::TempDir;
 use crate::{
     LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest, PackageArtifactDuckDbRecoveryRequest,
     PackageArtifactDuckDbReplayRequest, PackageArtifactParquetRecoveryRequest,
-    PackageArtifactPostgresRecoveryRequest, PreparedDuckDbRecoveryRequest,
+    PackageArtifactParquetReplayRequest, PackageArtifactPostgresRecoveryRequest,
+    PackageArtifactPostgresReplayRequest, PreparedDuckDbRecoveryRequest,
     PreparedDuckDbReplayRequest, PreparedReceiptSource, ProjectReceiptSource,
     ProjectRunDestination, ProjectRunReport, ProjectRunRequest, ProjectRunResource,
     recover_duckdb_package_from_artifacts, recover_parquet_package_from_artifacts,
     recover_postgres_package_from_artifacts, recover_prepared_duckdb_package,
-    replay_duckdb_package_from_artifacts, replay_prepared_duckdb_package,
+    replay_duckdb_package_from_artifacts, replay_parquet_package_from_artifacts,
+    replay_postgres_package_from_artifacts, replay_prepared_duckdb_package,
     replay_prepared_duckdb_package_with_failpoint, run_local_file_to_duckdb_checkpoint,
     run_project, runtime::state_delta_from_run,
 };
@@ -376,6 +378,13 @@ fn package_receipts(package_dir: &Path) -> Vec<Receipt> {
         .unwrap()
         .receipts()
         .unwrap()
+}
+
+fn remove_package_receipts(package_dir: &Path) {
+    let path = package_dir.join(RECEIPTS_FILE);
+    if path.exists() {
+        fs::remove_file(path).unwrap();
+    }
 }
 
 fn live_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
@@ -739,6 +748,31 @@ impl Drop for LocalPostgres {
 
 fn quote_identifier(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
+}
+
+fn reset_postgres_schema(postgres: &LivePostgres) {
+    let schema = quote_identifier(&postgres.schema);
+    postgres
+        .client()
+        .batch_execute(&format!(
+            "DROP SCHEMA IF EXISTS {schema} CASCADE; CREATE SCHEMA {schema}"
+        ))
+        .unwrap();
+}
+
+fn postgres_table_exists(postgres: &LivePostgres, table: &str) -> bool {
+    postgres
+        .client()
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = $1 AND table_name = $2
+            )",
+            &[&postgres.schema, &table],
+        )
+        .unwrap()
+        .get(0)
 }
 
 fn find_binary(name: &str) -> Option<PathBuf> {
@@ -1243,6 +1277,66 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
 }
 
 #[test]
+fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-general-parquet-artifact-replay";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let parquet_root = temp.path().join(".cdf/lake");
+    let replay_root = temp.path().join(".cdf/replay-lake");
+    let state_path = temp.path().join(".cdf/state.db");
+    let replay_state_path = temp.path().join(".cdf/replay-state.db");
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before parquet checkpoint"));
+    let mut request = parquet_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &parquet_root,
+        &state_path,
+        "run-general-parquet-artifact-replay",
+    );
+    request.after_receipt_verified = Some(&hook);
+    futures_executor::block_on(run_project(request)).unwrap_err();
+    fs::remove_file(temp.path().join("data/events.ndjson")).unwrap();
+    remove_package_receipts(&package_dir);
+    assert!(package_receipts(&package_dir).is_empty());
+
+    let destination = ParquetDestination::new_filesystem(&replay_root).unwrap();
+    let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
+    let report = replay_parquet_package_from_artifacts(PackageArtifactParquetReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: &destination,
+        checkpoint_store: &store,
+        after_receipt_verified: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
+            package_receipt_recorded: true
+        }
+    );
+    assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
+    assert!(
+        destination
+            .verify_receipt(&report.receipt)
+            .unwrap()
+            .verified
+    );
+    assert_eq!(
+        assert_head(&store, &report.checkpoint.delta)
+            .delta
+            .checkpoint_id,
+        report.checkpoint.delta.checkpoint_id
+    );
+}
+
+#[test]
 fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_contact() {
     let Some(postgres) = LivePostgres::start() else {
         return;
@@ -1299,6 +1393,150 @@ fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_conta
         .unwrap()
         .get(0);
     assert_eq!(rows, 2);
+}
+
+#[test]
+fn postgres_artifact_replay_after_source_loss_without_receipt_commits_checkpoint() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-general-postgres-artifact-replay";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let state_path = temp.path().join(".cdf/state.db");
+    let replay_state_path = temp.path().join(".cdf/replay-state.db");
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before postgres checkpoint"));
+    let target = PostgresTarget::new(Some(&postgres.schema), "events_artifact_replay").unwrap();
+    let mut request = postgres_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &postgres.url,
+        target.clone(),
+        &state_path,
+        "run-general-postgres-artifact-replay",
+    );
+    request.after_receipt_verified = Some(&hook);
+    futures_executor::block_on(run_project(request)).unwrap_err();
+    fs::remove_file(temp.path().join("data/events.ndjson")).unwrap();
+    remove_package_receipts(&package_dir);
+    reset_postgres_schema(&postgres);
+    assert!(package_receipts(&package_dir).is_empty());
+
+    let destination = PostgresDestination::connect(postgres.url.clone()).unwrap();
+    let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
+    let report = replay_postgres_package_from_artifacts(PackageArtifactPostgresReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: &destination,
+        checkpoint_store: &store,
+        target,
+        dedup: MergeDedupPolicy::Last,
+        existing_table: None,
+        after_receipt_verified: None,
+    })
+    .unwrap();
+
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommitReceiptOnly {
+            package_receipt_recorded: true
+        }
+    );
+    assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
+    assert!(
+        destination
+            .verify_receipt(&report.receipt)
+            .unwrap()
+            .verified
+    );
+    assert_eq!(
+        assert_head(&store, &report.checkpoint.delta)
+            .delta
+            .checkpoint_id,
+        report.checkpoint.delta.checkpoint_id
+    );
+    let mut client = postgres.client();
+    let rows: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {}",
+                postgres.table("events_artifact_replay")
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 2);
+}
+
+#[test]
+fn postgres_artifact_replay_rejects_mismatched_explicit_target_before_mutation() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-general-postgres-target-mismatch";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let state_path = temp.path().join(".cdf/state.db");
+    let replay_state_path = temp.path().join(".cdf/replay-state.db");
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before postgres checkpoint"));
+    let target = PostgresTarget::new(Some(&postgres.schema), "events_target_match").unwrap();
+    let mut request = postgres_project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &postgres.url,
+        target,
+        &state_path,
+        "run-general-postgres-target-mismatch",
+    );
+    request.after_receipt_verified = Some(&hook);
+    futures_executor::block_on(run_project(request)).unwrap_err();
+    fs::remove_file(temp.path().join("data/events.ndjson")).unwrap();
+    remove_package_receipts(&package_dir);
+    reset_postgres_schema(&postgres);
+    let delta = PackageReader::open(&package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap()
+        .state_delta;
+
+    let destination = PostgresDestination::connect(postgres.url.clone()).unwrap();
+    let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
+    let wrong_target = PostgresTarget::new(Some(&postgres.schema), "events_target_wrong").unwrap();
+    let error = replay_postgres_package_from_artifacts(PackageArtifactPostgresReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: &destination,
+        checkpoint_store: &store,
+        target: wrong_target,
+        dedup: MergeDedupPolicy::Last,
+        existing_table: None,
+        after_receipt_verified: None,
+    })
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("does not match package destination commit target"),
+        "{error}"
+    );
+    assert!(package_receipts(&package_dir).is_empty());
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    assert!(
+        store
+            .history(&delta.pipeline_id, &delta.resource_id, &delta.scope)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!postgres_table_exists(&postgres, "events_target_match"));
+    assert!(!postgres_table_exists(&postgres, "events_target_wrong"));
 }
 
 #[test]

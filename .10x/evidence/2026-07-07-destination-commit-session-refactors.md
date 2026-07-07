@@ -52,10 +52,10 @@ This supports closing the three destination child tickets as implemented and ver
 - `.10x/tickets/done/2026-07-07-parquet-commit-session-refactor.md`
 - `.10x/tickets/done/2026-07-07-postgres-commit-session-refactor.md`
 
-It also supports unblocking `.10x/tickets/2026-07-07-general-run-orchestrator.md` on destination commit-session implementations, leaving the run-ledger store as the remaining declared dependency.
+It also supports unblocking `.10x/tickets/done/2026-07-07-general-run-orchestrator.md` on destination commit-session implementations, leaving the run-ledger store as the remaining declared dependency.
 
 ## Limits
 
-This evidence does not prove a general project orchestrator exists. DuckDB and Parquet still need package context captured by their package-aware planning APIs, and Postgres uses `with_commit_request` as a compatibility handoff. That input-shape constraint is owned by `.10x/tickets/2026-07-07-general-run-orchestrator.md`.
+This evidence did not prove a general project orchestrator existed. DuckDB and Parquet still needed package context captured by their package-aware planning APIs, and Postgres used `with_commit_request` as a compatibility handoff. That input-shape constraint was owned by `.10x/tickets/done/2026-07-07-general-run-orchestrator.md`.
 
 This evidence also does not claim streaming/restartable writes within a destination session. DuckDB and Parquet preserve their previous durable package-commit granularity, and Postgres preserves one explicit transaction around the existing live commit behavior.

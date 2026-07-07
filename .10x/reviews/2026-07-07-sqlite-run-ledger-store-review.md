@@ -14,7 +14,7 @@ Review of the run-ledger store slice implemented in `crates/cdf-state-sqlite/src
 
 No blocking findings were found.
 
-Minor residual design boundary: the storage API currently provides run creation, event append, per-run event listing, and per-run snapshots. That is enough for `inspect run <id>` and run-id-scoped resume plumbing, but it does not define a broader policy for discovering all interrupted runs. If CLI `cdf resume` needs no-argument discovery, `.10x/tickets/2026-07-07-general-run-orchestrator.md` or `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md` must define that policy rather than inventing it inside storage.
+Minor residual design boundary: the storage API currently provides run creation, event append, per-run event listing, and per-run snapshots. That is enough for `inspect run <id>` and run-id-scoped resume plumbing, but it does not define a broader policy for discovering all interrupted runs. If CLI `cdf resume` needs no-argument discovery, `.10x/tickets/done/2026-07-07-general-run-orchestrator.md` or `.10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md` must define that policy rather than inventing it inside storage.
 
 Minor security limit: raw secret values cannot be perfectly detected generically. The store enforces typed `SecretRef` values for sensitive detail keys and rejects untyped `secret://` strings; callers still must avoid placing resolved secrets under innocuous key names. This matches the first storage slice and is reinforced by `.10x/specs/project-cli-observability-security.md`.
 

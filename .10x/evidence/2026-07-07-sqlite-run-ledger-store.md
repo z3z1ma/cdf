@@ -42,7 +42,7 @@ CodeQL was intentionally skipped because the active execution instruction is to 
 
 ## What this supports
 
-This supports closing `.10x/tickets/done/2026-07-07-run-ledger-store.md` and unblocking `.10x/tickets/2026-07-07-general-run-orchestrator.md` on the run-ledger-store dependency.
+This supports closing `.10x/tickets/done/2026-07-07-run-ledger-store.md` and unblocking `.10x/tickets/done/2026-07-07-general-run-orchestrator.md` on the run-ledger-store dependency.
 
 ## Limits
 

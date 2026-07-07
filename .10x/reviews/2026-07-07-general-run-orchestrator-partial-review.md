@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/2026-07-07-general-run-orchestrator.md
+Target: .10x/tickets/done/2026-07-07-general-run-orchestrator.md
 Verdict: concerns
 
 # General Run Orchestrator Partial Review
@@ -20,7 +20,7 @@ Review of the partial general run orchestrator implementation in `crates/cdf-pro
 
 ## Findings
 
-- Significant: `.10x/tickets/2026-07-07-general-run-orchestrator.md` remained incomplete at the time of this partial review. The implementation supported deterministic local file resources into DuckDB and filesystem Parquet, but not Postgres destinations, REST resource streams, or table-backed SQL resource streams. That work was explicitly owned by `.10x/tickets/done/2026-07-07-general-run-postgres-destination.md` and `.10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md`; the parent ticket was correctly left open.
+- Significant: `.10x/tickets/done/2026-07-07-general-run-orchestrator.md` remained incomplete at the time of this partial review. The implementation supported deterministic local file resources into DuckDB and filesystem Parquet, but not Postgres destinations, REST resource streams, or table-backed SQL resource streams. That work was explicitly owned by `.10x/tickets/done/2026-07-07-general-run-postgres-destination.md` and `.10x/tickets/done/2026-07-07-general-run-non-file-resource-streams.md`; the parent ticket was correctly left open.
 - Minor: The public legacy `PreparedReceiptSource::DuckDbCommit` remains DuckDB-specific, while project-level reporting uses `ProjectReceiptSource`. This preserves semver and avoids mislabeling Parquet project reports, but it leaves two receipt-source types for future callers to distinguish.
 - Minor: `run_project` still validates `CompiledResource` as local-file-only. The fail-closed behavior is correct for this slice, but future REST/SQL work must avoid routing through `CompiledResource::open` defaults and must ratify non-file `SourcePosition` checkpoint semantics before implementation.
 

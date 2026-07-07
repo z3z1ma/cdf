@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-general-run-orchestrator.md
+Parent: .10x/tickets/done/2026-07-07-general-run-orchestrator.md
 Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/package-lifecycle-determinism.md
 
 # Add non-file resource streams to the general run orchestrator
@@ -39,7 +39,7 @@ Run focused `cdf-project` tests, existing REST/SQL resource conformance tests wh
 
 ## Progress and notes
 
-- 2026-07-07: Blocked during `.10x/tickets/2026-07-07-general-run-orchestrator.md` continuation. Inspection found safe lower-layer `RestResource` and `SqlResource` wrappers exist, but the general project-run request and checkpoint artifact semantics do not yet carry the needed runtime dependencies or non-file source-position contract.
+- 2026-07-07: Blocked during `.10x/tickets/done/2026-07-07-general-run-orchestrator.md` continuation. Inspection found safe lower-layer `RestResource` and `SqlResource` wrappers exist, but the general project-run request and checkpoint artifact semantics did not yet carry the needed runtime dependencies or non-file source-position contract.
 - 2026-07-07: Reactivated for a conservative dependency-bearing stream slice. Governing records now support typed cursor/file/source positions (`.10x/specs/checkpoint-state-commit-gate.md`), execution through `ResourceStream` (`.10x/specs/run-orchestration-ledger.md`), and concrete REST/SQL runtime wrappers in source. The worker must keep raw REST/SQL `CompiledResource::open` out of the project run path, validate missing runtime dependencies before package/destination/state mutation, and fail closed on divergent segment source positions rather than inventing cursor aggregation semantics.
 - 2026-07-07: Implemented the bounded dependency-bearing stream slice in `cdf-project` and `cdf-declarative`: `ProjectRunRequest` now accepts only local-file compiled resources or concrete `RestResource`/`SqlResource` wrappers, runtime execution uses the selected `ResourceStream`, REST/SQL missing secret-provider dependencies fail before package/destination/state writes, and state-delta preimages accept one coherent non-file `SourcePosition` while preserving file-manifest normalization. Added focused REST, raw compiled REST rejection, missing dependency, divergent position, and live/local Postgres SQL run coverage. Verification passed: `cargo fmt --check`; `cargo check -p cdf-project --tests --locked`; `cargo test -p cdf-project general_project_run_ --locked -- --nocapture` (9 passed; local Postgres test executed); `cargo test -p cdf-project state_delta_rejects_divergent_segment_source_positions --locked`; `cargo clippy -p cdf-project --all-targets --locked -- -D warnings`; `cargo check --workspace --locked`.
 - 2026-07-07: Parent review found that accepting inexact REST cursors or missing cursor declarations would violate active window-close semantics and that dependency preflight needed to resolve actual secret values, not just provider presence. Repaired by requiring exact zero-lag cursors for non-file project runs in this slice, resolving REST/SQL secrets in preflight, rejecting missing/empty secrets before writes, and adding project/declarative tests for those cases.
