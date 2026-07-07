@@ -3,6 +3,7 @@ name = "cdf-dest-postgres"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Postgres destination boundary for cdf."
 
 [dependencies]

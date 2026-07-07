@@ -3,6 +3,7 @@ name = "cdf-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Command-line entry point for cdf."
 
 [[bin]]

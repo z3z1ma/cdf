@@ -3,6 +3,7 @@ name = "cdf-kernel"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Core types, traits, and artifact contracts for cdf."
 
 [dependencies]

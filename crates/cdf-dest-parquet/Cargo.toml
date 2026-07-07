@@ -3,6 +3,7 @@ name = "cdf-dest-parquet"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Parquet object-store destination boundary for cdf."
 
 [dependencies]

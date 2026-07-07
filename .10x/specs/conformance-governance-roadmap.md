@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-07
 
 # Conformance, governance, and roadmap
 
@@ -28,6 +28,8 @@ Checkpoint schema, package manifest version, capability-sheet format, WIT world,
 
 Each cdf minor release MUST pin one load-bearing dependency tuple. Patch releases MUST NOT move those pins.
 
+While CDF depends on Apache DataFusion from a git source, CDF MUST NOT publish crates.io releases unless a later active decision explicitly supersedes this constraint. Current crate manifests MUST carry `publish = false` while that git pin remains. The release path MUST first replace the DataFusion git pin with a crates.io dependency or record the superseding release decision with supply-chain evidence, then remove the manifest publication guard only as part of that governed release work.
+
 ## MVP contents
 
 MVP MUST include the kernel, engine, contract compiler, package builder/replayer, SQLite ledger, authoring tiers 0/1/2/4 for Arrow IPC and NDJSON, HTTP toolkit, DuckDB/Parquet/Postgres destinations, HTTP-paginated API/Postgres snapshot-incremental/Parquet-CSV-JSON file sources, append/replace/merge dispositions, CLI except package archive, conformance suites, chaos layer, golden packages, and dlt shim preview.
@@ -52,4 +54,3 @@ No UI is in scope for the kernel. A future UI, if any, sits above CLI/library su
 ## Explicit exclusions
 
 This spec does not assign implementation work; child tickets under the parent plan own execution.
-

@@ -3,6 +3,7 @@ name = "cdf-declarative"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Declarative resource authoring boundary for cdf."
 
 [dependencies]

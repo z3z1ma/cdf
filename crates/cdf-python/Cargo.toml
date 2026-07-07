@@ -3,6 +3,7 @@ name = "cdf-python"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Optional Python authoring and interchange boundary for cdf."
 
 [dependencies]

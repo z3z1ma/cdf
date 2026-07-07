@@ -3,6 +3,7 @@ name = "cdf-subprocess"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "Subprocess adapter boundary for cdf."
 
 [dependencies]

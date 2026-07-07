@@ -3,6 +3,7 @@ name = "cdf-formats"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "External data format boundary for cdf."
 
 [dependencies]

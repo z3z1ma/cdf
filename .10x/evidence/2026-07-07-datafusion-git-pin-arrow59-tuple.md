@@ -52,6 +52,6 @@ This supports closing the DataFusion tuple ticket: CDF's engine can now compile 
 
 ## Limits
 
-The workspace still contains Arrow `58.3.0` through `duckdb 1.10504.0`; that is not the DataFusion engine tuple and is now owned by `.10x/tickets/2026-07-07-duckdb-arrow58-transitive-residual.md`.
+The workspace still contains Arrow `58.3.0` through `duckdb 1.10504.0`; that is not the DataFusion engine tuple and is now owned by `.10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md`.
 
 CodeQL extraction warnings match the known local extractor limitation recorded in `.10x/knowledge/quality-gate-execution.md`; the actual SARIF result count was 0. OSV's nonzero exit is the already-ratified `paste` advisory only. Coverage, Miri, fuzzing, Kani, mutation testing, and profiling were not run for this dependency tuple slice because the implementation changed manifests, lockfile policy, and test fixtures but did not add new unsafe code, parsers, algorithms, or performance-sensitive runtime logic.

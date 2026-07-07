@@ -3,6 +3,7 @@ name = "cdf-http"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "HTTP resource toolkit boundary for cdf."
 
 [dependencies]

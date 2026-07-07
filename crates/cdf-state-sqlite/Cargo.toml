@@ -3,6 +3,7 @@ name = "cdf-state-sqlite"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+publish = false
 description = "SQLite checkpoint store boundary for cdf."
 
 [dependencies]

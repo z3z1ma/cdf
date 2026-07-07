@@ -20,7 +20,7 @@ The lower-layer boundary is preserved. The direct source scan found no DataFusio
 
 The supply-chain posture is honest. `cargo deny`, `cargo audit`, `cargo vet`, Semgrep, CodeQL, and cargo-machete passed. OSV reports only the already-ratified `paste 1.0.15` advisory. CodeQL refreshed the reusable database for a legitimate input change and produced 0 SARIF findings.
 
-The main residual risk is not hidden: the workspace still carries Arrow `58.3.0` through `duckdb 1.10504.0`. That is outside the DataFusion engine tuple and is now owned by `.10x/tickets/2026-07-07-duckdb-arrow58-transitive-residual.md`.
+The main residual risk is not hidden: the workspace still carries Arrow `58.3.0` through `duckdb 1.10504.0`. That is outside the DataFusion engine tuple and is now owned by `.10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md`.
 
 ## Verdict
 

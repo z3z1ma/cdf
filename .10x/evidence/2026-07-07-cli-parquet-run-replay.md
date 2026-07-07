@@ -29,7 +29,7 @@ Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
 - `cargo check --workspace --all-targets --no-default-features --locked`: passed.
 - `cargo nextest run --workspace --locked --no-fail-fast`: passed, 418 tests.
 - `cargo hack check --workspace --all-targets --feature-powerset --locked`: passed.
-- `cargo deny check`: passed; duplicate Arrow 58/59 warnings remain tracked by `.10x/tickets/2026-07-07-duckdb-arrow58-transitive-residual.md`.
+- `cargo deny check`: passed; duplicate Arrow 58/59 warnings remain tracked by `.10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md`.
 - `cargo audit`: passed with the already-ratified `paste` / `RUSTSEC-2024-0436` allowed warning.
 - `cargo vet --locked`: passed, `Vetting Succeeded (393 exempted)`.
 - `osv-scanner --lockfile Cargo.lock`: exited nonzero only for the already-ratified `paste` / `RUSTSEC-2024-0436` finding.

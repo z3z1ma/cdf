@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -42,7 +42,12 @@ No DataFusion tuple changes, no Arrow-major bridge in the engine hot path, no Du
 ## Progress and notes
 
 - 2026-07-07: Opened during closure of the DataFusion git-pin tuple work. The DataFusion engine tuple is aligned to Arrow `59.1.0`, but `cargo tree --workspace --locked -i arrow-array@58.3.0` still finds `duckdb 1.10504.0 -> arrow 58.3.0`.
+- 2026-07-07: Investigation completed in `.10x/evidence/2026-07-07-duckdb-arrow58-residual-audit.md`. `cargo search duckdb --limit 10` and `cargo info duckdb` report `duckdb 1.10504.0` as latest/current; registry source shows `duckdb-rs` has an unconditional Arrow `58` dependency with `prettyprint` and `ffi`, so no current feature/version path removes Arrow 58.
+- 2026-07-07: Audited CDF DuckDB commit, replay, duplicate receipt, and receipt verification boundaries. CDF package replay enters the destination as Arrow 59 `RecordBatch` values from `cdf-package`, then `crates/cdf-dest-duckdb/src/package.rs` and `rows.rs` lower schemas and arrays to DuckDB SQL type strings and `duckdb::types::Value`. Commit and merge use row appenders/SQL; receipts and mirror verification use JSON and primitive rows. No Arrow 58 structs cross into CDF public Arrow 59 APIs.
+- 2026-07-07: Recorded temporary acceptance/no-action decision in `.10x/decisions/duckdb-arrow58-private-driver-residual.md`. No implementation follow-up ticket was opened because current remediation options require upstream change, fork, or driver rewrite rather than a bounded low-risk change.
+- 2026-07-07: Supply-chain gates passed without `deny.toml` or `supply-chain/config.toml` changes: `cargo deny check` passed with duplicate warnings and all checks ok; `cargo vet --locked` passed.
+- 2026-07-07: Parent orchestrator repaired references after review and moved this ticket to `done/`. The residual is accepted temporarily by `.10x/decisions/duckdb-arrow58-private-driver-residual.md`; no implementation owner remains open until a revisit trigger fires.
 
 ## Blockers
 
-None for investigation.
+None. Revisit triggers live in `.10x/decisions/duckdb-arrow58-private-driver-residual.md`.

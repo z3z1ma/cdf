@@ -14,7 +14,7 @@ Current source and records support the directive:
 - `crates/cdf-kernel/src/destination.rs` currently defines `CommitSession::write(&mut self) -> Result<()>` with no segment payload and gives `DestinationProtocol::begin` an error-returning default.
 - `crates/cdf-project/src/runtime.rs` is 2,913 lines and contains closed `ProjectRunDestination` and `ProjectRunResource` enums plus public destination-specialized replay/recover wrapper families.
 - Existing conformance records show many closed slices but still leave non-DuckDB chaos, broader run-spine matrix coverage, per-destination live-run goldens, property/fuzz targets, and the killer-demo evidence open under `.10x/tickets/2026-07-05-conformance-chaos-golden.md`.
-- `.10x/tickets/2026-07-07-duckdb-arrow58-transitive-residual.md` already owns the remaining DuckDB Arrow 58 investigation after the DataFusion git pin aligned the engine tuple.
+- `.10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md` already owns the remaining DuckDB Arrow 58 investigation after the DataFusion git pin aligned the engine tuple.
 - Current contract implementation has schema/program vocabulary and package quarantine artifact helpers, but live row-level verdict routing is not complete.
 - No benchmark harness is present; the prior baseline benchmark owner was triage-only.
 
