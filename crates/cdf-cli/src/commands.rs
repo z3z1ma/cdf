@@ -6,7 +6,9 @@ use std::{
 };
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
-use cdf_declarative::CompiledResourcePlan;
+use cdf_declarative::{
+    CompiledResource, CompiledResourcePlan, SqlResource, SqlRuntimeDependencies,
+};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStore, OrderBy, PartitionPlan, PipelineId, PredicateId,
@@ -14,10 +16,11 @@ use cdf_kernel::{
 };
 use cdf_package::{MANIFEST_FILE, PackageReader};
 use cdf_project::{
-    FileResourceSourceResolver, LocalFileDuckDbRunReport, LocalFileDuckDbRunRequest,
-    PreparedReceiptSource, ResourceSourceKind, generate_lockfile,
-    run_local_file_to_duckdb_checkpoint, validate_project,
+    FileResourceSourceResolver, ProjectReceiptSource, ProjectRunDestination, ProjectRunReport,
+    ProjectRunRequest, ProjectRunResource, ResourceSourceKind, generate_lockfile, run_project,
+    validate_project,
 };
+use cdf_state_sqlite::RunLedgerSnapshot;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -156,9 +159,10 @@ fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     let explicit = explicit_run_args(args)?;
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&explicit.resource_id)?;
-    ensure_run_resource_supported(resource.plan())?;
+    let run_resource = build_project_run_resource(&context, resource)?;
+    let (destination, destination_report) =
+        build_project_run_destination(&context, &explicit.target)?;
     let state_store_path = context.state_store_path()?;
-    let destination_path = run_duckdb_destination_path(&context)?;
     let plan = build_engine_plan(
         &context,
         &ScanArgs {
@@ -170,26 +174,25 @@ fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
             package_id: Some(explicit.package_id.clone()),
         },
     )?;
-    let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
-        LocalFileDuckDbRunRequest {
-            resource,
-            plan,
-            package_root: context.package_root(),
-            destination_path,
-            state_store_path,
-            pipeline_id: explicit.pipeline_id.clone(),
-            target: explicit.target.clone(),
-            package_id: explicit.package_id.clone(),
-            checkpoint_id: explicit.checkpoint_id.clone(),
-            after_receipt_verified: None,
-        },
-    ))?;
-    let cli_report = RunCliReport::from_report(&report);
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: run_resource.as_project_resource(),
+        plan,
+        package_root: context.package_root(),
+        state_store_path,
+        pipeline_id: explicit.pipeline_id.clone(),
+        package_id: explicit.package_id.clone(),
+        checkpoint_id: explicit.checkpoint_id.clone(),
+        destination,
+        run_id: None,
+        after_receipt_verified: None,
+    }))?;
+    let cli_report = RunCliReport::from_report(&report, destination_report);
     output(
         "run",
         format!(
-            "ran resource {} into package {} for target {}; checkpoint {} committed after DuckDB receipt verification, crossing the commit gate",
+            "ran resource {} as run {} into package {} for target {}; checkpoint {} committed after destination receipt verification, crossing the commit gate",
             cli_report.resource_id,
+            cli_report.run_id,
             cli_report.package_hash,
             cli_report.target,
             cli_report.checkpoint_id
@@ -212,20 +215,70 @@ fn required_run_arg(value: Option<String>, name: &str) -> Result<String, CliErro
     value.ok_or_else(|| CliError::usage(format!("run requires {name}")))
 }
 
-fn ensure_run_resource_supported(plan: &CompiledResourcePlan) -> Result<(), CliError> {
-    match plan {
-        CompiledResourcePlan::Files(_) => Ok(()),
+enum CliProjectRunResource<'a> {
+    LocalFile(&'a CompiledResource),
+    Sql(Box<SqlResource>),
+}
+
+impl<'a> CliProjectRunResource<'a> {
+    fn as_project_resource(&'a self) -> ProjectRunResource<'a> {
+        match self {
+            Self::LocalFile(resource) => ProjectRunResource::local_file(resource),
+            Self::Sql(resource) => ProjectRunResource::sql(resource.as_ref()),
+        }
+    }
+}
+
+fn build_project_run_resource<'a>(
+    context: &ProjectContext,
+    resource: &'a CompiledResource,
+) -> Result<CliProjectRunResource<'a>, CliError> {
+    match resource.plan() {
+        CompiledResourcePlan::Files(_) => Ok(CliProjectRunResource::LocalFile(resource)),
         CompiledResourcePlan::Rest(_) => Err(CliError::not_supported(
             "run",
-            "REST resource execution is excluded from this explicit local file to DuckDB slice",
-            "REST source runtime wired to package/checkpoint orchestration",
+            "REST resource execution requires a production HttpTransport; cdf-cli has no production HTTP transport registered in this build, so REST remains fail-closed before package, destination, or checkpoint writes",
+            "production HttpTransport adapter for RestRuntimeDependencies",
         )),
-        CompiledResourcePlan::Sql(_) => Err(CliError::not_supported(
-            "run",
-            "SQL resource execution is excluded from this explicit local file to DuckDB slice",
-            "SQL source runtime wired to package/checkpoint orchestration",
-        )),
+        CompiledResourcePlan::Sql(_) => {
+            let dependencies =
+                SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
+            Ok(CliProjectRunResource::Sql(Box::new(
+                resource.to_sql_resource(dependencies)?,
+            )))
+        }
     }
+}
+
+fn build_project_run_destination(
+    context: &ProjectContext,
+    target: &TargetName,
+) -> Result<(ProjectRunDestination, RunDestinationReport), CliError> {
+    if context.environment.destination.starts_with("postgres://") {
+        cdf_dest_postgres::PostgresTarget::parse(target.as_str())?;
+        return Err(CliError::not_supported(
+            "run",
+            "Postgres destination execution requires explicit CLI/project configuration for the Postgres existing-table policy and merge dedup policy before cdf-cli may construct ProjectRunDestination::Postgres",
+            "ratified Postgres destination policy configuration for cdf run",
+        ));
+    }
+
+    if context.environment.destination.starts_with("parquet://") {
+        return Err(CliError::not_supported(
+            "run",
+            "filesystem Parquet destination execution is available in cdf-project, but the CLI destination URI spelling is not ratified in active records",
+            "ratified filesystem Parquet destination URI spelling",
+        ));
+    }
+
+    let destination_path = run_duckdb_destination_path(context)?;
+    Ok((
+        ProjectRunDestination::DuckDb {
+            database_path: destination_path.clone(),
+            target: target.clone(),
+        },
+        RunDestinationReport::duckdb(destination_path.display().to_string(), target.to_string()),
+    ))
 }
 
 fn run_duckdb_destination_path(context: &ProjectContext) -> Result<PathBuf, CliError> {
@@ -1300,9 +1353,11 @@ struct PreviewReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct RunCliReport {
     command: &'static str,
+    run_id: String,
     resource_id: String,
     pipeline_id: String,
     target: String,
+    destination: RunDestinationReport,
     package_id: String,
     package_dir: String,
     package_hash: String,
@@ -1310,19 +1365,25 @@ struct RunCliReport {
     checkpoint_id: String,
     checkpoint: RunCheckpointReport,
     receipt_id: String,
+    receipt: RunReceiptReport,
     receipt_source: RunReceiptSourceReport,
     row_count: u64,
     segment_count: usize,
+    ledger_events: RunLedgerSummary,
     writes: WriteEffects,
 }
 
 impl RunCliReport {
-    fn from_report(report: &LocalFileDuckDbRunReport) -> Self {
+    fn from_report(report: &ProjectRunReport, destination: RunDestinationReport) -> Self {
+        let destination_kind = destination.kind;
         Self {
             command: "run",
+            run_id: report.run_id.to_string(),
             resource_id: report.checkpoint.delta.resource_id.to_string(),
             pipeline_id: report.checkpoint.delta.pipeline_id.to_string(),
             target: report.receipt.target.to_string(),
+            destination: destination
+                .with_receipt_destination(report.receipt.destination.to_string()),
             package_id: report.package_id.clone(),
             package_dir: report.package_dir.display().to_string(),
             package_hash: report.package_hash.to_string(),
@@ -1336,9 +1397,14 @@ impl RunCliReport {
                 committed_at_ms: report.checkpoint.committed_at_ms,
             },
             receipt_id: report.receipt.receipt_id.to_string(),
-            receipt_source: RunReceiptSourceReport::from(&report.receipt_source),
+            receipt: RunReceiptReport::from_report(report),
+            receipt_source: RunReceiptSourceReport::from_project(
+                &report.receipt_source,
+                destination_kind,
+            ),
             row_count: report.row_count,
             segment_count: report.segment_count,
+            ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
             writes: WriteEffects {
                 package: true,
                 destination: true,
@@ -1358,6 +1424,67 @@ struct RunCheckpointReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunDestinationReport {
+    kind: &'static str,
+    destination_id: Option<String>,
+    target: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    database_path: Option<String>,
+}
+
+impl RunDestinationReport {
+    fn duckdb(database_path: String, target: String) -> Self {
+        Self {
+            kind: "duckdb",
+            destination_id: None,
+            target,
+            database_path: Some(database_path),
+        }
+    }
+
+    fn with_receipt_destination(mut self, destination_id: String) -> Self {
+        self.destination_id = Some(destination_id);
+        self
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunReceiptReport {
+    receipt_id: String,
+    destination_id: String,
+    target: String,
+    package_hash: String,
+    disposition: String,
+    committed_at_ms: i64,
+    segment_ack_count: usize,
+    counts: cdf_kernel::CommitCounts,
+}
+
+impl RunReceiptReport {
+    fn from_report(report: &ProjectRunReport) -> Self {
+        Self {
+            receipt_id: report.receipt.receipt_id.to_string(),
+            destination_id: report.receipt.destination.to_string(),
+            target: report.receipt.target.to_string(),
+            package_hash: report.receipt.package_hash.to_string(),
+            disposition: write_disposition_name(&report.receipt.disposition).to_owned(),
+            committed_at_ms: report.receipt.committed_at_ms,
+            segment_ack_count: report.receipt.segment_acks.len(),
+            counts: report.receipt.counts.clone(),
+        }
+    }
+}
+
+fn write_disposition_name(disposition: &cdf_kernel::WriteDisposition) -> &'static str {
+    match disposition {
+        cdf_kernel::WriteDisposition::Append => "append",
+        cdf_kernel::WriteDisposition::Replace => "replace",
+        cdf_kernel::WriteDisposition::Merge => "merge",
+        cdf_kernel::WriteDisposition::CdcApply => "cdc_apply",
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum RunReceiptSourceReport {
     DuckDbCommit {
@@ -1365,21 +1492,109 @@ enum RunReceiptSourceReport {
         no_op: bool,
         package_receipt_recorded: bool,
     },
+    DestinationCommit {
+        duplicate: bool,
+        no_op: bool,
+        package_receipt_recorded: bool,
+    },
+    DestinationCommitReceiptOnly {
+        package_receipt_recorded: bool,
+    },
     SuppliedDurableReceipt,
 }
 
-impl From<&PreparedReceiptSource> for RunReceiptSourceReport {
-    fn from(source: &PreparedReceiptSource) -> Self {
+impl RunReceiptSourceReport {
+    fn from_project(source: &ProjectReceiptSource, destination_kind: &str) -> Self {
         match source {
-            PreparedReceiptSource::DuckDbCommit {
+            ProjectReceiptSource::DestinationCommit {
                 duplicate,
                 package_receipt_recorded,
-            } => Self::DuckDbCommit {
+            } if destination_kind == "duckdb" => Self::DuckDbCommit {
                 duplicate: *duplicate,
                 no_op: *duplicate,
                 package_receipt_recorded: *package_receipt_recorded,
             },
-            PreparedReceiptSource::SuppliedDurableReceipt => Self::SuppliedDurableReceipt,
+            ProjectReceiptSource::DestinationCommit {
+                duplicate,
+                package_receipt_recorded,
+            } => Self::DestinationCommit {
+                duplicate: *duplicate,
+                no_op: *duplicate,
+                package_receipt_recorded: *package_receipt_recorded,
+            },
+            ProjectReceiptSource::DestinationCommitReceiptOnly {
+                package_receipt_recorded,
+            } => Self::DestinationCommitReceiptOnly {
+                package_receipt_recorded: *package_receipt_recorded,
+            },
+            ProjectReceiptSource::SuppliedDurableReceipt => Self::SuppliedDurableReceipt,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+struct RunLedgerSummary {
+    event_count: usize,
+    first_sequence: Option<u64>,
+    last_sequence: Option<u64>,
+    terminal_kind: Option<String>,
+    kinds: BTreeMap<String, usize>,
+    events: Vec<RunLedgerEventSummary>,
+}
+
+impl RunLedgerSummary {
+    fn from_snapshot(snapshot: &RunLedgerSnapshot) -> Self {
+        let mut kinds = BTreeMap::new();
+        for event in &snapshot.events {
+            *kinds.entry(event.kind.as_str().to_owned()).or_insert(0) += 1;
+        }
+        Self {
+            event_count: snapshot.events.len(),
+            first_sequence: snapshot.events.first().map(|event| event.sequence),
+            last_sequence: snapshot.events.last().map(|event| event.sequence),
+            terminal_kind: snapshot
+                .events
+                .last()
+                .map(|event| event.kind.as_str().to_owned()),
+            kinds,
+            events: snapshot
+                .events
+                .iter()
+                .map(RunLedgerEventSummary::from_event)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunLedgerEventSummary {
+    sequence: u64,
+    kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resource_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    package_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    checkpoint_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    receipt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    destination_id: Option<String>,
+}
+
+impl RunLedgerEventSummary {
+    fn from_event(event: &cdf_state_sqlite::RunEvent) -> Self {
+        Self {
+            sequence: event.sequence,
+            kind: event.kind.as_str().to_owned(),
+            resource_id: event.resource_id.as_ref().map(ToString::to_string),
+            package_id: event.package_id.clone(),
+            package_hash: event.package_hash.as_ref().map(ToString::to_string),
+            checkpoint_id: event.checkpoint_id.as_ref().map(ToString::to_string),
+            receipt_id: event.receipt_id.as_ref().map(ToString::to_string),
+            destination_id: event.destination_id.as_ref().map(ToString::to_string),
         }
     }
 }

@@ -577,20 +577,43 @@ fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
     let report = &json["result"];
     assert_eq!(json["command"], "run");
     assert_eq!(report["command"], "run");
+    assert!(!report["run_id"].as_str().unwrap().is_empty());
     assert_eq!(report["resource_id"], "local.events");
     assert_eq!(report["pipeline_id"], "pipeline-run");
     assert_eq!(report["target"], "events");
+    assert_eq!(report["destination"]["kind"], "duckdb");
+    assert_eq!(report["destination"]["destination_id"], "duckdb");
+    assert!(
+        report["destination"]["database_path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".cdf/dev.duckdb")
+    );
     assert_eq!(report["package_id"], "pkg-run-success");
     assert_eq!(report["package_status"], "checkpointed");
     assert_eq!(report["checkpoint_id"], "checkpoint-run-success");
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["checkpoint"]["committed"], true);
     assert_eq!(report["checkpoint"]["is_head"], true);
+    assert_eq!(report["receipt"]["destination_id"], "duckdb");
+    assert_eq!(report["receipt"]["target"], "events");
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
     assert_eq!(report["receipt_source"]["kind"], "duck_db_commit");
     assert_eq!(report["receipt_source"]["duplicate"], false);
     assert_eq!(report["receipt_source"]["no_op"], false);
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["segment_count"], 1);
+    assert_eq!(report["ledger_events"]["event_count"], 10);
+    assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
+    assert_eq!(
+        report["ledger_events"]["kinds"]["destination_receipt_recorded"],
+        1
+    );
+    assert_eq!(report["ledger_events"]["events"][0]["kind"], "run_started");
+    assert_eq!(
+        report["ledger_events"]["events"][9]["kind"],
+        "run_succeeded"
+    );
     assert_eq!(report["writes"]["package"], true);
     assert_eq!(report["writes"]["destination"], true);
     assert_eq!(report["writes"]["checkpoint"], true);
@@ -796,7 +819,7 @@ fn run_path_package_id_fails_before_writes() {
 }
 
 #[test]
-fn run_non_duckdb_destination_fails_before_package_or_destination_writes() {
+fn run_postgres_destination_fails_closed_until_policy_config_is_ratified() {
     let project = TestProject::new();
     write_project_destination(&project, "postgres://secret://env/WAREHOUSE");
 
@@ -810,7 +833,7 @@ fn run_non_duckdb_destination_fails_before_package_or_destination_writes() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("duckdb://")
+            .contains("existing-table policy and merge dedup policy")
     );
 }
 
@@ -831,11 +854,16 @@ fn run_rest_resource_fails_before_package_or_destination_writes() {
     assert_no_run_writes(&project, "pkg-run-rest");
     let json = stderr_or_stdout_json(&result.stderr);
     assert_eq!(json["error"]["not_supported"], true);
-    assert!(json["error"]["message"].as_str().unwrap().contains("REST"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("HttpTransport")
+    );
 }
 
 #[test]
-fn run_sql_resource_fails_before_package_or_destination_writes() {
+fn run_sql_resource_missing_secret_fails_before_package_or_destination_writes() {
     let project = TestProject::new();
     write_secret_project(
         &project,
@@ -851,11 +879,109 @@ fn run_sql_resource_fails_before_package_or_destination_writes() {
         "checkpoint-run-sql",
     );
 
-    assert_eq!(result.exit_code, 78);
+    assert_eq!(result.exit_code, 4);
     assert_no_run_writes(&project, "pkg-run-sql");
     let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], false);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("secret://env/CDF_CLI_SQL")
+    );
+}
+
+#[test]
+fn run_sql_resource_resolves_secret_without_leaking_before_cursor_blocker() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("sql-dsn"),
+        "postgres://user:sql-secret@localhost/db\n",
+    )
+    .unwrap();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+
+    let result = run_valid_run_resource(
+        &project,
+        "warehouse.orders",
+        "pkg-run-sql-resolved",
+        "checkpoint-run-sql-resolved",
+    );
+
+    assert_eq!(result.exit_code, 3);
+    assert_no_run_writes(&project, "pkg-run-sql-resolved");
+    assert_secret_absent(&result, "sql-secret");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("exact zero-lag cursor")
+    );
+}
+
+#[test]
+fn run_parquet_destination_uri_fails_closed_until_spelling_is_ratified() {
+    let project = TestProject::new();
+    write_project_destination(&project, "parquet://.cdf/parquet");
+
+    let result = run_valid_run_args(&project, "pkg-run-parquet", "checkpoint-run-parquet");
+
+    assert_eq!(result.exit_code, 78);
+    assert_no_run_writes(&project, "pkg-run-parquet");
+    let json = stderr_or_stdout_json(&result.stderr);
     assert_eq!(json["error"]["not_supported"], true);
-    assert!(json["error"]["message"].as_str().unwrap().contains("SQL"));
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("URI spelling is not ratified")
+    );
+}
+
+#[test]
+fn run_postgres_destination_secret_is_not_resolved_before_policy_config_blocker() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        "postgres://user:destination-secret@localhost/db\n",
+    )
+    .unwrap();
+    write_project_destination(&project, "postgres://secret://file/destination-dsn");
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "run".to_owned(),
+        "--resource".to_owned(),
+        "local.events".to_owned(),
+        "--pipeline".to_owned(),
+        "pipeline-run".to_owned(),
+        "--target".to_owned(),
+        "events".to_owned(),
+        "--package-id".to_owned(),
+        "pkg-run-postgres-redacted".to_owned(),
+        "--checkpoint-id".to_owned(),
+        "checkpoint-run-postgres-redacted".to_owned(),
+    ]);
+
+    assert_eq!(result.exit_code, 78);
+    assert_no_run_writes(&project, "pkg-run-postgres-redacted");
+    assert_secret_absent(&result, "destination-secret");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Postgres destination execution requires explicit")
+    );
 }
 
 #[test]

@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
@@ -41,8 +41,13 @@ No `resume`, no `replay package`, no `inspect run`, no `run --loop`, no arbitrar
 
 ## Blockers
 
-None for DuckDB/Postgres and resource routing. Filesystem Parquet CLI URI spelling must be ratified inside this ticket before enabling Parquet CLI run support.
+- REST CLI run routing is blocked by the absence of a production `HttpTransport` adapter in the current crates. `cdf-project` supports dependency-bearing REST resources, but `cdf-cli` has no production transport to supply without expanding lower-layer runtime semantics.
+- Postgres CLI destination routing is blocked by `.10x/decisions/project-run-postgres-destination-inputs.md`: the active decision requires explicit destination/run configuration for existing-table policy and merge dedup policy, and no active CLI/project configuration syntax currently supplies those values.
+- Filesystem Parquet CLI URI spelling must be ratified inside this ticket before enabling Parquet CLI run support.
 
 ## Progress and notes
 
 - 2026-07-07: Split from the broad CLI spine ticket after general orchestrator closure.
+- 2026-07-07: Wired `cdf run` through `cdf_project::run_project(ProjectRunRequest)` for local file resources, table-backed SQL resource adapters, and DuckDB destinations. JSON run reports now include the minted run id, destination summary, receipt object, row/segment counts, and run-ledger event summary while preserving existing DuckDB/local-file fields.
+- 2026-07-07: Kept REST fail-closed before run mutation because no production `HttpTransport` exists in the current CLI/lower-layer surface. Kept Postgres destination fail-closed because active decision `.10x/decisions/project-run-postgres-destination-inputs.md` requires explicit existing-table and merge-dedup policy configuration that the CLI/project config does not yet provide. Kept filesystem Parquet fail-closed because no active record ratifies a CLI URI spelling.
+- 2026-07-07: Focused evidence recorded in `.10x/evidence/2026-07-07-cli-run-general-runtime.md`.
