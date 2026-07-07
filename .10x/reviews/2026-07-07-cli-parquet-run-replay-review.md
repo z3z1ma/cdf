@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md
+Target: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md
 Verdict: pass
 
 # CLI Parquet run and replay review
@@ -26,4 +26,4 @@ At review time, these tickets were not closed by this review. Postgres run/repla
 
 ## Verdict
 
-Pass for the Parquet run/replay slice. At review time, `.10x/tickets/2026-07-07-cli-run-general-runtime.md` and `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md` still had remaining acceptance criteria.
+Pass for the Parquet run/replay slice. At review time, `.10x/tickets/done/2026-07-07-cli-run-general-runtime.md` and `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md` still had remaining acceptance criteria.

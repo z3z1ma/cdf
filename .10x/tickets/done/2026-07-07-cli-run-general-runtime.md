@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
@@ -43,11 +43,7 @@ No `resume`, no `replay package`, no `inspect run`, no `run --loop`, no arbitrar
 
 ## Blockers
 
-None from user.
-
-REST CLI run routing still requires implementation of a production `HttpTransport` adapter. `cdf-project` supports dependency-bearing REST resources, but `cdf-cli` has no production transport registered yet.
-
-Postgres CLI destination routing still requires implementation of the ratified project-config policy shape.
+None.
 
 ## Progress and notes
 
@@ -57,3 +53,6 @@ Postgres CLI destination routing still requires implementation of the ratified p
 - 2026-07-07: Focused evidence recorded in `.10x/evidence/2026-07-07-cli-run-general-runtime.md`.
 - 2026-07-07: User ratified `.10x/decisions/destination-introspection-package-and-cli-policy.md`: `parquet://<root>` is the filesystem Parquet destination root/prefix; destination introspection is standard wherever applicable but cannot infer missing write semantics; package scope is one resource transition; and Postgres project policy is `[environments.<name>.destination_policy.postgres] merge_dedup = "fail"`. Decision-level blockers for Parquet and Postgres are cleared; implementation wiring remains.
 - 2026-07-07: Implemented the filesystem Parquet CLI destination slice for `cdf run`: `parquet://<root>` is parsed as a filesystem root/prefix, relative roots resolve under the selected project root, absolute roots are allowed, and empty/nested URI roots fail closed before package, destination, or checkpoint writes. The CLI now constructs `ProjectRunDestination::ParquetFilesystem { root, target }` and reports Parquet destination root/destination id/receipt/checkpoint/ledger fields in JSON. Focused success and malformed-URI CLI tests were updated. Evidence: `.10x/evidence/2026-07-07-cli-parquet-run-replay.md`. Review: `.10x/reviews/2026-07-07-cli-parquet-run-replay-review.md`.
+- 2026-07-07: Completed the remaining REST and Postgres `cdf run` wiring. `cdf-cli` now has a production `ReqwestHttpTransport`, REST resources route through `ProjectRunResource::rest`, Postgres SQL resources continue to route through dependency-bearing SQL resources, and Postgres destinations are enabled only with typed project policy `[environments.<name>.destination_policy.postgres] merge_dedup = "fail"`. Secret-backed Postgres destination URIs resolve only after policy validation and resolved DSNs are redacted from propagated errors.
+- 2026-07-07: Extracted the run command path out of `commands.rs` into `run_command.rs`, shared destination URI helpers into `destination_uri.rs`, and REST transport into `http_transport.rs`. `commands.rs` now dispatches `Command::Run` rather than owning the run implementation. Remaining command-module architecture work is tracked by `.10x/tickets/2026-07-07-cli-command-module-architecture.md`.
+- 2026-07-07: Closure evidence recorded in `.10x/evidence/2026-07-07-cli-rest-postgres-run-quality.md`; review recorded in `.10x/reviews/2026-07-07-cli-rest-postgres-run-review.md`. Verification passed: focused REST/Postgres/policy tests, full workspace tests/doc-tests, workspace check, CLI/project clippy with warnings denied, fmt/diff checks, cargo deny, cargo audit, cargo machete, Semgrep over explicit touched files, Gitleaks over touched crates, direct unsafe scan, jscpd, rust-code-analysis, and scc. CodeQL was skipped per active user/goal instruction.

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md, .10x/decisions/destination-introspection-package-and-cli-policy.md, .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md, .10x/tickets/done/2026-07-07-cli-replay-package-spine.md, .10x/decisions/destination-introspection-package-and-cli-policy.md, .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md
 
 # CLI filesystem Parquet run and replay
 
@@ -43,7 +43,7 @@ Commands run from `/Users/alexanderbut/code_projects/personal/firn`:
 
 This supports the filesystem Parquet portions of:
 
-- `.10x/tickets/2026-07-07-cli-run-general-runtime.md`
+- `.10x/tickets/done/2026-07-07-cli-run-general-runtime.md`
 - `.10x/tickets/done/2026-07-07-cli-replay-package-spine.md`
 
 It proves the ratified `parquet://<root>` CLI spelling is now wired for run and replay, with no source contact during package replay and no mutation for malformed Parquet destination URIs.

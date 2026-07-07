@@ -1,14 +1,14 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/2026-07-07-cli-run-general-runtime.md
+Target: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md
 Verdict: concerns
 
 # CLI run general runtime review
 
 ## Target
 
-Partial implementation for `.10x/tickets/2026-07-07-cli-run-general-runtime.md`, covering `cdf run` routing through `cdf_project::run_project` for local file resources into DuckDB, SQL resource dependency construction, expanded run JSON, and fail-closed unsupported CLI combinations.
+Partial implementation for `.10x/tickets/done/2026-07-07-cli-run-general-runtime.md`, covering `cdf run` routing through `cdf_project::run_project` for local file resources into DuckDB, SQL resource dependency construction, expanded run JSON, and fail-closed unsupported CLI combinations.
 
 ## Findings
 

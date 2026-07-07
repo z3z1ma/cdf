@@ -22,6 +22,9 @@ retention = { default = "5 runs" }
 destination = "postgres://secret://env/PROD_DWH"
 retention = { default = "90d", financial = "400d" }
 
+[environments.prod.destination_policy.postgres]
+merge_dedup = "fail"
+
 [python]
 interpreter = ".venv/bin/python"
 
@@ -105,6 +108,38 @@ fn environment_overlays_inherit_unspecified_settings() {
         Some(RetentionRule::Duration(DurationSpec::from_millis(
             400 * 86_400_000
         )))
+    );
+    assert_eq!(
+        prod.destination_policy
+            .postgres
+            .as_ref()
+            .unwrap()
+            .merge_dedup,
+        PostgresMergeDedupPolicy::Fail
+    );
+}
+
+#[test]
+fn destination_policy_overlays_from_default_environment() {
+    let project = BOOK_PROJECT
+        .replace(
+            "[environments.prod.destination_policy.postgres]\nmerge_dedup = \"fail\"\n\n",
+            "",
+        )
+        .replace(
+            "retention = { default = \"5 runs\" }\n\n",
+            "retention = { default = \"5 runs\" }\n\n[environments.dev.destination_policy.postgres]\nmerge_dedup = \"fail\"\n\n",
+        );
+    let config = parse_cdf_toml(&project).unwrap();
+    let prod = config.effective_environment("prod").unwrap();
+
+    assert_eq!(
+        prod.destination_policy
+            .postgres
+            .as_ref()
+            .unwrap()
+            .merge_dedup,
+        PostgresMergeDedupPolicy::Fail
     );
 }
 

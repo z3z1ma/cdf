@@ -5,8 +5,11 @@ use std::ffi::OsString;
 mod args;
 mod commands;
 mod context;
+mod destination_uri;
 mod doctor_drift;
+mod http_transport;
 mod output;
+mod run_command;
 mod status_freshness;
 mod system_sql;
 

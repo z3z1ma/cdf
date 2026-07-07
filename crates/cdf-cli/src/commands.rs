@@ -6,24 +6,18 @@ use std::{
 };
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
-use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, SqlResource, SqlRuntimeDependencies,
-};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
-use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, CheckpointId, CheckpointStore, OrderBy, PartitionPlan, PipelineId, PredicateId,
     ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest, ScopeKey, SortDirection,
-    TargetName,
 };
 use cdf_package::{MANIFEST_FILE, PackageReader, PackageReplayInputs};
 use cdf_project::{
     FileResourceSourceResolver, PackageArtifactDuckDbReplayRequest,
     PackageArtifactParquetReplayRequest, PackageArtifactPostgresReplayRequest,
-    ProjectReceiptSource, ProjectRunDestination, ProjectRunReport, ProjectRunRequest,
-    ProjectRunResource, ResourceSourceKind, generate_lockfile,
+    ProjectReceiptSource, ProjectRunReport, ResourceSourceKind, generate_lockfile,
     replay_duckdb_package_from_artifacts, replay_parquet_package_from_artifacts,
-    replay_postgres_package_from_artifacts, run_project, validate_project,
+    replay_postgres_package_from_artifacts, validate_project,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, RunLedgerSnapshot,
@@ -36,12 +30,15 @@ use serde_json::json;
 use crate::{
     args::{
         BackfillArgs, Cli, Command, ContractCommand, InitArgs, InspectArgs, InspectNoun,
-        PackageArchiveArgs, PackageCommand, ReplayPackageArgs, ResumeArgs, RunArgs, ScanArgs,
-        SqlArgs, StateCommand,
+        PackageArchiveArgs, PackageCommand, ReplayPackageArgs, ResumeArgs, ScanArgs, SqlArgs,
+        StateCommand,
     },
     context::{DestinationRuntime, DoctorProbe, ProjectContext, require_lock},
+    destination_uri::{parquet_filesystem_root, postgres_database_url, redact_error_value},
     doctor_drift::{self, DriftStatus},
     output::{CliError, CommandOutput, InvocationResult},
+    run_command,
+    run_command::ensure_parent_directory,
     status_freshness, system_sql,
 };
 
@@ -99,7 +96,7 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Validate => validate(&cli),
         Command::Plan(args) => plan_or_explain(&cli, args, "plan"),
         Command::Explain(args) => plan_or_explain(&cli, args, "explain"),
-        Command::Run(args) => run(&cli, args),
+        Command::Run(args) => run_command::run(&cli, args),
         Command::Preview(args) => preview(&cli, args),
         Command::Sql(args) => sql(&cli, args),
         Command::Inspect(args) => inspect(&cli, args),
@@ -154,170 +151,6 @@ fn plan_or_explain(
     let report = scan_report(&context, &plan)?;
     let human = format_scan_report(command, &report);
     output(command, human, report)
-}
-
-fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
-    if args.loop_mode {
-        return Err(CliError::not_supported(
-            "run --loop",
-            "the local development loop supervisor is excluded from this explicit one-package run slice",
-            "later loop/streaming supervisor",
-        ));
-    }
-    let explicit = explicit_run_args(args)?;
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    let resource = context.resource(&explicit.resource_id)?;
-    let run_resource = build_project_run_resource(&context, resource)?;
-    let (destination, destination_report) =
-        build_project_run_destination(&context, &explicit.target)?;
-    let state_store_path = context.state_store_path()?;
-    let plan = build_engine_plan(
-        &context,
-        &ScanArgs {
-            resource_id: explicit.resource_id.clone(),
-            projection: None,
-            filters: Vec::new(),
-            limit: None,
-            order_by: Vec::new(),
-            package_id: Some(explicit.package_id.clone()),
-        },
-    )?;
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: run_resource.as_project_resource(),
-        plan,
-        package_root: context.package_root(),
-        state_store_path,
-        pipeline_id: explicit.pipeline_id.clone(),
-        package_id: explicit.package_id.clone(),
-        checkpoint_id: explicit.checkpoint_id.clone(),
-        destination,
-        run_id: None,
-        after_receipt_verified: None,
-    }))?;
-    let cli_report = RunCliReport::from_report(&report, destination_report);
-    output(
-        "run",
-        format!(
-            "ran resource {} as run {} into package {} for target {}; checkpoint {} committed after destination receipt verification, crossing the commit gate",
-            cli_report.resource_id,
-            cli_report.run_id,
-            cli_report.package_hash,
-            cli_report.target,
-            cli_report.checkpoint_id
-        ),
-        cli_report,
-    )
-}
-
-fn explicit_run_args(args: RunArgs) -> Result<ExplicitRunArgs, CliError> {
-    Ok(ExplicitRunArgs {
-        resource_id: required_run_arg(args.resource_id, "--resource")?,
-        pipeline_id: PipelineId::new(required_run_arg(args.pipeline_id, "--pipeline")?)?,
-        target: TargetName::new(required_run_arg(args.target, "--target")?)?,
-        package_id: required_run_arg(args.package_id, "--package-id")?,
-        checkpoint_id: CheckpointId::new(required_run_arg(args.checkpoint_id, "--checkpoint-id")?)?,
-    })
-}
-
-fn required_run_arg(value: Option<String>, name: &str) -> Result<String, CliError> {
-    value.ok_or_else(|| CliError::usage(format!("run requires {name}")))
-}
-
-enum CliProjectRunResource<'a> {
-    LocalFile(&'a CompiledResource),
-    Sql(Box<SqlResource>),
-}
-
-impl<'a> CliProjectRunResource<'a> {
-    fn as_project_resource(&'a self) -> ProjectRunResource<'a> {
-        match self {
-            Self::LocalFile(resource) => ProjectRunResource::local_file(resource),
-            Self::Sql(resource) => ProjectRunResource::sql(resource.as_ref()),
-        }
-    }
-}
-
-fn build_project_run_resource<'a>(
-    context: &ProjectContext,
-    resource: &'a CompiledResource,
-) -> Result<CliProjectRunResource<'a>, CliError> {
-    match resource.plan() {
-        CompiledResourcePlan::Files(_) => Ok(CliProjectRunResource::LocalFile(resource)),
-        CompiledResourcePlan::Rest(_) => Err(CliError::not_supported(
-            "run",
-            "REST resource execution requires a production HttpTransport; cdf-cli has no production HTTP transport registered in this build, so REST remains fail-closed before package, destination, or checkpoint writes",
-            "production HttpTransport adapter for RestRuntimeDependencies",
-        )),
-        CompiledResourcePlan::Sql(_) => {
-            let dependencies =
-                SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
-            Ok(CliProjectRunResource::Sql(Box::new(
-                resource.to_sql_resource(dependencies)?,
-            )))
-        }
-    }
-}
-
-fn build_project_run_destination(
-    context: &ProjectContext,
-    target: &TargetName,
-) -> Result<(ProjectRunDestination, RunDestinationReport), CliError> {
-    if context.environment.destination.starts_with("postgres://") {
-        cdf_dest_postgres::PostgresTarget::parse(target.as_str())?;
-        return Err(CliError::not_supported(
-            "run",
-            "Postgres destination execution requires explicit CLI/project configuration for the Postgres existing-table policy and merge dedup policy before cdf-cli may construct ProjectRunDestination::Postgres",
-            "ratified Postgres destination policy configuration for cdf run",
-        ));
-    }
-
-    if context.environment.destination.starts_with("parquet://") {
-        let root = parquet_filesystem_root(context, &context.environment.destination, "run")?;
-        return Ok((
-            ProjectRunDestination::ParquetFilesystem {
-                root: root.clone(),
-                target: target.clone(),
-            },
-            RunDestinationReport::parquet(root.display().to_string(), target.to_string()),
-        ));
-    }
-
-    let destination_path = run_duckdb_destination_path(context)?;
-    Ok((
-        ProjectRunDestination::DuckDb {
-            database_path: destination_path.clone(),
-            target: target.clone(),
-        },
-        RunDestinationReport::duckdb(destination_path.display().to_string(), target.to_string()),
-    ))
-}
-
-fn run_duckdb_destination_path(context: &ProjectContext) -> Result<PathBuf, CliError> {
-    let Some(raw_path) = context.environment.destination.strip_prefix("duckdb://") else {
-        return Err(CliError::not_supported(
-            "run",
-            format!(
-                "destination URI `{}` is unsupported for this slice; only local duckdb:// destinations are supported",
-                context.environment.destination
-            ),
-            "local DuckDB destination runtime",
-        ));
-    };
-    if raw_path.trim().is_empty() || raw_path.contains("://") {
-        return Err(CliError::not_supported(
-            "run",
-            format!(
-                "destination URI `{}` is malformed or non-local for this slice; expected duckdb://path",
-                context.environment.destination
-            ),
-            "local DuckDB destination path",
-        ));
-    }
-    let destination_path = context
-        .duckdb_destination_path()
-        .expect("duckdb:// prefix was checked");
-    cdf_dest_duckdb::DuckDbDestination::new(&destination_path)?;
-    Ok(destination_path)
 }
 
 fn replay_duckdb_destination_path(
@@ -549,98 +382,20 @@ fn postgres_replay_destination(
     context: &ProjectContext,
     uri: &str,
 ) -> Result<(cdf_dest_postgres::PostgresDestination, bool), CliError> {
-    let Some(raw) = uri.strip_prefix("postgres://") else {
-        return Err(CliError::not_supported(
-            "replay package",
-            format!("destination URI `{uri}` is unsupported; expected postgres://..."),
-            "Postgres artifact replay destination",
-        ));
-    };
-    if raw.trim().is_empty() {
-        return Err(CliError::not_supported(
-            "replay package",
-            "Postgres replay destination URI is malformed; expected postgres://database-url or postgres://secret://provider/key",
-            "Postgres database URL",
-        ));
-    }
-    if raw.starts_with("secret://") {
-        let secret = cdf_project::SecretRef::new(raw.to_owned())?;
-        let provider = context.secret_provider();
-        let value = provider.resolve(&secret.to_secret_uri()?)?;
-        return Ok((
-            cdf_dest_postgres::PostgresDestination::connect(value.as_str()?.to_owned())?,
-            true,
-        ));
-    }
+    let (database_url, secret_backed) = postgres_database_url(context, uri, "replay package")?;
     Ok((
-        cdf_dest_postgres::PostgresDestination::connect(uri.to_owned())?,
-        false,
+        cdf_dest_postgres::PostgresDestination::connect(database_url)?,
+        secret_backed,
     ))
 }
 
 fn redact_postgres_replay_error(
-    mut error: CdfError,
+    error: CdfError,
     destination: &cdf_dest_postgres::PostgresDestination,
     secret_backed: bool,
 ) -> CdfError {
-    if secret_backed
-        && let Some(database_url) = destination.database_url()
-        && !database_url.is_empty()
-    {
-        error.message = error.message.replace(database_url, "[REDACTED]");
-    }
-    error
-}
-
-fn parquet_filesystem_root(
-    context: &ProjectContext,
-    uri: &str,
-    command: &'static str,
-) -> Result<PathBuf, CliError> {
-    let Some(raw_root) = uri.strip_prefix("parquet://") else {
-        return Err(CliError::not_supported(
-            command,
-            format!("destination URI `{uri}` is unsupported; expected parquet://root"),
-            "filesystem Parquet destination root",
-        ));
-    };
-    if raw_root.trim().is_empty() || raw_root.contains("://") {
-        return Err(CliError::not_supported(
-            command,
-            format!("destination URI `{uri}` is malformed or non-local; expected parquet://root"),
-            "filesystem Parquet destination root",
-        ));
-    }
-    let root = PathBuf::from(raw_root);
-    Ok(if root.is_absolute() {
-        root
-    } else {
-        context.root.join(root)
-    })
-}
-
-fn ensure_parent_directory(path: &Path) -> Result<(), CliError> {
-    let Some(parent) = path.parent() else {
-        return Err(CliError::from(CdfError::internal(format!(
-            "{} has no parent directory",
-            path.display()
-        ))));
-    };
-    fs::create_dir_all(parent).map_err(|error| {
-        CliError::from(CdfError::data(format!(
-            "create {}: {error}",
-            parent.display()
-        )))
-    })
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ExplicitRunArgs {
-    resource_id: String,
-    pipeline_id: PipelineId,
-    target: TargetName,
-    package_id: String,
-    checkpoint_id: CheckpointId,
+    let secret = secret_backed.then(|| destination.database_url()).flatten();
+    redact_error_value(error, secret)
 }
 
 fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
@@ -1173,7 +928,10 @@ fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
     )
 }
 
-fn build_engine_plan(context: &ProjectContext, args: &ScanArgs) -> Result<EnginePlan, CliError> {
+pub(crate) fn build_engine_plan(
+    context: &ProjectContext,
+    args: &ScanArgs,
+) -> Result<EnginePlan, CliError> {
     let resource = context.resource(&args.resource_id)?;
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
@@ -1613,7 +1371,7 @@ fn lower_runtime_missing(error: &CdfError) -> bool {
         .contains("execution is outside the MVP compiler crate")
 }
 
-fn output<T: Serialize>(
+pub(crate) fn output<T: Serialize>(
     command: &'static str,
     human: String,
     value: T,
@@ -1735,7 +1493,7 @@ struct PreviewReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct RunCliReport {
+pub(crate) struct RunCliReport {
     command: &'static str,
     run_id: String,
     resource_id: String,
@@ -1758,7 +1516,10 @@ struct RunCliReport {
 }
 
 impl RunCliReport {
-    fn from_report(report: &ProjectRunReport, destination: RunDestinationReport) -> Self {
+    pub(crate) fn from_report(
+        report: &ProjectRunReport,
+        destination: RunDestinationReport,
+    ) -> Self {
         let destination_kind = destination.kind;
         Self {
             command: "run",
@@ -1795,6 +1556,13 @@ impl RunCliReport {
                 checkpoint: true,
             },
         }
+    }
+
+    pub(crate) fn human_message(&self) -> String {
+        format!(
+            "ran resource {} as run {} into package {} for target {}; checkpoint {} committed after destination receipt verification, crossing the commit gate",
+            self.resource_id, self.run_id, self.package_hash, self.target, self.checkpoint_id
+        )
     }
 }
 
@@ -1868,7 +1636,7 @@ struct RunCheckpointReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct RunDestinationReport {
+pub(crate) struct RunDestinationReport {
     kind: &'static str,
     destination_id: Option<String>,
     target: String,
@@ -1879,7 +1647,7 @@ struct RunDestinationReport {
 }
 
 impl RunDestinationReport {
-    fn duckdb(database_path: String, target: String) -> Self {
+    pub(crate) fn duckdb(database_path: String, target: String) -> Self {
         Self {
             kind: "duckdb",
             destination_id: None,
@@ -1889,7 +1657,7 @@ impl RunDestinationReport {
         }
     }
 
-    fn parquet(root: String, target: String) -> Self {
+    pub(crate) fn parquet(root: String, target: String) -> Self {
         Self {
             kind: "parquet",
             destination_id: None,
@@ -1899,7 +1667,7 @@ impl RunDestinationReport {
         }
     }
 
-    fn postgres(target: String) -> Self {
+    pub(crate) fn postgres(target: String) -> Self {
         Self {
             kind: "postgres",
             destination_id: None,

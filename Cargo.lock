@@ -673,6 +673,7 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "postgres",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

@@ -38,6 +38,7 @@ impl ProjectConfig {
             state: required_env_field(name, "state", merged.state)?,
             packages: required_env_field(name, "packages", merged.packages)?,
             destination: required_env_field(name, "destination", merged.destination)?,
+            destination_policy: merged.destination_policy,
             retention: merged.retention,
         })
     }
@@ -55,6 +56,8 @@ pub struct EnvironmentConfig {
     pub state: Option<String>,
     pub packages: Option<String>,
     pub destination: Option<String>,
+    #[serde(default)]
+    pub destination_policy: DestinationPolicy,
     pub retention: Option<RetentionPolicy>,
 }
 
@@ -70,6 +73,9 @@ impl EnvironmentConfig {
                 .destination
                 .clone()
                 .or_else(|| self.destination.clone()),
+            destination_policy: self
+                .destination_policy
+                .overlay(&override_config.destination_policy),
             retention: merge_retention(self.retention.clone(), override_config.retention.clone()),
         }
     }
@@ -81,7 +87,37 @@ pub struct EffectiveEnvironment {
     pub state: String,
     pub packages: String,
     pub destination: String,
+    pub destination_policy: DestinationPolicy,
     pub retention: Option<RetentionPolicy>,
+}
+
+#[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationPolicy {
+    #[serde(default)]
+    pub postgres: Option<PostgresDestinationPolicy>,
+}
+
+impl DestinationPolicy {
+    fn overlay(&self, override_policy: &Self) -> Self {
+        Self {
+            postgres: override_policy
+                .postgres
+                .clone()
+                .or_else(|| self.postgres.clone()),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PostgresDestinationPolicy {
+    pub merge_dedup: PostgresMergeDedupPolicy,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PostgresMergeDedupPolicy {
+    Fail,
 }
 
 #[derive(Clone, Default, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-cli-run-resume-replay-inspect-spine.md
-Depends-On: .10x/tickets/2026-07-07-cli-run-general-runtime.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
+Depends-On: .10x/tickets/done/2026-07-07-cli-run-general-runtime.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
 
 # Add `cdf inspect run`
 

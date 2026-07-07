@@ -3,12 +3,14 @@ use std::{
     env,
     ffi::OsString,
     fs,
+    io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
     process::Command,
     sync::Arc,
     sync::Mutex,
     sync::atomic::{AtomicU64, Ordering},
+    thread,
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -826,21 +828,21 @@ fn run_path_package_id_fails_before_writes() {
 }
 
 #[test]
-fn run_postgres_destination_fails_closed_until_policy_config_is_ratified() {
+fn run_postgres_destination_missing_policy_fails_closed_before_writes() {
     let project = TestProject::new();
     write_project_destination(&project, "postgres://secret://env/WAREHOUSE");
 
     let result = run_valid_run_args(&project, "pkg-run-postgres", "checkpoint-run-postgres");
 
-    assert_eq!(result.exit_code, 78);
+    assert_eq!(result.exit_code, 3);
     assert_no_run_writes(&project, "pkg-run-postgres");
     let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], true);
+    assert_eq!(json["error"]["not_supported"], false);
     assert!(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("existing-table policy and merge dedup policy")
+            .contains("destination_policy.postgres")
     );
 }
 
@@ -857,15 +859,73 @@ fn run_rest_resource_fails_before_package_or_destination_writes() {
     let result =
         run_valid_run_resource(&project, "api.items", "pkg-run-rest", "checkpoint-run-rest");
 
-    assert_eq!(result.exit_code, 78);
+    assert_eq!(result.exit_code, 4);
     assert_no_run_writes(&project, "pkg-run-rest");
     let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["not_supported"], true);
+    assert_eq!(json["error"]["not_supported"], false);
     assert!(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("HttpTransport")
+            .contains("secret://env/CDF_CLI_TOKEN")
+    );
+}
+
+#[test]
+fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
+    let project = TestProject::new();
+    fs::write(project.root.join("rest-token"), "rest-token-secret\n").unwrap();
+    let base_url = serve_json_once(
+        r#"{ "items": [
+            { "id": 1, "updated_at": 10 },
+            { "id": 2, "updated_at": 20 }
+        ] }"#,
+    );
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+
+    let result = run_valid_run_resource_target(
+        &project,
+        "api.items",
+        "pkg-run-rest-success",
+        "checkpoint-run-rest-success",
+        "items",
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "rest-token-secret");
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_id"], "api.items");
+    assert_eq!(report["destination"]["kind"], "duckdb");
+    assert_eq!(report["target"], "items");
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
+    assert_eq!(report["row_count"], 2);
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("api.items").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed REST run head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-run-rest-success"
     );
 }
 
@@ -1004,7 +1064,7 @@ fn run_parquet_malformed_uri_fails_before_writes() {
 }
 
 #[test]
-fn run_postgres_destination_secret_is_not_resolved_before_policy_config_blocker() {
+fn run_postgres_destination_secret_is_not_resolved_before_missing_policy_blocker() {
     let project = TestProject::new();
     fs::write(
         project.root.join("destination-dsn"),
@@ -1031,7 +1091,7 @@ fn run_postgres_destination_secret_is_not_resolved_before_policy_config_blocker(
         "checkpoint-run-postgres-redacted".to_owned(),
     ]);
 
-    assert_eq!(result.exit_code, 78);
+    assert_eq!(result.exit_code, 3);
     assert_no_run_writes(&project, "pkg-run-postgres-redacted");
     assert_secret_absent(&result, "destination-secret");
     let json = stderr_or_stdout_json(&result.stderr);
@@ -1039,8 +1099,113 @@ fn run_postgres_destination_secret_is_not_resolved_before_policy_config_blocker(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("Postgres destination execution requires explicit")
+            .contains("destination_policy.postgres")
     );
+}
+
+#[test]
+fn run_postgres_destination_unsupported_policy_fails_before_secret_resolution() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        "postgres://user:destination-secret@localhost/db\n",
+    )
+    .unwrap();
+    write_project_destination_with_postgres_policy(
+        &project,
+        "postgres://secret://file/destination-dsn",
+        "last",
+    );
+
+    let result = run_valid_run_target(
+        &project,
+        "pkg-run-postgres-policy-unsupported",
+        "checkpoint-run-postgres-policy-unsupported",
+        "public.events",
+    );
+
+    assert_eq!(result.exit_code, 3);
+    assert_no_run_writes(&project, "pkg-run-postgres-policy-unsupported");
+    assert_secret_absent(&result, "destination-secret");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("expected `fail`")
+    );
+}
+
+#[test]
+fn run_postgres_destination_resolves_secret_and_commits_checkpoint() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("destination-dsn"),
+        format!("{}\n", postgres.url),
+    )
+    .unwrap();
+    write_project_destination_with_postgres_policy(
+        &project,
+        "postgres://secret://file/destination-dsn",
+        "fail",
+    );
+    let target = format!("{}.events_cli_run", postgres.schema);
+
+    let result = run_valid_run_target(
+        &project,
+        "pkg-run-postgres-success",
+        "checkpoint-run-postgres-success",
+        &target,
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &postgres.url);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["destination"]["kind"], "postgres");
+    assert_eq!(report["destination"]["destination_id"], "postgres");
+    assert_eq!(report["destination"]["target"], target);
+    assert_eq!(report["target"], target);
+    assert_eq!(report["receipt"]["destination_id"], "postgres");
+    assert_eq!(report["receipt"]["target"], target);
+    assert_eq!(report["receipt"]["counts"]["rows_written"], 2);
+    assert_eq!(
+        report["receipt_source"]["kind"],
+        "destination_commit_receipt_only"
+    );
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["package_status"], "checkpointed");
+    assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed Postgres run head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-run-postgres-success"
+    );
+
+    let mut client = postgres.client();
+    let rows: i64 = client
+        .query_one(
+            &format!(
+                "SELECT COUNT(*)::bigint FROM {}",
+                postgres.table("events_cli_run")
+            ),
+            &[],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(rows, 2);
 }
 
 #[test]
@@ -2822,6 +2987,16 @@ fn run_valid_run_resource(
     package_id: &str,
     checkpoint_id: &str,
 ) -> crate::InvocationResult {
+    run_valid_run_resource_target(project, resource_id, package_id, checkpoint_id, "events")
+}
+
+fn run_valid_run_resource_target(
+    project: &TestProject,
+    resource_id: &str,
+    package_id: &str,
+    checkpoint_id: &str,
+    target: &str,
+) -> crate::InvocationResult {
     run_dynamic(vec![
         "cdf".to_owned(),
         "--json".to_owned(),
@@ -2833,7 +3008,7 @@ fn run_valid_run_resource(
         "--pipeline".to_owned(),
         "pipeline-run".to_owned(),
         "--target".to_owned(),
-        "events".to_owned(),
+        target.to_owned(),
         "--package-id".to_owned(),
         package_id.to_owned(),
         "--checkpoint-id".to_owned(),
@@ -3129,6 +3304,20 @@ fn write_project_destination(project: &TestProject, destination: &str) {
     .unwrap();
 }
 
+fn write_project_destination_with_postgres_policy(
+    project: &TestProject,
+    destination: &str,
+    merge_dedup: &str,
+) {
+    let project_text = PROJECT.replace(
+        "destination = \"duckdb://.cdf/dev.duckdb\"",
+        &format!(
+            "destination = \"{destination}\"\n\n[environments.dev.destination_policy.postgres]\nmerge_dedup = \"{merge_dedup}\""
+        ),
+    );
+    fs::write(project.root.join("cdf.toml"), project_text).unwrap();
+}
+
 fn write_discovered_schema_resource(project: &TestProject) {
     fs::write(
         project.root.join("resources/files.toml"),
@@ -3385,25 +3574,78 @@ destination = "{destination}"
     }
 }
 
+fn write_rest_project(project: &TestProject, destination: &str, base_url: &str, token: &str) {
+    fs::write(
+        project.root.join("cdf.toml"),
+        format!(
+            r#"
+[project]
+name = "cli_test"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "{destination}"
+
+[resources."api.*"]
+source = "resources/api.toml"
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("resources/api.toml"),
+        rest_resource_with_base_url(base_url, token),
+    )
+    .unwrap();
+}
+
 fn rest_resource(token: &str) -> String {
+    rest_resource_with_base_url("https://api.example.test", token)
+}
+
+fn rest_resource_with_base_url(base_url: &str, token: &str) -> String {
     format!(
         r#"
 [source.api]
 kind = "rest"
-base_url = "https://api.example.test"
+base_url = "{base_url}"
 auth = {{ kind = "bearer", token = "{token}" }}
 
 [resource.items]
 path = "/items"
-records = "$"
+records = "$.items"
 primary_key = ["id"]
+cursor = {{ field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }}
 write_disposition = "append"
 trust = "governed"
 schema = {{ fields = [
   {{ name = "id", type = "int64", nullable = false }},
+  {{ name = "updated_at", type = "int64", nullable = false }},
 ] }}
 "#
     )
+}
+
+fn serve_json_once(body: &str) -> String {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = body.to_owned();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let _ = stream.read(&mut request);
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    });
+    format!("http://{address}")
 }
 
 fn sql_resource(connection: &str) -> String {
