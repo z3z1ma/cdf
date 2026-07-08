@@ -8,11 +8,15 @@ use std::{
 };
 
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, TimestampMillisecondArray,
+    Array, ArrayRef, BooleanArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray,
+    TimestampMillisecondArray,
+    builder::{Int32Builder, MapBuilder, StringBuilder},
+    types::Int32Type,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
-    ContractPolicy, DedupKeep, ObservedSchema, RowRule, VerdictAction, compile_validation_program,
+    ContractPolicy, DedupKeep, NestedDataPolicy, ObservedSchema, RowRule, VARIANT_COLUMN_NAME,
+    VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
@@ -442,6 +446,120 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
             .iter()
             .any(|file| file.path == "quarantine/part-000001.parquet")
     );
+}
+
+#[test]
+fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() {
+    let resource = MockResource::tier_a(vec![nested_variant_batch()]);
+    let mut input = plan_input_for_schema(
+        resource.schema(),
+        vec![],
+        None,
+        None,
+        PlanBoundedness::Bounded,
+    );
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.normalization.nested = NestedDataPolicy::VariantCapture(Default::default());
+    policy.rows.rules = vec![RowRule::Regex {
+        column: "email".to_owned(),
+        pattern: r"^[^@]+@example\.test$".to_owned(),
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 1);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let batch = &batches[0];
+    assert_eq!(batch.schema().fields().len(), 3);
+    assert!(batch.schema().field_with_name("payload").is_err());
+    assert!(batch.schema().field_with_name("tags").is_err());
+    assert!(batch.schema().field_with_name("attributes").is_err());
+    let batch_schema = batch.schema();
+    let variant_field = batch_schema.field_with_name(VARIANT_COLUMN_NAME).unwrap();
+    assert_eq!(
+        cdf_kernel::semantic(variant_field),
+        Some(VARIANT_SEMANTIC_TAG)
+    );
+    let variants = batch
+        .column_by_name(VARIANT_COLUMN_NAME)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(
+        variants.value(0),
+        r#"{"attributes":[{"key":"tier","value":1}],"payload":{"count":7,"kind":"alpha"},"tags":[1,2]}"#
+    );
+
+    let output_schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("schema/output.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        output_schema["fields"][2],
+        serde_json::json!({
+            "name": VARIANT_COLUMN_NAME,
+            "data_type": "Utf8",
+            "nullable": true,
+            "semantic": VARIANT_SEMANTIC_TAG
+        })
+    );
+    let evolution_path = temp.path().join("schema/contract-evolution.json");
+    let evolution_bytes = std::fs::read(&evolution_path).unwrap();
+    let evolution: serde_json::Value = serde_json::from_slice(&evolution_bytes).unwrap();
+    assert_eq!(evolution["implicit_promotion_count"], 0);
+    assert_eq!(evolution["promotion_events"], serde_json::json!([]));
+    assert_eq!(
+        evolution["variant_capture"],
+        serde_json::json!([
+            {
+                "source_field": "attributes",
+                "variant_column": VARIANT_COLUMN_NAME,
+                "semantic": VARIANT_SEMANTIC_TAG
+            },
+            {
+                "source_field": "payload",
+                "variant_column": VARIANT_COLUMN_NAME,
+                "semantic": VARIANT_SEMANTIC_TAG
+            },
+            {
+                "source_field": "tags",
+                "variant_column": VARIANT_COLUMN_NAME,
+                "semantic": VARIANT_SEMANTIC_TAG
+            }
+        ])
+    );
+    assert_eq!(
+        evolution_bytes,
+        cdf_package::canonical_json_bytes(&evolution).unwrap()
+    );
+    assert!(
+        reader
+            .verify()
+            .unwrap()
+            .checked_files
+            .iter()
+            .any(|file| file.path == "schema/contract-evolution.json")
+    );
+    assert_eq!(reader.replay_view().unwrap().segments.len(), 1);
+
+    let quarantine = reader.read_quarantine_records().unwrap();
+    assert_eq!(quarantine.len(), 1);
+    let cdf_package::QuarantineObservedValue::Hashed { value, .. } =
+        &quarantine[0].observed_value_redacted
+    else {
+        panic!("pii variant interaction must keep quarantine observed value hashed");
+    };
+    assert!(value.starts_with("sha256:"));
+    let quarantine_artifact =
+        std::fs::read(temp.path().join("quarantine/part-000001.parquet")).unwrap();
+    assert!(!String::from_utf8_lossy(&quarantine_artifact).contains("raw-secret"));
 }
 
 #[test]
@@ -1572,6 +1690,65 @@ fn batch_with_file_position() -> Batch {
         }],
     }));
     batch
+}
+
+fn nested_variant_batch() -> Batch {
+    let payload = StructArray::from(vec![
+        (
+            Arc::new(Field::new("kind", DataType::Utf8, false)),
+            Arc::new(StringArray::from(vec!["alpha", "beta"])) as ArrayRef,
+        ),
+        (
+            Arc::new(Field::new("count", DataType::Int32, false)),
+            Arc::new(Int32Array::from(vec![7, 9])) as ArrayRef,
+        ),
+    ]);
+    let tags = ListArray::from_iter_primitive::<Int32Type, _, _>(vec![
+        Some(vec![Some(1), Some(2)]),
+        Some(vec![Some(3), None]),
+    ]);
+    let mut attributes = MapBuilder::new(None, StringBuilder::new(), Int32Builder::new());
+    attributes.keys().append_value("tier");
+    attributes.values().append_value(1);
+    attributes.append(true).unwrap();
+    attributes.keys().append_value("score");
+    attributes.values().append_value(5);
+    attributes.append(true).unwrap();
+    let attributes = attributes.finish();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        with_semantic(Field::new("email", DataType::Utf8, false), "pii:email"),
+        Field::new("payload", payload.data_type().clone(), true),
+        Field::new("tags", tags.data_type().clone(), true),
+        Field::new("attributes", attributes.data_type().clone(), true),
+    ]));
+    let record_batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["ok@example.test", "raw-secret"])) as ArrayRef,
+            Arc::new(payload) as ArrayRef,
+            Arc::new(tags) as ArrayRef,
+            Arc::new(attributes) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    Batch {
+        header: BatchHeader {
+            batch_id: BatchId::new("batch-variant").unwrap(),
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("part-0").unwrap(),
+            observed_schema_hash: SchemaHash::new("schema-v1").unwrap(),
+            row_count: record_batch.num_rows() as u64,
+            byte_count: record_batch.get_array_memory_size() as u64,
+            source_position: None,
+            watermarks: Vec::new(),
+            stats: BatchStats::default(),
+            cdc: None,
+        },
+        payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
+    }
 }
 
 fn batch_for_partition(

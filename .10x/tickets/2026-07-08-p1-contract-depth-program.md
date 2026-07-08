@@ -26,7 +26,7 @@ This parent is a plan. Child tickets own executable implementation. Children mus
 - `.10x/tickets/done/2026-07-08-p1-e1-row-level-verdicts-live-chain.md`
 - `.10x/tickets/done/2026-07-08-p1-e2-quarantine-routing-redaction.md`
 - `.10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md`
-- `.10x/tickets/2026-07-08-p1-e4-variant-capture-evolution-event.md`
+- `.10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md`
 - `.10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md`
 - `.10x/tickets/2026-07-08-p1-e6-drift-quarantine-conformance.md`
 
@@ -55,6 +55,7 @@ No trust UI, no schema-on-read replacement for packages, no DataFusion multi-out
 - 2026-07-08: E1 closed with compiled row-level verdict programs, pure Arrow evaluator, live `ContractExec` filtering before normalization, freshness `observed_at_ms` context, focused tests, local/non-public 100k-row benchmarkable path, evidence `.10x/evidence/2026-07-08-p1-e1-row-level-verdicts-live-chain.md`, and review `.10x/reviews/2026-07-08-p1-e1-row-level-verdicts-live-chain-review.md`.
 - 2026-07-08: E2 closed with identity-participating package quarantine Parquet artifacts, redacted observed values, accepted-row continuation, unsupported mirror outcome artifacts, Postgres `_cdf_quarantine` mirrors, evidence `.10x/evidence/2026-07-08-p1-e2-quarantine-routing-redaction.md`, and review `.10x/reviews/2026-07-08-p1-e2-quarantine-routing-redaction-review.md`.
 - 2026-07-08: E3 closed with deterministic pre-merge dedup over accepted package-order rows, `keep = first|last|fail` coverage, package identity `stats/dedup-summary.json`, live run replay/redrive identity coverage, legacy `EnginePlan` JSON compatibility repair, evidence `.10x/evidence/2026-07-08-p1-e3-merge-dedup-live-path.md`, and review `.10x/reviews/2026-07-08-p1-e3-merge-dedup-live-path-review.md`.
+- 2026-07-08: E4 closed with live `_cdf_variant` capture for Struct/List/Map nested fields, semantic `json` schema evidence, deterministic `schema/contract-evolution.json` with zero implicit promotions, package verify/replay evidence, conformance compiler coverage, evidence `.10x/evidence/2026-07-08-p1-e4-variant-capture-evolution-event.md`, and review `.10x/reviews/2026-07-08-p1-e4-variant-capture-evolution-event-review.md`.
 
 ## Blockers
 

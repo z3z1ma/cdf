@@ -1,19 +1,17 @@
 use std::{
     path::Path,
-    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use arrow_array::RecordBatch;
-use arrow_schema::{Field, Schema};
+use arrow_schema::Schema;
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
     ContractEvaluationContext, QuarantineCandidate, ValidationProgram,
     evaluate_package_order_dedup, evaluate_record_batch,
 };
 use cdf_kernel::{
-    CdfError, ResourceStream, Result, RunId, SegmentId, SourcePosition, WriteDisposition,
-    with_source_name,
+    CdfError, ResourceStream, Result, RunId, SegmentId, SourcePosition, WriteDisposition, semantic,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -22,8 +20,10 @@ use tracing::{Instrument, Span, info_span};
 
 use crate::{
     EnginePackageDraft, EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions,
-    EngineSegmentPosition, ExecutionProfile, LineageSummary, planning::validate_program,
+    EngineSegmentPosition, ExecutionProfile, LineageSummary,
+    planning::validate_program,
     predicates::apply_residual_filters,
+    variant_capture::{contract_evolution_artifact, normalize_batch},
 };
 
 pub type PackagePreFinalizeHook<'a> =
@@ -39,6 +39,8 @@ struct SchemaFieldArtifact {
     name: String,
     data_type: String,
     nullable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    semantic: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -260,6 +262,9 @@ where
         "schema/output.json",
         &output_schema.unwrap_or(SchemaArtifact { fields: Vec::new() }),
     )?;
+    if let Some(evolution) = contract_evolution_artifact(&plan.validation_program) {
+        builder.write_json_artifact("schema/contract-evolution.json", &evolution)?;
+    }
     builder.write_stats_artifact(
         "profile.json",
         &cdf_package::canonical_json_bytes(&profile)?,
@@ -326,7 +331,7 @@ fn write_output_batch(
     output_position: Option<SourcePosition>,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
-    let output = apply_normalize_exec(output, program)?;
+    let output = normalize_batch(output, program)?;
     *state.output_schema = Some(schema_artifact(output.schema().as_ref()));
     state.profile.output_rows += output.num_rows() as u64;
     state.profile.output_bytes += output.get_array_memory_size() as u64;
@@ -456,34 +461,6 @@ fn quarantine_observed_value(
     }
 }
 
-fn apply_normalize_exec(batch: RecordBatch, program: &ValidationProgram) -> Result<RecordBatch> {
-    let fields = batch
-        .schema()
-        .fields()
-        .iter()
-        .map(|field| normalize_field(field.as_ref(), program))
-        .collect::<Result<Vec<_>>>()?;
-    let schema = Arc::new(Schema::new_with_metadata(
-        fields,
-        batch.schema().metadata().clone(),
-    ));
-    RecordBatch::try_new(schema, batch.columns().to_vec()).map_err(CdfError::from)
-}
-
-fn normalize_field(field: &Field, program: &ValidationProgram) -> Result<Field> {
-    let Some(column) = program
-        .column_programs
-        .iter()
-        .find(|column| column.source_name == *field.name() || column.output_name == *field.name())
-    else {
-        return Err(CdfError::contract(format!(
-            "validation program does not cover field {:?}",
-            field.name()
-        )));
-    };
-    Ok(with_source_name(field.clone(), column.source_name.clone()).with_name(&column.output_name))
-}
-
 fn schema_artifact(schema: &Schema) -> SchemaArtifact {
     SchemaArtifact {
         fields: schema
@@ -493,6 +470,7 @@ fn schema_artifact(schema: &Schema) -> SchemaArtifact {
                 name: field.name().clone(),
                 data_type: field.data_type().to_string(),
                 nullable: field.is_nullable(),
+                semantic: semantic(field.as_ref()).map(ToOwned::to_owned),
             })
             .collect(),
     }

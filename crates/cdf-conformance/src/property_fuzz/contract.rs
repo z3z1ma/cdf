@@ -3,8 +3,9 @@ use std::collections::BTreeSet;
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    ContractEvaluationContext, ContractPolicy, ObservedSchema, PromotionPolicy, RowDispositionKind,
-    RowDispositionRule, RowRule, RuleOutcome, ValidationProgram, assert_verdict_lattice_total,
+    ContractEvaluationContext, ContractPolicy, NestedAction, ObservedSchema, PromotionPolicy,
+    RowDispositionKind, RowDispositionRule, RowRule, RuleOutcome, VARIANT_COLUMN_NAME,
+    VARIANT_SEMANTIC_TAG, ValidationProgram, assert_verdict_lattice_total,
     compile_validation_program, evaluate_record_batch,
 };
 use proptest::prelude::*;
@@ -134,4 +135,26 @@ fn conformance_local_contract_evaluator_owns_row_verdict_path() {
     assert_eq!(evaluation.summary.accepted_rows, 1);
     assert_eq!(evaluation.summary.quarantined_rows, 1);
     assert_eq!(evaluation.quarantine_candidates[0].source_row_ordinal, 1);
+}
+
+#[test]
+fn conformance_nested_unknown_fields_compile_to_variant_capture() {
+    let schema = Schema::new(vec![Field::new_struct(
+        "payload",
+        vec![Field::new("id", DataType::Int64, false)],
+        true,
+    )]);
+    let program = compile_validation_program(
+        &ContractPolicy::for_trust(cdf_kernel::TrustLevel::Experimental),
+        &ObservedSchema::from_arrow(&schema),
+    )
+    .unwrap();
+
+    assert_eq!(
+        program.column_programs[0].nested_action,
+        NestedAction::CaptureVariant {
+            column_name: VARIANT_COLUMN_NAME.to_owned(),
+            semantic: VARIANT_SEMANTIC_TAG.to_owned(),
+        }
+    );
 }

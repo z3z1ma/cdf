@@ -7,6 +7,7 @@ mod table_provider;
 #[cfg(test)]
 mod tests;
 mod types;
+mod variant_capture;
 
 pub use execution::{
     PackagePreFinalizeHook, execute_to_package, execute_to_package_with_run_id,

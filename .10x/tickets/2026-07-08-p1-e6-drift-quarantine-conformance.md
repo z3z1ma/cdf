@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
-Depends-On: .10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/2026-07-08-p1-e4-variant-capture-evolution-event.md, .10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md
+Depends-On: .10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md, .10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md
 
 # P1 E6: Drift-quarantine conformance scenario
 
@@ -47,4 +47,4 @@ No public demo script unless split from the broader MVP killer-demo owner. No ne
 
 ## Blockers
 
-None once E3, E4, and E5 are closed.
+E5 must close first because E3 and E4 are closed and the P1 parent requires the contract-depth children to execute in order.

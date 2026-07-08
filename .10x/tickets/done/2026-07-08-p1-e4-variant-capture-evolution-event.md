@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
@@ -47,3 +47,9 @@ No arbitrary JSON schema inference engine. No destination-specific variant type 
 ## Blockers
 
 None; E2 is closed at `.10x/tickets/done/2026-07-08-p1-e2-quarantine-routing-redaction.md` and E3 is closed at `.10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md`.
+
+## Progress and Notes
+
+- 2026-07-08: Activated after E2/E3 closure; parent orchestrator is delegating implementation to a focused worker and retaining evidence/review/closure ownership.
+- 2026-07-08: Implemented engine `_cdf_variant` materialization for captured Struct/List/Map nested fields, deterministic contract-evolution package evidence with zero implicit promotions, schema semantic evidence for semantic-tagged fields, and focused engine/conformance coverage. Ticket remains active for parent-owned evidence/review/closure.
+- 2026-07-08: Parent review split variant capture into `cdf-engine::variant_capture`, reduced the new hotspot cyclomatic complexity from 39 to 18, recorded evidence `.10x/evidence/2026-07-08-p1-e4-variant-capture-evolution-event.md` and review `.10x/reviews/2026-07-08-p1-e4-variant-capture-evolution-event-review.md`; E4 is closed.
