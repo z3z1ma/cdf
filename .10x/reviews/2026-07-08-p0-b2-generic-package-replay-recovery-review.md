@@ -23,7 +23,7 @@ Current B2 diff for `cdf-project` generic package replay/recovery, destination r
 
 - Significant, resolved: The first worker patch did not satisfy the B2 mock registered destination acceptance criterion because the test directly constructed `MockProjectDestinationRuntime`. The repair added `ProjectDestinationRegistry`, `MockProjectDestinationDriver`, and tests that resolve runtimes through the registry before replay, recovery, and generic stop-before-destination-write injection.
 - Minor, residual: `ProjectDestinationRegistry` is a minimal registry/factory. It proves the B2 replay/recovery boundary but does not yet provide built-in DuckDB/Parquet/Postgres URI resolution or project-config construction. B3 owns that.
-- Minor, residual quality policy: bare `cargo vet` fails on the ratified DataFusion git pin's `policy.audit-as-crates-io` posture, while `cargo vet --locked` passes. This is now owned by `.10x/tickets/2026-07-08-cargo-vet-datafusion-git-policy-bare-command.md`.
+- At review time, bare `cargo vet` failed on the ratified DataFusion git pin's `policy.audit-as-crates-io` posture while `cargo vet --locked` passed. That residual is now closed under `.10x/tickets/done/2026-07-08-cargo-vet-datafusion-git-policy-bare-command.md`.
 
 ## Verdict
 

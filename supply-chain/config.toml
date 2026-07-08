@@ -4,6 +4,90 @@
 [cargo-vet]
 version = "0.10"
 
+[policy."datafusion-catalog-listing:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-catalog:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-common-runtime:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-common:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-datasource-arrow:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-datasource-csv:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-datasource-json:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-datasource:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-doc:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-execution:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-expr-common:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-expr:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-functions-aggregate-common:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-functions-aggregate:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-functions-table:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-functions-window-common:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-functions-window:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-functions:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-macros:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-optimizer:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-physical-expr-adapter:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-physical-expr-common:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-physical-expr:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-physical-optimizer:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-physical-plan:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-pruning:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion-session:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
+[policy."datafusion:54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"]
+audit-as-crates-io = true
+
 [[exemptions.adler2]]
 version = "2.0.1"
 criteria = "safe-to-deploy"
@@ -429,115 +513,115 @@ version = "6.2.1"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-catalog]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-catalog-listing]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-common]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-common-runtime]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-datasource]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-datasource-arrow]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-datasource-csv]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-datasource-json]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-doc]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-execution]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-expr]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-expr-common]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-functions]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-functions-aggregate]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-functions-aggregate-common]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-functions-table]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-functions-window]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-functions-window-common]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-macros]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-optimizer]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-physical-expr]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-physical-expr-adapter]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-physical-expr-common]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-physical-optimizer]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-physical-plan]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-pruning]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.datafusion-session]]
-version = "54.0.0"
+version = "54.0.0@git:7ff7278edc1bf7446303bff51e5883a38414bbdf"
 criteria = "safe-to-deploy"
 
 [[exemptions.derive_arbitrary]]

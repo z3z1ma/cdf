@@ -56,7 +56,7 @@ Supply-chain and security:
 - `cargo audit`: passed with one allowed warning, `RUSTSEC-2024-0436` for `paste 1.0.15`.
 - `cargo vet --locked`: passed, `Vetting Succeeded (393 exempted)`.
 - `osv-scanner scan source --lockfile Cargo.lock --format json --output target/quality/reports/osv-p0-b2.json .`: exited nonzero with exactly one result, `RUSTSEC-2024-0436` for `paste 1.0.15`, matching the active scoped exception.
-- bare `cargo vet`: failed with the DataFusion git pin `policy.audit-as-crates-io` issue now owned by `.10x/tickets/2026-07-08-cargo-vet-datafusion-git-policy-bare-command.md`. This is not a B2 runtime defect, and the locked vet gate passed.
+- bare `cargo vet`: failed with the DataFusion git pin `policy.audit-as-crates-io` issue now closed under `.10x/tickets/done/2026-07-08-cargo-vet-datafusion-git-policy-bare-command.md`. This is not a B2 runtime defect, and the locked vet gate passed.
 - `tools/codeql-rust-quality.sh`: passed using the reusable database path `target/quality/codeql-db-rust`. It refreshed the database because Rust source changed after the registry repair, then analyzed with 0 SARIF results. Extractor diagnostics were the known local Rust macro-expansion warning noise: 186 Rust files scanned, 0 extraction errors, 2,879 extraction warnings, 142 files with warnings, and 44 without warnings.
 
 ## What this supports
@@ -75,4 +75,4 @@ B2 does not delete public DuckDB/Parquet/Postgres compatibility wrappers, migrat
 
 The new registry is intentionally minimal. B3 owns built-in project/URI resolution for current production destinations and resource construction.
 
-The bare `cargo vet` residual remains open under `.10x/tickets/2026-07-08-cargo-vet-datafusion-git-policy-bare-command.md`.
+At evidence time, the bare `cargo vet` residual remained open; it is now closed under `.10x/tickets/done/2026-07-08-cargo-vet-datafusion-git-policy-bare-command.md`.
