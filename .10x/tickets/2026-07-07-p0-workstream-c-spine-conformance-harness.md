@@ -26,7 +26,7 @@ This ticket is a parent plan. Child tickets own executable implementation slices
 - `.10x/tickets/done/2026-07-08-p0-c2-rest-sql-run-matrix.md`
 - `.10x/tickets/done/2026-07-08-p0-c3-cross-destination-chaos.md`
 - `.10x/tickets/done/2026-07-08-p0-c4-live-run-goldens-per-destination.md`
-- `.10x/tickets/2026-07-08-p0-c5-property-fuzz-targets.md`
+- `.10x/tickets/done/2026-07-08-p0-c5-property-fuzz-targets.md`
 - `.10x/tickets/2026-07-08-p0-c6-workstream-c-closure.md`
 
 ## Required outcome
@@ -66,6 +66,7 @@ No new product runtime behavior except narrow hooks required for conformance. No
 - 2026-07-08: C2 closed. The run-spine matrix now covers FILE, deterministic REST fixture, and table-backed Postgres SQL source archetypes across DuckDB, filesystem Parquet, and Postgres destinations, with 24 executed cells and 3 sheet-backed Parquet merge exclusions.
 - 2026-07-08: C3 closed. Generic runtime chaos now covers DuckDB, filesystem Parquet, and Postgres across all four ratified crash windows through `RuntimeStage`, with no destination exclusions and evidence/review recorded.
 - 2026-07-08: C4 closed. Live-run golden fixtures now exist for DuckDB, filesystem Parquet, and Postgres with committed hashes, package verification before comparison, destination row-count evidence, trait-level receipt verification, repeated determinism runs, and evidence/review recorded.
+- 2026-07-08: C5 closed. `cdf-conformance` now has a focused `property_fuzz` module with bounded property/adversarial tests for the active contract verdict lattice, source-position serialization, NDJSON parsing, and Singer/Airbyte protocol parsers, plus supply-chain remediation for the new dev-test graph.
 
 ## Blockers
 

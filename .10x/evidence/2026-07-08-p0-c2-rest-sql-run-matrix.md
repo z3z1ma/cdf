@@ -101,6 +101,6 @@ This supports C2 acceptance: conformance now drives FILE, deterministic REST, an
 
 ## Limits
 
-This closes C2 only. Cross-destination chaos is now closed at `.10x/tickets/done/2026-07-08-p0-c3-cross-destination-chaos.md`; per-destination live-run goldens later closed at `.10x/tickets/done/2026-07-08-p0-c4-live-run-goldens-per-destination.md`; property/fuzz targets remain owned by `.10x/tickets/2026-07-08-p0-c5-property-fuzz-targets.md`; Workstream C closure remains owned by `.10x/tickets/2026-07-08-p0-c6-workstream-c-closure.md`.
+This closes C2 only. Cross-destination chaos is now closed at `.10x/tickets/done/2026-07-08-p0-c3-cross-destination-chaos.md`; per-destination live-run goldens later closed at `.10x/tickets/done/2026-07-08-p0-c4-live-run-goldens-per-destination.md`; property/fuzz targets later closed at `.10x/tickets/done/2026-07-08-p0-c5-property-fuzz-targets.md`; Workstream C closure remains owned by `.10x/tickets/2026-07-08-p0-c6-workstream-c-closure.md`.
 
 CodeQL was not run for this slice. C2 touched conformance harness/test code and internal dev-dependency references, not production runtime or a new security boundary; the reusable CodeQL database was not recreated, and the local security/supply-chain checks above were run instead.
