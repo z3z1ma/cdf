@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/specs/resource-authoring-planning-batches.md
+Depends-On: .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/python-front-door-product-surface.md
 
 # P1 product WS7: Python through the front door
 
@@ -17,6 +17,13 @@ Make `python://` resources runnable through the product surface, not only throug
 - Plan/run interpreter-missing errors route users through `cdf doctor` remediation.
 - Add free-threaded 3.14t and GIL interpreter CI matrix coverage required by the standing goal's Python criteria.
 - Move the dlt shim from preview toward GA behind a real dlt-source integration test, or ratify the remaining slice order if full parity needs sequencing.
+
+## Child tickets
+
+- `.10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md`
+- `.10x/tickets/2026-07-08-p1-product-ws7b-python-run-spine.md`
+- `.10x/tickets/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
+- `.10x/tickets/2026-07-08-p1-product-ws7d-dlt-ga-gap-integration.md`
 
 ## Acceptance criteria
 
@@ -36,7 +43,8 @@ No use of Python as the execution substrate. No weakening of secret redaction or
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. The Python bridge exists; this workstream opens the product doorway.
+- 2026-07-08: Shaped the Python product surface in `.10x/specs/python-front-door-product-surface.md` and split implementation into WS7A-WS7D child tickets. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws7-python-front-door-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws7-python-front-door-shaping-review.md`.
 
 ## Blockers
 
-None for shaping. Implementation may split if bridge/runtime parity exposes additional semantic decisions.
+None for shaping. Implementation is owned by the child tickets.
