@@ -15,7 +15,7 @@ Ticket `.10x/tickets/done/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`
 - Minor, accepted: `cargo semver-checks` reports public API removals and `RuntimeStage` enum changes. These are the intended B4 break: the removed API was a temporary destination-specialized wrapper surface and the repo is still pre-1.0.
 - Minor, accepted: `jscpd` reports 6.819% duplicated lines across the broad B4 runtime/CLI/conformance scope. The implementation deleted 1,364 lines and collapsed the wrapper family; remaining duplication is mostly tests/harnesses and destination-driver helper shape, not a new B4 blocker.
 - Minor, accepted: `replay_package_with_runtime` remains the hottest runtime function at cyclomatic 19. It is now the single generic replay spine rather than one of several destination-specialized branches. Further splitting is a maintainability opportunity, not a B4 closure blocker.
-- Residual, owned by Workstream C: conformance callers route through the generic path, but the full run-spine matrix, non-DuckDB chaos breadth, per-destination live-run goldens, and property/fuzz targets remain open under `.10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md`.
+- Residual at B4 closure, owned by Workstream C: conformance callers routed through the generic path, but the full run-spine matrix, non-DuckDB chaos breadth, per-destination live-run goldens, and property/fuzz targets still needed the now-closed Workstream C owner at `.10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md`.
 
 ## Assumptions Tested
 

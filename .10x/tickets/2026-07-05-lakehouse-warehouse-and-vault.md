@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-05
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+Depends-On: .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 
 # Implement lakehouse, warehouse, and vault-class integrations
 
@@ -31,7 +31,8 @@ Vector-store destinations and UI remain out of scope unless later ratified by ac
 - 2026-07-05: Opened from book and specs.
 - 2026-07-07: Destination and lakehouse portions are blocked by the P0 structural-debt stop-line until Workstreams A, B, and C close. A vault-only child may be split separately if prioritized because the stop-line is specifically about new destination/source/streaming lanes.
 - 2026-07-08: Workstream B closed. New destination/lakehouse lanes remain blocked by the P0 stop-line until Workstream C closes.
+- 2026-07-08: Workstream C closed at `.10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md`; the A-C stop-line is lifted for new destination lanes. This ticket is open again, though broader P0 Workstreams E and F remain the current structural-debt priority.
 
 ## Blockers
 
-P0 stop-line for new destination lanes: `.10x/decisions/p0-structural-debt-stop-line.md`.
+None.

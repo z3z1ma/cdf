@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+Parent: .10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 Depends-On: .10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md, .10x/tickets/done/2026-07-08-p0-c2-rest-sql-run-matrix.md
 
 # P0 C3: Cross-destination generic chaos

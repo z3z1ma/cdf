@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+Relates-To: .10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md, .10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 
 # P0 C1 run-spine matrix foundation evidence
 

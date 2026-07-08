@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+Parent: .10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 Depends-On: .10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md, .10x/tickets/done/2026-07-08-p0-c2-rest-sql-run-matrix.md, .10x/tickets/done/2026-07-08-p0-c3-cross-destination-chaos.md, .10x/tickets/done/2026-07-08-p0-c4-live-run-goldens-per-destination.md, .10x/tickets/done/2026-07-08-p0-c5-property-fuzz-targets.md
 
 # P0 C6: Workstream C closure rollup
@@ -40,6 +40,8 @@ No implementation repair beyond closure-blocker fixes explicitly scoped to Works
 ## Progress And Notes
 
 - 2026-07-08: Split from P0 Workstream C as the parent closure owner.
+- 2026-07-08: Activated after C5 closed. C6 is closure bookkeeping and graph audit for Workstream C: no new runtime/source/destination work is in scope.
+- 2026-07-08: Closed Workstream C with aggregate evidence in `.10x/evidence/2026-07-08-p0-workstream-c-spine-conformance-harness.md` and review in `.10x/reviews/2026-07-08-p0-workstream-c-spine-conformance-harness-review.md`. Final `cargo nextest run -p cdf-conformance --locked` passed with 60 tests.
 
 ## Blockers
 
