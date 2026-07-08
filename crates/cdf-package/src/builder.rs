@@ -17,6 +17,7 @@ use crate::{
     json::canonical_json_bytes,
     model::{FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, SegmentEntry, TRACE_FILE},
     ops::update_package_status,
+    quarantine::{QuarantineRecord, quarantine_records_to_parquet_bytes},
     storage::{
         atomic_write, build_manifest, collect_identity_file_entries, create_layout,
         file_entry_for_path, io_error, nested_artifact_path, normalize_artifact_path, package_path,
@@ -133,6 +134,15 @@ impl PackageBuilder {
             nested_artifact_path("quarantine", file_name.as_ref())?,
             bytes,
         )
+    }
+
+    pub fn write_quarantine_records(
+        &self,
+        file_name: impl AsRef<Path>,
+        records: &[QuarantineRecord],
+    ) -> Result<FileEntry> {
+        let bytes = quarantine_records_to_parquet_bytes(records)?;
+        self.write_quarantine_artifact(file_name, &bytes)
     }
 
     pub fn write_lineage_artifact(

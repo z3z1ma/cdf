@@ -56,7 +56,7 @@ None.
 - 2026-07-08: Wired `ContractExec` in the live engine path before normalization. Accepted rows are filtered into `NormalizeExec`; reject-batch and reject-run dispositions return contract errors before package finalization or destination mutation. The package still writes `plan/validation-program.json`; freshness packages also write `plan/contract-evaluation-context.json` with package-level `observed_at_ms`.
 - 2026-07-08: Added focused contract, engine, and conformance tests, including a local/non-public 100k-row type/null/domain benchmarkable path. Evidence is recorded in `.10x/evidence/2026-07-08-p1-e1-row-level-verdicts-live-chain.md`.
 - 2026-07-08: Parent review found and repaired an all-quarantined-batch edge where the live path could write a zero-row package segment. `execute_to_package_inner` now skips post-contract empty batches, and the freshness engine test asserts no data segments are emitted when all rows are rejected.
-- 2026-07-08: Parent review found no blocking issues and recorded the adversarial pass in `.10x/reviews/2026-07-08-p1-e1-row-level-verdicts-live-chain-review.md`. Live quarantine artifact writing remains excluded here and owned by `.10x/tickets/2026-07-08-p1-e2-quarantine-routing-redaction.md`; live merge/dedup enforcement remains owned by `.10x/tickets/2026-07-08-p1-e3-merge-dedup-live-path.md`.
+- 2026-07-08: Parent review found no blocking issues and recorded the adversarial pass in `.10x/reviews/2026-07-08-p1-e1-row-level-verdicts-live-chain-review.md`. Live quarantine artifact writing remains excluded here and owned by `.10x/tickets/done/2026-07-08-p1-e2-quarantine-routing-redaction.md`; live merge/dedup enforcement remains owned by `.10x/tickets/2026-07-08-p1-e3-merge-dedup-live-path.md`.
 
 ## Blockers
 

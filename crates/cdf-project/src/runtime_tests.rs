@@ -12,7 +12,7 @@ use std::{
 
 use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{ContractPolicy, ObservedSchema, RowRule, compile_validation_program};
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
@@ -70,7 +70,7 @@ write_disposition = "append"
 trust = "governed"
 schema = { fields = [
   { name = "id", type = "int64", nullable = false },
-  { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
+  { name = "updated_at", type = "int64", nullable = false },
 ] }
 "#;
 const SIMPLE_FILE_RESOURCE_APPEND: &str = r#"
@@ -746,8 +746,8 @@ fn live_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events.ndjson"),
-        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n\
-         {\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n",
+        "{\"id\":1,\"updated_at\":1783296000000000}\n\
+         {\"id\":2,\"updated_at\":1783296060000000}\n",
     )
     .unwrap();
     let document = cdf_declarative::parse_toml(LIVE_FILE_RESOURCE).unwrap();
@@ -1468,6 +1468,70 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     assert_eq!(
         report.ledger_snapshot.events[6].receipt_id,
         Some(report.receipt.receipt_id.clone())
+    );
+}
+
+#[test]
+fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_id = "pkg-quarantine-duckdb-unsupported";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut plan = live_plan(&resource, package_id);
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.rows.rules = vec![RowRule::Range {
+        column: "id".to_owned(),
+        min: None,
+        max: Some("1".to_owned()),
+    }];
+    plan.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+
+    let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
+        LocalFileDuckDbRunRequest {
+            resource: &resource,
+            plan,
+            package_root: package_root.clone(),
+            destination_path: duckdb_path,
+            state_store_path: state_path,
+            pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+            target: TargetName::new("events").unwrap(),
+            package_id: package_id.to_owned(),
+            checkpoint_id: CheckpointId::new("checkpoint-quarantine-duckdb-unsupported").unwrap(),
+            after_receipt_verified: None,
+        },
+    ))
+    .unwrap();
+
+    assert_eq!(report.row_count, 1);
+    assert_eq!(report.segment_count, 1);
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    let reader = PackageReader::open(&package_dir).unwrap();
+    assert_eq!(reader.read_quarantine_records().unwrap().len(), 1);
+    assert!(
+        reader
+            .manifest()
+            .identity
+            .files
+            .iter()
+            .any(|file| file.path == "destination/quarantine-mirror.json")
+    );
+    let mirror_outcome: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("destination/quarantine-mirror.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(mirror_outcome["destination_id"], "duckdb");
+    assert_eq!(mirror_outcome["quarantine_table_support"], "unsupported");
+    assert_eq!(mirror_outcome["outcome"], "not_mirrored");
+    assert_eq!(
+        mirror_outcome["quarantine_artifacts"][0],
+        "quarantine/part-000001.parquet"
     );
 }
 

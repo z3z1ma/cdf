@@ -24,7 +24,9 @@ use cdf_kernel::{
     ScanPredicate, ScanRequest, SchemaSource, ScopeKey, SegmentId, SortDirection, SourcePosition,
     TrustLevel,
 };
-use cdf_package::{PackageBuilder, PackageManifest, PackageReader};
+use cdf_package::{
+    PackageBuilder, PackageManifest, PackageReader, QuarantineObservedValue, QuarantineRecord,
+};
 use futures_util::StreamExt;
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
@@ -821,6 +823,66 @@ fn live_append_duplicate_receipt_verification_and_state_mirror() {
         duplicate_with_different_token.receipt.receipt_id,
         outcome.receipt.receipt_id
     );
+}
+
+#[test]
+fn live_append_populates_quarantine_mirror_when_sheet_supports_it() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let package_dir = tempfile::tempdir().unwrap();
+    let mut builder =
+        PackageBuilder::create(package_dir.path(), "pkg-live-quarantine-mirror").unwrap();
+    builder
+        .write_quarantine_records(
+            "part-000001.parquet",
+            &[QuarantineRecord {
+                source_row_ordinal: 1,
+                rule_id: "row-rule-0000-regex".to_owned(),
+                error_code: "regex_violation".to_owned(),
+                source_position: Some(position(10)),
+                observed_value_redacted: QuarantineObservedValue::Hashed {
+                    algorithm: "sha256".to_owned(),
+                    value: "sha256:abc123".to_owned(),
+                },
+            }],
+        )
+        .unwrap();
+    builder
+        .write_segment(
+            SegmentId::new("seg-000001").unwrap(),
+            &[batch(&[(1, Some("ada"))])],
+        )
+        .unwrap();
+    let manifest = builder.finish().unwrap();
+    let plan = plan(
+        &env,
+        "orders_quarantine_mirror",
+        &manifest,
+        WriteDisposition::Append,
+        MergeDedupPolicy::Last,
+        Some(state_delta(&manifest, "chk-live-quarantine-mirror")),
+    );
+
+    let outcome = commit(&env, package_dir.path(), plan);
+    assert!(!outcome.duplicate);
+    let mut client = env.client();
+    let target = env.target("orders_quarantine_mirror");
+    let row = client
+        .query_one(
+            &format!(
+                "SELECT \"source_row_ordinal\", \"rule_id\", \"error_code\", \"observed_value_json\"::text FROM {} WHERE \"target\" = $1 AND \"package_hash\" = $2",
+                quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
+            ),
+            &[&target.display_name(), &manifest.package_hash],
+        )
+        .unwrap();
+    assert_eq!(row.get::<_, i64>(0), 1);
+    assert_eq!(row.get::<_, String>(1), "row-rule-0000-regex");
+    assert_eq!(row.get::<_, String>(2), "regex_violation");
+    let observed_json = row.get::<_, String>(3);
+    assert!(observed_json.contains("sha256:abc123"));
+    assert!(!observed_json.contains("pii-fixture-sensitive"));
 }
 
 #[test]

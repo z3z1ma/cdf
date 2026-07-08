@@ -1,5 +1,8 @@
 use super::{
-    artifacts::{StateCommitArtifactContext, write_run_state_commit_artifacts},
+    artifacts::{
+        QuarantineMirrorArtifactContext, StateCommitArtifactContext,
+        write_quarantine_mirror_outcome_artifact, write_run_state_commit_artifacts,
+    },
     destinations::ResolvedProjectDestination,
     hooks::{ReceiptVerifiedHook, RuntimeStage},
     ledger::{ProjectRunRecorder, ProjectRunRecorderContext},
@@ -136,12 +139,19 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     let descriptor = resource.descriptor();
     let schema = resource.schema();
     let scope = descriptor.state_scope.clone();
+    let quarantine_mirror = QuarantineMirrorArtifactContext {
+        destination_id: execution.destination.describe().destination_id,
+        quarantine_table_support: execution
+            .destination
+            .runtime_mut()
+            .quarantine_table_support(),
+    };
     let head =
         execution
             .checkpoint_store
             .head(execution.pipeline_id, &descriptor.resource_id, &scope)?;
 
-    let write_state_commit_artifacts =
+    let write_package_pre_finalize_artifacts =
         |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
             write_run_state_commit_artifacts(
                 builder,
@@ -156,13 +166,14 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
                 &execution.schema_hash,
                 &scope,
                 &head,
-            )
+            )?;
+            write_quarantine_mirror_outcome_artifact(builder, &quarantine_mirror)
         };
     let output = execute_to_package_with_segment_positions_and_pre_finalize(
         execution.plan,
         resource,
         &execution.package_dir,
-        &write_state_commit_artifacts,
+        &write_package_pre_finalize_artifacts,
     )
     .await?;
 

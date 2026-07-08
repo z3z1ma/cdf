@@ -84,6 +84,11 @@ fn conformance_case(
             .iter()
             .any(|migration| migration.migration_id == "postgres.create_cdf_state")
     );
+    assert!(
+        migrations
+            .iter()
+            .any(|migration| { migration.migration_id == "postgres.create_cdf_quarantine" })
+    );
     DestinationConformanceCase::new(request).with_expected_migrations(migrations)
 }
 
@@ -275,6 +280,10 @@ fn receipt_contains_postgres_xid_verify_clause_and_segment_acks() {
     let transaction = receipt.transaction.unwrap();
     assert_eq!(transaction.system, POSTGRES_DESTINATION_ID);
     assert_eq!(transaction.values.get("xid"), Some(&"123456".to_owned()));
+    assert_eq!(
+        transaction.values.get("quarantine_table"),
+        Some(&CDF_QUARANTINE_TABLE.to_owned())
+    );
     assert_eq!(receipt.verify.kind, "postgres_sql");
     assert!(receipt.verify.statement.contains(CDF_LOADS_TABLE));
     assert_eq!(receipt.segment_acks.len(), 2);
@@ -297,6 +306,11 @@ fn mirror_and_drift_hooks_expose_load_and_state_tables() {
         plan.mirror_sql
             .iter()
             .any(|statement| statement.sql.contains(CDF_STATE_TABLE))
+    );
+    assert!(
+        plan.mirror_sql
+            .iter()
+            .any(|statement| statement.sql.contains(CDF_QUARANTINE_TABLE))
     );
     assert!(plan.drift.load_for_package.sql.contains(CDF_LOADS_TABLE));
     assert!(plan.drift.state_for_scope.sql.contains(CDF_STATE_TABLE));

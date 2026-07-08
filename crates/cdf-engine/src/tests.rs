@@ -21,7 +21,7 @@ use cdf_kernel::{
     PartitioningCapabilities, PredicateId, PushdownFidelity, QueryableResource,
     ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, ScanPlan,
     ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SourcePosition, TrustLevel,
-    WriteDisposition, source_name,
+    WriteDisposition, source_name, with_semantic,
 };
 use cdf_package::PackageStatus;
 use datafusion::{
@@ -339,6 +339,92 @@ fn contract_exec_filters_quarantined_rows_before_normalize() {
         .unwrap();
     assert_eq!(names.value(0), "two");
     assert_eq!(names.value(1), "three");
+}
+
+#[test]
+fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
+    let raw_pii = "pii-fixture-sensitive";
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        with_semantic(Field::new("name", DataType::Utf8, false), "pii:email"),
+        Field::new("active", DataType::Boolean, false),
+    ]));
+    let mut batch = batch_for_partition_with_schema(
+        "batch-pii",
+        "part-0",
+        schema.clone(),
+        vec![1, 2],
+        vec!["ok@example.test", raw_pii],
+        vec![true, true],
+    );
+    batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "/tmp/cdf/pii.ndjson".to_owned(),
+            size_bytes: 64,
+            etag: None,
+            sha256: Some("sha256-pii-fixture".to_owned()),
+        }],
+    }));
+    let resource = MockResource::tier_a(vec![batch]);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Regex {
+        column: "name".to_owned(),
+        pattern: r"^[^@]+@example\.test$".to_owned(),
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 1);
+    assert_eq!(output.segments.len(), 1);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let accepted = batches[0]
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(accepted.len(), 1);
+    assert_eq!(accepted.value(0), "ok@example.test");
+
+    let quarantine = reader.read_quarantine_records().unwrap();
+    assert_eq!(quarantine.len(), 1);
+    assert_eq!(quarantine[0].source_row_ordinal, 1);
+    assert_eq!(quarantine[0].error_code, "regex_violation");
+    assert!(matches!(
+        quarantine[0].source_position,
+        Some(SourcePosition::FileManifest(_))
+    ));
+    let cdf_package::QuarantineObservedValue::Hashed { algorithm, value } =
+        &quarantine[0].observed_value_redacted
+    else {
+        panic!("pii semantic field must be hash-redacted");
+    };
+    assert_eq!(algorithm, "sha256");
+    assert_eq!(
+        value,
+        "sha256:0a08d503e0f6794940fd8e6a1f547999622742616551894946ba6dc0489cf184"
+    );
+
+    let quarantine_path = temp.path().join("quarantine/part-000001.parquet");
+    let artifact = std::fs::read(quarantine_path).unwrap();
+    assert!(!String::from_utf8_lossy(&artifact).contains(raw_pii));
+    assert!(
+        reader
+            .verify()
+            .unwrap()
+            .checked_files
+            .iter()
+            .any(|file| file.path == "quarantine/part-000001.parquet")
+    );
 }
 
 #[test]

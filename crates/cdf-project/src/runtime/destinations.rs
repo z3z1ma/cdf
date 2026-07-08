@@ -1,5 +1,6 @@
 use super::{hooks::ReceiptVerifiedHook, prelude::*, types::ProjectReceiptSource};
 use crate::DestinationPolicy;
+use cdf_kernel::CapabilitySupport;
 
 mod duckdb;
 mod parquet;
@@ -300,6 +301,10 @@ pub trait ProjectDestinationRuntime {
 
     fn supported_dispositions(&self) -> &[WriteDisposition] {
         &self.protocol().sheet().supported_dispositions
+    }
+
+    fn quarantine_table_support(&self) -> CapabilitySupport {
+        self.protocol().sheet().quarantine_tables.clone()
     }
 
     fn validate_run_preflight(

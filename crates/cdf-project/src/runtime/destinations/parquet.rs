@@ -114,6 +114,10 @@ impl ProjectDestinationRuntime for FilesystemParquetProjectDestinationRuntime {
         &SUPPORTED
     }
 
+    fn quarantine_table_support(&self) -> CapabilitySupport {
+        CapabilitySupport::Unsupported
+    }
+
     fn prepare_package_commit(
         &mut self,
         package_dir: &Path,

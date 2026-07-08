@@ -7,6 +7,7 @@ mod json;
 mod model;
 mod ops;
 mod parquet;
+mod quarantine;
 mod reader;
 mod storage;
 
@@ -17,6 +18,7 @@ pub use json::*;
 pub use model::*;
 pub use ops::*;
 pub use parquet::transcode_record_batches_to_parquet_bytes;
+pub use quarantine::*;
 pub use reader::*;
 
 #[cfg(test)]

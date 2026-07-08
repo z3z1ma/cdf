@@ -300,6 +300,106 @@ fn package_layout_manifest_and_verification_cover_identity_files() {
 }
 
 #[test]
+fn quarantine_records_round_trip_as_parquet_identity_evidence() {
+    let records = vec![
+        QuarantineRecord {
+            source_row_ordinal: 7,
+            rule_id: "row-rule-0000-regex".to_owned(),
+            error_code: "regex_violation".to_owned(),
+            source_position: Some(SourcePosition::Cursor(CursorPosition {
+                version: CHECKPOINT_STATE_VERSION,
+                field: "updated_at".to_owned(),
+                value: CursorValue::I64(42),
+            })),
+            observed_value_redacted: QuarantineObservedValue::Hashed {
+                algorithm: "sha256".to_owned(),
+                value: "sha256:abc123".to_owned(),
+            },
+        },
+        QuarantineRecord {
+            source_row_ordinal: 8,
+            rule_id: "row-rule-0001-domain".to_owned(),
+            error_code: "domain_violation".to_owned(),
+            source_position: None,
+            observed_value_redacted: QuarantineObservedValue::Preserved {
+                value: "inactive".to_owned(),
+            },
+        },
+    ];
+
+    let bytes = quarantine_records_to_parquet_bytes(&records).unwrap();
+    assert_eq!(
+        quarantine_records_from_parquet_bytes(&bytes).unwrap(),
+        records
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-quarantine-0001").unwrap();
+    builder
+        .write_quarantine_records("part-000001.parquet", &records)
+        .unwrap();
+    let manifest = builder.finish().unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
+    assert_eq!(reader.read_quarantine_records().unwrap(), records);
+
+    let report = verify_package(temp.path()).unwrap();
+    assert!(
+        report
+            .checked_files
+            .iter()
+            .any(|file| file.path == "quarantine/part-000001.parquet")
+    );
+    assert!(
+        manifest
+            .identity
+            .files
+            .iter()
+            .any(|file| file.path == "quarantine/part-000001.parquet")
+    );
+
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(temp.path().join("quarantine/part-000001.parquet"))
+        .unwrap();
+    file.write_all(b"tamper").unwrap();
+    file.sync_all().unwrap();
+    let error = verify_package(temp.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("tampered identity file quarantine/part-000001.parquet"),
+        "{error}"
+    );
+
+    let traversal = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(traversal.path(), "pkg-quarantine-traversal").unwrap();
+    builder
+        .write_quarantine_records("part-000001.parquet", &records)
+        .unwrap();
+    let mut manifest = builder.finish().unwrap();
+    manifest.identity.files.push(FileEntry {
+        path: "quarantine/../escape.parquet".to_owned(),
+        byte_count: 0,
+        sha256: String::new(),
+    });
+    fs::write(
+        traversal.path().join(MANIFEST_FILE),
+        canonical_json_bytes(&manifest).unwrap(),
+    )
+    .unwrap();
+    let error = PackageReader::open(traversal.path())
+        .unwrap()
+        .read_quarantine_records()
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("package artifact path must be relative and stay inside the package"),
+        "{error}"
+    );
+}
+
+#[test]
 fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();

@@ -14,6 +14,10 @@ pub(crate) fn mirror_statements(
             state_mirror_sql(),
         ));
     }
+    statements.push(PostgresStatement::execute(
+        "record_cdf_quarantine",
+        record_quarantine_sql(),
+    ));
     statements.push(PostgresStatement::query(
         "verify_receipt",
         verify.statement.clone(),
@@ -26,6 +30,13 @@ pub(crate) fn record_load_sql() -> String {
     format!(
         "INSERT INTO {} (\"receipt_id\", \"destination\", \"target\", \"resource_id\", \"package_hash\", \"idempotency_token\", \"disposition\", \"schema_hash\", \"rows_written\", \"rows_inserted\", \"rows_updated\", \"rows_deleted\", \"segment_count\", \"migrations_json\", \"receipt_json\", \"xid\", \"duplicate\", \"committed_at_ms\")\nVALUES ($1, 'postgres', $2, $4, $3, $5, $6, $7, $8, $9, $10, $11, $12, $13::text::jsonb, $14::text::jsonb, $15, $16, $17)\nON CONFLICT (\"target\", \"package_hash\") DO NOTHING",
         quote_identifier_unchecked(CDF_LOADS_TABLE)
+    )
+}
+
+pub(crate) fn record_quarantine_sql() -> String {
+    format!(
+        "INSERT INTO {} (\"target\", \"package_hash\", \"receipt_id\", \"source_row_ordinal\", \"rule_id\", \"error_code\", \"source_position_json\", \"observed_value_json\", \"committed_at_ms\")\nVALUES ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8::text::jsonb, $9)\nON CONFLICT (\"target\", \"package_hash\", \"source_row_ordinal\", \"rule_id\", \"error_code\") DO NOTHING",
+        quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
     )
 }
 

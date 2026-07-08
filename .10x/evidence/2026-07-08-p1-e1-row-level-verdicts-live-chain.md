@@ -85,4 +85,4 @@ git diff --check
 
 - The throughput output is explicitly local and non-public. It is a benchmarkable test path, not a public performance claim.
 - Dedup is serialized as metadata for this child. Live merge/dedup enforcement remains outside E1 and is owned by `.10x/tickets/2026-07-08-p1-e3-merge-dedup-live-path.md`.
-- Quarantine artifact writing and destination quarantine mirrors remain outside E1 and are owned by `.10x/tickets/2026-07-08-p1-e2-quarantine-routing-redaction.md`.
+- Quarantine artifact writing and destination quarantine mirrors remain outside E1 and are owned by `.10x/tickets/done/2026-07-08-p1-e2-quarantine-routing-redaction.md`.

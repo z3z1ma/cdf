@@ -190,6 +190,7 @@ impl PostgresCommitSession {
         if let Some(delta) = &self.plan.state_delta {
             upsert_state_mirror(&mut client, &self.plan, &receipt, delta)?;
         }
+        insert_quarantine_mirror(&mut client, &self.package_dir, &self.plan, &receipt)?;
         verify_receipt_in_transaction(&mut client, &receipt)?;
         self.receipt = Some(receipt);
         self.client = Some(client);
@@ -686,6 +687,54 @@ fn upsert_state_mirror(
             ],
         )
         .map_err(|error| postgres_error("upsert Postgres _cdf_state mirror", error))?;
+    Ok(())
+}
+
+fn insert_quarantine_mirror(
+    client: &mut Client,
+    package_dir: &std::path::Path,
+    plan: &PostgresLoadPlan,
+    receipt: &Receipt,
+) -> Result<()> {
+    let records = cdf_package::PackageReader::open(package_dir)?.read_quarantine_records()?;
+    if records.is_empty() {
+        return Ok(());
+    }
+    let statement = plan
+        .mirror_sql
+        .iter()
+        .find(|statement| statement.name == "record_cdf_quarantine")
+        .ok_or_else(|| {
+            CdfError::internal("Postgres plan missing record_cdf_quarantine statement")
+        })?;
+    let target = receipt.target.as_str();
+    let package_hash = receipt.package_hash.as_str();
+    let receipt_id = receipt.receipt_id.as_str();
+    for record in records {
+        let source_row_ordinal = to_i64(record.source_row_ordinal, "source_row_ordinal")?;
+        let source_position_json = record
+            .source_position
+            .map(|position| serde_json::to_string(&position).map_err(json_error))
+            .transpose()?;
+        let observed_value_json =
+            serde_json::to_string(&record.observed_value_redacted).map_err(json_error)?;
+        client
+            .execute(
+                &statement.sql,
+                &[
+                    &target,
+                    &package_hash,
+                    &receipt_id,
+                    &source_row_ordinal,
+                    &record.rule_id.as_str(),
+                    &record.error_code.as_str(),
+                    &source_position_json,
+                    &observed_value_json,
+                    &receipt.committed_at_ms,
+                ],
+            )
+            .map_err(|error| postgres_error("insert Postgres _cdf_quarantine mirror", error))?;
+    }
     Ok(())
 }
 

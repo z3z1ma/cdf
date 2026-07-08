@@ -98,6 +98,10 @@ pub fn build_receipt(plan: &PostgresLoadPlan, input: PostgresReceiptInput) -> Re
     transaction_values.insert("duplicate".to_owned(), input.duplicate.to_string());
     transaction_values.insert("loads_table".to_owned(), CDF_LOADS_TABLE.to_owned());
     transaction_values.insert("state_table".to_owned(), CDF_STATE_TABLE.to_owned());
+    transaction_values.insert(
+        "quarantine_table".to_owned(),
+        CDF_QUARANTINE_TABLE.to_owned(),
+    );
 
     Ok(Receipt {
         receipt_id: input.receipt_id,

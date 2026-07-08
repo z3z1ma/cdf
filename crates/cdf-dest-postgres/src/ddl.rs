@@ -26,6 +26,13 @@ pub(crate) fn system_table_ddl() -> Vec<PostgresStatement> {
                 quote_identifier_unchecked(CDF_STATE_TABLE)
             ),
         ),
+        PostgresStatement::execute(
+            "create_cdf_quarantine",
+            format!(
+                "CREATE TABLE IF NOT EXISTS {} (\n  \"target\" TEXT NOT NULL,\n  \"package_hash\" TEXT NOT NULL,\n  \"receipt_id\" TEXT NOT NULL,\n  \"source_row_ordinal\" BIGINT NOT NULL,\n  \"rule_id\" TEXT NOT NULL,\n  \"error_code\" TEXT NOT NULL,\n  \"source_position_json\" JSONB,\n  \"observed_value_json\" JSONB NOT NULL,\n  \"committed_at_ms\" BIGINT NOT NULL,\n  PRIMARY KEY (\"target\", \"package_hash\", \"source_row_ordinal\", \"rule_id\", \"error_code\")\n)",
+                quote_identifier_unchecked(CDF_QUARANTINE_TABLE)
+            ),
+        ),
     ]
 }
 

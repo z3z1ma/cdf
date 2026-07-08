@@ -7,9 +7,11 @@ use std::{
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
 use arrow_select::filter::filter_record_batch;
-use cdf_contract::{ContractEvaluationContext, ValidationProgram, evaluate_record_batch};
+use cdf_contract::{
+    ContractEvaluationContext, QuarantineCandidate, ValidationProgram, evaluate_record_batch,
+};
 use cdf_kernel::{CdfError, ResourceStream, Result, RunId, SegmentId, with_source_name};
-use cdf_package::{PackageBuilder, PackageStatus};
+use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use tracing::{Instrument, Span, info_span};
@@ -40,6 +42,11 @@ struct ExecutionTraceContext {
     run_id: String,
     resource_id: String,
     package_id: String,
+}
+
+struct ContractExecOutput {
+    accepted: RecordBatch,
+    quarantine_records: Vec<QuarantineRecord>,
 }
 
 impl ExecutionTraceContext {
@@ -138,6 +145,7 @@ where
     let mut lineage = LineageSummary::default();
     let mut segments = Vec::new();
     let mut segment_positions = Vec::new();
+    let mut quarantine_part_count = 0_usize;
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = None;
 
@@ -173,8 +181,16 @@ where
                 let evaluation_context = package_evaluation_context
                     .clone()
                     .with_source_position(batch.header.source_position.clone());
-                let output =
+                let contract =
                     apply_contract_exec(output, &plan.validation_program, &evaluation_context)?;
+                if !contract.quarantine_records.is_empty() {
+                    quarantine_part_count += 1;
+                    builder.write_quarantine_records(
+                        format!("part-{quarantine_part_count:06}.parquet"),
+                        &contract.quarantine_records,
+                    )?;
+                }
+                let output = contract.accepted;
                 if output.num_rows() == 0 {
                     continue;
                 }
@@ -297,12 +313,56 @@ fn apply_contract_exec(
     batch: RecordBatch,
     program: &ValidationProgram,
     context: &ContractEvaluationContext,
-) -> Result<RecordBatch> {
+) -> Result<ContractExecOutput> {
     let evaluation = evaluate_record_batch(program, context, &batch)?;
-    if evaluation.summary.accepted_rows == evaluation.summary.input_rows {
-        return Ok(batch);
+    let quarantine_records = quarantine_records_from_candidates(evaluation.quarantine_candidates)?;
+    let accepted = if evaluation.summary.accepted_rows == evaluation.summary.input_rows {
+        batch
+    } else {
+        filter_record_batch(&batch, &evaluation.accepted_rows).map_err(CdfError::from)?
+    };
+    Ok(ContractExecOutput {
+        accepted,
+        quarantine_records,
+    })
+}
+
+fn quarantine_records_from_candidates(
+    candidates: Vec<QuarantineCandidate>,
+) -> Result<Vec<QuarantineRecord>> {
+    candidates
+        .into_iter()
+        .map(|candidate| {
+            Ok(QuarantineRecord {
+                source_row_ordinal: u64::try_from(candidate.source_row_ordinal)
+                    .map_err(|error| CdfError::internal(error.to_string()))?,
+                rule_id: candidate.rule_id,
+                error_code: candidate.error_code,
+                source_position: candidate.source_position,
+                observed_value_redacted: quarantine_observed_value(
+                    candidate.observed_value_redacted,
+                ),
+            })
+        })
+        .collect()
+}
+
+fn quarantine_observed_value(
+    value: cdf_contract::RedactedObservedValue,
+) -> QuarantineObservedValue {
+    match value {
+        cdf_contract::RedactedObservedValue::Null => QuarantineObservedValue::Null,
+        cdf_contract::RedactedObservedValue::Preserved { value } => {
+            QuarantineObservedValue::Preserved { value }
+        }
+        cdf_contract::RedactedObservedValue::Hashed { algorithm, value } => {
+            QuarantineObservedValue::Hashed { algorithm, value }
+        }
+        cdf_contract::RedactedObservedValue::Omitted => QuarantineObservedValue::Omitted,
+        cdf_contract::RedactedObservedValue::Masked { value } => {
+            QuarantineObservedValue::Masked { value }
+        }
     }
-    filter_record_batch(&batch, &evaluation.accepted_rows).map_err(CdfError::from)
 }
 
 fn apply_normalize_exec(batch: RecordBatch, program: &ValidationProgram) -> Result<RecordBatch> {

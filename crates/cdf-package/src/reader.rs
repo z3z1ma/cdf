@@ -22,6 +22,7 @@ use crate::{
         append_receipt, read_manifest, read_receipts, read_segment_file, tombstone_package,
         update_package_status, verify_package,
     },
+    quarantine::{QuarantineRecord, quarantine_records_from_package_file},
 };
 
 #[derive(Clone, Debug)]
@@ -128,6 +129,19 @@ impl PackageReader {
                 ))
             })
             .collect()
+    }
+
+    pub fn read_quarantine_records(&self) -> Result<Vec<QuarantineRecord>> {
+        let mut records = Vec::new();
+        for entry in &self.manifest.identity.files {
+            if entry.path.starts_with("quarantine/") && entry.path.ends_with(".parquet") {
+                records.extend(quarantine_records_from_package_file(
+                    &self.package_dir,
+                    &entry.path,
+                )?);
+            }
+        }
+        Ok(records)
     }
 
     pub fn read_commit_segments(

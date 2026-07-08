@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
@@ -48,3 +48,9 @@ No new destination category. No DataFusion multi-output-plan fork. No trust prom
 ## Blockers
 
 None; E1 is closed at `.10x/tickets/done/2026-07-08-p1-e1-row-level-verdicts-live-chain.md`.
+
+## Progress and notes
+
+- 2026-07-08: Activated after E1 closure in `feb81c94`; assigned as the next P1 contract-depth child slice.
+- 2026-07-08: Implemented package quarantine Parquet records, live engine routing, unsupported mirror outcome artifacts, and Postgres `_cdf_quarantine` mirror support. Parent review hardened quarantine manifest readback against traversal and repaired the project file-run fixture to match E1 strict type validation.
+- 2026-07-08: Evidence recorded in `.10x/evidence/2026-07-08-p1-e2-quarantine-routing-redaction.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p1-e2-quarantine-routing-redaction-review.md`. Closed.

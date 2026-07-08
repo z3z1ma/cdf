@@ -1,6 +1,9 @@
 use super::prelude::*;
 #[cfg(test)]
 use super::types::LocalFileDuckDbRunRequest;
+use cdf_kernel::CapabilitySupport;
+
+const QUARANTINE_MIRROR_OUTCOME_FILE: &str = "destination/quarantine-mirror.json";
 
 pub(super) fn write_run_state_commit_artifacts(
     builder: &cdf_package::PackageBuilder,
@@ -31,12 +34,96 @@ pub(super) fn write_run_state_commit_artifacts(
     Ok(())
 }
 
+pub(super) fn write_quarantine_mirror_outcome_artifact(
+    builder: &cdf_package::PackageBuilder,
+    context: &QuarantineMirrorArtifactContext,
+) -> Result<()> {
+    let artifacts = quarantine_artifacts(builder.package_dir())?;
+    if artifacts.is_empty() {
+        return Ok(());
+    }
+
+    let (outcome, reason) = match context.quarantine_table_support {
+        CapabilitySupport::Supported => ("mirror_supported", None),
+        CapabilitySupport::Unsupported => (
+            "not_mirrored",
+            Some("destination sheet declares quarantine_tables unsupported"),
+        ),
+    };
+    builder.write_json_artifact(
+        QUARANTINE_MIRROR_OUTCOME_FILE,
+        &QuarantineMirrorOutcomeArtifact {
+            destination_id: context.destination_id.as_str().to_owned(),
+            quarantine_table_support: capability_support_name(&context.quarantine_table_support),
+            quarantine_artifacts: artifacts,
+            outcome,
+            reason,
+        },
+    )?;
+    Ok(())
+}
+
 pub(super) struct StateCommitArtifactContext<'a> {
     pub(super) descriptor: &'a ResourceDescriptor,
     pub(super) schema: &'a Schema,
     pub(super) pipeline_id: &'a PipelineId,
     pub(super) checkpoint_id: &'a CheckpointId,
     pub(super) target: &'a TargetName,
+}
+
+pub(super) struct QuarantineMirrorArtifactContext {
+    pub(super) destination_id: DestinationId,
+    pub(super) quarantine_table_support: CapabilitySupport,
+}
+
+#[derive(serde::Serialize)]
+struct QuarantineMirrorOutcomeArtifact<'a> {
+    destination_id: String,
+    quarantine_table_support: &'static str,
+    quarantine_artifacts: Vec<String>,
+    outcome: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'a str>,
+}
+
+fn quarantine_artifacts(package_dir: &Path) -> Result<Vec<String>> {
+    let directory = package_dir.join("quarantine");
+    if !directory.exists() {
+        return Ok(Vec::new());
+    }
+    let mut artifacts = Vec::new();
+    for entry in fs::read_dir(&directory)
+        .map_err(|error| CdfError::data(format!("read {}: {error}", directory.display())))?
+    {
+        let entry = entry
+            .map_err(|error| CdfError::data(format!("read {}: {error}", directory.display())))?;
+        let path = entry.path();
+        if !entry
+            .file_type()
+            .map_err(|error| CdfError::data(format!("stat {}: {error}", path.display())))?
+            .is_file()
+        {
+            continue;
+        }
+        let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+            return Err(CdfError::data(format!(
+                "quarantine artifact path is not UTF-8: {}",
+                path.display()
+            )));
+        };
+        if file_name.starts_with("part-") && file_name.ends_with(".parquet") {
+            artifacts.push(format!("quarantine/{file_name}"));
+        }
+    }
+    artifacts.sort();
+    Ok(artifacts)
+}
+
+fn capability_support_name(support: &CapabilitySupport) -> &'static str {
+    match support {
+        CapabilitySupport::Supported => "supported",
+        CapabilitySupport::Unsupported => "unsupported",
+    }
 }
 
 #[cfg(test)]

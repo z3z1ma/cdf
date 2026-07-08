@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 pub const POSTGRES_DESTINATION_ID: &str = "postgres";
 pub const CDF_LOADS_TABLE: &str = "_cdf_loads";
 pub const CDF_STATE_TABLE: &str = "_cdf_state";
+pub const CDF_QUARANTINE_TABLE: &str = "_cdf_quarantine";
 pub const CDF_LOAD_COLUMN: &str = "_cdf_load";
 pub const CDF_SEGMENT_COLUMN: &str = "_cdf_segment";
 pub const CDF_ROW_COLUMN: &str = "_cdf_row";
