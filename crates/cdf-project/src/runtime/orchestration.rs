@@ -32,6 +32,7 @@ pub(crate) async fn run_local_file_to_duckdb_checkpoint(
         checkpoint_id: request.checkpoint_id,
         destination,
         run_id: None,
+        event_sink: None,
         after_receipt_verified: request.after_receipt_verified,
     };
     Ok(run_project(request).await?.into_local_file_duckdb_report())
@@ -56,6 +57,7 @@ pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunRep
         checkpoint_id,
         mut destination,
         run_id,
+        event_sink,
         after_receipt_verified,
         ..
     } = request;
@@ -73,6 +75,7 @@ pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunRep
             &package_dir,
             destination.describe().destination_id,
         ),
+        event_sink,
     );
     let execution = ProjectRunExecution {
         resource,

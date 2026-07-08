@@ -301,6 +301,7 @@ pub async fn run_live_local_file_fixture_with_destination(
         package_id: spec.package_id,
         checkpoint_id: spec.checkpoint_id,
         run_id: None,
+        event_sink: None,
         after_receipt_verified,
     })
     .await

@@ -79,6 +79,7 @@ pub struct ProjectRunRequest<'a> {
     pub checkpoint_id: CheckpointId,
     pub destination: ResolvedProjectDestination,
     pub run_id: Option<RunId>,
+    pub event_sink: Option<&'a dyn RunEventSink>,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 

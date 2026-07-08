@@ -136,6 +136,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
             )
             .unwrap(),
             run_id: Some(RunId::new(RUN_ID).unwrap()),
+            event_sink: None,
             after_receipt_verified: Some(&gate),
         }))
     }));

@@ -24,6 +24,7 @@ pub(super) struct ProjectRunRecorder<'a> {
     pub(super) ledger: &'a SqliteRunLedger,
     pub(super) run_id: RunId,
     pub(super) context: ProjectRunRecorderContext,
+    pub(super) event_sink: Option<&'a dyn RunEventSink>,
 }
 
 impl<'a> ProjectRunRecorder<'a> {
@@ -31,11 +32,13 @@ impl<'a> ProjectRunRecorder<'a> {
         ledger: &'a SqliteRunLedger,
         run_id: RunId,
         context: ProjectRunRecorderContext,
+        event_sink: Option<&'a dyn RunEventSink>,
     ) -> Self {
         Self {
             ledger,
             run_id,
             context,
+            event_sink,
         }
     }
 
@@ -164,7 +167,10 @@ impl<'a> ProjectRunRecorder<'a> {
     }
 
     fn append(&self, event: RunEventAppend) -> Result<()> {
-        self.ledger.append_event(&self.run_id, event)?;
+        let stored = self.ledger.append_event(&self.run_id, event)?;
+        if let Some(event_sink) = self.event_sink {
+            let _ = event_sink.try_emit(&stored);
+        }
         Ok(())
     }
 }
@@ -265,5 +271,92 @@ fn validation_transition_trigger_name(trigger: &ValidationTransitionTrigger) -> 
         ValidationTransitionTrigger::AnomalySpike => "anomaly_spike",
         ValidationTransitionTrigger::QuarantineEvent => "quarantine_event",
         ValidationTransitionTrigger::Manual => "manual",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct RecordingSink {
+        events: Mutex<Vec<cdf_kernel::RunEvent>>,
+    }
+
+    impl RecordingSink {
+        fn new() -> Self {
+            Self {
+                events: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn events(&self) -> Vec<cdf_kernel::RunEvent> {
+            self.events.lock().unwrap().clone()
+        }
+    }
+
+    impl RunEventSink for RecordingSink {
+        fn try_emit(&self, event: &cdf_kernel::RunEvent) -> cdf_kernel::RunEventSinkResult {
+            self.events.lock().unwrap().push(event.clone());
+            cdf_kernel::RunEventSinkResult::Accepted
+        }
+    }
+
+    #[test]
+    fn project_run_recorder_live_sink_rejects_raw_secret_details_before_emit() {
+        let ledger = SqliteRunLedger::open_in_memory().unwrap();
+        let run = ledger
+            .create_run(Some(RunId::new("run-recorder-secret-guard").unwrap()))
+            .unwrap();
+        let sink = RecordingSink::new();
+        let recorder = ProjectRunRecorder::new(
+            &ledger,
+            run.run_id.clone(),
+            ProjectRunRecorderContext {
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-recorder-secret-guard".to_owned(),
+                package_path: "pkg-recorder-secret-guard".to_owned(),
+                destination_id: DestinationId::new("duckdb").unwrap(),
+                plan_id: PlanId::new("plan-recorder-secret-guard").unwrap(),
+                pipeline_id: PipelineId::new("pipeline-recorder-secret-guard").unwrap(),
+            },
+            Some(&sink),
+        );
+
+        let mut raw_secret = recorder.base_event(RunEventKind::RunStarted);
+        raw_secret.details = RunEventDetails::new([(
+            "token",
+            RunEventValue::String("super-secret-token".to_owned()),
+        )]);
+        assert!(recorder.append(raw_secret).is_err());
+        assert!(sink.events().is_empty());
+        assert!(ledger.events(&run.run_id).unwrap().is_empty());
+
+        let mut untyped_secret_ref = recorder.base_event(RunEventKind::RunStarted);
+        untyped_secret_ref.details = RunEventDetails::new([(
+            "note",
+            RunEventValue::String("secret://env/API_TOKEN".to_owned()),
+        )]);
+        assert!(recorder.append(untyped_secret_ref).is_err());
+        assert!(sink.events().is_empty());
+        assert!(ledger.events(&run.run_id).unwrap().is_empty());
+
+        let mut typed_secret = recorder.base_event(RunEventKind::RunStarted);
+        typed_secret.details = RunEventDetails::new([(
+            "token",
+            RunEventValue::SecretRef(
+                cdf_kernel::SecretReference::new("secret://env/API_TOKEN").unwrap(),
+            ),
+        )]);
+        recorder.append(typed_secret).unwrap();
+
+        let live_events = sink.events();
+        let persisted_events = ledger.events(&run.run_id).unwrap();
+        assert_eq!(live_events, persisted_events);
+        assert!(matches!(
+            live_events[0].details.attributes.get("token"),
+            Some(RunEventValue::SecretRef(_))
+        ));
     }
 }

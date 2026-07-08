@@ -149,6 +149,7 @@ pub(super) fn run_scenario(
         package_id,
         checkpoint_id: checkpoint_id.clone(),
         run_id: Some(run_id),
+        event_sink: None,
         after_receipt_verified: Some(&gate),
     }))?;
     assert!(

@@ -34,9 +34,10 @@ use cdf_kernel::{
     IncrementalShape, LogPosition, MigrationRecord, PackageHash, PageToken, PartitionId,
     PipelineId, PlanId, PushdownFidelity, QueryableResource, Receipt, ReceiptId,
     ReceiptVerification, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, RewindReport, RewindRequest, RunId, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
+    ResourceStream, Result, RewindReport, RewindRequest, RunEvent, RunEventSink,
+    RunEventSinkResult, RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
+    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport,
+    TrustLevel, VerifyClause, WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
@@ -97,6 +98,53 @@ schema = { fields = [
   { name = "name", type = "string", nullable = true },
 ] }
 "#;
+
+struct RecordingRunEventSink {
+    capacity: Option<usize>,
+    events: Mutex<Vec<RunEvent>>,
+    drops: AtomicU64,
+}
+
+impl RecordingRunEventSink {
+    fn unbounded() -> Self {
+        Self {
+            capacity: None,
+            events: Mutex::new(Vec::new()),
+            drops: AtomicU64::new(0),
+        }
+    }
+
+    fn bounded(capacity: usize) -> Self {
+        Self {
+            capacity: Some(capacity),
+            events: Mutex::new(Vec::new()),
+            drops: AtomicU64::new(0),
+        }
+    }
+
+    fn events(&self) -> Vec<RunEvent> {
+        self.events.lock().unwrap().clone()
+    }
+
+    fn drop_count(&self) -> u64 {
+        self.drops.load(Ordering::SeqCst)
+    }
+}
+
+impl RunEventSink for RecordingRunEventSink {
+    fn try_emit(&self, event: &RunEvent) -> RunEventSinkResult {
+        let mut events = self.events.lock().unwrap();
+        if self
+            .capacity
+            .is_some_and(|capacity| events.len() >= capacity)
+        {
+            self.drops.fetch_add(1, Ordering::SeqCst);
+            return RunEventSinkResult::Dropped;
+        }
+        events.push(event.clone());
+        RunEventSinkResult::Accepted
+    }
+}
 
 #[test]
 fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
@@ -1275,6 +1323,7 @@ fn project_run_request<'a>(
         )
         .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }
 }
@@ -1322,6 +1371,7 @@ fn parquet_project_run_request<'a>(
         )
         .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }
 }
@@ -1351,6 +1401,7 @@ fn postgres_project_run_request<'a>(
         )
         .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }
 }
@@ -1696,6 +1747,7 @@ fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTr
         )
         .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap();
@@ -1817,6 +1869,113 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
         report.ledger_snapshot.events[7].receipt_id,
         Some(report.receipt.receipt_id.clone())
     );
+}
+
+#[test]
+fn general_project_run_live_sink_events_match_persisted_ledger_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-general-live-sink-order";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let sink = RecordingRunEventSink::unbounded();
+    let mut request = project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-live-sink-order",
+    );
+    request.event_sink = Some(&sink);
+
+    let report = futures_executor::block_on(run_project(request)).unwrap();
+
+    let live_events = sink.events();
+    assert_eq!(live_events, report.ledger_snapshot.events);
+    assert_eq!(
+        live_events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        report
+            .ledger_snapshot
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>()
+    );
+    let ledger = SqliteRunLedger::open(&state_path).unwrap();
+    assert_eq!(ledger.events(&report.run_id).unwrap(), live_events);
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert!(
+        DuckDbDestination::new(&duckdb_path)
+            .unwrap()
+            .verify_receipt(&report.receipt)
+            .unwrap()
+            .verified
+    );
+}
+
+#[test]
+fn general_project_run_live_sink_drops_do_not_fail_run_or_truncate_ledger() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-general-live-sink-drop";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let sink = RecordingRunEventSink::bounded(1);
+    let mut request = project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-live-sink-drop",
+    );
+    request.event_sink = Some(&sink);
+
+    let report = futures_executor::block_on(run_project(request)).unwrap();
+
+    let live_events = sink.events();
+    assert_eq!(live_events.len(), 1);
+    assert_eq!(live_events[0], report.ledger_snapshot.events[0]);
+    assert_eq!(
+        sink.drop_count(),
+        u64::try_from(report.ledger_snapshot.events.len() - live_events.len()).unwrap()
+    );
+    let ledger = SqliteRunLedger::open(&state_path).unwrap();
+    assert_eq!(
+        ledger.events(&report.run_id).unwrap(),
+        report.ledger_snapshot.events
+    );
+    assert_eq!(
+        report
+            .ledger_snapshot
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<Vec<_>>(),
+        vec![
+            RunEventKind::RunStarted,
+            RunEventKind::PlanRecorded,
+            RunEventKind::PackageStarted,
+            RunEventKind::PackageFinalized,
+            RunEventKind::ValidationDepthTransitionRecorded,
+            RunEventKind::CheckpointProposed,
+            RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationReceiptRecorded,
+            RunEventKind::CheckpointCommitted,
+            RunEventKind::PackageStatusUpdated,
+            RunEventKind::RunSucceeded,
+        ]
+    );
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(report.row_count, 2);
 }
 
 #[test]
@@ -3038,6 +3197,7 @@ fn general_project_run_rejects_raw_compiled_rest_before_writes() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-rest-rejected").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap_err();
@@ -3077,6 +3237,7 @@ fn general_project_run_rejects_rest_missing_secret_provider_before_writes() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-rest-missing-secret").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap_err();
@@ -3119,6 +3280,7 @@ fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-rest-missing-secret-value").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap_err();
@@ -3159,6 +3321,7 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-rest-no-cursor").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap_err();
@@ -3214,6 +3377,7 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-rest-window-close-numeric").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap();
@@ -3253,6 +3417,7 @@ fn general_project_run_rejects_sql_missing_secret_provider_before_writes() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-sql-missing-secret").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap_err();
@@ -3293,6 +3458,7 @@ fn general_project_run_rejects_sql_empty_secret_before_writes() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-sql-empty-secret").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap_err();
@@ -3349,6 +3515,7 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
         )
         .unwrap(),
         run_id: Some(RunId::new("run-general-sql-runtime").unwrap()),
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .unwrap();

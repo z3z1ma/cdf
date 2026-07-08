@@ -54,6 +54,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         checkpoint_id: explicit.checkpoint_id.clone(),
         destination,
         run_id: None,
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;

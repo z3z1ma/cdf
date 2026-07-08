@@ -63,15 +63,13 @@ mod prelude {
         DestinationCommitRequest, DestinationId, DestinationProtocol, IdempotencyToken,
         IncrementalShape, PackageHash, PartitionPlan, PipelineId, PlanId, QueryableResource,
         Receipt, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
-        RunId, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentId,
-        SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
+        RunEventAppend, RunEventDetails, RunEventKind, RunEventSink, RunEventValue, RunId,
+        ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition,
+        StateDelta, StateSegment, TargetName, WriteDisposition,
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,
         ReplayView, SegmentEntry, StateDeltaPreimage,
     };
-    pub(super) use cdf_state_sqlite::{
-        RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, RunLedgerSnapshot,
-        SqliteCheckpointStore, SqliteRunLedger,
-    };
+    pub(super) use cdf_state_sqlite::{RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger};
 }

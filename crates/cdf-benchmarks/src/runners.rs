@@ -372,6 +372,7 @@ schema = { fields = [
             TargetName::new("events")?,
         )?,
         run_id: Some(RunId::new("run-startup-benchmark")?),
+        event_sink: None,
         after_receipt_verified: None,
     }))?;
     Ok(WorkMetric {

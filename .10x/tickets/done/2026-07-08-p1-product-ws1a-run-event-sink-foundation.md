@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
@@ -55,6 +55,10 @@ This slice deliberately emits to the live sink after the SQLite ledger append so
 ## Progress and notes
 
 - 2026-07-08: Split from `.10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md` after inspecting `crates/cdf-project/src/runtime/ledger.rs`, `crates/cdf-project/src/runtime/orchestration.rs`, and `crates/cdf-state-sqlite/src/run_ledger.rs`. The existing recorder is the smallest safe fanout seam for first live event evidence.
+- 2026-07-08: Implemented the shared kernel run event model and `RunEventSink` contract, preserved SQLite public re-exports, added `ProjectRunRequest::event_sink`, and emitted exact persisted events from `ProjectRunRecorder` after ledger append.
+- 2026-07-08: Added focused live-sink ordering/drop tests in `crates/cdf-project/src/runtime_tests.rs` and a recorder-level redaction test in `crates/cdf-project/src/runtime/ledger.rs`; compile-fixed existing request literals with `event_sink: None` only.
+- 2026-07-08: Closure evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p1-product-ws1a-run-event-sink-foundation-review.md`.
+- 2026-07-08: Parent re-verified the slice, added public `RunEventSink` contract docs, repaired the WS1 parent pointer to this done record, and appended parent-observed quality evidence.
 
 ## Blockers
 

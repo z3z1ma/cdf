@@ -68,6 +68,7 @@ pub(crate) fn execute_cell(
         checkpoint_id: checkpoint_id.clone(),
         destination: destination.resolved()?,
         run_id: Some(run_id),
+        event_sink: None,
         after_receipt_verified: Some(&hook),
     }))?;
 

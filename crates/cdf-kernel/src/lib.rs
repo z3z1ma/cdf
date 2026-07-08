@@ -10,6 +10,7 @@ mod ids;
 mod metadata;
 mod position;
 mod resource;
+mod run_event;
 mod scope;
 
 pub use async_types::*;
@@ -22,6 +23,7 @@ pub use ids::*;
 pub use metadata::*;
 pub use position::*;
 pub use resource::*;
+pub use run_event::*;
 pub use scope::*;
 
 #[cfg(test)]

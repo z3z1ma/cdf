@@ -75,6 +75,7 @@ fn execute_slice(
         checkpoint_id: slice.checkpoint_id()?,
         destination,
         run_id: None,
+        event_sink: None,
         after_receipt_verified: None,
     }))
     .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
