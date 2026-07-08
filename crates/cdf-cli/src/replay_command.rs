@@ -12,7 +12,6 @@ use cdf_state_sqlite::{RunEventAppend, RunEventKind, SqliteCheckpointStore, Sqli
 
 use crate::{
     args::{Cli, ReplayPackageArgs},
-    commands::output,
     context::ProjectContext,
     destination_uri::redact_error_value,
     output::{CliError, CommandOutput},
@@ -310,5 +309,5 @@ pub(crate) fn replay_package(
         destination_report,
         &ledger_snapshot,
     );
-    output("replay package", cli_report.human_message(), cli_report)
+    CommandOutput::rendered("replay package", cli_report.render_document(), cli_report)
 }

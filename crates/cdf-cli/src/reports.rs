@@ -5,6 +5,13 @@ use cdf_project::{ProjectDestinationDescription, ProjectReceiptSource, ProjectRu
 use cdf_state_sqlite::{RunEventDetails, RunEventValue, RunLedgerSnapshot};
 use serde::Serialize;
 
+use crate::render::{
+    RenderDocument,
+    humanize::humanize_rows,
+    primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
+    redaction::redact_uri_userinfo,
+};
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct RunCliReport {
     command: &'static str,
@@ -65,11 +72,83 @@ impl RunCliReport {
         }
     }
 
-    pub(crate) fn human_message(&self) -> String {
-        format!(
-            "ran resource {} as run {} into package {} for target {}; checkpoint {} committed after destination receipt verification, crossing the commit gate",
-            self.resource_id, self.run_id, self.package_hash, self.target, self.checkpoint_id
-        )
+    pub(crate) fn render_document(&self) -> RenderDocument {
+        RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("run {} completed for {}", self.run_id, self.resource_id),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Run")
+                    .row("run", self.run_id.clone())
+                    .row("resource", self.resource_id.clone())
+                    .row("pipeline", self.pipeline_id.clone())
+                    .row("target", self.target.clone())
+                    .row("destination", self.destination.summary()),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Package")
+                    .row("package", self.package_id.clone())
+                    .row("status", self.package_status.clone())
+                    .row("hash", self.package_hash.clone())
+                    .row("dir", safe_display_value(&self.package_dir)),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Rows")
+                    .row("rows", humanize_rows(self.row_count))
+                    .row("segments", self.segment_count.to_string())
+                    .row(
+                        "receipt rows",
+                        humanize_rows(self.receipt.counts.rows_written),
+                    )
+                    .row(
+                        "receipt segments",
+                        self.receipt.segment_ack_count.to_string(),
+                    ),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Verdicts")
+                    .row("package", self.package_status.clone())
+                    .row("checkpoint", self.checkpoint.status.clone())
+                    .row(
+                        "ledger terminal",
+                        self.ledger_events
+                            .terminal_kind
+                            .clone()
+                            .unwrap_or_else(|| "none".to_owned()),
+                    )
+                    .row("events", self.ledger_events.event_count.to_string()),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Receipt")
+                    .row("receipt", self.receipt_id.clone())
+                    .row("destination", self.receipt.destination_id.clone())
+                    .row("target", self.receipt.target.clone())
+                    .row("disposition", self.receipt.disposition.clone())
+                    .row("source", receipt_source_summary(&self.receipt_source)),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Gate")
+                    .row("checkpoint", self.checkpoint_id.clone())
+                    .row("committed", yes_no(self.checkpoint.committed))
+                    .row("head", yes_no(self.checkpoint.is_head))
+                    .row("package written", yes_no(self.writes.package))
+                    .row("destination written", yes_no(self.writes.destination))
+                    .row("checkpoint written", yes_no(self.writes.checkpoint))
+                    .row(
+                        "condition",
+                        "destination receipt verified before checkpoint commit",
+                    ),
+            )
+            .blank_line()
+            .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
     }
 }
 
@@ -133,21 +212,61 @@ impl ReplayPackageCliReport {
         }
     }
 
-    pub(crate) fn human_message(&self) -> String {
-        format!(
-            "replayed package {} into destination {} target {}; receipt {} from {}; checkpoint {} status {}; package status {}",
-            self.package_hash,
-            self.destination
-                .destination_id
-                .as_deref()
-                .unwrap_or("unknown"),
-            self.target,
-            self.receipt_id,
-            receipt_source_summary(&self.receipt_source),
-            self.checkpoint_id,
-            self.checkpoint.status,
-            self.package_status
-        )
+    pub(crate) fn render_document(&self) -> RenderDocument {
+        RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("replay package {} completed", self.package_id),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Replay")
+                    .row("run", self.run_id.clone())
+                    .row("package", self.package_id.clone())
+                    .row("status", self.package_status.clone())
+                    .row("hash", self.package_hash.clone())
+                    .row("dir", safe_display_value(&self.package_dir)),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Destination")
+                    .row("destination", self.destination.summary())
+                    .row("target", self.target.clone()),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Duplicate")
+                    .row("source", receipt_source_summary(&self.receipt_source))
+                    .row("duplicate", duplicate_value(&self.receipt_source))
+                    .row("no-op", no_op_value(&self.receipt_source)),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Receipt")
+                    .row("receipt", self.receipt_id.clone())
+                    .row("destination", self.receipt.destination_id.clone())
+                    .row("target", self.receipt.target.clone())
+                    .row("rows", humanize_rows(self.receipt.counts.rows_written))
+                    .row("segments", self.receipt.segment_ack_count.to_string()),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Checkpoint")
+                    .row("checkpoint", self.checkpoint_id.clone())
+                    .row("status", self.checkpoint.status.clone())
+                    .row("committed", yes_no(self.checkpoint.committed))
+                    .row("head", yes_no(self.checkpoint.is_head))
+                    .row(
+                        "ledger terminal",
+                        self.ledger_events
+                            .terminal_kind
+                            .clone()
+                            .unwrap_or_else(|| "none".to_owned()),
+                    ),
+            )
+            .blank_line()
+            .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
     }
 }
 
@@ -240,6 +359,31 @@ impl RunDestinationReport {
     pub(crate) fn with_receipt_destination(mut self, destination_id: String) -> Self {
         self.destination_id = Some(destination_id);
         self
+    }
+
+    fn summary(&self) -> String {
+        let destination = self.destination_id.as_deref().unwrap_or(self.kind);
+        match self.kind {
+            "duckdb" => format!(
+                "{} {} target {}",
+                destination,
+                self.database_path
+                    .as_deref()
+                    .map(safe_display_value)
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                self.target
+            ),
+            "parquet" => format!(
+                "{} {} target {}",
+                destination,
+                self.root
+                    .as_deref()
+                    .map(safe_display_value)
+                    .unwrap_or_else(|| "unknown".to_owned()),
+                self.target
+            ),
+            _ => format!("{destination} target {}", self.target),
+        }
     }
 }
 
@@ -418,6 +562,28 @@ fn receipt_source_summary(source: &RunReceiptSourceReport) -> String {
     }
 }
 
+fn duplicate_value(source: &RunReceiptSourceReport) -> String {
+    source
+        .duplicate_no_op()
+        .map(|(duplicate, _)| yes_no(duplicate).to_owned())
+        .unwrap_or_else(|| "not reported".to_owned())
+}
+
+fn no_op_value(source: &RunReceiptSourceReport) -> String {
+    source
+        .duplicate_no_op()
+        .map(|(_, no_op)| yes_no(no_op).to_owned())
+        .unwrap_or_else(|| "not reported".to_owned())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn safe_display_value(value: &str) -> String {
+    redact_uri_userinfo(value)
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 struct RunLedgerSummary {
     event_count: usize,
@@ -509,5 +675,70 @@ impl WriteEffects {
             destination: true,
             checkpoint: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn run_rendering_redacts_secret_like_destination_uri_userinfo() {
+        let report = RunCliReport {
+            command: "run",
+            run_id: "run-redacted".to_owned(),
+            resource_id: "local.events".to_owned(),
+            pipeline_id: "pipeline".to_owned(),
+            target: "events".to_owned(),
+            destination: RunDestinationReport::duckdb(
+                "postgres://user:secret-value@localhost/db".to_owned(),
+                "events".to_owned(),
+            )
+            .with_receipt_destination("duckdb".to_owned()),
+            package_id: "pkg-redacted".to_owned(),
+            package_dir: ".cdf/packages/pkg-redacted".to_owned(),
+            package_hash: "sha256:package".to_owned(),
+            package_status: "checkpointed".to_owned(),
+            checkpoint_id: "checkpoint-redacted".to_owned(),
+            checkpoint: RunCheckpointReport {
+                checkpoint_id: "checkpoint-redacted".to_owned(),
+                status: "committed".to_owned(),
+                committed: true,
+                is_head: true,
+                committed_at_ms: Some(1),
+            },
+            receipt_id: "receipt-redacted".to_owned(),
+            receipt: RunReceiptReport {
+                receipt_id: "receipt-redacted".to_owned(),
+                destination_id: "duckdb".to_owned(),
+                target: "events".to_owned(),
+                package_hash: "sha256:package".to_owned(),
+                disposition: "append".to_owned(),
+                committed_at_ms: 1,
+                segment_ack_count: 1,
+                counts: cdf_kernel::CommitCounts {
+                    rows_written: 2,
+                    rows_inserted: None,
+                    rows_updated: None,
+                    rows_deleted: None,
+                },
+            },
+            receipt_source: RunReceiptSourceReport::DestinationCommit {
+                duplicate: false,
+                no_op: false,
+                package_receipt_recorded: true,
+            },
+            row_count: 2,
+            segment_count: 1,
+            ledger_events: RunLedgerSummary::default(),
+            writes: WriteEffects::all(),
+        };
+
+        let rendered = report
+            .render_document()
+            .render(&crate::render::RenderConfig::headless_for_width(96));
+
+        assert!(!rendered.contains("secret-value"));
+        assert!(rendered.contains("postgres://[redacted]@localhost/db"));
     }
 }

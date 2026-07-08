@@ -644,6 +644,114 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
 }
 
 #[test]
+fn plan_human_headless_render_uses_operator_panels() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--select",
+        "id,updated_at",
+        "--filter",
+        "id > 10",
+        "--limit",
+        "5",
+        "--package-id",
+        "pkg-plan-render",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!result.stdout.contains("\u{1b}["));
+    for expected in [
+        "OK plan local.events -> events",
+        "Fetch",
+        "Pushdown",
+        "Destination",
+        "Guarantee",
+        "Contract",
+        "Migration",
+        "unsupported  1",
+        "guarantee  effectively_once_per_package",
+        "items      1",
+        "-> cdf run local.events",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+}
+
+#[test]
+fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
+    let project = TestProject::new();
+    let cli = test_cli(&project);
+    let output = crate::scan_command::plan_or_explain(
+        &cli,
+        crate::args::ScanArgs {
+            resource_id: "local.events".to_owned(),
+            destination_uri: None,
+            target: None,
+            projection: Some(vec!["id".to_owned(), "updated_at".to_owned()]),
+            filters: vec!["id > 10".to_owned()],
+            limit: Some(5),
+            order_by: Vec::new(),
+            package_id: Some("pkg-plan-rich".to_owned()),
+        },
+        "plan",
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "\u{1b}[32m✓\u{1b}[0m plan local.events -> events",
+        "\u{1b}[36mPushdown\u{1b}[0m",
+        "\u{1b}[36mDestination\u{1b}[0m",
+        "\u{1b}[36mGuarantee\u{1b}[0m",
+        "\u{1b}[36mContract\u{1b}[0m",
+        "\u{1b}[36mMigration\u{1b}[0m",
+        "\u{1b}[36m→\u{1b}[0m cdf run local.events",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+}
+
+#[test]
+fn plan_human_next_command_preserves_explicit_destination_and_target() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--target",
+        "custom_events",
+        "--to",
+        "duckdb://.cdf/plan-explicit.duckdb",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.stdout.contains(
+            "-> cdf run local.events --target custom_events --to duckdb://.cdf/plan-explicit.duckdb"
+        ),
+        "stdout:\n{}",
+        result.stdout
+    );
+    assert!(!result.stdout.contains("--package-id"));
+    assert!(!result.stdout.contains("--checkpoint-id"));
+}
+
+#[test]
 fn explain_json_exposes_destination_plan_without_writes() {
     let project = TestProject::new();
     let override_path = project.root.join(".cdf/explain.duckdb");
@@ -675,6 +783,41 @@ fn explain_json_exposes_destination_plan_without_writes() {
     );
     assert_eq!(report["ddl_preview"]["supported"], true);
     assert_eq!(report["delivery_guarantee"], "effectively_once_per_package");
+}
+
+#[test]
+fn explain_human_headless_render_uses_operator_panels() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "explain",
+        "local.events",
+        "--to",
+        "duckdb://.cdf/explain-render.duckdb",
+        "--package-id",
+        "pkg-explain-render",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!result.stdout.contains("\u{1b}["));
+    for expected in [
+        "OK explain local.events -> events",
+        "Pushdown",
+        "Destination",
+        "Guarantee",
+        "Contract",
+        "Migration",
+        ".cdf/explain-render.duckdb",
+        "-> cdf run local.events --to duckdb://.cdf/explain-render.duckdb",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -1601,7 +1744,7 @@ fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
     assert_eq!(report["receipt_source"]["no_op"], false);
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["segment_count"], 1);
-    assert_eq!(report["ledger_events"]["event_count"], 11);
+    assert_eq!(report["ledger_events"]["event_count"], 13);
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
     assert_eq!(
         report["ledger_events"]["kinds"]["destination_receipt_recorded"],
@@ -1609,7 +1752,7 @@ fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
     );
     assert_eq!(report["ledger_events"]["events"][0]["kind"], "run_started");
     assert_eq!(
-        report["ledger_events"]["events"][10]["kind"],
+        report["ledger_events"]["events"][12]["kind"],
         "run_succeeded"
     );
     assert_eq!(report["writes"]["package"], true);
@@ -1730,11 +1873,67 @@ fn run_human_output_mentions_receipt_verified_commit_gate() {
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    assert!(result.stdout.contains("resource local.events"));
-    assert!(result.stdout.contains("target events"));
-    assert!(result.stdout.contains("checkpoint checkpoint-run-human"));
-    assert!(result.stdout.contains("receipt verification"));
-    assert!(result.stdout.contains("commit gate"));
+    assert!(!result.stdout.contains("\u{1b}["));
+    for expected in [
+        "OK run ",
+        "Run",
+        "Package",
+        "Rows",
+        "Verdicts",
+        "Receipt",
+        "Gate",
+        "resource     local.events",
+        "target       events",
+        "checkpoint           checkpoint-run-human",
+        "condition            destination receipt verified before checkpoint commit",
+        "-> cdf inspect run ",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+}
+
+#[test]
+fn run_human_rich_render_uses_checkpoint_gate_panel() {
+    let project = TestProject::new();
+    let cli = test_cli(&project);
+    let output = crate::run_command::run(
+        &cli,
+        crate::args::RunArgs {
+            resource_id: Some("local.events".to_owned()),
+            pipeline_id: Some("pipeline-run-rich".to_owned()),
+            destination_uri: None,
+            target: Some("events".to_owned()),
+            package_id: Some("pkg-run-rich".to_owned()),
+            checkpoint_id: Some("checkpoint-run-rich".to_owned()),
+            loop_mode: false,
+        },
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "\u{1b}[32m✓\u{1b}[0m run ",
+        "\u{1b}[36mRun\u{1b}[0m",
+        "\u{1b}[36mPackage\u{1b}[0m",
+        "\u{1b}[36mRows\u{1b}[0m",
+        "\u{1b}[36mVerdicts\u{1b}[0m",
+        "\u{1b}[36mReceipt\u{1b}[0m",
+        "\u{1b}[36mGate\u{1b}[0m",
+        "checkpoint           checkpoint-run-rich",
+        "destination receipt verified before checkpoint commit",
+        "\u{1b}[36m→\u{1b}[0m cdf inspect run ",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -1795,10 +1994,10 @@ fn inspect_run_reports_completed_run_json_and_human() {
         report["pointers"]["checkpoint_ids"],
         json!(["checkpoint-inspect-run"])
     );
-    assert_eq!(report["events"].as_array().unwrap().len(), 11);
+    assert_eq!(report["events"].as_array().unwrap().len(), 13);
     assert_eq!(report["events"][0]["sequence"], 1);
     assert_eq!(report["events"][0]["kind"], "run_started");
-    assert_eq!(report["events"][10]["kind"], "run_succeeded");
+    assert_eq!(report["events"][12]["kind"], "run_succeeded");
     assert_eq!(report["artifacts"]["package_status"], "checkpointed");
     assert_eq!(
         report["artifacts"]["packages"][0]["status"], "available",
@@ -2680,7 +2879,7 @@ fn run_sql_resource_with_ordered_cursor_commits_checkpoint() {
     assert_eq!(report["checkpoint"]["is_head"], true);
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
     assert_eq!(
-        report["ledger_events"]["events"][10]["kind"],
+        report["ledger_events"]["events"][12]["kind"],
         "run_succeeded"
     );
 
@@ -3170,6 +3369,97 @@ fn replay_package_duckdb_duplicate_reports_no_op() {
     let mirrors = destination.read_mirror_snapshot_read_only().unwrap();
     assert_eq!(mirrors.loads.len(), 1);
     assert_eq!(mirrors.state.len(), 1);
+}
+
+#[test]
+fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate_facts() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-replay-human", "checkpoint-replay-human");
+    let first = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "replay".to_owned(),
+        "package".to_owned(),
+        package_dir.to_str().unwrap().to_owned(),
+        "--to".to_owned(),
+        "duckdb://.cdf/replay-human.duckdb".to_owned(),
+    ]);
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+
+    remove_state_store(&project);
+    let second = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "replay".to_owned(),
+        "package".to_owned(),
+        package_dir.to_str().unwrap().to_owned(),
+        "--to".to_owned(),
+        "duckdb://.cdf/replay-human.duckdb".to_owned(),
+    ]);
+
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+    assert!(!second.stdout.contains("\u{1b}["));
+    for expected in [
+        "OK replay package pkg-replay-human completed",
+        "Replay",
+        "Destination",
+        "Duplicate",
+        "Receipt",
+        "Checkpoint",
+        "duplicate  yes",
+        "no-op      yes",
+        "checkpoint       checkpoint-replay-human",
+        "ledger terminal  replay_recorded",
+        "-> cdf inspect run ",
+    ] {
+        assert!(
+            second.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            second.stdout
+        );
+    }
+}
+
+#[test]
+fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-replay-rich", "checkpoint-replay-rich");
+    let cli = test_cli(&project);
+    let output = crate::replay_command::replay_package(
+        &cli,
+        crate::args::ReplayPackageArgs {
+            package_dir,
+            destination_uri: Some("duckdb://.cdf/replay-rich.duckdb".to_owned()),
+            target: None,
+            merge_dedup: None,
+        },
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "\u{1b}[32m✓\u{1b}[0m replay package pkg-replay-rich completed",
+        "\u{1b}[36mReplay\u{1b}[0m",
+        "\u{1b}[36mDestination\u{1b}[0m",
+        "\u{1b}[36mDuplicate\u{1b}[0m",
+        "\u{1b}[36mReceipt\u{1b}[0m",
+        "\u{1b}[36mCheckpoint\u{1b}[0m",
+        "duplicate  no",
+        "no-op      no",
+        "checkpoint       checkpoint-replay-rich",
+        "\u{1b}[36m→\u{1b}[0m cdf inspect run ",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -5080,8 +5370,8 @@ fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
     assert_eq!(first_components[0]["action"], "initialized");
     assert_eq!(first_components[1]["component"], "run_ledger");
     assert_eq!(first_components[1]["before_version"], Value::Null);
-    assert_eq!(first_components[1]["after_version"], 2);
-    assert_eq!(first_components[1]["target_version"], 2);
+    assert_eq!(first_components[1]["after_version"], 3);
+    assert_eq!(first_components[1]["target_version"], 3);
     assert_eq!(first_components[1]["applied"], true);
     assert_eq!(first_components[1]["action"], "initialized");
 
@@ -6660,6 +6950,32 @@ fn run<const N: usize>(args: [&str; N]) -> crate::InvocationResult {
 
 fn run_dynamic(args: Vec<String>) -> crate::InvocationResult {
     invoke(args.into_iter().map(OsString::from))
+}
+
+fn render_rich(output: crate::output::CommandOutput) -> crate::InvocationResult {
+    crate::output::InvocationResult::from_output(false, &rich_render_config(), output)
+}
+
+fn rich_render_config() -> crate::render::RenderConfig {
+    crate::render::RenderConfig::new(
+        crate::render::config::DisplayMode::Tty,
+        96,
+        crate::render::config::RenderEnv {
+            no_color: false,
+            clicolor_force: false,
+        },
+        false,
+    )
+}
+
+fn test_cli(project: &TestProject) -> crate::args::Cli {
+    crate::args::Cli {
+        json: false,
+        no_color: false,
+        project: Some(project.root.clone()),
+        env: None,
+        command: crate::args::Command::Version,
+    }
 }
 
 fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {

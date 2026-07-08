@@ -20,6 +20,11 @@ use crate::{
     destination_uri::{redact_error_value, resolve_selected_destination},
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
+    render::{
+        RenderDocument,
+        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        redaction::redact_uri_userinfo,
+    },
     reports::WriteEffects,
 };
 
@@ -38,8 +43,11 @@ pub(crate) fn plan_or_explain(
         args.destination_uri.as_deref(),
         command,
     )?;
-    let human = format_scan_report(command, &report);
-    output(command, human, report)
+    CommandOutput::rendered(
+        command,
+        scan_report_document(command, &report, args.destination_uri.as_deref()),
+        report,
+    )
 }
 
 pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
@@ -329,18 +337,187 @@ fn lower_runtime_missing(error: &CdfError) -> bool {
         .contains("execution is outside the MVP compiler crate")
 }
 
-fn format_scan_report(command: &str, report: &ScanPlanReport) -> String {
+fn scan_report_document(
+    command: &str,
+    report: &ScanPlanReport,
+    destination_uri: Option<&str>,
+) -> RenderDocument {
     let pushed = report.pushdown.pushed.len();
     let inexact = report.pushdown.inexact.len();
     let unsupported = report.pushdown.unsupported.len();
     let migrations = report.ddl_preview.migrations.len();
-    format!(
-        "{command} {} to {}: {} partition(s), {pushed} pushed predicate(s), {inexact} inexact, {unsupported} unsupported, {migrations} migration preview item(s), guarantee {}",
-        report.resource_id,
-        report.destination.target,
-        report.will_fetch.partitions.len(),
-        report.delivery_guarantee
-    )
+    let mut document = RenderDocument::new()
+        .push(SectionRule::new())
+        .push(StatusLine::new(
+            StatusKind::Success,
+            format!(
+                "{command} {} -> {}",
+                report.resource_id, report.destination.target
+            ),
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Fetch")
+                .row("project", report.project.clone())
+                .row("environment", report.environment.clone())
+                .row("package", report.package_id.clone())
+                .row("partitions", report.will_fetch.partitions.len().to_string())
+                .row(
+                    "projection",
+                    list_or_default(&report.will_fetch.projection, "all fields"),
+                )
+                .row(
+                    "filters",
+                    list_or_default(&report.will_fetch.filters, "none"),
+                )
+                .row("limit", optional_u64(report.will_fetch.limit)),
+        )
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Pushdown")
+                .row("pushed", pushed.to_string())
+                .row("inexact", inexact.to_string())
+                .row("unsupported", unsupported.to_string())
+                .row("projection", yes_no(report.explain.projection_pushed))
+                .row("limit", yes_no(report.explain.limit_pushed)),
+        )
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Destination")
+                .row("destination", report.destination.destination_id.clone())
+                .row("target", report.destination.target.clone())
+                .row("label", safe_display_value(&report.destination.label))
+                .row("schemes", report.destination.schemes.join(", "))
+                .row("disposition", report.destination.disposition.clone())
+                .row("idempotency", report.destination.idempotency.clone()),
+        )
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Guarantee")
+                .row("guarantee", report.delivery_guarantee.clone())
+                .row(
+                    "qualifier",
+                    report.delivery_guarantee_detail.qualifier.clone(),
+                )
+                .row("basis", report.delivery_guarantee_detail.basis.clone()),
+        )
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Contract")
+                .row("schema", report.resource_schema.schema_hash.clone())
+                .row("fields", report.resource_schema.fields.len().to_string())
+                .row("state scope", report.state_advancement.scope.to_string())
+                .row(
+                    "cursor",
+                    report
+                        .state_advancement
+                        .cursor
+                        .clone()
+                        .unwrap_or_else(|| "none".to_owned()),
+                )
+                .row(
+                    "advances after",
+                    report.state_advancement.advances_after.clone(),
+                ),
+        )
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Migration")
+                .row("supported", yes_no(report.ddl_preview.supported))
+                .row("support", report.ddl_preview.migration_support.clone())
+                .row("items", migrations.to_string())
+                .row("target", report.ddl_preview.target.clone()),
+        );
+
+    if !report.ddl_preview.migrations.is_empty() {
+        let table = report.ddl_preview.migrations.iter().fold(
+            Table::new(["migration", "description"]),
+            |table, migration| {
+                table.row([
+                    migration.migration_id.clone(),
+                    safe_display_value(&migration.description),
+                ])
+            },
+        );
+        document = document.blank_line().push(table);
+    }
+
+    document
+        .blank_line()
+        .push(NextCommand::new(next_run_command(
+            &report.resource_id,
+            &report.destination.target,
+            destination_uri,
+        )))
+}
+
+fn list_or_default(values: &[String], default: &str) -> String {
+    if values.is_empty() {
+        default.to_owned()
+    } else {
+        values.join(", ")
+    }
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn safe_display_value(value: &str) -> String {
+    redact_uri_userinfo(value)
+}
+
+fn next_run_command(resource_id: &str, target: &str, destination_uri: Option<&str>) -> String {
+    let mut command = format!("cdf run {resource_id}");
+    if target != default_target_for_resource(resource_id) {
+        command.push_str(" --target ");
+        command.push_str(target);
+    }
+    if let Some(destination_uri) = destination_uri {
+        command.push_str(" --to ");
+        command.push_str(&safe_display_value(destination_uri));
+    }
+    command
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    #[test]
+    fn next_run_command_includes_explicit_destination_without_minted_ids() {
+        assert_eq!(
+            next_run_command(
+                "local.events",
+                "events",
+                Some("duckdb://.cdf/explain-render.duckdb")
+            ),
+            "cdf run local.events --to duckdb://.cdf/explain-render.duckdb"
+        );
+    }
+
+    #[test]
+    fn next_run_command_preserves_non_default_target_and_redacts_destination_userinfo() {
+        let command = next_run_command(
+            "local.events",
+            "custom_events",
+            Some("postgres://user:secret-value@localhost/db"),
+        );
+
+        assert_eq!(
+            command,
+            "cdf run local.events --target custom_events --to postgres://[redacted]@localhost/db"
+        );
+        assert!(!command.contains("secret-value"));
+        assert!(!command.contains("--package-id"));
+        assert!(!command.contains("--checkpoint-id"));
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

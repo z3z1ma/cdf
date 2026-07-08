@@ -8,7 +8,6 @@ use cdf_project::{ProjectRunRequest, run_project};
 
 use crate::{
     args::{Cli, RunArgs, ScanArgs},
-    commands::output,
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_selected_destination},
     output::{CliError, CommandOutput},
@@ -69,8 +68,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     }))
     .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
     let cli_report = RunCliReport::from_report(&report, destination_report);
-    let human = cli_report.human_message();
-    output("run", human, cli_report)
+    CommandOutput::rendered("run", cli_report.render_document(), cli_report)
 }
 
 fn run_destination_resolution_error(error: CdfError) -> CliError {
