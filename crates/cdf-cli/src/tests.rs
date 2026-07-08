@@ -327,7 +327,7 @@ fn preview_multi_match_file_glob_fails_closed_without_writes() {
     let project = TestProject::new();
     fs::write(
         project.root.join("data/events-extra.ndjson"),
-        "{\"id\":3,\"updated_at\":\"2026-07-06T00:02:00Z\"}\n",
+        "{\"id\":3,\"updated_at\":1783296120000000}\n",
     )
     .unwrap();
     let result = run([
@@ -364,12 +364,12 @@ fn preview_wildcard_directory_glob_requires_component_match() {
     fs::create_dir_all(project.root.join("data/other")).unwrap();
     fs::write(
         project.root.join("data/match-a/events.ndjson"),
-        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+        "{\"id\":1,\"updated_at\":1783296000000000}\n",
     )
     .unwrap();
     fs::write(
         project.root.join("data/other/events.ndjson"),
-        "{\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n",
+        "{\"id\":2,\"updated_at\":1783296060000000}\n",
     )
     .unwrap();
     write_resource_glob(&project, "match-*/events.ndjson");
@@ -395,12 +395,12 @@ fn preview_question_mark_glob_matches_exactly_one_character() {
     fs::remove_file(project.root.join("data/events.ndjson")).unwrap();
     fs::write(
         project.root.join("data/event1.ndjson"),
-        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+        "{\"id\":1,\"updated_at\":1783296000000000}\n",
     )
     .unwrap();
     fs::write(
         project.root.join("data/event12.ndjson"),
-        "{\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n",
+        "{\"id\":2,\"updated_at\":1783296060000000}\n",
     )
     .unwrap();
     write_resource_glob(&project, "event?.ndjson");
@@ -427,7 +427,7 @@ fn preview_double_star_glob_descends_into_physical_nested_directories() {
     fs::create_dir_all(project.root.join("data/nested")).unwrap();
     fs::write(
         project.root.join("data/nested/events.ndjson"),
-        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+        "{\"id\":1,\"updated_at\":1783296000000000}\n",
     )
     .unwrap();
     write_resource_glob(&project, "**/*.ndjson");
@@ -477,7 +477,7 @@ fn preview_wildcard_directory_glob_ignores_symlink_directories() {
     fs::create_dir_all(project.root.join("data/real")).unwrap();
     fs::write(
         project.root.join("data/real/events.ndjson"),
-        "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
+        "{\"id\":1,\"updated_at\":1783296000000000}\n",
     )
     .unwrap();
     std::os::unix::fs::symlink(
@@ -4226,12 +4226,12 @@ fn write_format_fixture(project: &TestProject, format: &str) {
     match format {
         "csv" => fs::write(
             project.root.join("data/events.csv"),
-            "id,updated_at\n1,2026-07-06T00:00:00Z\n2,2026-07-06T00:01:00Z\n",
+            "id,updated_at\n1,1783296000000000\n2,1783296060000000\n",
         )
         .unwrap(),
         "json" => fs::write(
             project.root.join("data/events.json"),
-            r#"[{"id":1,"updated_at":"2026-07-06T00:00:00Z"},{"id":2,"updated_at":"2026-07-06T00:01:00Z"}]"#,
+            r#"[{"id":1,"updated_at":1783296000000000},{"id":2,"updated_at":1783296060000000}]"#,
         )
         .unwrap(),
         "parquet" => write_parquet_preview_fixture(project),

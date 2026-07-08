@@ -3,29 +3,46 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use cdf_formats::{CsvOptions, FileFormat, FileResource, FileSource, JsonOptions, ReadOptions};
-use cdf_kernel::{
-    BatchStream, BoxFuture, CdfError, PartitionPlan, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, ScopeKey,
+use arrow_schema::SchemaRef;
+use cdf_formats::{
+    CsvOptions, FileFormat, FileSource, JsonOptions, ReadOptions, read_file_source,
+    read_file_source_with_declared_schema,
 };
+use cdf_kernel::{
+    BatchStream, BoxFuture, CdfError, PartitionPlan, ResourceDescriptor, ResourceId, Result,
+    ScopeKey,
+};
+use futures_util::stream;
 
 use crate::{FileFormatDeclaration, FileResourcePlan};
 
 pub(crate) fn open_file_resource(
     descriptor: &ResourceDescriptor,
+    declared_schema: SchemaRef,
     plan: &FileResourcePlan,
     partition: PartitionPlan,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     let descriptor = descriptor.clone();
+    let declared_schema = declared_schema.clone();
     let plan = plan.clone();
     Box::pin(async move {
         validate_partition(&descriptor, &plan, &partition)?;
         let path = resolve_single_file(&descriptor.resource_id, &plan)?;
         let format = compile_format(&plan.format)?;
         let options = ReadOptions::new(descriptor.resource_id.clone(), partition.partition_id);
-        let resource = FileResource::new(FileSource::new(path, format, options))?;
-        resource.open(resource.partition().clone()).await
+        let source = FileSource::new(path, format, options);
+        let read = if uses_declared_json_schema(&source.format, &declared_schema) {
+            read_file_source_with_declared_schema(&source, declared_schema)?
+        } else {
+            read_file_source(&source)?
+        };
+        Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
     })
+}
+
+fn uses_declared_json_schema(format: &FileFormat, declared_schema: &SchemaRef) -> bool {
+    !declared_schema.fields().is_empty()
+        && matches!(format, FileFormat::Json(_) | FileFormat::Ndjson(_))
 }
 
 fn validate_partition(

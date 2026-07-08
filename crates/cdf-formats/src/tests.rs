@@ -17,8 +17,8 @@ use cdf_conformance::resource::{
 };
 use cdf_contract::{ContractPolicy, NORMALIZER_NAMECASE_V1};
 use cdf_kernel::{
-    ErrorKind, PartitionId, ResourceId, ResourceStream, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKey, SegmentId, SourcePosition, with_source_name,
+    ErrorKind, PartitionId, PreContractObservedValue, ResourceId, ResourceStream, ScanRequest,
+    SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, with_semantic, with_source_name,
 };
 
 fn options(resource: &str, partition: &str) -> ReadOptions {
@@ -142,6 +142,105 @@ fn ndjson_inference_feeds_contract_observed_schema() {
     assert_eq!(
         read.batches[0].header.observed_schema_hash,
         read.schema_hash
+    );
+}
+
+#[test]
+fn declared_ndjson_scalar_type_mismatch_quarantines_row_and_preserves_accepted_order() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("event_type", DataType::Utf8, false),
+    ]));
+    let ndjson = br#"{"id":1,"event_type":"order.created"}
+{"id":2,"event_type":42}
+{"id":3,"event_type":"order.shipped"}
+"#;
+
+    let read = read_ndjson_bytes_with_declared_schema(
+        ndjson,
+        &options("events", "p0").with_batch_size(16).unwrap(),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    assert_eq!(read.batches.len(), 1);
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.num_rows(), 2);
+    let ids = batch
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    let event_types = batch
+        .column_by_name("event_type")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!([ids.value(0), ids.value(1)], [1, 3]);
+    assert_eq!(event_types.value(0), "order.created");
+    assert_eq!(event_types.value(1), "order.shipped");
+
+    let facts = &read.batches[0].header.pre_contract_quarantine;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].source_row_ordinal, 1);
+    assert_eq!(facts[0].rule_id, "source-decode:event_type:type-mismatch");
+    assert_eq!(facts[0].error_code, "source_type_mismatch");
+    assert_eq!(
+        facts[0].observed_value_redacted,
+        PreContractObservedValue::Preserved {
+            value: "42".to_owned()
+        }
+    );
+}
+
+#[test]
+fn declared_ndjson_malformed_json_still_fails_closed() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "event_type",
+        DataType::Utf8,
+        false,
+    )]));
+    let error = read_ndjson_bytes_with_declared_schema(
+        br#"{"event_type":"order.created"}
+{bad}
+"#,
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Data);
+}
+
+#[test]
+fn declared_ndjson_type_mismatch_hashes_pii_observed_value() {
+    let schema = Arc::new(Schema::new(vec![with_semantic(
+        Field::new("email", DataType::Int64, false),
+        "pii:email",
+    )]));
+
+    let read = read_ndjson_bytes_with_declared_schema(
+        br#"{"email":"alice@example.com"}
+"#,
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    let facts = &read.batches[0].header.pre_contract_quarantine;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(
+        facts[0].observed_value_redacted,
+        PreContractObservedValue::Hashed {
+            algorithm: "sha256".to_owned(),
+            value: "sha256:ff8d9819fc0e12bf0d24892e45987e249a28dce836a85cad60e28eaaa8c6d976"
+                .to_owned()
+        }
     );
 }
 

@@ -22,10 +22,10 @@ use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
     ContractRef, DeliveryGuarantee, EstimateSupport, FileManifest, FilePosition,
     FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PredicateId, PushdownFidelity, QueryableResource,
-    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId, ScanPlan,
-    ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SourcePosition, TrustLevel,
-    WriteDisposition, source_name, with_semantic,
+    PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact, PredicateId,
+    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
+    ScopeKey, SourcePosition, TrustLevel, WriteDisposition, source_name, with_semantic,
 };
 use cdf_package::PackageStatus;
 use datafusion::{
@@ -491,6 +491,100 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
             .iter()
             .any(|file| file.path == "quarantine/part-000001.parquet")
     );
+}
+
+#[test]
+fn source_decode_quarantine_facts_fold_into_package_artifacts() {
+    let mut batch = batch_for_partition(
+        "batch-source-drift",
+        "part-0",
+        vec![3],
+        vec!["three"],
+        vec![true],
+    );
+    batch.header.source_position = Some(SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "/tmp/cdf/source-drift.ndjson".to_owned(),
+            size_bytes: 96,
+            etag: None,
+            sha256: Some("sha256-source-drift-fixture".to_owned()),
+        }],
+    }));
+    batch.header.pre_contract_quarantine = vec![PreContractQuarantineFact {
+        source_row_ordinal: 1,
+        rule_id: "source-decode:event_type:type-mismatch".to_owned(),
+        error_code: "source_type_mismatch".to_owned(),
+        source_position: batch.header.source_position.clone(),
+        observed_value_redacted: PreContractObservedValue::Preserved {
+            value: "42".to_owned(),
+        },
+    }];
+    let resource = MockResource::tier_a(vec![batch]);
+    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 1);
+    assert_eq!(output.segments.len(), 1);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let accepted = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&accepted[0], "id"), vec![3]);
+    assert_eq!(batch_strings(&accepted, "name"), vec!["three"]);
+    let quarantine = reader.read_quarantine_records().unwrap();
+    assert_eq!(quarantine.len(), 1);
+    assert_eq!(quarantine[0].source_row_ordinal, 1);
+    assert_eq!(
+        quarantine[0].rule_id,
+        "source-decode:event_type:type-mismatch"
+    );
+    assert_eq!(quarantine[0].error_code, "source_type_mismatch");
+    assert!(matches!(
+        quarantine[0].source_position,
+        Some(SourcePosition::FileManifest(_))
+    ));
+    assert_eq!(
+        quarantine[0].observed_value_redacted,
+        cdf_package::QuarantineObservedValue::Preserved {
+            value: "42".to_owned()
+        }
+    );
+
+    let verdict_summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("stats/verdict-summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(verdict_summary["input_rows"], 2);
+    assert_eq!(verdict_summary["accepted_rows"], 1);
+    assert_eq!(verdict_summary["quarantined_rows"], 1);
+    assert_eq!(verdict_summary["violation_count"], 1);
+    assert_eq!(verdict_summary["quarantine_candidate_count"], 1);
+    assert!(
+        verdict_summary["rule_summaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|summary| summary
+                == &serde_json::json!({
+                    "rule_id": "source-decode:event_type:type-mismatch",
+                    "error_code": "source_type_mismatch",
+                    "checked_rows": 1,
+                    "violation_count": 1
+                }))
+    );
+
+    let quarantine_summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("stats/quarantine-summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(quarantine_summary["quarantined_rows"], 1);
+    assert_eq!(quarantine_summary["quarantine_candidate_count"], 1);
+    assert_eq!(
+        quarantine_summary["artifacts"],
+        serde_json::json!(["quarantine/part-000001.parquet"])
+    );
+    reader.verify().unwrap();
 }
 
 #[test]
@@ -1788,6 +1882,7 @@ fn nested_variant_batch() -> Batch {
             row_count: record_batch.num_rows() as u64,
             byte_count: record_batch.get_array_memory_size() as u64,
             source_position: None,
+            pre_contract_quarantine: Vec::new(),
             watermarks: Vec::new(),
             stats: BatchStats::default(),
             cdc: None,
@@ -1833,6 +1928,7 @@ fn batch_for_partition_with_schema(
             row_count: record_batch.num_rows() as u64,
             byte_count: record_batch.get_array_memory_size() as u64,
             source_position: None,
+            pre_contract_quarantine: Vec::new(),
             watermarks: Vec::new(),
             stats: BatchStats::default(),
             cdc: None,

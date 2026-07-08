@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/2026-07-07-p0-structural-debt-program.md, .10x/decisions/p0-structural-debt-stop-line.md
+Relates-To: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md, .10x/decisions/p0-structural-debt-stop-line.md
 
 # P0 structural debt activation evidence
 
@@ -37,7 +37,7 @@ Inspected:
 Created or updated:
 
 - `.10x/decisions/p0-structural-debt-stop-line.md`
-- `.10x/tickets/2026-07-07-p0-structural-debt-program.md`
+- `.10x/tickets/done/2026-07-07-p0-structural-debt-program.md`
 - six P0 workstream child tickets A-F.
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`
 - destination and run specs to require segment-streaming sessions and trait-level receipt verification.

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-e6-drift-quarantine-conformance.md, .10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md, .10x/decisions/source-decode-type-drift-quarantine.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-e6-drift-quarantine-conformance.md, .10x/tickets/done/2026-07-08-source-decode-type-drift-quarantine-seam.md, .10x/decisions/source-decode-type-drift-quarantine.md
 
 # P1 E6 drift-quarantine partial evidence
 
@@ -74,7 +74,7 @@ This supports the E6 partial implementation status:
 
 - package verdict/quarantine summaries now exist for live row-rule quarantine;
 - the conformance harness can assert accepted-row continuation, destination receipt verification, checkpoint gating, dedup evidence, package quarantine artifacts, destination mirror support/exclusion, and trust-ring quarantine demotion for a row-rule drift;
-- literal source scalar type-drift quarantine remains unimplemented and is now owned by `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md`.
+- literal source scalar type-drift quarantine remains unimplemented and is now owned by `.10x/tickets/done/2026-07-08-source-decode-type-drift-quarantine-seam.md`.
 
 ## Limits
 

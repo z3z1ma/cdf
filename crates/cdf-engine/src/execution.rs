@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -11,7 +12,8 @@ use cdf_contract::{
     evaluate_package_order_dedup, evaluate_record_batch,
 };
 use cdf_kernel::{
-    CdfError, ResourceStream, Result, RunId, SegmentId, SourcePosition, WriteDisposition, semantic,
+    CdfError, PreContractObservedValue, PreContractQuarantineFact, ResourceStream, Result, RunId,
+    SegmentId, SourcePosition, WriteDisposition, semantic,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -200,6 +202,20 @@ where
 
                 let batch = batch?;
                 lineage.input_batches.push(batch.header.batch_id.clone());
+                if !batch.header.pre_contract_quarantine.is_empty() {
+                    let quarantine_records =
+                        quarantine_records_from_pre_contract(&batch.header.pre_contract_quarantine);
+                    merge_verdict_summary(
+                        &mut verdict_summary,
+                        pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine),
+                    );
+                    write_quarantine_part(
+                        &mut builder,
+                        &quarantine_records,
+                        &mut quarantine_part_count,
+                        &mut quarantine_artifacts,
+                    )?;
+                }
                 let Some(record_batch) = batch.record_batch() else {
                     return Err(CdfError::data(
                         "package execution requires in-memory Arrow record batches at MVP",
@@ -221,10 +237,12 @@ where
                 } = apply_contract_exec(output, &plan.validation_program, &evaluation_context)?;
                 merge_verdict_summary(&mut verdict_summary, summary);
                 if !quarantine_records.is_empty() {
-                    quarantine_part_count += 1;
-                    let file_name = format!("part-{quarantine_part_count:06}.parquet");
-                    builder.write_quarantine_records(&file_name, &quarantine_records)?;
-                    quarantine_artifacts.push(format!("quarantine/{file_name}"));
+                    write_quarantine_part(
+                        &mut builder,
+                        &quarantine_records,
+                        &mut quarantine_part_count,
+                        &mut quarantine_artifacts,
+                    )?;
                 }
                 let output = accepted;
                 if output.num_rows() == 0 {
@@ -372,6 +390,87 @@ fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {
             total.rule_summaries.push(rule);
         }
     }
+}
+
+fn pre_contract_quarantine_summary(facts: &[PreContractQuarantineFact]) -> VerdictSummary {
+    let quarantined_rows = facts
+        .iter()
+        .map(|fact| fact.source_row_ordinal)
+        .collect::<BTreeSet<_>>()
+        .len() as u64;
+    let mut summary = VerdictSummary {
+        input_rows: quarantined_rows,
+        accepted_rows: 0,
+        quarantined_rows,
+        violation_count: facts.len() as u64,
+        quarantine_candidate_count: facts.len() as u64,
+        rule_summaries: Vec::new(),
+    };
+
+    for fact in facts {
+        if let Some(existing) = summary.rule_summaries.iter_mut().find(|existing| {
+            existing.rule_id == fact.rule_id && existing.error_code == fact.error_code
+        }) {
+            existing.checked_rows += 1;
+            existing.violation_count += 1;
+        } else {
+            summary
+                .rule_summaries
+                .push(cdf_contract::RuleVerdictSummary {
+                    rule_id: fact.rule_id.clone(),
+                    error_code: fact.error_code.clone(),
+                    checked_rows: 1,
+                    violation_count: 1,
+                });
+        }
+    }
+
+    summary
+}
+
+fn quarantine_records_from_pre_contract(
+    facts: &[PreContractQuarantineFact],
+) -> Vec<QuarantineRecord> {
+    facts
+        .iter()
+        .map(|fact| QuarantineRecord {
+            source_row_ordinal: fact.source_row_ordinal,
+            rule_id: fact.rule_id.clone(),
+            error_code: fact.error_code.clone(),
+            source_position: fact.source_position.clone(),
+            observed_value_redacted: pre_contract_observed_value(&fact.observed_value_redacted),
+        })
+        .collect()
+}
+
+fn pre_contract_observed_value(value: &PreContractObservedValue) -> QuarantineObservedValue {
+    match value {
+        PreContractObservedValue::Null => QuarantineObservedValue::Null,
+        PreContractObservedValue::Preserved { value } => QuarantineObservedValue::Preserved {
+            value: value.clone(),
+        },
+        PreContractObservedValue::Hashed { algorithm, value } => QuarantineObservedValue::Hashed {
+            algorithm: algorithm.clone(),
+            value: value.clone(),
+        },
+        PreContractObservedValue::Omitted => QuarantineObservedValue::Omitted,
+        PreContractObservedValue::Masked { value } => QuarantineObservedValue::Masked {
+            value: value.clone(),
+        },
+    }
+}
+
+fn write_quarantine_part(
+    builder: &mut PackageBuilder,
+    quarantine_records: &[QuarantineRecord],
+    quarantine_part_count: &mut usize,
+    quarantine_artifacts: &mut Vec<String>,
+) -> Result<()> {
+    *quarantine_part_count += 1;
+    let file_name = format!("part-{quarantine_part_count:06}.parquet");
+    builder.write_quarantine_records(&file_name, quarantine_records)?;
+    quarantine_artifacts.push(format!("quarantine/{file_name}"));
+    Ok(())
 }
 
 fn write_output_batch(

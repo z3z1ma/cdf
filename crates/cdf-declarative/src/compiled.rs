@@ -157,7 +157,7 @@ impl ResourceStream for CompiledResource {
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
         match &self.plan {
             CompiledResourcePlan::Files(plan) => {
-                open_file_resource(&self.descriptor, plan, partition)
+                open_file_resource(&self.descriptor, Arc::clone(&self.schema), plan, partition)
             }
             CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Box::pin(async {
                 Err(CdfError::internal(

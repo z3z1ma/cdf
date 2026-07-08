@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
+Parent: .10x/tickets/done/2026-07-08-p1-contract-depth-program.md
 Depends-On: .10x/tickets/done/2026-07-08-p1-e1-row-level-verdicts-live-chain.md, .10x/tickets/done/2026-07-08-p1-e2-quarantine-routing-redaction.md
 
 # P1 E3: Deterministic pre-merge dedup in the live path

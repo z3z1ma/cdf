@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/2026-07-08-p1-contract-depth-program.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/done/2026-07-08-p1-contract-depth-program.md
 
 # P1 E3 merge dedup live-path evidence
 

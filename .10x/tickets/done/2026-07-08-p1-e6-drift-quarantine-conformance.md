@@ -1,8 +1,8 @@
-Status: blocked
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
-Depends-On: .10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md, .10x/tickets/done/2026-07-08-p1-e5-trust-ring-ledger-events.md, .10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md
+Parent: .10x/tickets/done/2026-07-08-p1-contract-depth-program.md
+Depends-On: .10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md, .10x/tickets/done/2026-07-08-p1-e5-trust-ring-ledger-events.md, .10x/tickets/done/2026-07-08-source-decode-type-drift-quarantine-seam.md
 
 # P1 E6: Drift-quarantine conformance scenario
 
@@ -48,7 +48,8 @@ No public demo script unless split from the broader MVP killer-demo owner. No ne
 ## Progress and notes
 
 - 2026-07-08: First E6 worker slice added live verdict/quarantine package summary artifacts and a conformance scenario for row-rule/domain drift with accepted-row progress, dedup evidence, package quarantine artifacts, destination mirror support/exclusion, and trust-ring quarantine demotion. Parent review reproduced that a literal source scalar type drift (`event_type: 42` under a frozen string contract) fails in `cdf-formats` before `ContractExec` with `expected string got 42`. Partial evidence is `.10x/evidence/2026-07-08-p1-e6-drift-quarantine-partial.md`.
+- 2026-07-08: Closed after the source-decode seam landed. The conformance drift fixture now uses literal numeric JSON `event_type: 42` under a frozen string contract, asserts package and Postgres mirror `source_type_mismatch` evidence, preserves accepted-row progress, and remains wired into the conformance cadence. Evidence: `.10x/evidence/2026-07-08-source-decode-type-drift-quarantine-seam.md`; review: `.10x/reviews/2026-07-08-source-decode-type-drift-quarantine-seam-review.md`.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md`. E6 cannot close until a literal source scalar type-drift fixture routes localized offending rows to quarantine while accepted rows continue.
+None.

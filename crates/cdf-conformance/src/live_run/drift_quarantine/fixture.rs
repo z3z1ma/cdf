@@ -62,13 +62,13 @@ const SOURCE_SCOPE: &str = "events.ndjson";
 
 pub(super) const TARGET: &str = "drift_events";
 pub(super) const ALLOWED_EVENT_TYPE: &str = "order.created";
-pub(super) const DRIFTED_EVENT_TYPE: &str = "invoice.voided";
+pub(super) const DRIFTED_EVENT_TYPE_OBSERVED: &str = "42";
 pub(super) const CLEAN_SOURCE: &str =
     "{\"id\":1,\"event_type\":\"order.created\",\"name\":\"clean\"}\n";
 pub(super) const DRIFT_SOURCE: &str = "\
 {\"id\":1,\"event_type\":\"order.created\",\"name\":\"second-accepted-first\"}\n\
 {\"id\":1,\"event_type\":\"order.created\",\"name\":\"second-accepted-last\"}\n\
-{\"id\":2,\"event_type\":\"invoice.voided\",\"name\":\"drifted-event-type\"}\n";
+{\"id\":2,\"event_type\":42,\"name\":\"drifted-event-type\"}\n";
 
 #[derive(Clone, Debug)]
 pub(super) struct ScenarioSpec {

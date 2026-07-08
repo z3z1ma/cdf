@@ -1,14 +1,14 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Target: .10x/tickets/2026-07-07-p0-structural-debt-program.md
+Target: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 Verdict: pass
 
 # P0 structural debt activation review
 
 ## Target
 
-Review of the record-only activation of `.10x/tickets/2026-07-07-p0-structural-debt-program.md` and its supporting decision, workstream tickets, spec updates, parent blockers, and coverage-matrix row.
+Review of the record-only activation of `.10x/tickets/done/2026-07-07-p0-structural-debt-program.md` and its supporting decision, workstream tickets, spec updates, parent blockers, and coverage-matrix row.
 
 ## Findings
 

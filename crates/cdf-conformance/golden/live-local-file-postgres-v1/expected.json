@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-postgres-v1",
-  "package_hash": "sha256:2c39d0a79a2bd936ebff4058c4b659cb71edf6f000a94d51d356c53907c30cbb",
+  "package_hash": "sha256:9f4dc09019ffbe99879ce9f6b5624d23db475611abcea48c0bd0b28f9114e93b",
   "checkpoint_id": "checkpoint-live-local-file-postgres-v1",
   "pipeline_id": "pipeline-live-local-file-postgres-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:2c39d0a79a2bd936ebff4058c4b659cb71edf6f000a94d51d356c53907c30cbb",
+    "package_hash": "sha256:9f4dc09019ffbe99879ce9f6b5624d23db475611abcea48c0bd0b28f9114e93b",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:2c39d0a79a2bd936ebff4058c4b659cb71edf6f000a94d51d356c53907c30cbb",
+    "signature_signing_input": "sha256:9f4dc09019ffbe99879ce9f6b5624d23db475611abcea48c0bd0b28f9114e93b",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -40,13 +40,13 @@
     "identity_files": [
       {
         "path": "data/seg-000001.arrow",
-        "byte_count": 1314,
-        "sha256": "32cd1896b86d65b419caa01d354e26714c53ba9bcd50422a296fa0295284a0ab"
+        "byte_count": 1330,
+        "sha256": "d2dbffa899aebe656831f984e90fffc962655e5a3eff8e0167722b68c7b948db"
       },
       {
         "path": "destination/commit_plan.json",
         "byte_count": 526,
-        "sha256": "a902de0ce64168e047205a513bf74ad8525263f315e22535aad5928385476584"
+        "sha256": "f7fabe98f6358e4792f37b1c7945e3319aa65ca65b029ff487d3223836010266"
       },
       {
         "path": "lineage/lineage.json",
@@ -70,8 +70,8 @@
       },
       {
         "path": "schema/output.json",
-        "byte_count": 113,
-        "sha256": "312141629dd4e36c5c29d830a10bd31bb9a570498d935980b4898268689ca8e4"
+        "byte_count": 114,
+        "sha256": "0f553c365cc42b31c85770d09839ea360192647a8dc4c62eba01a2e6237801c7"
       },
       {
         "path": "state/input_checkpoint.json",
@@ -81,7 +81,7 @@
       {
         "path": "state/proposed_delta.json",
         "byte_count": 851,
-        "sha256": "8d069cd6154f0071cfb8b837e05636eae7fdaf67166b0e4eb6b392eac8edc07b"
+        "sha256": "2b10ba2455ba00663dd5724042cbe15b31c88f14fe601cf4ecd43b8d6e095226"
       },
       {
         "path": "stats/profile.json",
@@ -99,8 +99,8 @@
         "segment_id": "seg-000001",
         "path": "data/seg-000001.arrow",
         "row_count": 2,
-        "byte_count": 1314,
-        "sha256": "32cd1896b86d65b419caa01d354e26714c53ba9bcd50422a296fa0295284a0ab"
+        "byte_count": 1330,
+        "sha256": "d2dbffa899aebe656831f984e90fffc962655e5a3eff8e0167722b68c7b948db"
       }
     ]
   }

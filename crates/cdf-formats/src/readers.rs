@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs,
     io::{Cursor, Read},
     path::Path,
@@ -9,11 +10,14 @@ use arrow_array::RecordBatch;
 use arrow_csv::reader::{Format as ArrowCsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_ipc::reader::StreamReader;
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
-use arrow_schema::{ArrowError, SchemaRef};
-use cdf_contract::ObservedSchema;
+use arrow_schema::{ArrowError, DataType, Field, SchemaRef};
+use cdf_contract::{
+    ObservedSchema, PiiRedactionPolicy, RedactionDecision, redaction_decision_for_field,
+};
 use cdf_kernel::{
-    Batch, BatchId, CdfError, FileManifest, FilePosition, ResourceDescriptor, Result, SchemaSource,
-    ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    Batch, BatchId, CdfError, FileManifest, FilePosition, PreContractObservedValue,
+    PreContractQuarantineFact, ResourceDescriptor, Result, SchemaSource, ScopeKey, SourcePosition,
+    TrustLevel, WriteDisposition,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -47,6 +51,44 @@ pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
         FileFormat::Parquet => {
             read_parquet_file_with_scope(&source.path, &source.options, scope, Some(position))
         }
+    }
+}
+
+pub fn read_file_source_with_declared_schema(
+    source: &FileSource,
+    declared_schema: SchemaRef,
+) -> Result<FormatRead> {
+    let position = file_source_position(&source.path)?;
+    let scope = ScopeKey::File {
+        path: path_string(&source.path)?,
+    };
+
+    match &source.format {
+        FileFormat::Json(options) => {
+            let bytes = fs::read(&source.path)
+                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
+            read_json_bytes_with_declared_schema_and_scope(
+                &bytes,
+                &source.options,
+                options,
+                declared_schema,
+                scope,
+                Some(position),
+            )
+        }
+        FileFormat::Ndjson(options) => {
+            let bytes = fs::read(&source.path)
+                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
+            read_ndjson_bytes_with_declared_schema_and_scope(
+                &bytes,
+                &source.options,
+                options,
+                declared_schema,
+                scope,
+                Some(position),
+            )
+        }
+        FileFormat::Csv(_) | FileFormat::Parquet => read_file_source(source),
     }
 }
 
@@ -97,6 +139,22 @@ pub fn read_ndjson_bytes(
     read_ndjson_bytes_with_scope(bytes, options, json_options, ScopeKey::Resource, None)
 }
 
+pub fn read_ndjson_bytes_with_declared_schema(
+    bytes: &[u8],
+    options: &ReadOptions,
+    json_options: &JsonOptions,
+    declared_schema: SchemaRef,
+) -> Result<FormatRead> {
+    read_ndjson_bytes_with_declared_schema_and_scope(
+        bytes,
+        options,
+        json_options,
+        declared_schema,
+        ScopeKey::Resource,
+        None,
+    )
+}
+
 pub fn infer_ndjson_observed_schema(
     bytes: &[u8],
     json_options: &JsonOptions,
@@ -140,6 +198,25 @@ fn read_json_bytes_with_scope(
     read_ndjson_bytes_with_scope(&ndjson, options, json_options, scope, position)
 }
 
+fn read_json_bytes_with_declared_schema_and_scope(
+    bytes: &[u8],
+    options: &ReadOptions,
+    json_options: &JsonOptions,
+    declared_schema: SchemaRef,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    let ndjson = json_document_to_ndjson(bytes)?;
+    read_ndjson_bytes_with_declared_schema_and_scope(
+        &ndjson,
+        options,
+        json_options,
+        declared_schema,
+        scope,
+        position,
+    )
+}
+
 fn read_ndjson_bytes_with_scope(
     bytes: &[u8],
     options: &ReadOptions,
@@ -156,6 +233,33 @@ fn read_ndjson_bytes_with_scope(
         .map_err(CdfError::from)?;
     let record_batches = collect_record_batches(&mut reader)?;
     build_output(schema, record_batches, options, scope, position)
+}
+
+fn read_ndjson_bytes_with_declared_schema_and_scope(
+    bytes: &[u8],
+    options: &ReadOptions,
+    _json_options: &JsonOptions,
+    declared_schema: SchemaRef,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    let filtered = filter_declared_ndjson_rows(bytes, declared_schema.as_ref(), &position)?;
+    let mut reader = JsonReaderBuilder::new(declared_schema.clone())
+        .with_batch_size(options.batch_size)
+        .build(Cursor::new(filtered.accepted_ndjson))
+        .map_err(CdfError::from)?;
+    let mut record_batches = collect_record_batches(&mut reader)?;
+    if record_batches.is_empty() && !filtered.quarantine_facts.is_empty() {
+        record_batches.push(RecordBatch::new_empty(declared_schema.clone()));
+    }
+    build_output_with_pre_contract_quarantine(
+        declared_schema,
+        record_batches,
+        options,
+        scope,
+        position,
+        filtered.quarantine_facts,
+    )
 }
 
 fn read_parquet_file_with_scope(
@@ -183,6 +287,24 @@ fn build_output(
     options: &ReadOptions,
     scope: ScopeKey,
     position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    build_output_with_pre_contract_quarantine(
+        schema,
+        record_batches,
+        options,
+        scope,
+        position,
+        Vec::new(),
+    )
+}
+
+fn build_output_with_pre_contract_quarantine(
+    schema: SchemaRef,
+    record_batches: Vec<RecordBatch>,
+    options: &ReadOptions,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+    mut pre_contract_quarantine: Vec<PreContractQuarantineFact>,
 ) -> Result<FormatRead> {
     let schema = record_batches
         .first()
@@ -221,6 +343,9 @@ fn build_output(
             record_batch,
         )?;
         batch.header.source_position = position.clone();
+        if index == 0 {
+            batch.header.pre_contract_quarantine = std::mem::take(&mut pre_contract_quarantine);
+        }
         batches.push(batch);
     }
 
@@ -230,6 +355,191 @@ fn build_output(
         schema_hash,
         batches,
     })
+}
+
+struct DeclaredNdjsonFilter {
+    accepted_ndjson: Vec<u8>,
+    quarantine_facts: Vec<PreContractQuarantineFact>,
+}
+
+fn filter_declared_ndjson_rows(
+    bytes: &[u8],
+    schema: &arrow_schema::Schema,
+    position: &Option<SourcePosition>,
+) -> Result<DeclaredNdjsonFilter> {
+    validate_declared_json_schema(schema)?;
+    let declared_fields = schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<BTreeSet<_>>();
+    let text = std::str::from_utf8(bytes).map_err(|error| {
+        CdfError::data(format!("NDJSON file source is not valid UTF-8: {error}"))
+    })?;
+    let mut accepted_ndjson = Vec::new();
+    let mut quarantine_facts = Vec::new();
+    let mut row_ordinal = 0_u64;
+
+    for (line_index, line) in text.lines().enumerate() {
+        if line.trim().is_empty() {
+            return Err(CdfError::data(format!(
+                "NDJSON file source line {} is empty",
+                line_index + 1
+            )));
+        }
+        let row: Value = serde_json::from_str(line).map_err(json_error)?;
+        let object = row.as_object().ok_or_else(|| {
+            CdfError::data(format!(
+                "NDJSON file source line {} must be a JSON object",
+                line_index + 1
+            ))
+        })?;
+        if let Some(undeclared) = object
+            .keys()
+            .find(|name| !declared_fields.contains(name.as_str()))
+        {
+            return Err(CdfError::data(format!(
+                "NDJSON file source line {} contains undeclared field {undeclared:?}",
+                line_index + 1
+            )));
+        }
+
+        let mut row_facts = Vec::new();
+        for field in schema.fields() {
+            let Some(value) = object.get(field.name()) else {
+                continue;
+            };
+            if value.is_null() {
+                continue;
+            }
+            if declared_json_type_mismatch(field.as_ref(), value)? {
+                row_facts.push(PreContractQuarantineFact {
+                    source_row_ordinal: row_ordinal,
+                    rule_id: format!("source-decode:{}:type-mismatch", field.name()),
+                    error_code: "source_type_mismatch".to_owned(),
+                    source_position: position.clone(),
+                    observed_value_redacted: redacted_declared_json_value(field.as_ref(), value)?,
+                });
+            }
+        }
+
+        if row_facts.is_empty() {
+            serde_json::to_writer(&mut accepted_ndjson, &row).map_err(json_error)?;
+            accepted_ndjson.push(b'\n');
+        } else {
+            quarantine_facts.extend(row_facts);
+        }
+        row_ordinal += 1;
+    }
+
+    Ok(DeclaredNdjsonFilter {
+        accepted_ndjson,
+        quarantine_facts,
+    })
+}
+
+fn validate_declared_json_schema(schema: &arrow_schema::Schema) -> Result<()> {
+    for field in schema.fields() {
+        if !declared_json_type_supported(field.data_type()) {
+            return Err(CdfError::contract(format!(
+                "declared NDJSON source decode quarantine does not support field {:?} with type {}",
+                field.name(),
+                field.data_type()
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn declared_json_type_supported(data_type: &DataType) -> bool {
+    matches!(
+        data_type,
+        DataType::Boolean
+            | DataType::Int8
+            | DataType::Int16
+            | DataType::Int32
+            | DataType::Int64
+            | DataType::UInt8
+            | DataType::UInt16
+            | DataType::UInt32
+            | DataType::UInt64
+            | DataType::Float32
+            | DataType::Float64
+            | DataType::Utf8
+            | DataType::LargeUtf8
+            | DataType::Date32
+            | DataType::Timestamp(_, _)
+    )
+}
+
+fn declared_json_type_mismatch(field: &Field, value: &Value) -> Result<bool> {
+    if !is_json_scalar(value) {
+        return Err(CdfError::data(format!(
+            "NDJSON field {:?} expected scalar {}, got complex JSON value",
+            field.name(),
+            field.data_type()
+        )));
+    }
+    Ok(match field.data_type() {
+        DataType::Boolean => !value.is_boolean(),
+        DataType::Int8
+        | DataType::Int16
+        | DataType::Int32
+        | DataType::Int64
+        | DataType::UInt8
+        | DataType::UInt16
+        | DataType::UInt32
+        | DataType::UInt64
+        | DataType::Float32
+        | DataType::Float64 => !value.is_number(),
+        DataType::Utf8 | DataType::LargeUtf8 | DataType::Date32 | DataType::Timestamp(_, _) => {
+            !value.is_string()
+        }
+        other => {
+            return Err(CdfError::contract(format!(
+                "declared NDJSON source decode quarantine does not support field {:?} with type {other}",
+                field.name()
+            )));
+        }
+    })
+}
+
+fn is_json_scalar(value: &Value) -> bool {
+    value.is_boolean() || value.is_number() || value.is_string()
+}
+
+fn redacted_declared_json_value(field: &Field, value: &Value) -> Result<PreContractObservedValue> {
+    let value = source_scalar_string(value).ok_or_else(|| {
+        CdfError::data(format!(
+            "NDJSON field {:?} type mismatch value is not scalar",
+            field.name()
+        ))
+    })?;
+    match redaction_decision_for_field(field, &PiiRedactionPolicy::default()) {
+        RedactionDecision::Preserve => Ok(PreContractObservedValue::Preserved { value }),
+        RedactionDecision::Hash { algorithm } if algorithm == "sha256" => {
+            Ok(PreContractObservedValue::Hashed {
+                algorithm,
+                value: format!("sha256:{}", sha256_hex(value.as_bytes())),
+            })
+        }
+        RedactionDecision::Hash { algorithm } => Err(CdfError::contract(format!(
+            "unsupported quarantine hash algorithm {algorithm:?}"
+        ))),
+        RedactionDecision::Omit => Ok(PreContractObservedValue::Omitted),
+        RedactionDecision::Mask { replacement } => {
+            Ok(PreContractObservedValue::Masked { value: replacement })
+        }
+    }
+}
+
+fn source_scalar_string(value: &Value) -> Option<String> {
+    match value {
+        Value::Bool(value) => Some(value.to_string()),
+        Value::Number(value) => Some(value.to_string()),
+        Value::String(value) => Some(value.clone()),
+        Value::Null | Value::Array(_) | Value::Object(_) => None,
+    }
 }
 
 fn collect_record_batches<I>(reader: &mut I) -> Result<Vec<RecordBatch>>
@@ -287,6 +597,12 @@ fn file_sha256(path: &Path) -> Result<String> {
     std::io::copy(&mut file, &mut hasher)
         .map_err(|error| io_data_error(format!("hash {}", path.display()), error))?;
     Ok(hex::encode(hasher.finalize()))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hex::encode(hasher.finalize())
 }
 
 fn path_string(path: &Path) -> Result<String> {

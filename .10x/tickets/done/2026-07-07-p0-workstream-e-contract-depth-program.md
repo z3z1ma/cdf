@@ -1,7 +1,7 @@
-Status: active
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
+Parent: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
 # P0 Workstream E: Activate contract depth
 
@@ -50,10 +50,11 @@ No public performance claim, no speculative trust UI, no schema-on-read replacem
 
 - 2026-07-07: Opened from P0 stop-line. Current inspection shows `cdf-contract` has schema/program vocabulary and `PackageBuilder::write_quarantine_artifact`, but live execution has not yet routed row-level verdicts into quarantine artifacts.
 - 2026-07-07: Read-only subagent inventory found `SchemaSource::Contract` currently rejected by project runtime and `apply_contract_exec` enforcing column coverage rather than row verdict/quarantine routing.
-- 2026-07-08: Activated after P0 Workstream C closure. Opened P1 parent `.10x/tickets/2026-07-08-p1-contract-depth-program.md`, ordered children E1-E6, and API/semantics decision `.10x/decisions/contract-live-verdict-execution-semantics.md`. No implementation has started in this graph-shaping slice.
+- 2026-07-08: Activated after P0 Workstream C closure. Opened P1 parent `.10x/tickets/done/2026-07-08-p1-contract-depth-program.md`, ordered children E1-E6, and API/semantics decision `.10x/decisions/contract-live-verdict-execution-semantics.md`. No implementation has started in this graph-shaping slice.
 - 2026-07-08: P1 E1-E5 are closed. Contract live path now has row verdicts, quarantine routing/redaction, deterministic pre-merge dedup, `_cdf_variant` capture with package contract-evolution evidence, and trust-ring promotion/demotion ledger events including explicit anomaly-fact demotion. E6 drift-quarantine conformance remains before Workstream E can close.
-- 2026-07-08: E6 partial work added package verdict/quarantine summary artifacts and row-rule/domain drift conformance coverage, but literal source scalar type-drift quarantine is blocked by the missing pre-contract decoder quarantine seam. The seam is ratified by `.10x/decisions/source-decode-type-drift-quarantine.md` and owned by `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md`.
+- 2026-07-08: E6 partial work added package verdict/quarantine summary artifacts and row-rule/domain drift conformance coverage, but literal source scalar type-drift quarantine is blocked by the missing pre-contract decoder quarantine seam. The seam is ratified by `.10x/decisions/source-decode-type-drift-quarantine.md` and owned by `.10x/tickets/done/2026-07-08-source-decode-type-drift-quarantine-seam.md`.
+- 2026-07-08: Closed after P1 E6 and `.10x/tickets/done/2026-07-08-source-decode-type-drift-quarantine-seam.md` completed. Live contract depth now covers all required Workstream E outcomes, including literal source type-drift quarantine, accepted stream progress, destination mirror support/exclusions, and quality/security evidence. Rollup evidence: `.10x/evidence/2026-07-08-p0-structural-debt-program-exit.md`; review: `.10x/reviews/2026-07-08-p0-structural-debt-program-exit-review.md`.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md` before Workstream E can close.
+None.

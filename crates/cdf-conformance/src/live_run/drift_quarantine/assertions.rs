@@ -13,7 +13,7 @@ use cdf_state_sqlite::{RunEventKind, RunEventValue, SqliteCheckpointStore};
 use postgres::{Client, NoTls};
 use serde_json::{self, Value};
 
-use super::fixture::{ALLOWED_EVENT_TYPE, DRIFTED_EVENT_TYPE, ScenarioSpec, TARGET};
+use super::fixture::{ALLOWED_EVENT_TYPE, DRIFTED_EVENT_TYPE_OBSERVED, ScenarioSpec, TARGET};
 use crate::{
     package_replay::DuckDbDestination,
     run_matrix::local_postgres::{LivePostgres, qualified_name},
@@ -105,8 +105,11 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     let quarantine = reader.read_quarantine_records().unwrap();
     assert_eq!(quarantine.len(), 1);
     assert_eq!(quarantine[0].source_row_ordinal, 2);
-    assert_eq!(quarantine[0].rule_id, "row-rule-0000-domain");
-    assert_eq!(quarantine[0].error_code, "domain_violation");
+    assert_eq!(
+        quarantine[0].rule_id,
+        "source-decode:event_type:type-mismatch"
+    );
+    assert_eq!(quarantine[0].error_code, "source_type_mismatch");
     assert!(matches!(
         quarantine[0].source_position,
         Some(SourcePosition::FileManifest(_))
@@ -114,7 +117,7 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     assert_eq!(
         quarantine[0].observed_value_redacted,
         QuarantineObservedValue::Preserved {
-            value: DRIFTED_EVENT_TYPE.to_owned()
+            value: DRIFTED_EVENT_TYPE_OBSERVED.to_owned()
         }
     );
 
@@ -253,10 +256,13 @@ pub(super) fn assert_postgres_quarantine_mirror(
         )
         .unwrap();
     assert_eq!(row.get::<_, i64>(0), 2);
-    assert_eq!(row.get::<_, String>(1), "row-rule-0000-domain");
-    assert_eq!(row.get::<_, String>(2), "domain_violation");
+    assert_eq!(
+        row.get::<_, String>(1),
+        "source-decode:event_type:type-mismatch"
+    );
+    assert_eq!(row.get::<_, String>(2), "source_type_mismatch");
     let observed = row.get::<_, String>(3);
-    assert!(observed.contains(DRIFTED_EVENT_TYPE));
+    assert!(observed.contains(DRIFTED_EVENT_TYPE_OBSERVED));
 }
 
 pub(super) fn assert_postgres_target_contains_deduped_accepted_row(postgres: &LivePostgres) {

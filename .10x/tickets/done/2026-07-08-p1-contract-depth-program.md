@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-07-p0-workstream-e-contract-depth-program.md
+Parent: .10x/tickets/done/2026-07-07-p0-workstream-e-contract-depth-program.md
 
 # P1 contract-depth program
 
@@ -28,7 +28,7 @@ This parent is a plan. Child tickets own executable implementation. Children mus
 - `.10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md`
 - `.10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md`
 - `.10x/tickets/done/2026-07-08-p1-e5-trust-ring-ledger-events.md`
-- `.10x/tickets/2026-07-08-p1-e6-drift-quarantine-conformance.md`
+- `.10x/tickets/done/2026-07-08-p1-e6-drift-quarantine-conformance.md`
 
 ## Acceptance criteria
 
@@ -57,8 +57,9 @@ No trust UI, no schema-on-read replacement for packages, no DataFusion multi-out
 - 2026-07-08: E3 closed with deterministic pre-merge dedup over accepted package-order rows, `keep = first|last|fail` coverage, package identity `stats/dedup-summary.json`, live run replay/redrive identity coverage, legacy `EnginePlan` JSON compatibility repair, evidence `.10x/evidence/2026-07-08-p1-e3-merge-dedup-live-path.md`, and review `.10x/reviews/2026-07-08-p1-e3-merge-dedup-live-path-review.md`.
 - 2026-07-08: E4 closed with live `_cdf_variant` capture for Struct/List/Map nested fields, semantic `json` schema evidence, deterministic `schema/contract-evolution.json` with zero implicit promotions, package verify/replay evidence, conformance compiler coverage, evidence `.10x/evidence/2026-07-08-p1-e4-variant-capture-evolution-event.md`, and review `.10x/reviews/2026-07-08-p1-e4-variant-capture-evolution-event-review.md`.
 - 2026-07-08: E5 closed with trust-ring promotion/demotion ledger events for first-contact, clean-stable promotion, drift demotion, quarantine demotion, and explicit anomaly-fact demotion. Anomaly semantics are ratified by `.10x/decisions/contract-anomaly-signal-demotion-policy.md`; closure evidence is `.10x/evidence/2026-07-08-p1-e5-trust-ledger-events.md` and review is `.10x/reviews/2026-07-08-p1-e5-trust-ledger-events-review.md`. E6 drift-quarantine conformance remains open.
-- 2026-07-08: E6 is partially implemented but blocked. Live packages now write verdict/quarantine summary artifacts and the conformance harness covers row-rule/domain drift quarantine with accepted-row progress. Literal source scalar type drift still fails in the decoder before `ContractExec`; `.10x/decisions/source-decode-type-drift-quarantine.md` ratifies the required seam, and `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md` owns implementation.
+- 2026-07-08: E6 is partially implemented but blocked. Live packages now write verdict/quarantine summary artifacts and the conformance harness covers row-rule/domain drift quarantine with accepted-row progress. Literal source scalar type drift still fails in the decoder before `ContractExec`; `.10x/decisions/source-decode-type-drift-quarantine.md` ratifies the required seam, and `.10x/tickets/done/2026-07-08-source-decode-type-drift-quarantine-seam.md` owns implementation.
+- 2026-07-08: Closed after E6 and the source-decode type-drift seam closed. P1 now covers row verdicts, package/destination quarantine routing, dedup, variant capture, trust ledger events, literal drift-quarantine conformance, and the required quality evidence. Rollup evidence: `.10x/evidence/2026-07-08-p0-structural-debt-program-exit.md`; review: `.10x/reviews/2026-07-08-p0-structural-debt-program-exit-review.md`.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md` before E6 and this parent can close.
+None.

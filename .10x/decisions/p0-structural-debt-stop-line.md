@@ -21,7 +21,7 @@ The directive is user-ratified on 2026-07-07 and supplements the CDF 1.0 standin
 
 ## Decision
 
-CDF adopts a P0 structural-debt stop-line program owned by `.10x/tickets/2026-07-07-p0-structural-debt-program.md`.
+CDF adopts a P0 structural-debt stop-line program owned by `.10x/tickets/done/2026-07-07-p0-structural-debt-program.md`.
 
 Until Workstreams A, B, and C close with evidence and adversarial review, the project MUST NOT open new:
 

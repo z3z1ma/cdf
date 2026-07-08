@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
+Parent: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 Depends-On: .10x/tickets/done/2026-07-07-duckdb-arrow58-transitive-residual.md, .10x/decisions/datafusion-git-pin-arrow59-tuple.md
 
 # P0 Workstream D: Close dependency tuple residual

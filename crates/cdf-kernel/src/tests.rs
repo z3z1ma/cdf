@@ -375,7 +375,35 @@ fn batch_wraps_arrow_record_batch_and_reports_counts() {
 
     assert_eq!(batch.header.row_count, 3);
     assert!(batch.header.byte_count > 0);
+    assert!(batch.header.pre_contract_quarantine.is_empty());
     assert!(batch.record_batch().is_some());
+}
+
+#[test]
+fn batch_header_serde_defaults_missing_pre_contract_quarantine() {
+    let header = BatchHeader {
+        batch_id: BatchId::new("batch-legacy").unwrap(),
+        resource_id: ResourceId::new("orders").unwrap(),
+        partition_id: PartitionId::new("p0").unwrap(),
+        observed_schema_hash: SchemaHash::new("schema-sha256").unwrap(),
+        row_count: 1,
+        byte_count: 8,
+        source_position: None,
+        pre_contract_quarantine: Vec::new(),
+        watermarks: Vec::new(),
+        stats: BatchStats::default(),
+        cdc: None,
+    };
+
+    let mut json = serde_json::to_value(&header).unwrap();
+    assert!(json.get("pre_contract_quarantine").is_none());
+    json.as_object_mut()
+        .unwrap()
+        .remove("pre_contract_quarantine");
+
+    let decoded: BatchHeader = serde_json::from_value(json).unwrap();
+
+    assert!(decoded.pre_contract_quarantine.is_empty());
 }
 
 #[test]
