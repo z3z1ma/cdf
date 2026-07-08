@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
-Depends-On: .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md, .10x/tickets/2026-07-07-p0-b3-generic-project-run-resolution.md
+Depends-On: .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md, .10x/tickets/done/2026-07-07-p0-b3-generic-project-run-resolution.md
 
 # P0 B4: Caller migration, wrapper deletion, and Workstream B closure
 
@@ -38,7 +38,8 @@ No new destination implementation, no Workstream C scenario matrix expansion bey
 ## Progress and notes
 
 - 2026-07-07: Opened from Workstream B. Huygens inventory names the caller sets that must migrate: CLI run/replay/resume, CLI tests, conformance package replay/live-run/chaos/golden helpers, and project runtime tests.
+- 2026-07-08: B3 dependency closed. B4 can now migrate remaining replay/resume/package-replay callers and delete the specialized wrapper family.
 
 ## Blockers
 
-Depends on B2 and B3.
+None. B2 and B3 are closed.

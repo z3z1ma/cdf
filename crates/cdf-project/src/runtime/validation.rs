@@ -1,13 +1,8 @@
 use super::{
-    destinations::{
-        commit_request, postgres_columns_from_schema, postgres_load_plan_input, postgres_target,
-    },
-    prelude::*,
-    resources::ProjectRunResource,
-    types::*,
+    destinations::ProjectDestinationDescription, prelude::*, resources::ProjectRunSource, types::*,
 };
 
-pub(super) fn validate_project_run_request(request: &ProjectRunRequest<'_>) -> Result<()> {
+pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) -> Result<()> {
     request.resource.validate_supported()?;
     validate_checkpointable_source_position(request.resource)?;
     validate_run_plan(
@@ -15,112 +10,55 @@ pub(super) fn validate_project_run_request(request: &ProjectRunRequest<'_>) -> R
         &request.plan,
         &request.package_id,
     )?;
-    match &request.destination {
-        ProjectRunDestination::DuckDb { database_path, .. } => {
-            let destination = DuckDbDestination::new(database_path)?;
-            if !destination
-                .sheet()
-                .supported_dispositions
-                .contains(&request.resource.descriptor().write_disposition)
-            {
-                return Err(CdfError::contract(format!(
-                    "DuckDB destination does not support {:?}",
-                    request.resource.descriptor().write_disposition
-                )));
-            }
-        }
-        ProjectRunDestination::ParquetFilesystem { .. } => {
-            if !matches!(
-                request.resource.descriptor().write_disposition,
-                WriteDisposition::Append | WriteDisposition::Replace
-            ) {
-                return Err(CdfError::contract(format!(
-                    "Parquet destination does not support {:?}; append and replace are supported in this slice",
-                    request.resource.descriptor().write_disposition
-                )));
-            }
-        }
-        ProjectRunDestination::Postgres { database_url, .. } => {
-            PostgresDestination::connect(database_url.clone())?;
-            validate_postgres_preflight(request)?;
-        }
+    let disposition = &request.resource.descriptor().write_disposition;
+    let description = request.destination.describe();
+    if !request
+        .destination
+        .runtime_mut()
+        .supported_dispositions()
+        .contains(disposition)
+    {
+        return Err(CdfError::contract(format!(
+            "{} destination does not support {:?}",
+            destination_validation_name(&description),
+            disposition
+        )));
     }
+    let schema_hash = declared_schema_hash(request.resource.stream())?;
+    request
+        .destination
+        .runtime_mut()
+        .validate_run_preflight(request.resource.stream(), &schema_hash)?;
     Ok(())
 }
 
-fn validate_postgres_preflight(request: &ProjectRunRequest<'_>) -> Result<()> {
-    let resource = request.resource.stream();
-    let schema_hash = declared_schema_hash(resource)?;
-    let delta = postgres_preflight_delta(resource, &schema_hash)?;
-    let commit = commit_request(
-        &delta,
-        postgres_target(request)?,
-        resource.descriptor().write_disposition.clone(),
-    )?;
-    let replay = PackageReplayInputs {
-        input_checkpoint: None,
-        state_delta: delta,
-        destination_commit: commit,
-        schema_hash,
-        merge_keys: Vec::new(),
-    };
-    let input =
-        postgres_load_plan_input(request, &replay, postgres_columns_from_schema(resource)?)?;
-    PostgresDestination::new().plan_load(input)?;
-    Ok(())
+fn destination_validation_name(description: &ProjectDestinationDescription) -> &str {
+    match description.schemes.first().copied() {
+        Some("duckdb") => "DuckDB",
+        Some("parquet") => "Parquet",
+        Some("postgres") => "Postgres",
+        _ => description.label.as_str(),
+    }
 }
 
-fn postgres_preflight_delta(
-    resource: &dyn ResourceStream,
-    schema_hash: &SchemaHash,
-) -> Result<StateDelta> {
+fn validate_checkpointable_source_position(resource: ProjectRunSource<'_>) -> Result<()> {
+    if resource.capabilities().incremental == IncrementalShape::File {
+        return Ok(());
+    }
     let descriptor = resource.descriptor();
-    let segment = StateSegment {
-        segment_id: SegmentId::new("seg-postgres-preflight")?,
-        scope: descriptor.state_scope.clone(),
-        output_position: SourcePosition::Cursor(CursorPosition {
-            version: 1,
-            field: "preflight".to_owned(),
-            value: CursorValue::I64(0),
-        }),
-        row_count: 1,
-        byte_count: 1,
-    };
-    Ok(StateDelta {
-        checkpoint_id: CheckpointId::new("checkpoint-postgres-preflight")?,
-        pipeline_id: PipelineId::new("pipeline-postgres-preflight")?,
-        resource_id: descriptor.resource_id.clone(),
-        scope: descriptor.state_scope.clone(),
-        state_version: CHECKPOINT_STATE_VERSION,
-        parent_checkpoint_id: None,
-        input_position: None,
-        output_position: segment.output_position.clone(),
-        package_hash: PackageHash::new("sha256:postgres-preflight")?,
-        schema_hash: schema_hash.clone(),
-        segments: vec![segment],
-    })
-}
-
-fn validate_checkpointable_source_position(resource: ProjectRunResource<'_>) -> Result<()> {
-    match resource {
-        ProjectRunResource::LocalFile(_) => Ok(()),
-        ProjectRunResource::Rest(_) | ProjectRunResource::Sql(_) => {
-            let descriptor = resource.descriptor();
-            let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
-                CdfError::contract(format!(
-                    "cdf run requires non-file resource `{}` to declare an ordered cursor; page-token-only checkpoint semantics are not ratified",
-                    descriptor.resource_id
-                ))
-            })?;
-            if cursor.ordering == CursorOrderingClaim::Unordered {
-                return Err(CdfError::contract(format!(
-                    "cdf run requires non-file resource `{}` to declare an ordered cursor for checkpoint advancement",
-                    descriptor.resource_id
-                )));
-            }
-            Ok(())
-        }
+    let cursor = descriptor.cursor.as_ref().ok_or_else(|| {
+        CdfError::contract(format!(
+            "cdf run requires resource `{}` without file-incremental capability to declare an ordered cursor; page-token-only checkpoint semantics are not ratified",
+            descriptor.resource_id
+        ))
+    })?;
+    if cursor.ordering == CursorOrderingClaim::Unordered {
+        return Err(CdfError::contract(format!(
+            "cdf run requires resource `{}` without file-incremental capability to declare an ordered cursor for checkpoint advancement",
+            descriptor.resource_id
+        )));
     }
+    Ok(())
 }
 
 pub(super) fn validate_local_file_run_resource(resource: &CompiledResource) -> Result<()> {

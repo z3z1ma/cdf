@@ -1,24 +1,12 @@
 use super::prelude::*;
 
-pub(super) fn verify_destination_receipt_before_checkpoint(
-    destination: &dyn DestinationProtocol,
+pub(super) fn validate_destination_receipt_before_checkpoint(
     delta: &StateDelta,
     target: &TargetName,
     disposition: &WriteDisposition,
     receipt: &Receipt,
 ) -> Result<()> {
-    validate_receipt_identity(delta, target, disposition, receipt)?;
-    let verification = destination.verify(receipt)?;
-    if !verification.verified {
-        return Err(CdfError::destination(format!(
-            "destination receipt {} did not verify: {}",
-            verification.receipt_id,
-            verification
-                .reason
-                .unwrap_or_else(|| "verification returned false".to_owned())
-        )));
-    }
-    Ok(())
+    validate_receipt_identity(delta, target, disposition, receipt)
 }
 
 fn validate_receipt_identity(

@@ -1,6 +1,7 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use cdf_project::{ProjectReceiptSource, ProjectRunReport};
+use cdf_kernel::TargetName;
+use cdf_project::{ProjectDestinationDescription, ProjectReceiptSource, ProjectRunReport};
 use cdf_state_sqlite::{RunEventDetails, RunEventValue, RunLedgerSnapshot};
 use serde::Serialize;
 
@@ -183,6 +184,29 @@ pub(crate) struct RunDestinationReport {
 }
 
 impl RunDestinationReport {
+    pub(crate) fn from_project(
+        description: &ProjectDestinationDescription,
+        target: &TargetName,
+    ) -> Self {
+        match description
+            .schemes
+            .first()
+            .copied()
+            .unwrap_or("destination")
+        {
+            "duckdb" => Self::duckdb(description.label.clone(), target.to_string()),
+            "parquet" => Self::parquet(description.label.clone(), target.to_string()),
+            "postgres" => Self::postgres(target.to_string()),
+            _ => Self {
+                kind: "destination",
+                destination_id: None,
+                target: target.to_string(),
+                database_path: None,
+                root: None,
+            },
+        }
+    }
+
     pub(crate) fn duckdb(database_path: String, target: String) -> Self {
         Self {
             kind: "duckdb",

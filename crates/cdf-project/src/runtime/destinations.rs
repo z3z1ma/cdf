@@ -1,8 +1,18 @@
-use super::{
-    hooks::ReceiptVerifiedHook,
-    prelude::*,
-    types::{ProjectReceiptSource, ProjectRunDestination, ProjectRunRequest},
+use super::{hooks::ReceiptVerifiedHook, prelude::*, types::ProjectReceiptSource};
+use crate::DestinationPolicy;
+
+mod duckdb;
+mod parquet;
+mod postgres;
+
+pub use duckdb::DuckDbProjectDestinationDriver;
+pub(super) use duckdb::DuckDbProjectDestinationRuntime;
+pub use parquet::ParquetProjectDestinationDriver;
+pub(super) use parquet::{
+    FilesystemParquetProjectDestinationRuntime, ParquetProjectDestinationRuntime,
 };
+pub use postgres::PostgresProjectDestinationDriver;
+pub(super) use postgres::{PostgresProjectDestinationRuntime, validate_postgres_replay_target};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
@@ -87,17 +97,92 @@ impl PreparedDestinationCommit {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+type ProjectSecretProvider = dyn SecretProvider + Send + Sync + std::panic::RefUnwindSafe;
+
+#[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct ProjectResolutionContext<'a> {
-    marker: PhantomData<&'a ()>,
+    project_root: Option<&'a Path>,
+    target: Option<&'a TargetName>,
+    environment_name: Option<&'a str>,
+    destination_policy: Option<&'a DestinationPolicy>,
+    secret_provider: Option<&'a ProjectSecretProvider>,
 }
 
 impl<'a> ProjectResolutionContext<'a> {
     pub fn new() -> Self {
         Self {
-            marker: PhantomData,
+            project_root: None,
+            target: None,
+            environment_name: None,
+            destination_policy: None,
+            secret_provider: None,
         }
+    }
+
+    pub fn for_project_run(project_root: &'a Path, target: &'a TargetName) -> Self {
+        Self {
+            project_root: Some(project_root),
+            target: Some(target),
+            environment_name: None,
+            destination_policy: None,
+            secret_provider: None,
+        }
+    }
+
+    pub fn with_environment_name(mut self, environment_name: &'a str) -> Self {
+        self.environment_name = Some(environment_name);
+        self
+    }
+
+    pub fn with_destination_policy(mut self, policy: &'a DestinationPolicy) -> Self {
+        self.destination_policy = Some(policy);
+        self
+    }
+
+    pub fn with_secret_provider(mut self, provider: &'a ProjectSecretProvider) -> Self {
+        self.secret_provider = Some(provider);
+        self
+    }
+
+    fn project_root(&self) -> Result<&'a Path> {
+        self.project_root.ok_or_else(|| {
+            CdfError::contract("project destination resolution requires a project root")
+        })
+    }
+
+    fn target(&self) -> Result<&'a TargetName> {
+        self.target.ok_or_else(|| {
+            CdfError::contract("project destination resolution requires a run target")
+        })
+    }
+
+    fn destination_policy(&self) -> Result<&'a DestinationPolicy> {
+        self.destination_policy.ok_or_else(|| {
+            CdfError::contract("project destination resolution requires destination policy")
+        })
+    }
+
+    fn secret_provider(&self) -> Result<&'a ProjectSecretProvider> {
+        self.secret_provider.ok_or_else(|| {
+            CdfError::auth("secret-backed destination URI requires a SecretProvider")
+        })
+    }
+
+    fn environment_name(&self) -> &str {
+        self.environment_name.unwrap_or("<selected>")
+    }
+}
+
+impl std::fmt::Debug for ProjectResolutionContext<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProjectResolutionContext")
+            .field("project_root", &self.project_root)
+            .field("target", &self.target)
+            .field("environment_name", &self.environment_name)
+            .field("destination_policy", &self.destination_policy.is_some())
+            .field("secret_provider", &self.secret_provider.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -147,6 +232,14 @@ impl ProjectDestinationRegistry {
         Self {
             drivers: Vec::new(),
         }
+    }
+
+    pub fn with_builtin_drivers() -> Result<Self> {
+        let mut registry = Self::new();
+        registry.register(DuckDbProjectDestinationDriver)?;
+        registry.register(ParquetProjectDestinationDriver)?;
+        registry.register(PostgresProjectDestinationDriver)?;
+        Ok(registry)
     }
 
     pub fn register<D>(&mut self, driver: D) -> Result<()>
@@ -208,6 +301,18 @@ pub trait ProjectDestinationRuntime {
 
     fn describe(&self) -> ProjectDestinationDescription;
 
+    fn supported_dispositions(&self) -> &[WriteDisposition] {
+        &self.protocol().sheet().supported_dispositions
+    }
+
+    fn validate_run_preflight(
+        &mut self,
+        _resource: &dyn ResourceStream,
+        _schema_hash: &SchemaHash,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn prepare_package_commit(
         &mut self,
         package_dir: &Path,
@@ -217,6 +322,102 @@ pub trait ProjectDestinationRuntime {
     ) -> Result<PreparedDestinationCommit>;
 
     fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()>;
+
+    fn ensure_protocol_ready(&mut self) -> Result<()> {
+        Ok(())
+    }
+
+    fn verify_receipt(&mut self, receipt: &Receipt) -> Result<cdf_kernel::ReceiptVerification> {
+        self.ensure_protocol_ready()?;
+        self.protocol().verify(receipt)
+    }
+
+    fn secret_redaction(&self) -> Option<&str> {
+        None
+    }
+}
+
+pub struct ResolvedProjectDestination {
+    target: TargetName,
+    runtime: Box<dyn ProjectDestinationRuntime>,
+}
+
+impl std::fmt::Debug for ResolvedProjectDestination {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResolvedProjectDestination")
+            .field("target", &self.target)
+            .field("description", &self.describe())
+            .finish_non_exhaustive()
+    }
+}
+
+impl ResolvedProjectDestination {
+    pub fn new(runtime: Box<dyn ProjectDestinationRuntime>, target: TargetName) -> Self {
+        Self { target, runtime }
+    }
+
+    pub fn duckdb(database_path: impl AsRef<Path>, target: TargetName) -> Result<Self> {
+        Ok(Self::new(
+            Box::new(DuckDbDestination::new(database_path)?),
+            target,
+        ))
+    }
+
+    pub fn parquet_filesystem(root: impl AsRef<Path>, target: TargetName) -> Result<Self> {
+        Ok(Self::new(
+            Box::new(FilesystemParquetProjectDestinationRuntime::new(
+                root.as_ref().to_path_buf(),
+            )),
+            target,
+        ))
+    }
+
+    pub fn postgres(
+        database_url: impl Into<String>,
+        target: PostgresTarget,
+        dedup: MergeDedupPolicy,
+        existing_table: Option<PostgresExistingTable>,
+    ) -> Result<Self> {
+        let target_name = TargetName::new(target.display_name())?;
+        let destination = PostgresDestination::connect(database_url)?;
+        Ok(Self::new(
+            Box::new(PostgresProjectDestinationRuntime::for_replay(
+                &destination,
+                target,
+                dedup,
+                existing_table,
+            )),
+            target_name,
+        ))
+    }
+
+    pub fn target(&self) -> &TargetName {
+        &self.target
+    }
+
+    pub fn describe(&self) -> ProjectDestinationDescription {
+        self.runtime.describe()
+    }
+
+    pub fn secret_redaction(&self) -> Option<&str> {
+        self.runtime.secret_redaction()
+    }
+
+    pub(super) fn runtime_mut(&mut self) -> &mut dyn ProjectDestinationRuntime {
+        self.runtime.as_mut()
+    }
+}
+
+pub fn resolve_project_run_destination(
+    uri: &str,
+    context: &ProjectResolutionContext<'_>,
+) -> Result<ResolvedProjectDestination> {
+    let registry = ProjectDestinationRegistry::with_builtin_drivers()?;
+    let runtime = registry.resolve(uri, context)?;
+    Ok(ResolvedProjectDestination::new(
+        runtime,
+        context.target()?.clone(),
+    ))
 }
 
 fn project_destination_uri_scheme(uri: &str) -> Result<&str> {
@@ -246,194 +447,31 @@ fn validate_project_destination_scheme(scheme: &str) -> Result<()> {
     Ok(())
 }
 
-pub(super) struct DuckDbProjectDestinationRuntime<'a> {
-    destination: &'a DuckDbDestination,
-}
-
-impl<'a> DuckDbProjectDestinationRuntime<'a> {
-    pub(super) fn new(destination: &'a DuckDbDestination) -> Self {
-        Self { destination }
-    }
-}
-
-impl ProjectDestinationRuntime for DuckDbProjectDestinationRuntime<'_> {
-    fn protocol(&self) -> &dyn DestinationProtocol {
-        self.destination
-    }
-
-    fn describe(&self) -> ProjectDestinationDescription {
-        ProjectDestinationDescription {
-            destination_id: self.destination.sheet().destination.clone(),
-            schemes: &["duckdb"],
-            label: self.destination.database_path().display().to_string(),
-        }
-    }
-
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        let request = DuckDbCommitRequest {
-            package_dir: package_dir.to_path_buf(),
-            commit: inputs.destination_commit.clone(),
-            schema_hash: inputs.schema_hash.clone(),
-            merge_keys: inputs.merge_keys.clone(),
-        };
-        let duplicate = duckdb_has_duplicate_receipt(self.destination, &request.commit)?;
-        let plan = self.destination.plan_package_commit(&request)?;
-        Ok(PreparedDestinationCommit::new(
-            request.commit,
-            plan.kernel,
-            DestinationReceiptReportingPolicy::DestinationCommit { duplicate },
+fn local_uri_path<'a>(uri: &'a str, scheme: &str) -> Result<&'a str> {
+    let prefix = format!("{scheme}://");
+    let raw = uri.strip_prefix(&prefix).ok_or_else(|| {
+        CdfError::contract(format!(
+            "destination URI `{uri}` is unsupported; expected {scheme}://path"
         ))
+    })?;
+    if raw.trim().is_empty() || raw.contains("://") {
+        return Err(CdfError::contract(format!(
+            "destination URI `{uri}` is malformed or non-local; expected {scheme}://path"
+        )));
     }
+    Ok(raw)
+}
 
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "DuckDB")
+fn absolute_under_root(root: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
     }
 }
 
-pub(super) struct ParquetProjectDestinationRuntime<'a> {
-    destination: &'a ParquetDestination,
-}
-
-impl<'a> ParquetProjectDestinationRuntime<'a> {
-    pub(super) fn new(destination: &'a ParquetDestination) -> Self {
-        Self { destination }
-    }
-}
-
-impl ProjectDestinationRuntime for ParquetProjectDestinationRuntime<'_> {
-    fn protocol(&self) -> &dyn DestinationProtocol {
-        self.destination
-    }
-
-    fn describe(&self) -> ProjectDestinationDescription {
-        ProjectDestinationDescription {
-            destination_id: self.destination.sheet().destination.clone(),
-            schemes: &["parquet"],
-            label: "parquet filesystem".to_owned(),
-        }
-    }
-
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        let request = ParquetCommitRequest {
-            package_dir: package_dir.to_path_buf(),
-            commit: inputs.destination_commit.clone(),
-            schema_hash: inputs.schema_hash.clone(),
-        };
-        let plan = self.destination.plan_package_commit(&request)?;
-        Ok(PreparedDestinationCommit::new(
-            request.commit,
-            plan.kernel,
-            DestinationReceiptReportingPolicy::DestinationCommit {
-                duplicate: plan.duplicate,
-            },
-        ))
-    }
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "Parquet")
-    }
-}
-
-pub(super) struct PostgresProjectDestinationRuntime {
-    destination: PostgresDestination,
-    replay: Option<PostgresReplayPlanning>,
-}
-
-#[derive(Clone)]
-struct PostgresReplayPlanning {
-    target: PostgresTarget,
-    dedup: MergeDedupPolicy,
-    existing_table: Option<PostgresExistingTable>,
-}
-
-impl PostgresProjectDestinationRuntime {
-    pub(super) fn for_replay(
-        destination: &PostgresDestination,
-        target: PostgresTarget,
-        dedup: MergeDedupPolicy,
-        existing_table: Option<PostgresExistingTable>,
-    ) -> Self {
-        Self {
-            destination: destination.clone(),
-            replay: Some(PostgresReplayPlanning {
-                target,
-                dedup,
-                existing_table,
-            }),
-        }
-    }
-
-    pub(super) fn for_recovery(destination: &PostgresDestination) -> Self {
-        Self {
-            destination: destination.clone(),
-            replay: None,
-        }
-    }
-}
-
-impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
-    fn protocol(&self) -> &dyn DestinationProtocol {
-        &self.destination
-    }
-
-    fn describe(&self) -> ProjectDestinationDescription {
-        ProjectDestinationDescription {
-            destination_id: self.destination.sheet().destination.clone(),
-            schemes: &["postgres"],
-            label: "postgres".to_owned(),
-        }
-    }
-
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        let replay = self.replay.as_ref().ok_or_else(|| {
-            CdfError::internal("Postgres package replay requires replay planning inputs")
-        })?;
-        let load_input = postgres_load_plan_input_from_artifacts(
-            inputs,
-            replay.target.clone(),
-            replay.dedup.clone(),
-            replay.existing_table.clone(),
-            postgres_columns_from_package(reader)?,
-        )?;
-        let load_plan = self.destination.plan_load(load_input)?;
-        let request = PostgresCommitRequest {
-            package_dir: package_dir.to_path_buf(),
-            plan: load_plan.clone(),
-        };
-        Ok(PreparedDestinationCommit::new(
-            inputs.destination_commit.clone(),
-            load_plan.kernel,
-            DestinationReceiptReportingPolicy::DestinationCommitReceiptOnly,
-        )
-        .with_pending_context(request))
-    }
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        let request = prepared.take_pending_context::<PostgresCommitRequest>("Postgres")?;
-        self.destination = self.destination.clone().with_commit_request(request);
-        Ok(())
-    }
-}
-
-fn reject_unexpected_pending_context(
+pub(super) fn reject_unexpected_pending_context(
     prepared: &PreparedDestinationCommit,
     destination: &str,
 ) -> Result<()> {
@@ -443,142 +481,6 @@ fn reject_unexpected_pending_context(
         )));
     }
     Ok(())
-}
-
-fn duckdb_has_duplicate_receipt(
-    destination: &DuckDbDestination,
-    request: &DestinationCommitRequest,
-) -> Result<bool> {
-    if !destination.database_path().exists() {
-        return Ok(false);
-    }
-    let snapshot = destination.read_mirror_snapshot_read_only()?;
-    for load in snapshot.loads {
-        if load.target == request.target.as_str()
-            && load.idempotency_token == request.idempotency_token.as_str()
-            && load.package_hash == request.package_hash.as_str()
-        {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-pub(super) fn postgres_load_plan_input(
-    request: &ProjectRunRequest<'_>,
-    inputs: &PackageReplayInputs,
-    columns: Vec<PostgresColumn>,
-) -> Result<PostgresLoadPlanInput> {
-    let ProjectRunDestination::Postgres {
-        target,
-        dedup,
-        existing_table,
-        ..
-    } = &request.destination
-    else {
-        return Err(CdfError::internal(
-            "postgres load plan requested for non-Postgres project destination",
-        ));
-    };
-    let descriptor = request.resource.descriptor();
-    Ok(PostgresLoadPlanInput {
-        package_hash: inputs.state_delta.package_hash.clone(),
-        idempotency_token: inputs.destination_commit.idempotency_token.clone(),
-        target: target.clone(),
-        disposition: descriptor.write_disposition.clone(),
-        schema_hash: inputs.schema_hash.clone(),
-        segments: inputs.state_delta.segments.clone(),
-        columns,
-        merge_keys: postgres_merge_keys(descriptor)?,
-        dedup: dedup.clone(),
-        existing_table: existing_table.clone(),
-        resource_id: Some(descriptor.resource_id.clone()),
-        state_delta: Some(inputs.state_delta.clone()),
-    })
-}
-
-pub(super) fn postgres_load_plan_input_from_artifacts(
-    inputs: &PackageReplayInputs,
-    target: PostgresTarget,
-    dedup: MergeDedupPolicy,
-    existing_table: Option<PostgresExistingTable>,
-    columns: Vec<PostgresColumn>,
-) -> Result<PostgresLoadPlanInput> {
-    validate_postgres_replay_target(&target, &inputs.destination_commit.target)?;
-    Ok(PostgresLoadPlanInput {
-        package_hash: inputs.state_delta.package_hash.clone(),
-        idempotency_token: inputs.destination_commit.idempotency_token.clone(),
-        target,
-        disposition: inputs.destination_commit.disposition.clone(),
-        schema_hash: inputs.schema_hash.clone(),
-        segments: inputs.state_delta.segments.clone(),
-        columns,
-        merge_keys: postgres_merge_keys_from_artifacts(&inputs.merge_keys)?,
-        dedup,
-        existing_table,
-        resource_id: Some(inputs.state_delta.resource_id.clone()),
-        state_delta: Some(inputs.state_delta.clone()),
-    })
-}
-
-pub(super) fn validate_postgres_replay_target(
-    target: &PostgresTarget,
-    package_target: &TargetName,
-) -> Result<()> {
-    let explicit = target.display_name();
-    if explicit != package_target.as_str() {
-        return Err(CdfError::contract(format!(
-            "explicit Postgres replay target {explicit} does not match package destination commit target {package_target}"
-        )));
-    }
-    Ok(())
-}
-
-pub(super) fn postgres_merge_keys(
-    descriptor: &ResourceDescriptor,
-) -> Result<Vec<PostgresIdentifier>> {
-    if descriptor.write_disposition != WriteDisposition::Merge {
-        return Ok(Vec::new());
-    }
-    descriptor
-        .merge_key
-        .iter()
-        .map(PostgresIdentifier::user)
-        .collect()
-}
-
-pub(super) fn postgres_merge_keys_from_artifacts(
-    keys: &[String],
-) -> Result<Vec<PostgresIdentifier>> {
-    keys.iter().map(PostgresIdentifier::user).collect()
-}
-
-pub(super) fn postgres_columns_from_schema(
-    resource: &dyn ResourceStream,
-) -> Result<Vec<PostgresColumn>> {
-    postgres_columns_for_schema(resource.schema().as_ref())
-}
-
-pub(super) fn postgres_columns_from_package(reader: &PackageReader) -> Result<Vec<PostgresColumn>> {
-    let segments = reader.read_all_segments()?;
-    let schema = segments
-        .iter()
-        .flat_map(|(_, batches)| batches.iter())
-        .next()
-        .map(|batch| batch.schema())
-        .ok_or_else(|| {
-            CdfError::data("Postgres destination requires at least one package batch")
-        })?;
-    postgres_columns_for_schema(schema.as_ref())
-}
-
-pub(super) fn postgres_target(request: &ProjectRunRequest<'_>) -> Result<TargetName> {
-    match &request.destination {
-        ProjectRunDestination::Postgres { target, .. } => TargetName::new(target.display_name()),
-        _ => Err(CdfError::internal(
-            "postgres target requested for non-Postgres project destination",
-        )),
-    }
 }
 
 pub(super) fn commit_request(

@@ -9,9 +9,9 @@ use cdf_kernel::{
 };
 use cdf_package::{PackageReader, PackageStatus};
 use cdf_project::{
-    InMemoryResourceSourceResolver, LocalFileDuckDbRunReport, LocalFileDuckDbRunRequest,
-    compile_project_declarative_resources_with_root, parse_cdf_toml,
-    run_local_file_to_duckdb_checkpoint,
+    InMemoryResourceSourceResolver, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
+    ResolvedProjectDestination, compile_project_declarative_resources_with_root, parse_cdf_toml,
+    run_project,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -110,7 +110,7 @@ impl LiveLocalFileFixtureSpec {
 #[derive(Clone, Debug)]
 pub struct LiveLocalFileFixture {
     pub spec: LiveLocalFileFixtureSpec,
-    pub report: LocalFileDuckDbRunReport,
+    pub report: ProjectRunReport,
     pub package_evidence: GoldenPackageEvidence,
 }
 
@@ -154,7 +154,7 @@ pub async fn run_live_local_file_fixture(
 pub async fn run_live_local_file_fixture_with_hook(
     spec: LiveLocalFileFixtureSpec,
     after_receipt_verified: Option<cdf_project::ReceiptVerifiedHook<'_>>,
-) -> Result<LocalFileDuckDbRunReport> {
+) -> Result<ProjectRunReport> {
     write_live_fixture_files(&spec.project_root)?;
     fs::create_dir_all(&spec.package_root)
         .map_err(|error| CdfError::data(format!("create package root: {error}")))?;
@@ -193,16 +193,16 @@ pub async fn run_live_local_file_fixture_with_hook(
             ))
         })?;
 
-    run_local_file_to_duckdb_checkpoint(LocalFileDuckDbRunRequest {
-        resource: &resource,
+    run_project(ProjectRunRequest {
+        resource: ProjectRunSource::local_file(&resource),
         plan,
         package_root: spec.package_root,
-        destination_path: spec.destination_path,
         state_store_path: spec.state_store_path,
         pipeline_id: spec.pipeline_id,
-        target: spec.target,
+        destination: ResolvedProjectDestination::duckdb(spec.destination_path, spec.target)?,
         package_id: spec.package_id,
         checkpoint_id: spec.checkpoint_id,
+        run_id: None,
         after_receipt_verified,
     })
     .await

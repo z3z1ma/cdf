@@ -9,7 +9,7 @@ use super::{
         RuntimeStage, RuntimeStageHook,
     },
     prelude::*,
-    receipts::verify_destination_receipt_before_checkpoint,
+    receipts::validate_destination_receipt_before_checkpoint,
     types::*,
 };
 
@@ -117,31 +117,6 @@ pub(super) struct PostgresPackageReplayInputs {
 }
 
 impl PostgresPackageReplayInputs {
-    pub(super) fn from_package_artifacts(
-        request: &ProjectRunRequest<'_>,
-        _reader: &PackageReader,
-        inputs: PackageReplayInputs,
-    ) -> Result<Self> {
-        let ProjectRunDestination::Postgres {
-            target,
-            dedup,
-            existing_table,
-            ..
-        } = &request.destination
-        else {
-            return Err(CdfError::internal(
-                "Postgres replay inputs requested for non-Postgres project destination",
-            ));
-        };
-        validate_postgres_replay_target(target, &inputs.destination_commit.target)?;
-        Ok(Self {
-            inputs,
-            target: target.clone(),
-            dedup: dedup.clone(),
-            existing_table: existing_table.clone(),
-        })
-    }
-
     fn from_explicit_artifact_replay(
         _reader: &PackageReader,
         inputs: PackageReplayInputs,
@@ -596,7 +571,7 @@ where
     };
 
     let package_receipt_recorded = reader.receipts()?.len() > receipts_before;
-    verify_receipt_and_notify(runtime.protocol(), &inputs, &receipt, &hooks)?;
+    verify_receipt_and_notify(runtime, &inputs, &receipt, &hooks)?;
 
     let checkpoint = checkpoint_store.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?;
     let package_status = mark_package_checkpointed_after_commit(&mut reader, &checkpoint, &hooks)?;
@@ -621,7 +596,7 @@ where
     Store: CheckpointStore + ?Sized,
 {
     validate_package_replay_inputs(&reader, &inputs)?;
-    verify_receipt_and_notify(runtime.protocol(), &inputs, &receipt, &hooks)?;
+    verify_receipt_and_notify(runtime, &inputs, &receipt, &hooks)?;
 
     let checkpoint = commit_or_reuse_committed_checkpoint(
         checkpoint_store,
@@ -660,13 +635,13 @@ fn commit_prepared_package_through_session(
 }
 
 fn verify_receipt_and_notify(
-    destination: &dyn DestinationProtocol,
+    runtime: &mut dyn ProjectDestinationRuntime,
     inputs: &PackageReplayInputs,
     receipt: &Receipt,
     hooks: &PackageReplayHooks<'_>,
 ) -> Result<()> {
-    verify_destination_receipt_before_checkpoint(
-        destination,
+    verify_destination_receipt_before_checkpoint_with_runtime(
+        runtime,
         &inputs.state_delta,
         &inputs.destination_commit.target,
         &inputs.destination_commit.disposition,
@@ -678,6 +653,27 @@ fn verify_receipt_and_notify(
     )?;
     if let Some(hook) = hooks.after_receipt_verified {
         hook(receipt)?;
+    }
+    Ok(())
+}
+
+fn verify_destination_receipt_before_checkpoint_with_runtime(
+    runtime: &mut dyn ProjectDestinationRuntime,
+    delta: &StateDelta,
+    target: &TargetName,
+    disposition: &WriteDisposition,
+    receipt: &Receipt,
+) -> Result<()> {
+    validate_destination_receipt_before_checkpoint(delta, target, disposition, receipt)?;
+    let verification = runtime.verify_receipt(receipt)?;
+    if !verification.verified {
+        return Err(CdfError::destination(format!(
+            "destination receipt {} did not verify: {}",
+            verification.receipt_id,
+            verification
+                .reason
+                .unwrap_or_else(|| "verification returned false".to_owned())
+        )));
     }
     Ok(())
 }

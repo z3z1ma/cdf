@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md, .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md
 
@@ -39,6 +39,10 @@ No new resource archetype, no new destination, no resident streaming supervisor,
 
 - 2026-07-07: Opened from Workstream B after caller inventory confirmed CLI run and conformance live-run are external users of the closed run API.
 - 2026-07-08: Unblocked by B2 closure. Run finalization must reuse `.10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md` rather than adding a second destination commit/checkpoint path.
+- 2026-07-08: Activated after B2 closure. Assigned to worker subagent for generic run orchestration, project-owned resource/destination resolution, CLI `run` migration, and conformance live-run migration.
+- 2026-07-08: Replacement worker audited the inherited partial B3 diff, kept the trait-backed run resource/destination path, repaired rustfmt drift, and verified the generic run path through `cdf-project` runtime tests, `cdf-cli` run tests, `cdf-conformance` live-run tests, workspace `cargo check`, and `clippy`.
+- 2026-07-08: Parent tightened and closed the worker diff: removed the old public closed enum names from Rust source, routed CLI destination resolution through the project registry, preserved lazy Parquet validation-before-write behavior, split destination adapters into focused submodules, ran final quality/security checks, and recorded evidence in `.10x/evidence/2026-07-08-p0-b3-generic-project-run-resolution.md`.
+- 2026-07-08: Adversarial review recorded at `.10x/reviews/2026-07-08-p0-b3-generic-project-run-resolution-review.md`; residual wrapper-family deletion remains owned by B4.
 
 ## Blockers
 

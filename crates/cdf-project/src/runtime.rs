@@ -43,7 +43,6 @@ mod prelude {
         any::Any,
         collections::{BTreeMap, BTreeSet},
         fs,
-        marker::PhantomData,
         path::{Component, Path, PathBuf},
     };
 
@@ -63,13 +62,15 @@ mod prelude {
     pub(super) use cdf_engine::{
         EnginePackageDraft, EnginePlan, execute_to_package_with_segment_positions_and_pre_finalize,
     };
+    pub(super) use cdf_http::SecretProvider;
     pub(super) use cdf_kernel::{
         CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
         CheckpointStore, CursorOrderingClaim, CursorPosition, CursorValue,
         DestinationCommitRequest, DestinationId, DestinationProtocol, IdempotencyToken,
-        PackageHash, PipelineId, PlanId, Receipt, ResourceDescriptor, ResourceId, ResourceStream,
-        Result, RunId, SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta,
-        StateSegment, TargetName, WriteDisposition,
+        IncrementalShape, PackageHash, PipelineId, PlanId, QueryableResource, Receipt,
+        ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId,
+        SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment,
+        TargetName, WriteDisposition,
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,

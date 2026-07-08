@@ -1,4 +1,7 @@
-use super::{hooks::ReceiptVerifiedHook, prelude::*, resources::ProjectRunResource};
+use super::{
+    destinations::ResolvedProjectDestination, hooks::ReceiptVerifiedHook, prelude::*,
+    resources::ProjectRunSource,
+};
 
 pub struct PreparedDuckDbReplayRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
@@ -147,65 +150,15 @@ pub struct LocalFileDuckDbRunRequest<'a> {
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
-#[derive(Clone, PartialEq, Eq)]
-pub enum ProjectRunDestination {
-    DuckDb {
-        database_path: PathBuf,
-        target: TargetName,
-    },
-    ParquetFilesystem {
-        root: PathBuf,
-        target: TargetName,
-    },
-    Postgres {
-        database_url: String,
-        target: PostgresTarget,
-        dedup: MergeDedupPolicy,
-        existing_table: Option<PostgresExistingTable>,
-    },
-}
-
-impl std::fmt::Debug for ProjectRunDestination {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::DuckDb {
-                database_path,
-                target,
-            } => f
-                .debug_struct("DuckDb")
-                .field("database_path", database_path)
-                .field("target", target)
-                .finish(),
-            Self::ParquetFilesystem { root, target } => f
-                .debug_struct("ParquetFilesystem")
-                .field("root", root)
-                .field("target", target)
-                .finish(),
-            Self::Postgres {
-                target,
-                dedup,
-                existing_table,
-                ..
-            } => f
-                .debug_struct("Postgres")
-                .field("database_url", &"<redacted>")
-                .field("target", target)
-                .field("dedup", dedup)
-                .field("existing_table", existing_table)
-                .finish(),
-        }
-    }
-}
-
 pub struct ProjectRunRequest<'a> {
-    pub resource: ProjectRunResource<'a>,
+    pub resource: ProjectRunSource<'a>,
     pub plan: EnginePlan,
     pub package_root: PathBuf,
     pub state_store_path: PathBuf,
     pub pipeline_id: PipelineId,
     pub package_id: String,
     pub checkpoint_id: CheckpointId,
-    pub destination: ProjectRunDestination,
+    pub destination: ResolvedProjectDestination,
     pub run_id: Option<RunId>,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }

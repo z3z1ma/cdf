@@ -49,8 +49,8 @@ use crate::{
     PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
     PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
     ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
-    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext,
-    ProjectRunDestination, ProjectRunReport, ProjectRunRequest, ProjectRunResource,
+    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
+    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
     recover_duckdb_package_from_artifacts, recover_package_with_runtime,
     recover_parquet_package_from_artifacts, recover_postgres_package_from_artifacts,
     recover_prepared_duckdb_package, replay_duckdb_package_from_artifacts,
@@ -644,6 +644,14 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
         }
     }
 
+    fn validate_run_preflight(
+        &mut self,
+        _resource: &dyn ResourceStream,
+        _schema_hash: &SchemaHash,
+    ) -> Result<()> {
+        Ok(())
+    }
+
     fn prepare_package_commit(
         &mut self,
         _package_dir: &Path,
@@ -916,17 +924,18 @@ fn project_run_request<'a>(
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
     ProjectRunRequest {
-        resource: ProjectRunResource::LocalFile(resource),
+        resource: ProjectRunSource::local_file(resource),
         plan: live_plan(resource, package_id),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.to_path_buf(),
-            target: TargetName::new("events").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path,
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
         after_receipt_verified: None,
     }
@@ -941,17 +950,18 @@ fn parquet_project_run_request<'a>(
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
     ProjectRunRequest {
-        resource: ProjectRunResource::LocalFile(resource),
+        resource: ProjectRunSource::local_file(resource),
         plan: live_plan(resource, package_id),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
-        destination: ProjectRunDestination::ParquetFilesystem {
-            root: parquet_root.to_path_buf(),
-            target: TargetName::new("events").unwrap(),
-        },
+        destination: ResolvedProjectDestination::parquet_filesystem(
+            parquet_root,
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
         after_receipt_verified: None,
     }
@@ -967,19 +977,20 @@ fn postgres_project_run_request<'a>(
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
     ProjectRunRequest {
-        resource: ProjectRunResource::LocalFile(resource),
+        resource: ProjectRunSource::local_file(resource),
         plan: live_plan(resource, package_id),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
-        destination: ProjectRunDestination::Postgres {
-            database_url: database_url.to_owned(),
+        destination: ResolvedProjectDestination::postgres(
+            database_url.to_owned(),
             target,
-            dedup: MergeDedupPolicy::Last,
-            existing_table: None,
-        },
+            MergeDedupPolicy::Last,
+            None,
+        )
+        .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
         after_receipt_verified: None,
     }
@@ -1313,17 +1324,18 @@ fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTr
     let duckdb_path = root.join(".cdf/dev.duckdb");
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Rest(&resource),
+        resource: ProjectRunSource::rest(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root,
         state_store_path: state_path,
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-runtime").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path,
-            target: TargetName::new("items").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path,
+            TargetName::new("items").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new(run_id).unwrap()),
         after_receipt_verified: None,
     }))
@@ -1992,17 +2004,18 @@ fn general_project_run_rejects_raw_compiled_rest_before_writes() {
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::LocalFile(&rest_resource),
+        resource: ProjectRunSource::local_file(&rest_resource),
         plan: live_plan(&rest_resource, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-rejected").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.clone(),
-            target: TargetName::new("items").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("items").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-rest-rejected").unwrap()),
         after_receipt_verified: None,
     }))
@@ -2030,17 +2043,18 @@ fn general_project_run_rejects_rest_missing_secret_provider_before_writes() {
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Rest(&resource),
+        resource: ProjectRunSource::rest(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-missing-secret").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.clone(),
-            target: TargetName::new("items").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("items").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-rest-missing-secret").unwrap()),
         after_receipt_verified: None,
     }))
@@ -2071,17 +2085,18 @@ fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Rest(&resource),
+        resource: ProjectRunSource::rest(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-missing-secret-value").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.clone(),
-            target: TargetName::new("items").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("items").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-rest-missing-secret-value").unwrap()),
         after_receipt_verified: None,
     }))
@@ -2110,17 +2125,18 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Rest(&resource),
+        resource: ProjectRunSource::rest(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-no-cursor").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.clone(),
-            target: TargetName::new("items").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("items").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-rest-no-cursor").unwrap()),
         after_receipt_verified: None,
     }))
@@ -2164,17 +2180,18 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
     let state_path = temp.path().join(".cdf/state.db");
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Rest(&resource),
+        resource: ProjectRunSource::rest(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-rest-window-close-numeric").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.clone(),
-            target: TargetName::new("items").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("items").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-rest-window-close-numeric").unwrap()),
         after_receipt_verified: None,
     }))
@@ -2202,17 +2219,18 @@ fn general_project_run_rejects_sql_missing_secret_provider_before_writes() {
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Sql(&resource),
+        resource: ProjectRunSource::sql(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-sql-missing-secret").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.clone(),
-            target: TargetName::new("orders").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("orders").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-sql-missing-secret").unwrap()),
         after_receipt_verified: None,
     }))
@@ -2241,17 +2259,18 @@ fn general_project_run_rejects_sql_empty_secret_before_writes() {
     let state_path = temp.path().join(".cdf/state.db");
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Sql(&resource),
+        resource: ProjectRunSource::sql(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-sql-empty-secret").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path.clone(),
-            target: TargetName::new("orders").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path.clone(),
+            TargetName::new("orders").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-sql-empty-secret").unwrap()),
         after_receipt_verified: None,
     }))
@@ -2296,17 +2315,18 @@ fn general_project_run_executes_table_backed_postgres_sql_resource_stream() {
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunResource::Sql(&resource),
+        resource: ProjectRunSource::sql(&resource),
         plan: live_plan(resource.compiled(), package_id),
         package_root,
         state_store_path: state_path,
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-general-sql-runtime").unwrap(),
-        destination: ProjectRunDestination::DuckDb {
-            database_path: duckdb_path,
-            target: TargetName::new("orders").unwrap(),
-        },
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path,
+            TargetName::new("orders").unwrap(),
+        )
+        .unwrap(),
         run_id: Some(RunId::new("run-general-sql-runtime").unwrap()),
         after_receipt_verified: None,
     }))
