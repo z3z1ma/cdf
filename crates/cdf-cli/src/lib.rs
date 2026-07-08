@@ -18,6 +18,7 @@ mod inspect_command;
 mod inspect_run_command;
 mod output;
 mod package_command;
+mod progress;
 mod project_command;
 mod project_run_resource;
 mod render;

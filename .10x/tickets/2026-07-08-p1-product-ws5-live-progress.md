@@ -12,7 +12,7 @@ Subscribe the renderer to the runtime event spine so run, replay, resume, and ba
 
 ## Child tickets
 
-- `.10x/tickets/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
 - `.10x/tickets/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
 - `.10x/tickets/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
 - `.10x/tickets/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
@@ -48,6 +48,7 @@ No new lifecycle events beyond the WS1 event model without updating WS1. No arti
 - 2026-07-08: Shaped `.10x/specs/cli-live-progress.md` and split execution into WS5A-WS5D child tickets. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws5-live-progress-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws5-live-progress-shaping-review.md`.
 - 2026-07-08: WS1A/WS1B/WS1C, WS2C, and WS3B/WS3C are done. WS5A is unblocked for progress sink/renderer foundation; replay/resume/backfill progress remains sequenced with WS1D event convergence and WS3D static rendering.
 - 2026-07-08: WS3D static recovery/state/backfill rendering is done, so later WS5 progress children no longer depend on that rendering slice.
+- 2026-07-08: WS5A progress sink/renderer foundation is done in `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`; evidence is `.10x/evidence/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md` and review is `.10x/reviews/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation-review.md`.
 
 ## Blockers
 

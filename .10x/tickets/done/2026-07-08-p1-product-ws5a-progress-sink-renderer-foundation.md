@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
@@ -31,7 +31,20 @@ Do not wire run/replay/resume/backfill commands end to end except for test doubl
 ## Progress and notes
 
 - 2026-07-08: Split from WS5 after creating `.10x/specs/cli-live-progress.md`.
+- 2026-07-08: Implemented `crates/cdf-cli/src/progress.rs` and registered it in `crates/cdf-cli/src/lib.rs` as a dormant WS5A foundation module.
+- 2026-07-08: Added `CliProgressSink` as a `RunEventSink` implementation using `try_lock` and bounded milestone buffering so progress cannot block runtime event publication. The sink maps run events to plan/extract/validate/package/commit/verify/gate phases, keeps `run_failed` on the current failed phase, records quiet/normal/verbose display modes, redacts `SecretRef` and URI userinfo before display, and renders headless milestone lines or interactive renderer primitives through shared `ProgressConfig`.
+- 2026-07-08: Focused tests cover phase mapping for the full current `RunEventKind` vocabulary, redaction for headless and interactive rendering, nonblocking/backpressure drops, duplicate and out-of-order no-ops, terminal behavior, headless formatting, and quiet/verbose behavior.
+- 2026-07-08: Verification evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`; closure review recorded in `.10x/reviews/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation-review.md`.
+- 2026-07-08: Parent review hardened progress redaction with the shared renderer sensitive-key predicate, preserving the existing focused progress tests and formatter gate.
 
 ## Blockers
 
 None. WS1A, WS2C, and WS3B are done.
+
+## Evidence
+
+- `.10x/evidence/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
+
+## Review
+
+- `.10x/reviews/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation-review.md`

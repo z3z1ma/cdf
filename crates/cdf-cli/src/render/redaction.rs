@@ -29,6 +29,19 @@ pub(crate) fn redact_uri_userinfo(value: impl AsRef<str>) -> String {
     format!("{}{}{}", &value[..authority_start], REDACTED, &value[at..])
 }
 
+pub(crate) fn is_sensitive_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.contains("secret")
+        || key.contains("token")
+        || key.contains("password")
+        || key.contains("credential")
+        || key.contains("authorization")
+        || key.contains("api_key")
+        || key.contains("apikey")
+        || key.contains("connection_string")
+        || key.contains("dsn")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
