@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
@@ -32,6 +32,10 @@ Do not implement CLI progress rendering, tracing bridge, OTLP export, or new lif
 ## Progress and notes
 
 - 2026-07-08: Split from WS1 after WS1A closed. WS1A intentionally emitted to the optional sink after ledger append; this child makes the subscriber architecture explicit while preserving the durable-ledger authority.
+- 2026-07-08: Worker started implementation on `main`. Inspected governing specs, WS1A ticket/evidence/review, `QUALITY.md`, `crates/cdf-kernel/src/run_event.rs`, and `crates/cdf-project/src/runtime/**`; unrelated dirty WASM records are present and out of scope.
+- 2026-07-08: Implemented internal `RunEventFanout` with mandatory durable SQLite subscriber and non-authoritative live subscribers. `ProjectRunRecorder` now publishes through the fanout boundary, preserving durable append before live emission.
+- 2026-07-08: Upgraded focused runtime tests for persisted-before-live delivery, all-dropped sink stress, durable append failure preventing live emission, redaction-before-emit, and artifact identity assertions.
+- 2026-07-08: Closure evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture-review.md`.
 
 ## Blockers
 

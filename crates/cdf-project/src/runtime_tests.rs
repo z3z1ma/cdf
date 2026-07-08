@@ -101,6 +101,7 @@ schema = { fields = [
 
 struct RecordingRunEventSink {
     capacity: Option<usize>,
+    persisted_state_path: Option<PathBuf>,
     events: Mutex<Vec<RunEvent>>,
     drops: AtomicU64,
 }
@@ -109,6 +110,7 @@ impl RecordingRunEventSink {
     fn unbounded() -> Self {
         Self {
             capacity: None,
+            persisted_state_path: None,
             events: Mutex::new(Vec::new()),
             drops: AtomicU64::new(0),
         }
@@ -117,8 +119,16 @@ impl RecordingRunEventSink {
     fn bounded(capacity: usize) -> Self {
         Self {
             capacity: Some(capacity),
+            persisted_state_path: None,
             events: Mutex::new(Vec::new()),
             drops: AtomicU64::new(0),
+        }
+    }
+
+    fn unbounded_with_persistence_check(state_path: &Path) -> Self {
+        Self {
+            persisted_state_path: Some(state_path.to_path_buf()),
+            ..Self::unbounded()
         }
     }
 
@@ -140,6 +150,11 @@ impl RunEventSink for RecordingRunEventSink {
         {
             self.drops.fetch_add(1, Ordering::SeqCst);
             return RunEventSinkResult::Dropped;
+        }
+        if let Some(state_path) = &self.persisted_state_path {
+            let ledger = SqliteRunLedger::open(state_path).unwrap();
+            let persisted = ledger.events(&event.run_id).unwrap();
+            assert_eq!(persisted.last(), Some(event));
         }
         events.push(event.clone());
         RunEventSinkResult::Accepted
@@ -1349,6 +1364,17 @@ fn project_run_request_with_policy<'a>(
     request
 }
 
+fn assert_run_artifact_identity_unchanged(report: &ProjectRunReport) {
+    let reader = PackageReader::open(&report.package_dir).unwrap();
+    assert_eq!(
+        PackageHash::new(reader.manifest().package_hash.clone()).unwrap(),
+        report.package_hash
+    );
+    assert_eq!(report.receipt.package_hash, report.package_hash);
+    assert_eq!(report.checkpoint.delta.package_hash, report.package_hash);
+    assert_eq!(reader.manifest().lifecycle.status, report.package_status);
+}
+
 fn parquet_project_run_request<'a>(
     resource: &'a cdf_declarative::CompiledResource,
     package_id: &str,
@@ -1879,7 +1905,7 @@ fn general_project_run_live_sink_events_match_persisted_ledger_order() {
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
-    let sink = RecordingRunEventSink::unbounded();
+    let sink = RecordingRunEventSink::unbounded_with_persistence_check(&state_path);
     let mut request = project_run_request(
         &resource,
         package_id,
@@ -1908,6 +1934,7 @@ fn general_project_run_live_sink_events_match_persisted_ledger_order() {
     );
     let ledger = SqliteRunLedger::open(&state_path).unwrap();
     assert_eq!(ledger.events(&report.run_id).unwrap(), live_events);
+    assert_run_artifact_identity_unchanged(&report);
     assert_eq!(report.package_status, PackageStatus::Checkpointed);
     assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
     assert!(
@@ -1927,7 +1954,7 @@ fn general_project_run_live_sink_drops_do_not_fail_run_or_truncate_ledger() {
     let package_root = temp.path().join(".cdf/packages");
     let duckdb_path = temp.path().join(".cdf/dev.duckdb");
     let state_path = temp.path().join(".cdf/state.db");
-    let sink = RecordingRunEventSink::bounded(1);
+    let sink = RecordingRunEventSink::bounded(0);
     let mut request = project_run_request(
         &resource,
         package_id,
@@ -1941,11 +1968,10 @@ fn general_project_run_live_sink_drops_do_not_fail_run_or_truncate_ledger() {
     let report = futures_executor::block_on(run_project(request)).unwrap();
 
     let live_events = sink.events();
-    assert_eq!(live_events.len(), 1);
-    assert_eq!(live_events[0], report.ledger_snapshot.events[0]);
+    assert!(live_events.is_empty());
     assert_eq!(
         sink.drop_count(),
-        u64::try_from(report.ledger_snapshot.events.len() - live_events.len()).unwrap()
+        u64::try_from(report.ledger_snapshot.events.len()).unwrap()
     );
     let ledger = SqliteRunLedger::open(&state_path).unwrap();
     assert_eq!(
@@ -1973,6 +1999,7 @@ fn general_project_run_live_sink_drops_do_not_fail_run_or_truncate_ledger() {
             RunEventKind::RunSucceeded,
         ]
     );
+    assert_run_artifact_identity_unchanged(&report);
     assert_eq!(report.package_status, PackageStatus::Checkpointed);
     assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
     assert_eq!(report.row_count, 2);

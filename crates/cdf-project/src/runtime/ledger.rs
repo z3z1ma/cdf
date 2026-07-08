@@ -21,10 +21,9 @@ pub(super) struct ProjectRunRecorderContext {
 }
 
 pub(super) struct ProjectRunRecorder<'a> {
-    pub(super) ledger: &'a SqliteRunLedger,
+    pub(super) events: RunEventFanout<'a>,
     pub(super) run_id: RunId,
     pub(super) context: ProjectRunRecorderContext,
-    pub(super) event_sink: Option<&'a dyn RunEventSink>,
 }
 
 impl<'a> ProjectRunRecorder<'a> {
@@ -35,10 +34,9 @@ impl<'a> ProjectRunRecorder<'a> {
         event_sink: Option<&'a dyn RunEventSink>,
     ) -> Self {
         Self {
-            ledger,
+            events: RunEventFanout::new(ledger, event_sink),
             run_id,
             context,
-            event_sink,
         }
     }
 
@@ -146,7 +144,7 @@ impl<'a> ProjectRunRecorder<'a> {
     }
 
     pub(super) fn snapshot(&self) -> Result<RunLedgerSnapshot> {
-        self.ledger.snapshot(&self.run_id)?.ok_or_else(|| {
+        self.events.durable.snapshot(&self.run_id)?.ok_or_else(|| {
             CdfError::internal(format!(
                 "run {} disappeared from the run ledger",
                 self.run_id
@@ -167,11 +165,60 @@ impl<'a> ProjectRunRecorder<'a> {
     }
 
     fn append(&self, event: RunEventAppend) -> Result<()> {
-        let stored = self.ledger.append_event(&self.run_id, event)?;
-        if let Some(event_sink) = self.event_sink {
-            let _ = event_sink.try_emit(&stored);
-        }
+        self.events.publish(&self.run_id, event)?;
         Ok(())
+    }
+}
+
+pub(super) struct RunEventFanout<'a> {
+    durable: DurableRunLedgerSubscriber<'a>,
+    live: LiveRunEventSubscribers<'a>,
+}
+
+impl<'a> RunEventFanout<'a> {
+    fn new(ledger: &'a SqliteRunLedger, event_sink: Option<&'a dyn RunEventSink>) -> Self {
+        Self {
+            durable: DurableRunLedgerSubscriber { ledger },
+            live: LiveRunEventSubscribers::new(event_sink),
+        }
+    }
+
+    fn publish(&self, run_id: &RunId, event: RunEventAppend) -> Result<()> {
+        let stored = self.durable.append(run_id, event)?;
+        self.live.publish(&stored);
+        Ok(())
+    }
+}
+
+struct DurableRunLedgerSubscriber<'a> {
+    ledger: &'a SqliteRunLedger,
+}
+
+impl DurableRunLedgerSubscriber<'_> {
+    fn append(&self, run_id: &RunId, event: RunEventAppend) -> Result<cdf_kernel::RunEvent> {
+        self.ledger.append_event(run_id, event)
+    }
+
+    fn snapshot(&self, run_id: &RunId) -> Result<Option<RunLedgerSnapshot>> {
+        self.ledger.snapshot(run_id)
+    }
+}
+
+struct LiveRunEventSubscribers<'a> {
+    subscribers: Vec<&'a dyn RunEventSink>,
+}
+
+impl<'a> LiveRunEventSubscribers<'a> {
+    fn new(event_sink: Option<&'a dyn RunEventSink>) -> Self {
+        Self {
+            subscribers: event_sink.into_iter().collect(),
+        }
+    }
+
+    fn publish(&self, stored: &cdf_kernel::RunEvent) {
+        for subscriber in &self.subscribers {
+            let _ = subscriber.try_emit(stored);
+        }
     }
 }
 
@@ -358,5 +405,32 @@ mod tests {
             live_events[0].details.attributes.get("token"),
             Some(RunEventValue::SecretRef(_))
         ));
+    }
+
+    #[test]
+    fn project_run_recorder_does_not_emit_when_durable_ledger_append_fails() {
+        let ledger = SqliteRunLedger::open_in_memory().unwrap();
+        let run_id = RunId::new("run-recorder-missing-ledger-run").unwrap();
+        let sink = RecordingSink::new();
+        let recorder = ProjectRunRecorder::new(
+            &ledger,
+            run_id.clone(),
+            ProjectRunRecorderContext {
+                resource_id: ResourceId::new("local.events").unwrap(),
+                scope: ScopeKey::Resource,
+                package_id: "pkg-recorder-missing-ledger-run".to_owned(),
+                package_path: "pkg-recorder-missing-ledger-run".to_owned(),
+                destination_id: DestinationId::new("duckdb").unwrap(),
+                plan_id: PlanId::new("plan-recorder-missing-ledger-run").unwrap(),
+                pipeline_id: PipelineId::new("pipeline-recorder-missing-ledger-run").unwrap(),
+            },
+            Some(&sink),
+        );
+
+        let error = recorder.append_run_started().unwrap_err();
+
+        assert!(error.to_string().contains("does not exist"));
+        assert!(sink.events().is_empty());
+        assert!(ledger.events(&run_id).unwrap().is_empty());
     }
 }

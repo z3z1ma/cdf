@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
-Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md
+Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md
 
 # P1 product WS1C: Event lifecycle and payload breadth
 

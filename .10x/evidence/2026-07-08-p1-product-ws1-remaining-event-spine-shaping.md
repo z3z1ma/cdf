@@ -24,7 +24,7 @@ Source inspection found the current event definitions in `crates/cdf-kernel/src/
 Read the WS1 parent, WS1A done ticket, WS1A evidence/review, event source files, and replay/resume/backfill command entry points. Then wrote:
 
 - `.10x/specs/runtime-event-spine.md`
-- `.10x/tickets/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1e-tracing-bridge.md`
