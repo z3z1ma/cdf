@@ -435,6 +435,51 @@ fn contract_exec_writes_redacted_quarantine_artifact_and_keeps_accepted_rows() {
         "sha256:0a08d503e0f6794940fd8e6a1f547999622742616551894946ba6dc0489cf184"
     );
 
+    let files = reader
+        .manifest()
+        .identity
+        .files
+        .iter()
+        .map(|file| file.path.as_str())
+        .collect::<Vec<_>>();
+    assert!(files.contains(&"stats/verdict-summary.json"));
+    assert!(files.contains(&"stats/quarantine-summary.json"));
+
+    let verdict_summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("stats/verdict-summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(verdict_summary["input_rows"], 2);
+    assert_eq!(verdict_summary["accepted_rows"], 1);
+    assert_eq!(verdict_summary["quarantined_rows"], 1);
+    assert_eq!(verdict_summary["violation_count"], 1);
+    assert_eq!(verdict_summary["quarantine_candidate_count"], 1);
+    assert!(
+        verdict_summary["rule_summaries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|summary| summary
+                == &serde_json::json!({
+                    "rule_id": "row-rule-0000-regex",
+                    "error_code": "regex_violation",
+                    "checked_rows": 2,
+                    "violation_count": 1
+                }))
+    );
+
+    let quarantine_summary: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("stats/quarantine-summary.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(quarantine_summary["quarantined_rows"], 1);
+    assert_eq!(quarantine_summary["quarantine_candidate_count"], 1);
+    assert_eq!(quarantine_summary["artifact_count"], 1);
+    assert_eq!(
+        quarantine_summary["artifacts"],
+        serde_json::json!(["quarantine/part-000001.parquet"])
+    );
+
     let quarantine_path = temp.path().join("quarantine/part-000001.parquet");
     let artifact = std::fs::read(quarantine_path).unwrap();
     assert!(!String::from_utf8_lossy(&artifact).contains(raw_pii));

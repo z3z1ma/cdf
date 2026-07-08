@@ -7,7 +7,7 @@ use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, ValidationProgram,
+    ContractEvaluationContext, QuarantineCandidate, ValidationProgram, VerdictSummary,
     evaluate_package_order_dedup, evaluate_record_batch,
 };
 use cdf_kernel::{
@@ -53,6 +53,7 @@ struct ExecutionTraceContext {
 struct ContractExecOutput {
     accepted: RecordBatch,
     quarantine_records: Vec<QuarantineRecord>,
+    summary: VerdictSummary,
 }
 
 struct PendingDedupBatch {
@@ -66,6 +67,14 @@ struct OutputWriteState<'a> {
     segments: &'a mut Vec<cdf_package::SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     output_schema: &'a mut Option<SchemaArtifact>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct QuarantineSummaryArtifact {
+    quarantined_rows: u64,
+    quarantine_candidate_count: u64,
+    artifact_count: u64,
+    artifacts: Vec<String>,
 }
 
 impl ExecutionTraceContext {
@@ -161,9 +170,11 @@ where
     }
 
     let mut profile = ExecutionProfile::default();
+    let mut verdict_summary = VerdictSummary::default();
     let mut lineage = LineageSummary::default();
     let mut segments = Vec::new();
     let mut segment_positions = Vec::new();
+    let mut quarantine_artifacts = Vec::new();
     let mut quarantine_part_count = 0_usize;
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = None;
@@ -203,16 +214,19 @@ where
                 let evaluation_context = package_evaluation_context
                     .clone()
                     .with_source_position(batch.header.source_position.clone());
-                let contract =
-                    apply_contract_exec(output, &plan.validation_program, &evaluation_context)?;
-                if !contract.quarantine_records.is_empty() {
+                let ContractExecOutput {
+                    accepted,
+                    quarantine_records,
+                    summary,
+                } = apply_contract_exec(output, &plan.validation_program, &evaluation_context)?;
+                merge_verdict_summary(&mut verdict_summary, summary);
+                if !quarantine_records.is_empty() {
                     quarantine_part_count += 1;
-                    builder.write_quarantine_records(
-                        format!("part-{quarantine_part_count:06}.parquet"),
-                        &contract.quarantine_records,
-                    )?;
+                    let file_name = format!("part-{quarantine_part_count:06}.parquet");
+                    builder.write_quarantine_records(&file_name, &quarantine_records)?;
+                    quarantine_artifacts.push(format!("quarantine/{file_name}"));
                 }
-                let output = contract.accepted;
+                let output = accepted;
                 if output.num_rows() == 0 {
                     continue;
                 }
@@ -269,6 +283,23 @@ where
         "profile.json",
         &cdf_package::canonical_json_bytes(&profile)?,
     )?;
+    if verdict_summary.violation_count > 0 || verdict_summary.quarantine_candidate_count > 0 {
+        builder.write_stats_artifact(
+            "verdict-summary.json",
+            &cdf_package::canonical_json_bytes(&verdict_summary)?,
+        )?;
+    }
+    if verdict_summary.quarantine_candidate_count > 0 {
+        builder.write_stats_artifact(
+            "quarantine-summary.json",
+            &cdf_package::canonical_json_bytes(&QuarantineSummaryArtifact {
+                quarantined_rows: verdict_summary.quarantined_rows,
+                quarantine_candidate_count: verdict_summary.quarantine_candidate_count,
+                artifact_count: quarantine_artifacts.len() as u64,
+                artifacts: quarantine_artifacts,
+            })?,
+        )?;
+    }
     builder.write_lineage_artifact(
         "lineage.json",
         &cdf_package::canonical_json_bytes(&lineage)?,
@@ -322,6 +353,25 @@ fn apply_dedup_and_write_pending_batches(
         write_output_batch(builder, program, output, pending.output_position, state)?;
     }
     Ok(())
+}
+
+fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {
+    total.input_rows += batch.input_rows;
+    total.accepted_rows += batch.accepted_rows;
+    total.quarantined_rows += batch.quarantined_rows;
+    total.violation_count += batch.violation_count;
+    total.quarantine_candidate_count += batch.quarantine_candidate_count;
+
+    for rule in batch.rule_summaries {
+        if let Some(existing) = total.rule_summaries.iter_mut().find(|existing| {
+            existing.rule_id == rule.rule_id && existing.error_code == rule.error_code
+        }) {
+            existing.checked_rows += rule.checked_rows;
+            existing.violation_count += rule.violation_count;
+        } else {
+            total.rule_summaries.push(rule);
+        }
+    }
 }
 
 fn write_output_batch(
@@ -411,8 +461,9 @@ fn apply_contract_exec(
     context: &ContractEvaluationContext,
 ) -> Result<ContractExecOutput> {
     let evaluation = evaluate_record_batch(program, context, &batch)?;
+    let summary = evaluation.summary;
     let quarantine_records = quarantine_records_from_candidates(evaluation.quarantine_candidates)?;
-    let accepted = if evaluation.summary.accepted_rows == evaluation.summary.input_rows {
+    let accepted = if summary.accepted_rows == summary.input_rows {
         batch
     } else {
         filter_record_batch(&batch, &evaluation.accepted_rows).map_err(CdfError::from)?
@@ -420,6 +471,7 @@ fn apply_contract_exec(
     Ok(ContractExecOutput {
         accepted,
         quarantine_records,
+        summary,
     })
 }
 

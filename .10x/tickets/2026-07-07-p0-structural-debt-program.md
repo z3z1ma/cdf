@@ -73,7 +73,8 @@ No implementation is authorized by this parent directly. No new warehouse/lakeho
 - 2026-07-08: Activated Workstream E graph. P1 contract-depth parent `.10x/tickets/2026-07-08-p1-contract-depth-program.md`, ordered children E1-E6, and decision `.10x/decisions/contract-live-verdict-execution-semantics.md` are open; implementation has not started yet.
 - 2026-07-08: Closed Workstream F at `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md` with private `crates/cdf-benchmarks`, deterministic fixture specs, smoke/full/postgres Criterion suites, JSONL trend recording, scoped cargo-vet exemptions for benchmark-only dependencies, baseline evidence in `.10x/evidence/2026-07-08-p0-workstream-f-benchmark-gate.md`, and review in `.10x/reviews/2026-07-08-p0-workstream-f-benchmark-gate-review.md`. The broader P0 program remains active because Workstream E is not closed.
 - 2026-07-08: Closed P1 E5 at `.10x/tickets/done/2026-07-08-p1-e5-trust-ring-ledger-events.md` with explicit anomaly-fact demotion semantics ratified by `.10x/decisions/contract-anomaly-signal-demotion-policy.md`, closure evidence in `.10x/evidence/2026-07-08-p1-e5-trust-ledger-events.md`, and review in `.10x/reviews/2026-07-08-p1-e5-trust-ledger-events-review.md`. The broader P0 program remains active because Workstream E still requires E6 drift-quarantine conformance.
+- 2026-07-08: E6 is partially implemented but blocked on literal source scalar type-drift quarantine. The missing lower-layer seam is ratified by `.10x/decisions/source-decode-type-drift-quarantine.md` and owned by `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md`; P0 remains active.
 
 ## Blockers
 
-None for the P0 parent. Child tickets own their own API decisions, implementation, evidence, and review.
+Blocked on P0 Workstream E: `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md` must close before E6, Workstream E, and this parent can close.

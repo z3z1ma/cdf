@@ -52,7 +52,8 @@ No public performance claim, no speculative trust UI, no schema-on-read replacem
 - 2026-07-07: Read-only subagent inventory found `SchemaSource::Contract` currently rejected by project runtime and `apply_contract_exec` enforcing column coverage rather than row verdict/quarantine routing.
 - 2026-07-08: Activated after P0 Workstream C closure. Opened P1 parent `.10x/tickets/2026-07-08-p1-contract-depth-program.md`, ordered children E1-E6, and API/semantics decision `.10x/decisions/contract-live-verdict-execution-semantics.md`. No implementation has started in this graph-shaping slice.
 - 2026-07-08: P1 E1-E5 are closed. Contract live path now has row verdicts, quarantine routing/redaction, deterministic pre-merge dedup, `_cdf_variant` capture with package contract-evolution evidence, and trust-ring promotion/demotion ledger events including explicit anomaly-fact demotion. E6 drift-quarantine conformance remains before Workstream E can close.
+- 2026-07-08: E6 partial work added package verdict/quarantine summary artifacts and row-rule/domain drift conformance coverage, but literal source scalar type-drift quarantine is blocked by the missing pre-contract decoder quarantine seam. The seam is ratified by `.10x/decisions/source-decode-type-drift-quarantine.md` and owned by `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md`.
 
 ## Blockers
 
-None for opening the P1 contract-depth program. Individual child tickets must not implement unratified contract semantics beyond the behavior specified here and in active specs.
+Blocked on `.10x/tickets/2026-07-08-source-decode-type-drift-quarantine-seam.md` before Workstream E can close.
