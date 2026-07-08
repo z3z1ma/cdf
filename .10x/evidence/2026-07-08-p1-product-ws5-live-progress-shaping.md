@@ -23,7 +23,7 @@ Read the WS5 parent, WS1A done ticket, renderer decision, run event source, proj
 
 - `.10x/specs/cli-live-progress.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
-- `.10x/tickets/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
 - `.10x/tickets/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
 - `.10x/tickets/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
 
