@@ -41,8 +41,9 @@ No live progress implementation except renderer primitives; WS5 owns event consu
 - 2026-07-08: Opened from P1 product directive. This workstream is the quality bar for the CLI face of the system.
 - 2026-07-08: Split decision child `.10x/tickets/done/2026-07-08-p1-product-ws3a-cli-design-language-decision.md` before renderer implementation.
 - 2026-07-08: Active renderer/design-language decision recorded in `.10x/decisions/cli-design-language-and-renderer.md`; implementation children split as WS3B renderer foundation, WS3C plan/run/replay rendering, WS3D recovery/state/backfill rendering, and WS3E remaining rendering migration gate.
-- 2026-07-08: WS3B renderer foundation closed at `.10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md`. WS3C plan/run/replay rendering closed at `.10x/tickets/done/2026-07-08-p1-product-ws3c-plan-run-rendering.md`; plan/explain next commands preserve explicit `--to` destinations without user-minted package/checkpoint identifiers. WS3D is active for recovery/state/backfill rendering.
+- 2026-07-08: WS3B renderer foundation closed at `.10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md`. WS3C plan/run/replay rendering closed at `.10x/tickets/done/2026-07-08-p1-product-ws3c-plan-run-rendering.md`; plan/explain next commands preserve explicit `--to` destinations without user-minted package/checkpoint identifiers.
+- 2026-07-08: WS3D recovery/state/backfill rendering closed at `.10x/tickets/done/2026-07-08-p1-product-ws3d-recovery-state-backfill-rendering.md`. WS3E remaining rendering migration gate closed at `.10x/tickets/done/2026-07-08-p1-product-ws3e-remaining-rendering-migration-gate.md`; parent closure still needs aggregate evidence/review before moving this workstream to done.
 
 ## Blockers
 
-None. The design-language decision and renderer foundation have landed; remaining implementation is owned by WS3D and WS3E.
+None for remaining child execution. Parent closure still needs aggregate evidence/review and coverage-matrix reconciliation.

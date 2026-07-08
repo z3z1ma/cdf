@@ -93,31 +93,35 @@ pub struct CommandOutput {
 
 #[derive(Clone, Debug)]
 pub(crate) enum HumanOutput {
-    Plain(String),
-    #[allow(dead_code)]
-    // 10x: renderer hook is exercised by WS3B tests before command-family migration tickets use it.
     Rendered(RenderDocument),
 }
 
 impl HumanOutput {
     fn render(self, config: &RenderConfig) -> String {
         match self {
-            Self::Plain(text) => text,
             Self::Rendered(document) => document.render(config),
         }
     }
 }
 
 impl CommandOutput {
-    #[allow(dead_code)] // 10x: WS3B installs the typed renderer output hook; WS3C/WS3D adopt it by command family.
     pub(crate) fn rendered<T: Serialize>(
         command: &'static str,
         document: RenderDocument,
         value: T,
     ) -> Result<Self, CliError> {
+        Self::rendered_with_exit_code(command, document, value, 0)
+    }
+
+    pub(crate) fn rendered_with_exit_code<T: Serialize>(
+        command: &'static str,
+        document: RenderDocument,
+        value: T,
+        exit_code: i32,
+    ) -> Result<Self, CliError> {
         Ok(Self {
             command,
-            exit_code: 0,
+            exit_code,
             human: HumanOutput::Rendered(document),
             json: serde_json::to_value(value)
                 .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?,

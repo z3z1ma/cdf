@@ -15,13 +15,14 @@ use serde::Serialize;
 
 use crate::{
     args::{Cli, ScanArgs},
-    commands::{json_cli_error, output},
+    commands::json_cli_error,
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_selected_destination},
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
+        humanize::{humanize_bytes, humanize_rows},
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
@@ -55,14 +56,7 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
     let resource = context.resource(&args.resource_id)?;
     let plan = build_engine_plan(&context, &args)?;
     match preview_one_batch(&context, resource, &plan) {
-        Ok(report) => output(
-            "preview",
-            format!(
-                "previewed resource {}: {} row(s), {} byte(s); wrote no package, destination data, or checkpoint",
-                report.resource_id, report.row_count, report.byte_count
-            ),
-            report,
-        ),
+        Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported(
             "preview",
             error.message,
@@ -484,6 +478,33 @@ fn next_run_command(resource_id: &str, target: &str, destination_uri: Option<&st
         command.push_str(&safe_display_value(destination_uri));
     }
     command
+}
+
+fn preview_document(report: &PreviewReport) -> RenderDocument {
+    RenderDocument::new()
+        .push(SectionRule::new())
+        .push(StatusLine::new(
+            StatusKind::Success,
+            format!("previewed resource {}", report.resource_id),
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Preview")
+                .row("resource", report.resource.clone())
+                .row("partition", report.partition.clone())
+                .row("batch", report.batch.clone())
+                .row("rows", humanize_rows(report.row_count))
+                .row("bytes", humanize_bytes(report.byte_count)),
+        )
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Writes")
+                .row("package", yes_no(report.writes.package()))
+                .row("destination", yes_no(report.writes.destination()))
+                .row("checkpoint", yes_no(report.writes.checkpoint())),
+        )
+        .blank_line()
+        .push(NextCommand::new(format!("cdf plan {}", report.resource_id)))
 }
 
 #[cfg(test)]

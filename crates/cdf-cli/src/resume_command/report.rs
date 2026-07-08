@@ -2,9 +2,8 @@ use cdf_kernel::{Checkpoint, CheckpointStatus, Receipt};
 use serde::Serialize;
 
 use crate::{
-    commands::json_cli_error,
     context::ProjectContext,
-    output::{CliError, CommandOutput, HumanOutput},
+    output::{CliError, CommandOutput},
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
@@ -17,12 +16,7 @@ use super::model::ResumePackageFacts;
 pub(super) fn finish_resume_report(report: ResumeReport) -> Result<CommandOutput, CliError> {
     let exit_code = report.exit_code();
     let document = report.render_document();
-    Ok(CommandOutput {
-        command: "resume",
-        exit_code,
-        human: HumanOutput::Rendered(document),
-        json: serde_json::to_value(report).map_err(json_cli_error)?,
-    })
+    CommandOutput::rendered_with_exit_code("resume", document, report, exit_code)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

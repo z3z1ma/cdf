@@ -29,6 +29,10 @@ impl RenderDocument {
         self
     }
 
+    pub(crate) fn text(text: impl Into<String>) -> Self {
+        Self::new().push(TextBlock::new(text))
+    }
+
     pub(crate) fn render(&self, config: &RenderConfig) -> String {
         let mut output = String::new();
         for block in &self.blocks {
@@ -45,6 +49,7 @@ pub(crate) enum Block {
     Table(Table),
     SectionRule(SectionRule),
     NextCommand(NextCommand),
+    TextBlock(TextBlock),
     BlankLine,
 }
 
@@ -56,6 +61,7 @@ impl Block {
             Self::Table(table) => table.render(config),
             Self::SectionRule(rule) => rule.render(config),
             Self::NextCommand(command) => command.render(config),
+            Self::TextBlock(text) => text.render(config),
             Self::BlankLine => "\n".to_owned(),
         }
     }
@@ -88,6 +94,29 @@ impl From<SectionRule> for Block {
 impl From<NextCommand> for Block {
     fn from(value: NextCommand) -> Self {
         Self::NextCommand(value)
+    }
+}
+
+impl From<TextBlock> for Block {
+    fn from(value: TextBlock) -> Self {
+        Self::TextBlock(value)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct TextBlock {
+    text: String,
+}
+
+impl TextBlock {
+    pub(crate) fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+impl RenderPrimitive for TextBlock {
+    fn render(&self, _config: &RenderConfig) -> String {
+        self.text.clone()
     }
 }
 
@@ -221,7 +250,28 @@ impl Table {
         }
     }
 
+    pub(crate) fn from_headers(headers: impl IntoIterator<Item = impl Into<String>>) -> Self {
+        Self {
+            headers: headers.into_iter().map(Into::into).collect(),
+            rows: Vec::new(),
+        }
+    }
+
     pub(crate) fn row<const N: usize>(mut self, values: [impl Into<String>; N]) -> Self {
+        let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
+        assert_eq!(
+            values.len(),
+            self.headers.len(),
+            "renderer table row width must match header width"
+        );
+        self.rows.push(values);
+        self
+    }
+
+    pub(crate) fn row_values(
+        mut self,
+        values: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
         assert_eq!(
             values.len(),

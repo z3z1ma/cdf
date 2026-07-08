@@ -676,6 +676,18 @@ impl WriteEffects {
             checkpoint: true,
         }
     }
+
+    pub(crate) fn package(&self) -> bool {
+        self.package
+    }
+
+    pub(crate) fn destination(&self) -> bool {
+        self.destination
+    }
+
+    pub(crate) fn checkpoint(&self) -> bool {
+        self.checkpoint
+    }
 }
 
 #[cfg(test)]

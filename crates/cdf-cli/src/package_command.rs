@@ -8,13 +8,17 @@ use cdf_kernel::{CdfError, PackageHash};
 use cdf_package::{MANIFEST_FILE, PackageReader, PackageStatus};
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
-use serde_json::json;
 
 use crate::{
     args::{Cli, PackageArchiveArgs, PackageCommand},
-    commands::output,
     context::ProjectContext,
     output::{CliError, CommandOutput},
+    render::{
+        RenderDocument,
+        humanize::humanize_bytes,
+        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        redaction::redact_uri_userinfo,
+    },
 };
 
 pub(crate) fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutput, CliError> {
@@ -27,45 +31,24 @@ pub(crate) fn package(cli: &Cli, command: PackageCommand) -> Result<CommandOutpu
                 }
             };
             let packages = list_packages(root)?;
-            output(
-                "package ls",
-                format!("{} package(s)", packages.len()),
-                json!({ "packages": packages }),
-            )
+            let report = PackageListReport {
+                packages: packages.clone(),
+            };
+            CommandOutput::rendered("package ls", report.render_document(), packages)
         }
         PackageCommand::Gc { packages_dir } => {
             let report = package_gc_plan(cli, packages_dir)?;
-            output(
-                "package gc",
-                format!(
-                    "planned package gc for {}: dry-run, {} artifact(s), {} collectible, {} protected, {} corrupt, {} missing",
-                    report.package_root,
-                    report.artifacts.len(),
-                    report.counts.collectible,
-                    report.counts.protected,
-                    report.counts.corrupt,
-                    report.counts.missing
-                ),
-                report,
-            )
+            CommandOutput::rendered("package gc", report.render_document(), report)
         }
         PackageCommand::Verify { package_dir } => {
             let reader = PackageReader::open(&package_dir)?;
             let report = reader.verify()?;
-            output(
-                "package verify",
-                format!(
-                    "verified package {}: {} file(s), {} archive segment(s)",
-                    report.package_hash,
-                    report.checked_files.len(),
-                    report.checked_archives.len()
-                ),
-                PackageVerifyReport {
-                    package_hash: report.package_hash,
-                    checked_files: report.checked_files,
-                    checked_archives: report.checked_archives,
-                },
-            )
+            let cli_report = PackageVerifyReport {
+                package_hash: report.package_hash,
+                checked_files: report.checked_files,
+                checked_archives: report.checked_archives,
+            };
+            CommandOutput::rendered("package verify", cli_report.render_document(), cli_report)
         }
         PackageCommand::Archive(args) => package_archive(args),
     }
@@ -283,25 +266,19 @@ fn package_archive(args: PackageArchiveArgs) -> Result<CommandOutput, CliError> 
         .iter()
         .map(|segment| segment.archive_byte_count)
         .sum::<u64>();
-    output(
+    let cli_report = PackageArchiveCliReport {
+        command: "package archive",
+        package_hash: report.package_hash,
+        format: report.format,
+        status: report.status,
+        fidelity_report_path: report.fidelity_report_path,
+        fidelity_statement: report.fidelity_statement,
+        segments: report.segments,
+    };
+    CommandOutput::rendered(
         "package archive",
-        format!(
-            "archived package {} as parquet: status {}, {} segment(s), {} byte(s), fidelity {}",
-            report.package_hash,
-            package_archive_status(&report.status),
-            report.segments.len(),
-            archive_byte_count,
-            report.fidelity_report_path
-        ),
-        PackageArchiveCliReport {
-            command: "package archive",
-            package_hash: report.package_hash,
-            format: report.format,
-            status: report.status,
-            fidelity_report_path: report.fidelity_report_path,
-            fidelity_statement: report.fidelity_statement,
-            segments: report.segments,
-        },
+        cli_report.render_document(archive_byte_count),
+        cli_report,
     )
 }
 
@@ -336,6 +313,48 @@ fn sorted_child_entries(root: &Path) -> Result<Vec<fs::DirEntry>, CliError> {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct PackageListReport {
+    packages: Vec<PackageListEntry>,
+}
+
+impl PackageListReport {
+    fn render_document(&self) -> RenderDocument {
+        let table = self.packages.iter().fold(
+            Table::new(["path", "hash", "status", "segments"]),
+            |table, package| {
+                table.row([
+                    redact_uri_userinfo(&package.path),
+                    package.package_hash.clone(),
+                    package.status.clone(),
+                    package.segments.to_string(),
+                ])
+            },
+        );
+
+        let mut document = RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("{} package(s)", self.packages.len()),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Packages")
+                    .row("count", self.packages.len().to_string())
+                    .row("source", "package root"),
+            );
+
+        if !self.packages.is_empty() {
+            document = document.blank_line().push(table);
+        }
+
+        document
+            .blank_line()
+            .push(NextCommand::new("cdf package verify <package>"))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PackageListEntry {
     path: String,
     package_hash: String,
@@ -350,6 +369,48 @@ struct PackageGcPlanReport {
     mode: &'static str,
     artifacts: Vec<PackageGcArtifact>,
     counts: PackageGcCounts,
+}
+
+impl PackageGcPlanReport {
+    fn render_document(&self) -> RenderDocument {
+        let table = self.artifacts.iter().fold(
+            Table::new(["artifact", "classification", "action", "reason"]),
+            |table, artifact| {
+                table.row([
+                    artifact_display(artifact),
+                    classification_name(&artifact.classification).to_owned(),
+                    planned_action_name(&artifact.planned_action).to_owned(),
+                    artifact.retention_reason.to_owned(),
+                ])
+            },
+        );
+
+        let mut document = RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("planned package gc for {}", self.package_root),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Package GC")
+                    .row("root", redact_uri_userinfo(&self.package_root))
+                    .row("mode", self.mode)
+                    .row("artifacts", self.artifacts.len().to_string())
+                    .row("collectible", self.counts.collectible.to_string())
+                    .row("protected", self.counts.protected.to_string())
+                    .row("corrupt", self.counts.corrupt.to_string())
+                    .row("missing", self.counts.missing.to_string()),
+            );
+
+        if !self.artifacts.is_empty() {
+            document = document.blank_line().push(table);
+        }
+
+        document
+            .blank_line()
+            .push(NextCommand::new("cdf package verify <package>"))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -424,6 +485,57 @@ struct PackageVerifyReport {
     checked_archives: Vec<cdf_package::ArchiveSegmentMetadata>,
 }
 
+impl PackageVerifyReport {
+    fn render_document(&self) -> RenderDocument {
+        let file_table = self.checked_files.iter().fold(
+            Table::new(["file", "bytes", "sha256"]),
+            |table, file| {
+                table.row([
+                    redact_uri_userinfo(&file.path),
+                    humanize_bytes(file.byte_count),
+                    file.sha256.clone(),
+                ])
+            },
+        );
+        let archive_table = self.checked_archives.iter().fold(
+            Table::new(["segment", "archive", "rows", "bytes"]),
+            |table, archive| {
+                table.row([
+                    archive.segment_id.clone(),
+                    redact_uri_userinfo(&archive.archive_path),
+                    archive.archive_row_count.to_string(),
+                    humanize_bytes(archive.archive_byte_count),
+                ])
+            },
+        );
+
+        let mut document = RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("verified package {}", self.package_hash),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Integrity")
+                    .row("package", self.package_hash.clone())
+                    .row("files", self.checked_files.len().to_string())
+                    .row("archive segments", self.checked_archives.len().to_string()),
+            );
+
+        if !self.checked_files.is_empty() {
+            document = document.blank_line().push(file_table);
+        }
+        if !self.checked_archives.is_empty() {
+            document = document.blank_line().push(archive_table);
+        }
+
+        document
+            .blank_line()
+            .push(NextCommand::new("cdf inspect package <package>"))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PackageArchiveCliReport {
     command: &'static str,
@@ -435,10 +547,80 @@ struct PackageArchiveCliReport {
     segments: Vec<cdf_package::ArchiveSegmentMetadata>,
 }
 
+impl PackageArchiveCliReport {
+    fn render_document(&self, archive_byte_count: u64) -> RenderDocument {
+        let table = self.segments.iter().fold(
+            Table::new(["segment", "source", "archive", "rows", "bytes"]),
+            |table, segment| {
+                table.row([
+                    segment.segment_id.clone(),
+                    redact_uri_userinfo(&segment.source_path),
+                    redact_uri_userinfo(&segment.archive_path),
+                    segment.archive_row_count.to_string(),
+                    humanize_bytes(segment.archive_byte_count),
+                ])
+            },
+        );
+
+        let mut document = RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("archived package {}", self.package_hash),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Archive")
+                    .row("package", self.package_hash.clone())
+                    .row("format", self.format.clone())
+                    .row("status", package_archive_status(&self.status))
+                    .row("segments", self.segments.len().to_string())
+                    .row("bytes", humanize_bytes(archive_byte_count))
+                    .row("fidelity", redact_uri_userinfo(&self.fidelity_report_path))
+                    .row("statement", self.fidelity_statement.clone()),
+            );
+
+        if !self.segments.is_empty() {
+            document = document.blank_line().push(table);
+        }
+
+        document
+            .blank_line()
+            .push(NextCommand::new("cdf package verify <package>"))
+    }
+}
+
 fn package_archive_status(status: &cdf_package::PackageArchiveWriteStatus) -> &'static str {
     match status {
         cdf_package::PackageArchiveWriteStatus::Written => "written",
         cdf_package::PackageArchiveWriteStatus::Skipped => "skipped",
         cdf_package::PackageArchiveWriteStatus::Replaced => "replaced",
+    }
+}
+
+fn artifact_display(artifact: &PackageGcArtifact) -> String {
+    artifact
+        .package_path
+        .as_deref()
+        .or(artifact.package_hash.as_deref())
+        .map(redact_uri_userinfo)
+        .unwrap_or_else(|| "unknown".to_owned())
+}
+
+fn classification_name(classification: &PackageGcClassification) -> &'static str {
+    match classification {
+        PackageGcClassification::Retained => "retained",
+        PackageGcClassification::Collectible => "collectible",
+        PackageGcClassification::Missing => "missing",
+        PackageGcClassification::Corrupt => "corrupt",
+        PackageGcClassification::Protected => "protected",
+    }
+}
+
+fn planned_action_name(action: &PackageGcPlannedAction) -> &'static str {
+    match action {
+        PackageGcPlannedAction::Retain => "retain",
+        PackageGcPlannedAction::WouldCollect => "would_collect",
+        PackageGcPlannedAction::RestoreRequired => "restore_required",
     }
 }

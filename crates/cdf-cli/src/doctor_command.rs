@@ -9,10 +9,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    commands::report_output,
     context::{DestinationRuntime, DoctorProbe, ProjectContext},
     doctor_drift::{self, DriftStatus},
     output::{CliError, CommandOutput},
+    render::{
+        RenderDocument,
+        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        redaction::redact_uri_userinfo,
+    },
 };
 
 const MIN_PYTHON_MAJOR: u16 = 3;
@@ -92,16 +96,8 @@ pub(crate) fn doctor(cli: &crate::args::Cli) -> Result<CommandOutput, CliError> 
         failed,
         unsupported,
     };
-    report_output(
-        "doctor",
-        if failed == 0 {
-            format!("doctor completed with {unsupported} unsupported check(s)")
-        } else {
-            format!("doctor found {failed} failed check(s)")
-        },
-        report,
-        if failed == 0 { 0 } else { 1 },
-    )
+    let exit_code = if failed == 0 { 0 } else { 1 };
+    CommandOutput::rendered_with_exit_code("doctor", report.render_document(), report, exit_code)
 }
 
 fn project_health_details(context: &ProjectContext) -> serde_json::Value {
@@ -397,6 +393,68 @@ struct DoctorReport {
     unsupported: usize,
 }
 
+impl DoctorReport {
+    fn render_document(&self) -> RenderDocument {
+        let table = self.checks.iter().fold(
+            Table::new(["check", "status", "message"]),
+            |table, check| {
+                table.row([
+                    check.name.clone(),
+                    check.status.name().to_owned(),
+                    redact_uri_userinfo(&check.message),
+                ])
+            },
+        );
+
+        RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                if self.failed > 0 {
+                    StatusKind::Error
+                } else if self.unsupported > 0 {
+                    StatusKind::Warning
+                } else {
+                    StatusKind::Success
+                },
+                if self.failed == 0 {
+                    format!(
+                        "doctor completed with {} unsupported check(s)",
+                        self.unsupported
+                    )
+                } else {
+                    format!("doctor found {} failed check(s)", self.failed)
+                },
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Doctor")
+                    .row("checks", self.checks.len().to_string())
+                    .row("failed", self.failed.to_string())
+                    .row("unsupported", self.unsupported.to_string())
+                    .row("passed", self.passed_count().to_string())
+                    .row("skipped", self.skipped_count().to_string()),
+            )
+            .blank_line()
+            .push(table)
+            .blank_line()
+            .push(NextCommand::new("cdf status"))
+    }
+
+    fn passed_count(&self) -> usize {
+        self.checks
+            .iter()
+            .filter(|check| matches!(check.status, CheckStatus::Passed))
+            .count()
+    }
+
+    fn skipped_count(&self) -> usize {
+        self.checks
+            .iter()
+            .filter(|check| matches!(check.status, CheckStatus::Skipped))
+            .count()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct DoctorCheck {
     name: String,
@@ -456,4 +514,15 @@ enum CheckStatus {
     Failed,
     Skipped,
     Unsupported,
+}
+
+impl CheckStatus {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Passed => "passed",
+            Self::Failed => "failed",
+            Self::Skipped => "skipped",
+            Self::Unsupported => "unsupported",
+        }
+    }
 }

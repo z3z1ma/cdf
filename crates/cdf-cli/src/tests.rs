@@ -151,6 +151,83 @@ fn parser_preserves_json_anywhere_for_help_envelope() {
 }
 
 #[test]
+fn renderer_migration_gate_rejects_raw_human_output_bypasses() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    collect_rust_files(&src, &mut files);
+    let mut violations = Vec::new();
+    for file in files {
+        let relative = file.strip_prefix(&src).unwrap();
+        if matches!(
+            relative.to_str(),
+            Some("commands.rs" | "output.rs" | "tests.rs")
+        ) {
+            continue;
+        }
+        let text = fs::read_to_string(&file).unwrap();
+        for (pattern, reason) in [
+            (
+                "HumanOutput::Plain",
+                "plain human output bypasses the renderer",
+            ),
+            (
+                "CommandOutput {",
+                "commands must construct output through renderer helpers",
+            ),
+            (
+                "commands::output",
+                "command modules must return RenderDocument output directly",
+            ),
+            (
+                "commands::report_output",
+                "command modules must return RenderDocument output directly",
+            ),
+            (
+                "commands::{output",
+                "command modules must not import the raw output shim",
+            ),
+            (
+                "commands::{report_output",
+                "command modules must not import the raw output shim",
+            ),
+            (
+                "report_output(",
+                "command modules must not call the raw output shim",
+            ),
+            (
+                "human_message(",
+                "legacy human message helpers bypass renderer documents",
+            ),
+        ] {
+            if text.contains(pattern) {
+                violations.push(format!(
+                    "{} contains `{pattern}`: {reason}",
+                    relative.display()
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "renderer migration gate failed:\n{}",
+        violations.join("\n")
+    );
+}
+
+fn collect_rust_files(root: &Path, files: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(root).unwrap() {
+        let entry = entry.unwrap();
+        let path = entry.path();
+        if path.is_dir() {
+            collect_rust_files(&path, files);
+        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
+            files.push(path);
+        }
+    }
+}
+
+#[test]
 fn parser_preserves_global_project_env_and_json_anywhere() {
     let project = TestProject::new();
     let result = run([
@@ -166,6 +243,76 @@ fn parser_preserves_global_project_env_and_json_anywhere() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["command"], "validate");
+}
+
+#[test]
+fn inspect_human_outputs_use_renderer_for_project_inventory() {
+    let project = TestProject::new();
+
+    let project_result = run(["cdf", "--project", project.root_str(), "inspect", "project"]);
+    assert_eq!(
+        project_result.exit_code, 0,
+        "stderr: {}",
+        project_result.stderr
+    );
+    assert!(
+        project_result
+            .stdout
+            .contains("OK project cli_test env dev")
+    );
+    assert!(project_result.stdout.contains("Project"));
+    assert!(
+        project_result
+            .stdout
+            .contains("destination  duckdb://.cdf/dev.duckdb")
+    );
+    assert!(project_result.stdout.contains("-> cdf inspect resources"));
+
+    let resources = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "resources",
+    ]);
+    assert_eq!(resources.exit_code, 0, "stderr: {}", resources.stderr);
+    assert!(resources.stdout.contains("OK 1 compiled resource(s)"));
+    assert!(resources.stdout.contains("| resource     | trust"));
+    assert!(resources.stdout.contains("| local.events | governed"));
+
+    let resource = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "resource",
+        "local.events",
+    ]);
+    assert_eq!(resource.exit_code, 0, "stderr: {}", resource.stderr);
+    assert!(resource.stdout.contains("OK resource local.events"));
+    assert!(resource.stdout.contains("Resource"));
+    assert!(resource.stdout.contains("-> cdf plan local.events"));
+
+    let destinations = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "destinations",
+    ]);
+    assert_eq!(destinations.exit_code, 0, "stderr: {}", destinations.stderr);
+    assert!(
+        destinations
+            .stdout
+            .contains("OK inspected destination capabilities")
+    );
+    assert!(destinations.stdout.contains("Destination"));
+    assert!(
+        destinations
+            .stdout
+            .contains("environment  duckdb://.cdf/dev.duckdb")
+    );
+    assert!(destinations.stdout.contains("-> cdf plan"));
 }
 
 #[test]
@@ -1250,6 +1397,20 @@ fn preview_reads_single_ndjson_file_without_creating_runtime_artifacts() {
     assert_eq!(json["result"]["writes"]["package"], false);
     assert_eq!(json["result"]["writes"]["destination"], false);
     assert_eq!(json["result"]["writes"]["checkpoint"], false);
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert!(human.stdout.contains("OK previewed resource local.events"));
+    assert!(human.stdout.contains("Preview"));
+    assert!(human.stdout.contains("Writes"));
+    assert!(human.stdout.contains("-> cdf plan local.events"));
+    assert_no_preview_writes(&project);
 }
 
 #[test]
@@ -4133,7 +4294,14 @@ fn status_ignores_non_serving_freshness_resources() {
     );
     let human = run(["cdf", "--project", project.root_str(), "status"]);
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
-    assert_eq!(human.stdout, "no freshness SLO resources to evaluate\n");
+    assert!(
+        human
+            .stdout
+            .contains("OK no freshness SLO resources to evaluate")
+    );
+    assert!(human.stdout.contains("Freshness"));
+    assert!(human.stdout.contains("total          0"));
+    assert!(human.stdout.contains("-> cdf doctor"));
 }
 
 #[test]
@@ -4173,7 +4341,14 @@ fn status_reports_fresh_committed_head() {
     assert!(resource["age_ms"].as_u64().unwrap() <= 3_600_000);
     let human = run(["cdf", "--project", project.root_str(), "status"]);
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
-    assert_eq!(human.stdout, "freshness SLO status fresh: 1 resource(s)\n");
+    assert!(
+        human
+            .stdout
+            .contains("OK freshness SLO status fresh: 1 resource(s)")
+    );
+    assert!(human.stdout.contains("| resource     | state | age"));
+    assert!(human.stdout.contains("| local.events | fresh"));
+    assert!(human.stdout.contains("-> cdf doctor"));
 }
 
 #[test]
@@ -4199,10 +4374,13 @@ fn status_reports_stale_committed_head() {
     assert!(resource["age_ms"].as_u64().unwrap() > 1);
     let human = run(["cdf", "--project", project.root_str(), "status"]);
     assert_eq!(human.exit_code, 1, "stderr: {}", human.stderr);
-    assert_eq!(
-        human.stdout,
-        "freshness SLO breach: 1 stale, 0 fresh, 0 non-evaluable\n"
+    assert!(
+        human
+            .stdout
+            .contains("ERR freshness SLO breach: 1 stale, 0 fresh, 0 non-evaluable")
     );
+    assert!(human.stdout.contains("| local.events | stale"));
+    assert!(human.stdout.contains("-> cdf doctor"));
 }
 
 #[test]
@@ -4272,10 +4450,13 @@ fn status_reports_missing_state_as_non_evaluable() {
     assert_eq!(resource["non_evaluable_reason"], "state_database_missing");
     let human = run(["cdf", "--project", project.root_str(), "status"]);
     assert_eq!(human.exit_code, 78, "stderr: {}", human.stderr);
-    assert_eq!(
-        human.stdout,
-        "freshness SLO status non-evaluable: 1 resource(s), 0 fresh\n"
+    assert!(
+        human
+            .stdout
+            .contains("WARN freshness SLO status non-evaluable: 1 resource(s), 0 fresh")
     );
+    assert!(human.stdout.contains("| local.events | non-evaluable"));
+    assert!(human.stdout.contains("state_database_missing"));
 }
 
 #[test]
@@ -4556,9 +4737,18 @@ fn sql_human_output_is_concise_for_scheduler_logs() {
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    assert_eq!(
-        result.stdout,
-        "sql returned 1 row(s) from local system history\n"
+    assert!(
+        result
+            .stdout
+            .contains("OK sql returned 1 row(s) from local system history")
+    );
+    assert!(result.stdout.contains("System SQL"));
+    assert!(result.stdout.contains("| package_count |"));
+    assert!(result.stdout.contains("| 0             |"));
+    assert!(
+        result
+            .stdout
+            .contains("-> cdf sql \"select * from packages limit 5\"")
     );
 }
 
@@ -5221,6 +5411,33 @@ fn package_verify_uses_lower_package_reader() {
 }
 
 #[test]
+fn package_ls_json_remains_array_while_human_uses_renderer() {
+    let temp = TempDir::new("cdf-cli-package-ls");
+    let package_dir = build_archive_cli_package(temp.path(), "pkg-ls-json-array");
+
+    let json_result = run([
+        "cdf",
+        "--json",
+        "package",
+        "ls",
+        temp.path().to_str().unwrap(),
+    ]);
+
+    assert_eq!(json_result.exit_code, 0, "stderr: {}", json_result.stderr);
+    let json = stderr_or_stdout_json(&json_result.stdout);
+    assert_eq!(json["command"], "package ls");
+    assert!(json["result"].as_array().is_some());
+    assert_eq!(json["result"][0]["path"], package_dir.display().to_string());
+
+    let human = run(["cdf", "package", "ls", temp.path().to_str().unwrap()]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert!(human.stdout.contains("OK 1 package(s)"));
+    assert!(human.stdout.contains("Packages"));
+    assert!(human.stdout.contains("| path"));
+    assert!(human.stdout.contains("-> cdf package verify <package>"));
+}
+
+#[test]
 fn package_gc_plans_retention_from_packages_and_checkpoint_history() {
     let project = TestProject::new();
     let package_root = project.root.join(".cdf/packages");
@@ -5417,13 +5634,19 @@ fn package_archive_supports_local_json_flag_and_human_output() {
     let human_result = run(["cdf", "package", "archive", human_package.to_str().unwrap()]);
 
     assert_eq!(human_result.exit_code, 0, "stderr: {}", human_result.stderr);
-    assert!(human_result.stdout.contains("archived package sha256:"));
-    assert!(human_result.stdout.contains("status written"));
-    assert!(human_result.stdout.contains("1 segment(s)"));
+    assert!(human_result.stdout.contains("OK archived package sha256:"));
+    assert!(human_result.stdout.contains("Archive"));
+    assert!(human_result.stdout.contains("status     written"));
+    assert!(human_result.stdout.contains("segments   1"));
     assert!(
         human_result
             .stdout
-            .contains("fidelity archive/parquet/fidelity.json")
+            .contains("archive/parquet/fidelity.json")
+    );
+    assert!(
+        human_result
+            .stdout
+            .contains("-> cdf package verify <package>")
     );
 }
 

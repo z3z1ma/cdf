@@ -5,7 +5,7 @@ use serde_json::json;
 use crate::{
     args::{Cli, Command},
     output::{CliError, CommandOutput, InvocationResult},
-    render::RenderConfig,
+    render::{RenderConfig, RenderDocument},
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -66,12 +66,9 @@ pub(crate) fn report_output<T: Serialize>(
     value: T,
     exit_code: i32,
 ) -> Result<CommandOutput, CliError> {
-    Ok(CommandOutput {
-        command,
-        exit_code,
-        human: crate::output::HumanOutput::Plain(human),
-        json: serde_json::to_value(value).map_err(json_cli_error)?,
-    })
+    // 10x: compatibility shim for parser-generated help/version text; command
+    // families should return structured RenderDocument values directly.
+    CommandOutput::rendered_with_exit_code(command, RenderDocument::text(human), value, exit_code)
 }
 
 pub(crate) fn json_cli_error(error: serde_json::Error) -> CliError {
