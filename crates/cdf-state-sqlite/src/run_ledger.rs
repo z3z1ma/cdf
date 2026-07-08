@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::support::{encode_json, lock_error, now_ms, sqlite_error};
 
-const RUN_LEDGER_SCHEMA_VERSION: i64 = 1;
+const RUN_LEDGER_SCHEMA_VERSION: i64 = 2;
 const RUN_EVENT_SELECT: &str = "SELECT run_id, sequence, timestamp_ms, kind, resource_id, scope_json, partition_id, package_id, package_hash, package_path, checkpoint_id, receipt_id, destination_id, plan_id, details_json FROM cdf_run_events";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,10 +102,11 @@ pub enum RunEventKind {
     RunFailed,
     RunResumed,
     ReplayRecorded,
+    ValidationDepthTransitionRecorded,
 }
 
 impl RunEventKind {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 14] = [
         Self::RunStarted,
         Self::PlanRecorded,
         Self::PackageStarted,
@@ -119,6 +120,7 @@ impl RunEventKind {
         Self::RunFailed,
         Self::RunResumed,
         Self::ReplayRecorded,
+        Self::ValidationDepthTransitionRecorded,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -136,6 +138,7 @@ impl RunEventKind {
             Self::RunFailed => "run_failed",
             Self::RunResumed => "run_resumed",
             Self::ReplayRecorded => "replay_recorded",
+            Self::ValidationDepthTransitionRecorded => "validation_depth_transition_recorded",
         }
     }
 
@@ -154,6 +157,7 @@ impl RunEventKind {
             "run_failed" => Ok(Self::RunFailed),
             "run_resumed" => Ok(Self::RunResumed),
             "replay_recorded" => Ok(Self::ReplayRecorded),
+            "validation_depth_transition_recorded" => Ok(Self::ValidationDepthTransitionRecorded),
             other => Err(CdfError::data(format!("unknown run event kind {other:?}"))),
         }
     }
@@ -397,7 +401,11 @@ fn initialize_run_schema(conn: &Connection) -> Result<()> {
     )
     .map_err(sqlite_error)?;
 
-    let existing_version = validate_run_schema_version(conn)?;
+    let existing_version = read_run_schema_version(conn)?;
+    match existing_version {
+        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | None => {}
+        Some(version) => return Err(unsupported_run_schema_version(version)),
+    }
 
     conn.execute_batch(
         "
@@ -425,7 +433,8 @@ fn initialize_run_schema(conn: &Connection) -> Result<()> {
                 'run_succeeded',
                 'run_failed',
                 'run_resumed',
-                'replay_recorded'
+                'replay_recorded',
+                'validation_depth_transition_recorded'
             )),
             resource_id TEXT,
             scope_json TEXT,
@@ -455,6 +464,17 @@ fn initialize_run_schema(conn: &Connection) -> Result<()> {
         CREATE INDEX IF NOT EXISTS cdf_run_events_package_hash
             ON cdf_run_events (package_hash)
             WHERE package_hash IS NOT NULL;
+        ",
+    )
+    .map_err(sqlite_error)?;
+
+    if existing_version == Some(1) {
+        migrate_run_schema_v1_to_v2(conn)?;
+    }
+    create_run_event_indexes(conn)?;
+
+    conn.execute_batch(
+        "
 
         CREATE TRIGGER IF NOT EXISTS cdf_runs_no_update
         BEFORE UPDATE ON cdf_runs
@@ -495,6 +515,15 @@ fn initialize_run_schema(conn: &Connection) -> Result<()> {
 }
 
 fn validate_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
+    let existing_version = read_run_schema_version(conn)?;
+    match existing_version {
+        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | None => {}
+        Some(version) => return Err(unsupported_run_schema_version(version)),
+    }
+    Ok(existing_version)
+}
+
+fn read_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
     let migration_table_exists = conn
         .query_row(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cdf_sqlite_schema_migrations'",
@@ -516,14 +545,131 @@ fn validate_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
         )
         .optional()
         .map_err(sqlite_error)?;
-    if let Some(version) = existing_version
-        && version != RUN_LEDGER_SCHEMA_VERSION
-    {
-        return Err(CdfError::internal(format!(
-            "unsupported run ledger SQLite schema version {version}"
-        )));
-    }
     Ok(existing_version)
+}
+
+fn unsupported_run_schema_version(version: i64) -> CdfError {
+    CdfError::internal(format!(
+        "unsupported run ledger SQLite schema version {version}"
+    ))
+}
+
+fn migrate_run_schema_v1_to_v2(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        DROP TRIGGER IF EXISTS cdf_run_events_no_update;
+        DROP TRIGGER IF EXISTS cdf_run_events_no_delete;
+        DROP INDEX IF EXISTS cdf_run_events_run_sequence;
+        DROP INDEX IF EXISTS cdf_run_events_checkpoint;
+        DROP INDEX IF EXISTS cdf_run_events_receipt;
+        DROP INDEX IF EXISTS cdf_run_events_package_hash;
+
+        CREATE TABLE cdf_run_events_v2 (
+            event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL REFERENCES cdf_runs(run_id) ON DELETE RESTRICT,
+            sequence INTEGER NOT NULL CHECK (sequence > 0),
+            timestamp_ms INTEGER NOT NULL,
+            kind TEXT NOT NULL CHECK (kind IN (
+                'run_started',
+                'plan_recorded',
+                'package_started',
+                'package_finalized',
+                'destination_commit_started',
+                'destination_receipt_recorded',
+                'checkpoint_proposed',
+                'checkpoint_committed',
+                'package_status_updated',
+                'run_succeeded',
+                'run_failed',
+                'run_resumed',
+                'replay_recorded',
+                'validation_depth_transition_recorded'
+            )),
+            resource_id TEXT,
+            scope_json TEXT,
+            partition_id TEXT,
+            package_id TEXT,
+            package_hash TEXT,
+            package_path TEXT,
+            checkpoint_id TEXT,
+            receipt_id TEXT,
+            destination_id TEXT,
+            plan_id TEXT,
+            details_json TEXT NOT NULL,
+            UNIQUE(run_id, sequence)
+        );
+
+        INSERT INTO cdf_run_events_v2 (
+            event_id,
+            run_id,
+            sequence,
+            timestamp_ms,
+            kind,
+            resource_id,
+            scope_json,
+            partition_id,
+            package_id,
+            package_hash,
+            package_path,
+            checkpoint_id,
+            receipt_id,
+            destination_id,
+            plan_id,
+            details_json
+        )
+        SELECT
+            event_id,
+            run_id,
+            sequence,
+            timestamp_ms,
+            kind,
+            resource_id,
+            scope_json,
+            partition_id,
+            package_id,
+            package_hash,
+            package_path,
+            checkpoint_id,
+            receipt_id,
+            destination_id,
+            plan_id,
+            details_json
+        FROM cdf_run_events;
+
+        DROP TABLE cdf_run_events;
+        ALTER TABLE cdf_run_events_v2 RENAME TO cdf_run_events;
+        ",
+    )
+    .map_err(sqlite_error)?;
+    conn.execute(
+        "UPDATE cdf_sqlite_schema_migrations SET version = ?, applied_at_ms = ? WHERE component = 'run_ledger'",
+        params![RUN_LEDGER_SCHEMA_VERSION, now_ms()?],
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
+}
+
+fn create_run_event_indexes(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE INDEX IF NOT EXISTS cdf_run_events_run_sequence
+            ON cdf_run_events (run_id, sequence);
+
+        CREATE INDEX IF NOT EXISTS cdf_run_events_checkpoint
+            ON cdf_run_events (checkpoint_id)
+            WHERE checkpoint_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS cdf_run_events_receipt
+            ON cdf_run_events (receipt_id)
+            WHERE receipt_id IS NOT NULL;
+
+        CREATE INDEX IF NOT EXISTS cdf_run_events_package_hash
+            ON cdf_run_events (package_hash)
+            WHERE package_hash IS NOT NULL;
+        ",
+    )
+    .map_err(sqlite_error)?;
+    Ok(())
 }
 
 fn insert_supplied_run(

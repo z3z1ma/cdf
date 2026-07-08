@@ -1001,7 +1001,7 @@ fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
             applied_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
-        VALUES ('run_ledger', 2, 1);
+        VALUES ('run_ledger', 3, 1);
         ",
     )
     .unwrap();
@@ -1021,7 +1021,7 @@ fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
         assert!(
             error
                 .message
-                .contains("unsupported run ledger SQLite schema version 2")
+                .contains("unsupported run ledger SQLite schema version 3")
         );
     }
 }
@@ -1046,6 +1046,26 @@ fn sqlite_run_ledger_checkpoint_events_do_not_advance_checkpoint_store() {
     let mut event = RunEventAppend::new(RunEventKind::CheckpointCommitted);
     event.checkpoint_id = Some(delta.checkpoint_id.clone());
     ledger.append_event(&run.run_id, event).unwrap();
+    let mut transition = RunEventAppend::new(RunEventKind::ValidationDepthTransitionRecorded);
+    transition.resource_id = Some(delta.resource_id.clone());
+    transition.scope = Some(delta.scope.clone());
+    transition.package_hash = Some(delta.package_hash.clone());
+    transition.details = RunEventDetails::new([
+        (
+            "from_depth",
+            RunEventValue::String("sampled_fast_path".to_owned()),
+        ),
+        ("to_depth", RunEventValue::String("full".to_owned())),
+        (
+            "trigger",
+            RunEventValue::String("quarantine_event".to_owned()),
+        ),
+        (
+            "schema_hash",
+            RunEventValue::String(delta.schema_hash.as_str().to_owned()),
+        ),
+    ]);
+    ledger.append_event(&run.run_id, transition).unwrap();
 
     assert!(
         checkpoint_store
@@ -1072,7 +1092,7 @@ fn sqlite_run_ledger_records_schema_version() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 1);
+    assert_eq!(version, 2);
 }
 
 #[test]
@@ -1088,7 +1108,7 @@ fn sqlite_run_ledger_rejects_unsupported_schema_version() {
             applied_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
-        VALUES ('run_ledger', 2, 1);
+        VALUES ('run_ledger', 3, 1);
         ",
     )
     .unwrap();
@@ -1101,7 +1121,7 @@ fn sqlite_run_ledger_rejects_unsupported_schema_version() {
     assert!(
         error
             .to_string()
-            .contains("unsupported run ledger SQLite schema version 2")
+            .contains("unsupported run ledger SQLite schema version 3")
     );
 }
 

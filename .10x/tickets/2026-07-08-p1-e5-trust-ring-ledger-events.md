@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
@@ -45,6 +45,11 @@ Record ledger event tests, inspect-run redaction checks if output changes, packa
 
 No UI. No sampled-fast-path performance optimization unless needed to represent the event model. No new run-ledger backend.
 
+## Progress and Notes
+
+- 2026-07-08: Activated after E4 closure. Parent orchestrator delegated the core project/state ledger implementation to a focused worker and is retaining integration, quality evidence, review, and closure ownership.
+- 2026-07-08: Partial implementation landed for `validation_depth_transition_recorded` run-ledger events, SQLite run-ledger schema v2 migration, first-contact `new_resource`, clean-stable promotion, drift demotion, quarantine demotion, run/inspect event-detail visibility, and focused tests. Partial evidence recorded at `.10x/evidence/2026-07-08-p1-e5-trust-ledger-partial.md`.
+
 ## Blockers
 
-None; E4 is closed at `.10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md`.
+- Anomaly-spike demotion semantics are unclear. Current runtime/package facts expose no anomaly-spike signal, metric, threshold, or owner. E5 cannot close without ratifying what constitutes an anomaly spike and where that signal enters the run ledger. Recommended decision: define anomaly spikes as explicit profile/contract anomaly facts emitted by `ProfileExec` or a future anomaly detector, with event fields `{metric, observed, threshold, window}`; do not infer anomaly from row count, quarantine count, destination failure, or arbitrary heuristic in E5.

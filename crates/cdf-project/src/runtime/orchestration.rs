@@ -5,7 +5,7 @@ use super::{
     },
     destinations::ResolvedProjectDestination,
     hooks::{ReceiptVerifiedHook, RuntimeStage},
-    ledger::{ProjectRunRecorder, ProjectRunRecorderContext},
+    ledger::{ProjectRunRecorder, ProjectRunRecorderContext, ValidationDepthTransitionRecord},
     prelude::*,
     replay::{PackageReplayHooks, PackageReplayStage, replay_package_with_runtime},
     resources::ProjectRunSource,
@@ -15,6 +15,7 @@ use super::{
         validate_explicit_package_id, validate_project_run_request,
     },
 };
+use cdf_contract::{ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
 
 #[cfg(test)]
 pub(crate) async fn run_local_file_to_duckdb_checkpoint(
@@ -150,6 +151,11 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         execution
             .checkpoint_store
             .head(execution.pipeline_id, &descriptor.resource_id, &scope)?;
+    let history = execution.checkpoint_store.history(
+        execution.pipeline_id,
+        &descriptor.resource_id,
+        &scope,
+    )?;
 
     let write_package_pre_finalize_artifacts =
         |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
@@ -185,6 +191,28 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     execution
         .recorder
         .append_package_finalized(&package_hash, row_count, segment_count)?;
+    let has_quarantine_artifacts = output
+        .output
+        .manifest
+        .identity
+        .files
+        .iter()
+        .any(|file| file.path.starts_with("quarantine/") && file.path.ends_with(".parquet"));
+    for transition in validation_depth_transitions_recorded(
+        &execution.plan.validation_program,
+        head.as_ref(),
+        &history,
+        &execution.schema_hash,
+        has_quarantine_artifacts,
+    ) {
+        execution
+            .recorder
+            .append_validation_depth_transition_recorded(
+                &package_hash,
+                execution.checkpoint_id,
+                transition,
+            )?;
+    }
 
     let stage_hook =
         |stage: PackageReplayStage<'_>| notify_run_replay_stage(execution.recorder, stage);
@@ -241,4 +269,103 @@ fn notify_run_replay_stage(
             Ok(())
         }
     }
+}
+
+fn validation_depth_transitions_recorded<'a>(
+    program: &ValidationProgram,
+    head: Option<&'a Checkpoint>,
+    history: &'a [Checkpoint],
+    schema_hash: &'a SchemaHash,
+    has_quarantine_artifacts: bool,
+) -> Vec<ValidationDepthTransitionRecord<'a>> {
+    let mut transitions = Vec::new();
+    let promotion = &program.promotion;
+    if head.is_none() {
+        transitions.push(ValidationDepthTransitionRecord {
+            from_depth: ValidationDepth::Discovery,
+            to_depth: ValidationDepth::Full,
+            trigger: ValidationTransitionTrigger::NewResource,
+            schema_hash: Some(schema_hash),
+            previous_schema_hash: None,
+        });
+    }
+
+    if !promotion.allow_sampled_fast_path {
+        return transitions;
+    }
+
+    let sampled_fast_path = ValidationDepth::SampledFastPath {
+        clean_runs_required: promotion.clean_runs_required,
+    };
+    let prior_promoted = head
+        .map(|checkpoint| {
+            consecutive_committed_schema_hash_count(history, &checkpoint.delta.schema_hash)
+                >= promotion.clean_runs_required
+        })
+        .unwrap_or(false);
+    let drift = head
+        .map(|checkpoint| checkpoint.delta.schema_hash != *schema_hash)
+        .unwrap_or(false);
+
+    if prior_promoted {
+        if drift && promotion.demote_on_drift {
+            transitions.push(ValidationDepthTransitionRecord {
+                from_depth: sampled_fast_path,
+                to_depth: ValidationDepth::Full,
+                trigger: ValidationTransitionTrigger::Drift,
+                schema_hash: Some(schema_hash),
+                previous_schema_hash: head.map(|checkpoint| &checkpoint.delta.schema_hash),
+            });
+            return transitions;
+        }
+        if has_quarantine_artifacts && promotion.demote_on_quarantine {
+            transitions.push(ValidationDepthTransitionRecord {
+                from_depth: sampled_fast_path,
+                to_depth: ValidationDepth::Full,
+                trigger: ValidationTransitionTrigger::QuarantineEvent,
+                schema_hash: Some(schema_hash),
+                previous_schema_hash: None,
+            });
+            return transitions;
+        }
+    }
+
+    if drift || has_quarantine_artifacts || promotion.clean_runs_required == 0 {
+        return transitions;
+    }
+    let prior_stable_count = consecutive_committed_schema_hash_count(history, schema_hash);
+    let clean_run_count = prior_stable_count.saturating_add(1);
+    if prior_stable_count < promotion.clean_runs_required
+        && clean_run_count >= promotion.clean_runs_required
+    {
+        transitions.push(ValidationDepthTransitionRecord {
+            from_depth: ValidationDepth::Full,
+            to_depth: sampled_fast_path,
+            trigger: ValidationTransitionTrigger::CleanStableRuns {
+                count: clean_run_count,
+            },
+            schema_hash: Some(schema_hash),
+            previous_schema_hash: None,
+        });
+    }
+
+    transitions
+}
+
+fn consecutive_committed_schema_hash_count(
+    history: &[Checkpoint],
+    schema_hash: &SchemaHash,
+) -> u32 {
+    let mut count = 0_u32;
+    for checkpoint in history
+        .iter()
+        .rev()
+        .filter(|checkpoint| checkpoint.status == CheckpointStatus::Committed)
+    {
+        if checkpoint.delta.schema_hash != *schema_hash {
+            break;
+        }
+        count = count.saturating_add(1);
+    }
+    count
 }

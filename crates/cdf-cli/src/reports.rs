@@ -456,6 +456,7 @@ impl RunLedgerSummary {
 struct RunLedgerEventSummary {
     sequence: u64,
     kind: String,
+    details: RunEventDetails,
     #[serde(skip_serializing_if = "Option::is_none")]
     resource_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -475,6 +476,7 @@ impl RunLedgerEventSummary {
         Self {
             sequence: event.sequence,
             kind: event.kind.as_str().to_owned(),
+            details: event.details.clone(),
             resource_id: event.resource_id.as_ref().map(ToString::to_string),
             package_id: event.package_id.clone(),
             package_hash: event.package_hash.as_ref().map(ToString::to_string),

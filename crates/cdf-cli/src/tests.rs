@@ -72,7 +72,7 @@ write_disposition = "append"
 trust = "governed"
 schema = { fields = [
   { name = "id", type = "int64", nullable = false },
-  { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
+  { name = "updated_at", type = "int64", nullable = false },
 ] }
 "#;
 
@@ -618,7 +618,7 @@ fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
     assert_eq!(report["receipt_source"]["no_op"], false);
     assert_eq!(report["row_count"], 2);
     assert_eq!(report["segment_count"], 1);
-    assert_eq!(report["ledger_events"]["event_count"], 10);
+    assert_eq!(report["ledger_events"]["event_count"], 11);
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
     assert_eq!(
         report["ledger_events"]["kinds"]["destination_receipt_recorded"],
@@ -626,7 +626,7 @@ fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
     );
     assert_eq!(report["ledger_events"]["events"][0]["kind"], "run_started");
     assert_eq!(
-        report["ledger_events"]["events"][9]["kind"],
+        report["ledger_events"]["events"][10]["kind"],
         "run_succeeded"
     );
     assert_eq!(report["writes"]["package"], true);
@@ -764,10 +764,10 @@ fn inspect_run_reports_completed_run_json_and_human() {
         report["pointers"]["checkpoint_ids"],
         json!(["checkpoint-inspect-run"])
     );
-    assert_eq!(report["events"].as_array().unwrap().len(), 10);
+    assert_eq!(report["events"].as_array().unwrap().len(), 11);
     assert_eq!(report["events"][0]["sequence"], 1);
     assert_eq!(report["events"][0]["kind"], "run_started");
-    assert_eq!(report["events"][9]["kind"], "run_succeeded");
+    assert_eq!(report["events"][10]["kind"], "run_succeeded");
     assert_eq!(report["artifacts"]["package_status"], "checkpointed");
     assert_eq!(
         report["artifacts"]["packages"][0]["status"], "available",
@@ -1688,7 +1688,7 @@ fn run_sql_resource_with_ordered_cursor_commits_checkpoint() {
     assert_eq!(report["checkpoint"]["is_head"], true);
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
     assert_eq!(
-        report["ledger_events"]["events"][9]["kind"],
+        report["ledger_events"]["events"][10]["kind"],
         "run_succeeded"
     );
 
@@ -3660,8 +3660,8 @@ impl TestProject {
         fs::write(
             root.join("data/events.ndjson"),
             concat!(
-                "{\"id\":1,\"updated_at\":\"2026-07-06T00:00:00Z\"}\n",
-                "{\"id\":2,\"updated_at\":\"2026-07-06T00:01:00Z\"}\n"
+                "{\"id\":1,\"updated_at\":1783296000000000}\n",
+                "{\"id\":2,\"updated_at\":1783296060000000}\n"
             ),
         )
         .unwrap();

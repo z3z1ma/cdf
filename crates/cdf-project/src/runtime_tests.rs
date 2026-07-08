@@ -40,7 +40,7 @@ use cdf_package::{
     STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
     canonical_json_bytes,
 };
-use cdf_state_sqlite::{RunEventKind, SqliteCheckpointStore, SqliteRunLedger};
+use cdf_state_sqlite::{RunEventKind, RunEventValue, SqliteCheckpointStore, SqliteRunLedger};
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
@@ -90,6 +90,24 @@ trust = "governed"
 schema = { fields = [
   { name = "id", type = "int64", nullable = false },
   { name = "name", type = "string", nullable = true },
+] }
+"#;
+const SIMPLE_FILE_RESOURCE_APPEND_DRIFT: &str = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "name", type = "string", nullable = true },
+  { name = "note", type = "string", nullable = true },
 ] }
 "#;
 const SIMPLE_FILE_RESOURCE_MERGE: &str = r#"
@@ -879,6 +897,20 @@ fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> 
         .unwrap()
 }
 
+fn live_plan_with_policy(
+    resource: &cdf_declarative::CompiledResource,
+    package_id: &str,
+    policy: &ContractPolicy,
+) -> EnginePlan {
+    let mut plan = live_plan(resource, package_id);
+    plan.validation_program = compile_validation_program(
+        policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    plan
+}
+
 fn state_delta_request<'a>(
     resource: &'a cdf_declarative::CompiledResource,
     package_id: &str,
@@ -1471,6 +1503,7 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
             RunEventKind::PackageFinalized,
+            RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
             RunEventKind::DestinationReceiptRecorded,
@@ -1491,8 +1524,282 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
         Some(report.package_hash.clone())
     );
     assert_eq!(
-        report.ledger_snapshot.events[6].receipt_id,
+        report.ledger_snapshot.events[7].receipt_id,
         Some(report.receipt.receipt_id.clone())
+    );
+}
+
+#[test]
+fn trust_ring_clean_stable_runs_gate_sampled_fast_path_promotion() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.promotion.allow_sampled_fast_path = true;
+    policy.promotion.clean_runs_required = 2;
+
+    let mut first = project_run_request(
+        &resource,
+        "pkg-trust-promotion-1",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-promotion-1",
+    );
+    first.plan = live_plan_with_policy(&resource, "pkg-trust-promotion-1", &policy);
+    let first_report = futures_executor::block_on(run_project(first)).unwrap();
+    let first_transitions = first_report
+        .ledger_snapshot
+        .events
+        .iter()
+        .filter(|event| event.kind == RunEventKind::ValidationDepthTransitionRecorded)
+        .collect::<Vec<_>>();
+    assert_eq!(first_transitions.len(), 1);
+    assert_eq!(
+        first_transitions[0].details.attributes.get("trigger"),
+        Some(&RunEventValue::String("new_resource".to_owned()))
+    );
+
+    let mut second = project_run_request(
+        &resource,
+        "pkg-trust-promotion-2",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-promotion-2",
+    );
+    second.plan = live_plan_with_policy(&resource, "pkg-trust-promotion-2", &policy);
+    let second_report = futures_executor::block_on(run_project(second)).unwrap();
+    let transition = second_report
+        .ledger_snapshot
+        .events
+        .iter()
+        .find(|event| event.kind == RunEventKind::ValidationDepthTransitionRecorded)
+        .expect("promotion transition event");
+
+    assert_eq!(
+        transition.package_hash,
+        Some(second_report.package_hash.clone())
+    );
+    assert_eq!(
+        transition.details.attributes.get("from_depth"),
+        Some(&RunEventValue::String("full".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("to_depth"),
+        Some(&RunEventValue::String("sampled_fast_path".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("trigger"),
+        Some(&RunEventValue::String("clean_stable_runs".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("clean_run_count"),
+        Some(&RunEventValue::U64(2))
+    );
+    assert_eq!(
+        transition.details.attributes.get("clean_runs_required"),
+        Some(&RunEventValue::U64(2))
+    );
+    assert_eq!(
+        transition.details.attributes.get("schema_hash"),
+        Some(&RunEventValue::String(
+            second_report.receipt.schema_hash.as_str().to_owned()
+        ))
+    );
+    assert_eq!(second_report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(second_report.checkpoint.status, CheckpointStatus::Committed);
+}
+
+#[test]
+fn trust_ring_schema_drift_demotes_sampled_fast_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_root = temp.path().join(".cdf/packages");
+    let parquet_root = temp.path().join(".cdf/lake");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.promotion.allow_sampled_fast_path = true;
+    policy.promotion.clean_runs_required = 1;
+    policy.promotion.demote_on_drift = true;
+
+    let mut clean = parquet_project_run_request(
+        &resource,
+        "pkg-trust-drift-clean",
+        &package_root,
+        &parquet_root,
+        &state_path,
+        "run-trust-drift-clean",
+    );
+    clean.plan = live_plan_with_policy(&resource, "pkg-trust-drift-clean", &policy);
+    let clean_report = futures_executor::block_on(run_project(clean)).unwrap();
+    assert!(
+        clean_report.ledger_snapshot.events.iter().any(|event| event
+            .details
+            .attributes
+            .get("trigger")
+            == Some(&RunEventValue::String("clean_stable_runs".to_owned())))
+    );
+
+    let drift_resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND_DRIFT);
+    let mut drift = parquet_project_run_request(
+        &drift_resource,
+        "pkg-trust-drift-schema",
+        &package_root,
+        &parquet_root,
+        &state_path,
+        "run-trust-drift-schema",
+    );
+    drift.plan = live_plan_with_policy(&drift_resource, "pkg-trust-drift-schema", &policy);
+    let report = futures_executor::block_on(run_project(drift)).unwrap();
+    let transition = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .find(|event| {
+            event.kind == RunEventKind::ValidationDepthTransitionRecorded
+                && event.details.attributes.get("trigger")
+                    == Some(&RunEventValue::String("drift".to_owned()))
+        })
+        .expect("drift demotion transition event");
+
+    assert_eq!(
+        transition.details.attributes.get("from_depth"),
+        Some(&RunEventValue::String("sampled_fast_path".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("to_depth"),
+        Some(&RunEventValue::String("full".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("schema_hash"),
+        Some(&RunEventValue::String(
+            report.receipt.schema_hash.as_str().to_owned()
+        ))
+    );
+    assert_eq!(
+        transition.details.attributes.get("previous_schema_hash"),
+        Some(&RunEventValue::String(
+            clean_report.receipt.schema_hash.as_str().to_owned()
+        ))
+    );
+    assert_eq!(
+        transition.checkpoint_id,
+        Some(report.checkpoint.delta.checkpoint_id.clone())
+    );
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+}
+
+#[test]
+fn trust_ring_quarantine_demotes_sampled_fast_path_without_checkpoint_bypass() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.promotion.allow_sampled_fast_path = true;
+    policy.promotion.clean_runs_required = 1;
+    policy.promotion.demote_on_quarantine = true;
+    policy.rows.rules = vec![RowRule::Domain {
+        column: "name".to_owned(),
+        allowed: vec!["ada".to_owned(), "grace".to_owned()],
+    }];
+
+    let mut clean = project_run_request(
+        &resource,
+        "pkg-trust-demotion-clean",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-demotion-clean",
+    );
+    clean.plan = live_plan_with_policy(&resource, "pkg-trust-demotion-clean", &policy);
+    futures_executor::block_on(run_project(clean)).unwrap();
+
+    fs::write(
+        temp.path().join("data/events.ndjson"),
+        "{\"id\":1,\"name\":\"ada\"}\n\
+         {\"id\":2,\"name\":\"raw-secret\"}\n",
+    )
+    .unwrap();
+    let mut quarantine = project_run_request(
+        &resource,
+        "pkg-trust-demotion-quarantine",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-demotion-quarantine",
+    );
+    quarantine.plan = live_plan_with_policy(&resource, "pkg-trust-demotion-quarantine", &policy);
+    let report = futures_executor::block_on(run_project(quarantine)).unwrap();
+    let transition_index = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .position(|event| event.kind == RunEventKind::ValidationDepthTransitionRecorded)
+        .expect("demotion transition event");
+    let transition = &report.ledger_snapshot.events[transition_index];
+
+    assert_eq!(transition.package_hash, Some(report.package_hash.clone()));
+    assert_eq!(
+        transition.details.attributes.get("from_depth"),
+        Some(&RunEventValue::String("sampled_fast_path".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("to_depth"),
+        Some(&RunEventValue::String("full".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("trigger"),
+        Some(&RunEventValue::String("quarantine_event".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("schema_hash"),
+        Some(&RunEventValue::String(
+            report.receipt.schema_hash.as_str().to_owned()
+        ))
+    );
+    let transition_json = serde_json::to_string(transition).unwrap();
+    assert!(!transition_json.contains("raw-secret"));
+    assert!(!transition_json.contains("secret://"));
+
+    let kinds = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert!(
+        kinds
+            .iter()
+            .position(|kind| *kind == RunEventKind::PackageFinalized)
+            .unwrap()
+            < transition_index
+    );
+    assert!(
+        transition_index
+            < kinds
+                .iter()
+                .position(|kind| *kind == RunEventKind::CheckpointProposed)
+                .unwrap()
+    );
+    assert!(kinds.contains(&RunEventKind::CheckpointCommitted));
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-live").unwrap(),
+            &resource.descriptor().resource_id,
+            &resource.descriptor().state_scope,
+        )
+        .unwrap()
+        .expect("checkpoint head");
+    assert_eq!(
+        head.delta.checkpoint_id,
+        report.checkpoint.delta.checkpoint_id
     );
 }
 
@@ -1757,6 +2064,7 @@ fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
             RunEventKind::PackageFinalized,
+            RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
             RunEventKind::DestinationReceiptRecorded,
@@ -1821,6 +2129,7 @@ fn general_project_run_commits_file_resource_to_postgres_with_ledger_order() {
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
             RunEventKind::PackageFinalized,
+            RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
             RunEventKind::DestinationReceiptRecorded,
@@ -2665,6 +2974,7 @@ fn general_project_run_records_failure_after_durable_receipt_without_advancing_s
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
             RunEventKind::PackageFinalized,
+            RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
             RunEventKind::DestinationReceiptRecorded,
