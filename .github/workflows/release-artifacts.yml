@@ -1,0 +1,246 @@
+name: Release Artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without leading v"
+        required: true
+        default: "0.1.0"
+      upload_github_prerelease:
+        description: "Upload artifacts to a GitHub prerelease"
+        required: true
+        type: boolean
+        default: false
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+concurrency:
+  group: release-artifacts-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  metadata:
+    name: Release metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+      upload_github_prerelease: ${{ steps.upload.outputs.value }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          if [[ -z "$version" || "$version" == v* ]]; then
+            echo "release version must be nonempty and must not include leading v" >&2
+            exit 1
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve upload mode
+        id: upload
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "value=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.upload_github_prerelease }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Validate release metadata
+        run: tools/verify-release-metadata.sh "${{ steps.version.outputs.value }}"
+
+      - name: Confirm crates.io publication remains disabled
+        shell: bash
+        run: |
+          publish_pattern='cargo publi[s]h|cargo logi[n]'
+          if grep -RE "$publish_pattern" .github/workflows tools; then
+            echo "release workflow must not publish crates while DataFusion remains pinned to git" >&2
+            exit 1
+          fi
+          echo "crates.io publication disabled"
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            binary: cdf
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            binary: cdf
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            binary: cdf
+          - target: aarch64-apple-darwin
+            os: macos-15
+            binary: cdf
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            binary: cdf.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Python archive runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Validate release metadata
+        shell: bash
+        run: tools/verify-release-metadata.sh "${{ needs.metadata.outputs.version }}"
+
+      - name: Build cdf
+        shell: bash
+        run: cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}"
+
+      - name: Package release artifact
+        shell: bash
+        run: |
+          target="${{ matrix.target }}"
+          version="${{ needs.metadata.outputs.version }}"
+          binary="target/${target}/release/${{ matrix.binary }}"
+          host="$(rustc -vV | awk '/^host:/ { print $2 }')"
+          args=(
+            --version "$version"
+            --target "$target"
+            --binary "$binary"
+            --out-dir "dist"
+          )
+          if [[ -d target/generated/completions ]]; then
+            args+=(--completions-dir target/generated/completions)
+          fi
+          if [[ -d target/generated/man ]]; then
+            args+=(--man-dir target/generated/man)
+          fi
+          if [[ "$host" != "$target" ]]; then
+            args+=(--skip-binary-run "host ${host} cannot execute ${target}")
+          fi
+          tools/package-release-artifact.sh "${args[@]}"
+
+      - name: Verify target archive
+        shell: bash
+        run: tools/verify-release-artifacts.sh "${{ needs.metadata.outputs.version }}" dist "${{ matrix.target }}"
+
+      - name: Upload target artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdf-${{ needs.metadata.outputs.version }}-${{ matrix.target }}
+          path: |
+            dist/cdf-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz
+            dist/cdf-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz.sha256
+          if-no-files-found: error
+
+  verify:
+    name: Verify release bundle
+    needs:
+      - metadata
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download target artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cdf-${{ needs.metadata.outputs.version }}-*
+          path: dist/release
+          merge-multiple: true
+
+      - name: Verify all archives
+        shell: bash
+        run: |
+          targets=(
+            x86_64-unknown-linux-gnu
+            aarch64-unknown-linux-gnu
+            x86_64-apple-darwin
+            aarch64-apple-darwin
+            x86_64-pc-windows-msvc
+          )
+          tools/verify-release-artifacts.sh "${{ needs.metadata.outputs.version }}" dist/release "${targets[@]}"
+          (
+            cd dist/release
+            cat ./*.sha256 | sort -k2 > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
+      - name: Upload release bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdf-${{ needs.metadata.outputs.version }}-release-bundle
+          path: dist/release
+          if-no-files-found: error
+
+  github-prerelease:
+    name: GitHub prerelease
+    needs:
+      - metadata
+      - verify
+    if: ${{ needs.metadata.outputs.upload_github_prerelease == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download release bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: cdf-${{ needs.metadata.outputs.version }}-release-bundle
+          path: dist/release
+
+      - name: Build release notes from changelog
+        shell: bash
+        run: tools/verify-release-metadata.sh "${{ needs.metadata.outputs.version }}" --write-changelog-excerpt dist/release/RELEASE_NOTES.md
+
+      - name: Publish GitHub prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.metadata.outputs.version }}
+          name: CDF v${{ needs.metadata.outputs.version }}
+          prerelease: true
+          body_path: dist/release/RELEASE_NOTES.md
+          files: |
+            dist/release/*.tar.gz
+            dist/release/*.sha256
+            dist/release/SHA256SUMS
+          fail_on_unmatched_files: true

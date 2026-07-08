@@ -38,7 +38,9 @@ No claim of crates.io publication while the DataFusion git pin remains. No unsup
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This lane may begin immediately and must respect the existing reusable CodeQL database policy.
-- 2026-07-08: Ratified `.10x/specs/versioning-lts-release-policy.md` from P1 plus existing governance records. Split execution into `.10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md`, `.10x/tickets/2026-07-08-p1-product-ws8b-release-artifact-workflow.md`, and `.10x/tickets/2026-07-08-p1-product-ws8c-changelog-installer-channel.md`.
+- 2026-07-08: Ratified `.10x/specs/versioning-lts-release-policy.md` from P1 plus existing governance records. Split execution into `.10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md`, `.10x/tickets/2026-07-08-p1-product-ws8b-release-artifact-workflow.md`, and `.10x/tickets/done/2026-07-08-p1-product-ws8c-changelog-installer-channel.md`.
+- 2026-07-08: WS8B release artifact workflow closed at `.10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md`. It added the GitHub Actions release workflow, fail-closed metadata/artifact packaging scripts, local host artifact smoke evidence, and checksum verification. Parent remains open for actual hosted release-run evidence and generated completions/man pages once WS2D closes.
+- 2026-07-08: WS8B reproducibility blocker repaired. Packaging now uses deterministic tar/gzip writing through `tools/write-reproducible-targz.py`, and WS8B evidence includes a two-package identical-input SHA-256 and byte-identity smoke proof.
 
 ## Blockers
 

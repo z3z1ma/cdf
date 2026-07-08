@@ -49,7 +49,7 @@ Verification commands run in the main workspace:
 - Parent rerun: `cargo fmt --all -- --check`.
 - Parent rerun: `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings`.
 - Parent rerun: `git diff --check` over scoped WS3D records and source files.
-- Parent rerun: forbidden phrase scan `rg -n -i "killer demo" .10x docs crates VISION.md QUALITY.md README.md CHANGELOG.md tools`.
+- Parent rerun: forbidden legacy-demo-phrase scan across `.10x`, docs, crates, root docs, changelog, and tools.
 - Direct unsafe-token scan over touched WS3D Rust files.
 - Parent rerun: direct unsafe/extern scan over touched WS3D Rust files.
 - `semgrep scan --config p/rust --error` over touched WS3D Rust files.
@@ -72,7 +72,7 @@ Verification commands run in the main workspace:
 - `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings`: passed.
 - Direct unsafe/extern scan over touched WS3D Rust files: no matches. A broader parent token scan matched only `std::ffi::OsString` in tests and did not indicate unsafe boundary work.
 - Scoped `git diff --check`: passed.
-- Forbidden phrase scan for `killer demo`: no matches.
+- Forbidden legacy-demo-phrase scan: no matches.
 - Semgrep Rust scan over 8 touched Rust files: passed with 0 findings.
 - `jscpd`: completed with 8 Rust files analyzed, 25 clones, 346 duplicated lines, 3.45% duplicated lines. The clone profile is concentrated in the large existing test surface plus repeated CLI fixture shapes; no blocking duplication finding was produced.
 - `scc`: 8 Rust files analyzed, 10,041 lines, 3,791 code lines, complexity 169. Report path: `target/quality/reports/ws3d-scc.json`.
