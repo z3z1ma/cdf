@@ -4604,6 +4604,231 @@ fn state_show_uses_sqlite_store_and_reports_missing_head() {
 }
 
 #[test]
+fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
+    let project = TestProject::new();
+    remove_state_store(&project);
+
+    let first = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "migrate",
+    ]);
+
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    let first_json = stderr_or_stdout_json(&first.stdout);
+    assert_eq!(first_json["command"], "state migrate");
+    assert_eq!(first_json["result"]["applied_count"], 2);
+    assert!(
+        first_json["result"]["state_store_path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".cdf/state.db")
+    );
+    let first_components = first_json["result"]["components"].as_array().unwrap();
+    assert_eq!(first_components[0]["component"], "checkpoint_store");
+    assert_eq!(first_components[0]["before_version"], Value::Null);
+    assert_eq!(first_components[0]["after_version"], 1);
+    assert_eq!(first_components[0]["target_version"], 1);
+    assert_eq!(first_components[0]["applied"], true);
+    assert_eq!(first_components[0]["action"], "initialized");
+    assert_eq!(first_components[1]["component"], "run_ledger");
+    assert_eq!(first_components[1]["before_version"], Value::Null);
+    assert_eq!(first_components[1]["after_version"], 2);
+    assert_eq!(first_components[1]["target_version"], 2);
+    assert_eq!(first_components[1]["applied"], true);
+    assert_eq!(first_components[1]["action"], "initialized");
+
+    let second = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "migrate",
+    ]);
+
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+    let second_json = stderr_or_stdout_json(&second.stdout);
+    assert_eq!(second_json["result"]["applied_count"], 0);
+    let second_components = second_json["result"]["components"].as_array().unwrap();
+    assert_eq!(second_components[0]["action"], "current");
+    assert_eq!(second_components[0]["applied"], false);
+    assert_eq!(second_components[1]["action"], "current");
+    assert_eq!(second_components[1]["applied"], false);
+}
+
+#[test]
+fn state_recover_commits_verified_package_receipt_without_destination_rows() {
+    let project = TestProject::new();
+    let package_dir =
+        create_replay_package_fixture(&project, "pkg-state-recover", "checkpoint-state-recover");
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let package_hash = reader.manifest().package_hash.clone();
+    let receipt_id = reader.receipts().unwrap()[0].receipt_id.to_string();
+    let destination_path = project.root.join(".cdf/dev.duckdb");
+    let rows_before = duckdb_event_count(&destination_path);
+
+    let result = state_recover_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        None,
+        None,
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(json["command"], "state recover");
+    assert_eq!(report["command"], "state recover");
+    assert_eq!(report["package_id"], "pkg-state-recover");
+    assert_eq!(report["package_hash"], package_hash);
+    assert_eq!(report["selected_receipt_id"], receipt_id);
+    assert_eq!(report["receipt_selection"], "single_durable_receipt");
+    assert_eq!(report["destination"]["kind"], "duckdb");
+    assert_eq!(report["destination"]["destination_id"], "duckdb");
+    assert_eq!(report["checkpoint_id"], "checkpoint-state-recover");
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["checkpoint"]["is_head"], true);
+    assert_eq!(report["receipt_source"], "supplied_durable_receipt");
+    assert_eq!(report["writes"]["destination_rows"], false);
+    assert_eq!(report["writes"]["checkpoint"], true);
+    assert!(
+        report["evidence_limits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|limit| limit.as_str().unwrap().contains("quarantine lineage"))
+    );
+    assert_eq!(duckdb_event_count(&destination_path), rows_before);
+    assert_eq!(package_receipt_count(&package_dir), 1);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("state recover checkpoint head");
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-state-recover"
+    );
+    assert_eq!(
+        head.receipt.as_ref().unwrap().receipt_id.to_string(),
+        receipt_id
+    );
+}
+
+#[test]
+fn state_recover_explicit_receipt_disambiguates_multiple_package_receipts() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-state-recover-explicit",
+        "checkpoint-state-recover-explicit",
+    );
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let mut receipts = reader.receipts().unwrap();
+    let selected_receipt_id = receipts[0].receipt_id.to_string();
+    receipts[0].receipt_id = ReceiptId::new("receipt-state-recover-extra").unwrap();
+    reader.append_receipt(receipts[0].clone()).unwrap();
+    let rows_before = duckdb_event_count(project.root.join(".cdf/dev.duckdb"));
+
+    let result = state_recover_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/dev.duckdb",
+        Some(&selected_receipt_id),
+        None,
+        None,
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["receipt_selection"], "explicit");
+    assert_eq!(report["selected_receipt_id"], selected_receipt_id);
+    assert_eq!(report["receipt_id"], selected_receipt_id);
+    assert_eq!(
+        duckdb_event_count(project.root.join(".cdf/dev.duckdb")),
+        rows_before
+    );
+}
+
+#[test]
+fn state_recover_fails_closed_on_zero_or_ambiguous_package_receipts() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-state-recover-missing-receipt",
+        "checkpoint-state-recover-missing-receipt",
+    );
+    remove_package_receipts(&package_dir);
+
+    let missing = state_recover_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        None,
+        None,
+    );
+
+    assert_eq!(missing.exit_code, 3);
+    assert!(
+        !project.root.join(".cdf/state.db").exists(),
+        "missing receipt recovery must not create checkpoint state"
+    );
+    let missing_json = stderr_or_stdout_json(&missing.stderr);
+    assert!(
+        missing_json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("found zero")
+    );
+
+    let ambiguous_project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &ambiguous_project,
+        "pkg-state-recover-ambiguous-receipt",
+        "checkpoint-state-recover-ambiguous-receipt",
+    );
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let mut duplicate = reader.receipts().unwrap()[0].clone();
+    duplicate.receipt_id = ReceiptId::new("receipt-state-recover-ambiguous-extra").unwrap();
+    reader.append_receipt(duplicate).unwrap();
+
+    let ambiguous = state_recover_command(
+        &ambiguous_project,
+        &package_dir,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        None,
+        None,
+    );
+
+    assert_eq!(ambiguous.exit_code, 3);
+    assert!(
+        !ambiguous_project.root.join(".cdf/state.db").exists(),
+        "ambiguous receipt recovery must not create checkpoint state"
+    );
+    let ambiguous_json = stderr_or_stdout_json(&ambiguous.stderr);
+    assert!(
+        ambiguous_json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("pass --receipt")
+    );
+}
+
+#[test]
 fn unknown_command_returns_usage_exit_code() {
     let result = run(["cdf", "--json", "bogus"]);
 
@@ -4814,6 +5039,47 @@ fn replay_package_command_with_postgres_options(
         command.push(merge_dedup.to_owned());
     }
     run_dynamic(command)
+}
+
+fn state_recover_command(
+    project: &TestProject,
+    package_dir: &Path,
+    destination_uri: &str,
+    receipt_id: Option<&str>,
+    target: Option<&str>,
+    merge_dedup: Option<&str>,
+) -> crate::InvocationResult {
+    let mut command = vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "state".to_owned(),
+        "recover".to_owned(),
+        "--package".to_owned(),
+        package_dir.to_str().unwrap().to_owned(),
+        "--to".to_owned(),
+        destination_uri.to_owned(),
+    ];
+    if let Some(receipt_id) = receipt_id {
+        command.push("--receipt".to_owned());
+        command.push(receipt_id.to_owned());
+    }
+    if let Some(target) = target {
+        command.push("--target".to_owned());
+        command.push(target.to_owned());
+    }
+    if let Some(merge_dedup) = merge_dedup {
+        command.push("--merge-dedup".to_owned());
+        command.push(merge_dedup.to_owned());
+    }
+    run_dynamic(command)
+}
+
+fn duckdb_event_count(path: impl AsRef<Path>) -> i64 {
+    let conn = DuckConnection::open(path).unwrap();
+    conn.query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap()
 }
 
 fn resume_command(

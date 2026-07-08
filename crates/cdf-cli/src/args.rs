@@ -95,7 +95,7 @@ pub enum StateCommand {
     History(StateScopeArgs),
     Rewind(RewindArgs),
     Migrate,
-    Recover,
+    Recover(StateRecoverArgs),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +110,15 @@ pub struct RewindArgs {
     pub scope: StateScopeArgs,
     pub target_checkpoint_id: String,
     pub marker_checkpoint_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StateRecoverArgs {
+    pub package_dir: PathBuf,
+    pub destination_uri: String,
+    pub receipt_id: Option<String>,
+    pub target: Option<String>,
+    pub merge_dedup: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -444,11 +453,43 @@ fn parse_state(args: &[String]) -> Result<StateCommand, CliError> {
         "history" => parse_state_scope(&args[1..]).map(StateCommand::History),
         "rewind" => parse_rewind(&args[1..]).map(StateCommand::Rewind),
         "migrate" => no_extra_args("state migrate", &args[1..]).map(|()| StateCommand::Migrate),
-        "recover" => no_extra_args("state recover", &args[1..]).map(|()| StateCommand::Recover),
+        "recover" => parse_state_recover(&args[1..]).map(StateCommand::Recover),
         other => Err(CliError::usage(format!(
             "unknown state subcommand `{other}`"
         ))),
     }
+}
+
+fn parse_state_recover(args: &[String]) -> Result<StateRecoverArgs, CliError> {
+    let mut package_dir = None;
+    let mut destination_uri = None;
+    let mut receipt_id = None;
+    let mut target = None;
+    let mut merge_dedup = None;
+    let mut cursor = Cursor::new(args);
+    while let Some(arg) = cursor.next() {
+        match arg {
+            "--package" => package_dir = Some(PathBuf::from(cursor.value("--package")?)),
+            "--to" => destination_uri = Some(cursor.value("--to")?),
+            "--receipt" => receipt_id = Some(cursor.value("--receipt")?),
+            "--target" => target = Some(cursor.value("--target")?),
+            "--merge-dedup" => merge_dedup = Some(cursor.value("--merge-dedup")?),
+            value => {
+                return Err(CliError::usage(format!(
+                    "unknown state recover option `{value}`"
+                )));
+            }
+        }
+    }
+    Ok(StateRecoverArgs {
+        package_dir: package_dir
+            .ok_or_else(|| CliError::usage("state recover requires --package"))?,
+        destination_uri: destination_uri
+            .ok_or_else(|| CliError::usage("state recover requires --to"))?,
+        receipt_id,
+        target,
+        merge_dedup,
+    })
 }
 
 fn parse_state_scope(args: &[String]) -> Result<StateScopeArgs, CliError> {

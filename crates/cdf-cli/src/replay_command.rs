@@ -1,11 +1,12 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use cdf_kernel::{CdfError, RunId, TargetName};
+use cdf_kernel::{CdfError, Receipt, RunId, TargetName};
 use cdf_package::{PackageReader, PackageReplayInputs};
 use cdf_project::{
-    DestinationPolicy, PackageArtifactReplayRequest, PackageReplayReport,
-    PostgresDestinationPolicy, PostgresMergeDedupPolicy, ProjectResolutionContext,
-    ResolvedProjectDestination, replay_package_from_artifacts, resolve_project_run_destination,
+    DestinationPolicy, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
+    PackageReplayReport, PostgresDestinationPolicy, PostgresMergeDedupPolicy,
+    ProjectResolutionContext, ResolvedProjectDestination, recover_package_from_artifacts,
+    replay_package_from_artifacts, resolve_project_run_destination,
 };
 use cdf_state_sqlite::{RunEventAppend, RunEventKind, SqliteCheckpointStore, SqliteRunLedger};
 
@@ -21,15 +22,29 @@ use crate::{
     run_command::ensure_parent_directory,
 };
 
-struct ReplayDestination {
+#[derive(Clone, Copy)]
+pub(crate) struct PackageReplayDestinationArgs<'a> {
+    pub(crate) destination_uri: &'a str,
+    pub(crate) target: Option<&'a str>,
+    pub(crate) merge_dedup: Option<&'a str>,
+}
+
+pub(crate) struct ReplayDestination {
     destination: Option<ResolvedProjectDestination>,
     report: RunDestinationReport,
     kind: &'static str,
     secret_redaction: Option<String>,
 }
 
+pub(crate) struct PackageReplayContext {
+    pub(crate) project: ProjectContext,
+    pub(crate) reader: PackageReader,
+    pub(crate) package_id: String,
+    pub(crate) inputs: PackageReplayInputs,
+}
+
 impl ReplayDestination {
-    fn replay(
+    pub(crate) fn replay(
         &mut self,
         package_dir: PathBuf,
         store: &SqliteCheckpointStore,
@@ -57,9 +72,49 @@ impl ReplayDestination {
         }
     }
 
-    fn kind(&self) -> &'static str {
+    pub(crate) fn recover(
+        &mut self,
+        package_dir: PathBuf,
+        store: &SqliteCheckpointStore,
+        receipt: Receipt,
+    ) -> Result<PackageReplayReport, CliError> {
+        let destination = self
+            .destination
+            .take()
+            .ok_or_else(|| CdfError::internal("replay destination was already consumed"))?;
+        recover_package_from_artifacts(PackageArtifactRecoveryRequest {
+            package_dir,
+            destination,
+            checkpoint_store: store,
+            receipt,
+            after_receipt_verified: None,
+        })
+        .map_err(|error| redact_error_value(error, self.secret_redaction.as_deref()).into())
+    }
+
+    pub(crate) fn report(&self) -> &RunDestinationReport {
+        &self.report
+    }
+
+    pub(crate) fn kind(&self) -> &'static str {
         self.kind
     }
+}
+
+pub(crate) fn load_package_replay_context(
+    cli: &Cli,
+    package_dir: &Path,
+) -> Result<PackageReplayContext, CliError> {
+    let project = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let reader = PackageReader::open(package_dir)?;
+    let package_id = reader.manifest().identity.package_id.clone();
+    let inputs = reader.replay_inputs()?;
+    Ok(PackageReplayContext {
+        project,
+        reader,
+        package_id,
+        inputs,
+    })
 }
 
 fn replay_report_ref(report: &PackageReplayReport) -> PreparedReplayReportRef<'_> {
@@ -71,12 +126,12 @@ fn replay_report_ref(report: &PackageReplayReport) -> PreparedReplayReportRef<'_
     }
 }
 
-fn build_replay_destination(
+pub(crate) fn build_replay_destination(
     context: &ProjectContext,
-    args: &ReplayPackageArgs,
+    args: PackageReplayDestinationArgs<'_>,
     inputs: &PackageReplayInputs,
 ) -> Result<ReplayDestination, CliError> {
-    let uri = &args.destination_uri;
+    let uri = args.destination_uri;
     let secret_provider = context.secret_provider();
     let replay_policy;
     let destination_policy = if uri.starts_with("postgres://") {
@@ -120,11 +175,11 @@ fn build_replay_destination(
 }
 
 fn replay_target(
-    args: &ReplayPackageArgs,
+    args: PackageReplayDestinationArgs<'_>,
     inputs: &PackageReplayInputs,
 ) -> Result<TargetName, CliError> {
     if args.destination_uri.starts_with("postgres://") {
-        let explicit = args.target.as_deref().ok_or_else(|| {
+        let explicit = args.target.ok_or_else(|| {
             CliError::usage("replay package to Postgres requires --target schema.table")
         })?;
         let target = replay_postgres_target(explicit)?;
@@ -149,8 +204,10 @@ fn replay_postgres_target(target: &str) -> Result<cdf_dest_postgres::PostgresTar
     cdf_dest_postgres::PostgresTarget::parse(target).map_err(CliError::from)
 }
 
-fn replay_postgres_policy(args: &ReplayPackageArgs) -> Result<DestinationPolicy, CliError> {
-    let merge_dedup = match args.merge_dedup.as_deref() {
+fn replay_postgres_policy(
+    args: PackageReplayDestinationArgs<'_>,
+) -> Result<DestinationPolicy, CliError> {
+    let merge_dedup = match args.merge_dedup {
         Some("fail") => PostgresMergeDedupPolicy::Fail,
         Some(value) => {
             return Err(CliError::usage(format!(
@@ -197,17 +254,22 @@ pub(crate) fn replay_package(
     cli: &Cli,
     args: ReplayPackageArgs,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    let reader = PackageReader::open(&args.package_dir)?;
-    let package_id = reader.manifest().identity.package_id.clone();
-    let replay_inputs = reader.replay_inputs()?;
-    let mut replay_destination = build_replay_destination(&context, &args, &replay_inputs)?;
-    let package_hash = replay_inputs.state_delta.package_hash.clone();
-    let state_store_path = context.state_store_path()?;
+    let package = load_package_replay_context(cli, &args.package_dir)?;
+    let mut replay_destination = build_replay_destination(
+        &package.project,
+        PackageReplayDestinationArgs {
+            destination_uri: &args.destination_uri,
+            target: args.target.as_deref(),
+            merge_dedup: args.merge_dedup.as_deref(),
+        },
+        &package.inputs,
+    )?;
+    let package_hash = package.inputs.state_delta.package_hash.clone();
+    let state_store_path = package.project.state_store_path()?;
     ensure_parent_directory(&state_store_path)?;
     let run_ledger = SqliteRunLedger::open(&state_store_path)?;
     let run = run_ledger.create_run(None)?;
-    let store = context.state_store()?;
+    let store = package.project.state_store()?;
 
     let replay_report =
         replay_destination.replay(args.package_dir.clone(), &store, &run_ledger, &run.run_id)?;
@@ -215,9 +277,9 @@ pub(crate) fn replay_package(
 
     let receipt_source = report.receipt_source.clone();
     let mut event = RunEventAppend::new(RunEventKind::ReplayRecorded);
-    event.resource_id = Some(replay_inputs.state_delta.resource_id.clone());
-    event.scope = Some(replay_inputs.state_delta.scope.clone());
-    event.package_id = Some(package_id.clone());
+    event.resource_id = Some(package.inputs.state_delta.resource_id.clone());
+    event.scope = Some(package.inputs.state_delta.scope.clone());
+    event.package_id = Some(package.package_id.clone());
     event.package_hash = Some(package_hash.clone());
     event.package_path = Some(args.package_dir.display().to_string());
     event.checkpoint_id = Some(report.checkpoint.delta.checkpoint_id.clone());
@@ -238,7 +300,7 @@ pub(crate) fn replay_package(
         .with_receipt_destination(report.receipt.destination.to_string());
     let cli_report = ReplayPackageCliReport::from_report(
         run.run_id.to_string(),
-        package_id,
+        package.package_id,
         args.package_dir,
         report,
         receipt_source,

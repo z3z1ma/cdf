@@ -11,10 +11,13 @@ use cdf_kernel::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 
 use crate::support::{
-    decode_json, encode_json, lock_error, missing_checkpoint, now_ms, packages_ahead_of_state,
-    rewind_marker, same_tuple, sqlite_error, validate_state_version, verify_receipt,
+    decode_json, encode_json, ensure_migration_table, lock_error, missing_checkpoint, now_ms,
+    packages_ahead_of_state, read_component_schema_version, rewind_marker, same_tuple,
+    sqlite_error, validate_state_version, verify_receipt, write_component_schema_version,
 };
 
+pub(crate) const CHECKPOINT_STORE_COMPONENT: &str = "checkpoint_store";
+pub(crate) const CHECKPOINT_STORE_SCHEMA_VERSION: i64 = 1;
 const CHECKPOINT_SELECT: &str = "SELECT checkpoint_id, pipeline_id, resource_id, scope_json, state_version, parent_checkpoint_id, input_position_json, output_position_json, package_hash, schema_hash, receipt_id, status, is_head, created_at_ms, committed_at_ms, delta_json, receipt_json, rewind_target_checkpoint_id FROM cdf_checkpoints";
 pub struct SqliteCheckpointStore {
     conn: Mutex<Connection>,
@@ -326,7 +329,13 @@ impl CheckpointStore for SqliteCheckpointStore {
     }
 }
 
-fn initialize_schema(conn: &Connection) -> Result<()> {
+pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
+    ensure_migration_table(conn)?;
+    match read_component_schema_version(conn, CHECKPOINT_STORE_COMPONENT)? {
+        Some(CHECKPOINT_STORE_SCHEMA_VERSION) | None => {}
+        Some(version) => return Err(unsupported_checkpoint_schema_version(version)),
+    }
+
     conn.execute_batch(
         "
         PRAGMA foreign_keys = ON;
@@ -366,7 +375,18 @@ fn initialize_schema(conn: &Connection) -> Result<()> {
             ON cdf_checkpoints (pipeline_id, resource_id, scope_json, sequence);
         ",
     )
-    .map_err(sqlite_error)
+    .map_err(sqlite_error)?;
+    write_component_schema_version(
+        conn,
+        CHECKPOINT_STORE_COMPONENT,
+        CHECKPOINT_STORE_SCHEMA_VERSION,
+    )
+}
+
+fn unsupported_checkpoint_schema_version(version: i64) -> CdfError {
+    CdfError::internal(format!(
+        "unsupported checkpoint store SQLite schema version {version}"
+    ))
 }
 
 fn insert_checkpoint(tx: &Transaction<'_>, checkpoint: &Checkpoint) -> Result<()> {

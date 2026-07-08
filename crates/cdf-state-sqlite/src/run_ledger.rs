@@ -15,9 +15,13 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::support::{encode_json, lock_error, now_ms, sqlite_error};
+use crate::support::{
+    encode_json, ensure_migration_table, lock_error, now_ms, read_component_schema_version,
+    sqlite_error, write_component_schema_version,
+};
 
-const RUN_LEDGER_SCHEMA_VERSION: i64 = 2;
+pub(crate) const RUN_LEDGER_COMPONENT: &str = "run_ledger";
+pub(crate) const RUN_LEDGER_SCHEMA_VERSION: i64 = 2;
 const RUN_EVENT_SELECT: &str = "SELECT run_id, sequence, timestamp_ms, kind, resource_id, scope_json, partition_id, package_id, package_hash, package_path, checkpoint_id, receipt_id, destination_id, plan_id, details_json FROM cdf_run_events";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -385,21 +389,16 @@ impl SqliteRunLedger {
     }
 }
 
-fn initialize_run_schema(conn: &Connection) -> Result<()> {
+pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
     conn.execute_batch(
         "
         PRAGMA foreign_keys = ON;
         PRAGMA journal_mode = WAL;
         PRAGMA synchronous = NORMAL;
-
-        CREATE TABLE IF NOT EXISTS cdf_sqlite_schema_migrations (
-            component TEXT PRIMARY KEY,
-            version INTEGER NOT NULL,
-            applied_at_ms INTEGER NOT NULL
-        );
         ",
     )
     .map_err(sqlite_error)?;
+    ensure_migration_table(conn)?;
 
     let existing_version = read_run_schema_version(conn)?;
     match existing_version {
@@ -504,11 +503,7 @@ fn initialize_run_schema(conn: &Connection) -> Result<()> {
     .map_err(sqlite_error)?;
 
     if existing_version.is_none() {
-        conn.execute(
-            "INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms) VALUES ('run_ledger', ?, ?)",
-            params![RUN_LEDGER_SCHEMA_VERSION, now_ms()?],
-        )
-        .map_err(sqlite_error)?;
+        write_component_schema_version(conn, RUN_LEDGER_COMPONENT, RUN_LEDGER_SCHEMA_VERSION)?;
     }
 
     Ok(())
@@ -524,28 +519,7 @@ fn validate_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
 }
 
 fn read_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
-    let migration_table_exists = conn
-        .query_row(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cdf_sqlite_schema_migrations'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(sqlite_error)?
-        .is_some();
-    if !migration_table_exists {
-        return Ok(None);
-    }
-
-    let existing_version = conn
-        .query_row(
-            "SELECT version FROM cdf_sqlite_schema_migrations WHERE component = 'run_ledger'",
-            [],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()
-        .map_err(sqlite_error)?;
-    Ok(existing_version)
+    read_component_schema_version(conn, RUN_LEDGER_COMPONENT)
 }
 
 fn unsupported_run_schema_version(version: i64) -> CdfError {
@@ -642,8 +616,8 @@ fn migrate_run_schema_v1_to_v2(conn: &Connection) -> Result<()> {
     )
     .map_err(sqlite_error)?;
     conn.execute(
-        "UPDATE cdf_sqlite_schema_migrations SET version = ?, applied_at_ms = ? WHERE component = 'run_ledger'",
-        params![RUN_LEDGER_SCHEMA_VERSION, now_ms()?],
+        "UPDATE cdf_sqlite_schema_migrations SET version = ?, applied_at_ms = ? WHERE component = ?",
+        params![RUN_LEDGER_SCHEMA_VERSION, now_ms()?, RUN_LEDGER_COMPONENT],
     )
     .map_err(sqlite_error)?;
     Ok(())

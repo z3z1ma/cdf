@@ -712,6 +712,81 @@ fn sqlite_uses_wal_and_single_committed_head_index() {
 }
 
 #[test]
+fn sqlite_state_migration_initializes_missing_database_and_is_idempotent() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+
+    let first = migrate_sqlite_state(&db_path).unwrap();
+    assert_eq!(first.applied_count(), 2);
+    assert_eq!(first.components.len(), 2);
+    assert_eq!(first.components[0].component, "checkpoint_store");
+    assert_eq!(first.components[0].before_version, None);
+    assert_eq!(first.components[0].after_version, 1);
+    assert_eq!(first.components[0].target_version, 1);
+    assert_eq!(
+        first.components[0].action,
+        SqliteStateMigrationAction::Initialized
+    );
+    assert_eq!(first.components[1].component, "run_ledger");
+    assert_eq!(first.components[1].before_version, None);
+    assert_eq!(first.components[1].after_version, 2);
+    assert_eq!(first.components[1].target_version, 2);
+    assert_eq!(
+        first.components[1].action,
+        SqliteStateMigrationAction::Initialized
+    );
+
+    let second = migrate_sqlite_state(&db_path).unwrap();
+    assert_eq!(second.applied_count(), 0);
+    assert_eq!(
+        second
+            .components
+            .iter()
+            .map(|component| component.action)
+            .collect::<Vec<_>>(),
+        vec![
+            SqliteStateMigrationAction::Current,
+            SqliteStateMigrationAction::Current
+        ]
+    );
+}
+
+#[test]
+fn sqlite_state_migration_upgrades_committed_run_ledger_v1_fixture() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(include_str!("../fixtures/run-ledger-v1.sql"))
+        .unwrap();
+    drop(conn);
+
+    let report = migrate_sqlite_state(&db_path).unwrap();
+    assert_eq!(report.components[0].component, "checkpoint_store");
+    assert_eq!(
+        report.components[0].action,
+        SqliteStateMigrationAction::Initialized
+    );
+    assert_eq!(report.components[1].component, "run_ledger");
+    assert_eq!(report.components[1].before_version, Some(1));
+    assert_eq!(report.components[1].after_version, 2);
+    assert_eq!(
+        report.components[1].action,
+        SqliteStateMigrationAction::Migrated
+    );
+
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let run_id = RunId::new("run-v1-fixture").unwrap();
+    let snapshot = ledger.snapshot(&run_id).unwrap().unwrap();
+    assert_eq!(snapshot.events.len(), 1);
+    ledger
+        .append_event(
+            &run_id,
+            RunEventAppend::new(RunEventKind::ValidationDepthTransitionRecorded),
+        )
+        .unwrap();
+}
+
+#[test]
 fn sqlite_head_move_remains_transactionally_unique_across_connections() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("state.db");

@@ -94,7 +94,8 @@ Commands:
   contract freeze|show|test
   state show|history --pipeline ID --resource ID [--scope-json JSON]
   state rewind --pipeline ID --resource ID --target-checkpoint ID --marker-checkpoint ID [--scope-json JSON]
-  state migrate|recover
+  state migrate
+  state recover --package DIR --to DEST [--receipt ID] [--target schema.table --merge-dedup fail]
   resume [RUN_ID]
   replay package <DIR>
   backfill [RESOURCE]

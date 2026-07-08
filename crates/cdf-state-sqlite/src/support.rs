@@ -7,6 +7,7 @@ use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus, PackageHash,
     PipelineId, Receipt, ResourceId, Result, RewindRequest, ScopeKey, StateDelta, StateSegment,
 };
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::de::DeserializeOwned;
 
 pub(crate) fn rewind_marker(
@@ -139,6 +140,63 @@ pub(crate) fn now_ms() -> Result<i64> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| CdfError::internal(error.to_string()))?;
     i64::try_from(elapsed.as_millis()).map_err(|error| CdfError::internal(error.to_string()))
+}
+
+pub(crate) fn ensure_migration_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS cdf_sqlite_schema_migrations (
+            component TEXT PRIMARY KEY,
+            version INTEGER NOT NULL,
+            applied_at_ms INTEGER NOT NULL
+        );
+        ",
+    )
+    .map_err(sqlite_error)
+}
+
+pub(crate) fn migration_table_exists(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cdf_sqlite_schema_migrations'",
+        [],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map(|value| value.is_some())
+    .map_err(sqlite_error)
+}
+
+pub(crate) fn read_component_schema_version(
+    conn: &Connection,
+    component: &str,
+) -> Result<Option<i64>> {
+    if !migration_table_exists(conn)? {
+        return Ok(None);
+    }
+    conn.query_row(
+        "SELECT version FROM cdf_sqlite_schema_migrations WHERE component = ?",
+        params![component],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(sqlite_error)
+}
+
+pub(crate) fn write_component_schema_version(
+    conn: &Connection,
+    component: &str,
+    version: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
+         VALUES (?, ?, ?)
+         ON CONFLICT(component) DO UPDATE SET
+             version = excluded.version,
+             applied_at_ms = excluded.applied_at_ms",
+        params![component, version, now_ms()?],
+    )
+    .map(|_| ())
+    .map_err(sqlite_error)
 }
 
 pub(crate) fn sqlite_error(error: rusqlite::Error) -> CdfError {

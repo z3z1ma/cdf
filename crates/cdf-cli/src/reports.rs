@@ -47,13 +47,7 @@ impl RunCliReport {
             package_hash: report.package_hash.to_string(),
             package_status: report.package_status.as_str().to_owned(),
             checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
-            checkpoint: RunCheckpointReport {
-                checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
-                status: report.checkpoint.status.as_str().to_owned(),
-                committed: report.checkpoint.committed_at_ms.is_some(),
-                is_head: report.checkpoint.is_head,
-                committed_at_ms: report.checkpoint.committed_at_ms,
-            },
+            checkpoint: RunCheckpointReport::from_checkpoint(&report.checkpoint),
             receipt_id: report.receipt.receipt_id.to_string(),
             receipt: RunReceiptReport::from_report(report),
             receipt_source: RunReceiptSourceReport::from_project(
@@ -126,13 +120,7 @@ impl ReplayPackageCliReport {
             target: report.receipt.target.to_string(),
             package_status: report.package_status.as_str().to_owned(),
             checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
-            checkpoint: RunCheckpointReport {
-                checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
-                status: report.checkpoint.status.as_str().to_owned(),
-                committed: report.checkpoint.committed_at_ms.is_some(),
-                is_head: report.checkpoint.is_head,
-                committed_at_ms: report.checkpoint.committed_at_ms,
-            },
+            checkpoint: RunCheckpointReport::from_checkpoint(report.checkpoint),
             receipt_id: report.receipt.receipt_id.to_string(),
             receipt: RunReceiptReport::from_receipt(report.receipt),
             receipt_source: RunReceiptSourceReport::from_project(&receipt_source, destination_kind),
@@ -164,12 +152,24 @@ impl ReplayPackageCliReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct RunCheckpointReport {
+pub(crate) struct RunCheckpointReport {
     checkpoint_id: String,
     status: String,
     committed: bool,
     is_head: bool,
     committed_at_ms: Option<i64>,
+}
+
+impl RunCheckpointReport {
+    pub(crate) fn from_checkpoint(checkpoint: &cdf_kernel::Checkpoint) -> Self {
+        Self {
+            checkpoint_id: checkpoint.delta.checkpoint_id.to_string(),
+            status: checkpoint.status.as_str().to_owned(),
+            committed: checkpoint.committed_at_ms.is_some(),
+            is_head: checkpoint.is_head,
+            committed_at_ms: checkpoint.committed_at_ms,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -244,7 +244,7 @@ impl RunDestinationReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct RunReceiptReport {
+pub(crate) struct RunReceiptReport {
     receipt_id: String,
     destination_id: String,
     target: String,
@@ -260,7 +260,7 @@ impl RunReceiptReport {
         Self::from_receipt(&report.receipt)
     }
 
-    fn from_receipt(receipt: &cdf_kernel::Receipt) -> Self {
+    pub(crate) fn from_receipt(receipt: &cdf_kernel::Receipt) -> Self {
         Self {
             receipt_id: receipt.receipt_id.to_string(),
             destination_id: receipt.destination.to_string(),

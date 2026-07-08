@@ -19,7 +19,7 @@ This is a planning parent, not an executable implementation ticket. Before imple
 - `cdf plan` and `cdf explain`: `.10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md`.
 - `cdf preview`: `.10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md`.
 - `cdf contract freeze` and `cdf contract test`: `.10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md`.
-- `cdf state migrate` and `cdf state recover`: `.10x/tickets/2026-07-07-cli-state-migrate-recover.md`.
+- `cdf state migrate` and `cdf state recover`: `.10x/tickets/done/2026-07-07-cli-state-migrate-recover.md`.
 - `cdf backfill`: `.10x/tickets/2026-07-07-cli-backfill-planner.md`.
 - `cdf package gc`: `.10x/tickets/done/2026-07-07-cli-package-gc-retention.md`.
 - `cdf status`: `.10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md`.
