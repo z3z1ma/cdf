@@ -169,6 +169,16 @@ fn parser_preserves_global_project_env_and_json_anywhere() {
 }
 
 #[test]
+fn parser_accepts_no_color_anywhere_without_changing_json_envelope() {
+    let result = run(["cdf", "version", "--no-color", "--json"]);
+
+    assert_eq!(result.exit_code, 0);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "version");
+    assert_eq!(json["result"]["version"], env!("CARGO_PKG_VERSION"));
+}
+
+#[test]
 fn init_default_directory_creates_scaffold_and_validate_passes() {
     let temp = TempDir::new("cdf-cli-init");
     let target = temp.path().join("fresh-project");

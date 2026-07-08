@@ -13,6 +13,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cli {
     pub json: bool,
+    pub no_color: bool,
     pub project: Option<PathBuf>,
     pub env: Option<String>,
     pub command: Command,
@@ -184,6 +185,7 @@ impl Cli {
         }
 
         let mut json = false;
+        let mut no_color = false;
         let mut project = None;
         let mut env = None;
         let mut remaining = Vec::new();
@@ -192,6 +194,10 @@ impl Cli {
             match raw[index].as_str() {
                 "--json" => {
                     json = true;
+                    index += 1;
+                }
+                "--no-color" => {
+                    no_color = true;
                     index += 1;
                 }
                 "--project" => {
@@ -218,6 +224,7 @@ impl Cli {
         let command = parse_command(&remaining)?;
         Ok(Self {
             json,
+            no_color,
             project,
             env,
             command,
@@ -629,6 +636,7 @@ fn cli_command() -> ClapCommand {
     cmd("cdf")
         .version(VERSION)
         .about("Continuous Data Framework CLI")
+        .arg(flag("no_color", "no-color").global(true))
         .arg_required_else_help(false)
         .disable_help_subcommand(true)
         .subcommand(cmd("help").arg(values_arg("command").value_name("COMMAND")))

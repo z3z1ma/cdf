@@ -1,6 +1,8 @@
 use cdf_kernel::{CdfError, ErrorKind};
 use serde::Serialize;
 
+use crate::render::{RenderConfig, RenderDocument};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InvocationResult {
     pub exit_code: i32,
@@ -85,8 +87,42 @@ impl From<CdfError> for CliError {
 pub struct CommandOutput {
     pub command: &'static str,
     pub exit_code: i32,
-    pub human: String,
+    pub human: HumanOutput,
     pub json: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum HumanOutput {
+    Plain(String),
+    #[allow(dead_code)]
+    // 10x: renderer hook is exercised by WS3B tests before command-family migration tickets use it.
+    Rendered(RenderDocument),
+}
+
+impl HumanOutput {
+    fn render(self, config: &RenderConfig) -> String {
+        match self {
+            Self::Plain(text) => text,
+            Self::Rendered(document) => document.render(config),
+        }
+    }
+}
+
+impl CommandOutput {
+    #[allow(dead_code)] // 10x: WS3B installs the typed renderer output hook; WS3C/WS3D adopt it by command family.
+    pub(crate) fn rendered<T: Serialize>(
+        command: &'static str,
+        document: RenderDocument,
+        value: T,
+    ) -> Result<Self, CliError> {
+        Ok(Self {
+            command,
+            exit_code: 0,
+            human: HumanOutput::Rendered(document),
+            json: serde_json::to_value(value)
+                .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?,
+        })
+    }
 }
 
 #[derive(Serialize)]
@@ -103,7 +139,11 @@ struct ErrorEnvelope {
 }
 
 impl InvocationResult {
-    pub fn from_output(json_mode: bool, output: CommandOutput) -> Self {
+    pub(crate) fn from_output(
+        json_mode: bool,
+        render_config: &RenderConfig,
+        output: CommandOutput,
+    ) -> Self {
         let stdout = if json_mode {
             let envelope = SuccessEnvelope {
                 ok: true,
@@ -115,10 +155,13 @@ impl InvocationResult {
                 serde_json::to_string_pretty(&envelope)
                     .expect("CLI success envelope must serialize")
             )
-        } else if output.human.ends_with('\n') {
-            output.human
         } else {
-            format!("{}\n", output.human)
+            let human = output.human.render(render_config);
+            if human.ends_with('\n') {
+                human
+            } else {
+                format!("{human}\n")
+            }
         };
         Self {
             exit_code: output.exit_code,

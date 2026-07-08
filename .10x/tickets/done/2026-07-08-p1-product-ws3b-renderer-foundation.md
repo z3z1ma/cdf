@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
@@ -27,8 +27,14 @@ Renderer unit tests, snapshots, redaction tests, `cargo test -p cdf-cli --locked
 
 ## Explicit exclusions
 
-No command-family migration except minimal wiring needed to compile. No live progress; WS5 owns progress. No parser grammar changes.
+No command-family migration except minimal wiring needed to compile. No live progress; WS5 owns progress. No parser grammar changes beyond minimal `--no-color` display flag plumbing.
 
 ## Blockers
 
 None.
+
+## Progress and notes
+
+- 2026-07-08: Worker inspected the owning ticket, renderer decision, CLI/security and live-progress specs, `QUALITY.md`, `cdf-cli` output/parser/library surfaces, current tests, and dirty worktree state before editing. Existing dirty WASM records are unrelated and remain untouched.
+- 2026-07-08: Added `crates/cdf-cli/src/render/**`, `CommandOutput` rendered-human hooks, global `--no-color` parser plumbing, and foundational renderer snapshot-style tests without migrating command families.
+- 2026-07-08: Closure evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws3b-renderer-foundation.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p1-product-ws3b-renderer-foundation-review.md`.

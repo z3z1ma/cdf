@@ -5,14 +5,16 @@ use serde_json::json;
 use crate::{
     args::{Cli, Command},
     output::{CliError, CommandOutput, InvocationResult},
+    render::RenderConfig,
 };
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn execute(cli: Cli) -> InvocationResult {
     let json_mode = cli.json;
+    let render_config = RenderConfig::detect(cli.no_color);
     match dispatch(cli) {
-        Ok(output) => InvocationResult::from_output(json_mode, output),
+        Ok(output) => InvocationResult::from_output(json_mode, &render_config, output),
         Err(error) => InvocationResult::from_error(json_mode, error),
     }
 }
@@ -67,7 +69,7 @@ pub(crate) fn report_output<T: Serialize>(
     Ok(CommandOutput {
         command,
         exit_code,
-        human,
+        human: crate::output::HumanOutput::Plain(human),
         json: serde_json::to_value(value).map_err(json_cli_error)?,
     })
 }

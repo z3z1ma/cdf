@@ -17,6 +17,7 @@ mod output;
 mod package_command;
 mod project_command;
 mod project_run_resource;
+mod render;
 mod replay_command;
 mod reports;
 mod resume_command;
