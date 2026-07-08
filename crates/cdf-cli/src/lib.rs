@@ -12,6 +12,7 @@ mod contract_command;
 mod destination_uri;
 mod doctor_command;
 mod doctor_drift;
+mod error_catalog;
 mod http_transport;
 mod inspect_command;
 mod inspect_run_command;

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
@@ -31,6 +31,8 @@ Do not migrate every `CliError` construction site. Do not implement suggestions 
 ## Progress and notes
 
 - 2026-07-08: Split from WS4 after creating `.10x/specs/cli-error-experience-catalog.md`.
+- 2026-07-08: Implemented centralized error-code/remediation foundation in `cdf-cli`, added focused tests, and recorded evidence in `.10x/evidence/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`.
+- 2026-07-08: Closure review passed in `.10x/reviews/2026-07-08-p1-product-ws4a-error-envelope-foundation-review.md`; ticket moved to done.
 
 ## Blockers
 

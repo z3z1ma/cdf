@@ -29,7 +29,7 @@ Governing records establish:
 Read the WS4 parent, CLI grammar decision, renderer decision, `output.rs`, and a source inventory of `CliError` construction sites. Then wrote:
 
 - `.10x/specs/cli-error-experience-catalog.md`
-- `.10x/tickets/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4c-error-suggestions.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4d-error-rendering-docs.md`

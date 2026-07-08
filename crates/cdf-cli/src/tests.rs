@@ -6338,7 +6338,67 @@ fn unknown_command_returns_usage_exit_code() {
     assert_eq!(result.exit_code, 2);
     let json = stderr_or_stdout_json(&result.stderr);
     assert_eq!(json["error"]["kind"], "contract");
+    assert!(json["error"]["message"].as_str().unwrap().contains("bogus"));
     assert_eq!(json["error"]["exit_code"], 2);
+    assert_eq!(json["error"]["not_supported"], false);
+    assert_eq!(json["error"]["code"], "CDF-CLI-USAGE");
+    assert_eq!(
+        json["error"]["remediation"]["summary"],
+        "Correct the command arguments and run the command again."
+    );
+    assert!(json["error"]["remediation"]["steps"].is_array());
+}
+
+#[test]
+fn usage_error_human_output_keeps_message_and_adds_remediation() {
+    let result = run(["cdf", "sql"]);
+
+    assert_eq!(result.exit_code, 2);
+    assert!(result.stderr.contains("error: sql requires a query string"));
+    assert!(result.stderr.contains("remediation:"));
+}
+
+#[test]
+fn not_supported_error_preserves_exit_code_and_json_compatibility() {
+    let error =
+        crate::output::CliError::not_supported("preview", "query resources", "native scan runtime");
+    let result = crate::output::InvocationResult::from_error(true, error);
+
+    assert_eq!(result.exit_code, 78);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["kind"], "internal");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("preview")
+    );
+    assert_eq!(json["error"]["exit_code"], 78);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert_eq!(json["error"]["code"], "CDF-CLI-NOT-SUPPORTED");
+    assert_eq!(
+        json["error"]["remediation"]["summary"],
+        "Use a currently supported path or wait for the named lower layer to land."
+    );
+}
+
+#[test]
+fn generic_lower_layer_conversion_uses_documented_mapping() {
+    let error = crate::output::CliError::from(CdfError::destination("destination refused commit"));
+    let result = crate::output::InvocationResult::from_error(true, error);
+
+    assert_eq!(result.exit_code, 6);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "destination");
+    assert_eq!(json["error"]["message"], "destination refused commit");
+    assert_eq!(json["error"]["exit_code"], 6);
+    assert_eq!(json["error"]["not_supported"], false);
+    assert_eq!(json["error"]["code"], "CDF-DEST-ERROR");
+    assert_eq!(
+        json["error"]["remediation"]["summary"],
+        "Inspect the destination URI, target, policy, and destination health."
+    );
 }
 
 struct TestProject {

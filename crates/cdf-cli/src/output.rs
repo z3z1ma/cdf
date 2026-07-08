@@ -1,6 +1,7 @@
 use cdf_kernel::{CdfError, ErrorKind};
 use serde::Serialize;
 
+use crate::error_catalog;
 use crate::render::{RenderConfig, RenderDocument};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -16,6 +17,29 @@ pub struct ErrorBody {
     pub message: String,
     pub exit_code: i32,
     pub not_supported: bool,
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<ErrorRemediation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ErrorRemediation {
+    pub summary: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<String>,
+}
+
+impl ErrorRemediation {
+    fn from_template(template: error_catalog::RemediationTemplate) -> Self {
+        Self {
+            summary: template.summary.to_owned(),
+            steps: template
+                .steps
+                .iter()
+                .map(|step| (*step).to_owned())
+                .collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,15 +48,20 @@ pub struct CliError {
     pub message: String,
     pub exit_code: i32,
     pub not_supported: bool,
+    pub code: String,
+    pub remediation: Option<ErrorRemediation>,
 }
 
 impl CliError {
     pub fn usage(message: impl Into<String>) -> Self {
+        let mapping = error_catalog::USAGE;
         Self {
             kind: ErrorKind::Contract,
             message: message.into(),
-            exit_code: 2,
+            exit_code: mapping.exit_code,
             not_supported: false,
+            code: mapping.code.to_owned(),
+            remediation: mapping.remediation.map(ErrorRemediation::from_template),
         }
     }
 
@@ -41,6 +70,7 @@ impl CliError {
         reason: impl AsRef<str>,
         required_lower_layer: impl AsRef<str>,
     ) -> Self {
+        let mapping = error_catalog::NOT_SUPPORTED;
         Self {
             kind: ErrorKind::Internal,
             message: format!(
@@ -49,8 +79,10 @@ impl CliError {
                 reason.as_ref(),
                 required_lower_layer.as_ref()
             ),
-            exit_code: 78,
+            exit_code: mapping.exit_code,
             not_supported: true,
+            code: mapping.code.to_owned(),
+            remediation: mapping.remediation.map(ErrorRemediation::from_template),
         }
     }
 
@@ -60,25 +92,22 @@ impl CliError {
             message: self.message.clone(),
             exit_code: self.exit_code,
             not_supported: self.not_supported,
+            code: self.code.clone(),
+            remediation: self.remediation.clone(),
         }
     }
 }
 
 impl From<CdfError> for CliError {
     fn from(error: CdfError) -> Self {
-        let exit_code = match error.kind {
-            ErrorKind::Transient | ErrorKind::RateLimited => 75,
-            ErrorKind::Auth => 4,
-            ErrorKind::Contract => 3,
-            ErrorKind::Data => 5,
-            ErrorKind::Destination => 6,
-            ErrorKind::Internal => 70,
-        };
+        let mapping = error_catalog::generic_lower_layer_mapping(&error.kind);
         Self {
             kind: error.kind,
             message: error.message,
-            exit_code,
+            exit_code: mapping.exit_code,
             not_supported: false,
+            code: mapping.code.to_owned(),
+            remediation: mapping.remediation.map(ErrorRemediation::from_template),
         }
     }
 }
@@ -190,11 +219,24 @@ impl InvocationResult {
                 ),
             }
         } else {
+            let remediation = error
+                .remediation
+                .map(format_remediation)
+                .unwrap_or_default();
             Self {
                 exit_code: error.exit_code,
                 stdout: String::new(),
-                stderr: format!("error: {}\n", error.message),
+                stderr: format!("error: {}{remediation}\n", error.message),
             }
         }
     }
+}
+
+fn format_remediation(remediation: ErrorRemediation) -> String {
+    let mut text = format!("\nremediation: {}", remediation.summary);
+    for step in &remediation.steps {
+        text.push_str("\n  - ");
+        text.push_str(step);
+    }
+    text
 }

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
-Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/2026-07-08-p1-product-ws4a-error-envelope-foundation.md
+Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md
 
 # P1 product WS4B: Error construction-site migration
 
@@ -34,4 +34,4 @@ Do not implement edit-distance suggestions except where needed to keep a migrate
 
 ## Blockers
 
-Blocked until WS4A lands.
+None. WS4A is complete.

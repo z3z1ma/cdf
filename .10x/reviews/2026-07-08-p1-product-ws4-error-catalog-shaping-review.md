@@ -11,7 +11,7 @@ Verdict: pass
 The WS4 shaping records:
 
 - `.10x/specs/cli-error-experience-catalog.md`
-- `.10x/tickets/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4c-error-suggestions.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4d-error-rendering-docs.md`
