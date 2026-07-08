@@ -74,6 +74,7 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
 - 2026-07-08: Opened from the P1 directive after the P0 structural-debt program was closed. The existing CLI surface is considered functionally broad but product-experience-incomplete; this program owns the experience, instrumentation, documentation, Python front door, and release surface gap.
 - 2026-07-08: Activation evidence recorded in `.10x/evidence/2026-07-08-p1-product-experience-program-activation.md`; activation review recorded in `.10x/reviews/2026-07-08-p1-product-experience-program-activation-review.md`.
 - 2026-07-08: WS7 Python front-door shaping added `.10x/specs/python-front-door-product-surface.md` and child tickets WS7A-WS7D, with evidence/review under `.10x/evidence/2026-07-08-p1-product-ws7-python-front-door-shaping.md` and `.10x/reviews/2026-07-08-p1-product-ws7-python-front-door-shaping-review.md`.
+- 2026-07-08: WS4 error-catalog shaping added `.10x/specs/cli-error-experience-catalog.md` and child tickets WS4A-WS4D, with evidence/review under `.10x/evidence/2026-07-08-p1-product-ws4-error-catalog-shaping.md` and `.10x/reviews/2026-07-08-p1-product-ws4-error-catalog-shaping-review.md`.
 
 ## Blockers
 

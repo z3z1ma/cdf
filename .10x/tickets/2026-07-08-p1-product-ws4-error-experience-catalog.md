@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
+Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
 
 # P1 product WS4: Error experience and catalog
 
@@ -11,6 +11,13 @@ Depends-On: .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-langu
 Make CLI errors structured, stable, remedial, redacted, and documented without changing the existing exit-code taxonomy.
 
 Implementation may split into catalog spec, `CliError` migration, suggestion engine, renderer integration, and generated docs child tickets.
+
+## Child tickets
+
+- `.10x/tickets/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
+- `.10x/tickets/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`
+- `.10x/tickets/2026-07-08-p1-product-ws4c-error-suggestions.md`
+- `.10x/tickets/2026-07-08-p1-product-ws4d-error-rendering-docs.md`
 
 ## Required outcomes
 
@@ -39,7 +46,8 @@ No exit-code changes. No breaking JSON field removals or renames. No broad CLI g
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This workstream lands with WS3's renderer rollout.
+- 2026-07-08: Shaped `.10x/specs/cli-error-experience-catalog.md` and split execution into WS4A-WS4D child tickets. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4-error-catalog-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws4-error-catalog-shaping-review.md`.
 
 ## Blockers
 
-Implementation depends on the WS3 rendering layer for final human presentation.
+Final human presentation and generated docs depend on WS3 renderer and WS6 generated-reference lanes. WS4A may proceed independently.
