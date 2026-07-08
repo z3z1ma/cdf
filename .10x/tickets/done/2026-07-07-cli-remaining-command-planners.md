@@ -22,7 +22,7 @@ This is a planning parent, not an executable implementation ticket. Before imple
 - `cdf state migrate` and `cdf state recover`: `.10x/tickets/2026-07-07-cli-state-migrate-recover.md`.
 - `cdf backfill`: `.10x/tickets/2026-07-07-cli-backfill-planner.md`.
 - `cdf package gc`: `.10x/tickets/2026-07-07-cli-package-gc-retention.md`.
-- `cdf status`: `.10x/tickets/2026-07-07-cli-status-runtime-ledger-freshness.md`.
+- `cdf status`: `.10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md`.
 
 ## Acceptance criteria
 

@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-cli-surface.md
-Depends-On: .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/checkpoint-state-commit-gate.md
+Depends-On: .10x/specs/project-cli-observability-security.md, .10x/specs/run-orchestration-ledger.md, .10x/specs/checkpoint-state-commit-gate.md, .10x/decisions/status-freshness-authority-precedence.md
 
 # Integrate runtime-ledger freshness into status
 
@@ -39,3 +39,4 @@ None. If freshness precedence between checkpoint and receipt timestamps is ambig
 ## Progress and notes
 
 - 2026-07-07: Split from `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`. Existing status evaluates local committed-head freshness; runtime-ledger/package receipt timestamp integration remains open.
+- 2026-07-08: Implemented runtime-ledger/package receipt freshness integration for `cdf status`. Exactly one committed checkpoint head remains the primary freshness authority; receipt-only states fall back to corroborated package receipts. Added distinct JSON states for missing state DB, missing checkpoint table, missing run ledger, missing receipt, fresh receipt, stale receipt, and corrupt receipt evidence. Closure evidence is `.10x/evidence/2026-07-08-cli-status-runtime-ledger-freshness.md`; adversarial review is `.10x/reviews/2026-07-08-cli-status-runtime-ledger-freshness-review.md`.

@@ -16,7 +16,7 @@ The remaining non-run-spine CLI command-family gaps were split into direct child
 - `.10x/tickets/2026-07-07-cli-state-migrate-recover.md`
 - `.10x/tickets/2026-07-07-cli-backfill-planner.md`
 - `.10x/tickets/2026-07-07-cli-package-gc-retention.md`
-- `.10x/tickets/2026-07-07-cli-status-runtime-ledger-freshness.md`
+- `.10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md`
 
 The cross-cutting command module architecture child was already closed at `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`.
 

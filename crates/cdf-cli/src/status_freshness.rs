@@ -1,9 +1,10 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 use cdf_kernel::{CdfError, ScopeKey, TrustLevel};
+use cdf_package::read_receipts;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 use serde::Serialize;
 
@@ -50,6 +51,8 @@ pub(crate) struct StatusResource {
     pub non_evaluable_reason: Option<NonEvaluableReason>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matching_committed_heads: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_freshness: Option<ReceiptFreshnessObservation>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -75,8 +78,52 @@ pub(crate) enum FreshnessState {
 pub(crate) enum NonEvaluableReason {
     StateDatabaseMissing,
     CheckpointTableMissing,
+    RunLedgerMissing,
     CommittedHeadMissing,
     AmbiguousCommittedHeads,
+    ReceiptMissing,
+    ReceiptCorrupt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct ReceiptFreshnessObservation {
+    pub state: ReceiptFreshnessState,
+    pub source: ReceiptFreshnessSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub receipt_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub age_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub run_ledger_recorded_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_receipt_committed_at_ms: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReceiptFreshnessState {
+    MissingRunLedger,
+    MissingReceipt,
+    FreshReceipt,
+    StaleReceipt,
+    CorruptReceipt,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ReceiptFreshnessSource {
+    CheckpointCommittedHead,
+    RunLedger,
+    RunLedgerReceipt,
+    PackageReceipt,
 }
 
 pub(crate) fn evaluate(context: &ProjectContext) -> Result<StatusReport, CliError> {
@@ -115,7 +162,7 @@ pub(crate) fn evaluate(context: &ProjectContext) -> Result<StatusReport, CliErro
     let ledger = LocalLedger::open(&state_path)?;
     let freshness_resources = resources
         .into_iter()
-        .map(|resource| ledger.evaluate_resource(resource, now_ms))
+        .map(|resource| ledger.evaluate_resource(resource, &context.root, now_ms))
         .collect::<Result<Vec<_>, _>>()?;
     let summary = summarize(&freshness_resources);
 
@@ -187,6 +234,7 @@ impl LocalLedger {
     fn evaluate_resource(
         &self,
         resource: ServingFreshnessResource,
+        project_root: &Path,
         now_ms: i64,
     ) -> Result<StatusResource, CliError> {
         match self {
@@ -194,10 +242,14 @@ impl LocalLedger {
                 resource,
                 NonEvaluableReason::StateDatabaseMissing,
                 None,
+                None,
+                None,
             )?),
             Self::MissingCheckpointTable => Ok(non_evaluable(
                 resource,
                 NonEvaluableReason::CheckpointTableMissing,
+                None,
+                None,
                 None,
             )?),
             Self::Checkpoints(conn) => {
@@ -205,16 +257,20 @@ impl LocalLedger {
                     .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?;
                 let heads = committed_heads(conn, &resource.resource_id, &scope_json)?;
                 match heads.len() {
-                    0 => Ok(non_evaluable(
+                    0 => receipt_only_resource(conn, resource, project_root, &scope_json, now_ms),
+                    1 => evaluable_head(
+                        conn,
                         resource,
-                        NonEvaluableReason::CommittedHeadMissing,
-                        Some(0),
-                    )?),
-                    1 => evaluable(resource, heads.into_iter().next().unwrap(), now_ms),
+                        project_root,
+                        heads.into_iter().next().unwrap(),
+                        now_ms,
+                    ),
                     count => Ok(non_evaluable(
                         resource,
                         NonEvaluableReason::AmbiguousCommittedHeads,
                         Some(count),
+                        None,
+                        None,
                     )?),
                 }
             }
@@ -264,12 +320,119 @@ fn observed_checkpoint(row: &Row<'_>) -> rusqlite::Result<ObservedCheckpoint> {
     })
 }
 
-fn evaluable(
+fn evaluable_head(
+    conn: &Connection,
     resource: ServingFreshnessResource,
+    project_root: &Path,
     checkpoint: ObservedCheckpoint,
     now_ms: i64,
 ) -> Result<StatusResource, CliError> {
-    let age_ms = age_ms(now_ms, checkpoint.committed_at_ms);
+    let committed_at_ms = checkpoint.committed_at_ms;
+    let receipt_freshness = committed_head_receipt_freshness(
+        conn,
+        project_root,
+        &checkpoint,
+        now_ms,
+        resource.max_age_ms,
+    )?;
+    evaluable(
+        resource,
+        Some(checkpoint),
+        committed_at_ms,
+        now_ms,
+        receipt_freshness,
+    )
+}
+
+fn receipt_only_resource(
+    conn: &Connection,
+    resource: ServingFreshnessResource,
+    project_root: &Path,
+    scope_json: &str,
+    now_ms: i64,
+) -> Result<StatusResource, CliError> {
+    if !table_exists(conn, "cdf_run_events")? {
+        return non_evaluable(
+            resource,
+            NonEvaluableReason::RunLedgerMissing,
+            Some(0),
+            None,
+            Some(missing_run_ledger_observation(None, now_ms)),
+        );
+    }
+
+    let receipt_facts = receipt_facts_for_resource(conn, &resource.resource_id, scope_json)?;
+    if receipt_facts.is_empty() {
+        return non_evaluable(
+            resource,
+            NonEvaluableReason::CommittedHeadMissing,
+            Some(0),
+            None,
+            None,
+        );
+    }
+
+    match matching_package_receipt(&receipt_facts, project_root) {
+        PackageReceiptLookup::Found(receipt) => {
+            let observed_at_ms = receipt.committed_at_ms;
+            let receipt_freshness = Some(receipt_observation(
+                ReceiptObservationInput {
+                    source: ReceiptFreshnessSource::PackageReceipt,
+                    receipt_id: Some(receipt.receipt_id),
+                    package_hash: Some(receipt.package_hash),
+                    observed_at_ms,
+                    run_ledger_recorded_at_ms: Some(receipt.run_ledger_recorded_at_ms),
+                    package_path: Some(receipt.package_path),
+                    package_receipt_committed_at_ms: Some(observed_at_ms),
+                    reason: None,
+                },
+                now_ms,
+                resource.max_age_ms,
+            ));
+            evaluable(resource, None, observed_at_ms, now_ms, receipt_freshness)
+        }
+        PackageReceiptLookup::Missing(fact) => non_evaluable(
+            resource,
+            NonEvaluableReason::ReceiptMissing,
+            Some(0),
+            None,
+            Some(missing_receipt_observation(
+                fact.as_ref(),
+                None,
+                "no package receipt artifact corroborates the receipt-only run-ledger fact",
+                now_ms,
+            )),
+        ),
+        PackageReceiptLookup::Corrupt { fact, reason } => non_evaluable(
+            resource,
+            NonEvaluableReason::ReceiptCorrupt,
+            Some(0),
+            None,
+            Some(corrupt_receipt_observation(
+                CorruptReceiptObservationInput {
+                    source: ReceiptFreshnessSource::RunLedgerReceipt,
+                    receipt_id: Some(fact.receipt_id),
+                    package_hash: Some(fact.package_hash),
+                    observed_at_ms: None,
+                    run_ledger_recorded_at_ms: Some(fact.recorded_at_ms),
+                    package_path: fact.package_path,
+                    package_receipt_committed_at_ms: None,
+                    reason,
+                },
+                now_ms,
+            )),
+        ),
+    }
+}
+
+fn evaluable(
+    resource: ServingFreshnessResource,
+    checkpoint: Option<ObservedCheckpoint>,
+    observed_at_ms: i64,
+    now_ms: i64,
+    receipt_freshness: Option<ReceiptFreshnessObservation>,
+) -> Result<StatusResource, CliError> {
+    let age_ms = age_ms(now_ms, observed_at_ms);
     let freshness_state = if age_ms <= resource.max_age_ms {
         FreshnessState::Fresh
     } else {
@@ -282,10 +445,11 @@ fn evaluable(
             .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?,
         max_age_ms: resource.max_age_ms,
         freshness_state,
-        checkpoint: Some(checkpoint),
+        checkpoint,
         age_ms: Some(age_ms),
         non_evaluable_reason: None,
         matching_committed_heads: None,
+        receipt_freshness,
     })
 }
 
@@ -293,6 +457,8 @@ fn non_evaluable(
     resource: ServingFreshnessResource,
     reason: NonEvaluableReason,
     matching_committed_heads: Option<usize>,
+    checkpoint: Option<ObservedCheckpoint>,
+    receipt_freshness: Option<ReceiptFreshnessObservation>,
 ) -> Result<StatusResource, CliError> {
     Ok(StatusResource {
         resource_id: resource.resource_id,
@@ -301,11 +467,361 @@ fn non_evaluable(
             .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?,
         max_age_ms: resource.max_age_ms,
         freshness_state: FreshnessState::NonEvaluable,
-        checkpoint: None,
+        checkpoint,
         age_ms: None,
         non_evaluable_reason: Some(reason),
         matching_committed_heads,
+        receipt_freshness,
     })
+}
+
+fn committed_head_receipt_freshness(
+    conn: &Connection,
+    project_root: &Path,
+    checkpoint: &ObservedCheckpoint,
+    now_ms: i64,
+    max_age_ms: u64,
+) -> Result<Option<ReceiptFreshnessObservation>, CliError> {
+    if !table_exists(conn, "cdf_run_events")? {
+        return Ok(Some(missing_run_ledger_observation(
+            Some(checkpoint),
+            now_ms,
+        )));
+    }
+
+    let receipt_facts = matching_receipt_facts(conn, checkpoint)?;
+    if receipt_facts.is_empty() {
+        return Ok(Some(missing_receipt_observation(
+            None,
+            Some(checkpoint),
+            "run ledger has no destination receipt recorded for the committed checkpoint head",
+            now_ms,
+        )));
+    }
+
+    match matching_package_receipt(&receipt_facts, project_root) {
+        PackageReceiptLookup::Found(receipt)
+            if receipt.committed_at_ms == checkpoint.committed_at_ms =>
+        {
+            Ok(Some(receipt_observation(
+                ReceiptObservationInput {
+                    source: ReceiptFreshnessSource::PackageReceipt,
+                    receipt_id: Some(checkpoint.receipt_id.clone()),
+                    package_hash: Some(checkpoint.package_hash.clone()),
+                    observed_at_ms: checkpoint.committed_at_ms,
+                    run_ledger_recorded_at_ms: Some(receipt.run_ledger_recorded_at_ms),
+                    package_path: Some(receipt.package_path),
+                    package_receipt_committed_at_ms: Some(receipt.committed_at_ms),
+                    reason: None,
+                },
+                now_ms,
+                max_age_ms,
+            )))
+        }
+        PackageReceiptLookup::Found(receipt) => Ok(Some(corrupt_receipt_observation(
+            CorruptReceiptObservationInput {
+                source: ReceiptFreshnessSource::PackageReceipt,
+                receipt_id: Some(checkpoint.receipt_id.clone()),
+                package_hash: Some(checkpoint.package_hash.clone()),
+                observed_at_ms: Some(checkpoint.committed_at_ms),
+                run_ledger_recorded_at_ms: Some(receipt.run_ledger_recorded_at_ms),
+                package_path: Some(receipt.package_path),
+                package_receipt_committed_at_ms: Some(receipt.committed_at_ms),
+                reason: format!(
+                    "package receipt committed_at_ms {} does not match checkpoint committed_at_ms {}",
+                    receipt.committed_at_ms, checkpoint.committed_at_ms
+                ),
+            },
+            now_ms,
+        ))),
+        PackageReceiptLookup::Missing(fact) => Ok(Some(missing_receipt_observation(
+            fact.as_ref(),
+            Some(checkpoint),
+            "package receipt artifact is missing for the committed checkpoint receipt",
+            now_ms,
+        ))),
+        PackageReceiptLookup::Corrupt { fact, reason } => Ok(Some(corrupt_receipt_observation(
+            CorruptReceiptObservationInput {
+                source: ReceiptFreshnessSource::RunLedgerReceipt,
+                receipt_id: Some(checkpoint.receipt_id.clone()),
+                package_hash: Some(checkpoint.package_hash.clone()),
+                observed_at_ms: Some(checkpoint.committed_at_ms),
+                run_ledger_recorded_at_ms: Some(fact.recorded_at_ms),
+                package_path: fact.package_path,
+                package_receipt_committed_at_ms: None,
+                reason,
+            },
+            now_ms,
+        ))),
+    }
+}
+
+fn missing_run_ledger_observation(
+    checkpoint: Option<&ObservedCheckpoint>,
+    now_ms: i64,
+) -> ReceiptFreshnessObservation {
+    let observed_at_ms = checkpoint.map(|checkpoint| checkpoint.committed_at_ms);
+    ReceiptFreshnessObservation {
+        state: ReceiptFreshnessState::MissingRunLedger,
+        source: if checkpoint.is_some() {
+            ReceiptFreshnessSource::CheckpointCommittedHead
+        } else {
+            ReceiptFreshnessSource::RunLedger
+        },
+        receipt_id: checkpoint.map(|checkpoint| checkpoint.receipt_id.clone()),
+        package_hash: checkpoint.map(|checkpoint| checkpoint.package_hash.clone()),
+        observed_at_ms,
+        age_ms: observed_at_ms.map(|observed_at_ms| age_ms(now_ms, observed_at_ms)),
+        run_ledger_recorded_at_ms: None,
+        package_path: None,
+        package_receipt_committed_at_ms: None,
+        reason: Some("run ledger table is missing".to_owned()),
+    }
+}
+
+fn missing_receipt_observation(
+    fact: Option<&RunReceiptFact>,
+    checkpoint: Option<&ObservedCheckpoint>,
+    reason: &str,
+    now_ms: i64,
+) -> ReceiptFreshnessObservation {
+    let observed_at_ms = checkpoint.map(|checkpoint| checkpoint.committed_at_ms);
+    ReceiptFreshnessObservation {
+        state: ReceiptFreshnessState::MissingReceipt,
+        source: if fact.is_some() {
+            ReceiptFreshnessSource::RunLedgerReceipt
+        } else {
+            ReceiptFreshnessSource::CheckpointCommittedHead
+        },
+        receipt_id: fact
+            .map(|fact| fact.receipt_id.clone())
+            .or_else(|| checkpoint.map(|checkpoint| checkpoint.receipt_id.clone())),
+        package_hash: fact
+            .map(|fact| fact.package_hash.clone())
+            .or_else(|| checkpoint.map(|checkpoint| checkpoint.package_hash.clone())),
+        observed_at_ms,
+        age_ms: observed_at_ms.map(|observed_at_ms| age_ms(now_ms, observed_at_ms)),
+        run_ledger_recorded_at_ms: fact.map(|fact| fact.recorded_at_ms),
+        package_path: fact.and_then(|fact| fact.package_path.clone()),
+        package_receipt_committed_at_ms: None,
+        reason: Some(reason.to_owned()),
+    }
+}
+
+struct ReceiptObservationInput {
+    source: ReceiptFreshnessSource,
+    receipt_id: Option<String>,
+    package_hash: Option<String>,
+    observed_at_ms: i64,
+    run_ledger_recorded_at_ms: Option<i64>,
+    package_path: Option<String>,
+    package_receipt_committed_at_ms: Option<i64>,
+    reason: Option<String>,
+}
+
+fn receipt_observation(
+    input: ReceiptObservationInput,
+    now_ms: i64,
+    max_age_ms: u64,
+) -> ReceiptFreshnessObservation {
+    let age_ms = age_ms(now_ms, input.observed_at_ms);
+    let state = if age_ms <= max_age_ms {
+        ReceiptFreshnessState::FreshReceipt
+    } else {
+        ReceiptFreshnessState::StaleReceipt
+    };
+    ReceiptFreshnessObservation {
+        state,
+        source: input.source,
+        receipt_id: input.receipt_id,
+        package_hash: input.package_hash,
+        observed_at_ms: Some(input.observed_at_ms),
+        age_ms: Some(age_ms),
+        run_ledger_recorded_at_ms: input.run_ledger_recorded_at_ms,
+        package_path: input.package_path,
+        package_receipt_committed_at_ms: input.package_receipt_committed_at_ms,
+        reason: input.reason,
+    }
+}
+
+struct CorruptReceiptObservationInput {
+    source: ReceiptFreshnessSource,
+    receipt_id: Option<String>,
+    package_hash: Option<String>,
+    observed_at_ms: Option<i64>,
+    run_ledger_recorded_at_ms: Option<i64>,
+    package_path: Option<String>,
+    package_receipt_committed_at_ms: Option<i64>,
+    reason: String,
+}
+
+fn corrupt_receipt_observation(
+    input: CorruptReceiptObservationInput,
+    now_ms: i64,
+) -> ReceiptFreshnessObservation {
+    ReceiptFreshnessObservation {
+        state: ReceiptFreshnessState::CorruptReceipt,
+        source: input.source,
+        receipt_id: input.receipt_id,
+        package_hash: input.package_hash,
+        observed_at_ms: input.observed_at_ms,
+        age_ms: input
+            .observed_at_ms
+            .map(|observed_at_ms| age_ms(now_ms, observed_at_ms)),
+        run_ledger_recorded_at_ms: input.run_ledger_recorded_at_ms,
+        package_path: input.package_path,
+        package_receipt_committed_at_ms: input.package_receipt_committed_at_ms,
+        reason: Some(input.reason),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct RunReceiptFact {
+    receipt_id: String,
+    package_hash: String,
+    recorded_at_ms: i64,
+    package_path: Option<String>,
+}
+
+fn matching_receipt_facts(
+    conn: &Connection,
+    checkpoint: &ObservedCheckpoint,
+) -> Result<Vec<RunReceiptFact>, CliError> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT receipt_id, package_hash, timestamp_ms, package_path
+            FROM cdf_run_events
+            WHERE kind = 'destination_receipt_recorded'
+              AND package_hash = ?
+              AND receipt_id = ?
+            ORDER BY timestamp_ms DESC, sequence DESC
+            ",
+        )
+        .map_err(sqlite_cli_error)?;
+    let rows = stmt
+        .query_map(
+            params![
+                checkpoint.package_hash.as_str(),
+                checkpoint.receipt_id.as_str()
+            ],
+            |row| {
+                Ok(RunReceiptFact {
+                    receipt_id: row.get("receipt_id")?,
+                    package_hash: row.get("package_hash")?,
+                    recorded_at_ms: row.get("timestamp_ms")?,
+                    package_path: row.get("package_path")?,
+                })
+            },
+        )
+        .map_err(sqlite_cli_error)?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_cli_error)
+}
+
+fn receipt_facts_for_resource(
+    conn: &Connection,
+    resource_id: &str,
+    scope_json: &str,
+) -> Result<Vec<RunReceiptFact>, CliError> {
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT receipt_id, package_hash, timestamp_ms, package_path
+            FROM cdf_run_events
+            WHERE kind = 'destination_receipt_recorded'
+              AND resource_id = ?
+              AND scope_json = ?
+              AND receipt_id IS NOT NULL
+              AND package_hash IS NOT NULL
+            ORDER BY timestamp_ms DESC, sequence DESC
+            ",
+        )
+        .map_err(sqlite_cli_error)?;
+    let rows = stmt
+        .query_map(params![resource_id, scope_json], |row| {
+            Ok(RunReceiptFact {
+                receipt_id: row.get("receipt_id")?,
+                package_hash: row.get("package_hash")?,
+                recorded_at_ms: row.get("timestamp_ms")?,
+                package_path: row.get("package_path")?,
+            })
+        })
+        .map_err(sqlite_cli_error)?;
+    rows.collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(sqlite_cli_error)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PackageReceiptFact {
+    receipt_id: String,
+    package_hash: String,
+    committed_at_ms: i64,
+    run_ledger_recorded_at_ms: i64,
+    package_path: String,
+}
+
+enum PackageReceiptLookup {
+    Found(PackageReceiptFact),
+    Missing(Option<RunReceiptFact>),
+    Corrupt {
+        fact: RunReceiptFact,
+        reason: String,
+    },
+}
+
+fn matching_package_receipt(facts: &[RunReceiptFact], project_root: &Path) -> PackageReceiptLookup {
+    for fact in facts {
+        let Some(package_path) = &fact.package_path else {
+            continue;
+        };
+        let package_dir = resolve_package_path(project_root, package_path);
+        let receipts = match read_receipts(&package_dir) {
+            Ok(receipts) => receipts,
+            Err(error) => {
+                return PackageReceiptLookup::Corrupt {
+                    fact: fact.clone(),
+                    reason: format!(
+                        "read package receipts from {}: {error}",
+                        package_dir.display()
+                    ),
+                };
+            }
+        };
+        if let Some(receipt) = receipts.iter().rev().find(|receipt| {
+            receipt.package_hash.as_str() == fact.package_hash
+                && receipt.receipt_id.as_str() == fact.receipt_id
+        }) {
+            return PackageReceiptLookup::Found(PackageReceiptFact {
+                receipt_id: fact.receipt_id.clone(),
+                package_hash: fact.package_hash.clone(),
+                committed_at_ms: receipt.committed_at_ms,
+                run_ledger_recorded_at_ms: fact.recorded_at_ms,
+                package_path: package_path.clone(),
+            });
+        }
+    }
+    PackageReceiptLookup::Missing(facts.first().cloned())
+}
+
+fn table_exists(conn: &Connection, name: &str) -> Result<bool, CliError> {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+        params![name],
+        |_| Ok(()),
+    )
+    .optional()
+    .map(|value| value.is_some())
+    .map_err(sqlite_cli_error)
+}
+
+fn resolve_package_path(project_root: &Path, value: &str) -> PathBuf {
+    let path = PathBuf::from(value);
+    if path.is_absolute() || path.exists() {
+        path
+    } else {
+        project_root.join(path)
+    }
 }
 
 fn summarize(resources: &[StatusResource]) -> StatusSummary {

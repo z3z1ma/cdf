@@ -2927,6 +2927,11 @@ fn status_reports_fresh_committed_head() {
     assert_eq!(resource["state_scope"], json!({ "kind": "resource" }));
     assert_eq!(resource["max_age_ms"], 3_600_000);
     assert_eq!(resource["freshness_state"], "fresh");
+    assert_eq!(resource["receipt_freshness"]["state"], "missing_run_ledger");
+    assert_eq!(
+        resource["receipt_freshness"]["source"],
+        "checkpoint_committed_head"
+    );
     assert_eq!(
         resource["checkpoint"]["checkpoint_id"],
         "checkpoint-status-fresh"
@@ -3058,6 +3063,24 @@ fn status_reports_missing_checkpoint_table_as_non_evaluable() {
 }
 
 #[test]
+fn status_reports_missing_run_ledger_as_non_evaluable_without_committed_head() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    initialize_status_state(&project);
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 78, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["non_evaluable"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "non_evaluable");
+    assert_eq!(resource["non_evaluable_reason"], "run_ledger_missing");
+    assert_eq!(resource["receipt_freshness"]["state"], "missing_run_ledger");
+    assert_eq!(resource["receipt_freshness"]["source"], "run_ledger");
+}
+
+#[test]
 fn status_reports_ambiguous_multiple_pipeline_heads_as_non_evaluable() {
     let project = TestProject::new();
     write_status_resource(&project, "serving", "1h");
@@ -3091,6 +3114,152 @@ fn status_reports_ambiguous_multiple_pipeline_heads_as_non_evaluable() {
         "ambiguous_committed_heads"
     );
     assert_eq!(resource["matching_committed_heads"], 2);
+}
+
+#[test]
+fn status_reports_fresh_receipt_only_runtime_fact() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    initialize_status_state(&project);
+    let committed_at_ms = now_ms_for_test();
+    let (package_dir, package_hash) = write_status_package_receipt(
+        &project,
+        "pkg-status-receipt-fresh",
+        "receipt-status-runtime-fresh",
+        committed_at_ms,
+    );
+    record_status_receipt_event(
+        &project,
+        "run-status-receipt-fresh",
+        &package_dir,
+        &package_hash,
+        "receipt-status-runtime-fresh",
+    );
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(
+        result.exit_code, 0,
+        "stdout: {} stderr: {}",
+        result.stdout, result.stderr
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["fresh"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "fresh");
+    assert!(resource["checkpoint"].is_null());
+    assert_eq!(resource["receipt_freshness"]["state"], "fresh_receipt");
+    assert_eq!(resource["receipt_freshness"]["source"], "package_receipt");
+    assert_eq!(
+        resource["receipt_freshness"]["receipt_id"],
+        "receipt-status-runtime-fresh"
+    );
+    assert!(resource["age_ms"].as_u64().unwrap() <= 3_600_000);
+}
+
+#[test]
+fn status_reports_stale_receipt_only_runtime_fact() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1ms");
+    initialize_status_state(&project);
+    let (package_dir, package_hash) =
+        write_status_package_receipt(&project, "pkg-status-receipt-stale", "receipt-stale", 1);
+    record_status_receipt_event(
+        &project,
+        "run-status-receipt-stale",
+        &package_dir,
+        &package_hash,
+        "receipt-stale",
+    );
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(
+        result.exit_code, 1,
+        "stdout: {} stderr: {}",
+        result.stdout, result.stderr
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["stale"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "stale");
+    assert_eq!(resource["receipt_freshness"]["state"], "stale_receipt");
+    assert_eq!(resource["receipt_freshness"]["source"], "package_receipt");
+}
+
+#[test]
+fn status_reports_missing_receipt_artifact_as_non_evaluable() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    initialize_status_state(&project);
+    let (package_dir, package_hash) = write_status_package(&project, "pkg-status-missing-receipt");
+    record_status_receipt_event(
+        &project,
+        "run-status-missing-receipt",
+        &package_dir,
+        &package_hash,
+        "receipt-status-missing",
+    );
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 78, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["summary"]["non_evaluable"], 1);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "non_evaluable");
+    assert_eq!(resource["non_evaluable_reason"], "receipt_missing");
+    assert_eq!(resource["receipt_freshness"]["state"], "missing_receipt");
+    assert_eq!(
+        resource["receipt_freshness"]["source"],
+        "run_ledger_receipt"
+    );
+}
+
+#[test]
+fn status_committed_head_timestamp_takes_precedence_over_package_receipt() {
+    let project = TestProject::new();
+    write_status_resource(&project, "serving", "1h");
+    let checkpoint_committed_at_ms = now_ms_for_test();
+    let (package_dir, package_hash) = write_status_package_receipt(
+        &project,
+        "pkg-status-precedence",
+        "receipt-status-precedence",
+        1,
+    );
+    commit_status_head(
+        &project,
+        "pipeline-1",
+        "checkpoint-status-precedence",
+        &package_hash,
+        "receipt-status-precedence",
+        checkpoint_committed_at_ms,
+    );
+    record_status_receipt_event(
+        &project,
+        "run-status-precedence",
+        &package_dir,
+        &package_hash,
+        "receipt-status-precedence",
+    );
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "status"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let resource = &json["result"]["freshness_resources"][0];
+    assert_eq!(resource["freshness_state"], "fresh");
+    assert!(resource["age_ms"].as_u64().unwrap() <= 3_600_000);
+    assert_eq!(resource["receipt_freshness"]["state"], "corrupt_receipt");
+    assert_eq!(resource["receipt_freshness"]["source"], "package_receipt");
+    assert_eq!(
+        resource["receipt_freshness"]["observed_at_ms"],
+        checkpoint_committed_at_ms
+    );
+    assert_eq!(
+        resource["receipt_freshness"]["package_receipt_committed_at_ms"],
+        1
+    );
 }
 
 #[test]
@@ -4580,6 +4749,58 @@ fn write_status_resource(project: &TestProject, trust: &str, max_age: &str) {
         &format!("trust = \"{trust}\"\nfreshness = {{ max_age = \"{max_age}\" }}"),
     );
     fs::write(project.root.join("resources/files.toml"), status_resource).unwrap();
+}
+
+fn initialize_status_state(project: &TestProject) {
+    SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+}
+
+fn write_status_package(project: &TestProject, package_id: &str) -> (PathBuf, String) {
+    let package_dir = project.root.join(".cdf/packages").join(package_id);
+    fs::create_dir_all(project.root.join(".cdf/packages")).unwrap();
+    let builder = PackageBuilder::create(&package_dir, package_id).unwrap();
+    let manifest = builder
+        .finish_with_status(PackageStatus::Checkpointed)
+        .unwrap();
+    (package_dir, manifest.package_hash)
+}
+
+fn write_status_package_receipt(
+    project: &TestProject,
+    package_id: &str,
+    receipt_id: &str,
+    committed_at_ms: i64,
+) -> (PathBuf, String) {
+    let (package_dir, package_hash) = write_status_package(project, package_id);
+    PackageReader::open(&package_dir)
+        .unwrap()
+        .append_receipt(status_receipt(&package_hash, receipt_id, committed_at_ms))
+        .unwrap();
+    (package_dir, package_hash)
+}
+
+fn record_status_receipt_event(
+    project: &TestProject,
+    run_id: &str,
+    package_dir: &Path,
+    package_hash: &str,
+    receipt_id: &str,
+) {
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let run_id = RunId::new(run_id).unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    let mut event = RunEventAppend::new(RunEventKind::DestinationReceiptRecorded);
+    event.resource_id = Some(ResourceId::new("local.events").unwrap());
+    event.scope = Some(ScopeKey::Resource);
+    event.package_id = package_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned);
+    event.package_hash = Some(PackageHash::new(package_hash).unwrap());
+    event.package_path = Some(package_dir.display().to_string());
+    event.receipt_id = Some(ReceiptId::new(receipt_id).unwrap());
+    event.destination_id = Some(DestinationId::new("local-test").unwrap());
+    ledger.append_event(&run_id, event).unwrap();
 }
 
 fn commit_status_head(
