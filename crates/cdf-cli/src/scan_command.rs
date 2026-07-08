@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_declarative::{
+    CompiledResource, CompiledResourcePlan, RestRuntimeDependencies, SqlRuntimeDependencies,
+};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
@@ -15,6 +18,7 @@ use crate::{
     commands::{json_cli_error, output},
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_environment_destination},
+    http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     reports::WriteEffects,
 };
@@ -36,7 +40,7 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
     let plan = build_engine_plan(&context, &args)?;
-    match preview_one_batch(resource, &plan) {
+    match preview_one_batch(&context, resource, &plan) {
         Ok(report) => output(
             "preview",
             format!(
@@ -223,26 +227,82 @@ fn partition_report(partition: &PartitionPlan) -> PartitionReport {
 }
 
 fn preview_one_batch(
-    resource: &cdf_declarative::CompiledResource,
+    context: &ProjectContext,
+    resource: &CompiledResource,
     plan: &EnginePlan,
 ) -> cdf_kernel::Result<PreviewReport> {
+    validate_preview_direct_stream_plan(plan)?;
     let partition = plan
         .scan
         .partitions
         .first()
         .ok_or_else(|| CdfError::data("preview plan has no partitions"))?
         .clone();
-    let mut stream = futures_executor::block_on(resource.open(partition))?;
+    let mut stream = open_preview_stream(context, resource, partition)?;
     let batch = futures_executor::block_on(async { stream.next().await })
         .ok_or_else(|| CdfError::data("resource produced no preview batch"))??;
+    let writes = WriteEffects::default();
     Ok(PreviewReport {
+        resource: batch.header.resource_id.to_string(),
+        partition: batch.header.partition_id.to_string(),
+        batch: batch.header.batch_id.to_string(),
         resource_id: batch.header.resource_id.to_string(),
         batch_id: batch.header.batch_id.to_string(),
         partition_id: batch.header.partition_id.to_string(),
         row_count: batch.header.row_count,
         byte_count: batch.header.byte_count,
-        writes: WriteEffects::default(),
+        write_effects: writes.clone(),
+        writes,
     })
+}
+
+fn validate_preview_direct_stream_plan(plan: &EnginePlan) -> cdf_kernel::Result<()> {
+    if !plan.residual_predicates.is_empty() {
+        let expressions = plan
+            .residual_predicates
+            .iter()
+            .map(|predicate| predicate.expression.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(CdfError::contract(format!(
+            "cdf preview cannot apply residual predicates without creating a package; remove unsupported or inexact filters, or use a resource that pushes them exactly: {expressions}"
+        )));
+    }
+    if plan.final_projection.is_some() && !plan.explain.projection_pushed {
+        return Err(CdfError::contract(
+            "cdf preview cannot apply projection without creating a package; use a resource with projection pushdown or omit --projection",
+        ));
+    }
+    if plan.scan.request.limit.is_some() && !plan.explain.limit_pushed {
+        return Err(CdfError::contract(
+            "cdf preview cannot apply limit without creating a package; use a resource with limit pushdown or omit --limit",
+        ));
+    }
+    Ok(())
+}
+
+fn open_preview_stream(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    partition: PartitionPlan,
+) -> cdf_kernel::Result<cdf_kernel::BatchStream> {
+    match resource.plan() {
+        CompiledResourcePlan::Files(_) => {
+            futures_executor::block_on(resource.open_preview(partition))
+        }
+        CompiledResourcePlan::Rest(_) => {
+            let dependencies = RestRuntimeDependencies::new(ReqwestHttpTransport::new()?)
+                .with_secret_provider(context.secret_provider());
+            let rest = resource.to_rest_resource(dependencies)?;
+            futures_executor::block_on(rest.open(partition))
+        }
+        CompiledResourcePlan::Sql(_) => {
+            let dependencies =
+                SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
+            let sql = resource.to_sql_resource(dependencies)?;
+            futures_executor::block_on(sql.open(partition))
+        }
+    }
 }
 
 fn lower_runtime_missing(error: &CdfError) -> bool {
@@ -360,11 +420,15 @@ struct StateAdvancementReport {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct PreviewReport {
+    resource: String,
+    partition: String,
+    batch: String,
     resource_id: String,
     batch_id: String,
     partition_id: String,
     row_count: u64,
     byte_count: u64,
+    write_effects: WriteEffects,
     writes: WriteEffects,
 }
 

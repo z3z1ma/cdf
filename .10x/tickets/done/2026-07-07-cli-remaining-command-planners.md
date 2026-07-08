@@ -17,7 +17,7 @@ This is a planning parent, not an executable implementation ticket. Before imple
 - Cross-cutting command module architecture: done in `.10x/tickets/done/2026-07-07-cli-command-module-architecture.md`.
 - `cdf init`: `.10x/tickets/done/2026-07-07-cli-init-scaffold.md`.
 - `cdf plan` and `cdf explain`: `.10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md`.
-- `cdf preview`: `.10x/tickets/2026-07-07-cli-preview-resource-breadth.md`.
+- `cdf preview`: `.10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md`.
 - `cdf contract freeze` and `cdf contract test`: `.10x/tickets/2026-07-07-cli-contract-registry-freeze-test.md`.
 - `cdf state migrate` and `cdf state recover`: `.10x/tickets/2026-07-07-cli-state-migrate-recover.md`.
 - `cdf backfill`: `.10x/tickets/2026-07-07-cli-backfill-planner.md`.

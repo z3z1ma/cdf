@@ -9,7 +9,7 @@ use std::{
 };
 
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
-use arrow_ipc::writer::StreamWriter;
+use arrow_ipc::writer::{FileWriter, StreamWriter};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_conformance::resource::{
     ResourceExecutionConformanceCase, assert_resource_stream_conformance,
@@ -115,6 +115,28 @@ fn arrow_ipc_stream_round_trips_kernel_batches_without_schema_loss() {
         SchemaSource::Discovered {
             schema_hash: Some(read.schema_hash.clone())
         }
+    );
+}
+
+#[test]
+fn arrow_ipc_file_round_trips_kernel_batches_without_schema_loss() {
+    let input = sample_batch();
+    let mut bytes = Cursor::new(Vec::new());
+    {
+        let mut writer = FileWriter::try_new(&mut bytes, input.schema().as_ref()).unwrap();
+        writer.write(&input).unwrap();
+        writer.finish().unwrap();
+    }
+
+    let read =
+        read_arrow_ipc_file(Cursor::new(bytes.into_inner()), &options("orders", "p0")).unwrap();
+
+    assert_eq!(read.batches.len(), 1);
+    let output = read.batches[0].record_batch().unwrap();
+    assert_eq!(output.schema().as_ref(), input.schema().as_ref());
+    assert_eq!(
+        output.schema().field_with_name("id").unwrap().metadata(),
+        input.schema().field_with_name("id").unwrap().metadata()
     );
 }
 

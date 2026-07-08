@@ -20,7 +20,7 @@ use cdf_kernel::{
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
-use crate::file_runtime::open_file_resource;
+use crate::file_runtime::{open_file_resource, open_file_resource_preview};
 use crate::rest_runtime::{
     CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA, cursor_pushdown_value,
 };
@@ -47,6 +47,22 @@ impl CompiledResource {
 
     pub fn plan(&self) -> &CompiledResourcePlan {
         &self.plan
+    }
+
+    pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+        match &self.plan {
+            CompiledResourcePlan::Files(plan) => open_file_resource_preview(
+                &self.descriptor,
+                Arc::clone(&self.schema),
+                plan,
+                partition,
+            ),
+            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Box::pin(async {
+                Err(CdfError::internal(
+                    "declarative resource preview execution is outside the MVP compiler crate",
+                ))
+            }),
+        }
     }
 }
 

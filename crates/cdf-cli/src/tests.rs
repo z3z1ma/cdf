@@ -514,9 +514,18 @@ fn preview_reads_single_ndjson_file_without_creating_runtime_artifacts() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["ok"], true);
     assert_eq!(json["command"], "preview");
+    assert_eq!(json["result"]["resource"], "local.events");
+    assert_eq!(json["result"]["partition"], "files");
     assert_eq!(json["result"]["resource_id"], "local.events");
     assert_eq!(json["result"]["partition_id"], "files");
     assert_eq!(json["result"]["row_count"], 2);
+    assert!(
+        json["result"]["batch"]
+            .as_str()
+            .unwrap()
+            .starts_with("local-events-files-")
+    );
+    assert_eq!(json["result"]["batch"], json["result"]["batch_id"]);
     assert!(
         json["result"]["batch_id"]
             .as_str()
@@ -524,14 +533,17 @@ fn preview_reads_single_ndjson_file_without_creating_runtime_artifacts() {
             .starts_with("local-events-files-")
     );
     assert!(json["result"]["byte_count"].as_u64().unwrap() > 0);
+    assert_eq!(json["result"]["write_effects"]["package"], false);
+    assert_eq!(json["result"]["write_effects"]["destination"], false);
+    assert_eq!(json["result"]["write_effects"]["checkpoint"], false);
     assert_eq!(json["result"]["writes"]["package"], false);
     assert_eq!(json["result"]["writes"]["destination"], false);
     assert_eq!(json["result"]["writes"]["checkpoint"], false);
 }
 
 #[test]
-fn preview_succeeds_for_csv_json_and_parquet_file_resources() {
-    for format in ["csv", "json", "parquet"] {
+fn preview_succeeds_for_csv_json_parquet_and_arrow_ipc_file_resources() {
+    for format in ["csv", "json", "parquet", "arrow_ipc"] {
         let project = TestProject::new();
         write_format_fixture(&project, format);
 
@@ -550,12 +562,191 @@ fn preview_succeeds_for_csv_json_and_parquet_file_resources() {
             result.stderr
         );
         let json = stderr_or_stdout_json(&result.stdout);
+        assert_eq!(json["result"]["resource"], "local.events");
+        assert_eq!(json["result"]["partition"], "files");
         assert_eq!(json["result"]["resource_id"], "local.events");
         assert_eq!(json["result"]["row_count"], 2, "format {format}");
-        assert!(!project.root.join(".cdf/packages").exists());
-        assert!(!project.root.join(".cdf/state.db").exists());
-        assert!(!project.root.join(".cdf/dev.duckdb").exists());
+        assert_no_preview_writes(&project);
     }
+}
+
+#[test]
+fn preview_rest_resource_uses_local_http_runtime_without_writes() {
+    let project = TestProject::new();
+    fs::write(project.root.join("rest-token"), "rest-preview-token\n").unwrap();
+    let (base_url, request) = serve_json_once_capturing_request(
+        r#"{ "items": [
+            { "id": 1, "updated_at": 10 },
+            { "id": 2, "updated_at": 20 }
+        ] }"#,
+    );
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+    fs::write(
+        project.root.join("resources/api.toml"),
+        rest_resource_with_exact_cursor_base_url(&base_url, "secret://file/rest-token"),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "api.items",
+        "--filter",
+        "updated_at >= 10",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "rest-preview-token");
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["resource"], "api.items");
+    assert_eq!(json["result"]["partition"], "rest");
+    assert_eq!(json["result"]["row_count"], 2);
+    let request = request.lock().unwrap().clone().unwrap();
+    assert!(request.starts_with("GET /items?since=10 HTTP/1.1"));
+}
+
+#[test]
+fn preview_sql_table_resource_uses_postgres_runtime_without_writes() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("preview_source_orders");
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"id\" BIGINT NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            );
+            INSERT INTO {} (\"id\", \"updated_at\") VALUES (1, 10), (2, 20)",
+            table, table
+        ))
+        .unwrap();
+
+    let project = TestProject::new();
+    let source_dsn = postgres.url.replacen(
+        "postgresql://cdf@",
+        "postgresql://cdf:source-sql-preview-secret@",
+        1,
+    );
+    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_resource_with_ordered_cursor("secret://file/sql-dsn", &table),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "warehouse.orders",
+        "--filter",
+        "id > 1",
+        "--limit",
+        "1",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
+    assert_secret_absent(&result, "source-sql-preview-secret");
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["resource"], "warehouse.orders");
+    assert_eq!(json["result"]["partition"], "sql");
+    assert_eq!(json["result"]["row_count"], 1);
+}
+
+#[test]
+fn preview_sql_query_resource_fails_closed_without_writes() {
+    let project = TestProject::new();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        r#"
+[source.warehouse]
+kind = "sql"
+connection = "secret://file/sql-dsn"
+dialect = "postgres"
+
+[resource.orders]
+query = "SELECT * FROM public.orders"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "warehouse.orders",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("query resources are not supported")
+    );
+}
+
+#[test]
+fn preview_file_filter_fails_closed_without_writes() {
+    let project = TestProject::new();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+        "--filter",
+        "id > 1",
+    ]);
+
+    assert_eq!(result.exit_code, 3);
+    assert_no_preview_writes(&project);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cannot apply residual predicates")
+    );
 }
 
 #[test]
@@ -636,10 +827,10 @@ fn preview_missing_intermediate_literal_directory_fails_as_zero_match_without_wr
 }
 
 #[test]
-fn preview_multi_match_file_glob_fails_closed_without_writes() {
+fn preview_multi_match_file_glob_reads_first_sorted_match_without_writes() {
     let project = TestProject::new();
     fs::write(
-        project.root.join("data/events-extra.ndjson"),
+        project.root.join("data/zzz-events.ndjson"),
         "{\"id\":3,\"updated_at\":1783296120000000}\n",
     )
     .unwrap();
@@ -652,22 +843,12 @@ fn preview_multi_match_file_glob_fails_closed_without_writes() {
         "local.events",
     ]);
 
-    assert_eq!(result.exit_code, 5);
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_no_preview_writes(&project);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["kind"], "data");
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("matched 2 files")
-    );
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("multi-file scan semantics are not supported")
-    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["resource"], "local.events");
+    assert_eq!(json["result"]["partition"], "files");
+    assert_eq!(json["result"]["row_count"], 2);
 }
 
 #[test]
@@ -4305,13 +4486,20 @@ fn assert_no_preview_writes(project: &TestProject) {
         !project.root.join(".cdf/packages").exists(),
         "preview must not create package root"
     );
-    assert!(
-        !project.root.join(".cdf/state.db").exists(),
-        "preview must not create checkpoint state"
-    );
+    for suffix in ["", "-wal", "-shm"] {
+        assert!(
+            !project.root.join(format!(".cdf/state.db{suffix}")).exists(),
+            "preview must not create checkpoint/run-ledger state{}",
+            suffix
+        );
+    }
     assert!(
         !project.root.join(".cdf/dev.duckdb").exists(),
         "preview must not create destination DB"
+    );
+    assert!(
+        !project.root.join(".cdf/parquet").exists(),
+        "preview must not create destination root"
     );
 }
 
@@ -4850,7 +5038,11 @@ fn write_format_fixture(project: &TestProject, format: &str) {
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
 
-    let glob = format!("events.{format}");
+    let extension = match format {
+        "arrow_ipc" => "arrow",
+        other => other,
+    };
+    let glob = format!("events.{extension}");
     let resource = RESOURCE
         .replace("glob = \"*.ndjson\"", &format!("glob = \"{glob}\""))
         .replace("format = \"ndjson\"", &format!("format = \"{format}\""));
@@ -4868,6 +5060,7 @@ fn write_format_fixture(project: &TestProject, format: &str) {
         )
         .unwrap(),
         "parquet" => write_parquet_preview_fixture(project),
+        "arrow_ipc" => write_arrow_ipc_preview_fixture(project),
         other => panic!("unsupported format fixture {other}"),
     }
 }
@@ -4879,6 +5072,36 @@ fn write_parquet_preview_fixture(project: &TestProject) {
     fs::copy(
         package_dir.join("archive/parquet/data/seg-000001.parquet"),
         project.root.join("data/events.parquet"),
+    )
+    .unwrap();
+}
+
+fn write_arrow_ipc_preview_fixture(project: &TestProject) {
+    let temp = TempDir::new("cdf-cli-preview-arrow-ipc-source");
+    let package_dir = temp.path().join("pkg-preview-arrow-ipc-source");
+    let mut builder = PackageBuilder::create(&package_dir, "pkg-preview-arrow-ipc-source").unwrap();
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("updated_at", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2_i64])),
+            Arc::new(Int64Array::from(vec![
+                1_783_296_000_000_000_i64,
+                1_783_296_060_000_000_i64,
+            ])),
+        ],
+    )
+    .unwrap();
+    builder
+        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .unwrap();
+    builder.finish_with_status(PackageStatus::Packaged).unwrap();
+    fs::copy(
+        package_dir.join("data/seg-000001.arrow"),
+        project.root.join("data/events.arrow"),
     )
     .unwrap();
 }
@@ -5181,6 +5404,13 @@ schema = {{ fields = [
     )
 }
 
+fn rest_resource_with_exact_cursor_base_url(base_url: &str, token: &str) -> String {
+    rest_resource_with_base_url(base_url, token).replace(
+        r#"cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }"#,
+        r#"cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms", filter_fidelity = "exact" }"#,
+    )
+}
+
 fn serve_json_once(body: &str) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
@@ -5198,6 +5428,29 @@ fn serve_json_once(body: &str) -> String {
         stream.flush().unwrap();
     });
     format!("http://{address}")
+}
+
+fn serve_json_once_capturing_request(body: &str) -> (String, Arc<Mutex<Option<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let request_text = Arc::new(Mutex::new(None));
+    let request_for_thread = Arc::clone(&request_text);
+    let body = body.to_owned();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 4096];
+        let bytes_read = stream.read(&mut request).unwrap_or(0);
+        *request_for_thread.lock().unwrap() =
+            Some(String::from_utf8_lossy(&request[..bytes_read]).into_owned());
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+        stream.flush().unwrap();
+    });
+    (format!("http://{address}"), request_text)
 }
 
 fn sql_resource(connection: &str) -> String {

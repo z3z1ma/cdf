@@ -1,14 +1,14 @@
 use std::{
     collections::BTreeSet,
     fs,
-    io::{Cursor, Read},
+    io::{Cursor, Read, Seek},
     path::Path,
     sync::Arc,
 };
 
 use arrow_array::RecordBatch;
 use arrow_csv::reader::{Format as ArrowCsvFormat, ReaderBuilder as CsvReaderBuilder};
-use arrow_ipc::reader::StreamReader;
+use arrow_ipc::reader::{FileReader, StreamReader};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
 use arrow_schema::{ArrowError, DataType, Field, SchemaRef};
 use cdf_contract::{
@@ -110,8 +110,33 @@ fn read_arrow_ipc_stream_with_scope<R: Read>(
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
     let mut reader = StreamReader::try_new(reader, None).map_err(CdfError::from)?;
-    let schema = reader.schema();
-    let record_batches = collect_record_batches(&mut reader)?;
+    finish_arrow_ipc_read(reader.schema(), &mut reader, options, scope, position)
+}
+
+pub fn read_arrow_ipc_file<R: Read + Seek>(reader: R, options: &ReadOptions) -> Result<FormatRead> {
+    let mut reader = FileReader::try_new(reader, None).map_err(CdfError::from)?;
+    finish_arrow_ipc_read(
+        reader.schema(),
+        &mut reader,
+        options,
+        ScopeKey::File {
+            path: "arrow_ipc_file".to_owned(),
+        },
+        None,
+    )
+}
+
+fn finish_arrow_ipc_read<I>(
+    schema: SchemaRef,
+    reader: &mut I,
+    options: &ReadOptions,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead>
+where
+    I: Iterator<Item = std::result::Result<RecordBatch, ArrowError>>,
+{
+    let record_batches = collect_record_batches(reader)?;
     build_output(schema, record_batches, options, scope, position)
 }
 

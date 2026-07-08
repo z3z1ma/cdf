@@ -1,12 +1,12 @@
 use std::{
-    fs,
+    fs::{self, File},
     path::{Component, Path, PathBuf},
 };
 
 use arrow_schema::SchemaRef;
 use cdf_formats::{
-    CsvOptions, FileFormat, FileSource, JsonOptions, ReadOptions, read_file_source,
-    read_file_source_with_declared_schema,
+    CsvOptions, FileFormat, FileSource, JsonOptions, ReadOptions, read_arrow_ipc_file,
+    read_file_source, read_file_source_with_declared_schema,
 };
 use cdf_kernel::{
     BatchStream, BoxFuture, CdfError, PartitionPlan, ResourceDescriptor, ResourceId, Result,
@@ -22,20 +22,54 @@ pub(crate) fn open_file_resource(
     plan: &FileResourcePlan,
     partition: PartitionPlan,
 ) -> BoxFuture<'static, Result<BatchStream>> {
+    open_file_resource_inner(
+        descriptor,
+        declared_schema,
+        plan,
+        partition,
+        resolve_single_file,
+        false,
+    )
+}
+
+pub(crate) fn open_file_resource_preview(
+    descriptor: &ResourceDescriptor,
+    declared_schema: SchemaRef,
+    plan: &FileResourcePlan,
+    partition: PartitionPlan,
+) -> BoxFuture<'static, Result<BatchStream>> {
+    open_file_resource_inner(
+        descriptor,
+        declared_schema,
+        plan,
+        partition,
+        resolve_preview_file,
+        true,
+    )
+}
+
+fn open_file_resource_inner(
+    descriptor: &ResourceDescriptor,
+    declared_schema: SchemaRef,
+    plan: &FileResourcePlan,
+    partition: PartitionPlan,
+    resolve_path: fn(&ResourceId, &FileResourcePlan) -> Result<PathBuf>,
+    preview_arrow_ipc: bool,
+) -> BoxFuture<'static, Result<BatchStream>> {
     let descriptor = descriptor.clone();
     let declared_schema = declared_schema.clone();
     let plan = plan.clone();
     Box::pin(async move {
         validate_partition(&descriptor, &plan, &partition)?;
-        let path = resolve_single_file(&descriptor.resource_id, &plan)?;
-        let format = compile_format(&plan.format)?;
+        let path = resolve_path(&descriptor.resource_id, &plan)?;
         let options = ReadOptions::new(descriptor.resource_id.clone(), partition.partition_id);
-        let source = FileSource::new(path, format, options);
-        let read = if uses_declared_json_schema(&source.format, &declared_schema) {
-            read_file_source_with_declared_schema(&source, declared_schema)?
-        } else {
-            read_file_source(&source)?
-        };
+        let read = read_file_path(
+            &path,
+            &plan.format,
+            options,
+            declared_schema,
+            preview_arrow_ipc,
+        )?;
         Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
     })
 }
@@ -43,6 +77,54 @@ pub(crate) fn open_file_resource(
 fn uses_declared_json_schema(format: &FileFormat, declared_schema: &SchemaRef) -> bool {
     !declared_schema.fields().is_empty()
         && matches!(format, FileFormat::Json(_) | FileFormat::Ndjson(_))
+}
+
+fn read_file_path(
+    path: &Path,
+    declaration: &FileFormatDeclaration,
+    options: ReadOptions,
+    declared_schema: SchemaRef,
+    preview_arrow_ipc: bool,
+) -> Result<cdf_formats::FormatRead> {
+    let read = match declaration {
+        FileFormatDeclaration::ArrowIpc if preview_arrow_ipc => {
+            let file = File::open(path).map_err(|error| {
+                CdfError::data(format!("read Arrow IPC file {}: {error}", path.display()))
+            })?;
+            read_arrow_ipc_file(file, &options)
+        }
+        _ => {
+            let format = compile_format(declaration)?;
+            read_non_ipc_file_path(path, format, options, declared_schema)
+        }
+    }?;
+    Ok(read)
+}
+
+fn read_non_ipc_file_path(
+    path: &Path,
+    format: FileFormat,
+    options: ReadOptions,
+    declared_schema: SchemaRef,
+) -> Result<cdf_formats::FormatRead> {
+    let source = FileSource::new(path, format, options);
+    if uses_declared_json_schema(&source.format, &declared_schema) {
+        read_file_source_with_declared_schema(&source, declared_schema)
+    } else {
+        read_file_source(&source)
+    }
+}
+
+fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
+    match format {
+        FileFormatDeclaration::Csv => Ok(FileFormat::Csv(CsvOptions::default())),
+        FileFormatDeclaration::Json => Ok(FileFormat::Json(JsonOptions::default())),
+        FileFormatDeclaration::Ndjson => Ok(FileFormat::Ndjson(JsonOptions::default())),
+        FileFormatDeclaration::Parquet => Ok(FileFormat::Parquet),
+        FileFormatDeclaration::ArrowIpc => Err(CdfError::internal(
+            "declarative file format `arrow_ipc` is not supported by FileResource",
+        )),
+    }
 }
 
 fn validate_partition(
@@ -89,6 +171,28 @@ fn validate_partition(
 }
 
 fn resolve_single_file(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<PathBuf> {
+    let matches = resolve_file_matches(resource_id, plan)?;
+    match matches.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => Err(no_file_matches_error(resource_id, plan)),
+        paths => Err(CdfError::data(format!(
+            "declarative file resource `{resource_id}` matched {} files under `{}` for glob `{}`; narrow the glob to exactly one file because multi-file scan semantics are not supported",
+            paths.len(),
+            plan.root,
+            plan.glob
+        ))),
+    }
+}
+
+fn resolve_preview_file(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<PathBuf> {
+    let matches = resolve_file_matches(resource_id, plan)?;
+    matches
+        .into_iter()
+        .next()
+        .ok_or_else(|| no_file_matches_error(resource_id, plan))
+}
+
+fn resolve_file_matches(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<Vec<PathBuf>> {
     let root = PathBuf::from(&plan.root);
     if !root.is_absolute() {
         return Err(CdfError::contract(format!(
@@ -104,32 +208,14 @@ fn resolve_single_file(resource_id: &ResourceId, plan: &FileResourcePlan) -> Res
     matches.dedup();
 
     let matches = contained_matches(&root, matches)?;
-    match matches.as_slice() {
-        [path] => Ok(path.clone()),
-        [] => Err(CdfError::data(format!(
-            "declarative file resource `{resource_id}` matched no files under `{}` for glob `{}`",
-            root.display(),
-            plan.glob
-        ))),
-        paths => Err(CdfError::data(format!(
-            "declarative file resource `{resource_id}` matched {} files under `{}` for glob `{}`; narrow the glob to exactly one file because multi-file scan semantics are not supported",
-            paths.len(),
-            root.display(),
-            plan.glob
-        ))),
-    }
+    Ok(matches)
 }
 
-fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
-    match format {
-        FileFormatDeclaration::Csv => Ok(FileFormat::Csv(CsvOptions::default())),
-        FileFormatDeclaration::Json => Ok(FileFormat::Json(JsonOptions::default())),
-        FileFormatDeclaration::Ndjson => Ok(FileFormat::Ndjson(JsonOptions::default())),
-        FileFormatDeclaration::Parquet => Ok(FileFormat::Parquet),
-        FileFormatDeclaration::ArrowIpc => Err(CdfError::internal(
-            "declarative file format `arrow_ipc` is not supported by FileResource",
-        )),
-    }
+fn no_file_matches_error(resource_id: &ResourceId, plan: &FileResourcePlan) -> CdfError {
+    CdfError::data(format!(
+        "declarative file resource `{resource_id}` matched no files under `{}` for glob `{}`",
+        plan.root, plan.glob
+    ))
 }
 
 fn pattern_components(pattern: &str) -> Result<Vec<String>> {
