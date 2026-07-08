@@ -2,6 +2,7 @@ use cdf_kernel::{CdfError, ErrorKind};
 use serde::Serialize;
 
 use crate::error_catalog;
+use crate::progress::ProgressSnapshot;
 use crate::render::{RenderConfig, RenderDocument};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -51,8 +52,9 @@ pub struct CliError {
     pub exit_code: i32,
     pub not_supported: bool,
     pub code: String,
-    pub remediation: Option<ErrorRemediation>,
+    pub remediation: Option<Box<ErrorRemediation>>,
     pub suggestions: Box<[String]>,
+    pub(crate) progress: Option<Box<ProgressSnapshot>>,
 }
 
 impl CliError {
@@ -68,8 +70,12 @@ impl CliError {
             exit_code: mapping.exit_code,
             not_supported,
             code: mapping.code.to_owned(),
-            remediation: mapping.remediation.map(ErrorRemediation::from_template),
+            remediation: mapping
+                .remediation
+                .map(ErrorRemediation::from_template)
+                .map(Box::new),
             suggestions: Box::new([]),
+            progress: None,
         }
     }
 
@@ -131,6 +137,11 @@ impl CliError {
         self
     }
 
+    pub(crate) fn with_progress(mut self, progress: ProgressSnapshot) -> Self {
+        self.progress = Some(Box::new(progress));
+        self
+    }
+
     fn body(&self) -> ErrorBody {
         ErrorBody {
             kind: self.kind.clone(),
@@ -138,7 +149,7 @@ impl CliError {
             exit_code: self.exit_code,
             not_supported: self.not_supported,
             code: self.code.clone(),
-            remediation: self.remediation.clone(),
+            remediation: self.remediation.as_deref().cloned(),
             suggestions: self.suggestions.to_vec(),
         }
     }
@@ -162,12 +173,27 @@ pub struct CommandOutput {
 #[derive(Clone, Debug)]
 pub(crate) enum HumanOutput {
     Rendered(RenderDocument),
+    RenderedWithProgress {
+        progress: ProgressSnapshot,
+        document: RenderDocument,
+    },
 }
 
 impl HumanOutput {
     fn render(self, config: &RenderConfig) -> String {
         match self {
             Self::Rendered(document) => document.render(config),
+            Self::RenderedWithProgress { progress, document } => {
+                let mut rendered = progress.render_for_config(config);
+                if !rendered.is_empty() {
+                    if !rendered.ends_with('\n') {
+                        rendered.push('\n');
+                    }
+                    rendered.push('\n');
+                }
+                rendered.push_str(&document.render(config));
+                rendered
+            }
         }
     }
 }
@@ -181,16 +207,59 @@ impl CommandOutput {
         Self::rendered_with_exit_code(command, document, value, 0)
     }
 
+    pub(crate) fn rendered_with_progress<T: Serialize>(
+        command: &'static str,
+        document: RenderDocument,
+        value: T,
+        progress: ProgressSnapshot,
+    ) -> Result<Self, CliError> {
+        Self::rendered_human_with_exit_code(
+            command,
+            HumanOutput::RenderedWithProgress { progress, document },
+            value,
+            0,
+        )
+    }
+
     pub(crate) fn rendered_with_exit_code<T: Serialize>(
         command: &'static str,
         document: RenderDocument,
         value: T,
         exit_code: i32,
     ) -> Result<Self, CliError> {
+        Self::rendered_human_with_exit_code(
+            command,
+            HumanOutput::Rendered(document),
+            value,
+            exit_code,
+        )
+    }
+
+    pub(crate) fn rendered_with_progress_and_exit_code<T: Serialize>(
+        command: &'static str,
+        document: RenderDocument,
+        value: T,
+        progress: ProgressSnapshot,
+        exit_code: i32,
+    ) -> Result<Self, CliError> {
+        Self::rendered_human_with_exit_code(
+            command,
+            HumanOutput::RenderedWithProgress { progress, document },
+            value,
+            exit_code,
+        )
+    }
+
+    fn rendered_human_with_exit_code<T: Serialize>(
+        command: &'static str,
+        human: HumanOutput,
+        value: T,
+        exit_code: i32,
+    ) -> Result<Self, CliError> {
         Ok(Self {
             command,
             exit_code,
-            human: HumanOutput::Rendered(document),
+            human,
             json: serde_json::to_value(value).map_err(|error| {
                 CliError::mapped(
                     CdfError::internal(error.to_string()),
@@ -246,7 +315,11 @@ impl InvocationResult {
         }
     }
 
-    pub fn from_error(json_mode: bool, error: CliError) -> Self {
+    pub(crate) fn from_error_with_config(
+        json_mode: bool,
+        render_config: &RenderConfig,
+        error: CliError,
+    ) -> Self {
         if json_mode {
             let envelope = ErrorEnvelope {
                 ok: false,
@@ -262,17 +335,36 @@ impl InvocationResult {
                 ),
             }
         } else {
+            let progress = error.progress;
+            let exit_code = error.exit_code;
+            let message = error.message;
             let remediation = error
                 .remediation
-                .map(format_remediation)
+                .map(|remediation| format_remediation(*remediation))
                 .unwrap_or_default();
             let suggestions = format_suggestions(&error.suggestions);
+            let mut stderr = String::new();
+            if let Some(progress) = progress {
+                let rendered = progress.render_for_config(render_config);
+                if !rendered.is_empty() {
+                    stderr.push_str(&rendered);
+                    if !stderr.ends_with('\n') {
+                        stderr.push('\n');
+                    }
+                    stderr.push('\n');
+                }
+            }
+            stderr.push_str(&format!("error: {message}{remediation}{suggestions}\n"));
             Self {
-                exit_code: error.exit_code,
+                exit_code,
                 stdout: String::new(),
-                stderr: format!("error: {}{remediation}{suggestions}\n", error.message),
+                stderr,
             }
         }
+    }
+
+    pub fn from_error(json_mode: bool, error: CliError) -> Self {
+        Self::from_error_with_config(json_mode, &RenderConfig::detect(false), error)
     }
 }
 

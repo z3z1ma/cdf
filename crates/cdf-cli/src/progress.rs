@@ -1,4 +1,4 @@
-#![allow(dead_code)] // 10x: WS5A creates the progress subscriber foundation before WS5B/WS5C wire command families into it.
+#![allow(dead_code)] // 10x: progress still has grammar/backfill-only helpers until WS5C and display flag wiring land.
 
 use std::{
     collections::{BTreeSet, VecDeque},
@@ -174,6 +174,13 @@ impl ProgressSnapshot {
         }
     }
 
+    pub(crate) fn render_for_config(&self, render_config: &RenderConfig) -> String {
+        self.render(&ProgressConfig::new(
+            render_config.clone(),
+            DisplayVerbosity::Normal,
+        ))
+    }
+
     fn render_headless(&self) -> String {
         let mut output = String::new();
         for milestone in &self.milestones {
@@ -287,8 +294,12 @@ impl ProgressState {
         self.seen_sequences.insert(event.sequence);
         self.max_sequence = Some(event.sequence);
 
-        if self.terminal.is_some() {
-            return self.record_disposition(ProgressEventDisposition::AfterTerminal);
+        if let Some(terminal) = self.terminal {
+            if terminal == TerminalState::Failed && can_follow_failed_terminal(event.kind) {
+                self.terminal = None;
+            } else {
+                return self.record_disposition(ProgressEventDisposition::AfterTerminal);
+            }
         }
 
         let phase = match event.kind {
@@ -369,6 +380,15 @@ impl CliProgressSink {
     }
 }
 
+pub(crate) fn human_progress_sink(json_mode: bool, no_color: bool) -> Option<CliProgressSink> {
+    (!json_mode).then(|| {
+        CliProgressSink::new(ProgressConfig::new(
+            RenderConfig::detect(no_color),
+            DisplayVerbosity::Normal,
+        ))
+    })
+}
+
 impl RunEventSink for CliProgressSink {
     fn try_emit(&self, event: &RunEvent) -> RunEventSinkResult {
         let Ok(mut state) = self.state.try_lock() else {
@@ -426,10 +446,26 @@ fn phase_for_event(kind: RunEventKind) -> ProgressPhase {
 
 fn terminal_for_event(kind: RunEventKind) -> Option<TerminalState> {
     match kind {
-        RunEventKind::RunSucceeded => Some(TerminalState::Succeeded),
+        RunEventKind::RunSucceeded | RunEventKind::RunResumed | RunEventKind::ReplayRecorded => {
+            Some(TerminalState::Succeeded)
+        }
         RunEventKind::RunFailed => Some(TerminalState::Failed),
         _ => None,
     }
+}
+
+fn can_follow_failed_terminal(kind: RunEventKind) -> bool {
+    matches!(
+        kind,
+        RunEventKind::CheckpointProposed
+            | RunEventKind::DestinationCommitStarted
+            | RunEventKind::DestinationSegmentAcknowledged
+            | RunEventKind::DestinationReceiptRecorded
+            | RunEventKind::CheckpointCommitted
+            | RunEventKind::PackageStatusUpdated
+            | RunEventKind::RunResumed
+            | RunEventKind::ReplayRecorded
+    )
 }
 
 fn milestone_fields(event: &RunEvent, verbosity: DisplayVerbosity) -> Vec<(String, String)> {
@@ -487,6 +523,18 @@ fn push_metric_fields(fields: &mut Vec<(String, String)>, event: &RunEvent) {
         "retry_after_ms",
         "backoff_notice",
         "status",
+        "package_status",
+        "receipt_source",
+        "duplicate",
+        "no_op",
+        "package_receipt_recorded",
+        "source_contact",
+        "mutation_required",
+        "mutated",
+        "state",
+        "action",
+        "result",
+        "guidance",
         "from_depth",
         "to_depth",
         "trigger",
@@ -704,6 +752,45 @@ mod tests {
         assert_eq!(
             snapshot.milestones().last().unwrap().status,
             ProgressStatus::Failed
+        );
+    }
+
+    #[test]
+    fn recovery_events_after_run_failed_reopen_failed_terminal_until_run_resumed() {
+        let sink = sink(DisplayVerbosity::Normal);
+
+        assert_eq!(
+            sink.try_emit(&event(1, RunEventKind::PackageFinalized)),
+            RunEventSinkResult::Accepted
+        );
+        assert_eq!(
+            sink.try_emit(&event(2, RunEventKind::RunFailed)),
+            RunEventSinkResult::Accepted
+        );
+        assert_eq!(
+            sink.try_emit(&event(3, RunEventKind::DestinationReceiptRecorded)),
+            RunEventSinkResult::Accepted
+        );
+        assert_eq!(
+            sink.try_emit(&event(4, RunEventKind::RunResumed)),
+            RunEventSinkResult::Accepted
+        );
+        assert_eq!(
+            sink.try_emit(&event(5, RunEventKind::RunSucceeded)),
+            RunEventSinkResult::Accepted
+        );
+
+        let snapshot = sink.snapshot();
+        assert_eq!(snapshot.current_phase(), ProgressPhase::Gate);
+        assert_eq!(
+            snapshot.last_disposition(),
+            Some(ProgressEventDisposition::AfterTerminal)
+        );
+        assert_eq!(snapshot.milestones().len(), 4);
+        assert_eq!(snapshot.milestones().last().unwrap().message, "run resumed");
+        assert_eq!(
+            snapshot.milestones().last().unwrap().status,
+            ProgressStatus::Succeeded
         );
     }
 

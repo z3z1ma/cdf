@@ -4,7 +4,7 @@ mod events;
 mod model;
 mod report;
 
-use cdf_kernel::{CdfError, RunId};
+use cdf_kernel::{CdfError, RunEventSink, RunId};
 use cdf_state_sqlite::SqliteRunLedger;
 use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
@@ -14,6 +14,7 @@ use crate::{
     context::ProjectContext,
     error_catalog,
     output::{CliError, CommandOutput},
+    progress::human_progress_sink,
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, SectionRule, StatusKind, StatusLine},
@@ -53,13 +54,15 @@ pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliEr
             }
         },
     };
-    resume_run(&context, &state_path, run_id)
+    resume_run(&context, &state_path, run_id, cli.json, cli.no_color)
 }
 
 fn resume_run(
     context: &ProjectContext,
     state_path: &std::path::Path,
     run_id: RunId,
+    json_mode: bool,
+    no_color: bool,
 ) -> Result<CommandOutput, CliError> {
     let run_ledger = SqliteRunLedger::open(state_path)?;
     let snapshot = run_ledger.snapshot(&run_id)?.ok_or_else(|| {
@@ -68,14 +71,21 @@ fn resume_run(
             run_id
         ))
     })?;
-    let attempt = ResumeAttempt::new(context, &run_ledger, &snapshot)?;
+    let progress = human_progress_sink(json_mode, no_color);
+    let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
+    if let Some(sink) = event_sink {
+        for event in &snapshot.events {
+            let _ = sink.try_emit(event);
+        }
+    }
+    let attempt = ResumeAttempt::new(context, &run_ledger, &snapshot, event_sink)?;
     let outcome = attempt.execute();
     match outcome {
-        Ok(report) => finish_resume_report(report),
+        Ok(report) => finish_resume_report(report, progress.map(|progress| progress.snapshot())),
         Err(error) => {
             let report = attempt.fail_closed("recovery_failed", "fail_closed", error.message);
             let _ = attempt.append_run_failed(&report);
-            finish_resume_report(report)
+            finish_resume_report(report, progress.map(|progress| progress.snapshot()))
         }
     }
 }

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use cdf_kernel::{CdfError, Checkpoint, Receipt, RunId, StateDelta};
+use cdf_kernel::{CdfError, Checkpoint, Receipt, RunEventSink, RunId, StateDelta};
 use cdf_package::{PackageReader, PackageStatus};
 use cdf_project::{
     PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, recover_package_from_artifacts,
@@ -33,6 +33,7 @@ pub(super) struct ResumeAttempt<'a> {
     context: &'a ProjectContext,
     run_ledger: &'a SqliteRunLedger,
     snapshot: &'a RunLedgerSnapshot,
+    event_sink: Option<&'a dyn RunEventSink>,
     run_id: RunId,
     package_path: Option<PathBuf>,
     package: Option<ResumePackageFacts>,
@@ -45,6 +46,7 @@ impl<'a> ResumeAttempt<'a> {
         context: &'a ProjectContext,
         run_ledger: &'a SqliteRunLedger,
         snapshot: &'a RunLedgerSnapshot,
+        event_sink: Option<&'a dyn RunEventSink>,
     ) -> Result<Self, CliError> {
         let package_path = package_path_from_events(&snapshot.events)
             .map(|path| resolve_project_path(&context.root, Path::new(&path)));
@@ -60,6 +62,7 @@ impl<'a> ResumeAttempt<'a> {
             context,
             run_ledger,
             snapshot,
+            event_sink,
             run_id: snapshot.run.run_id.clone(),
             package_path,
             package,
@@ -469,7 +472,7 @@ impl<'a> ResumeAttempt<'a> {
             Some(common.receipt),
         );
         receipt_event.destination_id = Some(common.receipt.destination.clone());
-        self.run_ledger.append_event(&self.run_id, receipt_event)?;
+        self.append_event(receipt_event)?;
         self.append_checkpoint_committed(package, common.checkpoint, common.receipt)?;
         self.append_package_status_updated(package, common.package_status)?;
         Ok(())
@@ -488,7 +491,7 @@ impl<'a> ResumeAttempt<'a> {
             Some(receipt),
         );
         event.destination_id = Some(receipt.destination.clone());
-        self.run_ledger.append_event(&self.run_id, event)?;
+        self.append_event(event)?;
         Ok(())
     }
 
@@ -510,7 +513,7 @@ impl<'a> ResumeAttempt<'a> {
             "package_status",
             cdf_state_sqlite::RunEventValue::String(status.as_str().to_owned()),
         )]);
-        self.run_ledger.append_event(&self.run_id, event)?;
+        self.append_event(event)?;
         Ok(())
     }
 
@@ -528,7 +531,7 @@ impl<'a> ResumeAttempt<'a> {
             );
         }
         event.details = resume_event_details(report);
-        self.run_ledger.append_event(&self.run_id, event)?;
+        self.append_event(event)?;
         Ok(())
     }
 
@@ -546,7 +549,15 @@ impl<'a> ResumeAttempt<'a> {
             );
         }
         event.details = resume_event_details(report);
-        self.run_ledger.append_event(&self.run_id, event)?;
+        self.append_event(event)?;
+        Ok(())
+    }
+
+    fn append_event(&self, event: RunEventAppend) -> Result<(), CliError> {
+        let stored = self.run_ledger.append_event(&self.run_id, event)?;
+        if let Some(sink) = self.event_sink {
+            let _ = sink.try_emit(&stored);
+        }
         Ok(())
     }
 

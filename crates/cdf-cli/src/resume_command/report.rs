@@ -4,6 +4,7 @@ use serde::Serialize;
 use crate::{
     context::ProjectContext,
     output::{CliError, CommandOutput},
+    progress::ProgressSnapshot,
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
@@ -13,10 +14,18 @@ use crate::{
 
 use super::model::ResumePackageFacts;
 
-pub(super) fn finish_resume_report(report: ResumeReport) -> Result<CommandOutput, CliError> {
+pub(super) fn finish_resume_report(
+    report: ResumeReport,
+    progress: Option<ProgressSnapshot>,
+) -> Result<CommandOutput, CliError> {
     let exit_code = report.exit_code();
     let document = report.render_document();
-    CommandOutput::rendered_with_exit_code("resume", document, report, exit_code)
+    match progress {
+        Some(progress) => CommandOutput::rendered_with_progress_and_exit_code(
+            "resume", document, report, progress, exit_code,
+        ),
+        None => CommandOutput::rendered_with_exit_code("resume", document, report, exit_code),
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

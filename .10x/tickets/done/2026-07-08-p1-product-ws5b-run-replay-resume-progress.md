@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
@@ -32,7 +32,20 @@ Do not wire backfill. Do not add NDJSON event streaming. Do not redesign final n
 ## Progress and notes
 
 - 2026-07-08: Split from WS5. Source inspection found `run_command.rs` already accepts `event_sink: None`; replay and resume append ledger events through command-specific paths and may need narrow sink seams.
+- 2026-07-08: Implemented WS5B in the CLI layer without runtime changes. `cdf run` now passes a human-mode progress sink into `ProjectRunRequest::event_sink`; `cdf replay package` records progress-equivalent run events from package verification through replay completion/failure; `cdf resume` preloads existing ledger events and streams newly appended recovery events.
+- 2026-07-08: Preserved JSON separation by constructing progress sinks only when `--json` is not active and by attaching progress snapshots only to human render output. Replay JSON ledger event counts changed intentionally because replay now records the durable stage events required by this ticket.
+- 2026-07-08: Added deterministic headless/rich coverage for run, replay success, duplicate replay, replay failure, and post-finalization resume without source contact. Redaction remains fail-closed through the existing progress renderer value display path.
+- 2026-07-08: Evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`; closure review recorded in `.10x/reviews/2026-07-08-p1-product-ws5b-run-replay-resume-progress-review.md`.
+- 2026-07-08: Parent review repaired human failure-path progress rendering by carrying boxed progress snapshots on `CliError` and adding `replay_package_failure_human_stderr_includes_progress_context`; reran focused, full, duplication, complexity, security, and supply-chain checks.
 
 ## Blockers
 
-Blocked until WS5A and WS3C land.
+None.
+
+## Evidence
+
+- `.10x/evidence/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
+
+## Review
+
+- `.10x/reviews/2026-07-08-p1-product-ws5b-run-replay-resume-progress-review.md`

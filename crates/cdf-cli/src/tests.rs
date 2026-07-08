@@ -2122,6 +2122,8 @@ fn run_human_output_mentions_receipt_verified_commit_gate() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(!result.stdout.contains("\u{1b}["));
     for expected in [
+        "[plan] running run started",
+        "[gate] succeeded run succeeded",
         "OK run ",
         "Run",
         "Package",
@@ -2164,6 +2166,7 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
+        "Run progress",
         "\u{1b}[32m✓\u{1b}[0m run ",
         "\u{1b}[36mRun\u{1b}[0m",
         "\u{1b}[36mPackage\u{1b}[0m",
@@ -2551,8 +2554,14 @@ fn inspect_run_reports_duplicate_replay_status() {
     assert_eq!(json["result"]["duplicate"]["status"], "duplicate");
     assert_eq!(json["result"]["duplicate"]["duplicate"], true);
     assert_eq!(json["result"]["duplicate"]["no_op"], true);
+    let replay_event = json["result"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["kind"] == "replay_recorded")
+        .unwrap();
     assert_eq!(
-        json["result"]["events"][0]["details"]["attributes"]["receipt_source"]["value"],
+        replay_event["details"]["attributes"]["receipt_source"]["value"],
         "duck_db_commit"
     );
 }
@@ -2706,6 +2715,8 @@ fn resume_human_headless_render_uses_recovery_panels_and_redacts_destination_uri
     assert!(!result.stdout.contains("\u{1b}["));
     assert_secret_absent(&result, "resume-render-secret");
     for expected in [
+        "[plan] running run started",
+        "[plan] failed run failed",
         "ERR resume run run-resume-human-no-package failed closed",
         "Recovery",
         "Durable artifacts",
@@ -2743,6 +2754,7 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
 
     assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
     for expected in [
+        "Run progress",
         "\u{1b}[31m✗\u{1b}[0m resume run run-resume-rich-no-package failed closed",
         "\u{1b}[36mRecovery\u{1b}[0m",
         "\u{1b}[36mDurable artifacts\u{1b}[0m",
@@ -2786,6 +2798,55 @@ fn resume_finalized_package_without_receipt_replays_without_source_contact() {
     assert_eq!(json["result"]["mutated"], true);
     assert_eq!(json["result"]["package"]["status"], "checkpointed");
     assert_eq!(json["result"]["checkpoint"]["status"], "committed");
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+    assert_eq!(package_receipt_count(&package_dir), 1);
+}
+
+#[test]
+fn resume_finalized_package_human_progress_replays_without_source_contact() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-resume-progress",
+        "checkpoint-resume-progress",
+    );
+    let mut reader = PackageReader::open(&package_dir).unwrap();
+    reader.update_status(PackageStatus::Packaged).unwrap();
+    remove_package_receipts(&package_dir);
+    let run_id = create_resume_run_with_package(
+        &project,
+        "run-resume-progress",
+        &package_dir,
+        &[RunEventKind::PackageFinalized, RunEventKind::RunFailed],
+    );
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "resume".to_owned(),
+        "--run".to_owned(),
+        run_id.to_string(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!project.root.join("data/events.ndjson").exists());
+    for expected in [
+        "[package] running package finalized",
+        "[package] failed run failed",
+        "[verify] running destination receipt recorded",
+        "[gate] succeeded run resumed",
+        "OK resume run run-resume-progress completed",
+        "source_contact=false",
+        "source contact",
+        "mutation performed  yes",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
     assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
     assert_eq!(package_receipt_count(&package_dir), 1);
 }
@@ -3745,8 +3806,13 @@ fn replay_package_duckdb_replays_from_artifacts_without_source_contact() {
     assert_eq!(report["receipt_source"]["duplicate"], false);
     assert_eq!(report["receipt_source"]["no_op"], false);
     assert_eq!(report["package_status"], "checkpointed");
-    assert_eq!(report["ledger_events"]["event_count"], 1);
+    assert_eq!(report["ledger_events"]["event_count"], 8);
     assert_eq!(report["ledger_events"]["terminal_kind"], "replay_recorded");
+    assert_eq!(report["ledger_events"]["kinds"]["package_finalized"], 1);
+    assert_eq!(
+        report["ledger_events"]["kinds"]["destination_receipt_recorded"],
+        1
+    );
     assert_eq!(report["ledger_events"]["kinds"]["replay_recorded"], 1);
     assert_eq!(report["writes"]["package"], true);
     assert_eq!(report["writes"]["destination"], true);
@@ -3821,6 +3887,96 @@ fn replay_package_duckdb_duplicate_reports_no_op() {
 }
 
 #[test]
+fn replay_package_failure_records_progress_events_without_json_progress_output() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-progress-failure",
+        "checkpoint-replay-progress-failure",
+    );
+    let first = replay_package_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/replay-progress-failure.duckdb",
+    );
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+
+    let second = replay_package_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/replay-progress-failure-again.duckdb",
+    );
+
+    assert_ne!(second.exit_code, 0);
+    assert!(second.stdout.is_empty());
+    assert!(!second.stderr.contains("Run progress"));
+    assert!(!second.stderr.contains("package finalized"));
+
+    let conn = Connection::open(project.root.join(".cdf/state.db")).unwrap();
+    let latest_run_id: String = conn
+        .query_row(
+            "SELECT run_id FROM cdf_runs ORDER BY sequence DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let events = ledger
+        .events(&RunId::new(latest_run_id).unwrap())
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        events,
+        vec![RunEventKind::PackageFinalized, RunEventKind::RunFailed]
+    );
+}
+
+#[test]
+fn replay_package_failure_human_stderr_includes_progress_context() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-progress-human-failure",
+        "checkpoint-replay-progress-human-failure",
+    );
+    let first = replay_package_command(
+        &project,
+        &package_dir,
+        "duckdb://.cdf/replay-progress-human-failure.duckdb",
+    );
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+
+    let second = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "replay".to_owned(),
+        "package".to_owned(),
+        package_dir.to_str().unwrap().to_owned(),
+        "--to".to_owned(),
+        "duckdb://.cdf/replay-progress-human-failure-again.duckdb".to_owned(),
+    ]);
+
+    assert_ne!(second.exit_code, 0);
+    assert!(second.stdout.is_empty());
+    assert!(!second.stderr.contains("\u{1b}["));
+    for expected in [
+        "[package] running package finalized",
+        "[package] failed run failed",
+        "error:",
+        "checkpoint-replay-progress-human-failure",
+    ] {
+        assert!(
+            second.stderr.contains(expected),
+            "missing {expected:?} in:\n{}",
+            second.stderr
+        );
+    }
+}
+
+#[test]
 fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate_facts() {
     let project = TestProject::new();
     let package_dir =
@@ -3852,6 +4008,9 @@ fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate
     assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
     assert!(!second.stdout.contains("\u{1b}["));
     for expected in [
+        "[commit] succeeded replay recorded",
+        "duplicate=true",
+        "no_op=true",
         "OK replay package pkg-replay-human completed",
         "Replay",
         "Destination",
@@ -3892,6 +4051,7 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     for expected in [
+        "Run progress",
         "\u{1b}[32m✓\u{1b}[0m replay package pkg-replay-rich completed",
         "\u{1b}[36mReplay\u{1b}[0m",
         "\u{1b}[36mDestination\u{1b}[0m",
@@ -4147,8 +4307,13 @@ fn replay_package_postgres_replays_from_artifacts_without_source_contact() {
     );
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["package_status"], "checkpointed");
-    assert_eq!(report["ledger_events"]["event_count"], 1);
+    assert_eq!(report["ledger_events"]["event_count"], 8);
     assert_eq!(report["ledger_events"]["terminal_kind"], "replay_recorded");
+    assert_eq!(report["ledger_events"]["kinds"]["package_finalized"], 1);
+    assert_eq!(
+        report["ledger_events"]["kinds"]["destination_receipt_recorded"],
+        1
+    );
     assert_eq!(report["ledger_events"]["kinds"]["replay_recorded"], 1);
     assert_eq!(package_receipt_count(&package_dir), receipts_before + 1);
 
@@ -4227,8 +4392,13 @@ fn replay_package_parquet_replays_from_artifacts_without_source_contact() {
     assert_eq!(report["checkpoint_id"], "checkpoint-replay-parquet");
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["package_status"], "checkpointed");
-    assert_eq!(report["ledger_events"]["event_count"], 1);
+    assert_eq!(report["ledger_events"]["event_count"], 8);
     assert_eq!(report["ledger_events"]["terminal_kind"], "replay_recorded");
+    assert_eq!(report["ledger_events"]["kinds"]["package_finalized"], 1);
+    assert_eq!(
+        report["ledger_events"]["kinds"]["destination_receipt_recorded"],
+        1
+    );
     assert_eq!(report["ledger_events"]["kinds"]["replay_recorded"], 1);
     assert!(parquet_root.exists());
     assert_eq!(package_receipt_count(&package_dir), receipts_before + 1);

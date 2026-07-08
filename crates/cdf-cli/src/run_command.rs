@@ -3,7 +3,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cdf_kernel::{CdfError, CheckpointId, PipelineId, TargetName};
+use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, TargetName};
 use cdf_project::{ProjectRunRequest, run_project};
 
 use crate::{
@@ -14,6 +14,7 @@ use crate::{
     },
     error_catalog,
     output::{CliError, CommandOutput},
+    progress::human_progress_sink,
     project_run_resource::build_project_run_resource,
     reports::{RunCliReport, RunDestinationReport},
     scan_command::{build_engine_plan, default_target_for_resource},
@@ -59,7 +60,9 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     let destination = resolved.destination;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
-    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+    let progress = human_progress_sink(cli.json, cli.no_color);
+    let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
+    let report = match futures_executor::block_on(run_project(ProjectRunRequest {
         resource: run_resource.as_project_resource(),
         plan,
         package_root: context.package_root(),
@@ -69,12 +72,29 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         checkpoint_id: explicit.checkpoint_id.clone(),
         destination,
         run_id: None,
-        event_sink: None,
+        event_sink,
         after_receipt_verified: None,
     }))
-    .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
+    .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))
+    {
+        Ok(report) => report,
+        Err(error) => {
+            let error = CliError::from(error);
+            let error = match progress.as_ref() {
+                Some(progress) => error.with_progress(progress.snapshot()),
+                None => error,
+            };
+            return Err(error);
+        }
+    };
     let cli_report = RunCliReport::from_report(&report, destination_report);
-    CommandOutput::rendered("run", cli_report.render_document(), cli_report)
+    let document = cli_report.render_document();
+    match progress {
+        Some(progress) => {
+            CommandOutput::rendered_with_progress("run", document, cli_report, progress.snapshot())
+        }
+        None => CommandOutput::rendered("run", document, cli_report),
+    }
 }
 
 fn run_destination_resolution_error(

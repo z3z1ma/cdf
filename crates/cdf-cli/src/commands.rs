@@ -16,7 +16,7 @@ pub fn execute(cli: Cli) -> InvocationResult {
     let render_config = RenderConfig::detect(cli.no_color);
     match dispatch(cli) {
         Ok(output) => InvocationResult::from_output(json_mode, &render_config, output),
-        Err(error) => InvocationResult::from_error(json_mode, error),
+        Err(error) => InvocationResult::from_error_with_config(json_mode, &render_config, error),
     }
 }
 
