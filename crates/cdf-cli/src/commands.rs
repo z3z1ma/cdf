@@ -84,8 +84,8 @@ Usage:
 Commands:
   init [DIR] [--name NAME] [--force]
   validate
-  plan <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
-  explain <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
+  plan <RESOURCE> --target TARGET [--select a,b] [--filter EXPR] [--limit N]
+  explain <RESOURCE> --target TARGET [--select a,b] [--filter EXPR] [--limit N]
   run --resource RESOURCE --pipeline ID --target TARGET --package-id ID --checkpoint-id ID [--loop]
   preview <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
   sql <QUERY>

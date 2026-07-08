@@ -984,6 +984,61 @@ fn state_delta_for_positions(
     )
 }
 
+#[test]
+fn destination_planning_facade_previews_duckdb_schema_commit_without_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let database_path = temp.path().join("planned.duckdb");
+    let mut destination =
+        ResolvedProjectDestination::duckdb(&database_path, TargetName::new("events").unwrap())
+            .unwrap();
+
+    let plan = destination.plan_resource_commit(&resource).unwrap();
+
+    assert_eq!(plan.description.destination_id.as_str(), "duckdb");
+    assert_eq!(plan.target.as_str(), "events");
+    assert_eq!(
+        plan.commit_plan.delivery_guarantee,
+        DeliveryGuarantee::EffectivelyOncePerPackage
+    );
+    assert_eq!(
+        plan.commit_plan.idempotency,
+        IdempotencySupport::PackageToken
+    );
+    assert_eq!(plan.synthetic.package_hash.as_str(), "sha256:plan-preview");
+    assert_eq!(plan.synthetic.segment_ids.len(), 1);
+    assert!(
+        plan.commit_plan
+            .migrations
+            .iter()
+            .any(|migration| migration.description.contains("CREATE TABLE"))
+    );
+    assert!(
+        !database_path.exists(),
+        "DuckDB plan preview must not create destination data"
+    );
+}
+
+#[test]
+fn destination_planning_facade_rejects_parquet_merge_without_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
+    let parquet_root = temp.path().join("parquet");
+    let mut destination = ResolvedProjectDestination::parquet_filesystem(
+        &parquet_root,
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+
+    let error = destination.plan_resource_commit(&resource).unwrap_err();
+
+    assert!(error.to_string().contains("Parquet destination"));
+    assert!(
+        !parquet_root.exists(),
+        "Parquet plan preview must not create destination root"
+    );
+}
+
 fn project_run_request<'a>(
     resource: &'a cdf_declarative::CompiledResource,
     package_id: &str,

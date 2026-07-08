@@ -19,7 +19,7 @@ use arrow_array::{
     TimestampNanosecondArray, TimestampSecondArray, UInt8Array, UInt16Array, UInt32Array,
     UInt64Array,
 };
-use arrow_schema::{DataType, Field, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_kernel::{
     CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
     ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest, DestinationId,

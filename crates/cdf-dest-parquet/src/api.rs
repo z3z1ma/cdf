@@ -97,6 +97,14 @@ impl ParquetDestination {
         }
     }
 
+    pub fn dry_plan_commit(
+        request: &DestinationCommitRequest,
+    ) -> Result<(DestinationSheet, CommitPlan)> {
+        let sheet = parquet_sheet()?;
+        let plan = plan_kernel_commit(&sheet, request)?;
+        Ok((sheet, plan))
+    }
+
     pub fn plan_package_commit(&self, request: &ParquetCommitRequest) -> Result<ParquetCommitPlan> {
         let package = load_package_data(&request.package_dir)?;
         validate_requested_segments(&request.commit.segments, &package)?;
@@ -577,36 +585,7 @@ impl DestinationProtocol for ParquetDestination {
     }
 
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
-        if !self
-            .sheet
-            .supported_dispositions
-            .contains(&request.disposition)
-        {
-            return Err(CdfError::contract(format!(
-                "Parquet destination does not support {:?}",
-                request.disposition
-            )));
-        }
-        Ok(CommitPlan {
-            plan_id: PlanId::new(format!(
-                "parquet:{}:{}",
-                request.target.as_str(),
-                request.idempotency_token.as_str()
-            ))?,
-            target: request.target.clone(),
-            disposition: request.disposition.clone(),
-            idempotency: IdempotencySupport::PackageToken,
-            migrations: Vec::new(),
-            delivery_guarantee: match request.disposition {
-                WriteDisposition::Append => DeliveryGuarantee::EffectivelyOncePerPackage,
-                WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
-                WriteDisposition::Merge | WriteDisposition::CdcApply => {
-                    return Err(CdfError::contract(
-                        "Parquet destination supports append and replace only",
-                    ));
-                }
-            },
-        })
+        plan_kernel_commit(&self.sheet, request)
     }
 
     fn begin(
@@ -627,6 +606,38 @@ impl DestinationProtocol for ParquetDestination {
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
         self.verify_receipt(receipt)
     }
+}
+
+fn plan_kernel_commit(
+    sheet: &DestinationSheet,
+    request: &DestinationCommitRequest,
+) -> Result<CommitPlan> {
+    if !sheet.supported_dispositions.contains(&request.disposition) {
+        return Err(CdfError::contract(format!(
+            "Parquet destination does not support {:?}",
+            request.disposition
+        )));
+    }
+    Ok(CommitPlan {
+        plan_id: PlanId::new(format!(
+            "parquet:{}:{}",
+            request.target.as_str(),
+            request.idempotency_token.as_str()
+        ))?,
+        target: request.target.clone(),
+        disposition: request.disposition.clone(),
+        idempotency: IdempotencySupport::PackageToken,
+        migrations: Vec::new(),
+        delivery_guarantee: match request.disposition {
+            WriteDisposition::Append => DeliveryGuarantee::EffectivelyOncePerPackage,
+            WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
+            WriteDisposition::Merge | WriteDisposition::CdcApply => {
+                return Err(CdfError::contract(
+                    "Parquet destination supports append and replace only",
+                ));
+            }
+        },
+    })
 }
 
 fn expected_segments_for_context(

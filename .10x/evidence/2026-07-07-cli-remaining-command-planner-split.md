@@ -10,7 +10,7 @@ Relates-To: .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md, .10x
 The remaining non-run-spine CLI command-family gaps were split into direct children of `.10x/tickets/2026-07-05-cli-surface.md`:
 
 - `.10x/tickets/2026-07-07-cli-init-scaffold.md`
-- `.10x/tickets/2026-07-07-cli-plan-explain-ddl-guarantee.md`
+- `.10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md`
 - `.10x/tickets/2026-07-07-cli-preview-resource-breadth.md`
 - `.10x/tickets/2026-07-07-cli-contract-registry-freeze-test.md`
 - `.10x/tickets/2026-07-07-cli-state-migrate-recover.md`

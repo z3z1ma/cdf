@@ -136,6 +136,9 @@ fn validate_json_reports_project_shape() {
 #[test]
 fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
     let project = TestProject::new();
+    let package_root = project.root.join(".cdf/packages");
+    let state_path = project.root.join(".cdf/state.db");
+    let duckdb_path = project.root.join(".cdf/dev.duckdb");
     let result = run([
         "cdf",
         "--json",
@@ -143,6 +146,8 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
         project.root_str(),
         "plan",
         "local.events",
+        "--target",
+        "events",
         "--select",
         "id,updated_at",
         "--filter",
@@ -152,24 +157,139 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!package_root.exists(), "plan must not create package root");
+    assert!(!state_path.exists(), "plan must not create state store");
+    assert!(
+        !duckdb_path.exists(),
+        "plan must not create destination data"
+    );
     let json = stderr_or_stdout_json(&result.stdout);
     let result = &json["result"];
     assert_eq!(result["resource_id"], "local.events");
+    assert!(
+        result["resource_schema"]["schema_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert_eq!(result["resource_schema"]["fields"][0]["name"], "id");
     assert_eq!(result["will_fetch"]["limit"], 5);
     assert_eq!(
         result["pushdown"]["unsupported"][0]["fidelity"],
         "unsupported"
     );
-    assert_eq!(result["ddl_preview"]["supported"], false);
+    assert_eq!(result["destination"]["destination_id"], "duckdb");
+    assert_eq!(result["destination"]["target"], "events");
+    assert_eq!(result["destination"]["disposition"], "append");
+    assert_eq!(result["destination"]["idempotency"], "package_token");
+    assert_eq!(result["ddl_preview"]["supported"], true);
+    assert_eq!(result["ddl_preview"]["migration_support"], "supported");
     assert!(
-        result["delivery_guarantee"]
+        result["ddl_preview"]["migrations"][0]["description"]
             .as_str()
             .unwrap()
-            .contains("AtLeast")
+            .contains("CREATE TABLE")
+    );
+    assert_eq!(result["delivery_guarantee"], "effectively_once_per_package");
+    assert_eq!(
+        result["delivery_guarantee_detail"]["qualifier"],
+        "per_package"
     );
     assert_eq!(
         result["state_advancement"]["advances_after"],
         "destination receipt is recorded and CheckpointStore::commit verifies coverage"
+    );
+}
+
+#[test]
+fn explain_json_exposes_destination_plan_without_writes() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "explain",
+        "local.events",
+        "--target",
+        "events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "explain");
+    let report = &json["result"];
+    assert_eq!(report["ddl_preview"]["supported"], true);
+    assert_eq!(report["delivery_guarantee"], "effectively_once_per_package");
+}
+
+#[test]
+fn plan_json_derives_merge_guarantee_per_key() {
+    let project = TestProject::new();
+    write_resource_disposition(&project, "merge");
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--target",
+        "events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["destination"]["disposition"], "merge");
+    assert_eq!(report["delivery_guarantee"], "effectively_once_per_key");
+    assert_eq!(report["delivery_guarantee_detail"]["qualifier"], "per_key");
+    assert!(
+        !project.root.join(".cdf/packages").exists(),
+        "merge plan must not create package root"
+    );
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+}
+
+#[test]
+fn plan_unsupported_destination_disposition_fails_closed_without_writes() {
+    let project = TestProject::new();
+    write_project_destination(&project, "parquet://.cdf/parquet");
+    write_resource_disposition(&project, "merge");
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--target",
+        "events",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Parquet")
+    );
+    assert!(
+        !result.stdout.contains("effectively_once"),
+        "unsupported plan must not pretend a delivery guarantee"
+    );
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    assert!(
+        !project.root.join(".cdf/parquet").exists(),
+        "Parquet no-write planning must not create the destination root"
     );
 }
 
@@ -4208,6 +4328,17 @@ fn write_resource_glob(project: &TestProject, glob: &str) {
     fs::write(
         project.root.join("resources/files.toml"),
         RESOURCE.replace("glob = \"*.ndjson\"", &format!("glob = \"{glob}\"")),
+    )
+    .unwrap();
+}
+
+fn write_resource_disposition(project: &TestProject, disposition: &str) {
+    fs::write(
+        project.root.join("resources/files.toml"),
+        RESOURCE.replace(
+            "write_disposition = \"append\"",
+            &format!("write_disposition = \"{disposition}\""),
+        ),
     )
     .unwrap();
 }

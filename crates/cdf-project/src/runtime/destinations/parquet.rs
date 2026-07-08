@@ -118,6 +118,15 @@ impl ProjectDestinationRuntime for FilesystemParquetProjectDestinationRuntime {
         CapabilitySupport::Unsupported
     }
 
+    fn plan_resource_commit(
+        &mut self,
+        _resource: &dyn ResourceStream,
+        inputs: &DestinationCommitPlanningInputs,
+    ) -> Result<DestinationCommitPlanningOutcome> {
+        let (sheet, plan) = ParquetDestination::dry_plan_commit(&inputs.destination_commit)?;
+        Ok(DestinationCommitPlanningOutcome::new(sheet, plan))
+    }
+
     fn prepare_package_commit(
         &mut self,
         package_dir: &Path,

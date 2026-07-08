@@ -139,6 +139,35 @@ impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
         Ok(())
     }
 
+    fn plan_resource_commit(
+        &mut self,
+        resource: &dyn ResourceStream,
+        inputs: &DestinationCommitPlanningInputs,
+    ) -> Result<DestinationCommitPlanningOutcome> {
+        let replay = self.replay.as_ref().ok_or_else(|| {
+            CdfError::internal("Postgres project planning requires replay planning inputs")
+        })?;
+        let replay_inputs = PackageReplayInputs {
+            input_checkpoint: None,
+            state_delta: inputs.state_delta.clone(),
+            destination_commit: inputs.destination_commit.clone(),
+            schema_hash: inputs.schema_hash.clone(),
+            merge_keys: resource.descriptor().merge_key.clone(),
+        };
+        let load_input = postgres_load_plan_input_from_artifacts(
+            &replay_inputs,
+            replay.target.clone(),
+            replay.dedup.clone(),
+            replay.existing_table.clone(),
+            postgres_columns_from_schema(resource)?,
+        )?;
+        let load_plan = self.destination.plan_load(load_input)?;
+        Ok(DestinationCommitPlanningOutcome::new(
+            self.destination.sheet().clone(),
+            load_plan.kernel,
+        ))
+    }
+
     fn prepare_package_commit(
         &mut self,
         package_dir: &Path,

@@ -1,9 +1,11 @@
 use cdf_kernel::{CdfError, TargetName};
-use cdf_project::{
-    ProjectResolutionContext, ResolvedProjectDestination, resolve_project_run_destination,
-};
+use cdf_project::ResolvedProjectDestination;
 
-use crate::{context::ProjectContext, destination_uri::redact_error_value, output::CliError};
+use crate::{
+    context::ProjectContext,
+    destination_uri::{redact_error_value, resolve_environment_destination},
+    output::CliError,
+};
 
 pub(super) struct SelectedDestination {
     destination: Option<ResolvedProjectDestination>,
@@ -16,18 +18,11 @@ impl SelectedDestination {
         command: &'static str,
         target: &TargetName,
     ) -> Result<Self, CliError> {
-        let secret_provider = context.secret_provider();
-        let destination_context = ProjectResolutionContext::for_project_run(&context.root, target)
-            .with_environment_name(&context.environment.name)
-            .with_destination_policy(&context.environment.destination_policy)
-            .with_secret_provider(&secret_provider);
-        let destination =
-            resolve_project_run_destination(&context.environment.destination, &destination_context)
-                .map_err(|error| resume_destination_resolution_error(error, command))?;
-        let secret_redaction = destination.secret_redaction().map(str::to_owned);
+        let resolved = resolve_environment_destination(context, target)
+            .map_err(|error| resume_destination_resolution_error(error, command))?;
         Ok(Self {
-            destination: Some(destination),
-            secret_redaction,
+            destination: Some(resolved.destination),
+            secret_redaction: resolved.secret_redaction,
         })
     }
 

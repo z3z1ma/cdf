@@ -1,6 +1,6 @@
 use super::{hooks::ReceiptVerifiedHook, prelude::*, types::ProjectReceiptSource};
 use crate::DestinationPolicy;
-use cdf_kernel::CapabilitySupport;
+use cdf_kernel::{CapabilitySupport, CommitPlan, DestinationSheet};
 
 mod duckdb;
 mod parquet;
@@ -92,6 +92,25 @@ impl PreparedDestinationCommit {
 
     pub fn has_pending_context(&self) -> bool {
         self.pending_context.is_some()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DestinationCommitPlanningInputs {
+    pub state_delta: StateDelta,
+    pub destination_commit: DestinationCommitRequest,
+    pub schema_hash: SchemaHash,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DestinationCommitPlanningOutcome {
+    pub sheet: DestinationSheet,
+    pub plan: CommitPlan,
+}
+
+impl DestinationCommitPlanningOutcome {
+    pub fn new(sheet: DestinationSheet, plan: CommitPlan) -> Self {
+        Self { sheet, plan }
     }
 }
 
@@ -313,6 +332,18 @@ pub trait ProjectDestinationRuntime {
         _schema_hash: &SchemaHash,
     ) -> Result<()> {
         Ok(())
+    }
+
+    fn plan_resource_commit(
+        &mut self,
+        _resource: &dyn ResourceStream,
+        inputs: &DestinationCommitPlanningInputs,
+    ) -> Result<DestinationCommitPlanningOutcome> {
+        let plan = self.protocol().plan_commit(&inputs.destination_commit)?;
+        Ok(DestinationCommitPlanningOutcome::new(
+            self.protocol().sheet().clone(),
+            plan,
+        ))
     }
 
     fn prepare_package_commit(

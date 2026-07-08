@@ -3,8 +3,9 @@ use std::collections::BTreeMap;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
-    CdfError, OrderBy, PartitionPlan, PredicateId, ResourceStream, ScanPredicate, ScanRequest,
-    SortDirection,
+    CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
+    PartitionPlan, PredicateId, ResourceStream, ScanPredicate, ScanRequest, SortDirection,
+    TargetName, TransactionSupport, WriteDisposition,
 };
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -13,6 +14,7 @@ use crate::{
     args::{Cli, ScanArgs},
     commands::{json_cli_error, output},
     context::ProjectContext,
+    destination_uri::{redact_error_value, resolve_environment_destination},
     output::{CliError, CommandOutput},
     reports::WriteEffects,
 };
@@ -23,8 +25,9 @@ pub(crate) fn plan_or_explain(
     command: &'static str,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let target = required_scan_target(&args, command)?;
     let plan = build_engine_plan(&context, &args)?;
-    let report = scan_report(&context, &plan)?;
+    let report = scan_report(&context, &plan, &target, command)?;
     let human = format_scan_report(command, &report);
     output(command, human, report)
 }
@@ -120,19 +123,21 @@ fn parse_order_by(raw: &str) -> Result<OrderBy, CliError> {
     })
 }
 
-fn scan_report(context: &ProjectContext, plan: &EnginePlan) -> Result<ScanPlanReport, CliError> {
+fn scan_report(
+    context: &ProjectContext,
+    plan: &EnginePlan,
+    target: &TargetName,
+    command: &'static str,
+) -> Result<ScanPlanReport, CliError> {
     let resource = context.resource(plan.scan.request.resource_id.as_str())?;
+    let destination_plan = destination_plan_report(context, resource, target, command)?;
     Ok(ScanPlanReport {
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
         resource_id: plan.scan.request.resource_id.to_string(),
+        resource_schema: resource_schema_report(resource, &destination_plan.schema_hash),
         will_fetch: FetchReport {
-            partitions: plan
-                .scan
-                .partitions
-                .iter()
-                .map(partition_report)
-                .collect(),
+            partitions: plan.scan.partitions.iter().map(partition_report).collect(),
             projection: plan.scan.request.projection.clone().unwrap_or_default(),
             filters: plan
                 .scan
@@ -148,12 +153,10 @@ fn scan_report(context: &ProjectContext, plan: &EnginePlan) -> Result<ScanPlanRe
             inexact: plan.explain.inexact_predicates.clone(),
             unsupported: plan.explain.unsupported_predicates.clone(),
         },
-        ddl_preview: UnsupportedReport {
-            supported: false,
-            reason: "destination DDL preview requires a destination commit plan over a package schema; current lower APIs expose package commit planning, not scan-to-DDL planning".to_owned(),
-            required_lower_layer: "scan/resource schema to destination DDL planning facade".to_owned(),
-        },
-        delivery_guarantee: format!("{:?}", plan.explain.delivery_guarantee),
+        destination: destination_plan.destination,
+        ddl_preview: destination_plan.ddl_preview,
+        delivery_guarantee: destination_plan.delivery_guarantee.guarantee.clone(),
+        delivery_guarantee_detail: destination_plan.delivery_guarantee,
         state_advancement: StateAdvancementReport {
             scope: serde_json::to_value(&resource.descriptor().state_scope)
                 .map_err(json_cli_error)?,
@@ -162,11 +165,53 @@ fn scan_report(context: &ProjectContext, plan: &EnginePlan) -> Result<ScanPlanRe
                 .cursor
                 .as_ref()
                 .map(|cursor| cursor.field.clone()),
-            advances_after: "destination receipt is recorded and CheckpointStore::commit verifies coverage".to_owned(),
+            advances_after:
+                "destination receipt is recorded and CheckpointStore::commit verifies coverage"
+                    .to_owned(),
         },
         explain: plan.explain.clone(),
         package_id: plan.package_id.clone(),
     })
+}
+
+fn required_scan_target(args: &ScanArgs, command: &str) -> Result<TargetName, CliError> {
+    let target = args
+        .target
+        .as_ref()
+        .ok_or_else(|| CliError::usage(format!("{command} requires --target")))?;
+    TargetName::new(target.clone()).map_err(CliError::from)
+}
+
+fn destination_plan_report(
+    context: &ProjectContext,
+    resource: &cdf_declarative::CompiledResource,
+    target: &TargetName,
+    command: &'static str,
+) -> Result<DestinationPlanReport, CliError> {
+    let resolved = resolve_environment_destination(context, target)
+        .map_err(|error| plan_destination_resolution_error(command, error))?;
+    let mut destination = resolved.destination;
+    let plan = destination
+        .plan_resource_commit(resource)
+        .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
+    DestinationPlanReport::from_project(plan, resource).map_err(CliError::from)
+}
+
+fn plan_destination_resolution_error(command: &'static str, error: CdfError) -> CliError {
+    if error
+        .message
+        .contains("no project destination driver registered")
+        || error.message.contains("malformed or non-local")
+        || error.message.contains("is missing a scheme")
+    {
+        CliError::not_supported(
+            command,
+            error.message,
+            "registered no-write project destination planner",
+        )
+    } else {
+        error.into()
+    }
 }
 
 fn partition_report(partition: &PartitionPlan) -> PartitionReport {
@@ -210,9 +255,11 @@ fn format_scan_report(command: &str, report: &ScanPlanReport) -> String {
     let pushed = report.pushdown.pushed.len();
     let inexact = report.pushdown.inexact.len();
     let unsupported = report.pushdown.unsupported.len();
+    let migrations = report.ddl_preview.migrations.len();
     format!(
-        "{command} {}: {} partition(s), {pushed} pushed predicate(s), {inexact} inexact, {unsupported} unsupported, guarantee {}",
+        "{command} {} to {}: {} partition(s), {pushed} pushed predicate(s), {inexact} inexact, {unsupported} unsupported, {migrations} migration preview item(s), guarantee {}",
         report.resource_id,
+        report.destination.target,
         report.will_fetch.partitions.len(),
         report.delivery_guarantee
     )
@@ -223,13 +270,29 @@ struct ScanPlanReport {
     project: String,
     environment: String,
     resource_id: String,
+    resource_schema: ResourceSchemaReport,
     will_fetch: FetchReport,
     pushdown: PushdownReport,
-    ddl_preview: UnsupportedReport,
+    destination: DestinationReport,
+    ddl_preview: DdlPreviewReport,
     delivery_guarantee: String,
+    delivery_guarantee_detail: DeliveryGuaranteeReport,
     state_advancement: StateAdvancementReport,
     explain: cdf_engine::ExplainData,
     package_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ResourceSchemaReport {
+    schema_hash: String,
+    fields: Vec<ResourceSchemaFieldReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct ResourceSchemaFieldReport {
+    name: String,
+    data_type: String,
+    nullable: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -255,10 +318,37 @@ struct PushdownReport {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct UnsupportedReport {
+struct DestinationReport {
+    destination_id: String,
+    schemes: Vec<String>,
+    label: String,
+    target: String,
+    disposition: String,
+    idempotency: String,
+    supported_dispositions: Vec<String>,
+    sheet: DestinationSheet,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct DdlPreviewReport {
     supported: bool,
-    reason: String,
-    required_lower_layer: String,
+    reason: Option<String>,
+    target: String,
+    disposition: String,
+    migration_support: String,
+    migrations: Vec<cdf_kernel::MigrationRecord>,
+    synthetic_package_hash: String,
+    synthetic_idempotency_token: String,
+    synthetic_segments: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct DeliveryGuaranteeReport {
+    guarantee: String,
+    disposition: String,
+    idempotency: String,
+    qualifier: String,
+    basis: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -276,4 +366,220 @@ struct PreviewReport {
     row_count: u64,
     byte_count: u64,
     writes: WriteEffects,
+}
+
+struct DestinationPlanReport {
+    schema_hash: cdf_kernel::SchemaHash,
+    destination: DestinationReport,
+    ddl_preview: DdlPreviewReport,
+    delivery_guarantee: DeliveryGuaranteeReport,
+}
+
+impl DestinationPlanReport {
+    fn from_project(
+        plan: cdf_project::ProjectDestinationCommitPlan,
+        resource: &cdf_declarative::CompiledResource,
+    ) -> cdf_kernel::Result<Self> {
+        let guarantee = delivery_guarantee_report(
+            &plan.commit_plan.delivery_guarantee,
+            &plan.commit_plan.disposition,
+            &plan.commit_plan.idempotency,
+            &plan.sheet,
+            resource,
+        )?;
+        let migration_support = capability_support_name(&plan.sheet.migration_support).to_owned();
+        let ddl_supported = matches!(plan.sheet.migration_support, CapabilitySupport::Supported);
+        Ok(Self {
+            schema_hash: plan.schema_hash.clone(),
+            destination: DestinationReport {
+                destination_id: plan.description.destination_id.to_string(),
+                schemes: plan
+                    .description
+                    .schemes
+                    .iter()
+                    .map(|scheme| (*scheme).to_owned())
+                    .collect(),
+                label: plan.description.label.clone(),
+                target: plan.target.to_string(),
+                disposition: write_disposition_name(&plan.commit_plan.disposition).to_owned(),
+                idempotency: idempotency_name(&plan.commit_plan.idempotency).to_owned(),
+                supported_dispositions: plan
+                    .sheet
+                    .supported_dispositions
+                    .iter()
+                    .map(|disposition| write_disposition_name(disposition).to_owned())
+                    .collect(),
+                sheet: plan.sheet.clone(),
+            },
+            ddl_preview: DdlPreviewReport {
+                supported: ddl_supported,
+                reason: if ddl_supported {
+                    None
+                } else {
+                    Some(
+                        "destination sheet declares migration_support unsupported; no DDL migration preview is produced for this commit plan"
+                            .to_owned(),
+                    )
+                },
+                target: plan.commit_plan.target.to_string(),
+                disposition: write_disposition_name(&plan.commit_plan.disposition).to_owned(),
+                migration_support,
+                migrations: plan.commit_plan.migrations.clone(),
+                synthetic_package_hash: plan.synthetic.package_hash.to_string(),
+                synthetic_idempotency_token: plan.synthetic.idempotency_token.to_string(),
+                synthetic_segments: plan
+                    .synthetic
+                    .segment_ids
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            },
+            delivery_guarantee: guarantee,
+        })
+    }
+}
+
+fn resource_schema_report(
+    resource: &cdf_declarative::CompiledResource,
+    schema_hash: &cdf_kernel::SchemaHash,
+) -> ResourceSchemaReport {
+    ResourceSchemaReport {
+        schema_hash: schema_hash.to_string(),
+        fields: resource
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| ResourceSchemaFieldReport {
+                name: field.name().clone(),
+                data_type: format!("{:?}", field.data_type()),
+                nullable: field.is_nullable(),
+            })
+            .collect(),
+    }
+}
+
+fn delivery_guarantee_report(
+    planned: &DeliveryGuarantee,
+    disposition: &WriteDisposition,
+    idempotency: &IdempotencySupport,
+    sheet: &DestinationSheet,
+    resource: &cdf_declarative::CompiledResource,
+) -> cdf_kernel::Result<DeliveryGuaranteeReport> {
+    if idempotency != &sheet.idempotency {
+        return Err(CdfError::internal(format!(
+            "destination commit plan idempotency {} does not match destination sheet idempotency {}",
+            idempotency_name(idempotency),
+            idempotency_name(&sheet.idempotency)
+        )));
+    }
+    let expected = derive_delivery_guarantee(disposition, idempotency, sheet, resource);
+    if &expected != planned {
+        return Err(CdfError::internal(format!(
+            "destination commit plan guarantee {} does not match guarantee table result {}",
+            delivery_guarantee_name(planned),
+            delivery_guarantee_name(&expected)
+        )));
+    }
+    Ok(DeliveryGuaranteeReport {
+        guarantee: delivery_guarantee_name(planned).to_owned(),
+        disposition: write_disposition_name(disposition).to_owned(),
+        idempotency: idempotency_name(idempotency).to_owned(),
+        qualifier: delivery_guarantee_qualifier(planned).to_owned(),
+        basis: delivery_guarantee_basis(planned).to_owned(),
+    })
+}
+
+fn derive_delivery_guarantee(
+    disposition: &WriteDisposition,
+    idempotency: &IdempotencySupport,
+    sheet: &DestinationSheet,
+    resource: &cdf_declarative::CompiledResource,
+) -> DeliveryGuarantee {
+    match disposition {
+        WriteDisposition::Merge if !resource.descriptor().merge_key.is_empty() => {
+            DeliveryGuarantee::EffectivelyOncePerKey
+        }
+        WriteDisposition::Append if idempotency == &IdempotencySupport::PackageToken => {
+            DeliveryGuarantee::EffectivelyOncePerPackage
+        }
+        WriteDisposition::Replace
+            if matches!(
+                sheet.transactions,
+                TransactionSupport::AtomicTarget | TransactionSupport::AtomicPackage
+            ) =>
+        {
+            DeliveryGuarantee::EffectivelyOncePerTarget
+        }
+        WriteDisposition::CdcApply if idempotency == &IdempotencySupport::PackageToken => {
+            DeliveryGuarantee::EffectivelyOncePerPosition
+        }
+        WriteDisposition::Append
+        | WriteDisposition::Merge
+        | WriteDisposition::Replace
+        | WriteDisposition::CdcApply => DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+    }
+}
+
+fn delivery_guarantee_name(guarantee: &DeliveryGuarantee) -> &'static str {
+    match guarantee {
+        DeliveryGuarantee::AtLeastOnceDuplicateRisk => "at_least_once_duplicate_risk",
+        DeliveryGuarantee::EffectivelyOncePerKey => "effectively_once_per_key",
+        DeliveryGuarantee::EffectivelyOncePerPackage => "effectively_once_per_package",
+        DeliveryGuarantee::EffectivelyOncePerTarget => "effectively_once_per_target",
+        DeliveryGuarantee::EffectivelyOncePerPosition => "effectively_once_per_position",
+    }
+}
+
+fn delivery_guarantee_qualifier(guarantee: &DeliveryGuarantee) -> &'static str {
+    match guarantee {
+        DeliveryGuarantee::AtLeastOnceDuplicateRisk => "duplicate_risk",
+        DeliveryGuarantee::EffectivelyOncePerKey => "per_key",
+        DeliveryGuarantee::EffectivelyOncePerPackage => "per_package",
+        DeliveryGuarantee::EffectivelyOncePerTarget => "per_target",
+        DeliveryGuarantee::EffectivelyOncePerPosition => "per_position",
+    }
+}
+
+fn delivery_guarantee_basis(guarantee: &DeliveryGuarantee) -> &'static str {
+    match guarantee {
+        DeliveryGuarantee::AtLeastOnceDuplicateRisk => {
+            "at-least-once extraction without a qualifying idempotent destination rule leaves duplicate risk"
+        }
+        DeliveryGuarantee::EffectivelyOncePerKey => {
+            "at-least-once extraction plus merge with a merge key gives effectively-once per key"
+        }
+        DeliveryGuarantee::EffectivelyOncePerPackage => {
+            "at-least-once extraction plus append with package-token idempotency gives effectively-once per package"
+        }
+        DeliveryGuarantee::EffectivelyOncePerTarget => {
+            "at-least-once extraction plus atomic replace gives effectively-once per target"
+        }
+        DeliveryGuarantee::EffectivelyOncePerPosition => {
+            "at-least-once extraction plus ordered cdc_apply with package-token idempotency gives effectively-once per position"
+        }
+    }
+}
+
+fn write_disposition_name(disposition: &WriteDisposition) -> &'static str {
+    match disposition {
+        WriteDisposition::Append => "append",
+        WriteDisposition::Replace => "replace",
+        WriteDisposition::Merge => "merge",
+        WriteDisposition::CdcApply => "cdc_apply",
+    }
+}
+
+fn idempotency_name(idempotency: &IdempotencySupport) -> &'static str {
+    match idempotency {
+        IdempotencySupport::None => "none",
+        IdempotencySupport::PackageToken => "package_token",
+        IdempotencySupport::SegmentToken => "segment_token",
+    }
+}
+
+fn capability_support_name(support: &CapabilitySupport) -> &'static str {
+    match support {
+        CapabilitySupport::Supported => "supported",
+        CapabilitySupport::Unsupported => "unsupported",
+    }
 }

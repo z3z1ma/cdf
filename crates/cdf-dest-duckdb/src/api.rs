@@ -233,6 +233,42 @@ impl DuckDbDestination {
         Ok(plan)
     }
 
+    pub fn plan_schema_commit(
+        &self,
+        request: &DestinationCommitRequest,
+        schema: &Schema,
+    ) -> Result<DuckDbCommitPlan> {
+        let fields = schema
+            .fields()
+            .iter()
+            .map(|field| field_plan(field.as_ref()))
+            .collect::<Result<Vec<_>>>()?;
+        validate_field_names(&fields)?;
+        let target = parse_target(&request.target)?;
+        let table_plan = if self.database_path.exists() {
+            let conn = self.open_read_only_connection()?;
+            plan_table(&conn, target, &fields, request.disposition.clone())?
+        } else {
+            plan_absent_table(target, &fields, request.disposition.clone())?
+        };
+        let mut kernel = self.plan_commit(request)?;
+        kernel.migrations = table_plan
+            .ddl
+            .iter()
+            .enumerate()
+            .map(|(index, ddl)| MigrationRecord {
+                migration_id: format!("duckdb-ddl-{:03}", index + 1),
+                description: ddl.clone(),
+            })
+            .collect();
+        Ok(DuckDbCommitPlan {
+            kernel,
+            ddl: table_plan.ddl,
+            bulk_path: BulkPath::ArrowIpcPackageRows,
+            target_exists: table_plan.target_exists,
+        })
+    }
+
     pub fn commit_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
         let reader = PackageReader::open(&request.package_dir)?;
         reader.verify()?;

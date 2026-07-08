@@ -43,6 +43,7 @@ pub struct InitArgs {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanArgs {
     pub resource_id: String,
+    pub target: Option<String>,
     pub projection: Option<Vec<String>>,
     pub filters: Vec<String>,
     pub limit: Option<u64>,
@@ -262,6 +263,7 @@ fn parse_init(args: &[String]) -> Result<InitArgs, CliError> {
 
 fn parse_scan(command: &str, args: &[String]) -> Result<ScanArgs, CliError> {
     let mut resource_id = None;
+    let mut target = None;
     let mut projection = None;
     let mut filters = Vec::new();
     let mut limit = None;
@@ -272,6 +274,10 @@ fn parse_scan(command: &str, args: &[String]) -> Result<ScanArgs, CliError> {
     while let Some(arg) = cursor.next() {
         match arg {
             "--resource" => resource_id = Some(cursor.value("--resource")?),
+            "--target" if command == "preview" => {
+                return Err(CliError::usage("unknown preview option `--target`"));
+            }
+            "--target" => target = Some(cursor.value("--target")?),
             "--select" | "--projection" => {
                 projection = Some(
                     cursor
@@ -306,6 +312,7 @@ fn parse_scan(command: &str, args: &[String]) -> Result<ScanArgs, CliError> {
         resource_id.ok_or_else(|| CliError::usage(format!("{command} requires a resource id")))?;
     Ok(ScanArgs {
         resource_id,
+        target,
         projection,
         filters,
         limit,

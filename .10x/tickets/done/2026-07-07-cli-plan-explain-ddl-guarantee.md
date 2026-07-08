@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-cli-surface.md
 Depends-On: .10x/specs/project-cli-observability-security.md, .10x/specs/destination-receipts-guarantees.md, .10x/specs/run-orchestration-ledger.md
 
@@ -39,3 +39,5 @@ None. The governing guarantee table is ratified; if implementation needs a new g
 ## Progress and notes
 
 - 2026-07-07: Split from `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`. Current `scan_command` reports pushdown and state-advancement text but marks DDL preview unsupported because scan-to-destination planning is not exposed yet.
+- 2026-07-08: Worker A implemented a no-write project destination planning facade and wired `cdf plan`/`cdf explain --target` JSON/human reports to resource schema, destination sheet, DDL/migration preview, derived delivery guarantee, and state-advancement preview. Ticket remains open for parent review, evidence, and closure.
+- 2026-07-08: Parent review closed the slice with evidence `.10x/evidence/2026-07-08-cli-plan-explain-ddl-guarantee.md` and review `.10x/reviews/2026-07-08-cli-plan-explain-ddl-guarantee-review.md`. Focused CLI/project tests, workspace tests, fmt/check/clippy, Jscpd, rust-code-analysis, cargo machete, cargo deny/audit/vet, Semgrep, OSV, CodeQL through the reusable DB path, and source-only Gitleaks passed or matched ratified limits.

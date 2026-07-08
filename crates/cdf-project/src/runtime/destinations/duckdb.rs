@@ -27,6 +27,19 @@ impl ProjectDestinationRuntime for DuckDbDestination {
         duckdb_project_description(self)
     }
 
+    fn plan_resource_commit(
+        &mut self,
+        resource: &dyn ResourceStream,
+        inputs: &DestinationCommitPlanningInputs,
+    ) -> Result<DestinationCommitPlanningOutcome> {
+        let plan =
+            self.plan_schema_commit(&inputs.destination_commit, resource.schema().as_ref())?;
+        Ok(DestinationCommitPlanningOutcome::new(
+            self.sheet().clone(),
+            plan.kernel,
+        ))
+    }
+
     fn prepare_package_commit(
         &mut self,
         package_dir: &Path,

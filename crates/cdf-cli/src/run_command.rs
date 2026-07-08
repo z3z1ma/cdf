@@ -38,6 +38,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         &context,
         &ScanArgs {
             resource_id: explicit.resource_id.clone(),
+            target: None,
             projection: None,
             filters: Vec::new(),
             limit: None,
