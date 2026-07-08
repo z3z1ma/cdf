@@ -170,7 +170,7 @@ mod destinations;
 #[cfg(test)]
 mod file_fixture;
 #[cfg(test)]
-mod local_postgres;
+pub(crate) mod local_postgres;
 #[cfg(test)]
 mod plan_json;
 #[cfg(test)]

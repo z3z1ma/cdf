@@ -1,0 +1,220 @@
+use std::fs;
+
+use cdf_kernel::{CheckpointStatus, CheckpointStore, Result};
+use cdf_package::PackageStatus;
+use cdf_state_sqlite::SqliteCheckpointStore;
+
+use crate::run_matrix::local_postgres::LivePostgres;
+
+use super::{
+    ChaosCrashWindow, ChaosDestination, RuntimeChaosOutput, cross_destination_chaos_cases,
+    destinations::{ChaosDestinationHandle, DestinationFootprint},
+    fixture::{
+        ChaosPackageFixture, ExecutedCaseParts, assert_checkpoint_not_ahead_of_durable_data,
+        assert_duplicate_retry_no_second_write, durable_receipt, executed_case, package_status,
+        recover_after_crash,
+    },
+    helper::spawn_stage_helper_crash,
+};
+
+#[test]
+fn cross_destination_generic_runtime_stage_chaos_persists_output() {
+    let postgres = LivePostgres::start().expect(
+        "C3 runtime chaos requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
+    );
+    let mut output = RuntimeChaosOutput::default();
+
+    for (destination, window) in cross_destination_chaos_cases() {
+        output
+            .executed_cases
+            .push(execute_case(destination, window, &postgres).unwrap());
+    }
+
+    assert_eq!(output.executed_cases.len(), 12);
+    for destination in [
+        ChaosDestination::DuckDb,
+        ChaosDestination::ParquetFilesystem,
+        ChaosDestination::Postgres,
+    ] {
+        assert_eq!(
+            output
+                .executed_cases
+                .iter()
+                .filter(|case| case.destination == destination)
+                .count(),
+            4
+        );
+    }
+    for window in [
+        ChaosCrashWindow::PackageReplayVerifiedBeforeDestinationWrite,
+        ChaosCrashWindow::CheckpointProposedBeforeDestinationWrite,
+        ChaosCrashWindow::DestinationReceiptRecordedVerifiedBeforeCheckpointCommit,
+        ChaosCrashWindow::CheckpointCommittedBeforePackageStatusCheckpointed,
+    ] {
+        assert_eq!(
+            output
+                .executed_cases
+                .iter()
+                .filter(|case| case.crash_window == window)
+                .count(),
+            3
+        );
+    }
+
+    let serialized = serde_json::to_string_pretty(&output).unwrap();
+    assert!(!serialized.contains(postgres.url()));
+    println!("CDF_RUNTIME_CHAOS_OUTPUT={serialized}");
+}
+
+fn execute_case(
+    destination_kind: ChaosDestination,
+    window: ChaosCrashWindow,
+    postgres: &LivePostgres,
+) -> Result<super::ExecutedChaosCase> {
+    let temp = tempfile::tempdir()
+        .map_err(|error| cdf_kernel::CdfError::data(format!("create chaos tempdir: {error}")))?;
+    fs::create_dir_all(temp.path().join(".cdf")).map_err(|error| {
+        cdf_kernel::CdfError::data(format!("create runtime chaos .cdf dir: {error}"))
+    })?;
+    let sqlite_path = temp.path().join(".cdf/runtime-chaos-state.sqlite");
+    let store = SqliteCheckpointStore::open(&sqlite_path)?;
+    let destination = ChaosDestinationHandle::new(destination_kind, window, temp.path(), postgres)?;
+    let fixture = ChaosPackageFixture::build(
+        temp.path(),
+        destination_kind,
+        window,
+        destination.target_name(),
+    )?;
+
+    let initial_footprint = destination.footprint()?;
+    assert!(
+        !initial_footprint.has_destination_write(),
+        "runtime chaos destination must start empty"
+    );
+
+    spawn_stage_helper_crash(&fixture, &destination, &sqlite_path, window);
+
+    let receipt = durable_receipt(&fixture.package_dir)?;
+    let crash_footprint = destination.footprint()?;
+    assert_crash_state(&store, &fixture, window, receipt.as_ref(), &crash_footprint)?;
+    let crash_left_checkpoint_head = checkpoint_head_exists(&store, &fixture)?;
+    let crash_left_durable_receipt = receipt.is_some();
+    let crash_left_destination_write = crash_footprint.has_destination_write();
+
+    let before_recovery_footprint = destination.footprint()?;
+    let (report, recovery_path) =
+        recover_after_crash(&destination, &store, &fixture, window, receipt.clone())?;
+    let after_recovery_footprint = destination.footprint()?;
+    let receipt_recovery_avoided_second_destination_write = if receipt.is_some() {
+        before_recovery_footprint == after_recovery_footprint
+    } else {
+        true
+    };
+    assert!(
+        receipt_recovery_avoided_second_destination_write,
+        "durable-receipt recovery must not mutate destination footprint"
+    );
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(
+        package_status(&fixture.package_dir)?,
+        PackageStatus::Checkpointed
+    );
+    assert_checkpoint_not_ahead_of_durable_data(&destination, &report)?;
+
+    let (duplicate_retry_no_second_destination_write, duplicate_retry_behavior) =
+        assert_duplicate_retry_no_second_write(&destination, &fixture, &report, temp.path())?;
+
+    Ok(executed_case(ExecutedCaseParts {
+        destination: destination_kind,
+        window,
+        fixture: &fixture,
+        report: &report,
+        recovery_path,
+        crash_left_durable_receipt,
+        crash_left_checkpoint_head,
+        crash_left_destination_write,
+        receipt_recovery_avoided_second_destination_write,
+        duplicate_retry_no_second_destination_write,
+        duplicate_retry_behavior,
+    }))
+}
+
+fn assert_crash_state(
+    store: &SqliteCheckpointStore,
+    fixture: &ChaosPackageFixture,
+    window: ChaosCrashWindow,
+    receipt: Option<&cdf_kernel::Receipt>,
+    footprint: &DestinationFootprint,
+) -> Result<()> {
+    let history = store.history(
+        &fixture.inputs.state_delta.pipeline_id,
+        &fixture.inputs.state_delta.resource_id,
+        &fixture.inputs.state_delta.scope,
+    )?;
+    match window {
+        ChaosCrashWindow::PackageReplayVerifiedBeforeDestinationWrite => {
+            assert!(history.is_empty());
+            assert!(receipt.is_none());
+            assert!(!footprint.has_destination_write());
+            assert_eq!(
+                package_status(&fixture.package_dir)?,
+                PackageStatus::Packaged
+            );
+        }
+        ChaosCrashWindow::CheckpointProposedBeforeDestinationWrite => {
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].status, CheckpointStatus::Proposed);
+            assert!(!history[0].is_head);
+            assert!(receipt.is_none());
+            assert!(!footprint.has_destination_write());
+            assert_eq!(
+                package_status(&fixture.package_dir)?,
+                PackageStatus::Loading
+            );
+        }
+        ChaosCrashWindow::DestinationReceiptRecordedVerifiedBeforeCheckpointCommit => {
+            assert_eq!(history.len(), 1);
+            assert_eq!(history[0].status, CheckpointStatus::Proposed);
+            assert!(!history[0].is_head);
+            assert!(receipt.is_some());
+            assert!(footprint.has_destination_write());
+            assert_eq!(
+                package_status(&fixture.package_dir)?,
+                PackageStatus::Loading
+            );
+        }
+        ChaosCrashWindow::CheckpointCommittedBeforePackageStatusCheckpointed => {
+            assert!(receipt.is_some());
+            assert!(footprint.has_destination_write());
+            assert_eq!(
+                package_status(&fixture.package_dir)?,
+                PackageStatus::Loading
+            );
+            let head = store
+                .head(
+                    &fixture.inputs.state_delta.pipeline_id,
+                    &fixture.inputs.state_delta.resource_id,
+                    &fixture.inputs.state_delta.scope,
+                )?
+                .expect("checkpoint head after committed-window crash");
+            assert_eq!(head.status, CheckpointStatus::Committed);
+            assert!(head.is_head);
+            assert_eq!(head.delta, fixture.inputs.state_delta);
+            assert_eq!(head.receipt.as_ref(), receipt);
+        }
+    }
+    Ok(())
+}
+
+fn checkpoint_head_exists(
+    store: &SqliteCheckpointStore,
+    fixture: &ChaosPackageFixture,
+) -> Result<bool> {
+    Ok(store
+        .head(
+            &fixture.inputs.state_delta.pipeline_id,
+            &fixture.inputs.state_delta.resource_id,
+            &fixture.inputs.state_delta.scope,
+        )?
+        .is_some())
+}

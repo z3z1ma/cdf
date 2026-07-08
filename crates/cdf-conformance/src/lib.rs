@@ -7,3 +7,4 @@ pub mod live_run;
 pub mod package_replay;
 pub mod resource;
 pub mod run_matrix;
+pub mod runtime_chaos;
