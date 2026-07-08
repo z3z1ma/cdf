@@ -1,4 +1,8 @@
-use std::{ffi::OsString, path::PathBuf};
+use std::{
+    ffi::OsString,
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use clap::{Arg, ArgAction, ArgMatches, Command as ClapCommand, error::ErrorKind};
 
@@ -47,6 +51,7 @@ pub struct InitArgs {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScanArgs {
     pub resource_id: String,
+    pub destination_uri: Option<String>,
     pub target: Option<String>,
     pub projection: Option<Vec<String>>,
     pub filters: Vec<String>,
@@ -59,6 +64,7 @@ pub struct ScanArgs {
 pub struct RunArgs {
     pub resource_id: Option<String>,
     pub pipeline_id: Option<String>,
+    pub destination_uri: Option<String>,
     pub target: Option<String>,
     pub package_id: Option<String>,
     pub checkpoint_id: Option<String>,
@@ -104,9 +110,10 @@ pub enum StateCommand {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StateScopeArgs {
-    pub pipeline_id: String,
+    pub pipeline_id: Option<String>,
     pub resource_id: String,
     pub scope_json: Option<String>,
+    pub scope: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -133,7 +140,7 @@ pub struct ResumeArgs {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReplayPackageArgs {
     pub package_dir: PathBuf,
-    pub destination_uri: String,
+    pub destination_uri: Option<String>,
     pub target: Option<String>,
     pub merge_dedup: Option<String>,
 }
@@ -143,7 +150,7 @@ pub struct BackfillArgs {
     pub resource_id: String,
     pub from: String,
     pub to: String,
-    pub target: String,
+    pub target: Option<String>,
     pub execute: bool,
     pub slice_size: Option<u64>,
 }
@@ -308,6 +315,11 @@ fn parse_scan(
     } else {
         None
     };
+    let destination_uri = if accepts_target {
+        string_value(matches, "to")
+    } else {
+        None
+    };
     let projection = string_value(matches, "projection").map(|value| {
         value
             .split(',')
@@ -321,6 +333,7 @@ fn parse_scan(
         .transpose()?;
     Ok(ScanArgs {
         resource_id,
+        destination_uri,
         target,
         projection,
         filters: values(matches, "filter"),
@@ -339,6 +352,7 @@ fn parse_run(matches: &ArgMatches) -> Result<RunArgs, CliError> {
             "accepts at most one resource id",
         )?,
         pipeline_id: string_value(matches, "pipeline"),
+        destination_uri: string_value(matches, "to"),
         target: string_value(matches, "target"),
         package_id: string_value(matches, "package_id"),
         checkpoint_id: string_value(matches, "checkpoint_id"),
@@ -465,13 +479,18 @@ fn parse_state(matches: &ArgMatches) -> Result<StateCommand, CliError> {
 }
 
 fn parse_state_scope(matches: &ArgMatches) -> Result<StateScopeArgs, CliError> {
-    reject_state_extras(matches)?;
+    let resource_id = resource_arg(
+        "state command",
+        &values(matches, "resource_arg"),
+        string_value(matches, "resource"),
+        "accepts at most one resource id",
+    )?
+    .ok_or_else(|| CliError::usage("state command requires RESOURCE or --resource"))?;
     Ok(StateScopeArgs {
-        pipeline_id: string_value(matches, "pipeline")
-            .ok_or_else(|| CliError::usage("state command requires --pipeline"))?,
-        resource_id: string_value(matches, "resource")
-            .ok_or_else(|| CliError::usage("state command requires --resource"))?,
+        pipeline_id: string_value(matches, "pipeline"),
+        resource_id,
         scope_json: string_value(matches, "scope_json"),
+        scope: values(matches, "scope"),
     })
 }
 
@@ -479,9 +498,9 @@ fn parse_rewind(matches: &ArgMatches) -> Result<RewindArgs, CliError> {
     Ok(RewindArgs {
         scope: parse_state_scope(matches)?,
         target_checkpoint_id: string_value(matches, "target_checkpoint")
-            .ok_or_else(|| CliError::usage("state rewind requires --target-checkpoint"))?,
+            .ok_or_else(|| CliError::usage("state rewind requires --to or --target-checkpoint"))?,
         marker_checkpoint_id: string_value(matches, "marker_checkpoint")
-            .ok_or_else(|| CliError::usage("state rewind requires --marker-checkpoint"))?,
+            .unwrap_or_else(|| mint_cli_id("rewind-marker")),
     })
 }
 
@@ -528,8 +547,7 @@ fn parse_replay_package(matches: &ArgMatches) -> Result<ReplayPackageArgs, CliEr
     )?;
     Ok(ReplayPackageArgs {
         package_dir,
-        destination_uri: string_value(matches, "to")
-            .ok_or_else(|| CliError::usage("replay package requires --to"))?,
+        destination_uri: string_value(matches, "to"),
         target: string_value(matches, "target"),
         merge_dedup: string_value(matches, "merge_dedup"),
     })
@@ -560,8 +578,7 @@ fn parse_backfill(matches: &ArgMatches) -> Result<BackfillArgs, CliError> {
         from: string_value(matches, "from")
             .ok_or_else(|| CliError::usage("backfill requires --from"))?,
         to: string_value(matches, "to").ok_or_else(|| CliError::usage("backfill requires --to"))?,
-        target: string_value(matches, "target")
-            .ok_or_else(|| CliError::usage("backfill requires --target"))?,
+        target: string_value(matches, "target"),
         execute: matches.get_flag("execute"),
         slice_size,
     })
@@ -665,7 +682,9 @@ fn scan_command(name: &'static str, accepts_target: bool) -> ClapCommand {
         .arg(append_option("order_by", "order-by", "FIELD[:asc|desc]"))
         .arg(option("package_id", "package-id", "ID"));
     if accepts_target {
-        command = command.arg(option("target", "target", "TARGET"));
+        command = command
+            .arg(option("to", "to", "DEST"))
+            .arg(option("target", "target", "TARGET"));
     }
     command
 }
@@ -675,6 +694,7 @@ fn run_command() -> ClapCommand {
         .arg(values_arg("resource_arg").value_name("RESOURCE"))
         .arg(option("resource", "resource", "RESOURCE"))
         .arg(option("pipeline", "pipeline", "ID"))
+        .arg(option("to", "to", "DEST"))
         .arg(option("target", "target", "TARGET"))
         .arg(option("package_id", "package-id", "ID"))
         .arg(option("checkpoint_id", "checkpoint-id", "ID"))
@@ -718,11 +738,10 @@ fn state_command() -> ClapCommand {
         .subcommand(state_scope_command("history"))
         .subcommand(
             state_scope_command("rewind")
-                .arg(option(
-                    "target_checkpoint",
-                    "target-checkpoint",
-                    "CHECKPOINT",
-                ))
+                .arg(
+                    option("target_checkpoint", "target-checkpoint", "CHECKPOINT")
+                        .visible_alias("to"),
+                )
                 .arg(option(
                     "marker_checkpoint",
                     "marker-checkpoint",
@@ -743,10 +762,11 @@ fn state_command() -> ClapCommand {
 
 fn state_scope_command(name: &'static str) -> ClapCommand {
     cmd(name)
+        .arg(values_arg("resource_arg").value_name("RESOURCE"))
         .arg(option("pipeline", "pipeline", "ID"))
         .arg(option("resource", "resource", "RESOURCE"))
+        .arg(append_option("scope", "scope", "KEY=VALUE"))
         .arg(option("scope_json", "scope-json", "JSON"))
-        .arg(values_arg("values").hide(true))
 }
 
 fn resume_command() -> ClapCommand {
@@ -924,14 +944,6 @@ fn no_extra_values(command: &str, args: &[String]) -> Result<(), CliError> {
     }
 }
 
-fn reject_state_extras(matches: &ArgMatches) -> Result<(), CliError> {
-    let values = values(matches, "values");
-    if let Some(value) = values.first() {
-        return Err(CliError::usage(format!("unknown state option `{value}`")));
-    }
-    Ok(())
-}
-
 fn reject_values_as_unknown(command: &str, matches: &ArgMatches) -> Result<(), CliError> {
     let values = values(matches, "values");
     if let Some(value) = values.first() {
@@ -946,4 +958,12 @@ fn parse_u64(option: &str, value: &str) -> Result<u64, CliError> {
     value
         .parse()
         .map_err(|error| CliError::usage(format!("{option} must be an unsigned integer: {error}")))
+}
+
+fn mint_cli_id(prefix: &str) -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{prefix}-{}-{nanos}", std::process::id())
 }

@@ -17,7 +17,7 @@ use crate::{
     args::{Cli, ScanArgs},
     commands::{json_cli_error, output},
     context::ProjectContext,
-    destination_uri::{redact_error_value, resolve_environment_destination},
+    destination_uri::{redact_error_value, resolve_selected_destination},
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     reports::WriteEffects,
@@ -29,9 +29,15 @@ pub(crate) fn plan_or_explain(
     command: &'static str,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    let target = required_scan_target(&args, command)?;
+    let target = scan_target(&args)?;
     let plan = build_engine_plan(&context, &args)?;
-    let report = scan_report(&context, &plan, &target, command)?;
+    let report = scan_report(
+        &context,
+        &plan,
+        &target,
+        args.destination_uri.as_deref(),
+        command,
+    )?;
     let human = format_scan_report(command, &report);
     output(command, human, report)
 }
@@ -131,10 +137,12 @@ fn scan_report(
     context: &ProjectContext,
     plan: &EnginePlan,
     target: &TargetName,
+    destination_uri: Option<&str>,
     command: &'static str,
 ) -> Result<ScanPlanReport, CliError> {
     let resource = context.resource(plan.scan.request.resource_id.as_str())?;
-    let destination_plan = destination_plan_report(context, resource, target, command)?;
+    let destination_plan =
+        destination_plan_report(context, resource, target, destination_uri, command)?;
     Ok(ScanPlanReport {
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
@@ -178,21 +186,31 @@ fn scan_report(
     })
 }
 
-fn required_scan_target(args: &ScanArgs, command: &str) -> Result<TargetName, CliError> {
+fn scan_target(args: &ScanArgs) -> Result<TargetName, CliError> {
     let target = args
         .target
-        .as_ref()
-        .ok_or_else(|| CliError::usage(format!("{command} requires --target")))?;
-    TargetName::new(target.clone()).map_err(CliError::from)
+        .clone()
+        .unwrap_or_else(|| default_target_for_resource(&args.resource_id));
+    TargetName::new(target).map_err(CliError::from)
+}
+
+pub(crate) fn default_target_for_resource(resource_id: &str) -> String {
+    resource_id
+        .rsplit('.')
+        .next()
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(resource_id)
+        .to_owned()
 }
 
 fn destination_plan_report(
     context: &ProjectContext,
     resource: &cdf_declarative::CompiledResource,
     target: &TargetName,
+    destination_uri: Option<&str>,
     command: &'static str,
 ) -> Result<DestinationPlanReport, CliError> {
-    let resolved = resolve_environment_destination(context, target)
+    let resolved = resolve_selected_destination(context, target, destination_uri)
         .map_err(|error| plan_destination_resolution_error(command, error))?;
     let mut destination = resolved.destination;
     let plan = destination

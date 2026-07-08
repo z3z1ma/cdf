@@ -14,13 +14,21 @@ pub(crate) fn resolve_environment_destination(
     context: &ProjectContext,
     target: &TargetName,
 ) -> Result<EnvironmentDestination, CdfError> {
+    resolve_selected_destination(context, target, None)
+}
+
+pub(crate) fn resolve_selected_destination(
+    context: &ProjectContext,
+    target: &TargetName,
+    destination_uri: Option<&str>,
+) -> Result<EnvironmentDestination, CdfError> {
     let secret_provider = context.secret_provider();
     let destination_context = ProjectResolutionContext::for_project_run(&context.root, target)
         .with_environment_name(&context.environment.name)
         .with_destination_policy(&context.environment.destination_policy)
         .with_secret_provider(&secret_provider);
-    let destination =
-        resolve_project_run_destination(&context.environment.destination, &destination_context)?;
+    let uri = destination_uri.unwrap_or(context.environment.destination.as_str());
+    let destination = resolve_project_run_destination(uri, &destination_context)?;
     let secret_redaction = destination.secret_redaction().map(str::to_owned);
     Ok(EnvironmentDestination {
         destination,

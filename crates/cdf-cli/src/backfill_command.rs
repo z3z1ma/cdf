@@ -13,12 +13,17 @@ use crate::{
     output::{CliError, CommandOutput},
     project_run_resource::build_project_run_resource,
     reports::{RunDestinationReport, WriteEffects},
+    scan_command::default_target_for_resource,
 };
 
 pub(crate) fn backfill(cli: &Cli, args: BackfillArgs) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
-    let target = TargetName::new(args.target.clone())?;
+    let target = TargetName::new(
+        args.target
+            .clone()
+            .unwrap_or_else(|| default_target_for_resource(&args.resource_id)),
+    )?;
     let plan = plan_backfill(
         resource,
         BackfillPlanRequest {

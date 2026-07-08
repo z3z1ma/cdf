@@ -23,7 +23,7 @@ pub(super) fn recover(cli: &Cli, args: StateRecoverArgs) -> Result<CommandOutput
     let mut destination = build_replay_destination(
         &package.project,
         PackageReplayDestinationArgs {
-            destination_uri: &args.destination_uri,
+            destination_uri: Some(&args.destination_uri),
             target: args.target.as_deref(),
             merge_dedup: args.merge_dedup.as_deref(),
         },

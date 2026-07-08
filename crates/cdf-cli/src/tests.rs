@@ -112,12 +112,15 @@ fn parser_provides_subcommand_help_at_nested_layers() {
     assert_eq!(plan.exit_code, 0);
     assert!(plan.stdout.contains("Usage: cdf plan"));
     assert!(plan.stdout.contains("--resource <RESOURCE>"));
+    assert!(plan.stdout.contains("--to <DEST>"));
     assert!(plan.stdout.contains("--target <TARGET>"));
 
     let rewind = run(["cdf", "state", "rewind", "--help"]);
 
     assert_eq!(rewind.exit_code, 0);
     assert!(rewind.stdout.contains("Usage: cdf state rewind"));
+    assert!(rewind.stdout.contains("--scope <KEY=VALUE>"));
+    assert!(rewind.stdout.contains("[aliases: --to]"));
     assert!(rewind.stdout.contains("--target-checkpoint <CHECKPOINT>"));
     assert!(rewind.stdout.contains("--marker-checkpoint <CHECKPOINT>"));
 }
@@ -128,6 +131,7 @@ fn parser_help_command_renders_requested_command_path() {
 
     assert_eq!(result.exit_code, 0);
     assert!(result.stdout.contains("Usage: cdf state rewind"));
+    assert!(result.stdout.contains("--scope <KEY=VALUE>"));
     assert!(result.stdout.contains("--scope-json <JSON>"));
 }
 
@@ -551,8 +555,6 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
         project.root_str(),
         "plan",
         "local.events",
-        "--target",
-        "events",
         "--select",
         "id,updated_at",
         "--filter",
@@ -609,6 +611,7 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
 #[test]
 fn explain_json_exposes_destination_plan_without_writes() {
     let project = TestProject::new();
+    let override_path = project.root.join(".cdf/explain.duckdb");
     let result = run([
         "cdf",
         "--json",
@@ -616,17 +619,25 @@ fn explain_json_exposes_destination_plan_without_writes() {
         project.root_str(),
         "explain",
         "local.events",
-        "--target",
-        "events",
+        "--to",
+        "duckdb://.cdf/explain.duckdb",
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    assert!(!override_path.exists());
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["command"], "explain");
     let report = &json["result"];
+    assert_eq!(report["destination"]["target"], "events");
+    assert!(
+        report["destination"]["label"]
+            .as_str()
+            .unwrap()
+            .ends_with(".cdf/explain.duckdb")
+    );
     assert_eq!(report["ddl_preview"]["supported"], true);
     assert_eq!(report["delivery_guarantee"], "effectively_once_per_package");
 }
@@ -739,8 +750,6 @@ fn backfill_rejects_file_resource_without_runtime_writes() {
         "0",
         "--to",
         "10",
-        "--target",
-        "events",
     ]);
 
     assert_eq!(result.exit_code, 3);
@@ -1618,6 +1627,54 @@ fn run_local_file_to_duckdb_commits_package_rows_mirrors_and_checkpoint() {
 }
 
 #[test]
+fn run_short_form_uses_product_defaults_and_destination_alias() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "local.events",
+        "--to",
+        "duckdb://.cdf/short-form.duckdb",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_id"], "local.events");
+    assert_eq!(report["pipeline_id"], "cdf-run");
+    assert_eq!(report["target"], "events");
+    assert!(
+        report["package_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("pkg-local-events-")
+    );
+    assert!(
+        report["checkpoint_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("checkpoint-local-events-")
+    );
+    assert!(
+        report["destination"]["database_path"]
+            .as_str()
+            .unwrap()
+            .ends_with(".cdf/short-form.duckdb")
+    );
+    assert!(project.root.join(".cdf/short-form.duckdb").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let package_dir = project
+        .root
+        .join(".cdf/packages")
+        .join(report["package_id"].as_str().unwrap());
+    assert!(package_dir.exists());
+}
+
+#[test]
 fn run_human_output_mentions_receipt_verified_commit_gate() {
     let project = TestProject::new();
     let result = run([
@@ -1921,19 +1978,20 @@ fn inspect_run_reports_duplicate_replay_status() {
 }
 
 #[test]
-fn resume_requires_run_id_and_accepts_positional_terminal_noop() {
-    let missing = run(["cdf", "--json", "resume"]);
-
-    assert_eq!(missing.exit_code, 2);
-    let missing_json = stderr_or_stdout_json(&missing.stderr);
-    assert!(
-        missing_json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("resume requires --run")
-    );
-
+fn resume_bare_noops_when_no_interrupted_runs_and_accepts_positional_terminal_noop() {
     let project = TestProject::new();
+    SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+
+    let bare = run(["cdf", "--json", "--project", project.root_str(), "resume"]);
+
+    assert_eq!(bare.exit_code, 0, "stderr: {}", bare.stderr);
+    let bare_json = stderr_or_stdout_json(&bare.stdout);
+    assert_eq!(bare_json["command"], "resume");
+    assert_eq!(bare_json["result"]["state"], "no_interrupted_runs");
+    assert_eq!(bare_json["result"]["writes"]["package"], false);
+    assert_eq!(bare_json["result"]["writes"]["destination"], false);
+    assert_eq!(bare_json["result"]["writes"]["checkpoint"], false);
+
     let run_result = run_valid_run_args(&project, "pkg-resume-noop", "checkpoint-resume-noop");
     assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
     let run_json = stderr_or_stdout_json(&run_result.stdout);
@@ -1952,17 +2010,54 @@ fn resume_requires_run_id_and_accepts_positional_terminal_noop() {
 }
 
 #[test]
+fn resume_bare_selects_single_interrupted_run_and_fails_closed() {
+    let project = TestProject::new();
+    create_resume_run_with_events(
+        &project,
+        "run-resume-bare-single",
+        &[RunEventKind::RunStarted, RunEventKind::RunFailed],
+    );
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "resume"]);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["run_id"], "run-resume-bare-single");
+    assert_eq!(json["result"]["state"], "no_finalized_package");
+    assert_eq!(
+        json["result"]["action"],
+        "rerun_extraction_from_last_committed_checkpoint"
+    );
+}
+
+#[test]
+fn resume_bare_multiple_interrupted_runs_fails_closed_without_mutation() {
+    let project = TestProject::new();
+    for run_id in ["run-resume-bare-first", "run-resume-bare-second"] {
+        create_resume_run_with_events(&project, run_id, &[RunEventKind::RunStarted]);
+    }
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "resume"]);
+
+    assert_eq!(result.exit_code, 78);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["not_supported"], true);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("bare resume found 2 interrupted runs")
+    );
+}
+
+#[test]
 fn resume_no_finalized_package_fails_closed_with_guidance() {
     let project = TestProject::new();
-    let run_id = RunId::new("run-resume-no-package").unwrap();
-    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
-    ledger.create_run(Some(run_id.clone())).unwrap();
-    ledger
-        .append_event(&run_id, RunEventAppend::new(RunEventKind::RunStarted))
-        .unwrap();
-    ledger
-        .append_event(&run_id, RunEventAppend::new(RunEventKind::RunFailed))
-        .unwrap();
+    let run_id = create_resume_run_with_events(
+        &project,
+        "run-resume-no-package",
+        &[RunEventKind::RunStarted, RunEventKind::RunFailed],
+    );
 
     let result = resume_command(&project, run_id.as_str(), true);
 
@@ -2273,111 +2368,34 @@ fn resume_missing_package_artifact_fails_closed_with_guidance() {
 }
 
 #[test]
-fn run_missing_explicit_inputs_fails_before_writes() {
-    for (name, args) in [
-        (
-            "resource",
-            vec![
-                "cdf",
-                "--json",
-                "run",
-                "--pipeline",
-                "pipeline-run",
-                "--target",
-                "events",
-                "--package-id",
-                "pkg-run-missing",
-                "--checkpoint-id",
-                "checkpoint-run-missing",
-            ],
-        ),
-        (
-            "pipeline",
-            vec![
-                "cdf",
-                "--json",
-                "run",
-                "--resource",
-                "local.events",
-                "--target",
-                "events",
-                "--package-id",
-                "pkg-run-missing",
-                "--checkpoint-id",
-                "checkpoint-run-missing",
-            ],
-        ),
-        (
-            "target",
-            vec![
-                "cdf",
-                "--json",
-                "run",
-                "--resource",
-                "local.events",
-                "--pipeline",
-                "pipeline-run",
-                "--package-id",
-                "pkg-run-missing",
-                "--checkpoint-id",
-                "checkpoint-run-missing",
-            ],
-        ),
-        (
-            "package",
-            vec![
-                "cdf",
-                "--json",
-                "run",
-                "--resource",
-                "local.events",
-                "--pipeline",
-                "pipeline-run",
-                "--target",
-                "events",
-                "--checkpoint-id",
-                "checkpoint-run-missing",
-            ],
-        ),
-        (
-            "checkpoint",
-            vec![
-                "cdf",
-                "--json",
-                "run",
-                "--resource",
-                "local.events",
-                "--pipeline",
-                "pipeline-run",
-                "--target",
-                "events",
-                "--package-id",
-                "pkg-run-missing",
-            ],
-        ),
-    ] {
-        let project = TestProject::new();
-        let mut command = vec![
-            "cdf".to_owned(),
-            "--json".to_owned(),
-            "--project".to_owned(),
-            project.root_str().to_owned(),
-        ];
-        command.extend(args.into_iter().skip(2).map(str::to_owned));
+fn run_missing_resource_still_fails_before_writes() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "--pipeline",
+        "pipeline-run",
+        "--target",
+        "events",
+        "--package-id",
+        "pkg-run-missing",
+        "--checkpoint-id",
+        "checkpoint-run-missing",
+    ]);
 
-        let result = run_dynamic(command);
-
-        assert_eq!(result.exit_code, 2, "case {name}: {}", result.stderr);
-        assert_no_run_writes(&project, "pkg-run-missing");
-        let json = stderr_or_stdout_json(&result.stderr);
-        assert_eq!(json["error"]["kind"], "contract");
-        assert!(
-            json["error"]["message"]
-                .as_str()
-                .unwrap()
-                .contains("run requires")
-        );
-    }
+    assert_eq!(result.exit_code, 2, "stderr: {}", result.stderr);
+    assert_no_run_writes(&project, "pkg-run-missing");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("run requires RESOURCE or --resource")
+    );
 }
 
 #[test]
@@ -2945,8 +2963,13 @@ fn run_loop_remains_unsupported_without_writes() {
 }
 
 #[test]
-fn replay_package_missing_to_rejects_before_writes() {
+fn replay_package_without_to_uses_environment_destination_without_source_contact() {
     let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-default-destination",
+        "checkpoint-replay-default-destination",
+    );
     let result = run([
         "cdf",
         "--json",
@@ -2954,20 +2977,21 @@ fn replay_package_missing_to_rejects_before_writes() {
         project.root_str(),
         "replay",
         "package",
-        "missing-package",
+        package_dir.to_str().unwrap(),
     ]);
 
-    assert_eq!(result.exit_code, 2);
-    assert!(!project.root.join(".cdf/state.db").exists());
-    assert!(!project.root.join(".cdf/dev.duckdb").exists());
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert_eq!(json["error"]["kind"], "contract");
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["package_id"], "pkg-replay-default-destination");
+    assert_eq!(report["target"], "events");
     assert!(
-        json["error"]["message"]
+        report["destination"]["database_path"]
             .as_str()
             .unwrap()
-            .contains("requires --to")
+            .ends_with(".cdf/dev.duckdb")
     );
+    assert_eq!(duckdb_event_count(project.root.join(".cdf/dev.duckdb")), 2);
 }
 
 #[test]
@@ -4881,6 +4905,114 @@ fn state_show_uses_sqlite_store_and_reports_missing_head() {
 }
 
 #[test]
+fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
+    let project = TestProject::new();
+    let first = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "local.events",
+        "--package-id",
+        "pkg-state-product-first",
+        "--checkpoint-id",
+        "checkpoint-state-product-first",
+    ]);
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    let second = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "local.events",
+        "--package-id",
+        "pkg-state-product-second",
+        "--checkpoint-id",
+        "checkpoint-state-product-second",
+    ]);
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+
+    let show = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "show",
+        "local.events",
+        "--scope",
+        "kind=resource",
+    ]);
+
+    assert_eq!(show.exit_code, 0, "stderr: {}", show.stderr);
+    let show_json = stderr_or_stdout_json(&show.stdout);
+    assert_eq!(show_json["result"]["scope"]["kind"], "resource");
+    assert_eq!(
+        show_json["result"]["head"]["delta"]["pipeline_id"],
+        "cdf-run"
+    );
+    assert_eq!(
+        show_json["result"]["head"]["delta"]["checkpoint_id"],
+        "checkpoint-state-product-second"
+    );
+
+    let history = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "history",
+        "local.events",
+        "--scope",
+        "kind=resource",
+    ]);
+
+    assert_eq!(history.exit_code, 0, "stderr: {}", history.stderr);
+    let history_json = stderr_or_stdout_json(&history.stdout);
+    assert_eq!(
+        history_json["result"]["history"].as_array().unwrap().len(),
+        2
+    );
+
+    let rewind = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "rewind",
+        "local.events",
+        "--scope",
+        "kind=resource",
+        "--to",
+        "checkpoint-state-product-first",
+    ]);
+
+    assert_eq!(rewind.exit_code, 0, "stderr: {}", rewind.stderr);
+    let rewind_json = stderr_or_stdout_json(&rewind.stdout);
+    assert!(
+        rewind_json["result"]["marker"]["delta"]["checkpoint_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("rewind-marker-")
+    );
+    assert_eq!(
+        rewind_json["result"]["head"]["delta"]["checkpoint_id"],
+        "checkpoint-state-product-first"
+    );
+    assert_eq!(
+        rewind_json["result"]["packages_ahead"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
     let project = TestProject::new();
     remove_state_store(&project);
@@ -5376,6 +5508,22 @@ fn resume_command(
     }
     command.push(run_id.to_owned());
     run_dynamic(command)
+}
+
+fn create_resume_run_with_events(
+    project: &TestProject,
+    run_id: &str,
+    kinds: &[RunEventKind],
+) -> RunId {
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let run_id = RunId::new(run_id).unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    for kind in kinds {
+        ledger
+            .append_event(&run_id, RunEventAppend::new(*kind))
+            .unwrap();
+    }
+    run_id
 }
 
 fn create_resume_run_with_package(

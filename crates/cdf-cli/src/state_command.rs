@@ -2,13 +2,14 @@ mod migrate;
 mod recover;
 
 use cdf_kernel::{CheckpointId, CheckpointStore, PipelineId, ResourceId, ScopeKey};
-use serde_json::json;
+use serde_json::{Map, Value, json};
 
 use crate::{
     args::{Cli, RewindArgs, StateCommand, StateScopeArgs},
     commands::output,
     context::ProjectContext,
     output::{CliError, CommandOutput},
+    run_command::DEFAULT_RUN_PIPELINE_ID,
 };
 
 use self::{migrate::migrate, recover::recover};
@@ -26,12 +27,10 @@ pub(crate) fn state(cli: &Cli, command: StateCommand) -> Result<CommandOutput, C
 fn show(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let store = context.state_store()?;
-    let scope = scope_key(args.scope_json.as_deref())?;
-    let head = store.head(
-        &PipelineId::new(args.pipeline_id)?,
-        &ResourceId::new(args.resource_id)?,
-        &scope,
-    )?;
+    let pipeline_id = state_pipeline_id(&args)?;
+    let resource_id = ResourceId::new(args.resource_id.clone())?;
+    let scope = scope_key(&args)?;
+    let head = store.head(&pipeline_id, &resource_id, &scope)?;
     output(
         "state show",
         if head.is_some() {
@@ -46,12 +45,10 @@ fn show(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
 fn history(cli: &Cli, args: StateScopeArgs) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let store = context.state_store()?;
-    let scope = scope_key(args.scope_json.as_deref())?;
-    let history = store.history(
-        &PipelineId::new(args.pipeline_id)?,
-        &ResourceId::new(args.resource_id)?,
-        &scope,
-    )?;
+    let pipeline_id = state_pipeline_id(&args)?;
+    let resource_id = ResourceId::new(args.resource_id.clone())?;
+    let scope = scope_key(&args)?;
+    let history = store.history(&pipeline_id, &resource_id, &scope)?;
     output(
         "state history",
         format!("{} checkpoint(s)", history.len()),
@@ -64,9 +61,9 @@ fn rewind(cli: &Cli, args: RewindArgs) -> Result<CommandOutput, CliError> {
     let store = context.state_store()?;
     let report = store.rewind(cdf_kernel::RewindRequest {
         marker_checkpoint_id: CheckpointId::new(args.marker_checkpoint_id)?,
-        pipeline_id: PipelineId::new(args.scope.pipeline_id)?,
-        resource_id: ResourceId::new(args.scope.resource_id)?,
-        scope: scope_key(args.scope.scope_json.as_deref())?,
+        pipeline_id: state_pipeline_id(&args.scope)?,
+        resource_id: ResourceId::new(args.scope.resource_id.clone())?,
+        scope: scope_key(&args.scope)?,
         target_checkpoint_id: CheckpointId::new(args.target_checkpoint_id)?,
     })?;
     output(
@@ -80,11 +77,39 @@ fn rewind(cli: &Cli, args: RewindArgs) -> Result<CommandOutput, CliError> {
     )
 }
 
-fn scope_key(scope_json: Option<&str>) -> Result<ScopeKey, CliError> {
-    match scope_json {
-        Some(json) => serde_json::from_str(json).map_err(|error| {
+fn state_pipeline_id(args: &StateScopeArgs) -> Result<PipelineId, CliError> {
+    PipelineId::new(
+        args.pipeline_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_RUN_PIPELINE_ID.to_owned()),
+    )
+    .map_err(CliError::from)
+}
+
+fn scope_key(args: &StateScopeArgs) -> Result<ScopeKey, CliError> {
+    match (args.scope_json.as_deref(), args.scope.is_empty()) {
+        (Some(_), false) => Err(CliError::usage(
+            "state command accepts either --scope-json or --scope key=value, not both",
+        )),
+        (Some(scope_json), true) => serde_json::from_str(scope_json).map_err(|error| {
             CliError::usage(format!("--scope-json must encode a ScopeKey: {error}"))
         }),
-        None => Ok(ScopeKey::Resource),
+        (None, false) => scope_key_from_pairs(&args.scope),
+        (None, true) => Ok(ScopeKey::Resource),
     }
+}
+
+fn scope_key_from_pairs(pairs: &[String]) -> Result<ScopeKey, CliError> {
+    let mut scope = Map::new();
+    for pair in pairs {
+        let (key, value) = pair
+            .split_once('=')
+            .ok_or_else(|| CliError::usage("--scope values must be key=value pairs"))?;
+        if key.is_empty() {
+            return Err(CliError::usage("--scope key must not be empty"));
+        }
+        scope.insert(key.to_owned(), Value::String(value.to_owned()));
+    }
+    serde_json::from_value(Value::Object(scope))
+        .map_err(|error| CliError::usage(format!("--scope must encode a ScopeKey: {error}")))
 }

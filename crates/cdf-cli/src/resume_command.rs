@@ -6,9 +6,12 @@ mod report;
 
 use cdf_kernel::{CdfError, RunId};
 use cdf_state_sqlite::SqliteRunLedger;
+use rusqlite::{Connection, OpenFlags};
+use serde::Serialize;
 
 use crate::{
     args::{Cli, ResumeArgs},
+    commands::report_output,
     context::ProjectContext,
     output::{CliError, CommandOutput},
 };
@@ -16,10 +19,6 @@ use crate::{
 use self::{attempt::ResumeAttempt, report::finish_resume_report};
 
 pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliError> {
-    let run_id = args
-        .run_id
-        .ok_or_else(|| CliError::usage("resume requires --run RUN_ID or positional RUN_ID"))?;
-    let run_id = RunId::new(run_id)?;
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let state_path = context.state_store_path()?;
     if !state_path.exists() {
@@ -28,14 +27,40 @@ pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliEr
             state_path.display()
         ))));
     }
-    let run_ledger = SqliteRunLedger::open(&state_path)?;
+    let run_id = match args.run_id {
+        Some(run_id) => RunId::new(run_id)?,
+        None => match select_resume_run(&state_path)? {
+            ResumeSelection::None => return no_interrupted_runs_report(),
+            ResumeSelection::One(run_id) => run_id,
+            ResumeSelection::Many(run_ids) => {
+                return Err(CliError::not_supported(
+                    "resume",
+                    format!(
+                        "bare resume found {} interrupted runs ({}); pass RUN_ID to resume one explicitly",
+                        run_ids.len(),
+                        run_ids.join(", ")
+                    ),
+                    "multi-run resume drain",
+                ));
+            }
+        },
+    };
+    resume_run(&context, &state_path, run_id)
+}
+
+fn resume_run(
+    context: &ProjectContext,
+    state_path: &std::path::Path,
+    run_id: RunId,
+) -> Result<CommandOutput, CliError> {
+    let run_ledger = SqliteRunLedger::open(state_path)?;
     let snapshot = run_ledger.snapshot(&run_id)?.ok_or_else(|| {
         CdfError::data(format!(
             "run {} is not present in the selected environment run ledger",
             run_id
         ))
     })?;
-    let attempt = ResumeAttempt::new(&context, &run_ledger, &snapshot)?;
+    let attempt = ResumeAttempt::new(context, &run_ledger, &snapshot)?;
     let outcome = attempt.execute();
     match outcome {
         Ok(report) => finish_resume_report(report),
@@ -45,4 +70,63 @@ pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliEr
             finish_resume_report(report)
         }
     }
+}
+
+enum ResumeSelection {
+    None,
+    One(RunId),
+    Many(Vec<String>),
+}
+
+fn select_resume_run(state_path: &std::path::Path) -> Result<ResumeSelection, CliError> {
+    let _ = SqliteRunLedger::open_read_only(state_path)?;
+    let conn = Connection::open_with_flags(state_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| CdfError::data(format!("open run ledger read-only: {error}")))?;
+    let mut stmt = conn
+        .prepare(
+            "
+            SELECT r.run_id
+            FROM cdf_runs r
+            WHERE COALESCE((
+                SELECT e.kind
+                FROM cdf_run_events e
+                WHERE e.run_id = r.run_id
+                ORDER BY e.sequence DESC
+                LIMIT 1
+            ), '') NOT IN ('run_succeeded', 'run_resumed', 'replay_recorded')
+            ORDER BY r.created_at_ms, r.run_id
+            ",
+        )
+        .map_err(|error| CdfError::data(format!("prepare interrupted-run scan: {error}")))?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| CdfError::data(format!("scan interrupted runs: {error}")))?;
+    let run_ids = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| CdfError::data(format!("read interrupted run id: {error}")))?;
+    match run_ids.as_slice() {
+        [] => Ok(ResumeSelection::None),
+        [run_id] => Ok(ResumeSelection::One(RunId::new(run_id.clone())?)),
+        _ => Ok(ResumeSelection::Many(run_ids)),
+    }
+}
+
+#[derive(Serialize)]
+struct BareResumeReport {
+    state: &'static str,
+    interrupted_runs: Vec<String>,
+    writes: crate::reports::WriteEffects,
+}
+
+fn no_interrupted_runs_report() -> Result<CommandOutput, CliError> {
+    report_output(
+        "resume",
+        "no interrupted runs found; wrote no package, destination data, checkpoint rows, or run-ledger events".to_owned(),
+        BareResumeReport {
+            state: "no_interrupted_runs",
+            interrupted_runs: Vec::new(),
+            writes: crate::reports::WriteEffects::none(),
+        },
+        0,
+    )
 }

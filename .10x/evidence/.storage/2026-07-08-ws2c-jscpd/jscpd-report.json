@@ -1,0 +1,2157 @@
+{
+  "duplicates": [
+    {
+      "firstFile": {
+        "end": 182,
+        "endLoc": {
+          "column": 5,
+          "line": 182,
+          "position": 5349
+        },
+        "name": "",
+        "start": 174,
+        "startLoc": {
+          "column": 49,
+          "line": 174,
+          "position": 5131
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 236,
+        "endLoc": {
+          "column": 16,
+          "line": 236,
+          "position": 7571
+        },
+        "name": "",
+        "start": 228,
+        "startLoc": {
+          "column": 49,
+          "line": 228,
+          "position": 7342
+        }
+      },
+      "tokens": 51
+    },
+    {
+      "firstFile": {
+        "end": 555,
+        "endLoc": {
+          "column": 27,
+          "line": 555,
+          "position": 17606
+        },
+        "name": "",
+        "start": 546,
+        "startLoc": {
+          "column": 65,
+          "line": 546,
+          "position": 17283
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 10,
+      "secondFile": {
+        "end": 953,
+        "endLoc": {
+          "column": 27,
+          "line": 953,
+          "position": 30001
+        },
+        "name": "",
+        "start": 944,
+        "startLoc": {
+          "column": 70,
+          "line": 944,
+          "position": 29678
+        }
+      },
+      "tokens": 67
+    },
+    {
+      "firstFile": {
+        "end": 764,
+        "endLoc": {
+          "column": 33,
+          "line": 764,
+          "position": 24105
+        },
+        "name": "",
+        "start": 756,
+        "startLoc": {
+          "column": 48,
+          "line": 756,
+          "position": 23797
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 2416,
+        "endLoc": {
+          "column": 42,
+          "line": 2416,
+          "position": 78309
+        },
+        "name": "",
+        "start": 2408,
+        "startLoc": {
+          "column": 54,
+          "line": 2408,
+          "position": 77992
+        }
+      },
+      "tokens": 73
+    },
+    {
+      "firstFile": {
+        "end": 809,
+        "endLoc": {
+          "column": 27,
+          "line": 809,
+          "position": 25349
+        },
+        "name": "",
+        "start": 789,
+        "startLoc": {
+          "column": 50,
+          "line": 789,
+          "position": 24843
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 21,
+      "secondFile": {
+        "end": 1112,
+        "endLoc": {
+          "column": 27,
+          "line": 1112,
+          "position": 35201
+        },
+        "name": "",
+        "start": 1092,
+        "startLoc": {
+          "column": 53,
+          "line": 1092,
+          "position": 34695
+        }
+      },
+      "tokens": 92
+    },
+    {
+      "firstFile": {
+        "end": 805,
+        "endLoc": {
+          "column": 16,
+          "line": 805,
+          "position": 25261
+        },
+        "name": "",
+        "start": 789,
+        "startLoc": {
+          "column": 50,
+          "line": 789,
+          "position": 24843
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 17,
+      "secondFile": {
+        "end": 2622,
+        "endLoc": {
+          "column": 16,
+          "line": 2622,
+          "position": 84448
+        },
+        "name": "",
+        "start": 2606,
+        "startLoc": {
+          "column": 45,
+          "line": 2606,
+          "position": 84030
+        }
+      },
+      "tokens": 77
+    },
+    {
+      "firstFile": {
+        "end": 854,
+        "endLoc": {
+          "column": 13,
+          "line": 854,
+          "position": 26917
+        },
+        "name": "",
+        "start": 842,
+        "startLoc": {
+          "column": 48,
+          "line": 842,
+          "position": 26537
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 13,
+      "secondFile": {
+        "end": 3086,
+        "endLoc": {
+          "column": 16,
+          "line": 3086,
+          "position": 100911
+        },
+        "name": "",
+        "start": 3074,
+        "startLoc": {
+          "column": 48,
+          "line": 3074,
+          "position": 100529
+        }
+      },
+      "tokens": 96
+    },
+    {
+      "firstFile": {
+        "end": 1091,
+        "endLoc": {
+          "column": 28,
+          "line": 1091,
+          "position": 34641
+        },
+        "name": "",
+        "start": 1076,
+        "startLoc": {
+          "column": 54,
+          "line": 1076,
+          "position": 34177
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 16,
+      "secondFile": {
+        "end": 2605,
+        "endLoc": {
+          "column": 28,
+          "line": 2605,
+          "position": 83984
+        },
+        "name": "",
+        "start": 2590,
+        "startLoc": {
+          "column": 46,
+          "line": 2590,
+          "position": 83520
+        }
+      },
+      "tokens": 66
+    },
+    {
+      "firstFile": {
+        "end": 1232,
+        "endLoc": {
+          "column": 2,
+          "line": 1232,
+          "position": 38117
+        },
+        "name": "",
+        "start": 1209,
+        "startLoc": {
+          "column": 58,
+          "line": 1209,
+          "position": 37617
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 24,
+      "secondFile": {
+        "end": 1258,
+        "endLoc": {
+          "column": 2,
+          "line": 1258,
+          "position": 38776
+        },
+        "name": "",
+        "start": 1234,
+        "startLoc": {
+          "column": 47,
+          "line": 1234,
+          "position": 38275
+        }
+      },
+      "tokens": 104
+    },
+    {
+      "firstFile": {
+        "end": 1232,
+        "endLoc": {
+          "column": 2,
+          "line": 1232,
+          "position": 38117
+        },
+        "name": "",
+        "start": 1209,
+        "startLoc": {
+          "column": 68,
+          "line": 1209,
+          "position": 37627
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 24,
+      "secondFile": {
+        "end": 1284,
+        "endLoc": {
+          "column": 2,
+          "line": 1284,
+          "position": 39449
+        },
+        "name": "",
+        "start": 1260,
+        "startLoc": {
+          "column": 57,
+          "line": 1260,
+          "position": 38958
+        }
+      },
+      "tokens": 99
+    },
+    {
+      "firstFile": {
+        "end": 1341,
+        "endLoc": {
+          "column": 2,
+          "line": 1341,
+          "position": 41168
+        },
+        "name": "",
+        "start": 1323,
+        "startLoc": {
+          "column": 57,
+          "line": 1323,
+          "position": 40786
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 19,
+      "secondFile": {
+        "end": 1372,
+        "endLoc": {
+          "column": 2,
+          "line": 1372,
+          "position": 42053
+        },
+        "name": "",
+        "start": 1354,
+        "startLoc": {
+          "column": 49,
+          "line": 1354,
+          "position": 41671
+        }
+      },
+      "tokens": 80
+    },
+    {
+      "firstFile": {
+        "end": 1340,
+        "endLoc": {
+          "column": 2,
+          "line": 1340,
+          "position": 41160
+        },
+        "name": "",
+        "start": 1323,
+        "startLoc": {
+          "column": 57,
+          "line": 1323,
+          "position": 40786
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 18,
+      "secondFile": {
+        "end": 1398,
+        "endLoc": {
+          "column": 2,
+          "line": 1398,
+          "position": 42870
+        },
+        "name": "",
+        "start": 1381,
+        "startLoc": {
+          "column": 47,
+          "line": 1381,
+          "position": 42496
+        }
+      },
+      "tokens": 77
+    },
+    {
+      "firstFile": {
+        "end": 1342,
+        "endLoc": {
+          "column": 17,
+          "line": 1342,
+          "position": 41247
+        },
+        "name": "",
+        "start": 1323,
+        "startLoc": {
+          "column": 57,
+          "line": 1323,
+          "position": 40786
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 20,
+      "secondFile": {
+        "end": 1455,
+        "endLoc": {
+          "column": 2,
+          "line": 1455,
+          "position": 44498
+        },
+        "name": "",
+        "start": 1436,
+        "startLoc": {
+          "column": 51,
+          "line": 1436,
+          "position": 44103
+        }
+      },
+      "tokens": 87
+    },
+    {
+      "firstFile": {
+        "end": 1394,
+        "endLoc": {
+          "column": 43,
+          "line": 1394,
+          "position": 42820
+        },
+        "name": "",
+        "start": 1379,
+        "startLoc": {
+          "column": 4,
+          "line": 1379,
+          "position": 42432
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 16,
+      "secondFile": {
+        "end": 1416,
+        "endLoc": {
+          "column": 43,
+          "line": 1416,
+          "position": 43462
+        },
+        "name": "",
+        "start": 1402,
+        "startLoc": {
+          "column": 88,
+          "line": 1402,
+          "position": 43079
+        }
+      },
+      "tokens": 77
+    },
+    {
+      "firstFile": {
+        "end": 1481,
+        "endLoc": {
+          "column": 22,
+          "line": 1481,
+          "position": 45358
+        },
+        "name": "",
+        "start": 1462,
+        "startLoc": {
+          "column": 52,
+          "line": 1462,
+          "position": 44875
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 20,
+      "secondFile": {
+        "end": 1513,
+        "endLoc": {
+          "column": 22,
+          "line": 1513,
+          "position": 46289
+        },
+        "name": "",
+        "start": 1494,
+        "startLoc": {
+          "column": 58,
+          "line": 1494,
+          "position": 45806
+        }
+      },
+      "tokens": 100
+    },
+    {
+      "firstFile": {
+        "end": 1614,
+        "endLoc": {
+          "column": 16,
+          "line": 1614,
+          "position": 50198
+        },
+        "name": "",
+        "start": 1604,
+        "startLoc": {
+          "column": 67,
+          "line": 1604,
+          "position": 49881
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 2169,
+        "endLoc": {
+          "column": 16,
+          "line": 2169,
+          "position": 69489
+        },
+        "name": "",
+        "start": 2159,
+        "startLoc": {
+          "column": 53,
+          "line": 2159,
+          "position": 69172
+        }
+      },
+      "tokens": 71
+    },
+    {
+      "firstFile": {
+        "end": 1614,
+        "endLoc": {
+          "column": 16,
+          "line": 1614,
+          "position": 50198
+        },
+        "name": "",
+        "start": 1604,
+        "startLoc": {
+          "column": 67,
+          "line": 1604,
+          "position": 49881
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 2729,
+        "endLoc": {
+          "column": 16,
+          "line": 2729,
+          "position": 88703
+        },
+        "name": "",
+        "start": 2719,
+        "startLoc": {
+          "column": 58,
+          "line": 2719,
+          "position": 88386
+        }
+      },
+      "tokens": 71
+    },
+    {
+      "firstFile": {
+        "end": 1614,
+        "endLoc": {
+          "column": 16,
+          "line": 1614,
+          "position": 50198
+        },
+        "name": "",
+        "start": 1604,
+        "startLoc": {
+          "column": 67,
+          "line": 1604,
+          "position": 49881
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 2883,
+        "endLoc": {
+          "column": 16,
+          "line": 2883,
+          "position": 93863
+        },
+        "name": "",
+        "start": 2873,
+        "startLoc": {
+          "column": 72,
+          "line": 2873,
+          "position": 93546
+        }
+      },
+      "tokens": 71
+    },
+    {
+      "firstFile": {
+        "end": 1745,
+        "endLoc": {
+          "column": 7,
+          "line": 1745,
+          "position": 54254
+        },
+        "name": "",
+        "start": 1731,
+        "startLoc": {
+          "column": 53,
+          "line": 1731,
+          "position": 53950
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 15,
+      "secondFile": {
+        "end": 1827,
+        "endLoc": {
+          "column": 7,
+          "line": 1827,
+          "position": 57293
+        },
+        "name": "",
+        "start": 1813,
+        "startLoc": {
+          "column": 81,
+          "line": 1813,
+          "position": 56989
+        }
+      },
+      "tokens": 61
+    },
+    {
+      "firstFile": {
+        "end": 1744,
+        "endLoc": {
+          "column": 53,
+          "line": 1744,
+          "position": 54246
+        },
+        "name": "",
+        "start": 1731,
+        "startLoc": {
+          "column": 25,
+          "line": 1731,
+          "position": 53922
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 14,
+      "secondFile": {
+        "end": 1969,
+        "endLoc": {
+          "column": 53,
+          "line": 1969,
+          "position": 61580
+        },
+        "name": "",
+        "start": 1956,
+        "startLoc": {
+          "column": 28,
+          "line": 1956,
+          "position": 61256
+        }
+      },
+      "tokens": 69
+    },
+    {
+      "firstFile": {
+        "end": 2098,
+        "endLoc": {
+          "column": 7,
+          "line": 2098,
+          "position": 66539
+        },
+        "name": "",
+        "start": 2090,
+        "startLoc": {
+          "column": 27,
+          "line": 2090,
+          "position": 66299
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 2146,
+        "endLoc": {
+          "column": 24,
+          "line": 2146,
+          "position": 68423
+        },
+        "name": "",
+        "start": 2138,
+        "startLoc": {
+          "column": 36,
+          "line": 2138,
+          "position": 68166
+        }
+      },
+      "tokens": 52
+    },
+    {
+      "firstFile": {
+        "end": 2120,
+        "endLoc": {
+          "column": 14,
+          "line": 2120,
+          "position": 67492
+        },
+        "name": "",
+        "start": 2111,
+        "startLoc": {
+          "column": 83,
+          "line": 2111,
+          "position": 67252
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 10,
+      "secondFile": {
+        "end": 2841,
+        "endLoc": {
+          "column": 14,
+          "line": 2841,
+          "position": 92263
+        },
+        "name": "",
+        "start": 2832,
+        "startLoc": {
+          "column": 66,
+          "line": 2832,
+          "position": 92023
+        }
+      },
+      "tokens": 61
+    },
+    {
+      "firstFile": {
+        "end": 2121,
+        "endLoc": {
+          "column": 25,
+          "line": 2121,
+          "position": 67518
+        },
+        "name": "",
+        "start": 2111,
+        "startLoc": {
+          "column": 83,
+          "line": 2111,
+          "position": 67252
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 3328,
+        "endLoc": {
+          "column": 25,
+          "line": 3328,
+          "position": 108905
+        },
+        "name": "",
+        "start": 3318,
+        "startLoc": {
+          "column": 72,
+          "line": 3318,
+          "position": 108639
+        }
+      },
+      "tokens": 67
+    },
+    {
+      "firstFile": {
+        "end": 2169,
+        "endLoc": {
+          "column": 16,
+          "line": 2169,
+          "position": 69489
+        },
+        "name": "",
+        "start": 2158,
+        "startLoc": {
+          "column": 72,
+          "line": 2158,
+          "position": 69116
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 5127,
+        "endLoc": {
+          "column": 16,
+          "line": 5127,
+          "position": 172290
+        },
+        "name": "",
+        "start": 5116,
+        "startLoc": {
+          "column": 65,
+          "line": 5116,
+          "position": 171917
+        }
+      },
+      "tokens": 83
+    },
+    {
+      "firstFile": {
+        "end": 2171,
+        "endLoc": {
+          "column": 42,
+          "line": 2171,
+          "position": 69583
+        },
+        "name": "",
+        "start": 2159,
+        "startLoc": {
+          "column": 52,
+          "line": 2159,
+          "position": 69171
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 13,
+      "secondFile": {
+        "end": 3391,
+        "endLoc": {
+          "column": 42,
+          "line": 3391,
+          "position": 111527
+        },
+        "name": "",
+        "start": 3379,
+        "startLoc": {
+          "column": 70,
+          "line": 3379,
+          "position": 111124
+        }
+      },
+      "tokens": 88
+    },
+    {
+      "firstFile": {
+        "end": 2249,
+        "endLoc": {
+          "column": 32,
+          "line": 2249,
+          "position": 72323
+        },
+        "name": "",
+        "start": 2237,
+        "startLoc": {
+          "column": 33,
+          "line": 2237,
+          "position": 71988
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 13,
+      "secondFile": {
+        "end": 2294,
+        "endLoc": {
+          "column": 32,
+          "line": 2294,
+          "position": 74047
+        },
+        "name": "",
+        "start": 2282,
+        "startLoc": {
+          "column": 31,
+          "line": 2282,
+          "position": 73712
+        }
+      },
+      "tokens": 54
+    },
+    {
+      "firstFile": {
+        "end": 2255,
+        "endLoc": {
+          "column": 30,
+          "line": 2255,
+          "position": 72554
+        },
+        "name": "",
+        "start": 2237,
+        "startLoc": {
+          "column": 33,
+          "line": 2237,
+          "position": 71988
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 19,
+      "secondFile": {
+        "end": 2341,
+        "endLoc": {
+          "column": 30,
+          "line": 2341,
+          "position": 75916
+        },
+        "name": "",
+        "start": 2323,
+        "startLoc": {
+          "column": 34,
+          "line": 2323,
+          "position": 75361
+        }
+      },
+      "tokens": 96
+    },
+    {
+      "firstFile": {
+        "end": 2706,
+        "endLoc": {
+          "column": 23,
+          "line": 2706,
+          "position": 87622
+        },
+        "name": "",
+        "start": 2696,
+        "startLoc": {
+          "column": 32,
+          "line": 2696,
+          "position": 87341
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 3443,
+        "endLoc": {
+          "column": 23,
+          "line": 3443,
+          "position": 113269
+        },
+        "name": "",
+        "start": 3433,
+        "startLoc": {
+          "column": 61,
+          "line": 3433,
+          "position": 112988
+        }
+      },
+      "tokens": 50
+    },
+    {
+      "firstFile": {
+        "end": 2759,
+        "endLoc": {
+          "column": 2,
+          "line": 2759,
+          "position": 89693
+        },
+        "name": "",
+        "start": 2746,
+        "startLoc": {
+          "column": 60,
+          "line": 2746,
+          "position": 89386
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 14,
+      "secondFile": {
+        "end": 3509,
+        "endLoc": {
+          "column": 2,
+          "line": 3509,
+          "position": 115882
+        },
+        "name": "",
+        "start": 3496,
+        "startLoc": {
+          "column": 80,
+          "line": 3496,
+          "position": 115575
+        }
+      },
+      "tokens": 59
+    },
+    {
+      "firstFile": {
+        "end": 2778,
+        "endLoc": {
+          "column": 30,
+          "line": 2778,
+          "position": 90396
+        },
+        "name": "",
+        "start": 2768,
+        "startLoc": {
+          "column": 17,
+          "line": 2768,
+          "position": 90060
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 5382,
+        "endLoc": {
+          "column": 30,
+          "line": 5382,
+          "position": 179952
+        },
+        "name": "",
+        "start": 5372,
+        "startLoc": {
+          "column": 4,
+          "line": 5372,
+          "position": 179616
+        }
+      },
+      "tokens": 69
+    },
+    {
+      "firstFile": {
+        "end": 3089,
+        "endLoc": {
+          "column": 34,
+          "line": 3089,
+          "position": 101031
+        },
+        "name": "",
+        "start": 3078,
+        "startLoc": {
+          "column": 87,
+          "line": 3078,
+          "position": 100685
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 3392,
+        "endLoc": {
+          "column": 44,
+          "line": 3392,
+          "position": 111572
+        },
+        "name": "",
+        "start": 3381,
+        "startLoc": {
+          "column": 87,
+          "line": 3381,
+          "position": 111216
+        }
+      },
+      "tokens": 65
+    },
+    {
+      "firstFile": {
+        "end": 3171,
+        "endLoc": {
+          "column": 22,
+          "line": 3171,
+          "position": 103816
+        },
+        "name": "",
+        "start": 3159,
+        "startLoc": {
+          "column": 50,
+          "line": 3159,
+          "position": 103416
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 13,
+      "secondFile": {
+        "end": 3208,
+        "endLoc": {
+          "column": 22,
+          "line": 3208,
+          "position": 105006
+        },
+        "name": "",
+        "start": 3196,
+        "startLoc": {
+          "column": 12,
+          "line": 3196,
+          "position": 104606
+        }
+      },
+      "tokens": 82
+    },
+    {
+      "firstFile": {
+        "end": 3171,
+        "endLoc": {
+          "column": 22,
+          "line": 3171,
+          "position": 103816
+        },
+        "name": "",
+        "start": 3159,
+        "startLoc": {
+          "column": 50,
+          "line": 3159,
+          "position": 103416
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 13,
+      "secondFile": {
+        "end": 3245,
+        "endLoc": {
+          "column": 22,
+          "line": 3245,
+          "position": 106213
+        },
+        "name": "",
+        "start": 3233,
+        "startLoc": {
+          "column": 20,
+          "line": 3233,
+          "position": 105813
+        }
+      },
+      "tokens": 82
+    },
+    {
+      "firstFile": {
+        "end": 3176,
+        "endLoc": {
+          "column": 2,
+          "line": 3176,
+          "position": 103870
+        },
+        "name": "",
+        "start": 3162,
+        "startLoc": {
+          "column": 34,
+          "line": 3162,
+          "position": 103460
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 15,
+      "secondFile": {
+        "end": 3318,
+        "endLoc": {
+          "column": 2,
+          "line": 3318,
+          "position": 108569
+        },
+        "name": "",
+        "start": 3304,
+        "startLoc": {
+          "column": 63,
+          "line": 3304,
+          "position": 108141
+        }
+      },
+      "tokens": 81
+    },
+    {
+      "firstFile": {
+        "end": 3171,
+        "endLoc": {
+          "column": 22,
+          "line": 3171,
+          "position": 103816
+        },
+        "name": "",
+        "start": 3163,
+        "startLoc": {
+          "column": 54,
+          "line": 3163,
+          "position": 103517
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 3276,
+        "endLoc": {
+          "column": 22,
+          "line": 3276,
+          "position": 107225
+        },
+        "name": "",
+        "start": 3268,
+        "startLoc": {
+          "column": 63,
+          "line": 3268,
+          "position": 106926
+        }
+      },
+      "tokens": 63
+    },
+    {
+      "firstFile": {
+        "end": 3391,
+        "endLoc": {
+          "column": 42,
+          "line": 3391,
+          "position": 111527
+        },
+        "name": "",
+        "start": 3378,
+        "startLoc": {
+          "column": 69,
+          "line": 3378,
+          "position": 111051
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 14,
+      "secondFile": {
+        "end": 3472,
+        "endLoc": {
+          "column": 42,
+          "line": 3472,
+          "position": 114711
+        },
+        "name": "",
+        "start": 3459,
+        "startLoc": {
+          "column": 33,
+          "line": 3459,
+          "position": 114235
+        }
+      },
+      "tokens": 101
+    },
+    {
+      "firstFile": {
+        "end": 3503,
+        "endLoc": {
+          "column": 26,
+          "line": 3503,
+          "position": 115826
+        },
+        "name": "",
+        "start": 3495,
+        "startLoc": {
+          "column": 71,
+          "line": 3495,
+          "position": 115492
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 3526,
+        "endLoc": {
+          "column": 22,
+          "line": 3526,
+          "position": 116637
+        },
+        "name": "",
+        "start": 3518,
+        "startLoc": {
+          "column": 35,
+          "line": 3518,
+          "position": 116335
+        }
+      },
+      "tokens": 63
+    },
+    {
+      "firstFile": {
+        "end": 3574,
+        "endLoc": {
+          "column": 35,
+          "line": 3574,
+          "position": 118343
+        },
+        "name": "",
+        "start": 3566,
+        "startLoc": {
+          "column": 25,
+          "line": 3566,
+          "position": 118038
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 3901,
+        "endLoc": {
+          "column": 53,
+          "line": 3901,
+          "position": 130384
+        },
+        "name": "",
+        "start": 3893,
+        "startLoc": {
+          "column": 35,
+          "line": 3893,
+          "position": 130054
+        }
+      },
+      "tokens": 78
+    },
+    {
+      "firstFile": {
+        "end": 3712,
+        "endLoc": {
+          "column": 48,
+          "line": 3712,
+          "position": 123587
+        },
+        "name": "",
+        "start": 3703,
+        "startLoc": {
+          "column": 64,
+          "line": 3703,
+          "position": 123142
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 10,
+      "secondFile": {
+        "end": 3728,
+        "endLoc": {
+          "column": 48,
+          "line": 3728,
+          "position": 124282
+        },
+        "name": "",
+        "start": 3719,
+        "startLoc": {
+          "column": 36,
+          "line": 3719,
+          "position": 123837
+        }
+      },
+      "tokens": 102
+    },
+    {
+      "firstFile": {
+        "end": 3712,
+        "endLoc": {
+          "column": 48,
+          "line": 3712,
+          "position": 123587
+        },
+        "name": "",
+        "start": 3703,
+        "startLoc": {
+          "column": 64,
+          "line": 3703,
+          "position": 123142
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 10,
+      "secondFile": {
+        "end": 3763,
+        "endLoc": {
+          "column": 41,
+          "line": 3763,
+          "position": 125553
+        },
+        "name": "",
+        "start": 3753,
+        "startLoc": {
+          "column": 4,
+          "line": 3753,
+          "position": 125099
+        }
+      },
+      "tokens": 102
+    },
+    {
+      "firstFile": {
+        "end": 3763,
+        "endLoc": {
+          "column": 41,
+          "line": 3763,
+          "position": 125553
+        },
+        "name": "",
+        "start": 3752,
+        "startLoc": {
+          "column": 23,
+          "line": 3752,
+          "position": 125093
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 3861,
+        "endLoc": {
+          "column": 48,
+          "line": 3861,
+          "position": 129076
+        },
+        "name": "",
+        "start": 3851,
+        "startLoc": {
+          "column": 32,
+          "line": 3851,
+          "position": 128625
+        }
+      },
+      "tokens": 103
+    },
+    {
+      "firstFile": {
+        "end": 3992,
+        "endLoc": {
+          "column": 14,
+          "line": 3992,
+          "position": 133351
+        },
+        "name": "",
+        "start": 3983,
+        "startLoc": {
+          "column": 54,
+          "line": 3983,
+          "position": 133073
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 10,
+      "secondFile": {
+        "end": 4017,
+        "endLoc": {
+          "column": 14,
+          "line": 4017,
+          "position": 134175
+        },
+        "name": "",
+        "start": 4008,
+        "startLoc": {
+          "column": 50,
+          "line": 4008,
+          "position": 133897
+        }
+      },
+      "tokens": 57
+    },
+    {
+      "firstFile": {
+        "end": 4086,
+        "endLoc": {
+          "column": 7,
+          "line": 4086,
+          "position": 136595
+        },
+        "name": "",
+        "start": 4076,
+        "startLoc": {
+          "column": 35,
+          "line": 4076,
+          "position": 136250
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 4296,
+        "endLoc": {
+          "column": 26,
+          "line": 4296,
+          "position": 144316
+        },
+        "name": "",
+        "start": 4287,
+        "startLoc": {
+          "column": 62,
+          "line": 4287,
+          "position": 143974
+        }
+      },
+      "tokens": 81
+    },
+    {
+      "firstFile": {
+        "end": 4086,
+        "endLoc": {
+          "column": 7,
+          "line": 4086,
+          "position": 136595
+        },
+        "name": "",
+        "start": 4076,
+        "startLoc": {
+          "column": 35,
+          "line": 4076,
+          "position": 136250
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 11,
+      "secondFile": {
+        "end": 4323,
+        "endLoc": {
+          "column": 33,
+          "line": 4323,
+          "position": 145467
+        },
+        "name": "",
+        "start": 4315,
+        "startLoc": {
+          "column": 61,
+          "line": 4315,
+          "position": 145134
+        }
+      },
+      "tokens": 81
+    },
+    {
+      "firstFile": {
+        "end": 4255,
+        "endLoc": {
+          "column": 22,
+          "line": 4255,
+          "position": 142811
+        },
+        "name": "",
+        "start": 4244,
+        "startLoc": {
+          "column": 77,
+          "line": 4244,
+          "position": 142436
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 4349,
+        "endLoc": {
+          "column": 22,
+          "line": 4349,
+          "position": 146416
+        },
+        "name": "",
+        "start": 4337,
+        "startLoc": {
+          "column": 61,
+          "line": 4337,
+          "position": 146040
+        }
+      },
+      "tokens": 85
+    },
+    {
+      "firstFile": {
+        "end": 4255,
+        "endLoc": {
+          "column": 22,
+          "line": 4255,
+          "position": 142811
+        },
+        "name": "",
+        "start": 4244,
+        "startLoc": {
+          "column": 77,
+          "line": 4244,
+          "position": 142436
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 4421,
+        "endLoc": {
+          "column": 22,
+          "line": 4421,
+          "position": 148947
+        },
+        "name": "",
+        "start": 4409,
+        "startLoc": {
+          "column": 62,
+          "line": 4409,
+          "position": 148571
+        }
+      },
+      "tokens": 85
+    },
+    {
+      "firstFile": {
+        "end": 4255,
+        "endLoc": {
+          "column": 22,
+          "line": 4255,
+          "position": 142811
+        },
+        "name": "",
+        "start": 4247,
+        "startLoc": {
+          "column": 34,
+          "line": 4247,
+          "position": 142558
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 4444,
+        "endLoc": {
+          "column": 22,
+          "line": 4444,
+          "position": 149737
+        },
+        "name": "",
+        "start": 4436,
+        "startLoc": {
+          "column": 51,
+          "line": 4436,
+          "position": 149484
+        }
+      },
+      "tokens": 53
+    },
+    {
+      "firstFile": {
+        "end": 4344,
+        "endLoc": {
+          "column": 43,
+          "line": 4344,
+          "position": 146310
+        },
+        "name": "",
+        "start": 4335,
+        "startLoc": {
+          "column": 62,
+          "line": 4335,
+          "position": 145969
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 10,
+      "secondFile": {
+        "end": 4370,
+        "endLoc": {
+          "column": 43,
+          "line": 4370,
+          "position": 147198
+        },
+        "name": "",
+        "start": 4361,
+        "startLoc": {
+          "column": 61,
+          "line": 4361,
+          "position": 146857
+        }
+      },
+      "tokens": 79
+    },
+    {
+      "firstFile": {
+        "end": 4349,
+        "endLoc": {
+          "column": 22,
+          "line": 4349,
+          "position": 146416
+        },
+        "name": "",
+        "start": 4337,
+        "startLoc": {
+          "column": 55,
+          "line": 4337,
+          "position": 146034
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 13,
+      "secondFile": {
+        "end": 4391,
+        "endLoc": {
+          "column": 22,
+          "line": 4391,
+          "position": 147987
+        },
+        "name": "",
+        "start": 4380,
+        "startLoc": {
+          "column": 57,
+          "line": 4380,
+          "position": 147606
+        }
+      },
+      "tokens": 87
+    },
+    {
+      "firstFile": {
+        "end": 4421,
+        "endLoc": {
+          "column": 22,
+          "line": 4421,
+          "position": 148947
+        },
+        "name": "",
+        "start": 4408,
+        "startLoc": {
+          "column": 32,
+          "line": 4408,
+          "position": 148506
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 14,
+      "secondFile": {
+        "end": 4500,
+        "endLoc": {
+          "column": 22,
+          "line": 4500,
+          "position": 151566
+        },
+        "name": "",
+        "start": 4487,
+        "startLoc": {
+          "column": 4,
+          "line": 4487,
+          "position": 151125
+        }
+      },
+      "tokens": 95
+    },
+    {
+      "firstFile": {
+        "end": 4444,
+        "endLoc": {
+          "column": 22,
+          "line": 4444,
+          "position": 149737
+        },
+        "name": "",
+        "start": 4429,
+        "startLoc": {
+          "column": 42,
+          "line": 4429,
+          "position": 149188
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 16,
+      "secondFile": {
+        "end": 4467,
+        "endLoc": {
+          "column": 22,
+          "line": 4467,
+          "position": 150556
+        },
+        "name": "",
+        "start": 4452,
+        "startLoc": {
+          "column": 64,
+          "line": 4452,
+          "position": 150007
+        }
+      },
+      "tokens": 123
+    },
+    {
+      "firstFile": {
+        "end": 4500,
+        "endLoc": {
+          "column": 22,
+          "line": 4500,
+          "position": 151566
+        },
+        "name": "",
+        "start": 4484,
+        "startLoc": {
+          "column": 38,
+          "line": 4484,
+          "position": 151064
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 17,
+      "secondFile": {
+        "end": 4533,
+        "endLoc": {
+          "column": 22,
+          "line": 4533,
+          "position": 152580
+        },
+        "name": "",
+        "start": 4517,
+        "startLoc": {
+          "column": 37,
+          "line": 4517,
+          "position": 152078
+        }
+      },
+      "tokens": 103
+    },
+    {
+      "firstFile": {
+        "end": 4500,
+        "endLoc": {
+          "column": 22,
+          "line": 4500,
+          "position": 151566
+        },
+        "name": "",
+        "start": 4486,
+        "startLoc": {
+          "column": 9,
+          "line": 4486,
+          "position": 151118
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 15,
+      "secondFile": {
+        "end": 4557,
+        "endLoc": {
+          "column": 22,
+          "line": 4557,
+          "position": 153332
+        },
+        "name": "",
+        "start": 4543,
+        "startLoc": {
+          "column": 62,
+          "line": 4543,
+          "position": 152884
+        }
+      },
+      "tokens": 97
+    },
+    {
+      "firstFile": {
+        "end": 5353,
+        "endLoc": {
+          "column": 32,
+          "line": 5353,
+          "position": 179157
+        },
+        "name": "",
+        "start": 5342,
+        "startLoc": {
+          "column": 21,
+          "line": 5342,
+          "position": 178853
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 5378,
+        "endLoc": {
+          "column": 32,
+          "line": 5378,
+          "position": 179818
+        },
+        "name": "",
+        "start": 5367,
+        "startLoc": {
+          "column": 25,
+          "line": 5367,
+          "position": 179514
+        }
+      },
+      "tokens": 69
+    },
+    {
+      "firstFile": {
+        "end": 5366,
+        "endLoc": {
+          "column": 2,
+          "line": 5366,
+          "position": 179466
+        },
+        "name": "",
+        "start": 5354,
+        "startLoc": {
+          "column": 19,
+          "line": 5354,
+          "position": 179177
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 13,
+      "secondFile": {
+        "end": 5391,
+        "endLoc": {
+          "column": 2,
+          "line": 5391,
+          "position": 180130
+        },
+        "name": "",
+        "start": 5379,
+        "startLoc": {
+          "column": 22,
+          "line": 5379,
+          "position": 179841
+        }
+      },
+      "tokens": 57
+    },
+    {
+      "firstFile": {
+        "end": 5435,
+        "endLoc": {
+          "column": 38,
+          "line": 5435,
+          "position": 181625
+        },
+        "name": "",
+        "start": 5427,
+        "startLoc": {
+          "column": 25,
+          "line": 5427,
+          "position": 181382
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 5465,
+        "endLoc": {
+          "column": 38,
+          "line": 5465,
+          "position": 182482
+        },
+        "name": "",
+        "start": 5457,
+        "startLoc": {
+          "column": 28,
+          "line": 5457,
+          "position": 182239
+        }
+      },
+      "tokens": 60
+    },
+    {
+      "firstFile": {
+        "end": 5453,
+        "endLoc": {
+          "column": 2,
+          "line": 5453,
+          "position": 182109
+        },
+        "name": "",
+        "start": 5442,
+        "startLoc": {
+          "column": 4,
+          "line": 5442,
+          "position": 181809
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 5488,
+        "endLoc": {
+          "column": 2,
+          "line": 5488,
+          "position": 183137
+        },
+        "name": "",
+        "start": 5477,
+        "startLoc": {
+          "column": 4,
+          "line": 5477,
+          "position": 182837
+        }
+      },
+      "tokens": 70
+    },
+    {
+      "firstFile": {
+        "end": 5975,
+        "endLoc": {
+          "column": 6,
+          "line": 5975,
+          "position": 198782
+        },
+        "name": "",
+        "start": 5967,
+        "startLoc": {
+          "column": 12,
+          "line": 5967,
+          "position": 198570
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 9,
+      "secondFile": {
+        "end": 6649,
+        "endLoc": {
+          "column": 15,
+          "line": 6649,
+          "position": 220885
+        },
+        "name": "",
+        "start": 6641,
+        "startLoc": {
+          "column": 61,
+          "line": 6641,
+          "position": 220664
+        }
+      },
+      "tokens": 52
+    },
+    {
+      "firstFile": {
+        "end": 6280,
+        "endLoc": {
+          "column": 2,
+          "line": 6280,
+          "position": 208125
+        },
+        "name": "",
+        "start": 6269,
+        "startLoc": {
+          "column": 49,
+          "line": 6269,
+          "position": 207880
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 12,
+      "secondFile": {
+        "end": 6370,
+        "endLoc": {
+          "column": 2,
+          "line": 6370,
+          "position": 211048
+        },
+        "name": "",
+        "start": 6359,
+        "startLoc": {
+          "column": 32,
+          "line": 6359,
+          "position": 210803
+        }
+      },
+      "tokens": 62
+    },
+    {
+      "firstFile": {
+        "end": 6512,
+        "endLoc": {
+          "column": 64,
+          "line": 6512,
+          "position": 216410
+        },
+        "name": "",
+        "start": 6503,
+        "startLoc": {
+          "column": 62,
+          "line": 6503,
+          "position": 215966
+        }
+      },
+      "format": "rust",
+      "fragment": "",
+      "lines": 10,
+      "secondFile": {
+        "end": 6533,
+        "endLoc": {
+          "column": 37,
+          "line": 6533,
+          "position": 217223
+        },
+        "name": "",
+        "start": 6524,
+        "startLoc": {
+          "column": 59,
+          "line": 6524,
+          "position": 216787
+        }
+      },
+      "tokens": 82
+    }
+  ],
+  "statistics": {
+    "detectionDate": "2026-07-08T19:18:36.052Z",
+    "formats": {
+      "rust": {
+        "clones": 59,
+        "duplicatedLines": 715,
+        "duplicatedTokens": 4568,
+        "lines": 7792,
+        "newClones": 0,
+        "newDuplicatedLines": 0,
+        "percentage": 9.176078028747433,
+        "percentageTokens": 9.016264013895467,
+        "sources": 2,
+        "tokens": 50664
+      }
+    },
+    "total": {
+      "clones": 59,
+      "duplicatedLines": 715,
+      "duplicatedTokens": 4568,
+      "lines": 7792,
+      "newClones": 0,
+      "newDuplicatedLines": 0,
+      "percentage": 9.176078028747433,
+      "percentageTokens": 9.016264013895467,
+      "sources": 2,
+      "tokens": 50664
+    }
+  }
+}

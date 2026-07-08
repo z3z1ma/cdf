@@ -24,7 +24,7 @@ use crate::{
 
 #[derive(Clone, Copy)]
 pub(crate) struct PackageReplayDestinationArgs<'a> {
-    pub(crate) destination_uri: &'a str,
+    pub(crate) destination_uri: Option<&'a str>,
     pub(crate) target: Option<&'a str>,
     pub(crate) merge_dedup: Option<&'a str>,
 }
@@ -131,7 +131,9 @@ pub(crate) fn build_replay_destination(
     args: PackageReplayDestinationArgs<'_>,
     inputs: &PackageReplayInputs,
 ) -> Result<ReplayDestination, CliError> {
-    let uri = args.destination_uri;
+    let uri = args
+        .destination_uri
+        .unwrap_or(context.environment.destination.as_str());
     let secret_provider = context.secret_provider();
     let replay_policy;
     let destination_policy = if uri.starts_with("postgres://") {
@@ -145,7 +147,7 @@ pub(crate) fn build_replay_destination(
     } else {
         &context.environment.destination_policy
     };
-    let target = replay_target(args, inputs)?;
+    let target = replay_target(args, inputs, uri)?;
     let destination_context = ProjectResolutionContext::for_project_run(&context.root, &target)
         .with_environment_name(&context.environment.name)
         .with_destination_policy(destination_policy)
@@ -177,8 +179,9 @@ pub(crate) fn build_replay_destination(
 fn replay_target(
     args: PackageReplayDestinationArgs<'_>,
     inputs: &PackageReplayInputs,
+    uri: &str,
 ) -> Result<TargetName, CliError> {
-    if args.destination_uri.starts_with("postgres://") {
+    if uri.starts_with("postgres://") {
         let explicit = args.target.ok_or_else(|| {
             CliError::usage("replay package to Postgres requires --target schema.table")
         })?;
@@ -258,7 +261,7 @@ pub(crate) fn replay_package(
     let mut replay_destination = build_replay_destination(
         &package.project,
         PackageReplayDestinationArgs {
-            destination_uri: &args.destination_uri,
+            destination_uri: args.destination_uri.as_deref(),
             target: args.target.as_deref(),
             merge_dedup: args.merge_dedup.as_deref(),
         },

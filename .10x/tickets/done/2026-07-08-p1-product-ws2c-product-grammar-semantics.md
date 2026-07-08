@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws2-command-grammar-redesign.md
@@ -34,4 +34,18 @@ No parser framework migration; WS2B owns it. No completions/man pages; WS2D owns
 
 ## Blockers
 
-None. WS2B parser foundation is done; product grammar semantics remain this ticket's scope.
+None.
+
+## Progress and notes
+
+- 2026-07-08: Implemented scoped WS2C grammar semantics in cdf-cli parser and command modules. Short `plan`/`explain`, `run`, `state show/history/rewind`, bare `resume`, optional replay destination, and backfill default target behavior are covered by focused tests. Legacy explicit script forms remain covered by the full cdf-cli suite.
+- 2026-07-08: Bare `resume` drains exactly one interrupted run through the existing resume path, reports no-op when no interrupted runs exist, and fails closed with exit 78 when multiple interrupted runs require lower-layer multi-run drain semantics.
+- 2026-07-08: jscpd still reports pre-existing duplication in `args.rs`/`tests.rs`; WS2C-specific duplicated setup was reduced and the final jscpd JSON reports `newClones: 0`.
+
+## Evidence
+
+- `.10x/evidence/2026-07-08-p1-product-ws2c-product-grammar-semantics.md`
+
+## Review
+
+- `.10x/reviews/2026-07-08-p1-product-ws2c-product-grammar-semantics-review.md`
