@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
-Depends-On: .10x/tickets/2026-07-07-p0-b2-generic-package-replay-recovery.md, .10x/tickets/2026-07-07-p0-b3-generic-project-run-resolution.md
+Depends-On: .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md, .10x/tickets/2026-07-07-p0-b3-generic-project-run-resolution.md
 
 # P0 B4: Caller migration, wrapper deletion, and Workstream B closure
 

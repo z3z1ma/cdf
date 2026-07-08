@@ -32,6 +32,11 @@ pub use types::*;
 
 #[cfg(test)]
 pub(crate) use artifacts::state_delta_from_run;
+#[cfg(test)]
+pub(crate) use replay::{
+    PackageReplayHooks, PackageReplayStage, recover_package_with_runtime,
+    replay_package_with_runtime,
+};
 
 mod prelude {
     pub(super) use std::{
@@ -50,8 +55,8 @@ mod prelude {
     pub(super) use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};
     pub(super) use cdf_dest_postgres::{
         MergeDedupPolicy, PostgresColumn, PostgresCommitRequest, PostgresDestination,
-        PostgresExistingTable, PostgresIdentifier, PostgresLoadPlan, PostgresLoadPlanInput,
-        PostgresTarget, postgres_columns_for_schema,
+        PostgresExistingTable, PostgresIdentifier, PostgresLoadPlanInput, PostgresTarget,
+        postgres_columns_for_schema,
     };
     #[cfg(test)]
     pub(super) use cdf_engine::EngineRunOutputWithSegmentPositions;

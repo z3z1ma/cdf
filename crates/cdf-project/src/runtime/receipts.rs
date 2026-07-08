@@ -1,59 +1,17 @@
 use super::prelude::*;
 
-pub(super) fn verify_receipt_before_checkpoint(
-    destination: &DuckDbDestination,
+pub(super) fn verify_destination_receipt_before_checkpoint(
+    destination: &dyn DestinationProtocol,
     delta: &StateDelta,
     target: &TargetName,
     disposition: &WriteDisposition,
     receipt: &Receipt,
 ) -> Result<()> {
     validate_receipt_identity(delta, target, disposition, receipt)?;
-    let verification = DestinationProtocol::verify(destination, receipt)?;
+    let verification = destination.verify(receipt)?;
     if !verification.verified {
         return Err(CdfError::destination(format!(
-            "DuckDB receipt {} did not verify: {}",
-            verification.receipt_id,
-            verification
-                .reason
-                .unwrap_or_else(|| "verification returned false".to_owned())
-        )));
-    }
-    Ok(())
-}
-
-pub(super) fn verify_parquet_receipt_before_checkpoint(
-    destination: &ParquetDestination,
-    delta: &StateDelta,
-    target: &TargetName,
-    disposition: &WriteDisposition,
-    receipt: &Receipt,
-) -> Result<()> {
-    validate_receipt_identity(delta, target, disposition, receipt)?;
-    let verification = DestinationProtocol::verify(destination, receipt)?;
-    if !verification.verified {
-        return Err(CdfError::destination(format!(
-            "Parquet receipt {} did not verify: {}",
-            verification.receipt_id,
-            verification
-                .reason
-                .unwrap_or_else(|| "verification returned false".to_owned())
-        )));
-    }
-    Ok(())
-}
-
-pub(super) fn verify_postgres_receipt_before_checkpoint(
-    destination: &PostgresDestination,
-    delta: &StateDelta,
-    target: &TargetName,
-    disposition: &WriteDisposition,
-    receipt: &Receipt,
-) -> Result<()> {
-    validate_receipt_identity(delta, target, disposition, receipt)?;
-    let verification = DestinationProtocol::verify(destination, receipt)?;
-    if !verification.verified {
-        return Err(CdfError::destination(format!(
-            "Postgres receipt {} did not verify: {}",
+            "destination receipt {} did not verify: {}",
             verification.receipt_id,
             verification
                 .reason

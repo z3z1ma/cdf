@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
-Depends-On: .10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md, .10x/tickets/2026-07-07-p0-b2-generic-package-replay-recovery.md
+Depends-On: .10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md, .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md
 
 # P0 B3: Generic project run and resolution
 
@@ -38,7 +38,8 @@ No new resource archetype, no new destination, no resident streaming supervisor,
 ## Progress and notes
 
 - 2026-07-07: Opened from Workstream B after caller inventory confirmed CLI run and conformance live-run are external users of the closed run API.
+- 2026-07-08: Unblocked by B2 closure. Run finalization must reuse `.10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md` rather than adding a second destination commit/checkpoint path.
 
 ## Blockers
 
-Depends on B1 and B2 because run finalization must reuse the generic package replay/commit gate rather than creating a second path.
+None. B1 and B2 are closed.

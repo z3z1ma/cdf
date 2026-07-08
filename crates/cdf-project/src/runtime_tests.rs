@@ -22,12 +22,15 @@ use cdf_engine::{
 };
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    CheckpointStore, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition,
-    IdempotencyToken, LogPosition, PackageHash, PageToken, PartitionId, PipelineId, Receipt,
-    ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunId, ScanRequest,
-    SchemaHash, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
-    WriteDisposition,
+    CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, Checkpoint, CheckpointId,
+    CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan, CommitSegment, CommitSession,
+    CompositePosition, ConcurrencyLimit, CursorPosition, CursorValue, DeliveryGuarantee,
+    DestinationCommitRequest, DestinationId, DestinationProtocol, DestinationSheet, FileManifest,
+    FilePosition, IdempotencySupport, IdempotencyToken, IdentifierRules, LogPosition,
+    MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId, Receipt, ReceiptId,
+    ReceiptVerification, ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunId,
+    ScanRequest, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
+    StateSegment, TargetName, TransactionSupport, VerifyClause, WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
@@ -39,15 +42,19 @@ use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
 use crate::{
-    LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest, PackageArtifactDuckDbRecoveryRequest,
-    PackageArtifactDuckDbReplayRequest, PackageArtifactParquetRecoveryRequest,
-    PackageArtifactParquetReplayRequest, PackageArtifactPostgresRecoveryRequest,
-    PackageArtifactPostgresReplayRequest, PreparedDuckDbRecoveryRequest,
-    PreparedDuckDbReplayRequest, PreparedReceiptSource, ProjectReceiptSource,
+    DestinationReceiptReportingPolicy, LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest,
+    PackageArtifactDuckDbRecoveryRequest, PackageArtifactDuckDbReplayRequest,
+    PackageArtifactParquetRecoveryRequest, PackageArtifactParquetReplayRequest,
+    PackageArtifactPostgresRecoveryRequest, PackageArtifactPostgresReplayRequest,
+    PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
+    PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
+    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
+    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext,
     ProjectRunDestination, ProjectRunReport, ProjectRunRequest, ProjectRunResource,
-    recover_duckdb_package_from_artifacts, recover_parquet_package_from_artifacts,
-    recover_postgres_package_from_artifacts, recover_prepared_duckdb_package,
-    replay_duckdb_package_from_artifacts, replay_parquet_package_from_artifacts,
+    recover_duckdb_package_from_artifacts, recover_package_with_runtime,
+    recover_parquet_package_from_artifacts, recover_postgres_package_from_artifacts,
+    recover_prepared_duckdb_package, replay_duckdb_package_from_artifacts,
+    replay_package_with_runtime, replay_parquet_package_from_artifacts,
     replay_postgres_package_from_artifacts, replay_prepared_duckdb_package,
     replay_prepared_duckdb_package_with_failpoint, run_local_file_to_duckdb_checkpoint,
     run_project, runtime::state_delta_from_run,
@@ -354,6 +361,325 @@ fn recovery_request<'a, Store: CheckpointStore + ?Sized>(
         schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
         receipt,
         after_receipt_verified: None,
+    }
+}
+
+#[derive(Clone)]
+struct MockDestination {
+    sheet: DestinationSheet,
+    receipts: Arc<Mutex<Vec<Receipt>>>,
+    writes: Arc<Mutex<Vec<SegmentId>>>,
+}
+
+impl MockDestination {
+    fn new() -> Self {
+        Self {
+            sheet: DestinationSheet {
+                destination: DestinationId::new("mock").unwrap(),
+                supported_dispositions: vec![WriteDisposition::Append],
+                transactions: TransactionSupport::AtomicPackage,
+                idempotency: IdempotencySupport::PackageToken,
+                type_mappings: Vec::new(),
+                identifier_rules: IdentifierRules {
+                    normalizer: "mock".to_owned(),
+                    max_length: None,
+                    allowed_pattern: None,
+                },
+                migration_support: CapabilitySupport::Supported,
+                quarantine_tables: CapabilitySupport::Unsupported,
+                concurrency: ConcurrencyLimit {
+                    max_writers: Some(1),
+                },
+            },
+            receipts: Arc::new(Mutex::new(Vec::new())),
+            writes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn write_count(&self) -> usize {
+        self.writes.lock().unwrap().len()
+    }
+}
+
+impl DestinationProtocol for MockDestination {
+    fn sheet(&self) -> &DestinationSheet {
+        &self.sheet
+    }
+
+    fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
+        Ok(CommitPlan {
+            plan_id: PlanId::new(format!(
+                "mock-plan:{}:{}",
+                request.target.as_str(),
+                request.idempotency_token.as_str()
+            ))?,
+            target: request.target.clone(),
+            disposition: request.disposition.clone(),
+            idempotency: IdempotencySupport::PackageToken,
+            migrations: vec![MigrationRecord {
+                migration_id: "mock.migration".to_owned(),
+                description: "mock migration".to_owned(),
+            }],
+            delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerPackage,
+        })
+    }
+
+    fn begin(
+        &self,
+        request: DestinationCommitRequest,
+        plan: CommitPlan,
+    ) -> Result<Box<dyn CommitSession + '_>> {
+        Ok(Box::new(MockCommitSession {
+            destination: self,
+            request,
+            plan,
+            migrations_applied: false,
+            acks: Vec::new(),
+        }))
+    }
+
+    fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        let verified = self
+            .receipts
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|stored| stored == receipt);
+        Ok(ReceiptVerification {
+            verified,
+            receipt_id: receipt.receipt_id.clone(),
+            reason: (!verified).then(|| "mock receipt not recorded".to_owned()),
+        })
+    }
+}
+
+struct MockCommitSession<'a> {
+    destination: &'a MockDestination,
+    request: DestinationCommitRequest,
+    plan: CommitPlan,
+    migrations_applied: bool,
+    acks: Vec<SegmentAck>,
+}
+
+impl CommitSession for MockCommitSession<'_> {
+    fn apply_migrations(&mut self) -> Result<()> {
+        self.migrations_applied = true;
+        Ok(())
+    }
+
+    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+        if !self.migrations_applied {
+            return Err(CdfError::destination(
+                "mock destination migrations must be applied before writing",
+            ));
+        }
+        let expected = self
+            .request
+            .segments
+            .iter()
+            .find(|state| state.segment_id == segment.state.segment_id)
+            .ok_or_else(|| CdfError::data("unexpected mock segment"))?;
+        if expected.row_count != segment.state.row_count
+            || expected.byte_count != segment.state.byte_count
+        {
+            return Err(CdfError::data("mock segment state mismatch"));
+        }
+        let ack = SegmentAck {
+            segment_id: expected.segment_id.clone(),
+            row_count: expected.row_count,
+            byte_count: expected.byte_count,
+        };
+        self.destination
+            .writes
+            .lock()
+            .unwrap()
+            .push(ack.segment_id.clone());
+        self.acks.push(ack.clone());
+        Ok(ack)
+    }
+
+    fn finalize(self: Box<Self>) -> Result<Receipt> {
+        if self.acks.len() != self.request.segments.len() {
+            return Err(CdfError::destination(
+                "mock destination did not receive every segment",
+            ));
+        }
+        let rows_written = self.acks.iter().map(|ack| ack.row_count).sum();
+        let mut parameters = BTreeMap::new();
+        parameters.insert("target".to_owned(), self.request.target.as_str().to_owned());
+        parameters.insert(
+            "package_hash".to_owned(),
+            self.request.package_hash.as_str().to_owned(),
+        );
+        let receipt = Receipt {
+            receipt_id: ReceiptId::new(format!(
+                "mock-receipt:{}",
+                self.request.package_hash.as_str()
+            ))?,
+            destination: self.destination.sheet.destination.clone(),
+            target: self.request.target.clone(),
+            package_hash: self.request.package_hash.clone(),
+            segment_acks: self.acks,
+            disposition: self.request.disposition.clone(),
+            idempotency_token: self.request.idempotency_token.clone(),
+            transaction: None,
+            counts: CommitCounts {
+                rows_written,
+                rows_inserted: Some(rows_written),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+            migrations: self.plan.migrations.clone(),
+            committed_at_ms: 1_700_000_000_000,
+            verify: VerifyClause {
+                kind: "mock".to_owned(),
+                statement: "mock durable receipt".to_owned(),
+                parameters,
+            },
+        };
+        self.destination
+            .receipts
+            .lock()
+            .unwrap()
+            .push(receipt.clone());
+        Ok(receipt)
+    }
+
+    fn abort(self: Box<Self>) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct MockDestinationCounters {
+    resolves: Arc<AtomicU64>,
+    prepares: Arc<AtomicU64>,
+    binds: Arc<AtomicU64>,
+}
+
+impl MockDestinationCounters {
+    fn new() -> Self {
+        Self {
+            resolves: Arc::new(AtomicU64::new(0)),
+            prepares: Arc::new(AtomicU64::new(0)),
+            binds: Arc::new(AtomicU64::new(0)),
+        }
+    }
+
+    fn resolve_count(&self) -> usize {
+        self.resolves.load(Ordering::SeqCst) as usize
+    }
+
+    fn prepare_count(&self) -> usize {
+        self.prepares.load(Ordering::SeqCst) as usize
+    }
+
+    fn bind_count(&self) -> usize {
+        self.binds.load(Ordering::SeqCst) as usize
+    }
+}
+
+struct MockProjectDestinationDriver {
+    destination: MockDestination,
+    counters: MockDestinationCounters,
+}
+
+impl MockProjectDestinationDriver {
+    fn new(destination: MockDestination, counters: MockDestinationCounters) -> Self {
+        Self {
+            destination,
+            counters,
+        }
+    }
+}
+
+impl ProjectDestinationDriver for MockProjectDestinationDriver {
+    fn schemes(&self) -> &'static [&'static str] {
+        &["mock"]
+    }
+
+    fn resolve(
+        &self,
+        uri: &str,
+        _context: &ProjectResolutionContext<'_>,
+    ) -> Result<Box<dyn ProjectDestinationRuntime>> {
+        if !uri.starts_with("mock:") {
+            return Err(CdfError::contract(format!(
+                "mock destination driver cannot resolve `{uri}`"
+            )));
+        }
+        self.counters.resolves.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::new(MockProjectDestinationRuntime::with_destination(
+            self.destination.clone(),
+            self.counters.clone(),
+        )))
+    }
+}
+
+struct MockProjectDestinationRuntime {
+    destination: MockDestination,
+    counters: MockDestinationCounters,
+}
+
+impl MockProjectDestinationRuntime {
+    fn with_destination(destination: MockDestination, counters: MockDestinationCounters) -> Self {
+        Self {
+            destination,
+            counters,
+        }
+    }
+}
+
+impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
+    fn protocol(&self) -> &dyn DestinationProtocol {
+        &self.destination
+    }
+
+    fn describe(&self) -> ProjectDestinationDescription {
+        ProjectDestinationDescription {
+            destination_id: self.destination.sheet.destination.clone(),
+            schemes: &["mock"],
+            label: "mock".to_owned(),
+        }
+    }
+
+    fn prepare_package_commit(
+        &mut self,
+        _package_dir: &Path,
+        _reader: &PackageReader,
+        inputs: &cdf_package::PackageReplayInputs,
+        _context: &crate::DestinationPlanningContext<'_>,
+    ) -> Result<PreparedDestinationCommit> {
+        self.counters.prepares.fetch_add(1, Ordering::SeqCst);
+        let plan = self.destination.plan_commit(&inputs.destination_commit)?;
+        Ok(PreparedDestinationCommit::new(
+            inputs.destination_commit.clone(),
+            plan,
+            DestinationReceiptReportingPolicy::DestinationCommit { duplicate: false },
+        ))
+    }
+
+    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
+        if prepared.has_pending_context() {
+            return Err(CdfError::internal(
+                "mock destination received unexpected pending context",
+            ));
+        }
+        self.counters.binds.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+fn package_replay_stage_name(stage: PackageReplayStage<'_>) -> &'static str {
+    match stage {
+        PackageReplayStage::PackageReplayVerified => "package_replay_verified",
+        PackageReplayStage::CheckpointProposed { .. } => "checkpoint_proposed",
+        PackageReplayStage::DestinationWriteReady => "destination_write_ready",
+        PackageReplayStage::DestinationCommitStarted { .. } => "destination_commit_started",
+        PackageReplayStage::DestinationReceiptRecorded { .. } => "destination_receipt_recorded",
+        PackageReplayStage::CheckpointCommitted { .. } => "checkpoint_committed",
+        PackageReplayStage::PackageStatusUpdated { .. } => "package_status_updated",
     }
 }
 
@@ -2574,6 +2900,179 @@ impl CheckpointStore for HeadOnlyCommitFailingStore {
     fn rewind(&self, _request: RewindRequest) -> Result<RewindReport> {
         Err(CdfError::internal("unexpected rewind"))
     }
+}
+
+#[test]
+fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_branch() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-generic-mock");
+    build_package(&package_dir, "pkg-generic-mock", PackageStatus::Packaged);
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let inputs = reader.replay_inputs().unwrap();
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let destination = MockDestination::new();
+    let counters = MockDestinationCounters::new();
+    let mut registry = ProjectDestinationRegistry::new();
+    registry
+        .register(MockProjectDestinationDriver::new(
+            destination.clone(),
+            counters.clone(),
+        ))
+        .unwrap();
+    let context = ProjectResolutionContext::new();
+    let mut replay_runtime = registry.resolve("mock://registered", &context).unwrap();
+    let replay_stages = Arc::new(Mutex::new(Vec::new()));
+    let replay_stages_hook = Arc::clone(&replay_stages);
+    let stage_hook = move |stage: PackageReplayStage<'_>| {
+        replay_stages_hook
+            .lock()
+            .unwrap()
+            .push(package_replay_stage_name(stage));
+        Ok(())
+    };
+
+    let report = replay_package_with_runtime(
+        reader,
+        package_dir.clone(),
+        replay_runtime.as_mut(),
+        &store,
+        inputs.clone(),
+        PackageReplayHooks {
+            stage: Some(&stage_hook),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(counters.resolve_count(), 1);
+    assert_eq!(counters.prepare_count(), 1);
+    assert_eq!(counters.bind_count(), 1);
+    assert_eq!(destination.write_count(), 1);
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
+            package_receipt_recorded: false
+        }
+    );
+    assert!(report.receipt.covers_state_delta(&inputs.state_delta));
+    assert_eq!(
+        *replay_stages.lock().unwrap(),
+        vec![
+            "package_replay_verified",
+            "checkpoint_proposed",
+            "destination_write_ready",
+            "destination_commit_started",
+            "destination_receipt_recorded",
+            "checkpoint_committed",
+            "package_status_updated",
+        ]
+    );
+
+    let writes_before_recovery = destination.write_count();
+    let mut recovery_runtime = registry.resolve("mock://registered", &context).unwrap();
+    let recovery_stages = Arc::new(Mutex::new(Vec::new()));
+    let recovery_stages_hook = Arc::clone(&recovery_stages);
+    let recovery_stage_hook = move |stage: PackageReplayStage<'_>| {
+        recovery_stages_hook
+            .lock()
+            .unwrap()
+            .push(package_replay_stage_name(stage));
+        Ok(())
+    };
+    let recovery = recover_package_with_runtime(
+        PackageReader::open(&package_dir).unwrap(),
+        recovery_runtime.as_mut(),
+        &store,
+        inputs.clone(),
+        report.receipt.clone(),
+        PackageReplayHooks {
+            stage: Some(&recovery_stage_hook),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    assert_eq!(counters.resolve_count(), 2);
+    assert_eq!(counters.prepare_count(), 1);
+    assert_eq!(counters.bind_count(), 1);
+    assert_eq!(destination.write_count(), writes_before_recovery);
+    assert_eq!(
+        recovery.receipt_source,
+        ProjectReceiptSource::SuppliedDurableReceipt
+    );
+    assert_eq!(recovery.checkpoint, report.checkpoint);
+    assert_eq!(
+        *recovery_stages.lock().unwrap(),
+        vec![
+            "destination_receipt_recorded",
+            "checkpoint_committed",
+            "package_status_updated",
+        ]
+    );
+}
+
+#[test]
+fn generic_stage_hook_stops_mock_replay_before_destination_write() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-generic-mock-failpoint");
+    build_package(
+        &package_dir,
+        "pkg-generic-mock-failpoint",
+        PackageStatus::Packaged,
+    );
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let inputs = reader.replay_inputs().unwrap();
+    let store = SqliteCheckpointStore::open_in_memory().unwrap();
+    let destination = MockDestination::new();
+    let counters = MockDestinationCounters::new();
+    let mut registry = ProjectDestinationRegistry::new();
+    registry
+        .register(MockProjectDestinationDriver::new(
+            destination.clone(),
+            counters.clone(),
+        ))
+        .unwrap();
+    let context = ProjectResolutionContext::new();
+    let mut runtime = registry
+        .resolve("mock://registered-failpoint", &context)
+        .unwrap();
+    let stage_hook = |stage: PackageReplayStage<'_>| {
+        if matches!(stage, PackageReplayStage::DestinationWriteReady) {
+            return Err(CdfError::internal("stop at generic destination write hook"));
+        }
+        Ok(())
+    };
+
+    let error = replay_package_with_runtime(
+        reader,
+        package_dir.clone(),
+        runtime.as_mut(),
+        &store,
+        inputs.clone(),
+        PackageReplayHooks {
+            stage: Some(&stage_hook),
+            ..Default::default()
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("generic destination write"));
+    assert_eq!(counters.resolve_count(), 1);
+    assert_eq!(counters.prepare_count(), 0);
+    assert_eq!(counters.bind_count(), 0);
+    assert_eq!(destination.write_count(), 0);
+    assert_eq!(package_status(&package_dir), PackageStatus::Loading);
+    let history = store
+        .history(
+            &inputs.state_delta.pipeline_id,
+            &inputs.state_delta.resource_id,
+            &inputs.state_delta.scope,
+        )
+        .unwrap();
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].status, CheckpointStatus::Proposed);
 }
 
 #[test]
