@@ -85,7 +85,7 @@ This supports closing `.10x/tickets/done/2026-07-07-cli-init-scaffold.md`:
 
 ## Limits
 
-This evidence does not claim completion of the full CLI parent. Preview breadth, contract registry/freeze/test, state migrate/recover, backfill, package GC retention, and status freshness remain separate open owners under `.10x/tickets/2026-07-05-cli-surface.md`.
+This evidence does not claim completion of the full CLI parent. Preview breadth, contract registry/freeze/test, state migrate/recover, backfill, package GC retention, and status freshness remain separate open owners under `.10x/tickets/done/2026-07-05-cli-surface.md`.
 
 This slice does not add remote templates, credential discovery, package/state initialization, or non-local scaffold variants.
 

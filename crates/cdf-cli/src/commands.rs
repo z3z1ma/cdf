@@ -98,7 +98,7 @@ Commands:
   state recover --package DIR --to DEST [--receipt ID] [--target schema.table --merge-dedup fail]
   resume [RUN_ID]
   replay package <DIR>
-  backfill [RESOURCE]
+  backfill RESOURCE --from CURSOR --to CURSOR --target TARGET [--execute] [--slice-size N]
   package ls [DIR]
   package gc [DIR]
   package verify <DIR>

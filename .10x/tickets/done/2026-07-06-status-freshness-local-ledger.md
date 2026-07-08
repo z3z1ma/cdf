@@ -2,7 +2,7 @@ Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-05-observability-doctor-status-sql.md
-Depends-On: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-06-local-system-sql.md
+Depends-On: .10x/tickets/done/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-06-local-system-sql.md
 
 # Implement local status freshness evaluation
 

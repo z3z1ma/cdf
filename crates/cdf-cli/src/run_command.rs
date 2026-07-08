@@ -1,22 +1,15 @@
 use std::fs;
 
-use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, RestResource, RestRuntimeDependencies, SqlResource,
-    SqlRuntimeDependencies,
-};
 use cdf_kernel::{CdfError, CheckpointId, PipelineId, TargetName};
-use cdf_project::{
-    ProjectResolutionContext, ProjectRunRequest, ProjectRunSource, resolve_project_run_destination,
-    run_project,
-};
+use cdf_project::{ProjectRunRequest, run_project};
 
 use crate::{
     args::{Cli, RunArgs, ScanArgs},
     commands::output,
     context::ProjectContext,
-    destination_uri::redact_error_value,
-    http_transport::ReqwestHttpTransport,
+    destination_uri::{redact_error_value, resolve_environment_destination},
     output::{CliError, CommandOutput},
+    project_run_resource::build_project_run_resource,
     reports::{RunCliReport, RunDestinationReport},
     scan_command::build_engine_plan,
 };
@@ -46,18 +39,11 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
             package_id: Some(explicit.package_id.clone()),
         },
     )?;
-    let secret_provider = context.secret_provider();
-    let destination_context =
-        ProjectResolutionContext::for_project_run(&context.root, &explicit.target)
-            .with_environment_name(&context.environment.name)
-            .with_destination_policy(&context.environment.destination_policy)
-            .with_secret_provider(&secret_provider);
-    let destination =
-        resolve_project_run_destination(&context.environment.destination, &destination_context)
-            .map_err(run_destination_resolution_error)?;
+    let resolved = resolve_environment_destination(&context, &explicit.target)
+        .map_err(run_destination_resolution_error)?;
+    let destination = resolved.destination;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
-    let secret_database_url = destination.secret_redaction().map(str::to_owned);
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: run_resource.as_project_resource(),
         plan,
@@ -70,7 +56,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         run_id: None,
         after_receipt_verified: None,
     }))
-    .map_err(|error| redact_error_value(error, secret_database_url.as_deref()))?;
+    .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
     let cli_report = RunCliReport::from_report(&report, destination_report);
     let human = cli_report.human_message();
     output("run", human, cli_report)
@@ -113,45 +99,6 @@ struct ExplicitRunArgs {
     target: TargetName,
     package_id: String,
     checkpoint_id: CheckpointId,
-}
-
-enum CliProjectRunSource<'a> {
-    LocalFile(&'a CompiledResource),
-    Rest(Box<RestResource>),
-    Sql(Box<SqlResource>),
-}
-
-impl<'a> CliProjectRunSource<'a> {
-    fn as_project_resource(&'a self) -> ProjectRunSource<'a> {
-        match self {
-            Self::LocalFile(resource) => ProjectRunSource::local_file(resource),
-            Self::Rest(resource) => ProjectRunSource::rest(resource.as_ref()),
-            Self::Sql(resource) => ProjectRunSource::sql(resource.as_ref()),
-        }
-    }
-}
-
-fn build_project_run_resource<'a>(
-    context: &ProjectContext,
-    resource: &'a CompiledResource,
-) -> Result<CliProjectRunSource<'a>, CliError> {
-    match resource.plan() {
-        CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::LocalFile(resource)),
-        CompiledResourcePlan::Rest(_) => {
-            let dependencies = RestRuntimeDependencies::new(ReqwestHttpTransport::new()?)
-                .with_secret_provider(context.secret_provider());
-            Ok(CliProjectRunSource::Rest(Box::new(
-                resource.to_rest_resource(dependencies)?,
-            )))
-        }
-        CompiledResourcePlan::Sql(_) => {
-            let dependencies =
-                SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
-            Ok(CliProjectRunSource::Sql(Box::new(
-                resource.to_sql_resource(dependencies)?,
-            )))
-        }
-    }
 }
 
 pub(crate) fn ensure_parent_directory(path: &std::path::Path) -> Result<(), CliError> {

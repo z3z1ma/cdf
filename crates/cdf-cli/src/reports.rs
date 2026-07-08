@@ -493,3 +493,21 @@ pub(crate) struct WriteEffects {
     destination: bool,
     checkpoint: bool,
 }
+
+impl WriteEffects {
+    pub(crate) fn none() -> Self {
+        Self {
+            package: false,
+            destination: false,
+            checkpoint: false,
+        }
+    }
+
+    pub(crate) fn all() -> Self {
+        Self {
+            package: true,
+            destination: true,
+            checkpoint: true,
+        }
+    }
+}

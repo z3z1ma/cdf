@@ -588,6 +588,239 @@ fn explain_json_exposes_destination_plan_without_writes() {
 }
 
 #[test]
+fn backfill_dry_plan_splits_sql_cursor_windows_without_writes() {
+    let project = TestProject::new();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_resource_with_ordered_cursor("secret://file/sql-dsn", "orders"),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "backfill",
+        "warehouse.orders",
+        "--from",
+        "0",
+        "--to",
+        "25",
+        "--target",
+        "orders",
+        "--slice-size",
+        "10",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "backfill");
+    let report = &json["result"];
+    assert_eq!(report["mode"], "dry_plan");
+    assert_eq!(report["resource_id"], "warehouse.orders");
+    assert_eq!(report["target"], "orders");
+    assert_eq!(report["requested"]["from"], "0");
+    assert_eq!(report["requested"]["to"], "25");
+    assert_eq!(report["requested"]["slice_size"], 10);
+    assert_eq!(report["writes"]["package"], false);
+    assert_eq!(report["writes"]["destination"], false);
+    assert_eq!(report["writes"]["checkpoint"], false);
+    assert_eq!(report["slices"].as_array().unwrap().len(), 3);
+    assert_eq!(report["slices"][0]["start"], "0");
+    assert_eq!(report["slices"][0]["end"], "10");
+    assert_eq!(
+        report["slices"][0]["filters"],
+        json!(["updated_at >= 0", "updated_at < 10"])
+    );
+    assert_eq!(report["slices"][0]["scope"]["kind"], "window");
+    assert_eq!(report["slices"][0]["status"], "planned");
+    assert_eq!(report["slices"][0]["reason"], "dry_plan_only");
+    assert!(
+        report["slices"][0]["package_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("cdf-backfill-pkg-")
+    );
+}
+
+#[test]
+fn backfill_rejects_resource_alias_mismatch_before_project_load() {
+    let result = run([
+        "cdf",
+        "--json",
+        "backfill",
+        "local.events",
+        "--resource",
+        "other.events",
+        "--from",
+        "0",
+        "--to",
+        "10",
+        "--target",
+        "events",
+    ]);
+
+    assert_eq!(result.exit_code, 2);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("must match")
+    );
+}
+
+#[test]
+fn backfill_rejects_file_resource_without_runtime_writes() {
+    let project = TestProject::new();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "backfill",
+        "local.events",
+        "--from",
+        "0",
+        "--to",
+        "10",
+        "--target",
+        "events",
+    ]);
+
+    assert_eq!(result.exit_code, 3);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no cursor")
+    );
+}
+
+#[test]
+fn backfill_execute_sql_cursor_window_commits_window_scope() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("backfill_source_orders");
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"id\" BIGINT NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            );
+            INSERT INTO {} (\"id\", \"updated_at\") VALUES (1, 5), (2, 15), (3, 25)",
+            table, table
+        ))
+        .unwrap();
+
+    let project = TestProject::new();
+    let source_dsn = postgres.url.replacen(
+        "postgresql://cdf@",
+        "postgresql://cdf:source-backfill-secret@",
+        1,
+    );
+    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_resource_with_ordered_cursor("secret://file/sql-dsn", &table),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "backfill",
+        "warehouse.orders",
+        "--from",
+        "0",
+        "--to",
+        "20",
+        "--target",
+        "orders",
+        "--execute",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
+    assert_secret_absent(&result, "source-backfill-secret");
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["mode"], "execute");
+    assert_eq!(report["writes"]["package"], true);
+    assert_eq!(report["writes"]["destination"], true);
+    assert_eq!(report["writes"]["checkpoint"], true);
+    assert_eq!(report["slices"].as_array().unwrap().len(), 1);
+    let slice = &report["slices"][0];
+    assert_eq!(
+        slice["scope"],
+        json!({ "kind": "window", "start": "0", "end": "20" })
+    );
+    assert_eq!(slice["status"], "succeeded");
+    assert_eq!(slice["executed"]["row_count"], 2);
+    assert_eq!(slice["executed"]["destination"]["destination_id"], "duckdb");
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM orders", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let window_scope = ScopeKey::Window {
+        start: "0".to_owned(),
+        end: "20".to_owned(),
+    };
+    let window_head = store
+        .head(
+            &PipelineId::new("cdf-backfill").unwrap(),
+            &ResourceId::new("warehouse.orders").unwrap(),
+            &window_scope,
+        )
+        .unwrap()
+        .expect("backfill window checkpoint head");
+    assert_eq!(
+        window_head.delta.checkpoint_id.as_str(),
+        slice["checkpoint_id"].as_str().unwrap()
+    );
+    assert!(
+        store
+            .head(
+                &PipelineId::new("cdf-backfill").unwrap(),
+                &ResourceId::new("warehouse.orders").unwrap(),
+                &ScopeKey::Resource,
+            )
+            .unwrap()
+            .is_none(),
+        "backfill must not advance the resource-scope head"
+    );
+}
+
+#[test]
 fn plan_json_derives_merge_guarantee_per_key() {
     let project = TestProject::new();
     write_resource_disposition(&project, "merge");

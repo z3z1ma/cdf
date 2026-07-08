@@ -57,6 +57,10 @@ impl<'a> ProjectRunSource<'a> {
         self.resource
     }
 
+    pub fn queryable(self) -> &'a dyn QueryableResource {
+        self.resource
+    }
+
     pub fn capabilities(self) -> &'a ResourceCapabilities {
         self.resource.capabilities()
     }
@@ -65,7 +69,7 @@ impl<'a> ProjectRunSource<'a> {
         self.resource.descriptor()
     }
 
-    pub(super) fn validate_supported(self) -> Result<()> {
+    pub fn validate_supported(self) -> Result<()> {
         match self.validation {
             ProjectRunSourceValidation::LocalFile(resource) => {
                 validate_local_file_run_resource(resource)
@@ -74,5 +78,85 @@ impl<'a> ProjectRunSource<'a> {
             ProjectRunSourceValidation::Sql(resource) => resource.validate_runtime_dependencies(),
             ProjectRunSourceValidation::Prevalidated => Ok(()),
         }
+    }
+}
+
+pub struct WindowScopedResource<'a> {
+    inner: &'a dyn QueryableResource,
+    descriptor: ResourceDescriptor,
+    inner_scope: ScopeKey,
+}
+
+impl<'a> WindowScopedResource<'a> {
+    pub fn new(inner: &'a dyn QueryableResource, scope: ScopeKey) -> Self {
+        let mut descriptor = inner.descriptor().clone();
+        let inner_scope = descriptor.state_scope.clone();
+        descriptor.state_scope = scope;
+        Self {
+            inner,
+            descriptor,
+            inner_scope,
+        }
+    }
+
+    fn inner_request(&self, request: &ScanRequest) -> ScanRequest {
+        let mut request = request.clone();
+        request.scope = self.inner_scope.clone();
+        request
+    }
+
+    fn outer_partition(&self, mut partition: PartitionPlan) -> PartitionPlan {
+        partition.scope = self.descriptor.state_scope.clone();
+        partition
+    }
+
+    fn inner_partition(&self, mut partition: PartitionPlan) -> PartitionPlan {
+        partition.scope = self.inner_scope.clone();
+        partition
+    }
+}
+
+impl ResourceStream for WindowScopedResource<'_> {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> arrow_schema::SchemaRef {
+        self.inner.schema()
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        self.inner
+            .plan_partitions(&self.inner_request(request))
+            .map(|partitions| {
+                partitions
+                    .into_iter()
+                    .map(|partition| self.outer_partition(partition))
+                    .collect()
+            })
+    }
+
+    fn open(
+        &self,
+        partition: PartitionPlan,
+    ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::BatchStream>> {
+        self.inner.open(self.inner_partition(partition))
+    }
+}
+
+impl QueryableResource for WindowScopedResource<'_> {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        self.inner.capabilities()
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
+        let mut plan = self.inner.negotiate(&self.inner_request(request))?;
+        plan.request = request.clone();
+        plan.partitions = plan
+            .partitions
+            .into_iter()
+            .map(|partition| self.outer_partition(partition))
+            .collect();
+        Ok(plan)
     }
 }

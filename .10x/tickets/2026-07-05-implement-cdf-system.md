@@ -48,7 +48,7 @@ MVP authoring, destinations, and product surface:
 - `.10x/tickets/done/2026-07-05-parquet-object-store-destination.md`
 - `.10x/tickets/done/2026-07-05-postgres-destination.md`
 - `.10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md`
-- `.10x/tickets/2026-07-05-cli-surface.md`
+- `.10x/tickets/done/2026-07-05-cli-surface.md`
 - `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md`
 - `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
@@ -166,7 +166,8 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-08: Closed CLI contract registry freeze/test at `.10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md`; the contract command family now has deterministic `cdf.lock` snapshot freeze/test behavior, fail-closed missing registry handling, drift reporting, and broad quality evidence.
 - 2026-07-07: Opened P0 structural-debt stop-line program `.10x/tickets/done/2026-07-07-p0-structural-debt-program.md`. Until Workstreams A, B, and C close, new destination lanes, new source-archetype lanes, and the streaming supervisor are paused.
 - 2026-07-08: Closed P0 structural-debt stop-line program `.10x/tickets/done/2026-07-07-p0-structural-debt-program.md`. All six workstreams are done with evidence and adversarial review; the stop-line is fully lifted. The permanent runtime-conformance throughput rule remains active under `.10x/knowledge/runtime-conformance-throughput-rule.md`.
-- 2026-07-08: Closed CLI state migrate/recover at `.10x/tickets/done/2026-07-07-cli-state-migrate-recover.md`; local SQLite state migrations are now reportable/idempotent, and package-receipt state recovery is wired through destination receipt verification and `CheckpointStore::commit` without destination row writes. Full CLI surface still waits on the backfill planner owner.
+- 2026-07-08: Closed CLI state migrate/recover at `.10x/tickets/done/2026-07-07-cli-state-migrate-recover.md`; local SQLite state migrations are now reportable/idempotent, and package-receipt state recovery is wired through destination receipt verification and `CheckpointStore::commit` without destination row writes. At that point, the full CLI surface still waited on the backfill planner owner.
+- 2026-07-08: Closed CLI backfill at `.10x/tickets/done/2026-07-07-cli-backfill-planner.md` and then closed the aggregate CLI surface parent `.10x/tickets/done/2026-07-05-cli-surface.md`; the required headless command surface is no longer a parent-plan blocker, while conformance/demo and post-MVP lanes remain active elsewhere in this record.
 
 ## Blockers
 

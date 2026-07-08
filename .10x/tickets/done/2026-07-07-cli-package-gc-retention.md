@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-05-cli-surface.md
+Parent: .10x/tickets/done/2026-07-05-cli-surface.md
 Depends-On: .10x/specs/project-cli-observability-security.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-commit-gate.md
 
 # Implement package GC retention planner

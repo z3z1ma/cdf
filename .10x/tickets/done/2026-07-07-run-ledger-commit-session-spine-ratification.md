@@ -46,7 +46,7 @@ No source edits, no destination refactor, no CLI run widening, no run-ledger sch
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/conformance-governance-roadmap.md`
-- `.10x/tickets/2026-07-05-cli-surface.md`
+- `.10x/tickets/done/2026-07-05-cli-surface.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
 - `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
 - `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md`

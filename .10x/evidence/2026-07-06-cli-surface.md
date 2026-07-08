@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-07
-Relates-To: .10x/tickets/2026-07-05-cli-surface.md, .10x/specs/project-cli-observability-security.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-commit-gate.md
+Relates-To: .10x/tickets/done/2026-07-05-cli-surface.md, .10x/specs/project-cli-observability-security.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/package-lifecycle-determinism.md, .10x/specs/checkpoint-state-commit-gate.md
 
 # CLI surface evidence
 
@@ -98,7 +98,7 @@ All commands passed. Semgrep initially flagged `std::env::args_os` in `src/main.
 
 This supports that the CLI crate compiles, formats, passes scoped tests, and passes scoped clippy with explicit unsupported exits instead of bypassing package/destination/checkpoint invariants.
 
-This challenges full acceptance of `.10x/tickets/2026-07-05-cli-surface.md`: `preview`, `run`, `resume`, `replay package`, and several operational commands cannot satisfy their full behavioral contracts until lower-layer runtime, recovery, contract registry, migration, and retention APIs exist.
+This challenges full acceptance of `.10x/tickets/done/2026-07-05-cli-surface.md`: `preview`, `run`, `resume`, `replay package`, and several operational commands cannot satisfy their full behavioral contracts until lower-layer runtime, recovery, contract registry, migration, and retention APIs exist.
 
 ## Limits
 

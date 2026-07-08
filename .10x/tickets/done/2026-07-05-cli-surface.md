@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-05
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md, .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md, .10x/tickets/done/2026-07-07-cli-init-scaffold.md, .10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md, .10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md, .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md, .10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md, .10x/tickets/done/2026-07-07-cli-state-migrate-recover.md, .10x/tickets/2026-07-07-cli-backfill-planner.md, .10x/tickets/done/2026-07-07-cli-package-gc-retention.md
+Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md, .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md, .10x/tickets/done/2026-07-07-cli-init-scaffold.md, .10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md, .10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md, .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md, .10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md, .10x/tickets/done/2026-07-07-cli-state-migrate-recover.md, .10x/tickets/done/2026-07-07-cli-backfill-planner.md, .10x/tickets/done/2026-07-07-cli-package-gc-retention.md
 
 # Implement CLI surface
 
@@ -44,14 +44,11 @@ Business logic belongs in lower crates; CLI must not bypass lower-layer invarian
 - 2026-07-08: Closed `.10x/tickets/done/2026-07-07-cli-package-gc-retention.md`; `cdf package gc [DIR]` now produces a dry-run retention plan that classifies retained, collectible, missing, corrupt, and protected package artifacts from package manifests, receipts, tombstones, and read-only committed checkpoint history.
 - 2026-07-08: Closed `.10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md`; `cdf contract freeze` and `cdf contract test` now operate over deterministic `cdf.lock` snapshots with missing-registry fail-closed behavior, drift details, and project-free `contract show` preserved.
 - 2026-07-08: Closed `.10x/tickets/done/2026-07-07-cli-state-migrate-recover.md`; `cdf state migrate` now reports/idempotently initializes SQLite state component versions, and `cdf state recover --package --to [--receipt]` recovers checkpoint state from a verified package receipt without destination row writes or a direct checkpoint-head bypass.
+- 2026-07-08: Closed `.10x/tickets/done/2026-07-07-cli-backfill-planner.md`; `cdf backfill RESOURCE --from CURSOR --to CURSOR --target TARGET [--execute] [--slice-size N]` now dry-plans bounded cursor windows by default and executes eligible slices through `run_project` with concrete window checkpoint scopes.
+- 2026-07-08: Closed this parent with aggregate evidence `.10x/evidence/2026-07-08-cli-surface-closure.md` and review `.10x/reviews/2026-07-08-cli-surface-closure-review.md`. All command-family child owners are done; remaining full-system work belongs to other active parent lanes.
 
 ## Blockers
 
-None from user or unresolved product semantics.
+None. All command-family child owners are closed.
 
-Full CLI acceptance is dependency-gated by open implementation owners:
-
-- `run`, `resume`, `replay package`, and `inspect run` slices are closed under `.10x/tickets/done/2026-07-07-cli-run-resume-replay-inspect-spine.md`; direct CLI table-backed SQL `run` success-path evidence is closed under `.10x/tickets/done/2026-07-07-cli-sql-run-success.md`.
-- Remaining non-run-spine command families were split by `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`. Init, plan/explain DDL/guarantee output, status runtime-ledger freshness, preview resource breadth, contract freeze/test, state migrate/recover, and package GC retention planning are closed under `.10x/tickets/done/2026-07-07-cli-init-scaffold.md`, `.10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md`, `.10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md`, `.10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md`, `.10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md`, `.10x/tickets/done/2026-07-07-cli-state-migrate-recover.md`, and `.10x/tickets/done/2026-07-07-cli-package-gc-retention.md`; the still-open command-family owner is `.10x/tickets/2026-07-07-cli-backfill-planner.md`.
-
-Verification note: `cargo fmt --all -- --check`, `cargo test -p cdf-cli --locked --no-fail-fast`, `cargo clippy -p cdf-cli --all-targets --locked -- -D warnings`, `cargo check -p cdf-cli --all-targets --locked`, and `cargo check --workspace --all-targets --locked` pass after parent integration. Semgrep's initial CLI argv/path findings were resolved by using a source-local test directory and documenting the intentionally non-security CLI argv dispatch boundary with a narrow `nosemgrep` comment. Full acceptance is now dependency-gated by the open owners listed above.
+Verification note: the final backfill closure reran focused CLI/project tests, full workspace tests, fmt/clippy, `jscpd`, rust-code-analysis, supply-chain/security scans, source-only Gitleaks, and reusable-DB CodeQL. Earlier parent integration checks and child evidence remain linked above; no CLI command-family dependency remains open under this parent.

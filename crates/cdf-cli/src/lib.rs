@@ -16,6 +16,7 @@ mod inspect_run_command;
 mod output;
 mod package_command;
 mod project_command;
+mod project_run_resource;
 mod replay_command;
 mod reports;
 mod resume_command;

@@ -136,7 +136,12 @@ pub struct ReplayPackageArgs {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackfillArgs {
-    pub resource_id: Option<String>,
+    pub resource_id: String,
+    pub from: String,
+    pub to: String,
+    pub target: String,
+    pub execute: bool,
+    pub slice_size: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -601,24 +606,53 @@ fn parse_replay_package(args: &[String]) -> Result<ReplayPackageArgs, CliError> 
 }
 
 fn parse_backfill(args: &[String]) -> Result<BackfillArgs, CliError> {
-    let mut resource_id = None;
+    let mut positional_resource = None;
+    let mut resource_option = None;
+    let mut from = None;
+    let mut to = None;
+    let mut target = None;
+    let mut execute = false;
+    let mut slice_size = None;
     let mut cursor = Cursor::new(args);
     while let Some(arg) = cursor.next() {
         match arg {
-            "--resource" => resource_id = Some(cursor.value("--resource")?),
+            "--resource" => resource_option = Some(cursor.value("--resource")?),
+            "--from" => from = Some(cursor.value("--from")?),
+            "--to" => to = Some(cursor.value("--to")?),
+            "--target" => target = Some(cursor.value("--target")?),
+            "--execute" => execute = true,
+            "--slice-size" => {
+                slice_size = Some(parse_u64("--slice-size", &cursor.value("--slice-size")?)?)
+            }
             value if value.starts_with('-') => {
                 return Err(CliError::usage(format!(
                     "unknown backfill option `{value}`"
                 )));
             }
             value => {
-                if resource_id.replace(value.to_owned()).is_some() {
+                if positional_resource.replace(value.to_owned()).is_some() {
                     return Err(CliError::usage("backfill accepts at most one resource id"));
                 }
             }
         }
     }
-    Ok(BackfillArgs { resource_id })
+    if let (Some(positional), Some(option)) = (&positional_resource, &resource_option)
+        && positional != option
+    {
+        return Err(CliError::usage(
+            "backfill positional RESOURCE and --resource must match when both are supplied",
+        ));
+    }
+    Ok(BackfillArgs {
+        resource_id: positional_resource
+            .or(resource_option)
+            .ok_or_else(|| CliError::usage("backfill requires RESOURCE or --resource"))?,
+        from: from.ok_or_else(|| CliError::usage("backfill requires --from"))?,
+        to: to.ok_or_else(|| CliError::usage("backfill requires --to"))?,
+        target: target.ok_or_else(|| CliError::usage("backfill requires --target"))?,
+        execute,
+        slice_size,
+    })
 }
 
 fn parse_package(args: &[String]) -> Result<PackageCommand, CliError> {

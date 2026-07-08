@@ -16,7 +16,7 @@ No blocking findings.
 
 The split covers every command family listed in the planning parent: init, plan/explain, broader preview, contract freeze/test, state migrate/recover, backfill, package gc, status runtime-ledger freshness, plus the already-closed command module architecture child.
 
-The child tickets are direct children of `.10x/tickets/2026-07-05-cli-surface.md`, which keeps the planning parent from becoming a permanently open mailbox while preserving executable ownership under the product surface parent.
+The child tickets are direct children of `.10x/tickets/done/2026-07-05-cli-surface.md`, which keeps the planning parent from becoming a permanently open mailbox while preserving executable ownership under the product surface parent.
 
 ## Verdict
 

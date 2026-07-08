@@ -1,20 +1,20 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md, .10x/tickets/2026-07-05-cli-surface.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-remaining-command-planners.md, .10x/tickets/done/2026-07-05-cli-surface.md
 
 # CLI remaining command planner split evidence
 
 ## What was observed
 
-The remaining non-run-spine CLI command-family gaps were split into direct children of `.10x/tickets/2026-07-05-cli-surface.md`:
+The remaining non-run-spine CLI command-family gaps were split into direct children of `.10x/tickets/done/2026-07-05-cli-surface.md`:
 
 - `.10x/tickets/done/2026-07-07-cli-init-scaffold.md`
 - `.10x/tickets/done/2026-07-07-cli-plan-explain-ddl-guarantee.md`
 - `.10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md`
 - `.10x/tickets/done/2026-07-07-cli-contract-registry-freeze-test.md`
 - `.10x/tickets/done/2026-07-07-cli-state-migrate-recover.md`
-- `.10x/tickets/2026-07-07-cli-backfill-planner.md`
+- `.10x/tickets/done/2026-07-07-cli-backfill-planner.md`
 - `.10x/tickets/done/2026-07-07-cli-package-gc-retention.md`
 - `.10x/tickets/done/2026-07-07-cli-status-runtime-ledger-freshness.md`
 

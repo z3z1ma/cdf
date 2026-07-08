@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-05-cli-surface.md
+Parent: .10x/tickets/done/2026-07-05-cli-surface.md
 Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md, .10x/tickets/done/2026-07-06-declarative-file-preview-execution.md
 
 # Implement local file run to DuckDB and checkpoint
@@ -62,7 +62,7 @@ No REST or SQL resource execution, no Postgres/Parquet/object-store run executio
 
 - Record-backed: the commit-gate invariant, receipt-gated checkpoint commit, DuckDB receipt verification, and SQLite checkpoint behavior are governed by `.10x/specs/checkpoint-state-commit-gate.md`, `.10x/specs/destination-receipts-guarantees.md`, and `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`.
 - Record-backed: declarative local file resource runtime support is closed in `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`.
-- Record-backed: `run` is currently blocked on an invariant-preserving orchestration API in `.10x/tickets/2026-07-05-cli-surface.md`; this ticket narrows that blocker to the first explicit local DuckDB slice.
+- Record-backed: `run` is currently blocked on an invariant-preserving orchestration API in `.10x/tickets/done/2026-07-05-cli-surface.md`; this ticket narrows that blocker to the first explicit local DuckDB slice.
 - Source-observed but not generalized: local tests already use `pipeline-1` and target names such as `events`, but this ticket does not ratify any project-wide default for them. They must be explicit command inputs in this slice.
 
 ## References
@@ -72,7 +72,7 @@ No REST or SQL resource execution, no Postgres/Parquet/object-store run executio
 - `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/project-cli-observability-security.md`
-- `.10x/tickets/2026-07-05-cli-surface.md`
+- `.10x/tickets/done/2026-07-05-cli-surface.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
 - `.10x/tickets/done/2026-07-06-package-replay-commit-gate-runtime.md`
 - `.10x/tickets/done/2026-07-06-declarative-file-preview-execution.md`

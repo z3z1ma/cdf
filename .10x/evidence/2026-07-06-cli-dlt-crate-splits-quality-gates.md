@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-dlt-shim-preview.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
+Relates-To: .10x/tickets/done/2026-07-05-cli-surface.md, .10x/tickets/done/2026-07-05-dlt-shim-preview.md, .10x/tickets/done/2026-07-06-split-existing-rust-crate-roots.md, .10x/tickets/done/2026-07-06-ratify-supply-chain-policy.md, .10x/tickets/done/2026-07-06-improve-codeql-rust-extractor-coverage.md
 
 # CLI, dlt, and crate-split quality gates
 

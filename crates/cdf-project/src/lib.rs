@@ -23,6 +23,7 @@ pub const PROJECT_FILE_NAME: &str = "cdf.toml";
 pub const LOCK_FILE_NAME: &str = "cdf.lock";
 pub const LOCKFILE_VERSION: u16 = 1;
 
+mod backfill;
 mod internal;
 mod lockfile;
 mod models;
@@ -35,6 +36,7 @@ mod sources;
 #[cfg(test)]
 mod tests;
 
+pub use backfill::*;
 pub use lockfile::*;
 pub use models::*;
 pub use runtime::*;

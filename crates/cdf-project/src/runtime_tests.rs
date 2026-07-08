@@ -21,18 +21,22 @@ use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
 use cdf_engine::{
     EnginePlan, EnginePlanInput, EngineRunOutput, EngineRunOutputWithSegmentPositions,
     EngineSegmentPosition, ExecutionProfile, LineageSummary, PlanBoundedness, Planner,
+    negotiate_scan_plan,
 };
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
-    CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError, Checkpoint, CheckpointId,
-    CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    CompositePosition, ConcurrencyLimit, CursorPosition, CursorValue, DeliveryGuarantee,
-    DestinationCommitRequest, DestinationId, DestinationProtocol, DestinationSheet, FileManifest,
-    FilePosition, IdempotencySupport, IdempotencyToken, IdentifierRules, LogPosition,
-    MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId, Receipt, ReceiptId,
-    ReceiptVerification, ResourceId, ResourceStream, Result, RewindReport, RewindRequest, RunId,
-    ScanRequest, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
-    StateSegment, TargetName, TransactionSupport, VerifyClause, WriteDisposition,
+    BackpressureSupport, BatchStream, CHECKPOINT_STATE_VERSION, CapabilitySupport, CdfError,
+    Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, CommitCounts, CommitPlan,
+    CommitSegment, CommitSession, CompositePosition, ConcurrencyLimit, CursorOrderingClaim,
+    CursorPosition, CursorSpec, CursorValue, DeliveryGuarantee, DestinationCommitRequest,
+    DestinationId, DestinationProtocol, DestinationSheet, EstimateSupport, FileManifest,
+    FilePosition, FilterCapabilities, IdempotencySupport, IdempotencyToken, IdentifierRules,
+    IncrementalShape, LogPosition, MigrationRecord, PackageHash, PageToken, PartitionId,
+    PipelineId, PlanId, PushdownFidelity, QueryableResource, Receipt, ReceiptId,
+    ReceiptVerification, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, RewindReport, RewindRequest, RunId, ScanRequest, SchemaHash,
+    SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
@@ -45,12 +49,13 @@ use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
 use crate::{
-    DestinationReceiptReportingPolicy, LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest,
-    PackageArtifactReplayRequest, PackageReplayHooks, PackageReplayStage,
-    PreparedDestinationCommit, PreparedPackageRecoveryRequest, PreparedPackageReplayRequest,
-    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
-    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
-    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination, RuntimeStage,
+    BackfillPlanRequest, DestinationReceiptReportingPolicy, LocalFileDuckDbRunRequest,
+    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayHooks,
+    PackageReplayStage, PreparedDestinationCommit, PreparedPackageRecoveryRequest,
+    PreparedPackageReplayRequest, ProjectDestinationDescription, ProjectDestinationDriver,
+    ProjectDestinationRegistry, ProjectDestinationRuntime, ProjectReceiptSource,
+    ProjectResolutionContext, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
+    ResolvedProjectDestination, RuntimeStage, backfill_pipeline_id, plan_backfill,
     recover_package_from_artifacts, recover_package_with_runtime, recover_prepared_package,
     replay_package_from_artifacts, replay_package_with_runtime, replay_prepared_package,
     replay_prepared_package_with_stage_hook, run_local_file_to_duckdb_checkpoint, run_project,
@@ -92,6 +97,215 @@ schema = { fields = [
   { name = "name", type = "string", nullable = true },
 ] }
 "#;
+
+#[test]
+fn backfill_planner_splits_numeric_windows_with_window_scopes_and_ids() {
+    let resource = BackfillMockResource::cursor();
+
+    let plan = plan_backfill(
+        &resource,
+        BackfillPlanRequest {
+            target: TargetName::new("events").unwrap(),
+            from: "0".to_owned(),
+            to: "25".to_owned(),
+            slice_size: Some(10),
+        },
+    )
+    .unwrap();
+
+    assert_eq!(plan.resource_id, "mock.events");
+    assert_eq!(plan.target, "events");
+    assert_eq!(
+        plan.pipeline_id,
+        backfill_pipeline_id().unwrap().to_string()
+    );
+    assert_eq!(plan.slices.len(), 3);
+    assert_eq!(
+        plan.slices
+            .iter()
+            .map(|slice| (slice.start.as_str(), slice.end.as_str()))
+            .collect::<Vec<_>>(),
+        vec![("0", "10"), ("10", "20"), ("20", "25")]
+    );
+    for slice in &plan.slices {
+        assert_eq!(
+            slice.scope,
+            ScopeKey::Window {
+                start: slice.start.clone(),
+                end: slice.end.clone()
+            }
+        );
+        assert_eq!(
+            slice.engine_plan.scan.request.scope,
+            ScopeKey::Window {
+                start: slice.start.clone(),
+                end: slice.end.clone()
+            }
+        );
+        assert!(slice.package_id.starts_with("cdf-backfill-pkg-"));
+        assert!(slice.checkpoint_id.starts_with("cdf-backfill-cp-"));
+        assert_eq!(
+            slice.filters,
+            vec![
+                format!("updated_at >= {}", slice.start),
+                format!("updated_at < {}", slice.end),
+            ]
+        );
+        assert!(slice.engine_plan.residual_predicates.is_empty());
+    }
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn backfill_planner_rejects_file_incremental_resource_without_opening_source() {
+    let resource = BackfillMockResource::file_incremental();
+
+    let error = plan_backfill(
+        &resource,
+        BackfillPlanRequest {
+            target: TargetName::new("events").unwrap(),
+            from: "0".to_owned(),
+            to: "10".to_owned(),
+            slice_size: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("cursor-backed queryable"));
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn backfill_planner_rejects_inverted_numeric_bounds_without_opening_source() {
+    let resource = BackfillMockResource::cursor();
+
+    let error = plan_backfill(
+        &resource,
+        BackfillPlanRequest {
+            target: TargetName::new("events").unwrap(),
+            from: "10".to_owned(),
+            to: "10".to_owned(),
+            slice_size: None,
+        },
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("--from < --to"));
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+}
+
+struct BackfillMockResource {
+    descriptor: ResourceDescriptor,
+    capabilities: ResourceCapabilities,
+    schema: Arc<Schema>,
+    open_count: AtomicU64,
+}
+
+impl BackfillMockResource {
+    fn cursor() -> Self {
+        Self::new(IncrementalShape::Cursor, Some(CursorOrderingClaim::Exact))
+    }
+
+    fn file_incremental() -> Self {
+        Self::new(IncrementalShape::File, Some(CursorOrderingClaim::Exact))
+    }
+
+    fn new(incremental: IncrementalShape, ordering: Option<CursorOrderingClaim>) -> Self {
+        let schema_hash = SchemaHash::new("schema-backfill-mock").unwrap();
+        Self {
+            descriptor: ResourceDescriptor {
+                resource_id: ResourceId::new("mock.events").unwrap(),
+                schema_source: SchemaSource::Declared {
+                    schema_hash,
+                    source: "mock".to_owned(),
+                },
+                primary_key: vec!["id".to_owned()],
+                merge_key: vec!["id".to_owned()],
+                cursor: ordering.map(|ordering| CursorSpec {
+                    field: "updated_at".to_owned(),
+                    ordering,
+                    lag_tolerance_ms: 0,
+                }),
+                write_disposition: WriteDisposition::Append,
+                contract: None,
+                state_scope: ScopeKey::Resource,
+                freshness: None,
+                trust_level: TrustLevel::Governed,
+            },
+            capabilities: ResourceCapabilities {
+                projection: CapabilitySupport::Unsupported,
+                filters: FilterCapabilities {
+                    default_fidelity: PushdownFidelity::Exact,
+                    supported_operators: vec![">=".to_owned(), "<".to_owned()],
+                },
+                limits: CapabilitySupport::Unsupported,
+                ordering: CapabilitySupport::Unsupported,
+                partitioning: Default::default(),
+                incremental,
+                replay: ReplaySupport::FromPosition,
+                idempotent_reads: true,
+                backpressure: BackpressureSupport::Pausable,
+                estimates: EstimateSupport::None,
+            },
+            schema: Arc::new(Schema::new(vec![
+                Field::new("id", DataType::Int64, false),
+                Field::new("updated_at", DataType::Int64, false),
+            ])),
+            open_count: AtomicU64::new(0),
+        }
+    }
+}
+
+impl ResourceStream for BackfillMockResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<cdf_kernel::PartitionPlan>> {
+        let mut metadata = BTreeMap::new();
+        metadata.insert("kind".to_owned(), "mock".to_owned());
+        Ok(vec![cdf_kernel::PartitionPlan {
+            partition_id: PartitionId::new("mock").unwrap(),
+            scope: request.scope.clone(),
+            start_position: None,
+            metadata,
+        }])
+    }
+
+    fn open(
+        &self,
+        _partition: cdf_kernel::PartitionPlan,
+    ) -> cdf_kernel::BoxFuture<'_, Result<BatchStream>> {
+        self.open_count.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async {
+            Err(CdfError::internal(
+                "mock backfill source should not be opened",
+            ))
+        })
+    }
+}
+
+impl QueryableResource for BackfillMockResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        &self.capabilities
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<cdf_kernel::ScanPlan> {
+        negotiate_scan_plan(
+            self.descriptor.resource_id.clone(),
+            request.clone(),
+            &self.capabilities,
+            self.plan_partitions(request)?,
+            None,
+            None,
+            DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        )
+    }
+}
 const SIMPLE_FILE_RESOURCE_APPEND_DRIFT: &str = r#"
 [source.local]
 kind = "files"

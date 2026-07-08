@@ -35,7 +35,7 @@ Inspected:
 - `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/destination-receipts-guarantees.md`
 - `.10x/specs/project-cli-observability-security.md`
-- `.10x/tickets/2026-07-05-cli-surface.md`
+- `.10x/tickets/done/2026-07-05-cli-surface.md`
 - `.10x/tickets/2026-07-05-observability-doctor-status-sql.md`
 - `.10x/research/2026-07-07-run-spine-gap-map.md`
 - `crates/cdf-kernel/src/destination.rs`

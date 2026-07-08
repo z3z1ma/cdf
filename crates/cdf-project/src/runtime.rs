@@ -61,10 +61,10 @@ mod prelude {
         CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
         CheckpointStore, CursorOrderingClaim, CursorPosition, CursorValue,
         DestinationCommitRequest, DestinationId, DestinationProtocol, IdempotencyToken,
-        IncrementalShape, PackageHash, PipelineId, PlanId, QueryableResource, Receipt,
-        ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RunId,
-        SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, StateDelta, StateSegment,
-        TargetName, WriteDisposition,
+        IncrementalShape, PackageHash, PartitionPlan, PipelineId, PlanId, QueryableResource,
+        Receipt, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
+        RunId, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentId,
+        SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,

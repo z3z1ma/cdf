@@ -55,7 +55,7 @@ This ticket intentionally provides the lower-layer primitive needed by later CLI
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
-- `.10x/tickets/2026-07-05-cli-surface.md`
+- `.10x/tickets/done/2026-07-05-cli-surface.md`
 - `.10x/tickets/2026-07-05-conformance-chaos-golden.md`
 
 ## Progress and notes

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-06
 Updated: 2026-07-06
-Relates-To: .10x/tickets/done/2026-07-06-declarative-file-preview-execution.md, .10x/tickets/2026-07-05-cli-surface.md, .10x/tickets/2026-07-05-implement-cdf-system.md
+Relates-To: .10x/tickets/done/2026-07-06-declarative-file-preview-execution.md, .10x/tickets/done/2026-07-05-cli-surface.md, .10x/tickets/2026-07-05-implement-cdf-system.md
 
 # Declarative file preview execution evidence
 

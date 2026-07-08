@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-06
 Updated: 2026-07-06
-Parent: .10x/tickets/2026-07-05-cli-surface.md
+Parent: .10x/tickets/done/2026-07-05-cli-surface.md
 Depends-On: .10x/tickets/done/2026-07-05-project-format-lockfile-secrets.md, .10x/tickets/done/2026-07-05-declarative-resources.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md
 
 # Implement declarative file preview execution
@@ -55,7 +55,7 @@ No `cdf run`, no package creation, no destination commits, no checkpoint advance
 - `VISION.md` Chapters 7, 8, and 17.
 - `.10x/specs/resource-authoring-planning-batches.md`
 - `.10x/specs/project-cli-observability-security.md`
-- `.10x/tickets/2026-07-05-cli-surface.md`
+- `.10x/tickets/done/2026-07-05-cli-surface.md`
 - `.10x/tickets/done/2026-07-06-resource-execution-conformance-file-sources.md`
 - `.10x/knowledge/rust-crate-organization.md`
 - `.10x/knowledge/quality-gate-execution.md`
