@@ -21,7 +21,7 @@ Owns:
 
 ## Child tickets
 
-- `.10x/tickets/2026-07-07-p0-b1-runtime-registry-foundation.md`
+- `.10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md`
 - `.10x/tickets/2026-07-07-p0-b2-generic-package-replay-recovery.md`
 - `.10x/tickets/2026-07-07-p0-b3-generic-project-run-resolution.md`
 - `.10x/tickets/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`
@@ -57,6 +57,7 @@ No new destination implementation, no new source archetype, no distributed sched
 - 2026-07-07: Read-only subagent inventory confirmed `crates/cdf-project/src/runtime_tests.rs` is also a 3,290-line hotspot, and that prior run-spine records intentionally preserved compatibility wrappers rather than owning their deletion.
 - 2026-07-07: Read-only subagents inventoried public APIs/callers, module split candidates, and the smallest generic adapter shape. API decision recorded in `.10x/decisions/project-destination-driver-registry.md`.
 - 2026-07-07: Split Workstream B into four executable children: B1 runtime registry/module foundation, B2 generic package replay/recovery, B3 generic project run/resolution, and B4 caller migration/wrapper deletion/closure.
+- 2026-07-07: Closed B1 at `.10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md`. `cdf-project` runtime is now split into focused modules, the project destination driver/runtime foundation API exists, and existing public compatibility APIs remain for B2-B4 migration.
 
 ## Blockers
 

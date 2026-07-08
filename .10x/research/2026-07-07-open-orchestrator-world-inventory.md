@@ -80,7 +80,7 @@ The smallest safe Workstream B shape is a `cdf-project` destination driver regis
 
 The implementation should split into four child tickets:
 
-- `.10x/tickets/2026-07-07-p0-b1-runtime-registry-foundation.md`
+- `.10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md`
 - `.10x/tickets/2026-07-07-p0-b2-generic-package-replay-recovery.md`
 - `.10x/tickets/2026-07-07-p0-b3-generic-project-run-resolution.md`
 - `.10x/tickets/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`

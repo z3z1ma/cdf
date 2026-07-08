@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
-Depends-On: .10x/tickets/2026-07-07-p0-b1-runtime-registry-foundation.md
+Depends-On: .10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md
 
 # P0 B2: Generic package replay and recovery spine
 

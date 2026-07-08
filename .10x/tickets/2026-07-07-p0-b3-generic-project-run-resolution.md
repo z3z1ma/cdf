@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
-Depends-On: .10x/tickets/2026-07-07-p0-b1-runtime-registry-foundation.md, .10x/tickets/2026-07-07-p0-b2-generic-package-replay-recovery.md
+Depends-On: .10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md, .10x/tickets/2026-07-07-p0-b2-generic-package-replay-recovery.md
 
 # P0 B3: Generic project run and resolution
 
