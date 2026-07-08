@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md
+Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/specs/runtime-event-spine.md
 
 # P1 product WS1: Runtime event spine
 
@@ -11,6 +11,15 @@ Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-obser
 Add a first-class run event system in `cdf-project` and `cdf-kernel` that can feed the run ledger, CLI renderer, and tracing bridge without changing deterministic package/checkpoint behavior.
 
 This workstream is broad enough to split before implementation if needed. The first executable child should define the kernel/project event model and non-blocking sink contract before wiring all runtime paths.
+
+## Child tickets
+
+- `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md`
+- `.10x/tickets/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`
+- `.10x/tickets/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
+- `.10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
+- `.10x/tickets/2026-07-08-p1-product-ws1e-tracing-bridge.md`
+- `.10x/tickets/2026-07-08-p1-product-ws1f-event-spine-evidence-gate.md`
 
 ## Required outcomes
 
@@ -40,6 +49,7 @@ No CLI spinner/progress UI in this workstream except test doubles. No OTLP expor
 
 - 2026-07-08: Opened from P1 product directive. This is the prerequisite for live progress and a durable observability bridge.
 - 2026-07-08: Split executable child `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md` for the shared event DTOs plus non-blocking live sink accepted by `ProjectRunRequest`.
+- 2026-07-08: Shaped remaining event-spine work in `.10x/specs/runtime-event-spine.md` and child tickets WS1B-WS1F. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws1-remaining-event-spine-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws1-remaining-event-spine-shaping-review.md`.
 
 ## Blockers
 
