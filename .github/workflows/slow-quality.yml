@@ -61,7 +61,7 @@ jobs:
           cargo install --locked cargo-semver-checks
           cargo install --locked cargo-vet
           cargo install --locked rust-code-analysis-cli
-          go install github.com/gitleaks/gitleaks/v8@v8.18.4
+          go install github.com/zricethezav/gitleaks/v8@v8.18.4
           go install github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2
           python -m pip install --user semgrep
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"

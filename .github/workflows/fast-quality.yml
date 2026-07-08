@@ -46,7 +46,7 @@ jobs:
         run: |
           cargo install --locked cargo-audit
           cargo install --locked cargo-deny
-          go install github.com/gitleaks/gitleaks/v8@v8.18.4
+          go install github.com/zricethezav/gitleaks/v8@v8.18.4
 
       - name: Prepare quality report directory
         run: mkdir -p target/quality/reports
