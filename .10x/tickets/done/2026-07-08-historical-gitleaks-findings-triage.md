@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
@@ -38,3 +38,4 @@ None for source-level implementation closure. History rewrite or credential rota
 ## Progress and notes
 
 - 2026-07-08: Opened from the CLI plan/explain closure quality pass. Full-history `gitleaks detect` reported the two findings above, while focused source-only scans over the touched CLI/project/destination paths passed and the historical paths are absent from the current tree.
+- 2026-07-08: Triage classified both findings as false positives on Harness SDK-key schema/config field declarations, not committed credential values or private-key material. Current tracked-source Gitleaks scan passed with zero findings. Recorded evidence `.10x/evidence/2026-07-08-historical-gitleaks-findings-triage.md`, review `.10x/reviews/2026-07-08-historical-gitleaks-findings-triage-review.md`, and knowledge `.10x/knowledge/historical-gitleaks-findings.md`; preserved history and did not add a broad scanner allowlist.

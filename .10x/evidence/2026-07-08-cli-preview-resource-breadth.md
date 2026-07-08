@@ -79,7 +79,7 @@ cargo metadata --format-version=1 --locked --no-deps
 - CodeQL via `tools/codeql-rust-quality.sh`: status 0, reusable DB path `target/quality/codeql-db-rust`, 0 SARIF results. The wrapper refreshed the DB because Rust source content changed.
 - CodeQL extractor diagnostics: 0 extraction errors, 3521 extraction warnings, 229 Rust files extracted. This matches the documented local Rust extractor macro-warning limitation in `.10x/knowledge/quality-gate-execution.md`.
 - Gitleaks source scans over `crates` and the touched `.10x` records: passed with no leaks.
-- Gitleaks full-history scan: two pre-existing `generic-api-key` findings in removed historical paths `src/cdf/core/project.py` and `src/cdf/core/feature_flag/harness.py`. Existing owner: `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`. This slice added no source leak.
+- Gitleaks full-history scan: two pre-existing `generic-api-key` findings in removed historical paths `src/cdf/core/project.py` and `src/cdf/core/feature_flag/harness.py`. Existing owner: `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`. This slice added no source leak.
 - Direct unsafe construct scan over touched crate source: no matches. A broader first pass matched only a test variable name `unsafe_predicate`, not an unsafe construct.
 - Geiger forbid-only scans for `cdf-cli`, `cdf-declarative`, and `cdf-formats`: exit 0. The tool emitted dependency parser/match warnings for third-party crates, so the direct first-party unsafe scan is the stronger evidence for this slice.
 - `cargo machete --with-metadata`: no unused dependencies found.
@@ -93,4 +93,4 @@ The evidence supports all acceptance criteria in `.10x/tickets/done/2026-07-07-c
 
 ## Limits
 
-This evidence does not claim package-free engine residual preview exists. The active decision requires fail-closed behavior for residual predicates, unpushed projection, and unpushed limit. Full-history Gitleaks residuals are outside this slice and remain owned by `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`. The accepted `paste` advisory remains governed by the active supply-chain decisions.
+This evidence does not claim package-free engine residual preview exists. The active decision requires fail-closed behavior for residual predicates, unpushed projection, and unpushed limit. Full-history Gitleaks residuals are outside this slice and are triaged by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`. The accepted `paste` advisory remains governed by the active supply-chain decisions.

@@ -23,3 +23,5 @@ For reusable conformance harnesses, include negative self-tests with deliberatel
 This local `cargo-mutants` version does not accept Cargo flags such as `--locked` directly. Pass them through `--cargo-arg`, for example `cargo mutants --file crates/cdf-engine/src/execution.rs --all-features --cargo-arg --locked --jobs 2 --test-tool cargo --output reports/ai-quality/mutants-engine-tracing -- -p cdf-engine`.
 
 Do not place generated quality reports or CodeQL databases in tracked source. Prefer ignored build output or `/tmp` for transient reports, and record summarized results in `.10x/evidence/`.
+
+Historical Gitleaks scans have two known false-positive `generic-api-key` findings in removed Python-era Harness SDK-key field declarations. See `.10x/knowledge/historical-gitleaks-findings.md` for exact fingerprints and limits. Treat only those exact fingerprints as documented historical scanner noise; any new history finding, and all current-tree or staged-diff findings, remain hard failures until triaged.

@@ -1406,6 +1406,7 @@ Interpretation:
 * Never print secrets into chat, logs, reports, or summaries.
 * If a secret is found, report only file/path/rule metadata with the secret redacted.
 * Do not attempt secret rotation unless explicitly asked and authorized.
+* CDF has two exact historical false-positive fingerprints documented in `.10x/knowledge/historical-gitleaks-findings.md`. Do not broaden that exception; current-tree and staged-diff findings remain hard failures.
 
 ---
 

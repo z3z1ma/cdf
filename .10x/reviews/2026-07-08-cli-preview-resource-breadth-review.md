@@ -18,7 +18,7 @@ The main semantic risk was that preview could appear to honor filters, projectio
 
 The no-write contract is directly tested for successful file/REST/SQL preview and fail-closed unsupported cases. The helper checks package, checkpoint, DuckDB, Parquet, and SQLite state artifacts, which covers the write surfaces owned by this ticket. Run-ledger writes are not expected from preview and no project runtime run path is invoked.
 
-REST and SQL secrets flow through project secret providers rather than ad hoc CLI handling, and tests assert the secret values are absent from command output. Source-level Gitleaks, Semgrep, CodeQL, and direct unsafe scans found no new security issue. The full-history Gitleaks findings are pre-existing and already owned by `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`.
+REST and SQL secrets flow through project secret providers rather than ad hoc CLI handling, and tests assert the secret values are absent from command output. Source-level Gitleaks, Semgrep, CodeQL, and direct unsafe scans found no new security issue. The full-history Gitleaks findings are pre-existing and triaged by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`.
 
 The code shape is acceptable for this slice. Preview orchestration remains in `scan_command.rs`, but the new lower behavior is pushed into `cdf-declarative` and `cdf-formats` rather than expanding generic `commands.rs`. Complexity and duplication metrics do not show a new hotspot from the preview additions.
 

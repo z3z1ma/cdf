@@ -32,6 +32,6 @@ Pass. The ticket acceptance criteria are supported by focused no-write tests, lo
 
 ## Residual risk
 
-Full-history Gitleaks still reports two historical findings outside this change and outside the current tree. That is now owned by `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`; it is not a blocker for this source-level CLI planning slice.
+Full-history Gitleaks still reports two historical findings outside this change and outside the current tree. That is now triaged by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`; it is not a blocker for this source-level CLI planning slice.
 
 The current planning facade uses synthetic state/package inputs by design. It proves destination DDL/guarantee planning, not package materialization or destination commit behavior; those remain covered by the run/replay/session conformance slices.

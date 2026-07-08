@@ -50,6 +50,6 @@ Pass. Acceptance criteria are supported by focused tests, nextest, compile/lint 
 
 Broad destination mirror recovery remains unspecified and intentionally unimplemented. If CDF later needs recovery from destination mirrors without package receipts, the decision must be superseded with destination-specific inventory, precedence, and evidence-limit rules.
 
-The historical gitleaks findings are still open under `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`; they do not block this source slice because current-tree scans over touched paths passed.
+The historical Gitleaks findings are triaged under `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`; they do not block this source slice because current-tree scans over touched paths passed.
 
 CodeQL's local Rust extractor produced known macro-resolution warning noise. This review relies on CodeQL as one scanner among several, not as complete proof.

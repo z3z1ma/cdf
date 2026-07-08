@@ -38,7 +38,7 @@ Quality and security checks:
 - `gitleaks detect --no-git --source crates/cdf-cli/src --redact`: passed; no leaks found.
 - `gitleaks detect --no-git --source crates/cdf-state-sqlite --redact`: passed; no leaks found.
 - `gitleaks detect --no-git --source .10x --redact`: passed after evidence/review/ticket closure records were written; no leaks found.
-- `gitleaks git --redact .`: exited 1 with the two known full-history findings owned by `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`.
+- `gitleaks git --redact .`: exited 1 with the two known full-history findings owned by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`.
 - Direct unsafe/FFI/raw pointer scan over touched implementation files found no matches for `unsafe`, `extern "`, raw pointer forms, or `Send`/`Sync`.
 
 Maintainability checks:
@@ -62,6 +62,6 @@ Record-graph cleanup was validated with `rg` for the old open-ticket path after 
 
 `state recover` does not reconstruct arbitrary missing run-ledger history or quarantine lineage. The CLI JSON reports those evidence limits.
 
-Historical gitleaks findings remain open under `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`; source-only scans over touched implementation paths passed.
+Historical Gitleaks findings are triaged under `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`; source-only scans over touched implementation paths passed.
 
 CodeQL Rust extraction has known macro-resolution warning noise under the local toolchain. This run had 0 extraction errors and no blocking security findings, but CodeQL is not treated as complete semantic coverage for macro-heavy Rust.

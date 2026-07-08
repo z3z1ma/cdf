@@ -69,7 +69,7 @@ cargo tree -p cdf-project --locked -i paste
 - `cargo audit` passed with one allowed warning: `RUSTSEC-2024-0436` for `paste 1.0.15`.
 - `cargo vet` passed with 452 exemptions and the existing prune warning.
 - `osv-scanner scan source -r .` exited 1 only for `RUSTSEC-2024-0436` on `paste 1.0.15`; the advisory remains governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md` and `.10x/decisions/datafusion-git-pin-arrow59-tuple.md`.
-- Full-history `gitleaks git` reported the two pre-existing historical Python findings already owned by `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`.
+- Full-history `gitleaks git` reported the two pre-existing historical Python findings already owned by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`.
 - Source-only Gitleaks scans over `crates/cdf-cli/src` and `crates/cdf-project/src` passed with no leaks.
 - Semgrep Rust scan completed with 0 findings.
 - Direct unsafe/FFI/raw-pointer scan over touched files found no matches.
@@ -91,4 +91,4 @@ This supports closing `.10x/tickets/done/2026-07-07-cli-contract-registry-freeze
 
 This evidence does not prove row-level quarantine routing, fixture execution, dedup, trust-ledger promotion/demotion, or external registry behavior. Those are excluded from this CLI slice and remain governed by the contract-depth records and runtime/conformance work.
 
-The full-history Gitleaks findings are not resolved here because they are historical, outside the current source tree, and already owned by `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`.
+The full-history Gitleaks findings are not resolved here because they are historical, outside the current source tree, and are now triaged by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`.

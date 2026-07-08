@@ -44,7 +44,7 @@ Dependency, security, and quality gates:
 - `tools/codeql-rust-quality.sh`: passed using reusable DB path `target/quality/codeql-db-rust`. It refreshed because Rust source content changed, then wrote `target/quality/reports/codeql-rust-current.sarif`; non-diagnostic/security result count was 0. Current extractor metrics still show the known Rust macro-expansion limitation.
 - Source-only `gitleaks detect --no-git --redact` over `crates/cdf-cli/src`, `crates/cdf-project/src/runtime`, `crates/cdf-dest-duckdb/src`, and `crates/cdf-dest-parquet/src`: passed with no leaks found.
 - `gitleaks protect --staged --redact --report-format json --report-path reports/ai-quality/gitleaks-cli-plan-explain-staged.json --no-banner`: passed with no leaks found.
-- Full-history `gitleaks detect --source . --redact --report-format json --report-path reports/ai-quality/gitleaks-cli-plan-explain.json` reported two historical `generic-api-key` findings in removed `src/cdf/...` paths. The historical triage owner is `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`.
+- Full-history `gitleaks detect --source . --redact --report-format json --report-path reports/ai-quality/gitleaks-cli-plan-explain.json` reported two historical `generic-api-key` findings in removed `src/cdf/...` paths. The historical triage owner is `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`.
 
 ## What this supports
 

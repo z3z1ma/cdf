@@ -42,4 +42,4 @@ Pass. The implementation satisfies the ticket acceptance criteria, stays within 
 
 ## Residual Risk
 
-This slice intentionally does not execute row-level contract fixtures or write quarantine artifacts. That is not a closure gap because it is excluded by the ticket and owned by the contract-depth program. Full-history Gitleaks still reports two historical Python-path findings; they are outside this change and owned by `.10x/tickets/2026-07-08-historical-gitleaks-findings-triage.md`.
+This slice intentionally does not execute row-level contract fixtures or write quarantine artifacts. That is not a closure gap because it is excluded by the ticket and owned by the contract-depth program. Full-history Gitleaks still reports two historical Python-path findings; they are outside this change and triaged by `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`.
