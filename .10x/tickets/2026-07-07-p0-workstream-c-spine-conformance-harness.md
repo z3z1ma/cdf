@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-07
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
@@ -17,6 +17,17 @@ Owns:
 - property/fuzz target wiring where the workspace convention places them;
 - targeted source/runtime test hooks only if required by conformance;
 - `.10x/knowledge/runtime-conformance-throughput-rule.md` updates if implementation teaches a sharper rule.
+
+This ticket is a parent plan. Child tickets own executable implementation slices.
+
+## Child Tickets
+
+- `.10x/tickets/2026-07-08-p0-c1-run-spine-matrix-foundation.md`
+- `.10x/tickets/2026-07-08-p0-c2-rest-sql-run-matrix.md`
+- `.10x/tickets/2026-07-08-p0-c3-cross-destination-chaos.md`
+- `.10x/tickets/2026-07-08-p0-c4-live-run-goldens-per-destination.md`
+- `.10x/tickets/2026-07-08-p0-c5-property-fuzz-targets.md`
+- `.10x/tickets/2026-07-08-p0-c6-workstream-c-closure.md`
 
 ## Required outcome
 
@@ -50,6 +61,7 @@ No new product runtime behavior except narrow hooks required for conformance. No
 - 2026-07-07: Opened from P0 stop-line. Existing conformance covers important slices, but the full run spine matrix, non-DuckDB chaos, per-destination live-run golden fixtures, and property/fuzz targets are still open.
 - 2026-07-07: Read-only subagent inventory found no `proptest`, `quickcheck`, or fuzz dependency in `crates/cdf-conformance/Cargo.toml`; property/fuzz target selection remains this workstream's implementation responsibility.
 - 2026-07-08: Workstream B dependency closed. This ticket is now the remaining A-C stop-line blocker.
+- 2026-07-08: Split Workstream C into executable children: C1 matrix foundation/file cells, C2 REST/SQL matrix cells, C3 cross-destination chaos, C4 per-destination live-run goldens, C5 property/fuzz targets, and C6 closure rollup.
 
 ## Blockers
 

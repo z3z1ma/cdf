@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/done/2026-07-05-duckdb-destination.md, .10x/tickets/done/2026-07-05-parquet-object-store-destination.md, .10x/tickets/done/2026-07-05-postgres-destination.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 
@@ -53,6 +53,7 @@ No new production behavior except test hooks required for chaos.
 - 2026-07-07: Split `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md` as the next executable source-execution child. It targets openable Tier-0 Postgres table resources over explicit runtime dependencies, leaving arbitrary SQL `query` execution, CLI SQL `run` widening, live-run orchestration, and the full killer-demo harness in parent scope.
 - 2026-07-07: Closed `.10x/tickets/done/2026-07-07-declarative-postgres-sql-resource-execution.md`; table-backed declarative Postgres SQL resources now open through explicit `SecretProvider` runtime dependencies, carry typed pushdown metadata into executable partitions, fail closed for unsupported SQL shapes and tampered metadata, emit cursor source positions in live Postgres source coverage, and have broad `QUALITY.md` evidence. Remaining parent scope still includes arbitrary SQL `query` execution if ratified, CLI SQL `run` widening, general run orchestration, live HTTP/GitHub demo execution, property/fuzz targets, and MVP killer-demo evidence.
 - 2026-07-07: P0 Workstream C now owns the run-spine conformance catch-up: generic run matrix, non-DuckDB chaos, per-destination live-run golden fixtures, property/fuzz targets, and the standing runtime-conformance throughput rule.
+- 2026-07-08: P0 Workstream C was split into children C1-C6 under `.10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md`; this conformance parent remains open for broader MVP killer-demo and post-P0 conformance scope, but the stop-line catch-up is now owned by those P0 children.
 
 ## Blockers
 
