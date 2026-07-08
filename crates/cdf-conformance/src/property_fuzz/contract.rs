@@ -17,6 +17,7 @@ fn validation_program(row_dispositions: Vec<RowDispositionRule>) -> ValidationPr
         schema_verdicts: Vec::new(),
         column_programs: Vec::new(),
         row_rules: Vec::new(),
+        explicit_anomalies: Vec::new(),
         row_dispositions,
         transforms: Vec::new(),
         promotion: PromotionPolicy::default(),

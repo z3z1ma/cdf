@@ -73,6 +73,7 @@ pub fn compile_validation_program(
         schema_verdicts: schema_verdicts(&policy.schema, &policy.normalization.nested),
         column_programs,
         row_rules: row_rule_programs(policy, observed_schema),
+        explicit_anomalies: Vec::new(),
         row_dispositions: row_dispositions(policy),
         transforms: policy.transforms.clone(),
         promotion: policy.promotion.clone(),

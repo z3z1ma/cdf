@@ -13,7 +13,7 @@ use std::{
 use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    ContractPolicy, DedupKeep, ObservedSchema, RowRule, compile_validation_program,
+    AnomalyFact, ContractPolicy, DedupKeep, ObservedSchema, RowRule, compile_validation_program,
 };
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
@@ -1010,6 +1010,27 @@ fn project_run_request<'a>(
     }
 }
 
+fn project_run_request_with_policy<'a>(
+    resource: &'a cdf_declarative::CompiledResource,
+    package_id: &str,
+    package_root: &Path,
+    duckdb_path: &Path,
+    state_path: &Path,
+    run_id: &str,
+    policy: &ContractPolicy,
+) -> ProjectRunRequest<'a> {
+    let mut request = project_run_request(
+        resource,
+        package_id,
+        package_root,
+        duckdb_path,
+        state_path,
+        run_id,
+    );
+    request.plan = live_plan_with_policy(resource, package_id, policy);
+    request
+}
+
 fn parquet_project_run_request<'a>(
     resource: &'a cdf_declarative::CompiledResource,
     package_id: &str,
@@ -1540,15 +1561,15 @@ fn trust_ring_clean_stable_runs_gate_sampled_fast_path_promotion() {
     policy.promotion.allow_sampled_fast_path = true;
     policy.promotion.clean_runs_required = 2;
 
-    let mut first = project_run_request(
+    let first = project_run_request_with_policy(
         &resource,
         "pkg-trust-promotion-1",
         &package_root,
         &duckdb_path,
         &state_path,
         "run-trust-promotion-1",
+        &policy,
     );
-    first.plan = live_plan_with_policy(&resource, "pkg-trust-promotion-1", &policy);
     let first_report = futures_executor::block_on(run_project(first)).unwrap();
     let first_transitions = first_report
         .ledger_snapshot
@@ -1562,15 +1583,15 @@ fn trust_ring_clean_stable_runs_gate_sampled_fast_path_promotion() {
         Some(&RunEventValue::String("new_resource".to_owned()))
     );
 
-    let mut second = project_run_request(
+    let second = project_run_request_with_policy(
         &resource,
         "pkg-trust-promotion-2",
         &package_root,
         &duckdb_path,
         &state_path,
         "run-trust-promotion-2",
+        &policy,
     );
-    second.plan = live_plan_with_policy(&resource, "pkg-trust-promotion-2", &policy);
     let second_report = futures_executor::block_on(run_project(second)).unwrap();
     let transition = second_report
         .ledger_snapshot
@@ -1709,15 +1730,15 @@ fn trust_ring_quarantine_demotes_sampled_fast_path_without_checkpoint_bypass() {
         allowed: vec!["ada".to_owned(), "grace".to_owned()],
     }];
 
-    let mut clean = project_run_request(
+    let clean = project_run_request_with_policy(
         &resource,
         "pkg-trust-demotion-clean",
         &package_root,
         &duckdb_path,
         &state_path,
         "run-trust-demotion-clean",
+        &policy,
     );
-    clean.plan = live_plan_with_policy(&resource, "pkg-trust-demotion-clean", &policy);
     futures_executor::block_on(run_project(clean)).unwrap();
 
     fs::write(
@@ -1726,15 +1747,15 @@ fn trust_ring_quarantine_demotes_sampled_fast_path_without_checkpoint_bypass() {
          {\"id\":2,\"name\":\"raw-secret\"}\n",
     )
     .unwrap();
-    let mut quarantine = project_run_request(
+    let quarantine = project_run_request_with_policy(
         &resource,
         "pkg-trust-demotion-quarantine",
         &package_root,
         &duckdb_path,
         &state_path,
         "run-trust-demotion-quarantine",
+        &policy,
     );
-    quarantine.plan = live_plan_with_policy(&resource, "pkg-trust-demotion-quarantine", &policy);
     let report = futures_executor::block_on(run_project(quarantine)).unwrap();
     let transition_index = report
         .ledger_snapshot
@@ -1801,6 +1822,146 @@ fn trust_ring_quarantine_demotes_sampled_fast_path_without_checkpoint_bypass() {
         head.delta.checkpoint_id,
         report.checkpoint.delta.checkpoint_id
     );
+}
+
+#[test]
+fn trust_ring_explicit_anomaly_fact_demotes_sampled_fast_path() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.promotion.allow_sampled_fast_path = true;
+    policy.promotion.clean_runs_required = 1;
+    policy.promotion.demote_on_anomaly = true;
+
+    let clean = project_run_request_with_policy(
+        &resource,
+        "pkg-trust-anomaly-clean",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-anomaly-clean",
+        &policy,
+    );
+    futures_executor::block_on(run_project(clean)).unwrap();
+
+    let mut anomaly = project_run_request_with_policy(
+        &resource,
+        "pkg-trust-anomaly-spike",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-anomaly-spike",
+        &policy,
+    );
+    anomaly
+        .plan
+        .validation_program
+        .explicit_anomalies
+        .push(AnomalyFact {
+            metric: "profile.value_distribution_zscore".to_owned(),
+            observed: "12.4".to_owned(),
+            threshold: "3.0".to_owned(),
+            window: "last_5_committed_packages".to_owned(),
+        });
+    let report = futures_executor::block_on(run_project(anomaly)).unwrap();
+    let transition = report
+        .ledger_snapshot
+        .events
+        .iter()
+        .find(|event| {
+            event.kind == RunEventKind::ValidationDepthTransitionRecorded
+                && event.details.attributes.get("trigger")
+                    == Some(&RunEventValue::String("anomaly_spike".to_owned()))
+        })
+        .expect("anomaly demotion transition event");
+
+    assert_eq!(transition.package_hash, Some(report.package_hash.clone()));
+    assert_eq!(
+        transition.details.attributes.get("from_depth"),
+        Some(&RunEventValue::String("sampled_fast_path".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("to_depth"),
+        Some(&RunEventValue::String("full".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("schema_hash"),
+        Some(&RunEventValue::String(
+            report.receipt.schema_hash.as_str().to_owned()
+        ))
+    );
+    assert_eq!(
+        transition.details.attributes.get("metric"),
+        Some(&RunEventValue::String(
+            "profile.value_distribution_zscore".to_owned()
+        ))
+    );
+    assert_eq!(
+        transition.details.attributes.get("observed"),
+        Some(&RunEventValue::String("12.4".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("threshold"),
+        Some(&RunEventValue::String("3.0".to_owned()))
+    );
+    assert_eq!(
+        transition.details.attributes.get("window"),
+        Some(&RunEventValue::String(
+            "last_5_committed_packages".to_owned()
+        ))
+    );
+    assert_eq!(
+        transition.checkpoint_id,
+        Some(report.checkpoint.delta.checkpoint_id.clone())
+    );
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+}
+
+#[test]
+fn trust_ring_anomaly_demotion_requires_explicit_fact() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND);
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.promotion.allow_sampled_fast_path = true;
+    policy.promotion.clean_runs_required = 1;
+    policy.promotion.demote_on_anomaly = true;
+
+    let clean = project_run_request_with_policy(
+        &resource,
+        "pkg-trust-no-anomaly-clean",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-no-anomaly-clean",
+        &policy,
+    );
+    futures_executor::block_on(run_project(clean)).unwrap();
+
+    let no_anomaly = project_run_request_with_policy(
+        &resource,
+        "pkg-trust-no-anomaly-current",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-trust-no-anomaly-current",
+        &policy,
+    );
+    let report = futures_executor::block_on(run_project(no_anomaly)).unwrap();
+
+    assert!(!report.ledger_snapshot.events.iter().any(|event| {
+        event.kind == RunEventKind::ValidationDepthTransitionRecorded
+            && event.details.attributes.get("trigger")
+                == Some(&RunEventValue::String("anomaly_spike".to_owned()))
+    }));
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
 }
 
 #[test]

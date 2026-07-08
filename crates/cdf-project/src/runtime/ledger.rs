@@ -1,5 +1,5 @@
 use super::{hooks::RuntimeStage, prelude::*};
-use cdf_contract::{ValidationDepth, ValidationTransitionTrigger};
+use cdf_contract::{AnomalyFact, ValidationDepth, ValidationTransitionTrigger};
 
 pub(super) struct ValidationDepthTransitionRecord<'a> {
     pub(super) from_depth: ValidationDepth,
@@ -7,6 +7,7 @@ pub(super) struct ValidationDepthTransitionRecord<'a> {
     pub(super) trigger: ValidationTransitionTrigger,
     pub(super) schema_hash: Option<&'a SchemaHash>,
     pub(super) previous_schema_hash: Option<&'a SchemaHash>,
+    pub(super) anomaly: Option<&'a AnomalyFact>,
 }
 
 pub(super) struct ProjectRunRecorderContext {
@@ -215,6 +216,24 @@ fn validation_depth_transition_details(
         attributes.insert(
             "previous_schema_hash".to_owned(),
             RunEventValue::String(previous_schema_hash.as_str().to_owned()),
+        );
+    }
+    if let Some(anomaly) = transition.anomaly {
+        attributes.insert(
+            "metric".to_owned(),
+            RunEventValue::String(anomaly.metric.clone()),
+        );
+        attributes.insert(
+            "observed".to_owned(),
+            RunEventValue::String(anomaly.observed.clone()),
+        );
+        attributes.insert(
+            "threshold".to_owned(),
+            RunEventValue::String(anomaly.threshold.clone()),
+        );
+        attributes.insert(
+            "window".to_owned(),
+            RunEventValue::String(anomaly.window.clone()),
         );
     }
     RunEventDetails { attributes }

@@ -1,4 +1,4 @@
-Status: blocked
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
@@ -49,7 +49,11 @@ No UI. No sampled-fast-path performance optimization unless needed to represent 
 
 - 2026-07-08: Activated after E4 closure. Parent orchestrator delegated the core project/state ledger implementation to a focused worker and is retaining integration, quality evidence, review, and closure ownership.
 - 2026-07-08: Partial implementation landed for `validation_depth_transition_recorded` run-ledger events, SQLite run-ledger schema v2 migration, first-contact `new_resource`, clean-stable promotion, drift demotion, quarantine demotion, run/inspect event-detail visibility, and focused tests. Partial evidence recorded at `.10x/evidence/2026-07-08-p1-e5-trust-ledger-partial.md`.
+- 2026-07-08: Unblocked anomaly-spike semantics with `.10x/decisions/contract-anomaly-signal-demotion-policy.md`: anomaly demotion consumes explicit anomaly facts only and MUST NOT infer anomalies from row counts, quarantine counts, destination failures, elapsed time, or arbitrary package-profile heuristics.
+- 2026-07-08: Implemented explicit anomaly facts on the validation program as the current explicit-signal seam, with `metric`, `observed`, `threshold`, and `window` fields. Runtime trust transition evaluation records `anomaly_spike` demotion only when `demote_on_anomaly = true`, the prior committed head has earned sampled-fast-path status, and an explicit anomaly fact is present. No detector, threshold derivation, row-count heuristic, quarantine-count heuristic, or destination-failure heuristic was added.
+- 2026-07-08: Added focused live-run tests proving explicit anomaly demotion and no anomaly demotion without explicit facts, preserved drift/quarantine behavior, repaired the conformance property-fuzz manual `ValidationProgram` constructor, and reduced repeated trust-ring request construction with a local test helper.
+- 2026-07-08: Closure evidence recorded in `.10x/evidence/2026-07-08-p1-e5-trust-ledger-events.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p1-e5-trust-ledger-events-review.md`.
 
 ## Blockers
 
-- Anomaly-spike demotion semantics are unclear. Current runtime/package facts expose no anomaly-spike signal, metric, threshold, or owner. E5 cannot close without ratifying what constitutes an anomaly spike and where that signal enters the run ledger. Recommended decision: define anomaly spikes as explicit profile/contract anomaly facts emitted by `ProfileExec` or a future anomaly detector, with event fields `{metric, observed, threshold, window}`; do not infer anomaly from row count, quarantine count, destination failure, or arbitrary heuristic in E5.
+None.

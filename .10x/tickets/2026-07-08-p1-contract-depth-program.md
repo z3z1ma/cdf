@@ -27,7 +27,7 @@ This parent is a plan. Child tickets own executable implementation. Children mus
 - `.10x/tickets/done/2026-07-08-p1-e2-quarantine-routing-redaction.md`
 - `.10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md`
 - `.10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md`
-- `.10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md`
+- `.10x/tickets/done/2026-07-08-p1-e5-trust-ring-ledger-events.md`
 - `.10x/tickets/2026-07-08-p1-e6-drift-quarantine-conformance.md`
 
 ## Acceptance criteria
@@ -56,7 +56,7 @@ No trust UI, no schema-on-read replacement for packages, no DataFusion multi-out
 - 2026-07-08: E2 closed with identity-participating package quarantine Parquet artifacts, redacted observed values, accepted-row continuation, unsupported mirror outcome artifacts, Postgres `_cdf_quarantine` mirrors, evidence `.10x/evidence/2026-07-08-p1-e2-quarantine-routing-redaction.md`, and review `.10x/reviews/2026-07-08-p1-e2-quarantine-routing-redaction-review.md`.
 - 2026-07-08: E3 closed with deterministic pre-merge dedup over accepted package-order rows, `keep = first|last|fail` coverage, package identity `stats/dedup-summary.json`, live run replay/redrive identity coverage, legacy `EnginePlan` JSON compatibility repair, evidence `.10x/evidence/2026-07-08-p1-e3-merge-dedup-live-path.md`, and review `.10x/reviews/2026-07-08-p1-e3-merge-dedup-live-path-review.md`.
 - 2026-07-08: E4 closed with live `_cdf_variant` capture for Struct/List/Map nested fields, semantic `json` schema evidence, deterministic `schema/contract-evolution.json` with zero implicit promotions, package verify/replay evidence, conformance compiler coverage, evidence `.10x/evidence/2026-07-08-p1-e4-variant-capture-evolution-event.md`, and review `.10x/reviews/2026-07-08-p1-e4-variant-capture-evolution-event-review.md`.
-- 2026-07-08: E5 is partially implemented and blocked on anomaly-spike semantics. Current code records first-contact, clean-stable promotion, drift demotion, and quarantine demotion ledger events, with partial evidence `.10x/evidence/2026-07-08-p1-e5-trust-ledger-partial.md`.
+- 2026-07-08: E5 closed with trust-ring promotion/demotion ledger events for first-contact, clean-stable promotion, drift demotion, quarantine demotion, and explicit anomaly-fact demotion. Anomaly semantics are ratified by `.10x/decisions/contract-anomaly-signal-demotion-policy.md`; closure evidence is `.10x/evidence/2026-07-08-p1-e5-trust-ledger-events.md` and review is `.10x/reviews/2026-07-08-p1-e5-trust-ledger-events-review.md`. E6 drift-quarantine conformance remains open.
 
 ## Blockers
 

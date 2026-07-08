@@ -15,7 +15,7 @@ use super::{
         validate_explicit_package_id, validate_project_run_request,
     },
 };
-use cdf_contract::{ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
+use cdf_contract::{AnomalyFact, ValidationDepth, ValidationProgram, ValidationTransitionTrigger};
 
 #[cfg(test)]
 pub(crate) async fn run_local_file_to_duckdb_checkpoint(
@@ -272,7 +272,7 @@ fn notify_run_replay_stage(
 }
 
 fn validation_depth_transitions_recorded<'a>(
-    program: &ValidationProgram,
+    program: &'a ValidationProgram,
     head: Option<&'a Checkpoint>,
     history: &'a [Checkpoint],
     schema_hash: &'a SchemaHash,
@@ -287,6 +287,7 @@ fn validation_depth_transitions_recorded<'a>(
             trigger: ValidationTransitionTrigger::NewResource,
             schema_hash: Some(schema_hash),
             previous_schema_hash: None,
+            anomaly: None,
         });
     }
 
@@ -306,6 +307,7 @@ fn validation_depth_transitions_recorded<'a>(
     let drift = head
         .map(|checkpoint| checkpoint.delta.schema_hash != *schema_hash)
         .unwrap_or(false);
+    let anomaly = explicit_anomaly_for_run(program);
 
     if prior_promoted {
         if drift && promotion.demote_on_drift {
@@ -315,6 +317,7 @@ fn validation_depth_transitions_recorded<'a>(
                 trigger: ValidationTransitionTrigger::Drift,
                 schema_hash: Some(schema_hash),
                 previous_schema_hash: head.map(|checkpoint| &checkpoint.delta.schema_hash),
+                anomaly: None,
             });
             return transitions;
         }
@@ -325,12 +328,25 @@ fn validation_depth_transitions_recorded<'a>(
                 trigger: ValidationTransitionTrigger::QuarantineEvent,
                 schema_hash: Some(schema_hash),
                 previous_schema_hash: None,
+                anomaly: None,
+            });
+            return transitions;
+        }
+        if let Some(anomaly) = anomaly.filter(|_| promotion.demote_on_anomaly) {
+            transitions.push(ValidationDepthTransitionRecord {
+                from_depth: sampled_fast_path,
+                to_depth: ValidationDepth::Full,
+                trigger: ValidationTransitionTrigger::AnomalySpike,
+                schema_hash: Some(schema_hash),
+                previous_schema_hash: None,
+                anomaly: Some(anomaly),
             });
             return transitions;
         }
     }
 
-    if drift || has_quarantine_artifacts || promotion.clean_runs_required == 0 {
+    if drift || has_quarantine_artifacts || anomaly.is_some() || promotion.clean_runs_required == 0
+    {
         return transitions;
     }
     let prior_stable_count = consecutive_committed_schema_hash_count(history, schema_hash);
@@ -346,10 +362,15 @@ fn validation_depth_transitions_recorded<'a>(
             },
             schema_hash: Some(schema_hash),
             previous_schema_hash: None,
+            anomaly: None,
         });
     }
 
     transitions
+}
+
+fn explicit_anomaly_for_run(program: &ValidationProgram) -> Option<&AnomalyFact> {
+    program.explicit_anomalies.first()
 }
 
 fn consecutive_committed_schema_hash_count(

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-e5-trust-ring-ledger-events.md
 
 # P1 E5 partial trust-ledger evidence
 
@@ -46,4 +46,4 @@ This evidence supports committing the partial E5 implementation safely. It does 
 
 ## Limits
 
-No closure review was performed because E5 is blocked, not done. Full E5 closure still requires anomaly-spike trigger semantics, any additional implementation needed for that signal, final quality gates, adversarial review, parent graph updates, and ticket closure.
+No closure review was performed for this partial-evidence slice because E5 was blocked, not done, at the time. Full E5 closure still required anomaly-spike trigger semantics, any additional implementation needed for that signal, final quality gates, adversarial review, parent graph updates, and ticket closure.

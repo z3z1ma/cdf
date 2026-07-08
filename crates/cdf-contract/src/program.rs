@@ -15,6 +15,8 @@ pub struct ValidationProgram {
     pub column_programs: Vec<ColumnProgram>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub row_rules: Vec<RowRuleProgram>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub explicit_anomalies: Vec<AnomalyFact>,
     pub row_dispositions: Vec<RowDispositionRule>,
     pub transforms: Vec<TransformDescription>,
     pub promotion: PromotionPolicy,
@@ -60,6 +62,14 @@ impl ValidationProgram {
             .iter()
             .any(|rule| matches!(rule.predicate, RowRulePredicate::Dedup { .. }))
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnomalyFact {
+    pub metric: String,
+    pub observed: String,
+    pub threshold: String,
+    pub window: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
