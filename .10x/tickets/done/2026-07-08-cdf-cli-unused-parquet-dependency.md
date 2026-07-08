@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 
@@ -37,3 +37,9 @@ No CLI architecture refactor, no destination registry change, and no Parquet des
 ## Blockers
 
 None.
+
+## Progress and notes
+
+- 2026-07-08: Confirmed `crates/cdf-cli` had no direct `cdf_dest_parquet` API use and removed the unused `cdf-dest-parquet` direct dependency from `crates/cdf-cli/Cargo.toml`.
+- 2026-07-08: Refreshed `Cargo.lock` through Cargo check flows. Post-edit Cargo metadata for `cdf-cli` no longer includes `cdf-dest-parquet` as a direct dependency.
+- 2026-07-08: Full-workspace `cargo machete --with-metadata` is clean after the cleanup. Closure evidence recorded in `.10x/evidence/2026-07-08-unused-dependency-cleanup.md`; adversarial review recorded in `.10x/reviews/2026-07-08-unused-dependency-cleanup-review.md`.

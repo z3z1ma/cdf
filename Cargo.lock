@@ -684,7 +684,6 @@ name = "cdf-benchmarks"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
- "arrow-csv",
  "arrow-ipc",
  "arrow-schema 59.1.0",
  "arrow-select 59.1.0",
@@ -719,7 +718,6 @@ dependencies = [
  "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",
- "cdf-dest-parquet",
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-http",

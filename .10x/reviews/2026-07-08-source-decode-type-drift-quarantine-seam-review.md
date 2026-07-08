@@ -30,7 +30,7 @@ Review of the source-decode type-drift quarantine seam and E6 conformance integr
 
 `filter_declared_ndjson_rows` is deliberately narrow: it supports scalar-ish declared JSON types and fails closed on unsupported complex declared types or undeclared fields. That is acceptable for this seam because the governing decision authorized only localized scalar source type-drift quarantine.
 
-The existing `cargo machete` hint for `cdf-cli -> cdf-dest-parquet` is outside this seam and remains owned by `.10x/tickets/2026-07-08-cdf-cli-unused-parquet-dependency.md`.
+At review time, the existing `cargo machete` hint for `cdf-cli -> cdf-dest-parquet` was outside this seam; it is now closed under `.10x/tickets/done/2026-07-08-cdf-cli-unused-parquet-dependency.md`.
 
 ## Verdict
 

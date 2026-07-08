@@ -22,7 +22,7 @@ Adversarial closure review for P0 Structural Debt Stop-the-Line, with emphasis o
 
 The P0 exit does not mean CDF 1.0 is done. It removes the structural-debt stop-line so program lanes may resume under the standing goal. Remaining active work remains owned by the broader ticket graph and coverage matrix.
 
-Quality residuals are already owned or ratified: `cargo machete` still flags the existing `cdf-cli -> cdf-dest-parquet` direct dependency under `.10x/tickets/2026-07-08-cdf-cli-unused-parquet-dependency.md`; OSV/cargo-audit still surface only the ratified `paste` advisory; CodeQL still has known Rust extractor warnings with 0 SARIF findings.
+At review time, quality residuals were already owned or ratified: `cargo machete` still flagged the existing `cdf-cli -> cdf-dest-parquet` direct dependency, now closed under `.10x/tickets/done/2026-07-08-cdf-cli-unused-parquet-dependency.md`; OSV/cargo-audit still surfaced only the ratified `paste` advisory; CodeQL still had known Rust extractor warnings with 0 SARIF findings.
 
 ## Verdict
 

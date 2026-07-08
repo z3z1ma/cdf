@@ -56,7 +56,7 @@ Quality, security, and metrics:
 - `osv-scanner scan source -r .` exited nonzero only for the ratified `paste 1.0.15` / `RUSTSEC-2024-0436` advisory; report: `target/quality/reports/osv-source-decode-seam.json`.
 - `cargo geiger` with isolated target dir over `cdf-formats` completed; first-party packages in that dependency scan (`cdf-contract`, `cdf-formats`, `cdf-kernel`) used 0 unsafe items. Geiger emitted dependency matcher warnings; report: `target/quality/reports/cargo-geiger-cdf-formats-source-decode-seam.json`.
 - `tools/codeql-rust-quality.sh` used the reusable database path `target/quality/codeql-db-rust`. It refreshed the database because the source/manifest fingerprint changed, analyzed 227 Rust files, produced 0 SARIF results, 0 extraction errors, and 3,484 extraction warnings consistent with the known Rust extractor macro limitation in `.10x/knowledge/quality-gate-execution.md`; report: `target/quality/reports/codeql-source-decode-seam.log`.
-- `cargo machete --with-metadata` found no unused dependencies in the touched implementation crates and reported the pre-existing `cdf-cli -> cdf-dest-parquet` hint. That hint is already owned by `.10x/tickets/2026-07-08-cdf-cli-unused-parquet-dependency.md`; report: `target/quality/reports/cargo-machete-source-decode-seam.txt`.
+- `cargo machete --with-metadata` found no unused dependencies in the touched implementation crates and reported the pre-existing `cdf-cli -> cdf-dest-parquet` hint. That hint is now closed under `.10x/tickets/done/2026-07-08-cdf-cli-unused-parquet-dependency.md`; report: `target/quality/reports/cargo-machete-source-decode-seam.txt`.
 
 ## What this supports
 
@@ -68,4 +68,4 @@ It also supports the golden fixture changes: the only intended golden churn is p
 
 This does not implement a broad schema-on-read replacement, DataFusion multi-output plan, silent scalar coercion, new destination, new source archetype, or public demo script.
 
-`cargo machete` still reports the existing `cdf-cli` direct `cdf-dest-parquet` hint, owned separately. `osv-scanner` and cargo-audit still surface only the ratified `paste` maintenance advisory. CodeQL extraction warnings remain the known local extractor limitation and have 0 SARIF results.
+At evidence time, `cargo machete` still reported the existing `cdf-cli` direct `cdf-dest-parquet` hint; that hint is now closed under `.10x/tickets/done/2026-07-08-cdf-cli-unused-parquet-dependency.md`. `osv-scanner` and cargo-audit still surface only the ratified `paste` maintenance advisory. CodeQL extraction warnings remain the known local extractor limitation and have 0 SARIF results.

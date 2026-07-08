@@ -20,7 +20,7 @@ Review the E3 implementation that adds deterministic pre-merge dedup to the live
 - Pass after repair: The broad conformance run caught a fixture compatibility regression from the new `EnginePlan.write_disposition` field. The final implementation defaults legacy missing values to `Append`, adds a focused serde compatibility test, and the full touched-core-plus-conformance nextest run passes.
 - Minor accepted residual: `rust-code-analysis-cli` reports `evaluate_package_order_dedup` with cognitive complexity 26. The function is a single semantic unit over package-order grouping and fail-closed key checks; splitting it further would add indirection without reducing the acceptance risk in this slice. Keep this visible if future dedup variants are added.
 - Minor accepted residual: `jscpd` reports 8.00% duplicated lines over the touched file set, dominated by existing test/helper repetition. I did not find duplicated production dedup semantics that should be abstracted before closure.
-- Out-of-scope owner created: full-workspace `cargo machete` still reports `cdf-cli`'s `cdf-dest-parquet` dependency as unused. That is unrelated to E3 and is owned by `.10x/tickets/2026-07-08-cdf-cli-unused-parquet-dependency.md`.
+- At review time, full-workspace `cargo machete` still reported `cdf-cli`'s `cdf-dest-parquet` dependency as unused. That was unrelated to E3 and is now closed under `.10x/tickets/done/2026-07-08-cdf-cli-unused-parquet-dependency.md`.
 
 ## Verdict
 

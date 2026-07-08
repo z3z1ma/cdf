@@ -57,7 +57,7 @@ Quality and security gates:
 - `cargo deny check`: pass with known duplicate Arrow 58/59 warnings and final `advisories ok, bans ok, licenses ok, sources ok`.
 - `osv-scanner --lockfile Cargo.lock --format json > target/quality/reports/osv-p1-e3-merge-dedup.json`: nonzero only for the already-ratified `RUSTSEC-2024-0436` / `paste` unmaintained advisory.
 - `cargo machete --with-metadata ./crates/cdf-contract ./crates/cdf-package ./crates/cdf-engine ./crates/cdf-project`: pass, no unused dependencies in touched crates.
-- Full `cargo machete --with-metadata`: reports pre-existing `cdf-cli` unused dependency candidate `cdf-dest-parquet`. It is not introduced by E3 and is now owned by `.10x/tickets/2026-07-08-cdf-cli-unused-parquet-dependency.md`.
+- Full `cargo machete --with-metadata`: reported pre-existing `cdf-cli` unused dependency candidate `cdf-dest-parquet`. It was not introduced by E3 and is now closed under `.10x/tickets/done/2026-07-08-cdf-cli-unused-parquet-dependency.md`.
 
 ## What this supports
 
