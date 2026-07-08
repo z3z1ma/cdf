@@ -685,11 +685,13 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
+ "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",
  "cdf-dest-parquet",
  "cdf-dest-postgres",
  "cdf-engine",
+ "cdf-http",
  "cdf-kernel",
  "cdf-package",
  "cdf-project",

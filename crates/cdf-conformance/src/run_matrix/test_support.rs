@@ -1,0 +1,116 @@
+use std::{
+    collections::{BTreeMap, VecDeque},
+    fs,
+    path::Path,
+    sync::{Arc, Mutex},
+};
+
+use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
+use cdf_kernel::{CdfError, Result};
+
+#[derive(Clone, Default)]
+pub(crate) struct RecordingTransport {
+    state: Arc<Mutex<RecordingTransportState>>,
+}
+
+#[derive(Default)]
+struct RecordingTransportState {
+    requests: Vec<HttpRequest>,
+    responses: VecDeque<HttpResponse>,
+}
+
+impl RecordingTransport {
+    pub(crate) fn new<I>(responses: I) -> Self
+    where
+        I: IntoIterator<Item = HttpResponse>,
+    {
+        Self {
+            state: Arc::new(Mutex::new(RecordingTransportState {
+                requests: Vec::new(),
+                responses: responses.into_iter().collect(),
+            })),
+        }
+    }
+
+    pub(crate) fn requests(&self) -> Vec<HttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+}
+
+impl HttpTransport for RecordingTransport {
+    fn send(&mut self, request: HttpRequest) -> Result<HttpResponse> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request);
+        state
+            .responses
+            .pop_front()
+            .ok_or_else(|| CdfError::internal("run matrix REST transport exhausted responses"))
+    }
+}
+
+pub(crate) struct StaticSecretProvider {
+    values: BTreeMap<String, String>,
+}
+
+impl StaticSecretProvider {
+    pub(crate) fn new<I, K, V>(values: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+}
+
+impl SecretProvider for StaticSecretProvider {
+    fn resolve(&self, uri: &SecretUri) -> Result<SecretValue> {
+        self.values
+            .get(uri.as_str())
+            .map(|value| SecretValue::new(value.clone()))
+            .ok_or_else(|| CdfError::auth(format!("missing run matrix secret `{uri}`")))
+    }
+}
+
+pub(crate) fn json_response(body: &str) -> HttpResponse {
+    HttpResponse::new(200)
+        .with_header("content-type", "application/json")
+        .with_body(body)
+}
+
+pub(crate) fn copy_dir_all(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .map_err(|error| CdfError::data(format!("create {}: {error}", destination.display())))?;
+    for entry in fs::read_dir(source)
+        .map_err(|error| CdfError::data(format!("read {}: {error}", source.display())))?
+    {
+        let entry = entry.map_err(|error| {
+            CdfError::data(format!("read entry in {}: {error}", source.display()))
+        })?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type().map_err(|error| {
+            CdfError::data(format!(
+                "read file type for {}: {error}",
+                source_path.display()
+            ))
+        })?;
+        if file_type.is_dir() {
+            copy_dir_all(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path).map_err(|error| {
+                CdfError::data(format!(
+                    "copy {} to {}: {error}",
+                    source_path.display(),
+                    destination_path.display()
+                ))
+            })?;
+        }
+    }
+    Ok(())
+}

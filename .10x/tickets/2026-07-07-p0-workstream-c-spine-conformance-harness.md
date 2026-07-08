@@ -23,7 +23,7 @@ This ticket is a parent plan. Child tickets own executable implementation slices
 ## Child Tickets
 
 - `.10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md`
-- `.10x/tickets/2026-07-08-p0-c2-rest-sql-run-matrix.md`
+- `.10x/tickets/done/2026-07-08-p0-c2-rest-sql-run-matrix.md`
 - `.10x/tickets/2026-07-08-p0-c3-cross-destination-chaos.md`
 - `.10x/tickets/2026-07-08-p0-c4-live-run-goldens-per-destination.md`
 - `.10x/tickets/2026-07-08-p0-c5-property-fuzz-targets.md`
@@ -63,6 +63,7 @@ No new product runtime behavior except narrow hooks required for conformance. No
 - 2026-07-08: Workstream B dependency closed. This ticket is now the remaining A-C stop-line blocker.
 - 2026-07-08: Split Workstream C into executable children: C1 matrix foundation/file cells, C2 REST/SQL matrix cells, C3 cross-destination chaos, C4 per-destination live-run goldens, C5 property/fuzz targets, and C6 closure rollup.
 - 2026-07-08: C1 closed. Conformance now has a FILE-source run-spine matrix covering DuckDB, filesystem Parquet, and Postgres across supported append/replace/merge cells, with Parquet merge recorded as a sheet-backed exclusion.
+- 2026-07-08: C2 closed. The run-spine matrix now covers FILE, deterministic REST fixture, and table-backed Postgres SQL source archetypes across DuckDB, filesystem Parquet, and Postgres destinations, with 24 executed cells and 3 sheet-backed Parquet merge exclusions.
 
 ## Blockers
 

@@ -19,10 +19,12 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 
 [dev-dependencies]
+cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-engine = { path = "../cdf-engine" }
+cdf-http = { path = "../cdf-http" }
 futures-executor = "0.3.32"
 postgres = "0.19"
 tempfile = "3.27.0"

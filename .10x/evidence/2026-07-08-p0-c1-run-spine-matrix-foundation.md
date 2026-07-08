@@ -73,7 +73,7 @@ This supports C1 acceptance for the FILE-source matrix foundation: conformance n
 
 ## Limits
 
-This is C1 only. REST and SQL source archetypes remain owned by `.10x/tickets/2026-07-08-p0-c2-rest-sql-run-matrix.md`; cross-destination chaos remains owned by C3; per-destination live goldens remain owned by C4; property/fuzz targets remain owned by C5.
+This is C1 only. REST and SQL source archetypes are owned by `.10x/tickets/done/2026-07-08-p0-c2-rest-sql-run-matrix.md`; cross-destination chaos remains owned by C3; per-destination live goldens remain owned by C4; property/fuzz targets remain owned by C5.
 
 The C1 test harness is deliberately complete but large. The measured size/complexity and review concern are carried into C2, which now requires splitting the harness before adding REST/SQL cells.
 

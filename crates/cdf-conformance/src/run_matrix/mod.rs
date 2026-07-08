@@ -5,12 +5,16 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum SourceArchetype {
     File,
+    Rest,
+    Sql,
 }
 
 impl SourceArchetype {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",
+            Self::Rest => "rest",
+            Self::Sql => "sql",
         }
     }
 }
@@ -68,12 +72,28 @@ pub struct RunMatrixCell {
 }
 
 impl RunMatrixCell {
-    pub const fn file(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+    pub const fn new(
+        source_archetype: SourceArchetype,
+        destination: MatrixDestination,
+        disposition: MatrixDisposition,
+    ) -> Self {
         Self {
-            source_archetype: SourceArchetype::File,
+            source_archetype,
             destination,
             disposition,
         }
+    }
+
+    pub const fn file(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::File, destination, disposition)
+    }
+
+    pub const fn rest(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::Rest, destination, disposition)
+    }
+
+    pub const fn sql(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::Sql, destination, disposition)
     }
 }
 
@@ -105,6 +125,21 @@ pub struct RunMatrixOutput {
 }
 
 pub fn file_source_matrix_cells() -> Vec<RunMatrixCell> {
+    source_matrix_cells(SourceArchetype::File)
+}
+
+pub fn run_spine_matrix_cells() -> Vec<RunMatrixCell> {
+    [
+        SourceArchetype::File,
+        SourceArchetype::Rest,
+        SourceArchetype::Sql,
+    ]
+    .into_iter()
+    .flat_map(source_matrix_cells)
+    .collect()
+}
+
+pub fn source_matrix_cells(source_archetype: SourceArchetype) -> Vec<RunMatrixCell> {
     let mut cells = Vec::new();
     for destination in [
         MatrixDestination::DuckDb,
@@ -116,11 +151,33 @@ pub fn file_source_matrix_cells() -> Vec<RunMatrixCell> {
             MatrixDisposition::Replace,
             MatrixDisposition::Merge,
         ] {
-            cells.push(RunMatrixCell::file(destination, disposition));
+            cells.push(RunMatrixCell::new(
+                source_archetype,
+                destination,
+                disposition,
+            ));
         }
     }
     cells
 }
 
+#[cfg(test)]
+mod assertions;
+#[cfg(test)]
+mod core;
+#[cfg(test)]
+mod destinations;
+#[cfg(test)]
+mod file_fixture;
+#[cfg(test)]
+mod local_postgres;
+#[cfg(test)]
+mod plan_json;
+#[cfg(test)]
+mod rest_fixture;
+#[cfg(test)]
+mod sql_fixture;
+#[cfg(test)]
+mod test_support;
 #[cfg(test)]
 mod tests;
