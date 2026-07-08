@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
@@ -44,6 +44,9 @@ No REST or SQL source matrix cells; C2 owns them. No cross-destination chaos kil
 ## Progress And Notes
 
 - 2026-07-08: Split from P0 Workstream C after Workstreams A and B closed. Existing conformance has `live-local-file-v1` for local file to DuckDB only; this child generalizes that pattern into the matrix foundation and broadens the file source across current MVP destinations/dispositions.
+- 2026-07-08: Activated for worker implementation. Worker owns the conformance-owned file-source run-spine matrix foundation, focused tests, and C1 progress notes. Parent owns review, final quality gates, evidence/review records, closure, commit, and push.
+- 2026-07-08: Implemented `cdf-conformance::run_matrix` with FILE-source cells for DuckDB, filesystem Parquet, and Postgres across append/replace/merge. Focused test output records 8 executed cells and 1 excluded cell: Parquet merge is excluded because its destination sheet lists supported_dispositions=[append, replace]. Worker verification passed: `cargo fmt --all --check`, `cargo test -p cdf-conformance run_matrix -- --nocapture`, `cargo check -p cdf-conformance -p cdf-project --all-targets --locked`, `cargo clippy -p cdf-conformance -p cdf-project --all-targets --locked -- -D warnings`, and `git diff --check`.
+- 2026-07-08: Parent review found and repaired the initial conditional Postgres skip path; Postgres setup is now mandatory for the C1 matrix test and setup/schema failures fail loudly. Evidence is recorded in `.10x/evidence/2026-07-08-p0-c1-run-spine-matrix-foundation.md`; adversarial review is recorded in `.10x/reviews/2026-07-08-p0-c1-run-spine-matrix-foundation-review.md`. C1 is closed.
 
 ## Blockers
 

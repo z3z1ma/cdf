@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
-Depends-On: .10x/tickets/2026-07-08-p0-c1-run-spine-matrix-foundation.md
+Depends-On: .10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md
 
 # P0 C4: Live-run goldens per destination
 
@@ -38,4 +38,4 @@ No new runtime behavior. No full matrix expansion beyond selecting representativ
 
 ## Blockers
 
-C1 should land first so destination-specific golden fixtures can reuse the matrix source/destination fixture setup.
+C1 is closed. Destination-specific golden fixtures can reuse the matrix source/destination fixture setup.

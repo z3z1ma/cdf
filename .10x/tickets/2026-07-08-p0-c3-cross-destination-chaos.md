@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
-Depends-On: .10x/tickets/2026-07-08-p0-c1-run-spine-matrix-foundation.md
+Depends-On: .10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md
 
 # P0 C3: Cross-destination generic chaos
 
@@ -43,4 +43,4 @@ No new product runtime behavior except narrow test hooks if the existing generic
 
 ## Blockers
 
-C1 should land first if this child reuses matrix destination/source fixtures. If chaos can safely reuse existing package replay fixtures first, record that in progress before implementing.
+C1 is closed. If chaos reuses matrix destination/source fixtures, start from the done C1 harness; if chaos can safely reuse existing package replay fixtures first, record that in progress before implementing.
