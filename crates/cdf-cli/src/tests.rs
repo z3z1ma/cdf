@@ -97,27 +97,71 @@ fn help_lists_required_command_surface() {
 
     assert_eq!(result.exit_code, 0);
     for command in [
-        "init",
-        "validate",
-        "plan",
-        "explain",
-        "run",
-        "preview",
-        "sql",
-        "inspect",
-        "diff schema",
-        "contract freeze|show|test",
-        "state show|history",
-        "resume",
-        "replay package",
-        "backfill",
-        "package ls",
-        "package archive",
-        "doctor",
-        "status",
+        "help", "version", "init", "validate", "plan", "explain", "run", "preview", "sql",
+        "inspect", "diff", "contract", "state", "resume", "replay", "backfill", "package",
+        "doctor", "status",
     ] {
         assert!(result.stdout.contains(command), "missing {command}");
     }
+}
+
+#[test]
+fn parser_provides_subcommand_help_at_nested_layers() {
+    let plan = run(["cdf", "plan", "--help"]);
+
+    assert_eq!(plan.exit_code, 0);
+    assert!(plan.stdout.contains("Usage: cdf plan"));
+    assert!(plan.stdout.contains("--resource <RESOURCE>"));
+    assert!(plan.stdout.contains("--target <TARGET>"));
+
+    let rewind = run(["cdf", "state", "rewind", "--help"]);
+
+    assert_eq!(rewind.exit_code, 0);
+    assert!(rewind.stdout.contains("Usage: cdf state rewind"));
+    assert!(rewind.stdout.contains("--target-checkpoint <CHECKPOINT>"));
+    assert!(rewind.stdout.contains("--marker-checkpoint <CHECKPOINT>"));
+}
+
+#[test]
+fn parser_help_command_renders_requested_command_path() {
+    let result = run(["cdf", "help", "state", "rewind"]);
+
+    assert_eq!(result.exit_code, 0);
+    assert!(result.stdout.contains("Usage: cdf state rewind"));
+    assert!(result.stdout.contains("--scope-json <JSON>"));
+}
+
+#[test]
+fn parser_preserves_json_anywhere_for_help_envelope() {
+    let result = run(["cdf", "plan", "--help", "--json"]);
+
+    assert_eq!(result.exit_code, 0);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "help");
+    assert!(
+        json["result"]["help"]
+            .as_str()
+            .unwrap()
+            .contains("Usage: cdf plan")
+    );
+}
+
+#[test]
+fn parser_preserves_global_project_env_and_json_anywhere() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "validate",
+        "--project",
+        project.root_str(),
+        "--env",
+        "dev",
+        "--json",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "validate");
 }
 
 #[test]

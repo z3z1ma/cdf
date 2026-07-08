@@ -20,10 +20,10 @@ pub fn execute(cli: Cli) -> InvocationResult {
 fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
     let command = cli.command.clone();
     match command {
-        Command::Help => Ok(output(
+        Command::Help(help_text) => Ok(output(
             "help",
-            HELP_TEXT.to_owned(),
-            json!({ "help": HELP_TEXT }),
+            help_text.clone(),
+            json!({ "help": help_text }),
         )?),
         Command::Version => Ok(output(
             "version",
@@ -75,34 +75,3 @@ pub(crate) fn report_output<T: Serialize>(
 pub(crate) fn json_cli_error(error: serde_json::Error) -> CliError {
     CliError::from(CdfError::internal(error.to_string()))
 }
-
-const HELP_TEXT: &str = r#"cdf 0.1.0
-
-Usage:
-  cdf [--project PATH] [--env NAME] [--json] <command>
-
-Commands:
-  init [DIR] [--name NAME] [--force]
-  validate
-  plan <RESOURCE> --target TARGET [--select a,b] [--filter EXPR] [--limit N]
-  explain <RESOURCE> --target TARGET [--select a,b] [--filter EXPR] [--limit N]
-  run --resource RESOURCE --pipeline ID --target TARGET --package-id ID --checkpoint-id ID [--loop]
-  preview <RESOURCE> [--select a,b] [--filter EXPR] [--limit N]
-  sql <QUERY>
-  inspect project|resources|resource <ID>|lock|destinations|package <DIR>|run <ID>
-  diff schema
-  contract freeze|show|test
-  state show|history --pipeline ID --resource ID [--scope-json JSON]
-  state rewind --pipeline ID --resource ID --target-checkpoint ID --marker-checkpoint ID [--scope-json JSON]
-  state migrate
-  state recover --package DIR --to DEST [--receipt ID] [--target schema.table --merge-dedup fail]
-  resume [RUN_ID]
-  replay package <DIR>
-  backfill RESOURCE --from CURSOR --to CURSOR --target TARGET [--execute] [--slice-size N]
-  package ls [DIR]
-  package gc [DIR]
-  package verify <DIR>
-  package archive <DIR> [--format parquet] [--force]
-  doctor
-  status
-"#;

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws2-command-grammar-redesign.md
@@ -28,6 +28,14 @@ Focused parser tests, `cargo test -p cdf-cli --locked` for parser/help cases, `c
 ## Explicit exclusions
 
 No product grammar semantic changes such as default-minted run ids, `plan` destination defaults, no-arg `resume`, or `--scope key=value`; WS2C owns those. No generated completions/man pages; WS2D owns them. No renderer migration.
+
+## Progress and notes
+
+- 2026-07-08: Replaced the hand-rolled parser in `crates/cdf-cli/src/args.rs` with a clap v4 builder command tree that converts back into the existing dispatcher-facing args structs.
+- 2026-07-08: Preserved the global compatibility pre-pass for `--json`, `--project`, and `--env` anywhere in argv, added parser-layer subcommand help, and kept WS2C semantic grammar changes out of scope.
+- 2026-07-08: Added focused parser/help tests for nested help, `cdf help <path>`, JSON help envelopes with `--json` after the subcommand, and globals after `validate`.
+- 2026-07-08: Closure evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws2b-clap-parser-foundation.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p1-product-ws2b-clap-parser-foundation-review.md`.
+- 2026-07-08: Parent review tightened one generic path-argument error message and reran focused/full parser quality gates, including jscpd, complexity metrics, supply-chain scanners, and reusable CodeQL. Parent-observed evidence is appended to `.10x/evidence/2026-07-08-p1-product-ws2b-clap-parser-foundation.md`.
 
 ## Blockers
 

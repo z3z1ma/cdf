@@ -725,6 +725,7 @@ dependencies = [
  "cdf-package",
  "cdf-project",
  "cdf-state-sqlite",
+ "clap",
  "duckdb",
  "futures-executor",
  "futures-util",

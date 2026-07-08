@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws2-command-grammar-redesign.md
-Depends-On: .10x/tickets/2026-07-08-p1-product-ws2b-clap-parser-foundation.md, .10x/decisions/cli-command-grammar-and-parser.md
+Depends-On: .10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md, .10x/decisions/cli-command-grammar-and-parser.md
 
 # P1 product WS2C: Product grammar semantics
 
@@ -34,4 +34,4 @@ No parser framework migration; WS2B owns it. No completions/man pages; WS2D owns
 
 ## Blockers
 
-Depends on WS2B.
+None. WS2B parser foundation is done; product grammar semantics remain this ticket's scope.
