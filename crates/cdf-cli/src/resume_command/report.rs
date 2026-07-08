@@ -2,17 +2,27 @@ use cdf_kernel::{Checkpoint, CheckpointStatus, Receipt};
 use serde::Serialize;
 
 use crate::{
-    commands::report_output,
+    commands::json_cli_error,
     context::ProjectContext,
-    output::{CliError, CommandOutput},
+    output::{CliError, CommandOutput, HumanOutput},
+    render::{
+        RenderDocument,
+        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine},
+        redaction::redact_uri_userinfo,
+    },
 };
 
 use super::model::ResumePackageFacts;
 
 pub(super) fn finish_resume_report(report: ResumeReport) -> Result<CommandOutput, CliError> {
-    let human = report.human_message();
     let exit_code = report.exit_code();
-    report_output("resume", human, report, exit_code)
+    let document = report.render_document();
+    Ok(CommandOutput {
+        command: "resume",
+        exit_code,
+        human: HumanOutput::Rendered(document),
+        json: serde_json::to_value(report).map_err(json_cli_error)?,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -42,11 +52,103 @@ impl ResumeReport {
         }
     }
 
-    fn human_message(&self) -> String {
-        format!(
-            "resume run {} action {} result {} mutated={} guidance: {}",
-            self.run_id, self.action, self.recovery.result, self.mutated, self.recovery.guidance
-        )
+    fn render_document(&self) -> RenderDocument {
+        let status = if self.recovery.result == "success" {
+            StatusKind::Success
+        } else {
+            StatusKind::Error
+        };
+        RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                status,
+                format!(
+                    "resume run {} {}",
+                    self.run_id,
+                    if self.recovery.result == "success" {
+                        "completed"
+                    } else {
+                        "failed closed"
+                    }
+                ),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Recovery")
+                    .row("failed phase", self.state.clone())
+                    .row("action", self.action.clone())
+                    .row("result", self.recovery.result.clone())
+                    .row("source contact", yes_no(self.source_contact))
+                    .row("mutation required", yes_no(self.mutation_required))
+                    .row("mutation performed", yes_no(self.mutated))
+                    .row("guidance", self.recovery.guidance.clone())
+                    .row("next command", self.next_command()),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Durable artifacts")
+                    .row("package", optional_ref(self.package.package_id.as_deref()))
+                    .row(
+                        "package path",
+                        optional_display(self.package.path.as_deref()),
+                    )
+                    .row(
+                        "package hash",
+                        optional_ref(self.package.package_hash.as_deref()),
+                    )
+                    .row(
+                        "package status",
+                        optional_ref(self.package.status.as_deref()),
+                    )
+                    .row("package receipts", self.package.receipt_count.to_string())
+                    .row(
+                        "checkpoint",
+                        optional_ref(self.checkpoint.checkpoint_id.as_deref()),
+                    )
+                    .row(
+                        "checkpoint status",
+                        optional_ref(self.checkpoint.status.as_deref()),
+                    )
+                    .row("receipt", optional_ref(self.receipt.receipt_id.as_deref())),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("State")
+                    .row("checkpoint committed", yes_no(self.checkpoint.committed))
+                    .row("checkpoint is head", yes_no(self.checkpoint.is_head))
+                    .row(
+                        "receipt destination",
+                        optional_ref(self.receipt.destination_id.as_deref()),
+                    )
+                    .row(
+                        "receipt target",
+                        optional_ref(self.receipt.target.as_deref()),
+                    )
+                    .row(
+                        "receipt source",
+                        optional_ref(self.receipt.source.as_deref()),
+                    )
+                    .row("destination kind", self.destination.kind.clone())
+                    .row("destination", safe_display_value(&self.destination.uri)),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Run ledger")
+                    .row("events before", self.ledger_event_count_before.to_string())
+                    .row("events after", self.ledger_event_count_after.to_string()),
+            )
+            .blank_line()
+            .push(NextCommand::new(self.next_command()))
+    }
+
+    fn next_command(&self) -> String {
+        match self.action.as_str() {
+            "rerun_extraction_from_last_committed_checkpoint" => "cdf run <resource>".to_owned(),
+            "inspect_missing_artifacts" | "inspect_destination" => {
+                format!("cdf inspect run {}", self.run_id)
+            }
+            _ => format!("cdf inspect run {}", self.run_id),
+        }
     }
 }
 
@@ -138,4 +240,22 @@ impl ResumeDestinationPointer {
 pub(super) struct ResumeRecoveryReport {
     pub(super) result: String,
     pub(super) guidance: String,
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn optional_ref(value: Option<&str>) -> String {
+    value.unwrap_or("none").to_owned()
+}
+
+fn optional_display(value: Option<&str>) -> String {
+    value
+        .map(safe_display_value)
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn safe_display_value(value: &str) -> String {
+    redact_uri_userinfo(value)
 }

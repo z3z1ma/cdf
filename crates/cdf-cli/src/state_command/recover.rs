@@ -6,8 +6,12 @@ use serde::Serialize;
 
 use crate::{
     args::{Cli, StateRecoverArgs},
-    commands::output,
     output::{CliError, CommandOutput},
+    render::{
+        RenderDocument,
+        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        redaction::redact_uri_userinfo,
+    },
     replay_command::{
         PackageReplayDestinationArgs, build_replay_destination, load_package_replay_context,
     },
@@ -56,7 +60,7 @@ pub(super) fn recover(cli: &Cli, args: StateRecoverArgs) -> Result<CommandOutput
         &report,
     );
 
-    output("state recover", cli_report.human_message(), cli_report)
+    CommandOutput::rendered("state recover", cli_report.render_document(), cli_report)
 }
 
 fn ensure_recovery_checkpoint_proposed(
@@ -181,11 +185,69 @@ impl StateRecoverCliReport {
         }
     }
 
-    fn human_message(&self) -> String {
-        format!(
-            "recovered checkpoint {} from package receipt {}; destination rows were not written; evidence limits reported",
-            self.checkpoint_id, self.receipt_id
-        )
+    fn render_document(&self) -> RenderDocument {
+        let limit_table = self
+            .evidence_limits
+            .iter()
+            .fold(Table::new(["evidence limit"]), |table, limit| {
+                table.row([(*limit).to_owned()])
+            });
+
+        RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!("recovered checkpoint {}", self.checkpoint_id),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Recovery")
+                    .row("package", self.package_id.clone())
+                    .row("package dir", safe_display_value(&self.package_dir))
+                    .row("package hash", self.package_hash.clone())
+                    .row("selected receipt", self.selected_receipt_id.clone())
+                    .row(
+                        "receipt selection",
+                        receipt_selection_name(self.receipt_selection),
+                    )
+                    .row("receipt source", self.receipt_source)
+                    .row(
+                        "next command",
+                        format!(
+                            "cdf inspect package {}",
+                            safe_display_value(&self.package_dir)
+                        ),
+                    ),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Checkpoint")
+                    .row("checkpoint", self.checkpoint_id.clone())
+                    .row("package status", self.package_status.clone())
+                    .row("receipt", self.receipt_id.clone())
+                    .row(
+                        "mutation performed",
+                        "checkpoint committed from durable receipt",
+                    ),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Writes")
+                    .row("package status", yes_no(self.writes.package_status))
+                    .row("destination rows", yes_no(self.writes.destination_rows))
+                    .row("checkpoint", yes_no(self.writes.checkpoint))
+                    .row(
+                        "destination",
+                        "verified receipt only; destination rows were not written",
+                    ),
+            )
+            .blank_line()
+            .push(limit_table)
+            .blank_line()
+            .push(NextCommand::new(format!(
+                "cdf inspect package {}",
+                safe_display_value(&self.package_dir)
+            )))
     }
 }
 
@@ -204,4 +266,19 @@ fn receipt_source_name(source: &ProjectReceiptSource) -> &'static str {
         }
         ProjectReceiptSource::SuppliedDurableReceipt => "supplied_durable_receipt",
     }
+}
+
+fn receipt_selection_name(selection: RecoveryReceiptSelection) -> &'static str {
+    match selection {
+        RecoveryReceiptSelection::Explicit => "explicit",
+        RecoveryReceiptSelection::SingleDurableReceipt => "single_durable_receipt",
+    }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn safe_display_value(value: &str) -> String {
+    redact_uri_userinfo(value)
 }

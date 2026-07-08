@@ -7,11 +7,16 @@ use serde::Serialize;
 
 use crate::{
     args::{BackfillArgs, Cli},
-    commands::output,
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_environment_destination},
     output::{CliError, CommandOutput},
     project_run_resource::build_project_run_resource,
+    render::{
+        RenderDocument,
+        humanize::humanize_rows,
+        primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
+        redaction::redact_uri_userinfo,
+    },
     reports::{RunDestinationReport, WriteEffects},
     scan_command::default_target_for_resource,
 };
@@ -36,7 +41,7 @@ pub(crate) fn backfill(cli: &Cli, args: BackfillArgs) -> Result<CommandOutput, C
 
     if !args.execute {
         let report = BackfillCliReport::planned(&plan, args.slice_size);
-        return output("backfill", report.human_message(), report);
+        return CommandOutput::rendered("backfill", report.render_document(), report);
     }
 
     let run_resource = build_project_run_resource(&context, resource)?;
@@ -54,7 +59,7 @@ pub(crate) fn backfill(cli: &Cli, args: BackfillArgs) -> Result<CommandOutput, C
         )?);
     }
     let report = BackfillCliReport::executed(&plan, args.slice_size, reports);
-    output("backfill", report.human_message(), report)
+    CommandOutput::rendered("backfill", report.render_document(), report)
 }
 
 fn execute_slice(
@@ -166,21 +171,78 @@ impl BackfillCliReport {
         }
     }
 
-    fn human_message(&self) -> String {
-        match self.mode {
-            "execute" => format!(
-                "executed backfill for {} to {}: {} slice(s) through the run spine",
-                self.resource_id,
-                self.target,
-                self.slices.len()
-            ),
-            _ => format!(
-                "planned backfill for {} to {}: {} slice(s); wrote no package, destination data, checkpoint rows, or run-ledger events",
-                self.resource_id,
-                self.target,
-                self.slices.len()
-            ),
+    fn render_document(&self) -> RenderDocument {
+        let executed = self.mode == "execute";
+        let mut document = RenderDocument::new()
+            .push(SectionRule::new())
+            .push(StatusLine::new(
+                StatusKind::Success,
+                format!(
+                    "{} backfill {} -> {}",
+                    if executed { "executed" } else { "planned" },
+                    self.resource_id,
+                    self.target
+                ),
+            ))
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Backfill")
+                    .row("mode", self.mode)
+                    .row("resource", self.resource_id.clone())
+                    .row("target", self.target.clone())
+                    .row("pipeline", self.pipeline_id.clone())
+                    .row("from", self.requested.from.clone())
+                    .row("to", self.requested.to.clone())
+                    .row("slice size", optional_u64(self.requested.slice_size))
+                    .row("slices", self.slices.len().to_string()),
+            )
+            .blank_line()
+            .push(
+                KeyValuePanel::new("Writes")
+                    .row("package", yes_no(executed))
+                    .row("destination", yes_no(executed))
+                    .row("checkpoint", yes_no(executed))
+                    .row(
+                        "mutation",
+                        if executed {
+                            "ran each slice through the run spine"
+                        } else {
+                            "dry plan only; no package, destination, checkpoint, or run-ledger writes"
+                        },
+                    ),
+            );
+
+        let table = self.slices.iter().fold(
+            Table::new(["slice", "window", "status", "package", "checkpoint", "rows"]),
+            |table, slice| {
+                table.row([
+                    slice.ordinal.to_string(),
+                    format!("{}..{}", slice.start, slice.end),
+                    slice.status.to_owned(),
+                    safe_display_value(&slice.package_id),
+                    safe_display_value(&slice.checkpoint_id),
+                    slice
+                        .executed
+                        .as_ref()
+                        .map(|executed| humanize_rows(executed.row_count))
+                        .unwrap_or_else(|| "-".to_owned()),
+                ])
+            },
+        );
+        document = document.blank_line().push(table);
+
+        if executed {
+            document = document
+                .blank_line()
+                .push(NextCommand::new("cdf state history <resource>"));
+        } else {
+            document = document.blank_line().push(NextCommand::new(format!(
+                "cdf backfill {} --from {} --to {} --target {} --execute",
+                self.resource_id, self.requested.from, self.requested.to, self.target
+            )));
         }
+
+        document
     }
 }
 
@@ -254,4 +316,18 @@ struct BackfillSliceExecutionReport {
     row_count: u64,
     segment_count: usize,
     destination: RunDestinationReport,
+}
+
+fn optional_u64(value: Option<u64>) -> String {
+    value
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_owned())
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
+}
+
+fn safe_display_value(value: &str) -> String {
+    redact_uri_userinfo(value)
 }

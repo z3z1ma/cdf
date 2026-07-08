@@ -11,9 +11,12 @@ use serde::Serialize;
 
 use crate::{
     args::{Cli, ResumeArgs},
-    commands::report_output,
     context::ProjectContext,
     output::{CliError, CommandOutput},
+    render::{
+        RenderDocument,
+        primitives::{KeyValuePanel, SectionRule, StatusKind, StatusLine},
+    },
 };
 
 use self::{attempt::ResumeAttempt, report::finish_resume_report};
@@ -119,14 +122,35 @@ struct BareResumeReport {
 }
 
 fn no_interrupted_runs_report() -> Result<CommandOutput, CliError> {
-    report_output(
-        "resume",
-        "no interrupted runs found; wrote no package, destination data, checkpoint rows, or run-ledger events".to_owned(),
-        BareResumeReport {
-            state: "no_interrupted_runs",
-            interrupted_runs: Vec::new(),
-            writes: crate::reports::WriteEffects::none(),
-        },
-        0,
-    )
+    let report = BareResumeReport {
+        state: "no_interrupted_runs",
+        interrupted_runs: Vec::new(),
+        writes: crate::reports::WriteEffects::none(),
+    };
+    CommandOutput::rendered("resume", bare_resume_document(&report), report)
+}
+
+fn bare_resume_document(report: &BareResumeReport) -> RenderDocument {
+    RenderDocument::new()
+        .push(SectionRule::new())
+        .push(StatusLine::new(
+            StatusKind::Success,
+            "no interrupted runs found",
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Resume")
+                .row("state", report.state)
+                .row(
+                    "interrupted runs",
+                    report.interrupted_runs.len().to_string(),
+                )
+                .row("package written", "no")
+                .row("destination written", "no")
+                .row("checkpoint written", "no")
+                .row(
+                    "mutation performed",
+                    "none; no package, destination, checkpoint, or run-ledger writes",
+                ),
+        )
 }

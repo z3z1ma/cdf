@@ -884,6 +884,85 @@ fn backfill_dry_plan_splits_sql_cursor_windows_without_writes() {
             .unwrap()
             .starts_with("cdf-backfill-pkg-")
     );
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "backfill",
+        "warehouse.orders",
+        "--from",
+        "0",
+        "--to",
+        "25",
+        "--target",
+        "orders",
+        "--slice-size",
+        "10",
+    ]);
+
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert!(!human.stdout.contains("\u{1b}["));
+    for expected in [
+        "OK planned backfill warehouse.orders -> orders",
+        "Backfill",
+        "Writes",
+        "dry plan only; no package, destination, checkpoint, or run-ledger writes",
+        "| slice | window | status",
+        "-> cdf backfill warehouse.orders --from 0 --to 25 --target orders --execute",
+    ] {
+        assert!(
+            human.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            human.stdout
+        );
+    }
+}
+
+#[test]
+fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
+    let project = TestProject::new();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_resource_with_ordered_cursor("secret://file/sql-dsn", "orders"),
+    )
+    .unwrap();
+
+    let output = crate::backfill_command::backfill(
+        &test_cli(&project),
+        crate::args::BackfillArgs {
+            resource_id: "warehouse.orders".to_owned(),
+            from: "0".to_owned(),
+            to: "20".to_owned(),
+            target: Some("orders".to_owned()),
+            execute: false,
+            slice_size: Some(10),
+        },
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "\u{1b}[32m✓\u{1b}[0m planned backfill warehouse.orders -> orders",
+        "\u{1b}[36mBackfill\u{1b}[0m",
+        "\u{1b}[36mWrites\u{1b}[0m",
+        "dry plan only; no package, destination, checkpoint, or run-ledger writes",
+        "│ slice │ window │ status",
+        "\u{1b}[36m→\u{1b}[0m cdf backfill warehouse.orders --from 0 --to 20 --target orders --execute",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -2028,9 +2107,24 @@ fn inspect_run_reports_completed_run_json_and_human() {
         run_id,
     ]);
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
-    assert!(human.stdout.contains(&format!("run {run_id}")));
-    assert!(human.stdout.contains("terminal succeeded"));
-    assert!(human.stdout.contains("recovery no_op"));
+    assert!(!human.stdout.contains("\u{1b}["));
+    for expected in [
+        &format!("OK run {run_id} terminal succeeded"),
+        "Recovery",
+        "Artifacts",
+        "Pointers",
+        "Duplicate",
+        "Package artifacts",
+        "action             no_op",
+        "checkpoint status     committed",
+        "-> cdf inspect run ",
+    ] {
+        assert!(
+            human.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            human.stdout
+        );
+    }
 }
 
 #[test]
@@ -2071,6 +2165,64 @@ fn inspect_run_marks_missing_package_artifact() {
         json["result"]["artifacts"]["receipt"]["status"],
         "unavailable"
     );
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "run",
+        run_id,
+    ]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    for expected in [
+        "Package artifacts",
+        "missing",
+        "package path recorded in the run ledger does not exist",
+        "missing packages      1",
+        "receipt status        unavailable",
+    ] {
+        assert!(
+            human.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            human.stdout
+        );
+    }
+}
+
+#[test]
+fn inspect_run_human_rich_render_uses_recovery_and_artifact_panels() {
+    let project = TestProject::new();
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-inspect-run-rich",
+        "checkpoint-inspect-run-rich",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    let run_id = run_json["result"]["run_id"].as_str().unwrap();
+    let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+
+    let output = crate::inspect_run_command::inspect_run(&context, run_id.to_owned()).unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "\u{1b}[32m✓\u{1b}[0m run ",
+        "\u{1b}[36mRecovery\u{1b}[0m",
+        "\u{1b}[36mArtifacts\u{1b}[0m",
+        "\u{1b}[36mPointers\u{1b}[0m",
+        "action             no_op",
+        "checkpoint status     committed",
+        "│ seq │ kind",
+        "\u{1b}[36m→\u{1b}[0m cdf inspect run ",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -2162,6 +2314,32 @@ fn inspect_run_redacts_secret_ref_details_without_resolving_project_secret() {
     let detail = &json["result"]["events"][0]["details"]["attributes"]["destination_secret"];
     assert_eq!(detail["type"], "secret_ref");
     assert_eq!(detail["value"], "secret://file/destination-dsn");
+}
+
+#[test]
+fn inspect_run_human_render_redacts_uri_userinfo_in_artifact_paths() {
+    let project = TestProject::new();
+    let ledger = SqliteRunLedger::open(project.root.join(".cdf/state.db")).unwrap();
+    let run_id = RunId::new("run-inspect-render-redaction").unwrap();
+    let run_record = ledger.create_run(Some(run_id.clone())).unwrap();
+    let mut event = RunEventAppend::new(RunEventKind::PackageFinalized);
+    event.package_id = Some("pkg-inspect-render-redaction".to_owned());
+    event.package_path = Some("postgres://user:inspect-render-secret@localhost/db".to_owned());
+    ledger.append_event(&run_record.run_id, event).unwrap();
+
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "run",
+        run_id.as_str(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "inspect-render-secret");
+    assert!(result.stdout.contains("postgres://[redacted]@localhost/db"));
+    assert!(result.stdout.contains("missing"));
 }
 
 #[test]
@@ -2309,6 +2487,86 @@ fn resume_no_finalized_package_fails_closed_with_guidance() {
             .unwrap()
             .contains("no finalized package")
     );
+}
+
+#[test]
+fn resume_human_headless_render_uses_recovery_panels_and_redacts_destination_uri() {
+    let project = TestProject::new();
+    write_project_destination(
+        &project,
+        "postgres://user:resume-render-secret@localhost/db",
+    );
+    let run_id = create_resume_run_with_events(
+        &project,
+        "run-resume-human-no-package",
+        &[RunEventKind::RunStarted, RunEventKind::RunFailed],
+    );
+
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "resume",
+        "--run",
+        run_id.as_str(),
+    ]);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    assert!(!result.stdout.contains("\u{1b}["));
+    assert_secret_absent(&result, "resume-render-secret");
+    for expected in [
+        "ERR resume run run-resume-human-no-package failed closed",
+        "Recovery",
+        "Durable artifacts",
+        "State",
+        "Run ledger",
+        "failed phase        no_finalized_package",
+        "mutation performed  no",
+        "postgres://[redacted]@localhost/db",
+        "-> cdf run <resource>",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+}
+
+#[test]
+fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
+    let project = TestProject::new();
+    let run_id = create_resume_run_with_events(
+        &project,
+        "run-resume-rich-no-package",
+        &[RunEventKind::RunStarted, RunEventKind::RunFailed],
+    );
+    let output = crate::resume_command::resume(
+        &test_cli(&project),
+        crate::args::ResumeArgs {
+            run_id: Some(run_id.to_string()),
+        },
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    for expected in [
+        "\u{1b}[31m✗\u{1b}[0m resume run run-resume-rich-no-package failed closed",
+        "\u{1b}[36mRecovery\u{1b}[0m",
+        "\u{1b}[36mDurable artifacts\u{1b}[0m",
+        "\u{1b}[36mState\u{1b}[0m",
+        "\u{1b}[36mRun ledger\u{1b}[0m",
+        "failed phase        no_finalized_package",
+        "mutation performed  no",
+        "\u{1b}[36m→\u{1b}[0m cdf run <resource>",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -5227,6 +5485,72 @@ fn state_show_uses_sqlite_store_and_reports_missing_head() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["command"], "state show");
     assert!(json["result"]["head"].is_null());
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "state",
+        "show",
+        "--pipeline",
+        "pipeline-1",
+        "--resource",
+        "local.events",
+    ]);
+
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert!(!human.stdout.contains("\u{1b}["));
+    for expected in [
+        "WARN no committed state head",
+        "Scope",
+        "Head",
+        "pipeline",
+        "pipeline-1",
+        "checkpoint",
+        "none",
+        "mutation performed",
+        "-> cdf state history local.events --pipeline pipeline-1",
+    ] {
+        assert!(
+            human.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            human.stdout
+        );
+    }
+}
+
+#[test]
+fn state_followup_commands_render_scope_pairs_for_scope_json_objects() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "state",
+        "show",
+        "local.events",
+        "--scope-json",
+        r#"{"kind":"window","start":"0","end":"10"}"#,
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "-> cdf state history local.events",
+        "--scope kind=window",
+        "--scope start=0",
+        "--scope end=10",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+    assert!(
+        !result.stdout.contains("--scope-json"),
+        "follow-up command should teach --scope pairs:\n{}",
+        result.stdout
+    );
 }
 
 #[test]
@@ -5302,6 +5626,60 @@ fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
         2
     );
 
+    let human_show = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "state",
+        "show",
+        "local.events",
+        "--scope",
+        "kind=resource",
+    ]);
+    assert_eq!(human_show.exit_code, 0, "stderr: {}", human_show.stderr);
+    for expected in [
+        "OK state head found",
+        "Scope",
+        "Head",
+        "checkpoint-state-product-second",
+        "-> cdf state history local.events --scope kind=resource",
+    ] {
+        assert!(
+            human_show.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            human_show.stdout
+        );
+    }
+
+    let human_history = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "state",
+        "history",
+        "local.events",
+        "--scope",
+        "kind=resource",
+    ]);
+    assert_eq!(
+        human_history.exit_code, 0,
+        "stderr: {}",
+        human_history.stderr
+    );
+    for expected in [
+        "OK 2 checkpoint(s)",
+        "| checkpoint",
+        "checkpoint-state-product-first",
+        "checkpoint-state-product-second",
+        "-> cdf state show local.events --scope kind=resource",
+    ] {
+        assert!(
+            human_history.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            human_history.stdout
+        );
+    }
+
     let rewind = run([
         "cdf",
         "--json",
@@ -5335,6 +5713,70 @@ fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
             .len(),
         1
     );
+}
+
+#[test]
+fn state_rewind_human_headless_render_reports_marker_and_packages_ahead() {
+    let project = TestProject::new();
+    let first = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "local.events",
+        "--package-id",
+        "pkg-state-human-first",
+        "--checkpoint-id",
+        "checkpoint-state-human-first",
+    ]);
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    let second = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "local.events",
+        "--package-id",
+        "pkg-state-human-second",
+        "--checkpoint-id",
+        "checkpoint-state-human-second",
+    ]);
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "state",
+        "rewind",
+        "local.events",
+        "--scope",
+        "kind=resource",
+        "--to",
+        "checkpoint-state-human-first",
+        "--marker-checkpoint",
+        "rewind-marker-human",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!result.stdout.contains("\u{1b}["));
+    for expected in [
+        "OK rewound to checkpoint-state-human-first",
+        "Rewind",
+        "marker              rewind-marker-human",
+        "packages ahead      1",
+        "rewind marker checkpoint appended",
+        "| package ahead of state",
+        "-> cdf state show local.events --scope kind=resource",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -5392,6 +5834,61 @@ fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
     assert_eq!(second_components[0]["applied"], false);
     assert_eq!(second_components[1]["action"], "current");
     assert_eq!(second_components[1]["applied"], false);
+
+    let human = run(["cdf", "--project", project.root_str(), "state", "migrate"]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    for expected in [
+        "OK state migration checked 2 component(s)",
+        "State store",
+        "mutation performed  none; all SQLite state components were current",
+        "| component",
+        "checkpoint_store",
+        "run_ledger",
+    ] {
+        assert!(
+            human.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            human.stdout
+        );
+    }
+}
+
+#[test]
+fn state_show_human_rich_render_uses_scope_and_head_panels() {
+    let project = TestProject::new();
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-state-show-rich",
+        "checkpoint-state-show-rich",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+
+    let output = crate::state_command::state(
+        &test_cli(&project),
+        crate::args::StateCommand::Show(crate::args::StateScopeArgs {
+            pipeline_id: Some("pipeline-run".to_owned()),
+            resource_id: "local.events".to_owned(),
+            scope_json: None,
+            scope: vec!["kind=resource".to_owned()],
+        }),
+    )
+    .unwrap();
+    let result = render_rich(output);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    for expected in [
+        "\u{1b}[32m✓\u{1b}[0m state head found",
+        "\u{1b}[36mScope\u{1b}[0m",
+        "\u{1b}[36mHead\u{1b}[0m",
+        "checkpoint  checkpoint-state-show-rich",
+        "\u{1b}[36m→\u{1b}[0m cdf state history local.events --pipeline pipeline-run --scope kind=resource",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
@@ -5458,6 +5955,48 @@ fn state_recover_commits_verified_package_receipt_without_destination_rows() {
         head.receipt.as_ref().unwrap().receipt_id.to_string(),
         receipt_id
     );
+}
+
+#[test]
+fn state_recover_human_headless_render_reports_receipt_checkpoint_and_limits() {
+    let project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-state-recover-human",
+        "checkpoint-state-recover-human",
+    );
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--project".to_owned(),
+        project.root_str().to_owned(),
+        "state".to_owned(),
+        "recover".to_owned(),
+        "--package".to_owned(),
+        package_dir.to_str().unwrap().to_owned(),
+        "--to".to_owned(),
+        "duckdb://.cdf/dev.duckdb".to_owned(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!result.stdout.contains("\u{1b}["));
+    for expected in [
+        "OK recovered checkpoint checkpoint-state-recover-human",
+        "Recovery",
+        "Checkpoint",
+        "Writes",
+        "destination rows  no",
+        "verified receipt only; destination rows were not written",
+        "| evidence limit",
+        "does not reconstruct quarantine lineage",
+        "-> cdf inspect package ",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
 }
 
 #[test]
