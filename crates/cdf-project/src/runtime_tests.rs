@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, VecDeque},
-    env, fs,
+    env, fmt, fs,
     net::TcpListener,
     path::{Path, PathBuf},
     process::Command,
@@ -45,9 +45,17 @@ use cdf_package::{
     STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
     canonical_json_bytes,
 };
-use cdf_state_sqlite::{RunEventKind, RunEventValue, SqliteCheckpointStore, SqliteRunLedger};
+use cdf_state_sqlite::{
+    RunEventDetails, RunEventKind, RunEventValue, SecretReference, SqliteCheckpointStore,
+    SqliteRunLedger,
+};
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
+use tracing::{
+    Event, Id, Metadata, Subscriber,
+    field::{Field as TracingField, Visit},
+    span::{Attributes, Record},
+};
 
 use crate::{
     BackfillPlanRequest, DestinationReceiptReportingPolicy, LocalFileDuckDbRunRequest,
@@ -56,11 +64,11 @@ use crate::{
     PreparedPackageReplayRequest, ProjectDestinationDescription, ProjectDestinationDriver,
     ProjectDestinationRegistry, ProjectDestinationRuntime, ProjectReceiptSource,
     ProjectResolutionContext, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RuntimeStage, backfill_pipeline_id, plan_backfill,
-    recover_package_from_artifacts, recover_package_with_runtime, recover_prepared_package,
-    replay_package_from_artifacts, replay_package_with_runtime, replay_prepared_package,
-    replay_prepared_package_with_stage_hook, run_local_file_to_duckdb_checkpoint, run_project,
-    runtime::state_delta_from_run,
+    ResolvedProjectDestination, RuntimeStage, TracingRunEventSink, backfill_pipeline_id,
+    plan_backfill, recover_package_from_artifacts, recover_package_with_runtime,
+    recover_prepared_package, replay_package_from_artifacts, replay_package_with_runtime,
+    replay_prepared_package, replay_prepared_package_with_stage_hook,
+    run_local_file_to_duckdb_checkpoint, run_project, runtime::state_delta_from_run,
 };
 
 const SCHEMA_HASH: &str = "schema-v1";
@@ -158,6 +166,172 @@ impl RunEventSink for RecordingRunEventSink {
         }
         events.push(event.clone());
         RunEventSinkResult::Accepted
+    }
+}
+
+#[derive(Clone, Default)]
+struct CapturingTracingSubscriber {
+    next_id: Arc<AtomicU64>,
+    events: Arc<Mutex<Vec<CapturedTracingEvent>>>,
+}
+
+impl CapturingTracingSubscriber {
+    fn captured_events(&self) -> Vec<CapturedTracingEvent> {
+        self.events.lock().unwrap().clone()
+    }
+}
+
+impl Subscriber for CapturingTracingSubscriber {
+    fn enabled(&self, _metadata: &Metadata<'_>) -> bool {
+        true
+    }
+
+    fn new_span(&self, _attrs: &Attributes<'_>) -> Id {
+        Id::from_u64(self.next_id.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    fn record(&self, _span: &Id, _values: &Record<'_>) {}
+
+    fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+    fn event(&self, event: &Event<'_>) {
+        let mut visitor = TracingFieldVisitor::default();
+        event.record(&mut visitor);
+        self.events.lock().unwrap().push(CapturedTracingEvent {
+            target: event.metadata().target().to_owned(),
+            fields: visitor.fields,
+        });
+    }
+
+    fn enter(&self, _span: &Id) {}
+
+    fn exit(&self, _span: &Id) {}
+}
+
+#[derive(Clone, Debug)]
+struct CapturedTracingEvent {
+    target: String,
+    fields: BTreeMap<String, String>,
+}
+
+#[derive(Default)]
+struct TracingFieldVisitor {
+    fields: BTreeMap<String, String>,
+}
+
+impl Visit for TracingFieldVisitor {
+    fn record_str(&mut self, field: &TracingField, value: &str) {
+        self.fields
+            .insert(field.name().to_owned(), value.to_owned());
+    }
+
+    fn record_bool(&mut self, field: &TracingField, value: bool) {
+        self.fields
+            .insert(field.name().to_owned(), value.to_string());
+    }
+
+    fn record_i64(&mut self, field: &TracingField, value: i64) {
+        self.fields
+            .insert(field.name().to_owned(), value.to_string());
+    }
+
+    fn record_u64(&mut self, field: &TracingField, value: u64) {
+        self.fields
+            .insert(field.name().to_owned(), value.to_string());
+    }
+
+    fn record_debug(&mut self, field: &TracingField, value: &dyn fmt::Debug) {
+        self.fields
+            .insert(field.name().to_owned(), format!("{value:?}"));
+    }
+}
+
+fn expected_runtime_trace_fields(event: &RunEvent) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("run_id".to_owned(), event.run_id.as_str().to_owned()),
+        (
+            "resource_id".to_owned(),
+            optional_trace_field(event.resource_id.as_ref()),
+        ),
+        (
+            "scope".to_owned(),
+            event
+                .scope
+                .as_ref()
+                .and_then(|scope| serde_json::to_string(scope).ok())
+                .unwrap_or_default(),
+        ),
+        (
+            "partition_id".to_owned(),
+            optional_trace_field(event.partition_id.as_ref()),
+        ),
+        (
+            "package_id".to_owned(),
+            optional_trace_field(event.package_id.as_ref()),
+        ),
+        (
+            "package_hash".to_owned(),
+            optional_trace_field(event.package_hash.as_ref()),
+        ),
+        (
+            "package_path".to_owned(),
+            optional_trace_field(event.package_path.as_ref()),
+        ),
+        (
+            "destination_id".to_owned(),
+            optional_trace_field(event.destination_id.as_ref()),
+        ),
+        (
+            "plan_id".to_owned(),
+            optional_trace_field(event.plan_id.as_ref()),
+        ),
+        (
+            "checkpoint_id".to_owned(),
+            optional_trace_field(event.checkpoint_id.as_ref()),
+        ),
+        (
+            "receipt_id".to_owned(),
+            optional_trace_field(event.receipt_id.as_ref()),
+        ),
+        ("event_kind".to_owned(), event.kind.as_str().to_owned()),
+        ("sequence".to_owned(), event.sequence.to_string()),
+        ("timestamp_ms".to_owned(), event.timestamp_ms.to_string()),
+        (
+            "details".to_owned(),
+            serde_json::to_string(&event.details.attributes).unwrap(),
+        ),
+    ])
+}
+
+fn optional_trace_field<T: AsRef<str>>(value: Option<&T>) -> String {
+    value.map(|value| value.as_ref()).unwrap_or("").to_owned()
+}
+
+fn runtime_trace_events(subscriber: &CapturingTracingSubscriber) -> Vec<CapturedTracingEvent> {
+    subscriber
+        .captured_events()
+        .into_iter()
+        .filter(|event| event.target == "cdf_project.runtime.run_event")
+        .collect()
+}
+
+fn run_event_for_tracing_details(details: RunEventDetails) -> RunEvent {
+    RunEvent {
+        run_id: RunId::new("run-tracing-redaction").unwrap(),
+        sequence: 1,
+        timestamp_ms: 1_800_000_000_000,
+        kind: RunEventKind::RunStarted,
+        resource_id: Some(ResourceId::new("local.events").unwrap()),
+        scope: Some(ScopeKey::Resource),
+        partition_id: None,
+        package_id: Some("pkg-tracing-redaction".to_owned()),
+        package_hash: None,
+        package_path: Some("pkg-tracing-redaction".to_owned()),
+        checkpoint_id: None,
+        receipt_id: None,
+        destination_id: Some(DestinationId::new("duckdb").unwrap()),
+        plan_id: Some(PlanId::new("plan-tracing-redaction").unwrap()),
+        details,
     }
 }
 
@@ -2047,6 +2221,113 @@ fn general_project_run_live_sink_drops_do_not_fail_run_or_truncate_ledger() {
     assert_eq!(report.package_status, PackageStatus::Checkpointed);
     assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
     assert_eq!(report.row_count, 2);
+}
+
+#[test]
+fn general_project_run_tracing_bridge_emits_structured_runtime_events() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-general-tracing-bridge";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let tracing_sink = TracingRunEventSink::new();
+    let subscriber = CapturingTracingSubscriber::default();
+    let mut request = project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-tracing-bridge",
+    );
+    request.event_sink = Some(&tracing_sink);
+
+    let report = tracing::subscriber::with_default(subscriber.clone(), || {
+        futures_executor::block_on(run_project(request))
+    })
+    .unwrap();
+
+    let traced_events = runtime_trace_events(&subscriber);
+    assert_eq!(traced_events.len(), report.ledger_snapshot.events.len());
+    for (traced, persisted) in traced_events.iter().zip(&report.ledger_snapshot.events) {
+        assert_eq!(traced.fields, expected_runtime_trace_fields(persisted));
+    }
+    let finalized = traced_events
+        .iter()
+        .find(|event| {
+            event.fields.get("event_kind").map(String::as_str) == Some("package_finalized")
+        })
+        .expect("package_finalized trace event");
+    assert_eq!(
+        finalized.fields.get("package_hash").map(String::as_str),
+        Some(report.package_hash.as_str())
+    );
+    let checkpoint = traced_events
+        .iter()
+        .find(|event| {
+            event.fields.get("event_kind").map(String::as_str) == Some("checkpoint_committed")
+        })
+        .expect("checkpoint_committed trace event");
+    assert_eq!(
+        checkpoint.fields.get("checkpoint_id").map(String::as_str),
+        Some(report.checkpoint.delta.checkpoint_id.as_str())
+    );
+    let receipt = traced_events
+        .iter()
+        .find(|event| {
+            event.fields.get("event_kind").map(String::as_str)
+                == Some("destination_receipt_recorded")
+        })
+        .expect("destination_receipt_recorded trace event");
+    assert_eq!(
+        receipt.fields.get("receipt_id").map(String::as_str),
+        Some(report.receipt.receipt_id.as_str())
+    );
+    let ledger = SqliteRunLedger::open(&state_path).unwrap();
+    assert_eq!(
+        ledger.events(&report.run_id).unwrap(),
+        report.ledger_snapshot.events
+    );
+    assert_run_artifact_identity_unchanged(&report);
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+}
+
+#[test]
+fn runtime_tracing_bridge_drops_unredacted_details_before_emit() {
+    let tracing_sink = TracingRunEventSink::new();
+    let subscriber = CapturingTracingSubscriber::default();
+    let raw_secret = run_event_for_tracing_details(RunEventDetails::new([(
+        "api_token",
+        RunEventValue::String("super-secret-token".to_owned()),
+    )]));
+
+    let result = tracing::subscriber::with_default(subscriber.clone(), || {
+        tracing_sink.try_emit(&raw_secret)
+    });
+
+    assert_eq!(result, RunEventSinkResult::Dropped);
+    assert!(runtime_trace_events(&subscriber).is_empty());
+
+    let typed_secret = run_event_for_tracing_details(RunEventDetails::new([(
+        "api_token",
+        RunEventValue::SecretRef(SecretReference::new("secret://env/API_TOKEN").unwrap()),
+    )]));
+    let result = tracing::subscriber::with_default(subscriber.clone(), || {
+        tracing_sink.try_emit(&typed_secret)
+    });
+
+    assert_eq!(result, RunEventSinkResult::Accepted);
+    let traced_events = runtime_trace_events(&subscriber);
+    assert_eq!(traced_events.len(), 1);
+    assert_eq!(
+        traced_events[0].fields,
+        expected_runtime_trace_fields(&typed_secret)
+    );
+    let details = traced_events[0].fields.get("details").unwrap();
+    assert!(details.contains("secret://env/API_TOKEN"));
+    assert!(!details.contains("super-secret-token"));
 }
 
 #[test]

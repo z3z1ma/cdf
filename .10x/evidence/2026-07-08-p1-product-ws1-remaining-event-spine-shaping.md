@@ -27,7 +27,7 @@ Read the WS1 parent, WS1A done ticket, WS1A evidence/review, event source files,
 - `.10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
-- `.10x/tickets/2026-07-08-p1-product-ws1e-tracing-bridge.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1e-tracing-bridge.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1f-event-spine-evidence-gate.md`
 
 ## What this supports or challenges

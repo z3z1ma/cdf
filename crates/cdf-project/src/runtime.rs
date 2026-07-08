@@ -7,6 +7,7 @@ mod planning;
 mod receipts;
 mod replay;
 mod resources;
+mod tracing_bridge;
 mod types;
 mod validation;
 
@@ -20,6 +21,7 @@ pub use replay::{
     replay_prepared_package_with_stage_hook,
 };
 pub use resources::*;
+pub use tracing_bridge::TracingRunEventSink;
 pub use types::*;
 
 #[cfg(test)]
