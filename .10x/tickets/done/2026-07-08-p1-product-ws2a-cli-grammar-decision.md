@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws2-command-grammar-redesign.md
@@ -36,7 +36,9 @@ No parser implementation, no dependency changes, no command behavior changes, no
 ## Progress and notes
 
 - 2026-07-08: Opened as the required decision slice before WS2 parser migration. A read-only CLI inventory explorer was dispatched concurrently to inform this ticket.
+- 2026-07-08: Current grammar inventory recorded in `.10x/evidence/2026-07-08-p1-cli-inventory.md`; active parser/grammar decision recorded in `.10x/decisions/cli-command-grammar-and-parser.md`.
+- 2026-07-08: Parser migration children opened: `.10x/tickets/2026-07-08-p1-product-ws2b-clap-parser-foundation.md`, `.10x/tickets/2026-07-08-p1-product-ws2c-product-grammar-semantics.md`, and `.10x/tickets/2026-07-08-p1-product-ws2d-completions-manpages-help.md`. Review recorded in `.10x/reviews/2026-07-08-cli-command-grammar-decision-review.md`. WS2A is closed as a decision slice.
 
 ## Blockers
 
-Pending current-command inventory before the final decision can be written.
+None.

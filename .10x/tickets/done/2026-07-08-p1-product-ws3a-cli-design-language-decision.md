@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
@@ -36,7 +36,9 @@ No renderer implementation, no dependency changes, no command output changes, no
 ## Progress and notes
 
 - 2026-07-08: Opened as the required design-language slice before WS3 renderer implementation. Dependency posture inspection found `cdf-cli` does not yet depend on renderer/parser crates, while the supply-chain config already contains exemptions for several mature CLI-rendering crates used elsewhere or anticipated by policy.
+- 2026-07-08: Current output-path inventory recorded in `.10x/evidence/2026-07-08-p1-cli-inventory.md`; active renderer/design-language decision recorded in `.10x/decisions/cli-design-language-and-renderer.md`.
+- 2026-07-08: Renderer migration children opened: `.10x/tickets/2026-07-08-p1-product-ws3b-renderer-foundation.md`, `.10x/tickets/2026-07-08-p1-product-ws3c-plan-run-rendering.md`, `.10x/tickets/2026-07-08-p1-product-ws3d-recovery-state-backfill-rendering.md`, and `.10x/tickets/2026-07-08-p1-product-ws3e-remaining-rendering-migration-gate.md`. Review recorded in `.10x/reviews/2026-07-08-cli-design-language-decision-review.md`. WS3A is closed as a decision slice.
 
 ## Blockers
 
-Pending current-output inventory before the final decision can be written.
+None.

@@ -57,7 +57,8 @@ No human-output redesign beyond parser/help styling owned by the ratified parser
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive after the current CLI grammar was found operational but hostile to operators.
-- 2026-07-08: Split decision child `.10x/tickets/2026-07-08-p1-product-ws2a-cli-grammar-decision.md` before parser implementation.
+- 2026-07-08: Split decision child `.10x/tickets/done/2026-07-08-p1-product-ws2a-cli-grammar-decision.md` before parser implementation.
+- 2026-07-08: Active grammar/parser decision recorded in `.10x/decisions/cli-command-grammar-and-parser.md`; implementation children split as WS2B parser foundation, WS2C product grammar semantics, and WS2D completions/man/help artifacts.
 
 ## Blockers
 

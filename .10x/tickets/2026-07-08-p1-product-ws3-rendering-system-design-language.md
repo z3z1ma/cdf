@@ -39,7 +39,8 @@ No live progress implementation except renderer primitives; WS5 owns event consu
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This workstream is the quality bar for the CLI face of the system.
-- 2026-07-08: Split decision child `.10x/tickets/2026-07-08-p1-product-ws3a-cli-design-language-decision.md` before renderer implementation.
+- 2026-07-08: Split decision child `.10x/tickets/done/2026-07-08-p1-product-ws3a-cli-design-language-decision.md` before renderer implementation.
+- 2026-07-08: Active renderer/design-language decision recorded in `.10x/decisions/cli-design-language-and-renderer.md`; implementation children split as WS3B renderer foundation, WS3C plan/run/replay rendering, WS3D recovery/state/backfill rendering, and WS3E remaining rendering migration gate.
 
 ## Blockers
 
