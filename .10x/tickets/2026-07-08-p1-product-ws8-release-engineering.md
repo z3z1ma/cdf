@@ -38,6 +38,7 @@ No claim of crates.io publication while the DataFusion git pin remains. No unsup
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This lane may begin immediately and must respect the existing reusable CodeQL database policy.
+- 2026-07-08: Ratified `.10x/specs/versioning-lts-release-policy.md` from P1 plus existing governance records. Split execution into `.10x/tickets/2026-07-08-p1-product-ws8a-ci-quality-workflows.md`, `.10x/tickets/2026-07-08-p1-product-ws8b-release-artifact-workflow.md`, and `.10x/tickets/2026-07-08-p1-product-ws8c-changelog-installer-channel.md`.
 
 ## Blockers
 
