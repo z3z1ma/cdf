@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
-Depends-On: .10x/specs/cli-live-progress.md, .10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md, .10x/tickets/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/2026-07-08-p1-product-ws2c-product-grammar-semantics.md
+Depends-On: .10x/specs/cli-live-progress.md, .10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md, .10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md
 
 # P1 product WS5A: Progress sink and renderer foundation
 
@@ -34,4 +34,4 @@ Do not wire run/replay/resume/backfill commands end to end except for test doubl
 
 ## Blockers
 
-Blocked until WS3B and WS2C land. WS1A is already done.
+None. WS1A, WS2C, and WS3B are done.
