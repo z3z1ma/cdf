@@ -3988,6 +3988,146 @@ fn package_verify_uses_lower_package_reader() {
 }
 
 #[test]
+fn package_gc_plans_retention_from_packages_and_checkpoint_history() {
+    let project = TestProject::new();
+    let package_root = project.root.join(".cdf/packages");
+    fs::create_dir_all(&package_root).unwrap();
+
+    let protected_dir = build_archive_cli_package(&package_root, "pkg-gc-protected");
+    let protected_manifest = cdf_package::read_manifest(&protected_dir).unwrap();
+    commit_status_head(
+        &project,
+        "pipeline-gc",
+        "checkpoint-gc-protected",
+        &protected_manifest.package_hash,
+        "receipt-gc-protected",
+        1_783_296_000_000,
+    );
+    commit_status_head(
+        &project,
+        "pipeline-gc-missing",
+        "checkpoint-gc-missing",
+        "sha256:missing-gc-package",
+        "receipt-gc-missing",
+        1_783_296_000_001,
+    );
+
+    let collectible_dir = package_root.join("pkg-gc-collectible");
+    let collectible_builder =
+        PackageBuilder::create(&collectible_dir, "pkg-gc-collectible").unwrap();
+    let collectible_manifest = collectible_builder
+        .finish_with_status(PackageStatus::Validated)
+        .unwrap();
+
+    let retained_dir = build_archive_cli_package(&package_root, "pkg-gc-retained");
+    let retained_manifest = cdf_package::read_manifest(&retained_dir).unwrap();
+
+    let corrupt_dir = build_archive_cli_package(&package_root, "pkg-gc-corrupt");
+    let corrupt_manifest = cdf_package::read_manifest(&corrupt_dir).unwrap();
+    fs::write(corrupt_dir.join("data/seg-000001.arrow"), "tampered").unwrap();
+
+    let tombstone_dir = build_archive_cli_package(&package_root, "pkg-gc-tombstone");
+    let tombstone_manifest = cdf_package::read_manifest(&tombstone_dir).unwrap();
+    cdf_package::tombstone_package(&tombstone_dir).unwrap();
+
+    fs::create_dir_all(package_root.join("pkg-gc-partial")).unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "package",
+        "gc",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "package gc");
+    assert_eq!(json["result"]["command"], "package gc");
+    assert_eq!(json["result"]["mode"], "dry_run");
+    assert_eq!(json["result"]["counts"]["protected"], 2);
+    assert_eq!(json["result"]["counts"]["collectible"], 1);
+    assert_eq!(json["result"]["counts"]["retained"], 1);
+    assert_eq!(json["result"]["counts"]["corrupt"], 2);
+    assert_eq!(json["result"]["counts"]["missing"], 1);
+
+    assert_gc_artifact(
+        &json,
+        Some(&protected_manifest.package_hash),
+        "protected",
+        "committed_checkpoint",
+        "retain",
+    );
+    assert_gc_artifact(
+        &json,
+        Some(&collectible_manifest.package_hash),
+        "collectible",
+        "pre_packaged_artifact",
+        "would_collect",
+    );
+    assert_gc_artifact(
+        &json,
+        Some(&retained_manifest.package_hash),
+        "retained",
+        "replay_or_recovery_artifact",
+        "retain",
+    );
+    assert_gc_artifact(
+        &json,
+        Some(&corrupt_manifest.package_hash),
+        "corrupt",
+        "verification_failed",
+        "retain",
+    );
+    assert_gc_artifact(
+        &json,
+        Some(&tombstone_manifest.package_hash),
+        "protected",
+        "retention_tombstone",
+        "retain",
+    );
+    assert_gc_artifact(
+        &json,
+        Some("sha256:missing-gc-package"),
+        "missing",
+        "committed_checkpoint_missing_artifact",
+        "restore_required",
+    );
+    assert_gc_artifact(&json, None, "corrupt", "manifest_missing", "retain");
+}
+
+#[test]
+fn package_gc_explicit_directory_is_dry_run_without_deleting_collectible_artifacts() {
+    let temp = TempDir::new("cdf-cli-package-gc-dry-run");
+    let package_dir = temp.path().join("pkg-validated");
+    let builder = PackageBuilder::create(&package_dir, "pkg-validated").unwrap();
+    let manifest = builder
+        .finish_with_status(PackageStatus::Validated)
+        .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "package",
+        "gc",
+        temp.path().to_str().unwrap(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(package_dir.join("manifest.json").is_file());
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["counts"]["collectible"], 1);
+    assert_gc_artifact(
+        &json,
+        Some(&manifest.package_hash),
+        "collectible",
+        "pre_packaged_artifact",
+        "would_collect",
+    );
+}
+
+#[test]
 fn package_archive_writes_parquet_archive_and_reports_json() {
     let temp = TempDir::new("cdf-cli-package-archive-json");
     let package_dir = build_archive_cli_package(temp.path(), "pkg-archive-cli-json");
@@ -5385,6 +5525,31 @@ fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
 
 fn stderr_or_stdout_json(text: &str) -> Value {
     serde_json::from_str(text).unwrap()
+}
+
+fn assert_gc_artifact(
+    json: &Value,
+    package_hash: Option<&str>,
+    classification: &str,
+    retention_reason: &str,
+    planned_action: &str,
+) {
+    let artifact = json["result"]["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|artifact| {
+            artifact["package_hash"].as_str() == package_hash
+                && artifact["classification"] == classification
+                && artifact["retention_reason"] == retention_reason
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "missing gc artifact hash={package_hash:?} classification={classification} reason={retention_reason}: {}",
+                json["result"]["artifacts"]
+            )
+        });
+    assert_eq!(artifact["planned_action"], planned_action);
 }
 
 fn named_check<'a>(json: &'a Value, name: &str) -> &'a Value {

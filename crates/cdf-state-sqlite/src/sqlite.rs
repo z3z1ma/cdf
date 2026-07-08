@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     path::Path,
     sync::{Mutex, MutexGuard},
 };
@@ -7,7 +8,7 @@ use cdf_kernel::{
     CdfError, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, PackageHash, PipelineId,
     Receipt, ResourceId, Result, RewindReport, RewindRequest, ScopeKey, SourcePosition, StateDelta,
 };
-use rusqlite::{Connection, OptionalExtension, Row, Transaction, params};
+use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 
 use crate::support::{
     decode_json, encode_json, lock_error, missing_checkpoint, now_ms, packages_ahead_of_state,
@@ -28,12 +29,35 @@ impl SqliteCheckpointStore {
         })
     }
 
+    pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
+        let conn = Connection::open_with_flags(path.as_ref(), OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(sqlite_error)?;
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(sqlite_error)?;
         initialize_schema(&conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
         })
+    }
+
+    pub fn committed_package_hashes(&self) -> Result<BTreeSet<PackageHash>> {
+        let conn = self.lock_conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT package_hash FROM cdf_checkpoints \
+                 WHERE status = 'committed' ORDER BY package_hash",
+            )
+            .map_err(sqlite_error)?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(sqlite_error)?;
+        rows.map(|row| row.map_err(sqlite_error).and_then(PackageHash::new))
+            .collect()
     }
 
     fn lock_conn(&self) -> Result<MutexGuard<'_, Connection>> {

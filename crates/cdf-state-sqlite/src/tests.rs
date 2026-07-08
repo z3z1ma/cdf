@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cdf_conformance::checkpoint_store::{
     assert_checkpoint_store_conformance, assert_checkpoint_store_send_sync,
@@ -572,6 +572,46 @@ fn sqlite_passes_checkpoint_store_conformance() {
 fn commit_requires_receipt_covering_package_and_segments() {
     assert_store_rejects_bad_receipts(&InMemoryCheckpointStore::new());
     assert_store_rejects_bad_receipts(&SqliteCheckpointStore::open_in_memory().unwrap());
+}
+
+#[test]
+fn sqlite_committed_package_hashes_reports_only_committed_history() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let store = SqliteCheckpointStore::open(&db_path).unwrap();
+    let committed = commit_delta(
+        &store,
+        delta(
+            "checkpoint-gc-committed",
+            None,
+            partition_scope(),
+            cursor_position(1),
+            "package-gc-committed",
+        ),
+    );
+    let proposed = delta(
+        "checkpoint-gc-proposed",
+        Some(&committed.delta.checkpoint_id),
+        partition_scope(),
+        cursor_position(2),
+        "package-gc-proposed",
+    );
+    store.propose(proposed.clone()).unwrap();
+    let abandoned = delta(
+        "checkpoint-gc-abandoned",
+        Some(&committed.delta.checkpoint_id),
+        partition_scope(),
+        cursor_position(3),
+        "package-gc-abandoned",
+    );
+    store.propose(abandoned.clone()).unwrap();
+    store.abandon(&abandoned.checkpoint_id).unwrap();
+
+    let read_only = SqliteCheckpointStore::open_read_only(&db_path).unwrap();
+    assert_eq!(
+        read_only.committed_package_hashes().unwrap(),
+        BTreeSet::from([PackageHash::new("package-gc-committed").unwrap()])
+    );
 }
 
 #[test]
