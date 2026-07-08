@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
+Parent: .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md, .10x/tickets/done/2026-07-07-p0-b3-generic-project-run-resolution.md
 
 # P0 B4: Caller migration, wrapper deletion, and Workstream B closure
@@ -39,7 +39,9 @@ No new destination implementation, no Workstream C scenario matrix expansion bey
 
 - 2026-07-07: Opened from Workstream B. Huygens inventory names the caller sets that must migrate: CLI run/replay/resume, CLI tests, conformance package replay/live-run/chaos/golden helpers, and project runtime tests.
 - 2026-07-08: B3 dependency closed. B4 can now migrate remaining replay/resume/package-replay callers and delete the specialized wrapper family.
+- 2026-07-08: Migrated CLI replay/resume and conformance package-replay/live-run callers to generic package replay/recovery APIs; deleted public DuckDB/Parquet/Postgres replay/recover wrappers and DuckDB-only failpoint wrappers; preserved target validation before checkpoint proposal; recorded evidence in `.10x/evidence/2026-07-08-p0-b4-caller-migration-wrapper-deletion.md` and review in `.10x/reviews/2026-07-08-p0-b4-caller-migration-wrapper-deletion-review.md`.
+- 2026-07-08: Closed B4. The only semver-check failures are the intentional pre-1.0 public API removals this ticket required.
 
 ## Blockers
 
-None. B2 and B3 are closed.
+None.

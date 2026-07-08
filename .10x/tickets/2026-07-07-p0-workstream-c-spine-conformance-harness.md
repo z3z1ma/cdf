@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
-Depends-On: .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
+Depends-On: .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 
 # P0 Workstream C: Make harnesses catch the run spine
 
@@ -49,7 +49,8 @@ No new product runtime behavior except narrow hooks required for conformance. No
 
 - 2026-07-07: Opened from P0 stop-line. Existing conformance covers important slices, but the full run spine matrix, non-DuckDB chaos, per-destination live-run golden fixtures, and property/fuzz targets are still open.
 - 2026-07-07: Read-only subagent inventory found no `proptest`, `quickcheck`, or fuzz dependency in `crates/cdf-conformance/Cargo.toml`; property/fuzz target selection remains this workstream's implementation responsibility.
+- 2026-07-08: Workstream B dependency closed. This ticket is now the remaining A-C stop-line blocker.
 
 ## Blockers
 
-Depends on Workstream A and B because the harness must target the final streaming session API and generic orchestration/chaos seam.
+None. Workstreams A and B are closed; the harness can target the final streaming session API and generic orchestration/chaos seam.

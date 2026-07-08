@@ -12,7 +12,7 @@ use cdf_kernel::{
     PipelineId, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck, SourcePosition,
     StateDelta, TargetName, VerifyClause, WriteDisposition,
 };
-use cdf_project::{LocalDuckDbLifecycleFailpoint, replay_prepared_duckdb_package_with_failpoint};
+use cdf_project::{RuntimeStage, replay_prepared_package_with_stage_hook};
 
 use super::*;
 
@@ -28,6 +28,14 @@ const HELPER_SCHEMA_HASH_ENV: &str = "CDF_CONFORMANCE_SCHEMA_HASH";
 const HELPER_TEST_NAME: &str =
     "package_replay::tests::committed_before_checkpointed_helper_process";
 const HELPER_EXIT_CODE: i32 = 87;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LifecycleFailpoint {
+    PackagedBeforeDestinationWrite,
+    CheckpointProposalBeforeDestinationWrite,
+    ReceiptVerifiedBeforeCheckpointCommit,
+    CheckpointCommitBeforePackageStatusCheckpointed,
+}
 
 #[test]
 fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status() {
@@ -51,7 +59,7 @@ fn packaged_no_receipts_replay_commits_destination_receipt_checkpoint_and_status
 
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::DuckDbCommit {
+        ProjectReceiptSource::DestinationCommit {
             duplicate: false,
             package_receipt_recorded: true
         }
@@ -114,7 +122,7 @@ fn helper_process_after_packaged_before_destination_write_leaves_no_destination_
     let crashed = stage_helper_crash(
         "pkg-after-packaged",
         "checkpoint-after-packaged",
-        LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite,
+        LifecycleFailpoint::PackagedBeforeDestinationWrite,
     );
 
     assert!(!crashed.db_path.exists());
@@ -147,7 +155,7 @@ fn helper_process_after_checkpoint_proposal_leaves_no_destination_or_checkpoint_
     let crashed = stage_helper_crash(
         "pkg-after-proposal",
         "checkpoint-after-proposal",
-        LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite,
+        LifecycleFailpoint::CheckpointProposalBeforeDestinationWrite,
     );
 
     assert!(!crashed.db_path.exists());
@@ -180,7 +188,7 @@ fn helper_process_crash_recovers_from_durable_receipt_without_second_load() {
     let crashed = stage_helper_crash(
         "pkg-helper-recovery",
         "checkpoint-helper-recovery",
-        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit,
+        LifecycleFailpoint::ReceiptVerifiedBeforeCheckpointCommit,
     );
     let receipt = crashed.receipt.clone().expect("durable receipt");
     let history = crashed
@@ -245,7 +253,7 @@ fn helper_process_after_checkpoint_commit_finalizes_status_without_second_load()
     let crashed = stage_helper_crash(
         "pkg-after-checkpoint",
         "checkpoint-after-checkpoint",
-        LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed,
+        LifecycleFailpoint::CheckpointCommitBeforePackageStatusCheckpointed,
     );
     let receipt = crashed.receipt.clone().expect("durable receipt");
     assert_package_receipt_durable(&crashed.case.package_dir, &receipt);
@@ -301,7 +309,7 @@ fn bad_recovery_inputs_fail_closed_without_checkpoint_head() {
     let crashed = stage_helper_crash(
         "pkg-bad-recovery",
         "checkpoint-bad-recovery",
-        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit,
+        LifecycleFailpoint::ReceiptVerifiedBeforeCheckpointCommit,
     );
     let receipt = crashed.receipt.clone().expect("durable receipt");
 
@@ -382,7 +390,7 @@ fn negative_self_tests_prove_package_replay_harness_checks_required_edges() {
     assert_harness_panics(|| assert_no_checkpoint_head(&store, &case.delta));
 
     let mut wrong_duplicate = report.clone();
-    wrong_duplicate.receipt_source = PreparedReceiptSource::DuckDbCommit {
+    wrong_duplicate.receipt_source = ProjectReceiptSource::DestinationCommit {
         duplicate: false,
         package_receipt_recorded: true,
     };
@@ -467,17 +475,17 @@ fn committed_before_checkpointed_helper_process() {
     let destination = DuckDbDestination::new(db_path).unwrap();
     let store = SqliteCheckpointStore::open(sqlite_path).unwrap();
     let selected_failpoint = parse_lifecycle_failpoint(&env::var(HELPER_FAILPOINT_ENV).unwrap());
-    let hook = |failpoint: LocalDuckDbLifecycleFailpoint,
-                receipt: Option<&Receipt>|
-     -> Result<()> {
-        if failpoint == selected_failpoint {
+    let hook = |stage: RuntimeStage<'_>| -> Result<()> {
+        if let Some((failpoint, receipt)) = lifecycle_failpoint_from_stage(stage)
+            && failpoint == selected_failpoint
+        {
             match failpoint {
-                LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite
-                | LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite => {
+                LifecycleFailpoint::PackagedBeforeDestinationWrite
+                | LifecycleFailpoint::CheckpointProposalBeforeDestinationWrite => {
                     assert!(receipt.is_none());
                 }
-                LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit
-                | LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed => {
+                LifecycleFailpoint::ReceiptVerifiedBeforeCheckpointCommit
+                | LifecycleFailpoint::CheckpointCommitBeforePackageStatusCheckpointed => {
                     assert!(receipt.is_some());
                 }
             }
@@ -486,7 +494,7 @@ fn committed_before_checkpointed_helper_process() {
         Ok(())
     };
 
-    let _ = replay_prepared_duckdb_package_with_failpoint(
+    let _ = replay_prepared_package_with_stage_hook(
         case.replay_request(&destination, &store, None),
         Some(&hook),
     )
@@ -507,7 +515,7 @@ struct CrashedReplay {
 fn stage_helper_crash(
     package_id: &str,
     checkpoint_id: &str,
-    failpoint: LocalDuckDbLifecycleFailpoint,
+    failpoint: LifecycleFailpoint,
 ) -> CrashedReplay {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join(package_id);
@@ -677,37 +685,62 @@ fn disposition_name_for_test(disposition: &WriteDisposition) -> &'static str {
     }
 }
 
-fn parse_lifecycle_failpoint(value: &str) -> LocalDuckDbLifecycleFailpoint {
+fn parse_lifecycle_failpoint(value: &str) -> LifecycleFailpoint {
     match value {
         "after_packaged_before_destination_write" => {
-            LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite
+            LifecycleFailpoint::PackagedBeforeDestinationWrite
         }
         "after_checkpoint_proposal_before_destination_write" => {
-            LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite
+            LifecycleFailpoint::CheckpointProposalBeforeDestinationWrite
         }
         "after_receipt_verified_before_checkpoint_commit" => {
-            LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit
+            LifecycleFailpoint::ReceiptVerifiedBeforeCheckpointCommit
         }
         "after_checkpoint_commit_before_package_status_checkpointed" => {
-            LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed
+            LifecycleFailpoint::CheckpointCommitBeforePackageStatusCheckpointed
         }
         other => panic!("unknown helper lifecycle failpoint {other}"),
     }
 }
 
-fn lifecycle_failpoint_name(failpoint: LocalDuckDbLifecycleFailpoint) -> &'static str {
+fn lifecycle_failpoint_name(failpoint: LifecycleFailpoint) -> &'static str {
     match failpoint {
-        LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite => {
+        LifecycleFailpoint::PackagedBeforeDestinationWrite => {
             "after_packaged_before_destination_write"
         }
-        LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite => {
+        LifecycleFailpoint::CheckpointProposalBeforeDestinationWrite => {
             "after_checkpoint_proposal_before_destination_write"
         }
-        LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit => {
+        LifecycleFailpoint::ReceiptVerifiedBeforeCheckpointCommit => {
             "after_receipt_verified_before_checkpoint_commit"
         }
-        LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed => {
+        LifecycleFailpoint::CheckpointCommitBeforePackageStatusCheckpointed => {
             "after_checkpoint_commit_before_package_status_checkpointed"
         }
+    }
+}
+
+fn lifecycle_failpoint_from_stage(
+    stage: RuntimeStage<'_>,
+) -> Option<(LifecycleFailpoint, Option<&Receipt>)> {
+    match stage {
+        RuntimeStage::PackageReplayVerified => {
+            Some((LifecycleFailpoint::PackagedBeforeDestinationWrite, None))
+        }
+        RuntimeStage::DestinationWriteReady => Some((
+            LifecycleFailpoint::CheckpointProposalBeforeDestinationWrite,
+            None,
+        )),
+        RuntimeStage::DestinationReceiptRecorded { receipt } => Some((
+            LifecycleFailpoint::ReceiptVerifiedBeforeCheckpointCommit,
+            Some(receipt),
+        )),
+        RuntimeStage::CheckpointCommitted { checkpoint } => Some((
+            LifecycleFailpoint::CheckpointCommitBeforePackageStatusCheckpointed,
+            checkpoint.receipt.as_ref(),
+        )),
+        RuntimeStage::CheckpointProposed { .. }
+        | RuntimeStage::DestinationCommitStarted { .. }
+        | RuntimeStage::PackageStatusUpdated { .. } => None,
     }
 }

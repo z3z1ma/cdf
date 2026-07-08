@@ -34,30 +34,25 @@ use cdf_kernel::{
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
-    PackageManifest, PackageReader, PackageStatus, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
-    STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, canonical_json_bytes,
+    PackageManifest, PackageReader, PackageReplayInputs, PackageStatus, RECEIPTS_FILE,
+    STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
+    canonical_json_bytes,
 };
 use cdf_state_sqlite::{RunEventKind, SqliteCheckpointStore, SqliteRunLedger};
 use postgres::{Client, NoTls};
 use tempfile::TempDir;
 
 use crate::{
-    DestinationReceiptReportingPolicy, LocalDuckDbLifecycleFailpoint, LocalFileDuckDbRunRequest,
-    PackageArtifactDuckDbRecoveryRequest, PackageArtifactDuckDbReplayRequest,
-    PackageArtifactParquetRecoveryRequest, PackageArtifactParquetReplayRequest,
-    PackageArtifactPostgresRecoveryRequest, PackageArtifactPostgresReplayRequest,
-    PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
-    PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, PreparedReceiptSource,
+    DestinationReceiptReportingPolicy, LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest,
+    PackageArtifactReplayRequest, PackageReplayHooks, PackageReplayStage,
+    PreparedDestinationCommit, PreparedPackageRecoveryRequest, PreparedPackageReplayRequest,
     ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
     ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
-    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination,
-    recover_duckdb_package_from_artifacts, recover_package_with_runtime,
-    recover_parquet_package_from_artifacts, recover_postgres_package_from_artifacts,
-    recover_prepared_duckdb_package, replay_duckdb_package_from_artifacts,
-    replay_package_with_runtime, replay_parquet_package_from_artifacts,
-    replay_postgres_package_from_artifacts, replay_prepared_duckdb_package,
-    replay_prepared_duckdb_package_with_failpoint, run_local_file_to_duckdb_checkpoint,
-    run_project, runtime::state_delta_from_run,
+    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination, RuntimeStage,
+    recover_package_from_artifacts, recover_package_with_runtime, recover_prepared_package,
+    replay_package_from_artifacts, replay_package_with_runtime, replay_prepared_package,
+    replay_prepared_package_with_stage_hook, run_local_file_to_duckdb_checkpoint, run_project,
+    runtime::state_delta_from_run,
 };
 
 const SCHEMA_HASH: &str = "schema-v1";
@@ -129,6 +124,7 @@ schema = { fields = [
   { name = "seen_at", type = "timestamp_millis", nullable = false, timezone = "UTC" },
 ] }
 "#;
+
 const REST_RESOURCE: &str = r#"
 [source.api]
 kind = "rest"
@@ -317,16 +313,12 @@ fn replay_request<'a, Store: CheckpointStore + ?Sized>(
     destination: &'a DuckDbDestination,
     checkpoint_store: &'a Store,
     delta: StateDelta,
-) -> PreparedDuckDbReplayRequest<'a, Store> {
-    PreparedDuckDbReplayRequest {
+) -> PreparedPackageReplayRequest<'a, Store> {
+    PreparedPackageReplayRequest {
         package_dir: package_dir.to_path_buf(),
-        destination,
+        destination: resolved_duckdb_destination(destination, TargetName::new("orders").unwrap()),
         checkpoint_store,
-        delta,
-        target: TargetName::new("orders").unwrap(),
-        disposition: WriteDisposition::Append,
-        merge_keys: Vec::new(),
-        schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+        inputs: replay_inputs_from_delta(delta, TargetName::new("orders").unwrap()),
         after_receipt_verified: None,
     }
 }
@@ -335,10 +327,10 @@ fn artifact_replay_request<'a, Store: CheckpointStore + ?Sized>(
     package_dir: &Path,
     destination: &'a DuckDbDestination,
     checkpoint_store: &'a Store,
-) -> PackageArtifactDuckDbReplayRequest<'a, Store> {
-    PackageArtifactDuckDbReplayRequest {
+) -> PackageArtifactReplayRequest<'a, Store> {
+    PackageArtifactReplayRequest {
         package_dir: package_dir.to_path_buf(),
-        destination,
+        destination: resolved_duckdb_destination(destination, TargetName::new("orders").unwrap()),
         checkpoint_store,
         after_receipt_verified: None,
     }
@@ -350,18 +342,38 @@ fn recovery_request<'a, Store: CheckpointStore + ?Sized>(
     checkpoint_store: &'a Store,
     delta: StateDelta,
     receipt: Receipt,
-) -> PreparedDuckDbRecoveryRequest<'a, Store> {
-    PreparedDuckDbRecoveryRequest {
+) -> PreparedPackageRecoveryRequest<'a, Store> {
+    PreparedPackageRecoveryRequest {
         package_dir: package_dir.to_path_buf(),
-        destination,
+        destination: resolved_duckdb_destination(destination, TargetName::new("orders").unwrap()),
         checkpoint_store,
-        delta,
-        target: TargetName::new("orders").unwrap(),
-        disposition: WriteDisposition::Append,
-        schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+        inputs: replay_inputs_from_delta(delta, TargetName::new("orders").unwrap()),
         receipt,
         after_receipt_verified: None,
     }
+}
+
+fn replay_inputs_from_delta(delta: StateDelta, target: TargetName) -> PackageReplayInputs {
+    PackageReplayInputs {
+        input_checkpoint: None,
+        destination_commit: DestinationCommitRequest {
+            package_hash: delta.package_hash.clone(),
+            target,
+            disposition: WriteDisposition::Append,
+            segments: delta.segments.clone(),
+            idempotency_token: IdempotencyToken::new(delta.package_hash.as_str()).unwrap(),
+        },
+        merge_keys: Vec::new(),
+        schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+        state_delta: delta,
+    }
+}
+
+fn resolved_duckdb_destination(
+    destination: &DuckDbDestination,
+    target: TargetName,
+) -> ResolvedProjectDestination {
+    ResolvedProjectDestination::new(Box::new(destination.clone()), target)
 }
 
 #[derive(Clone)]
@@ -1254,7 +1266,7 @@ fn stage_successful_replay(
     let delta = delta(&manifest, checkpoint_id);
     let destination = destination(db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    let report = replay_prepared_duckdb_package(replay_request(
+    let report = replay_prepared_package(replay_request(
         package_dir,
         &destination,
         &store,
@@ -1286,7 +1298,7 @@ fn assert_bad_reuse_head_rejected(
     mutate_head(&mut head);
     let store = HeadOnlyCommitFailingStore { head };
 
-    let error = recover_prepared_duckdb_package(recovery_request(
+    let error = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,
@@ -1536,7 +1548,7 @@ fn general_project_run_commits_file_resource_to_postgres_with_ledger_order() {
         package_id,
         &package_root,
         &postgres.url,
-        target,
+        target.clone(),
         &state_path,
         "run-general-postgres",
     )))
@@ -1656,7 +1668,7 @@ fn general_project_run_rejects_unsupported_postgres_schema_before_writes() {
         package_id,
         &package_root,
         &postgres.url,
-        target,
+        target.clone(),
         &state_path,
         "run-general-postgres-unsupported-schema",
     )))
@@ -1710,13 +1722,13 @@ fn parquet_artifact_recovery_after_general_run_failure_does_not_need_source() {
     request.after_receipt_verified = Some(&hook);
     futures_executor::block_on(run_project(request)).unwrap_err();
 
-    let destination = ParquetDestination::new_filesystem(&parquet_root).unwrap();
     let store = SqliteCheckpointStore::open(&state_path).unwrap();
     let receipts = package_receipts(&package_dir);
     assert_eq!(receipts.len(), 1);
-    let report = recover_parquet_package_from_artifacts(PackageArtifactParquetRecoveryRequest {
+    let target = receipts[0].target.clone();
+    let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.clone(),
-        destination: &destination,
+        destination: ResolvedProjectDestination::parquet_filesystem(&parquet_root, target).unwrap(),
         checkpoint_store: &store,
         receipt: receipts[0].clone(),
         after_receipt_verified: None,
@@ -1757,11 +1769,16 @@ fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint(
     remove_package_receipts(&package_dir);
     assert!(package_receipts(&package_dir).is_empty());
 
-    let destination = ParquetDestination::new_filesystem(&replay_root).unwrap();
     let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
-    let report = replay_parquet_package_from_artifacts(PackageArtifactParquetReplayRequest {
+    let target = PackageReader::open(&package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap()
+        .destination_commit
+        .target;
+    let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: &destination,
+        destination: ResolvedProjectDestination::parquet_filesystem(&replay_root, target).unwrap(),
         checkpoint_store: &store,
         after_receipt_verified: None,
     })
@@ -1778,7 +1795,8 @@ fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint(
     );
     assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
     assert!(
-        destination
+        ParquetDestination::new_filesystem(&replay_root)
+            .unwrap()
             .verify_receipt(&report.receipt)
             .unwrap()
             .verified
@@ -1809,7 +1827,7 @@ fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_conta
         package_id,
         &package_root,
         &postgres.url,
-        target,
+        target.clone(),
         &state_path,
         "run-general-postgres-recovery",
     );
@@ -1817,13 +1835,18 @@ fn postgres_artifact_recovery_after_durable_receipt_commits_without_source_conta
     futures_executor::block_on(run_project(request)).unwrap_err();
     fs::remove_file(temp.path().join("data/events.ndjson")).unwrap();
 
-    let destination = PostgresDestination::connect(postgres.url.clone()).unwrap();
     let store = SqliteCheckpointStore::open(&state_path).unwrap();
     let receipts = package_receipts(&package_dir);
     assert_eq!(receipts.len(), 1);
-    let report = recover_postgres_package_from_artifacts(PackageArtifactPostgresRecoveryRequest {
+    let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.clone(),
-        destination: &destination,
+        destination: ResolvedProjectDestination::postgres(
+            postgres.url.clone(),
+            target,
+            MergeDedupPolicy::Last,
+            None,
+        )
+        .unwrap(),
         checkpoint_store: &store,
         receipt: receipts[0].clone(),
         after_receipt_verified: None,
@@ -1880,15 +1903,17 @@ fn postgres_artifact_replay_after_source_loss_without_receipt_commits_checkpoint
     reset_postgres_schema(&postgres);
     assert!(package_receipts(&package_dir).is_empty());
 
-    let destination = PostgresDestination::connect(postgres.url.clone()).unwrap();
     let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
-    let report = replay_postgres_package_from_artifacts(PackageArtifactPostgresReplayRequest {
+    let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: &destination,
+        destination: ResolvedProjectDestination::postgres(
+            postgres.url.clone(),
+            target,
+            MergeDedupPolicy::Last,
+            None,
+        )
+        .unwrap(),
         checkpoint_store: &store,
-        target,
-        dedup: MergeDedupPolicy::Last,
-        existing_table: None,
         after_receipt_verified: None,
     })
     .unwrap();
@@ -1903,7 +1928,8 @@ fn postgres_artifact_replay_after_source_loss_without_receipt_commits_checkpoint
     );
     assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
     assert!(
-        destination
+        PostgresDestination::connect(postgres.url.clone())
+            .unwrap()
             .verify_receipt(&report.receipt)
             .unwrap()
             .verified
@@ -1962,16 +1988,18 @@ fn postgres_artifact_replay_rejects_mismatched_explicit_target_before_mutation()
         .unwrap()
         .state_delta;
 
-    let destination = PostgresDestination::connect(postgres.url.clone()).unwrap();
     let store = SqliteCheckpointStore::open(&replay_state_path).unwrap();
     let wrong_target = PostgresTarget::new(Some(&postgres.schema), "events_target_wrong").unwrap();
-    let error = replay_postgres_package_from_artifacts(PackageArtifactPostgresReplayRequest {
+    let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.clone(),
-        destination: &destination,
+        destination: ResolvedProjectDestination::postgres(
+            postgres.url.clone(),
+            wrong_target,
+            MergeDedupPolicy::Last,
+            None,
+        )
+        .unwrap(),
         checkpoint_store: &store,
-        target: wrong_target,
-        dedup: MergeDedupPolicy::Last,
-        existing_table: None,
         after_receipt_verified: None,
     })
     .unwrap_err();
@@ -2433,9 +2461,9 @@ fn package_artifact_recovery_after_general_run_failure_does_not_need_source() {
     let destination = destination(&duckdb_path);
     let store = SqliteCheckpointStore::open(&state_path).unwrap();
     let receipts = package_receipts(&package_dir);
-    let report = recover_duckdb_package_from_artifacts(PackageArtifactDuckDbRecoveryRequest {
+    let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.clone(),
-        destination: &destination,
+        destination: resolved_duckdb_destination(&destination, receipts[0].target.clone()),
         checkpoint_store: &store,
         receipt: receipts[0].clone(),
         after_receipt_verified: None,
@@ -2446,7 +2474,7 @@ fn package_artifact_recovery_after_general_run_failure_does_not_need_source() {
     assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::SuppliedDurableReceipt
+        ProjectReceiptSource::SuppliedDurableReceipt
     );
 }
 
@@ -3105,7 +3133,7 @@ fn replay_commits_duckdb_receipt_then_checkpoint_and_marks_package_checkpointed(
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let report = replay_prepared_duckdb_package(replay_request(
+    let report = replay_prepared_package(replay_request(
         &package_dir,
         &destination,
         &store,
@@ -3138,7 +3166,7 @@ fn replay_commits_duckdb_receipt_then_checkpoint_and_marks_package_checkpointed(
     assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::DuckDbCommit {
+        ProjectReceiptSource::DestinationCommit {
             duplicate: false,
             package_receipt_recorded: true
         }
@@ -3158,12 +3186,9 @@ fn artifact_replay_reconstructs_delta_and_commit_request_from_package_files() {
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let report = replay_duckdb_package_from_artifacts(artifact_replay_request(
-        &package_dir,
-        &destination,
-        &store,
-    ))
-    .unwrap();
+    let report =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap();
 
     assert_eq!(report.package_status, PackageStatus::Checkpointed);
     assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
@@ -3204,12 +3229,9 @@ fn artifact_replay_rejects_corrupted_or_missing_preimages_before_mutation() {
         let duckdb = destination(&db_path);
         let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-        let error = replay_duckdb_package_from_artifacts(artifact_replay_request(
-            &package_dir,
-            &duckdb,
-            &store,
-        ))
-        .unwrap_err();
+        let error =
+            replay_package_from_artifacts(artifact_replay_request(&package_dir, &duckdb, &store))
+                .unwrap_err();
 
         assert!(
             error
@@ -3243,12 +3265,9 @@ fn artifact_replay_rejects_corrupted_or_missing_preimages_before_mutation() {
         let duckdb = destination(&db_path);
         let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-        let error = replay_duckdb_package_from_artifacts(artifact_replay_request(
-            &package_dir,
-            &duckdb,
-            &store,
-        ))
-        .unwrap_err();
+        let error =
+            replay_package_from_artifacts(artifact_replay_request(&package_dir, &duckdb, &store))
+                .unwrap_err();
 
         assert!(
             error
@@ -3294,12 +3313,9 @@ fn artifact_replay_rejects_manifest_package_hash_mismatch_before_mutation() {
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let error = replay_duckdb_package_from_artifacts(artifact_replay_request(
-        &package_dir,
-        &destination,
-        &store,
-    ))
-    .unwrap_err();
+    let error =
+        replay_package_from_artifacts(artifact_replay_request(&package_dir, &destination, &store))
+            .unwrap_err();
 
     assert!(
         error
@@ -3330,7 +3346,7 @@ fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_new_store_
     second_delta.checkpoint_id = CheckpointId::new("checkpoint-second").unwrap();
     let second_store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let report = replay_prepared_duckdb_package(replay_request(
+    let report = replay_prepared_package(replay_request(
         &package_dir,
         &destination,
         &second_store,
@@ -3341,7 +3357,7 @@ fn duplicate_destination_replay_returns_duplicate_receipt_and_commits_new_store_
     assert_eq!(report.receipt.receipt_id, first_receipt.receipt_id);
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::DuckDbCommit {
+        ProjectReceiptSource::DestinationCommit {
             duplicate: true,
             package_receipt_recorded: false
         }
@@ -3370,7 +3386,7 @@ fn recovery_verifies_durable_receipt_and_commits_without_new_destination_write()
     let mut request = replay_request(&package_dir, &destination, &store, delta.clone());
     request.after_receipt_verified = Some(&hook);
 
-    let error = replay_prepared_duckdb_package(request).unwrap_err();
+    let error = replay_prepared_package(request).unwrap_err();
     assert!(error.to_string().contains("stop before checkpoint commit"));
     assert_no_head(&store, &delta);
     assert_eq!(package_status(&package_dir), PackageStatus::Loading);
@@ -3382,7 +3398,7 @@ fn recovery_verifies_durable_receipt_and_commits_without_new_destination_write()
         .loads
         .len();
 
-    let report = recover_prepared_duckdb_package(recovery_request(
+    let report = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,
@@ -3393,7 +3409,7 @@ fn recovery_verifies_durable_receipt_and_commits_without_new_destination_write()
 
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::SuppliedDurableReceipt
+        ProjectReceiptSource::SuppliedDurableReceipt
     );
     assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
     assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
@@ -3416,16 +3432,14 @@ fn named_failpoint_after_checkpoint_proposal_stops_before_destination_write() {
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    let hook = |failpoint: LocalDuckDbLifecycleFailpoint, receipt: Option<&Receipt>| {
-        assert!(receipt.is_none());
-        if failpoint == LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite
-        {
+    let hook = |stage: RuntimeStage<'_>| {
+        if matches!(stage, RuntimeStage::DestinationWriteReady) {
             return Err(CdfError::internal("stop after checkpoint proposal"));
         }
         Ok(())
     };
 
-    let error = replay_prepared_duckdb_package_with_failpoint(
+    let error = replay_prepared_package_with_stage_hook(
         replay_request(&package_dir, &destination, &store, delta.clone()),
         Some(&hook),
     )
@@ -3456,17 +3470,15 @@ fn named_failpoint_after_checkpoint_commit_allows_status_only_recovery() {
     let db_path = temp.path().join("local.duckdb");
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
-    let hook = |failpoint: LocalDuckDbLifecycleFailpoint, receipt: Option<&Receipt>| {
-        if failpoint
-            == LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed
-        {
-            assert!(receipt.is_some());
+    let hook = |stage: RuntimeStage<'_>| {
+        if let RuntimeStage::CheckpointCommitted { checkpoint } = stage {
+            assert!(checkpoint.receipt.is_some());
             return Err(CdfError::internal("stop after checkpoint commit"));
         }
         Ok(())
     };
 
-    let error = replay_prepared_duckdb_package_with_failpoint(
+    let error = replay_prepared_package_with_stage_hook(
         replay_request(&package_dir, &destination, &store, delta.clone()),
         Some(&hook),
     )
@@ -3482,7 +3494,7 @@ fn named_failpoint_after_checkpoint_commit_allows_status_only_recovery() {
     assert!(destination.verify_receipt(&receipts[0]).unwrap().verified);
     let snapshot_before = destination.read_mirror_snapshot_read_only().unwrap();
 
-    let report = recover_prepared_duckdb_package(recovery_request(
+    let report = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,
@@ -3494,7 +3506,7 @@ fn named_failpoint_after_checkpoint_commit_allows_status_only_recovery() {
     assert_eq!(report.checkpoint, head);
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::SuppliedDurableReceipt
+        ProjectReceiptSource::SuppliedDurableReceipt
     );
     assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
     assert_eq!(
@@ -3544,7 +3556,7 @@ fn recovery_rejects_receipt_verification_failure_without_checkpoint() {
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_duckdb_package(recovery_request(
+    let error = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,
@@ -3570,7 +3582,7 @@ fn recovery_rejects_bad_receipt_identity_without_checkpoint() {
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_duckdb_package(recovery_request(
+    let error = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,
@@ -3596,7 +3608,7 @@ fn recovery_rejects_missing_segment_ack_without_checkpoint() {
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_duckdb_package(recovery_request(
+    let error = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,
@@ -3619,7 +3631,7 @@ fn replay_rejects_non_replayable_package_before_checkpoint_or_destination_mutati
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
 
-    let error = replay_prepared_duckdb_package(replay_request(
+    let error = replay_prepared_package(replay_request(
         &package_dir,
         &destination,
         &store,
@@ -3649,7 +3661,7 @@ fn replay_rejects_bad_package_hash_and_segment_mismatch_before_mutation() {
     let bad_hash_store = SqliteCheckpointStore::open_in_memory().unwrap();
     let mut bad_hash_delta = delta(&manifest, "checkpoint-bad-hash");
     bad_hash_delta.package_hash = PackageHash::new("sha256:wrong-package").unwrap();
-    let error = replay_prepared_duckdb_package(replay_request(
+    let error = replay_prepared_package(replay_request(
         &package_dir,
         &destination,
         &bad_hash_store,
@@ -3671,7 +3683,7 @@ fn replay_rejects_bad_package_hash_and_segment_mismatch_before_mutation() {
     let bad_segment_store = SqliteCheckpointStore::open_in_memory().unwrap();
     let mut bad_segment_delta = delta(&manifest, "checkpoint-bad-segment");
     bad_segment_delta.segments[0].byte_count += 1;
-    let error = replay_prepared_duckdb_package(replay_request(
+    let error = replay_prepared_package(replay_request(
         &package_dir,
         &destination,
         &bad_segment_store,
@@ -3707,9 +3719,9 @@ fn destination_failure_before_receipt_abandons_proposed_checkpoint() {
     let destination = destination(&db_path);
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     let mut request = replay_request(&package_dir, &destination, &store, delta.clone());
-    request.disposition = WriteDisposition::CdcApply;
+    request.inputs.destination_commit.disposition = WriteDisposition::CdcApply;
 
-    let error = replay_prepared_duckdb_package(request).unwrap_err();
+    let error = replay_prepared_package(request).unwrap_err();
 
     assert!(
         error.to_string().contains("does not support cdc_apply"),
@@ -3739,7 +3751,7 @@ fn checkpoint_failure_after_receipt_keeps_receipt_recoverable_and_state_unadvanc
     let destination = destination(&db_path);
     let store = CommitFailingStore::new();
 
-    let error = replay_prepared_duckdb_package(replay_request(
+    let error = replay_prepared_package(replay_request(
         &package_dir,
         &destination,
         &store,
@@ -3766,7 +3778,7 @@ fn checkpoint_failure_after_receipt_keeps_receipt_recoverable_and_state_unadvanc
     ));
 
     store.allow_commit();
-    let report = recover_prepared_duckdb_package(recovery_request(
+    let report = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,
@@ -3795,7 +3807,7 @@ fn recovery_refuses_receipts_not_covering_state_delta_counts() {
     let store = SqliteCheckpointStore::open_in_memory().unwrap();
     store.propose(recovery_delta.clone()).unwrap();
 
-    let error = recover_prepared_duckdb_package(recovery_request(
+    let error = recover_prepared_package(recovery_request(
         &package_dir,
         &destination,
         &store,

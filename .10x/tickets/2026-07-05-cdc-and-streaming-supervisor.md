@@ -1,8 +1,8 @@
 Status: blocked
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
+Depends-On: .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md, .10x/tickets/done/2026-07-05-datafusion-engine-planner.md, .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md
 
 # Implement CDC and streaming supervisor
 
@@ -30,6 +30,7 @@ No distributed scheduler in this ticket.
 
 - 2026-07-05: Opened from book and specs.
 - 2026-07-07: Blocked by the P0 structural-debt stop-line until Workstreams A, B, and C close. This ticket owns new CDC source archetypes and the resident streaming supervisor, both explicitly paused by the directive.
+- 2026-07-08: Workstream B closed. This ticket remains blocked by the P0 stop-line until Workstream C closes.
 
 ## Blockers
 

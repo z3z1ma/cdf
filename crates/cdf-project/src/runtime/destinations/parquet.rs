@@ -19,40 +19,6 @@ impl ProjectDestinationDriver for ParquetProjectDestinationDriver {
     }
 }
 
-pub(crate) struct ParquetProjectDestinationRuntime<'a> {
-    destination: &'a ParquetDestination,
-}
-
-impl<'a> ParquetProjectDestinationRuntime<'a> {
-    pub(crate) fn new(destination: &'a ParquetDestination) -> Self {
-        Self { destination }
-    }
-}
-
-impl ProjectDestinationRuntime for ParquetProjectDestinationRuntime<'_> {
-    fn protocol(&self) -> &dyn DestinationProtocol {
-        self.destination
-    }
-
-    fn describe(&self) -> ProjectDestinationDescription {
-        parquet_project_description(self.destination)
-    }
-
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        prepare_parquet_package_commit(self.destination, package_dir, inputs)
-    }
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "Parquet")
-    }
-}
-
 impl ProjectDestinationRuntime for ParquetDestination {
     fn protocol(&self) -> &dyn DestinationProtocol {
         self

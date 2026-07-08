@@ -25,7 +25,9 @@ use cdf_kernel::{
     TargetName, VerifyClause, WriteDisposition,
 };
 use cdf_package::{PackageBuilder, PackageReader, PackageStatus};
-use cdf_project::{PackageArtifactDuckDbReplayRequest, replay_duckdb_package_from_artifacts};
+use cdf_project::{
+    PackageArtifactReplayRequest, ResolvedProjectDestination, replay_package_from_artifacts,
+};
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
     SqliteCheckpointStore, SqliteRunLedger,
@@ -3896,10 +3898,16 @@ fn seed_resume_receipt_before_checkpoint(
     ledger.create_run(Some(run_id.clone())).unwrap();
     let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
     let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let target = PackageReader::open(package_dir)
+        .unwrap()
+        .replay_inputs()
+        .unwrap()
+        .destination_commit
+        .target;
     let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before resume checkpoint"));
-    let error = replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
+    let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.to_path_buf(),
-        destination: &destination,
+        destination: ResolvedProjectDestination::new(Box::new(destination), target),
         checkpoint_store: &store,
         after_receipt_verified: Some(&hook),
     })

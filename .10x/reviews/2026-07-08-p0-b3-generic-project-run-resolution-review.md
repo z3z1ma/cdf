@@ -14,7 +14,7 @@ Ticket `.10x/tickets/done/2026-07-07-p0-b3-generic-project-run-resolution.md`, e
 
 - Minor, accepted: `cargo semver-checks` reports removal of public `ProjectRunResource` and `ProjectRunDestination`. This is the intended B3 break: the old public closed enums were the architecture debt, and the repo is still pre-1.0.
 - Minor, accepted: `jscpd` still reports 7.97% duplication in the scoped runtime/CLI/conformance surface. Inspection and the metric trend show the B3 split reduced the inherited duplication; remaining duplication is mostly existing test and harness shape and does not block this ticket.
-- Minor, owned by B4: destination-specialized package replay/recovery wrapper families remain in the public API and in CLI/conformance callers. This is explicitly excluded from B3 and owned by `.10x/tickets/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`.
+- Minor, owned by B4: destination-specialized package replay/recovery wrapper families remain in the public API and in CLI/conformance callers. This is explicitly excluded from B3 and owned by `.10x/tickets/done/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`.
 
 ## Assumptions Tested
 

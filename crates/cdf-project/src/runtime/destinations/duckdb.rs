@@ -18,40 +18,6 @@ impl ProjectDestinationDriver for DuckDbProjectDestinationDriver {
     }
 }
 
-pub(crate) struct DuckDbProjectDestinationRuntime<'a> {
-    destination: &'a DuckDbDestination,
-}
-
-impl<'a> DuckDbProjectDestinationRuntime<'a> {
-    pub(crate) fn new(destination: &'a DuckDbDestination) -> Self {
-        Self { destination }
-    }
-}
-
-impl ProjectDestinationRuntime for DuckDbProjectDestinationRuntime<'_> {
-    fn protocol(&self) -> &dyn DestinationProtocol {
-        self.destination
-    }
-
-    fn describe(&self) -> ProjectDestinationDescription {
-        duckdb_project_description(self.destination)
-    }
-
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        prepare_duckdb_package_commit(self.destination, package_dir, inputs)
-    }
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "DuckDB")
-    }
-}
-
 impl ProjectDestinationRuntime for DuckDbDestination {
     fn protocol(&self) -> &dyn DestinationProtocol {
         self

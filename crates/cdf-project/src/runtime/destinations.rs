@@ -6,13 +6,10 @@ mod parquet;
 mod postgres;
 
 pub use duckdb::DuckDbProjectDestinationDriver;
-pub(super) use duckdb::DuckDbProjectDestinationRuntime;
+pub(super) use parquet::FilesystemParquetProjectDestinationRuntime;
 pub use parquet::ParquetProjectDestinationDriver;
-pub(super) use parquet::{
-    FilesystemParquetProjectDestinationRuntime, ParquetProjectDestinationRuntime,
-};
 pub use postgres::PostgresProjectDestinationDriver;
-pub(super) use postgres::{PostgresProjectDestinationRuntime, validate_postgres_replay_target};
+pub(super) use postgres::PostgresProjectDestinationRuntime;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]

@@ -10,28 +10,20 @@ mod types;
 mod validation;
 
 pub use destinations::*;
-pub use hooks::{
-    LocalDuckDbLifecycleFailpoint, LocalDuckDbLifecycleFailpointHook, ReceiptVerifiedHook,
-    RuntimeStage, RuntimeStageHook,
-};
-pub use orchestration::{
-    run_local_file_to_duckdb_checkpoint, run_local_file_to_duckdb_checkpoint_with_failpoint,
-    run_project,
-};
+pub use hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook};
+pub use orchestration::run_project;
 pub use replay::{
-    PreparedParquetReplayReport, PreparedPostgresReplayReport,
-    recover_duckdb_package_from_artifacts, recover_duckdb_package_from_artifacts_with_failpoint,
-    recover_parquet_package_from_artifacts, recover_postgres_package_from_artifacts,
-    recover_prepared_duckdb_package, recover_prepared_duckdb_package_with_failpoint,
-    replay_duckdb_package_from_artifacts, replay_duckdb_package_from_artifacts_with_failpoint,
-    replay_parquet_package_from_artifacts, replay_postgres_package_from_artifacts,
-    replay_prepared_duckdb_package, replay_prepared_duckdb_package_with_failpoint,
+    recover_package_from_artifacts, recover_prepared_package, replay_package_from_artifacts,
+    replay_package_from_artifacts_with_stage_hook, replay_prepared_package,
+    replay_prepared_package_with_stage_hook,
 };
 pub use resources::*;
 pub use types::*;
 
 #[cfg(test)]
 pub(crate) use artifacts::state_delta_from_run;
+#[cfg(test)]
+pub(crate) use orchestration::run_local_file_to_duckdb_checkpoint;
 #[cfg(test)]
 pub(crate) use replay::{
     PackageReplayHooks, PackageReplayStage, recover_package_with_runtime,

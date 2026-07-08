@@ -3,93 +3,44 @@ use super::{
     resources::ProjectRunSource,
 };
 
-pub struct PreparedDuckDbReplayRequest<'a, Store: CheckpointStore + ?Sized> {
+pub struct PreparedPackageReplayRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
-    pub destination: &'a DuckDbDestination,
+    pub destination: ResolvedProjectDestination,
     pub checkpoint_store: &'a Store,
-    pub delta: StateDelta,
-    pub target: TargetName,
-    pub disposition: WriteDisposition,
-    pub merge_keys: Vec<String>,
-    pub schema_hash: SchemaHash,
+    pub inputs: PackageReplayInputs,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
-pub struct PreparedDuckDbRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
+pub struct PreparedPackageRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
-    pub destination: &'a DuckDbDestination,
+    pub destination: ResolvedProjectDestination,
     pub checkpoint_store: &'a Store,
-    pub delta: StateDelta,
-    pub target: TargetName,
-    pub disposition: WriteDisposition,
-    pub schema_hash: SchemaHash,
+    pub inputs: PackageReplayInputs,
     pub receipt: Receipt,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
-pub struct PackageArtifactDuckDbReplayRequest<'a, Store: CheckpointStore + ?Sized> {
+pub struct PackageArtifactReplayRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
-    pub destination: &'a DuckDbDestination,
+    pub destination: ResolvedProjectDestination,
     pub checkpoint_store: &'a Store,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
-pub struct PackageArtifactDuckDbRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
+pub struct PackageArtifactRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
     pub package_dir: PathBuf,
-    pub destination: &'a DuckDbDestination,
     pub checkpoint_store: &'a Store,
+    pub destination: ResolvedProjectDestination,
     pub receipt: Receipt,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
-pub struct PackageArtifactParquetRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
-    pub package_dir: PathBuf,
-    pub destination: &'a ParquetDestination,
-    pub checkpoint_store: &'a Store,
-    pub receipt: Receipt,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
-pub struct PackageArtifactParquetReplayRequest<'a, Store: CheckpointStore + ?Sized> {
-    pub package_dir: PathBuf,
-    pub destination: &'a ParquetDestination,
-    pub checkpoint_store: &'a Store,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
-pub struct PackageArtifactPostgresRecoveryRequest<'a, Store: CheckpointStore + ?Sized> {
-    pub package_dir: PathBuf,
-    pub destination: &'a PostgresDestination,
-    pub checkpoint_store: &'a Store,
-    pub receipt: Receipt,
-    pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-}
-
-pub struct PackageArtifactPostgresReplayRequest<'a, Store: CheckpointStore + ?Sized> {
-    pub package_dir: PathBuf,
-    pub destination: &'a PostgresDestination,
-    pub checkpoint_store: &'a Store,
-    pub target: PostgresTarget,
-    pub dedup: MergeDedupPolicy,
-    pub existing_table: Option<PostgresExistingTable>,
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreparedDuckDbReplayReport {
+pub struct PackageReplayReport {
     pub checkpoint: Checkpoint,
     pub receipt: Receipt,
-    pub receipt_source: PreparedReceiptSource,
+    pub receipt_source: ProjectReceiptSource,
     pub package_status: PackageStatus,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum PreparedReceiptSource {
-    DuckDbCommit {
-        duplicate: bool,
-        package_receipt_recorded: bool,
-    },
-    SuppliedDurableReceipt,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -104,39 +55,7 @@ pub enum ProjectReceiptSource {
     SuppliedDurableReceipt,
 }
 
-impl ProjectReceiptSource {
-    pub(super) fn into_duckdb_receipt_source(self) -> PreparedReceiptSource {
-        match self {
-            Self::DestinationCommit {
-                duplicate,
-                package_receipt_recorded,
-            } => PreparedReceiptSource::DuckDbCommit {
-                duplicate,
-                package_receipt_recorded,
-            },
-            Self::DestinationCommitReceiptOnly { .. } => {
-                unreachable!("Postgres receipt-only metadata cannot become a DuckDB report")
-            }
-            Self::SuppliedDurableReceipt => PreparedReceiptSource::SuppliedDurableReceipt,
-        }
-    }
-}
-
-impl From<PreparedReceiptSource> for ProjectReceiptSource {
-    fn from(source: PreparedReceiptSource) -> Self {
-        match source {
-            PreparedReceiptSource::DuckDbCommit {
-                duplicate,
-                package_receipt_recorded,
-            } => Self::DestinationCommit {
-                duplicate,
-                package_receipt_recorded,
-            },
-            PreparedReceiptSource::SuppliedDurableReceipt => Self::SuppliedDurableReceipt,
-        }
-    }
-}
-
+#[cfg(test)]
 pub struct LocalFileDuckDbRunRequest<'a> {
     pub resource: &'a CompiledResource,
     pub plan: EnginePlan,
@@ -163,6 +82,7 @@ pub struct ProjectRunRequest<'a> {
     pub after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
 }
 
+#[cfg(test)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LocalFileDuckDbRunReport {
     pub package_dir: PathBuf,
@@ -171,7 +91,7 @@ pub struct LocalFileDuckDbRunReport {
     pub package_status: PackageStatus,
     pub checkpoint: Checkpoint,
     pub receipt: Receipt,
-    pub receipt_source: PreparedReceiptSource,
+    pub receipt_source: ProjectReceiptSource,
     pub row_count: u64,
     pub segment_count: usize,
 }
@@ -192,6 +112,7 @@ pub struct ProjectRunReport {
 }
 
 impl ProjectRunReport {
+    #[cfg(test)]
     pub(super) fn into_local_file_duckdb_report(self) -> LocalFileDuckDbRunReport {
         LocalFileDuckDbRunReport {
             package_dir: self.package_dir,
@@ -200,7 +121,7 @@ impl ProjectRunReport {
             package_status: self.package_status,
             checkpoint: self.checkpoint,
             receipt: self.receipt,
-            receipt_source: self.receipt_source.into_duckdb_receipt_source(),
+            receipt_source: self.receipt_source,
             row_count: self.row_count,
             segment_count: self.segment_count,
         }

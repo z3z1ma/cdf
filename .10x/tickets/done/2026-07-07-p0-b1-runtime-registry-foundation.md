@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
-Parent: .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
+Parent: .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 Depends-On: .10x/decisions/project-destination-driver-registry.md
 
 # P0 B1: Runtime registry foundation and module split

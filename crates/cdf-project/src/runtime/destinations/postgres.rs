@@ -87,14 +87,6 @@ impl PostgresProjectDestinationRuntime {
         }
     }
 
-    pub(crate) fn for_recovery(destination: &PostgresDestination) -> Self {
-        Self {
-            destination: destination.clone(),
-            replay: None,
-            secret_redaction: None,
-        }
-    }
-
     pub(crate) fn with_secret_redaction(mut self, secret_redaction: Option<String>) -> Self {
         self.secret_redaction = secret_redaction;
         self

@@ -1,12 +1,11 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
-use cdf_kernel::{CdfError, RunId};
+use cdf_kernel::{CdfError, RunId, TargetName};
 use cdf_package::{PackageReader, PackageReplayInputs};
 use cdf_project::{
-    PackageArtifactDuckDbReplayRequest, PackageArtifactParquetReplayRequest,
-    PackageArtifactPostgresReplayRequest, ProjectReceiptSource,
-    replay_duckdb_package_from_artifacts, replay_parquet_package_from_artifacts,
-    replay_postgres_package_from_artifacts,
+    DestinationPolicy, PackageArtifactReplayRequest, PackageReplayReport,
+    PostgresDestinationPolicy, PostgresMergeDedupPolicy, ProjectResolutionContext,
+    ResolvedProjectDestination, replay_package_from_artifacts, resolve_project_run_destination,
 };
 use cdf_state_sqlite::{RunEventAppend, RunEventKind, SqliteCheckpointStore, SqliteRunLedger};
 
@@ -14,7 +13,7 @@ use crate::{
     args::{Cli, ReplayPackageArgs},
     commands::output,
     context::ProjectContext,
-    destination_uri::{parquet_filesystem_root, postgres_database_url, redact_error_value},
+    destination_uri::redact_error_value,
     output::{CliError, CommandOutput},
     reports::{
         PreparedReplayReportRef, ReplayPackageCliReport, RunDestinationReport, replay_event_details,
@@ -22,96 +21,32 @@ use crate::{
     run_command::ensure_parent_directory,
 };
 
-fn replay_duckdb_destination_path(
-    context: &ProjectContext,
-    uri: &str,
-) -> Result<PathBuf, CliError> {
-    let Some(raw_path) = uri.strip_prefix("duckdb://") else {
-        return Err(CliError::not_supported(
-            "replay package",
-            format!(
-                "destination URI `{uri}` is unsupported for package replay; supported destinations are duckdb://path, parquet://root, and postgres://..."
-            ),
-            "artifact replay destination",
-        ));
-    };
-    if raw_path.trim().is_empty() || raw_path.contains("://") {
-        return Err(CliError::not_supported(
-            "replay package",
-            format!("destination URI `{uri}` is malformed or non-local; expected duckdb://path"),
-            "local DuckDB destination path",
-        ));
-    }
-    let path = PathBuf::from(raw_path);
-    Ok(if path.is_absolute() {
-        path
-    } else {
-        context.root.join(path)
-    })
-}
-
-enum ReplayDestination {
-    DuckDb {
-        path: PathBuf,
-    },
-    Parquet {
-        root: PathBuf,
-    },
-    Postgres {
-        destination: Box<cdf_dest_postgres::PostgresDestination>,
-        target: cdf_dest_postgres::PostgresTarget,
-        dedup: cdf_dest_postgres::MergeDedupPolicy,
-        secret_backed: bool,
-    },
+struct ReplayDestination {
+    destination: Option<ResolvedProjectDestination>,
+    report: RunDestinationReport,
+    kind: &'static str,
+    secret_redaction: Option<String>,
 }
 
 impl ReplayDestination {
     fn replay(
-        &self,
-        package_dir: &Path,
+        &mut self,
+        package_dir: PathBuf,
         store: &SqliteCheckpointStore,
         run_ledger: &SqliteRunLedger,
         run_id: &RunId,
-    ) -> Result<PreparedReplayReport, CliError> {
-        let result = match self {
-            Self::DuckDb { path } => {
-                ensure_parent_directory(path)?;
-                let destination = cdf_dest_duckdb::DuckDbDestination::new(path)?;
-                replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
-                    package_dir: package_dir.to_path_buf(),
-                    destination: &destination,
-                    checkpoint_store: store,
-                    after_receipt_verified: None,
-                })
-                .map(PreparedReplayReport::DuckDb)
-            }
-            Self::Parquet { root } => {
-                let destination = cdf_dest_parquet::ParquetDestination::new_filesystem(root)?;
-                replay_parquet_package_from_artifacts(PackageArtifactParquetReplayRequest {
-                    package_dir: package_dir.to_path_buf(),
-                    destination: &destination,
-                    checkpoint_store: store,
-                    after_receipt_verified: None,
-                })
-                .map(PreparedReplayReport::Parquet)
-            }
-            Self::Postgres {
-                destination,
-                target,
-                dedup,
-                secret_backed,
-            } => replay_postgres_package_from_artifacts(PackageArtifactPostgresReplayRequest {
-                package_dir: package_dir.to_path_buf(),
-                destination,
-                checkpoint_store: store,
-                target: target.clone(),
-                dedup: dedup.clone(),
-                existing_table: None,
-                after_receipt_verified: None,
-            })
-            .map(PreparedReplayReport::Postgres)
-            .map_err(|error| redact_postgres_replay_error(error, destination, *secret_backed)),
-        };
+    ) -> Result<PackageReplayReport, CliError> {
+        let destination = self
+            .destination
+            .take()
+            .ok_or_else(|| CdfError::internal("replay destination was already consumed"))?;
+        let result = replay_package_from_artifacts(PackageArtifactReplayRequest {
+            package_dir,
+            destination,
+            checkpoint_store: store,
+            after_receipt_verified: None,
+        })
+        .map_err(|error| redact_error_value(error, self.secret_redaction.as_deref()));
         match result {
             Ok(report) => Ok(report),
             Err(error) => {
@@ -122,104 +57,101 @@ impl ReplayDestination {
         }
     }
 
-    fn report(&self, target: String) -> RunDestinationReport {
-        match self {
-            Self::DuckDb { path } => {
-                RunDestinationReport::duckdb(path.display().to_string(), target)
-            }
-            Self::Parquet { root } => {
-                RunDestinationReport::parquet(root.display().to_string(), target)
-            }
-            Self::Postgres { .. } => RunDestinationReport::postgres(target),
-        }
-    }
-
     fn kind(&self) -> &'static str {
-        match self {
-            Self::DuckDb { .. } => "duckdb",
-            Self::Parquet { .. } => "parquet",
-            Self::Postgres { .. } => "postgres",
-        }
-    }
-
-    fn validate_package_inputs(&self, inputs: &PackageReplayInputs) -> Result<(), CliError> {
-        if let Self::Postgres { target, .. } = self {
-            let explicit = target.display_name();
-            if explicit != inputs.destination_commit.target.as_str() {
-                return Err(CliError::from(CdfError::contract(format!(
-                    "explicit Postgres replay target {explicit} does not match package destination commit target {}",
-                    inputs.destination_commit.target
-                ))));
-            }
-        }
-        Ok(())
+        self.kind
     }
 }
 
-enum PreparedReplayReport {
-    DuckDb(cdf_project::PreparedDuckDbReplayReport),
-    Parquet(cdf_project::PreparedParquetReplayReport),
-    Postgres(cdf_project::PreparedPostgresReplayReport),
-}
-
-impl PreparedReplayReport {
-    fn report(&self) -> PreparedReplayReportRef<'_> {
-        match self {
-            Self::DuckDb(report) => PreparedReplayReportRef {
-                checkpoint: &report.checkpoint,
-                receipt: &report.receipt,
-                receipt_source: ProjectReceiptSource::from(report.receipt_source.clone()),
-                package_status: &report.package_status,
-            },
-            Self::Parquet(report) => PreparedReplayReportRef {
-                checkpoint: &report.checkpoint,
-                receipt: &report.receipt,
-                receipt_source: report.receipt_source.clone(),
-                package_status: &report.package_status,
-            },
-            Self::Postgres(report) => PreparedReplayReportRef {
-                checkpoint: &report.checkpoint,
-                receipt: &report.receipt,
-                receipt_source: report.receipt_source.clone(),
-                package_status: &report.package_status,
-            },
-        }
+fn replay_report_ref(report: &PackageReplayReport) -> PreparedReplayReportRef<'_> {
+    PreparedReplayReportRef {
+        checkpoint: &report.checkpoint,
+        receipt: &report.receipt,
+        receipt_source: report.receipt_source.clone(),
+        package_status: &report.package_status,
     }
 }
 
 fn build_replay_destination(
     context: &ProjectContext,
     args: &ReplayPackageArgs,
+    inputs: &PackageReplayInputs,
 ) -> Result<ReplayDestination, CliError> {
     let uri = &args.destination_uri;
-    if uri.starts_with("postgres://") {
-        return build_postgres_replay_destination(context, args);
-    }
-    if uri.starts_with("parquet://") {
-        return Ok(ReplayDestination::Parquet {
-            root: parquet_filesystem_root(context, uri, "replay package")?,
-        });
-    }
-    Ok(ReplayDestination::DuckDb {
-        path: replay_duckdb_destination_path(context, uri)?,
+    let secret_provider = context.secret_provider();
+    let replay_policy;
+    let destination_policy = if uri.starts_with("postgres://") {
+        if args.target.is_none() {
+            return Err(CliError::usage(
+                "replay package to Postgres requires --target schema.table",
+            ));
+        }
+        replay_policy = replay_postgres_policy(args)?;
+        &replay_policy
+    } else {
+        &context.environment.destination_policy
+    };
+    let target = replay_target(args, inputs)?;
+    let destination_context = ProjectResolutionContext::for_project_run(&context.root, &target)
+        .with_environment_name(&context.environment.name)
+        .with_destination_policy(destination_policy)
+        .with_secret_provider(&secret_provider);
+    let destination = resolve_project_run_destination(uri, &destination_context)
+        .map_err(|error| replay_destination_resolution_error(error, uri))?;
+    let report = RunDestinationReport::from_project(&destination.describe(), destination.target());
+    let secret_redaction = destination.secret_redaction().map(str::to_owned);
+    let kind = match destination
+        .describe()
+        .schemes
+        .first()
+        .copied()
+        .unwrap_or("destination")
+    {
+        "duckdb" => "duckdb",
+        "parquet" => "parquet",
+        "postgres" => "postgres",
+        _ => "destination",
+    };
+    Ok(ReplayDestination {
+        destination: Some(destination),
+        report,
+        kind,
+        secret_redaction,
     })
 }
 
-fn build_postgres_replay_destination(
-    context: &ProjectContext,
+fn replay_target(
     args: &ReplayPackageArgs,
-) -> Result<ReplayDestination, CliError> {
-    let target = args.target.as_deref().ok_or_else(|| {
-        CliError::usage("replay package to Postgres requires --target schema.table")
-    })?;
+    inputs: &PackageReplayInputs,
+) -> Result<TargetName, CliError> {
+    if args.destination_uri.starts_with("postgres://") {
+        let explicit = args.target.as_deref().ok_or_else(|| {
+            CliError::usage("replay package to Postgres requires --target schema.table")
+        })?;
+        let target = replay_postgres_target(explicit)?;
+        if target.display_name() != inputs.destination_commit.target.as_str() {
+            return Err(CliError::from(CdfError::contract(format!(
+                "explicit Postgres replay target {} does not match package destination commit target {}",
+                target.display_name(),
+                inputs.destination_commit.target
+            ))));
+        }
+        return TargetName::new(target.display_name()).map_err(CliError::from);
+    }
+    Ok(inputs.destination_commit.target.clone())
+}
+
+fn replay_postgres_target(target: &str) -> Result<cdf_dest_postgres::PostgresTarget, CliError> {
     if target.split('.').count() != 2 {
         return Err(CliError::usage(
             "replay package to Postgres requires --target schema.table",
         ));
     }
-    let target = cdf_dest_postgres::PostgresTarget::parse(target)?;
-    let dedup = match args.merge_dedup.as_deref() {
-        Some("fail") => cdf_dest_postgres::MergeDedupPolicy::Fail,
+    cdf_dest_postgres::PostgresTarget::parse(target).map_err(CliError::from)
+}
+
+fn replay_postgres_policy(args: &ReplayPackageArgs) -> Result<DestinationPolicy, CliError> {
+    let merge_dedup = match args.merge_dedup.as_deref() {
+        Some("fail") => PostgresMergeDedupPolicy::Fail,
         Some(value) => {
             return Err(CliError::usage(format!(
                 "unsupported Postgres replay --merge-dedup `{value}`; supported value is `fail`"
@@ -231,33 +163,34 @@ fn build_postgres_replay_destination(
             ));
         }
     };
-    let (destination, secret_backed) = postgres_replay_destination(context, &args.destination_uri)?;
-    Ok(ReplayDestination::Postgres {
-        destination: Box::new(destination),
-        target,
-        dedup,
-        secret_backed,
+    Ok(DestinationPolicy {
+        postgres: Some(PostgresDestinationPolicy { merge_dedup }),
     })
 }
 
-fn postgres_replay_destination(
-    context: &ProjectContext,
-    uri: &str,
-) -> Result<(cdf_dest_postgres::PostgresDestination, bool), CliError> {
-    let (database_url, secret_backed) = postgres_database_url(context, uri, "replay package")?;
-    Ok((
-        cdf_dest_postgres::PostgresDestination::connect(database_url)?,
-        secret_backed,
-    ))
-}
-
-fn redact_postgres_replay_error(
-    error: CdfError,
-    destination: &cdf_dest_postgres::PostgresDestination,
-    secret_backed: bool,
-) -> CdfError {
-    let secret = secret_backed.then(|| destination.database_url()).flatten();
-    redact_error_value(error, secret)
+fn replay_destination_resolution_error(error: CdfError, uri: &str) -> CliError {
+    if error
+        .message
+        .contains("no project destination driver registered")
+    {
+        CliError::not_supported(
+            "replay package",
+            format!(
+                "destination URI `{uri}` is unsupported for package replay; supported destinations are duckdb://path, parquet://root, and postgres://..."
+            ),
+            "registered project destination driver",
+        )
+    } else if error.message.contains("malformed or non-local")
+        || error.message.contains("is missing a scheme")
+    {
+        CliError::not_supported(
+            "replay package",
+            error.message,
+            "registered project destination driver",
+        )
+    } else {
+        error.into()
+    }
 }
 
 pub(crate) fn replay_package(
@@ -265,11 +198,10 @@ pub(crate) fn replay_package(
     args: ReplayPackageArgs,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
-    let replay_destination = build_replay_destination(&context, &args)?;
     let reader = PackageReader::open(&args.package_dir)?;
     let package_id = reader.manifest().identity.package_id.clone();
     let replay_inputs = reader.replay_inputs()?;
-    replay_destination.validate_package_inputs(&replay_inputs)?;
+    let mut replay_destination = build_replay_destination(&context, &args, &replay_inputs)?;
     let package_hash = replay_inputs.state_delta.package_hash.clone();
     let state_store_path = context.state_store_path()?;
     ensure_parent_directory(&state_store_path)?;
@@ -278,8 +210,8 @@ pub(crate) fn replay_package(
     let store = context.state_store()?;
 
     let replay_report =
-        replay_destination.replay(&args.package_dir, &store, &run_ledger, &run.run_id)?;
-    let report = replay_report.report();
+        replay_destination.replay(args.package_dir.clone(), &store, &run_ledger, &run.run_id)?;
+    let report = replay_report_ref(&replay_report);
 
     let receipt_source = report.receipt_source.clone();
     let mut event = RunEventAppend::new(RunEventKind::ReplayRecorded);
@@ -302,7 +234,7 @@ pub(crate) fn replay_package(
         .ok_or_else(|| CdfError::internal("created replay run is absent from run ledger"))?;
 
     let destination_report = replay_destination
-        .report(report.receipt.target.to_string())
+        .report
         .with_receipt_destination(report.receipt.destination.to_string());
     let cli_report = ReplayPackageCliReport::from_report(
         run.run_id.to_string(),

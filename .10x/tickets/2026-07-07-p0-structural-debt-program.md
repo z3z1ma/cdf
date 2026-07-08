@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/decisions/p0-structural-debt-stop-line.md
 
@@ -15,7 +15,7 @@ This parent is a plan and orchestration record. Child tickets own execution. The
 ## Child workstreams
 
 - `.10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md`
-- `.10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md`
+- `.10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md`
 - `.10x/tickets/2026-07-07-p0-workstream-c-spine-conformance-harness.md`
 - `.10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md`
 - `.10x/tickets/2026-07-07-p0-workstream-e-contract-depth-program.md`
@@ -61,6 +61,8 @@ No implementation is authorized by this parent directly. No new warehouse/lakeho
 - 2026-07-07: Closed Workstream A at `.10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md` with the segment-write kernel API, required `DestinationProtocol::begin`, trait-level receipt verification, DuckDB/Parquet/Postgres segment sessions, runtime segment feeding, focused quality evidence in `.10x/evidence/2026-07-07-streaming-commit-session-api.md`, and adversarial review in `.10x/reviews/2026-07-07-streaming-commit-session-api-review.md`.
 - 2026-07-07: Stop-line remains active. Workstreams B and C are still open, so new warehouse/lakehouse destination lanes, new CDC/Kafka/source-archetype lanes, and resident streaming-supervisor implementation lanes remain paused.
 - 2026-07-07: Shaped Workstream B with read-only inventory in `.10x/research/2026-07-07-open-orchestrator-world-inventory.md`, API decision `.10x/decisions/project-destination-driver-registry.md`, and four child tickets for runtime foundation, generic replay/recovery, generic project run/resolution, and caller migration/wrapper deletion.
+- 2026-07-08: Closed Workstream B at `.10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md` with generic project destination registration/resolution, generic run/replay/recovery paths, generic stage/failpoint seams, caller migration, wrapper deletion, B4 quality evidence, and aggregate review.
+- 2026-07-08: Stop-line remains active. Workstream C is still open, so new warehouse/lakehouse destination lanes, new CDC/Kafka/source-archetype lanes, and resident streaming-supervisor implementation lanes remain paused.
 
 ## Blockers
 

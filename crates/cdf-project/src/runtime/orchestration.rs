@@ -1,7 +1,7 @@
 use super::{
     artifacts::{StateCommitArtifactContext, write_run_state_commit_artifacts},
     destinations::ResolvedProjectDestination,
-    hooks::{LocalDuckDbLifecycleFailpointHook, ReceiptVerifiedHook, RuntimeStage},
+    hooks::{ReceiptVerifiedHook, RuntimeStage},
     ledger::{ProjectRunRecorder, ProjectRunRecorderContext},
     prelude::*,
     replay::{PackageReplayHooks, PackageReplayStage, replay_package_with_runtime},
@@ -13,15 +13,9 @@ use super::{
     },
 };
 
-pub async fn run_local_file_to_duckdb_checkpoint(
+#[cfg(test)]
+pub(crate) async fn run_local_file_to_duckdb_checkpoint(
     request: LocalFileDuckDbRunRequest<'_>,
-) -> Result<LocalFileDuckDbRunReport> {
-    run_local_file_to_duckdb_checkpoint_with_failpoint(request, None).await
-}
-
-pub async fn run_local_file_to_duckdb_checkpoint_with_failpoint(
-    request: LocalFileDuckDbRunRequest<'_>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
 ) -> Result<LocalFileDuckDbRunReport> {
     let destination = ResolvedProjectDestination::duckdb(request.destination_path, request.target)?;
     let request = ProjectRunRequest {
@@ -36,19 +30,11 @@ pub async fn run_local_file_to_duckdb_checkpoint_with_failpoint(
         run_id: None,
         after_receipt_verified: request.after_receipt_verified,
     };
-    Ok(run_project_with_failpoint(request, lifecycle_failpoint)
-        .await?
-        .into_local_file_duckdb_report())
+    Ok(run_project(request).await?.into_local_file_duckdb_report())
 }
 
 pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
-    run_project_with_failpoint(request, None).await
-}
-
-async fn run_project_with_failpoint(
-    mut request: ProjectRunRequest<'_>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
-) -> Result<ProjectRunReport> {
+    let mut request = request;
     validate_project_run_request(&mut request)?;
     validate_explicit_package_id(&request.package_id)?;
 
@@ -96,7 +82,6 @@ async fn run_project_with_failpoint(
         destination: &mut destination,
         recorder: &recorder,
         after_receipt_verified,
-        lifecycle_failpoint,
         schema_hash,
     };
     match run_project_inner(execution).await {
@@ -139,7 +124,6 @@ struct ProjectRunExecution<'a> {
     destination: &'a mut ResolvedProjectDestination,
     recorder: &'a ProjectRunRecorder<'a>,
     after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'a>>,
     schema_hash: SchemaHash,
 }
 
@@ -202,7 +186,6 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         PackageReplayHooks {
             after_receipt_verified: execution.after_receipt_verified,
             stage: Some(&stage_hook),
-            lifecycle_failpoint: execution.lifecycle_failpoint,
         },
     )?;
     execution.recorder.append_run_succeeded()?;

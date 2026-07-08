@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-07-p0-b3-generic-project-run-resolution.md, .10x/tickets/2026-07-07-p0-workstream-b-open-orchestrator-world.md
+Relates-To: .10x/tickets/done/2026-07-07-p0-b3-generic-project-run-resolution.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 
 # P0 B3 Generic Project Run Resolution Evidence
 
@@ -33,7 +33,7 @@ The destination runtime code is split rather than concentrated in one module:
 The specialized replay/recover wrapper families still exist and are intentionally owned by B4:
 
 ```text
-.10x/tickets/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md
+.10x/tickets/done/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md
 ```
 
 ## Procedure

@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use cdf_kernel::{Checkpoint, CheckpointStatus, CheckpointStore, Receipt, StateDelta};
 use cdf_package::{PackageReader, PackageStatus};
-use cdf_project::ProjectReceiptSource;
+use cdf_project::{PackageReplayReport, ProjectReceiptSource};
 use cdf_state_sqlite::{RunEvent, SqliteCheckpointStore};
 
 use crate::output::CliError;
@@ -34,27 +34,13 @@ impl ResumePackageFacts {
 }
 
 pub(super) enum ResumeReplayReport {
-    DuckDb(cdf_project::PreparedDuckDbReplayReport),
-    Parquet(cdf_project::PreparedParquetReplayReport),
-    Postgres(cdf_project::PreparedPostgresReplayReport),
+    Generic(PackageReplayReport),
 }
 
 impl ResumeReplayReport {
     pub(super) fn common(&self) -> CommonReplayReport<'_> {
         match self {
-            Self::DuckDb(report) => CommonReplayReport {
-                checkpoint: &report.checkpoint,
-                receipt: &report.receipt,
-                receipt_source: ProjectReceiptSource::from(report.receipt_source.clone()),
-                package_status: &report.package_status,
-            },
-            Self::Parquet(report) => CommonReplayReport {
-                checkpoint: &report.checkpoint,
-                receipt: &report.receipt,
-                receipt_source: report.receipt_source.clone(),
-                package_status: &report.package_status,
-            },
-            Self::Postgres(report) => CommonReplayReport {
+            Self::Generic(report) => CommonReplayReport {
                 checkpoint: &report.checkpoint,
                 receipt: &report.receipt,
                 receipt_source: report.receipt_source.clone(),

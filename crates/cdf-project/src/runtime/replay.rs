@@ -1,13 +1,8 @@
 use super::{
     destinations::{
-        DestinationPlanningContext, DuckDbProjectDestinationRuntime,
-        ParquetProjectDestinationRuntime, PostgresProjectDestinationRuntime,
-        ProjectDestinationRuntime, commit_request, validate_postgres_replay_target,
+        DestinationPlanningContext, ProjectDestinationRuntime, ResolvedProjectDestination,
     },
-    hooks::{
-        LocalDuckDbLifecycleFailpoint, LocalDuckDbLifecycleFailpointHook, ReceiptVerifiedHook,
-        RuntimeStage, RuntimeStageHook,
-    },
+    hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook},
     prelude::*,
     receipts::validate_destination_receipt_before_checkpoint,
     types::*,
@@ -31,141 +26,29 @@ pub(crate) enum PackageReplayStage<'a> {
 pub(crate) struct PackageReplayHooks<'a> {
     pub(crate) after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
     pub(crate) stage: Option<PackageReplayStageHook<'a>>,
-    pub(crate) lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'a>>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct GenericPackageReplayReport {
-    pub(crate) checkpoint: Checkpoint,
-    pub(crate) receipt: Receipt,
-    pub(crate) receipt_source: ProjectReceiptSource,
-    pub(crate) package_status: PackageStatus,
-}
-
-impl GenericPackageReplayReport {
-    fn into_duckdb(self) -> PreparedDuckDbReplayReport {
-        PreparedDuckDbReplayReport {
-            checkpoint: self.checkpoint,
-            receipt: self.receipt,
-            receipt_source: self.receipt_source.into_duckdb_receipt_source(),
-            package_status: self.package_status,
-        }
-    }
-
-    fn into_parquet(self) -> PreparedParquetReplayReport {
-        PreparedParquetReplayReport {
-            checkpoint: self.checkpoint,
-            receipt: self.receipt,
-            receipt_source: self.receipt_source,
-            package_status: self.package_status,
-        }
-    }
-
-    fn into_postgres(self) -> PreparedPostgresReplayReport {
-        PreparedPostgresReplayReport {
-            checkpoint: self.checkpoint,
-            receipt: self.receipt,
-            receipt_source: self.receipt_source,
-            package_status: self.package_status,
-        }
-    }
-}
-
-struct DuckDbPackageReplayInputs {
-    inputs: PackageReplayInputs,
-}
-
-impl DuckDbPackageReplayInputs {
-    fn from_package_artifacts(inputs: PackageReplayInputs) -> Self {
-        Self { inputs }
-    }
-
-    fn from_explicit(
-        delta: StateDelta,
-        target: TargetName,
-        disposition: WriteDisposition,
-        merge_keys: Vec<String>,
-        schema_hash: SchemaHash,
-    ) -> Result<Self> {
-        Ok(Self {
-            inputs: package_replay_inputs_from_explicit(
-                delta,
-                target,
-                disposition,
-                merge_keys,
-                schema_hash,
-            )?,
-        })
-    }
-}
-
-pub(super) struct ParquetPackageReplayInputs {
-    inputs: PackageReplayInputs,
-}
-
-impl ParquetPackageReplayInputs {
-    pub(super) fn from_package_artifacts(inputs: PackageReplayInputs) -> Self {
-        Self { inputs }
-    }
-}
-
-pub(super) struct PostgresPackageReplayInputs {
-    inputs: PackageReplayInputs,
-    target: PostgresTarget,
-    dedup: MergeDedupPolicy,
-    existing_table: Option<PostgresExistingTable>,
-}
-
-impl PostgresPackageReplayInputs {
-    fn from_explicit_artifact_replay(
-        _reader: &PackageReader,
-        inputs: PackageReplayInputs,
-        target: PostgresTarget,
-        dedup: MergeDedupPolicy,
-        existing_table: Option<PostgresExistingTable>,
-    ) -> Result<Self> {
-        validate_postgres_replay_target(&target, &inputs.destination_commit.target)?;
-        Ok(Self {
-            inputs,
-            target,
-            dedup,
-            existing_table,
-        })
-    }
-}
-
-pub fn replay_duckdb_package_from_artifacts<Store>(
-    request: PackageArtifactDuckDbReplayRequest<'_, Store>,
-) -> Result<PreparedDuckDbReplayReport>
+pub fn replay_package_from_artifacts<Store>(
+    request: PackageArtifactReplayRequest<'_, Store>,
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    replay_duckdb_package_from_artifacts_with_failpoint(request, None)
+    replay_package_from_artifacts_with_stage_hook(request, None)
 }
 
-pub fn replay_duckdb_package_from_artifacts_with_failpoint<Store>(
-    request: PackageArtifactDuckDbReplayRequest<'_, Store>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
-) -> Result<PreparedDuckDbReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    replay_duckdb_package_from_artifacts_with_hooks(request, None, lifecycle_failpoint)
-}
-
-pub(super) fn replay_duckdb_package_from_artifacts_with_hooks<Store>(
-    request: PackageArtifactDuckDbReplayRequest<'_, Store>,
-    stage_hook: Option<DestinationReplayStageHook<'_>>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
-) -> Result<PreparedDuckDbReplayReport>
+pub fn replay_package_from_artifacts_with_stage_hook<Store>(
+    request: PackageArtifactReplayRequest<'_, Store>,
+    stage_hook: Option<RuntimeStageHook<'_>>,
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
     let reader = PackageReader::open(&request.package_dir)?;
-    let inputs = DuckDbPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
+    let inputs = reader.replay_inputs()?;
     let runtime_stage_hook =
         |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
-    replay_duckdb_package_with_inputs(
+    replay_package_with_resolved_destination(
         reader,
         request.package_dir,
         request.destination,
@@ -174,331 +57,139 @@ where
         PackageReplayHooks {
             after_receipt_verified: request.after_receipt_verified,
             stage: Some(&runtime_stage_hook),
-            lifecycle_failpoint,
         },
     )
 }
 
-pub fn recover_duckdb_package_from_artifacts<Store>(
-    request: PackageArtifactDuckDbRecoveryRequest<'_, Store>,
-) -> Result<PreparedDuckDbReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    recover_duckdb_package_from_artifacts_with_failpoint(request, None)
-}
-
-pub fn recover_duckdb_package_from_artifacts_with_failpoint<Store>(
-    request: PackageArtifactDuckDbRecoveryRequest<'_, Store>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
-) -> Result<PreparedDuckDbReplayReport>
+pub fn recover_package_from_artifacts<Store>(
+    request: PackageArtifactRecoveryRequest<'_, Store>,
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
     let reader = PackageReader::open(&request.package_dir)?;
-    let inputs = DuckDbPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
-    let mut runtime = DuckDbProjectDestinationRuntime::new(request.destination);
-    recover_package_with_runtime(
+    let inputs = reader.replay_inputs()?;
+    recover_package_with_resolved_destination(
         reader,
-        &mut runtime,
+        request.destination,
         request.checkpoint_store,
-        inputs.inputs,
+        inputs,
         request.receipt,
         PackageReplayHooks {
             after_receipt_verified: request.after_receipt_verified,
             stage: None,
-            lifecycle_failpoint,
         },
     )
-    .map(GenericPackageReplayReport::into_duckdb)
 }
 
-pub fn replay_prepared_duckdb_package<Store>(
-    request: PreparedDuckDbReplayRequest<'_, Store>,
-) -> Result<PreparedDuckDbReplayReport>
+pub fn replay_prepared_package<Store>(
+    request: PreparedPackageReplayRequest<'_, Store>,
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    replay_prepared_duckdb_package_with_failpoint(request, None)
+    replay_prepared_package_with_stage_hook(request, None)
 }
 
-pub fn replay_prepared_duckdb_package_with_failpoint<Store>(
-    request: PreparedDuckDbReplayRequest<'_, Store>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
-) -> Result<PreparedDuckDbReplayReport>
+pub fn replay_prepared_package_with_stage_hook<Store>(
+    request: PreparedPackageReplayRequest<'_, Store>,
+    stage_hook: Option<RuntimeStageHook<'_>>,
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
     let reader = PackageReader::open(&request.package_dir)?;
-    validate_prepared_package(&reader, &request.delta, &request.schema_hash)?;
-    let inputs = DuckDbPackageReplayInputs::from_explicit(
-        request.delta,
-        request.target,
-        request.disposition,
-        request.merge_keys,
-        request.schema_hash,
-    )?;
-    replay_duckdb_package_with_inputs(
+    let runtime_stage_hook =
+        |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(stage_hook, stage);
+    replay_package_with_resolved_destination(
         reader,
         request.package_dir,
         request.destination,
         request.checkpoint_store,
-        inputs,
+        request.inputs,
         PackageReplayHooks {
             after_receipt_verified: request.after_receipt_verified,
-            stage: None,
-            lifecycle_failpoint,
+            stage: Some(&runtime_stage_hook),
         },
     )
 }
 
-fn replay_duckdb_package_with_inputs<Store>(
-    reader: PackageReader,
-    package_dir: PathBuf,
-    destination: &DuckDbDestination,
-    checkpoint_store: &Store,
-    inputs: DuckDbPackageReplayInputs,
-    hooks: PackageReplayHooks<'_>,
-) -> Result<PreparedDuckDbReplayReport>
+pub fn recover_prepared_package<Store>(
+    request: PreparedPackageRecoveryRequest<'_, Store>,
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    let mut runtime = DuckDbProjectDestinationRuntime::new(destination);
+    let reader = PackageReader::open(&request.package_dir)?;
+    recover_package_with_resolved_destination(
+        reader,
+        request.destination,
+        request.checkpoint_store,
+        request.inputs,
+        request.receipt,
+        PackageReplayHooks {
+            after_receipt_verified: request.after_receipt_verified,
+            stage: None,
+        },
+    )
+}
+
+fn replay_package_with_resolved_destination<Store>(
+    reader: PackageReader,
+    package_dir: PathBuf,
+    mut destination: ResolvedProjectDestination,
+    checkpoint_store: &Store,
+    inputs: PackageReplayInputs,
+    hooks: PackageReplayHooks<'_>,
+) -> Result<PackageReplayReport>
+where
+    Store: CheckpointStore + ?Sized,
+{
+    validate_resolved_destination_target(&destination, &inputs)?;
     replay_package_with_runtime(
         reader,
         package_dir,
-        &mut runtime,
+        destination.runtime_mut(),
         checkpoint_store,
-        inputs.inputs,
+        inputs,
         hooks,
     )
-    .map(GenericPackageReplayReport::into_duckdb)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreparedParquetReplayReport {
-    pub checkpoint: Checkpoint,
-    pub receipt: Receipt,
-    pub receipt_source: ProjectReceiptSource,
-    pub package_status: PackageStatus,
-}
-
-pub fn recover_parquet_package_from_artifacts<Store>(
-    request: PackageArtifactParquetRecoveryRequest<'_, Store>,
-) -> Result<PreparedParquetReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let reader = PackageReader::open(&request.package_dir)?;
-    let inputs = ParquetPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
-    let mut runtime = ParquetProjectDestinationRuntime::new(request.destination);
-    recover_package_with_runtime(
-        reader,
-        &mut runtime,
-        request.checkpoint_store,
-        inputs.inputs,
-        request.receipt,
-        PackageReplayHooks {
-            after_receipt_verified: request.after_receipt_verified,
-            stage: None,
-            lifecycle_failpoint: None,
-        },
-    )
-    .map(GenericPackageReplayReport::into_parquet)
-}
-
-pub fn replay_parquet_package_from_artifacts<Store>(
-    request: PackageArtifactParquetReplayRequest<'_, Store>,
-) -> Result<PreparedParquetReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let reader = PackageReader::open(&request.package_dir)?;
-    let inputs = ParquetPackageReplayInputs::from_package_artifacts(reader.replay_inputs()?);
-    replay_parquet_package_with_inputs(
-        reader,
-        request.package_dir,
-        request.destination,
-        request.checkpoint_store,
-        inputs,
-        ParquetReplayHooks {
-            after_receipt_verified: request.after_receipt_verified,
-            stage: None,
-        },
-    )
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PreparedPostgresReplayReport {
-    pub checkpoint: Checkpoint,
-    pub receipt: Receipt,
-    pub receipt_source: ProjectReceiptSource,
-    pub package_status: PackageStatus,
-}
-
-pub fn recover_postgres_package_from_artifacts<Store>(
-    request: PackageArtifactPostgresRecoveryRequest<'_, Store>,
-) -> Result<PreparedPostgresReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let reader = PackageReader::open(&request.package_dir)?;
-    let replay_inputs = reader.replay_inputs()?;
-    let mut runtime = PostgresProjectDestinationRuntime::for_recovery(request.destination);
-    recover_package_with_runtime(
-        reader,
-        &mut runtime,
-        request.checkpoint_store,
-        replay_inputs,
-        request.receipt,
-        PackageReplayHooks {
-            after_receipt_verified: request.after_receipt_verified,
-            stage: None,
-            lifecycle_failpoint: None,
-        },
-    )
-    .map(GenericPackageReplayReport::into_postgres)
-}
-
-pub fn replay_postgres_package_from_artifacts<Store>(
-    request: PackageArtifactPostgresReplayRequest<'_, Store>,
-) -> Result<PreparedPostgresReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let reader = PackageReader::open(&request.package_dir)?;
-    let inputs = PostgresPackageReplayInputs::from_explicit_artifact_replay(
-        &reader,
-        reader.replay_inputs()?,
-        request.target,
-        request.dedup,
-        request.existing_table,
-    )?;
-    replay_postgres_package_with_inputs(
-        reader,
-        request.package_dir,
-        request.destination,
-        request.checkpoint_store,
-        inputs,
-        PostgresReplayHooks {
-            after_receipt_verified: request.after_receipt_verified,
-            stage: None,
-        },
-    )
-}
-
-pub(super) fn replay_parquet_package_with_inputs<Store>(
+fn recover_package_with_resolved_destination<Store>(
     reader: PackageReader,
-    package_dir: PathBuf,
-    destination: &ParquetDestination,
+    mut destination: ResolvedProjectDestination,
     checkpoint_store: &Store,
-    inputs: ParquetPackageReplayInputs,
-    hooks: ParquetReplayHooks<'_>,
-) -> Result<PreparedParquetReplayReport>
+    inputs: PackageReplayInputs,
+    receipt: Receipt,
+    hooks: PackageReplayHooks<'_>,
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    let mut runtime = ParquetProjectDestinationRuntime::new(destination);
-    let runtime_stage_hook =
-        |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(hooks.stage, stage);
-    replay_package_with_runtime(
-        reader,
-        package_dir,
-        &mut runtime,
-        checkpoint_store,
-        inputs.inputs,
-        PackageReplayHooks {
-            after_receipt_verified: hooks.after_receipt_verified,
-            stage: Some(&runtime_stage_hook),
-            lifecycle_failpoint: None,
-        },
-    )
-    .map(GenericPackageReplayReport::into_parquet)
-}
-
-pub(super) fn replay_postgres_package_with_inputs<Store>(
-    reader: PackageReader,
-    package_dir: PathBuf,
-    destination: &PostgresDestination,
-    checkpoint_store: &Store,
-    inputs: PostgresPackageReplayInputs,
-    hooks: PostgresReplayHooks<'_>,
-) -> Result<PreparedPostgresReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let mut runtime = PostgresProjectDestinationRuntime::for_replay(
-        destination,
-        inputs.target,
-        inputs.dedup,
-        inputs.existing_table,
-    );
-    let runtime_stage_hook =
-        |stage: PackageReplayStage<'_>| notify_runtime_replay_stage(hooks.stage, stage);
-    replay_package_with_runtime(
-        reader,
-        package_dir,
-        &mut runtime,
-        checkpoint_store,
-        inputs.inputs,
-        PackageReplayHooks {
-            after_receipt_verified: hooks.after_receipt_verified,
-            stage: Some(&runtime_stage_hook),
-            lifecycle_failpoint: None,
-        },
-    )
-    .map(GenericPackageReplayReport::into_postgres)
-}
-
-pub(super) struct ParquetReplayHooks<'a> {
-    pub(super) after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-    pub(super) stage: Option<DestinationReplayStageHook<'a>>,
-}
-
-pub(super) struct PostgresReplayHooks<'a> {
-    pub(super) after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-    pub(super) stage: Option<DestinationReplayStageHook<'a>>,
-}
-
-pub fn recover_prepared_duckdb_package<Store>(
-    request: PreparedDuckDbRecoveryRequest<'_, Store>,
-) -> Result<PreparedDuckDbReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    recover_prepared_duckdb_package_with_failpoint(request, None)
-}
-
-pub fn recover_prepared_duckdb_package_with_failpoint<Store>(
-    request: PreparedDuckDbRecoveryRequest<'_, Store>,
-    lifecycle_failpoint: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
-) -> Result<PreparedDuckDbReplayReport>
-where
-    Store: CheckpointStore + ?Sized,
-{
-    let reader = PackageReader::open(&request.package_dir)?;
-    validate_prepared_package(&reader, &request.delta, &request.schema_hash)?;
-    let inputs = DuckDbPackageReplayInputs::from_explicit(
-        request.delta,
-        request.target,
-        request.disposition,
-        Vec::new(),
-        request.schema_hash,
-    )?;
-    let mut runtime = DuckDbProjectDestinationRuntime::new(request.destination);
+    validate_resolved_destination_target(&destination, &inputs)?;
     recover_package_with_runtime(
         reader,
-        &mut runtime,
-        request.checkpoint_store,
-        inputs.inputs,
-        request.receipt,
-        PackageReplayHooks {
-            after_receipt_verified: request.after_receipt_verified,
-            stage: None,
-            lifecycle_failpoint,
-        },
+        destination.runtime_mut(),
+        checkpoint_store,
+        inputs,
+        receipt,
+        hooks,
     )
-    .map(GenericPackageReplayReport::into_duckdb)
+}
+
+fn validate_resolved_destination_target(
+    destination: &ResolvedProjectDestination,
+    inputs: &PackageReplayInputs,
+) -> Result<()> {
+    if destination.target() != &inputs.destination_commit.target {
+        return Err(CdfError::contract(format!(
+            "resolved destination target {} does not match package destination commit target {}",
+            destination.target(),
+            inputs.destination_commit.target
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn replay_package_with_runtime<Store>(
@@ -508,7 +199,7 @@ pub(crate) fn replay_package_with_runtime<Store>(
     checkpoint_store: &Store,
     inputs: PackageReplayInputs,
     hooks: PackageReplayHooks<'_>,
-) -> Result<GenericPackageReplayReport>
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
@@ -576,7 +267,7 @@ where
     let checkpoint = checkpoint_store.commit(&inputs.state_delta.checkpoint_id, receipt.clone())?;
     let package_status = mark_package_checkpointed_after_commit(&mut reader, &checkpoint, &hooks)?;
 
-    Ok(GenericPackageReplayReport {
+    Ok(PackageReplayReport {
         checkpoint,
         receipt,
         receipt_source: receipt_policy.into_project_receipt_source(package_receipt_recorded),
@@ -591,7 +282,7 @@ pub(crate) fn recover_package_with_runtime<Store>(
     inputs: PackageReplayInputs,
     receipt: Receipt,
     hooks: PackageReplayHooks<'_>,
-) -> Result<GenericPackageReplayReport>
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
@@ -605,7 +296,7 @@ where
     )?;
     let package_status = mark_package_checkpointed_after_commit(&mut reader, &checkpoint, &hooks)?;
 
-    Ok(GenericPackageReplayReport {
+    Ok(PackageReplayReport {
         checkpoint,
         receipt,
         receipt_source: ProjectReceiptSource::SuppliedDurableReceipt,
@@ -713,23 +404,6 @@ fn write_package_segments_to_session(
     Ok(())
 }
 
-fn package_replay_inputs_from_explicit(
-    delta: StateDelta,
-    target: TargetName,
-    disposition: WriteDisposition,
-    merge_keys: Vec<String>,
-    schema_hash: SchemaHash,
-) -> Result<PackageReplayInputs> {
-    let destination_commit = commit_request(&delta, target, disposition)?;
-    Ok(PackageReplayInputs {
-        input_checkpoint: None,
-        state_delta: delta,
-        destination_commit,
-        merge_keys,
-        schema_hash,
-    })
-}
-
 fn validate_package_replay_inputs(
     reader: &PackageReader,
     inputs: &PackageReplayInputs,
@@ -779,9 +453,11 @@ fn notify_runtime_replay_stage(
         return Ok(());
     };
     match stage {
+        PackageReplayStage::PackageReplayVerified => hook(RuntimeStage::PackageReplayVerified),
         PackageReplayStage::CheckpointProposed { delta } => {
             hook(RuntimeStage::CheckpointProposed { delta })
         }
+        PackageReplayStage::DestinationWriteReady => hook(RuntimeStage::DestinationWriteReady),
         PackageReplayStage::DestinationCommitStarted { plan_id } => {
             hook(RuntimeStage::DestinationCommitStarted { plan_id })
         }
@@ -794,9 +470,6 @@ fn notify_runtime_replay_stage(
         PackageReplayStage::PackageStatusUpdated { status } => {
             hook(RuntimeStage::PackageStatusUpdated { status })
         }
-        PackageReplayStage::PackageReplayVerified | PackageReplayStage::DestinationWriteReady => {
-            Ok(())
-        }
     }
 }
 
@@ -807,37 +480,7 @@ fn notify_destination_replay_stage(
     if let Some(hook) = hooks.stage {
         hook(stage)?;
     }
-    trigger_lifecycle_failpoint_for_stage(hooks.lifecycle_failpoint, stage)
-}
-
-fn trigger_lifecycle_failpoint_for_stage(
-    hook: Option<LocalDuckDbLifecycleFailpointHook<'_>>,
-    stage: PackageReplayStage<'_>,
-) -> Result<()> {
-    let Some(hook) = hook else {
-        return Ok(());
-    };
-    match stage {
-        PackageReplayStage::PackageReplayVerified => hook(
-            LocalDuckDbLifecycleFailpoint::AfterPackagedBeforeDestinationWrite,
-            None,
-        ),
-        PackageReplayStage::DestinationWriteReady => hook(
-            LocalDuckDbLifecycleFailpoint::AfterCheckpointProposalBeforeDestinationWrite,
-            None,
-        ),
-        PackageReplayStage::DestinationReceiptRecorded { receipt } => hook(
-            LocalDuckDbLifecycleFailpoint::AfterReceiptVerifiedBeforeCheckpointCommit,
-            Some(receipt),
-        ),
-        PackageReplayStage::CheckpointCommitted { checkpoint } => hook(
-            LocalDuckDbLifecycleFailpoint::AfterCheckpointCommitBeforePackageStatusCheckpointed,
-            checkpoint.receipt.as_ref(),
-        ),
-        PackageReplayStage::CheckpointProposed { .. }
-        | PackageReplayStage::DestinationCommitStarted { .. }
-        | PackageReplayStage::PackageStatusUpdated { .. } => Ok(()),
-    }
+    Ok(())
 }
 
 fn commit_or_reuse_committed_checkpoint<Store>(
@@ -867,29 +510,6 @@ where
             }
         }
     }
-}
-
-fn validate_prepared_package(
-    reader: &PackageReader,
-    delta: &StateDelta,
-    schema_hash: &SchemaHash,
-) -> Result<ReplayView> {
-    reader.verify()?;
-    let replay = reader.replay_view()?;
-    if replay.package_hash != delta.package_hash {
-        return Err(CdfError::data(format!(
-            "package hash {} does not match StateDelta package hash {}",
-            replay.package_hash, delta.package_hash
-        )));
-    }
-    if schema_hash != &delta.schema_hash {
-        return Err(CdfError::contract(format!(
-            "explicit schema hash {} does not match StateDelta schema hash {}",
-            schema_hash, delta.schema_hash
-        )));
-    }
-    validate_package_segments_match_delta(&replay.segments, &delta.segments)?;
-    Ok(replay)
 }
 
 fn validate_package_segments_match_delta(

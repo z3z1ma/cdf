@@ -13,18 +13,19 @@ use cdf_kernel::{
     TargetName, WriteDisposition,
 };
 use cdf_package::{
-    DestinationCommitPlanPreimage, PackageManifest, PackageStatus, SegmentEntry, StateDeltaPreimage,
+    DestinationCommitPlanPreimage, PackageManifest, PackageReplayInputs, PackageStatus,
+    SegmentEntry, StateDeltaPreimage,
 };
 use cdf_project::{
-    PackageArtifactDuckDbRecoveryRequest, PackageArtifactDuckDbReplayRequest,
-    PreparedDuckDbRecoveryRequest, PreparedDuckDbReplayRequest, ReceiptVerifiedHook,
-    recover_duckdb_package_from_artifacts, recover_prepared_duckdb_package,
-    replay_duckdb_package_from_artifacts, replay_prepared_duckdb_package,
+    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PreparedPackageRecoveryRequest,
+    PreparedPackageReplayRequest, ReceiptVerifiedHook, ResolvedProjectDestination,
+    recover_package_from_artifacts, recover_prepared_package, replay_package_from_artifacts,
+    replay_prepared_package,
 };
 
 pub use cdf_dest_duckdb::{DuckDbDestination, DuckDbMirrorSnapshot};
 pub use cdf_package::{PackageBuilder, PackageReader};
-pub use cdf_project::{PreparedDuckDbReplayReport, PreparedReceiptSource};
+pub use cdf_project::{PackageReplayReport, ProjectReceiptSource};
 pub use cdf_state_sqlite::SqliteCheckpointStore;
 
 pub const DEFAULT_PREPARED_SCHEMA_HASH: &str = "schema-v1";
@@ -117,19 +118,15 @@ impl PreparedPackageReplayCase {
         destination: &'a DuckDbDestination,
         checkpoint_store: &'a Store,
         after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-    ) -> PreparedDuckDbReplayRequest<'a, Store>
+    ) -> PreparedPackageReplayRequest<'a, Store>
     where
         Store: CheckpointStore + ?Sized,
     {
-        PreparedDuckDbReplayRequest {
+        PreparedPackageReplayRequest {
             package_dir: self.package_dir.clone(),
-            destination,
+            destination: resolved_duckdb_destination(destination, self.target.clone()),
             checkpoint_store,
-            delta: self.delta.clone(),
-            target: self.target.clone(),
-            disposition: self.disposition.clone(),
-            merge_keys: self.merge_keys.clone(),
-            schema_hash: self.schema_hash.clone(),
+            inputs: self.inputs().unwrap(),
             after_receipt_verified,
         }
     }
@@ -140,21 +137,35 @@ impl PreparedPackageReplayCase {
         checkpoint_store: &'a Store,
         receipt: Receipt,
         after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
-    ) -> PreparedDuckDbRecoveryRequest<'a, Store>
+    ) -> PreparedPackageRecoveryRequest<'a, Store>
     where
         Store: CheckpointStore + ?Sized,
     {
-        PreparedDuckDbRecoveryRequest {
+        PreparedPackageRecoveryRequest {
             package_dir: self.package_dir.clone(),
-            destination,
+            destination: resolved_duckdb_destination(destination, self.target.clone()),
             checkpoint_store,
-            delta: self.delta.clone(),
-            target: self.target.clone(),
-            disposition: self.disposition.clone(),
-            schema_hash: self.schema_hash.clone(),
+            inputs: self.inputs().unwrap(),
             receipt,
             after_receipt_verified,
         }
+    }
+
+    fn inputs(&self) -> Result<PackageReplayInputs> {
+        let destination_commit = cdf_kernel::DestinationCommitRequest {
+            target: self.target.clone(),
+            disposition: self.disposition.clone(),
+            package_hash: self.delta.package_hash.clone(),
+            segments: self.delta.segments.clone(),
+            idempotency_token: cdf_kernel::IdempotencyToken::new(self.delta.package_hash.as_str())?,
+        };
+        Ok(PackageReplayInputs {
+            input_checkpoint: None,
+            state_delta: self.delta.clone(),
+            destination_commit,
+            merge_keys: self.merge_keys.clone(),
+            schema_hash: self.schema_hash.clone(),
+        })
     }
 }
 
@@ -185,24 +196,26 @@ pub fn replay_prepared_package_case<Store>(
     case: &PreparedPackageReplayCase,
     destination: &DuckDbDestination,
     checkpoint_store: &Store,
-) -> Result<PreparedDuckDbReplayReport>
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    replay_prepared_duckdb_package(case.replay_request(destination, checkpoint_store, None))
+    replay_prepared_package(case.replay_request(destination, checkpoint_store, None))
 }
 
 pub fn replay_package_artifacts<Store>(
     package_dir: impl AsRef<Path>,
     destination: &DuckDbDestination,
     checkpoint_store: &Store,
-) -> Result<PreparedDuckDbReplayReport>
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
+    let reader = PackageReader::open(package_dir.as_ref())?;
+    let target = reader.replay_inputs()?.destination_commit.target;
+    replay_package_from_artifacts(PackageArtifactReplayRequest {
         package_dir: package_dir.as_ref().to_path_buf(),
-        destination,
+        destination: resolved_duckdb_destination(destination, target),
         checkpoint_store,
         after_receipt_verified: None,
     })
@@ -213,16 +226,11 @@ pub fn recover_prepared_package_case<Store>(
     destination: &DuckDbDestination,
     checkpoint_store: &Store,
     receipt: Receipt,
-) -> Result<PreparedDuckDbReplayReport>
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    recover_prepared_duckdb_package(case.recovery_request(
-        destination,
-        checkpoint_store,
-        receipt,
-        None,
-    ))
+    recover_prepared_package(case.recovery_request(destination, checkpoint_store, receipt, None))
 }
 
 pub fn recover_package_artifacts<Store>(
@@ -230,24 +238,33 @@ pub fn recover_package_artifacts<Store>(
     destination: &DuckDbDestination,
     checkpoint_store: &Store,
     receipt: Receipt,
-) -> Result<PreparedDuckDbReplayReport>
+) -> Result<PackageReplayReport>
 where
     Store: CheckpointStore + ?Sized,
 {
-    recover_duckdb_package_from_artifacts(PackageArtifactDuckDbRecoveryRequest {
+    let reader = PackageReader::open(package_dir.as_ref())?;
+    let target = reader.replay_inputs()?.destination_commit.target;
+    recover_package_from_artifacts(PackageArtifactRecoveryRequest {
         package_dir: package_dir.as_ref().to_path_buf(),
-        destination,
         checkpoint_store,
+        destination: resolved_duckdb_destination(destination, target),
         receipt,
         after_receipt_verified: None,
     })
+}
+
+fn resolved_duckdb_destination(
+    destination: &DuckDbDestination,
+    target: TargetName,
+) -> ResolvedProjectDestination {
+    ResolvedProjectDestination::new(Box::new(destination.clone()), target)
 }
 
 pub fn assert_packaged_replay_committed_without_source_contact<Store>(
     case: &PreparedPackageReplayCase,
     destination: &DuckDbDestination,
     checkpoint_store: &Store,
-    report: &PreparedDuckDbReplayReport,
+    report: &PackageReplayReport,
 ) where
     Store: CheckpointStore + ?Sized,
 {
@@ -281,13 +298,13 @@ pub fn assert_packaged_replay_committed_without_source_contact<Store>(
 
 pub fn assert_duplicate_replay_identity(
     case: &PreparedPackageReplayCase,
-    report: &PreparedDuckDbReplayReport,
+    report: &PackageReplayReport,
     original_receipt: &Receipt,
     snapshot: &DuckDbMirrorSnapshot,
 ) {
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::DuckDbCommit {
+        ProjectReceiptSource::DestinationCommit {
             duplicate: true,
             package_receipt_recorded: false
         },
@@ -308,7 +325,7 @@ pub fn assert_duplicate_replay_identity(
 pub fn assert_recovery_committed_from_durable_receipt<Store>(
     case: &PreparedPackageReplayCase,
     checkpoint_store: &Store,
-    report: &PreparedDuckDbReplayReport,
+    report: &PackageReplayReport,
     durable_receipt: &Receipt,
     snapshot_before: &DuckDbMirrorSnapshot,
     snapshot_after: &DuckDbMirrorSnapshot,
@@ -317,7 +334,7 @@ pub fn assert_recovery_committed_from_durable_receipt<Store>(
 {
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::SuppliedDurableReceipt
+        ProjectReceiptSource::SuppliedDurableReceipt
     );
     assert_eq!(&report.receipt, durable_receipt);
     assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);

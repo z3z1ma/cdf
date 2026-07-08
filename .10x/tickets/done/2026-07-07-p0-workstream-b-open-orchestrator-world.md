@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-07
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-07-p0-structural-debt-program.md
@@ -24,7 +24,7 @@ Owns:
 - `.10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md`
 - `.10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md`
 - `.10x/tickets/done/2026-07-07-p0-b3-generic-project-run-resolution.md`
-- `.10x/tickets/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`
+- `.10x/tickets/done/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`
 
 ## Required outcome
 
@@ -60,7 +60,9 @@ No new destination implementation, no new source archetype, no distributed sched
 - 2026-07-07: Closed B1 at `.10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md`. `cdf-project` runtime is now split into focused modules, the project destination driver/runtime foundation API exists, and existing public compatibility APIs remain for B2-B4 migration.
 - 2026-07-08: Closed B2 at `.10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md`. Package replay/recovery now delegate through the generic `ProjectDestinationRuntime` skeleton, trait-level destination verification, and segment-writing sessions; a mock registered destination test proves generic replay/recovery/failpoint injection without orchestrator edits.
 - 2026-07-08: Closed B3 at `.10x/tickets/done/2026-07-07-p0-b3-generic-project-run-resolution.md`. Project runs now consume trait-backed resources and registry-resolved destination runtimes; CLI `run` delegates destination resolution to `cdf-project`; old public closed run resource/destination enum names are gone from Rust source.
+- 2026-07-08: Closed B4 at `.10x/tickets/done/2026-07-07-p0-b4-caller-migration-wrapper-deletion.md`. CLI replay/resume and conformance package-replay/live-run callers now use generic replay/recovery APIs; the public DuckDB/Parquet/Postgres wrapper family and DuckDB-only failpoint wrappers are deleted.
+- 2026-07-08: Workstream B aggregate evidence recorded in `.10x/evidence/2026-07-08-p0-workstream-b-open-orchestrator-world.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p0-workstream-b-open-orchestrator-world-review.md`. Workstream B is done. The P0 stop-line remains active because Workstream C is still open.
 
 ## Blockers
 
-None. Workstream A is closed at `.10x/tickets/done/2026-07-07-p0-workstream-a-streaming-commit-session.md`; child tickets now own executable scope and dependencies.
+None.

@@ -1,93 +1,60 @@
-use std::path::PathBuf;
-
-use cdf_kernel::CdfError;
-
-use crate::{
-    context::ProjectContext,
-    destination_uri::{parquet_filesystem_root, postgres_database_url, redact_error_value},
-    output::CliError,
+use cdf_kernel::{CdfError, TargetName};
+use cdf_project::{
+    ProjectResolutionContext, ResolvedProjectDestination, resolve_project_run_destination,
 };
 
-pub(super) enum SelectedDestination {
-    DuckDb {
-        path: PathBuf,
-    },
-    Parquet {
-        root: PathBuf,
-    },
-    Postgres {
-        destination: Box<cdf_dest_postgres::PostgresDestination>,
-        secret_backed: bool,
-    },
-    Unsupported {
-        guidance: String,
-    },
+use crate::{context::ProjectContext, destination_uri::redact_error_value, output::CliError};
+
+pub(super) struct SelectedDestination {
+    destination: Option<ResolvedProjectDestination>,
+    secret_redaction: Option<String>,
 }
 
 impl SelectedDestination {
     pub(super) fn from_context(
         context: &ProjectContext,
         command: &'static str,
+        target: &TargetName,
     ) -> Result<Self, CliError> {
-        let uri = &context.environment.destination;
-        if uri.starts_with("duckdb://") {
-            let Some(path) = context.duckdb_destination_path() else {
-                return Ok(Self::Unsupported {
-                    guidance: format!("destination URI `{uri}` is not a local DuckDB path"),
-                });
-            };
-            return Ok(Self::DuckDb { path });
-        }
-        if uri.starts_with("parquet://") {
-            return Ok(Self::Parquet {
-                root: parquet_filesystem_root(context, uri, command)?,
-            });
-        }
-        if uri.starts_with("postgres://") {
-            let (database_url, secret_backed) = postgres_database_url(context, uri, command)?;
-            let destination = cdf_dest_postgres::PostgresDestination::connect(database_url.clone())
-                .map_err(|error| {
-                    redact_error_value(error, secret_backed.then_some(database_url.as_str()))
-                })?;
-            return Ok(Self::Postgres {
-                destination: Box::new(destination),
-                secret_backed,
-            });
-        }
-        Ok(Self::Unsupported {
-            guidance: format!(
-                "selected environment destination URI `{uri}` is unsupported for resume recovery"
-            ),
+        let secret_provider = context.secret_provider();
+        let destination_context = ProjectResolutionContext::for_project_run(&context.root, target)
+            .with_environment_name(&context.environment.name)
+            .with_destination_policy(&context.environment.destination_policy)
+            .with_secret_provider(&secret_provider);
+        let destination =
+            resolve_project_run_destination(&context.environment.destination, &destination_context)
+                .map_err(|error| resume_destination_resolution_error(error, command))?;
+        let secret_redaction = destination.secret_redaction().map(str::to_owned);
+        Ok(Self {
+            destination: Some(destination),
+            secret_redaction,
         })
+    }
+
+    pub(super) fn take(&mut self) -> Result<ResolvedProjectDestination, CliError> {
+        self.destination
+            .take()
+            .ok_or_else(|| CdfError::internal("resume destination was already consumed").into())
+    }
+
+    pub(super) fn redact_error(&self, error: CdfError) -> CdfError {
+        redact_error_value(error, self.secret_redaction.as_deref())
     }
 }
 
-pub(super) fn redact_postgres_resume_error(
-    error: CdfError,
-    destination: &cdf_dest_postgres::PostgresDestination,
-    secret_backed: bool,
-) -> CdfError {
-    let secret = secret_backed.then(|| destination.database_url()).flatten();
-    redact_error_value(error, secret)
-}
-
-pub(super) fn postgres_resume_replay_dedup(
-    context: &ProjectContext,
-) -> Result<cdf_dest_postgres::MergeDedupPolicy, CdfError> {
-    let policy = context
-        .environment
-        .destination_policy
-        .postgres
-        .as_ref()
-        .ok_or_else(|| {
-            CdfError::contract(format!(
-                "Postgres cdf resume requires [environments.{}.destination_policy.postgres] merge_dedup = \"fail\"",
-                context.environment.name
-            ))
-        })?;
-    match policy.merge_dedup {
-        cdf_project::PostgresMergeDedupPolicy::Fail => {
-            Ok(cdf_dest_postgres::MergeDedupPolicy::Fail)
-        }
+fn resume_destination_resolution_error(error: CdfError, command: &'static str) -> CliError {
+    if error
+        .message
+        .contains("no project destination driver registered")
+        || error.message.contains("malformed or non-local")
+        || error.message.contains("is missing a scheme")
+    {
+        CliError::not_supported(
+            command,
+            error.message,
+            "registered project destination driver",
+        )
+    } else {
+        error.into()
     }
 }

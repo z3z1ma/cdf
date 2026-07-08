@@ -4,7 +4,7 @@ use std::{
 };
 
 use cdf_kernel::{CheckpointStatus, CheckpointStore, ReceiptId, ResourceId, ScopeKey};
-use cdf_project::PreparedReceiptSource;
+use cdf_project::ProjectReceiptSource;
 
 use super::*;
 use crate::package_replay::{
@@ -95,7 +95,7 @@ fn committed_before_checkpoint_recovers_without_source_file() {
     );
     assert_eq!(
         report.receipt_source,
-        PreparedReceiptSource::SuppliedDurableReceipt
+        ProjectReceiptSource::SuppliedDurableReceipt
     );
     assert_eq!(
         PackageReader::open(&package_dir)

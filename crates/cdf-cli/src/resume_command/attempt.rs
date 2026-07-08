@@ -3,23 +3,17 @@ use std::path::{Path, PathBuf};
 use cdf_kernel::{CdfError, Checkpoint, Receipt, RunId, StateDelta};
 use cdf_package::{PackageReader, PackageStatus};
 use cdf_project::{
-    PackageArtifactDuckDbRecoveryRequest, PackageArtifactDuckDbReplayRequest,
-    PackageArtifactParquetRecoveryRequest, PackageArtifactParquetReplayRequest,
-    PackageArtifactPostgresRecoveryRequest, PackageArtifactPostgresReplayRequest,
-    recover_duckdb_package_from_artifacts, recover_parquet_package_from_artifacts,
-    recover_postgres_package_from_artifacts, replay_duckdb_package_from_artifacts,
-    replay_parquet_package_from_artifacts, replay_postgres_package_from_artifacts,
+    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, recover_package_from_artifacts,
+    replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventKind, RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger,
 };
 
-use crate::{context::ProjectContext, output::CliError, run_command::ensure_parent_directory};
+use crate::{context::ProjectContext, output::CliError};
 
 use super::{
-    destination::{
-        SelectedDestination, postgres_resume_replay_dedup, redact_postgres_resume_error,
-    },
+    destination::SelectedDestination,
     events::{
         base_package_event, fill_package_event_fields, receipt_source_name, resume_event_details,
         run_succeeded,
@@ -209,150 +203,63 @@ impl<'a> ResumeAttempt<'a> {
         package: &ResumePackageFacts,
         inputs: &cdf_package::PackageReplayInputs,
     ) -> Result<ResumeReport, CliError> {
-        match SelectedDestination::from_context(self.context, "resume")? {
-            SelectedDestination::DuckDb { path } => {
-                ensure_parent_directory(&path)?;
-                let destination = cdf_dest_duckdb::DuckDbDestination::new(&path)?;
-                let report =
-                    replay_duckdb_package_from_artifacts(PackageArtifactDuckDbReplayRequest {
-                        package_dir: package.path.clone(),
-                        destination: &destination,
-                        checkpoint_store: &self.store,
-                        after_receipt_verified: None,
-                    })
-                    .map(ResumeReplayReport::DuckDb)?;
-                self.success_after_replay(package, &inputs.state_delta, report)
-            }
-            SelectedDestination::Parquet { root } => {
-                let destination = cdf_dest_parquet::ParquetDestination::new_filesystem(&root)?;
-                let report =
-                    replay_parquet_package_from_artifacts(PackageArtifactParquetReplayRequest {
-                        package_dir: package.path.clone(),
-                        destination: &destination,
-                        checkpoint_store: &self.store,
-                        after_receipt_verified: None,
-                    })
-                    .map(ResumeReplayReport::Parquet)?;
-                self.success_after_replay(package, &inputs.state_delta, report)
-            }
-            SelectedDestination::Postgres {
-                destination,
-                secret_backed,
-            } => {
-                self.replay_finalized_postgres_package(package, inputs, &destination, secret_backed)
-            }
-            SelectedDestination::Unsupported { guidance } => {
-                let report =
-                    self.fail_closed("unsupported_destination", "inspect_destination", guidance);
-                let _ = self.append_run_failed(&report);
-                Ok(report)
-            }
-        }
-    }
-
-    fn replay_finalized_postgres_package(
-        &self,
-        package: &ResumePackageFacts,
-        inputs: &cdf_package::PackageReplayInputs,
-        destination: &cdf_dest_postgres::PostgresDestination,
-        secret_backed: bool,
-    ) -> Result<ResumeReport, CliError> {
-        let target = match cdf_dest_postgres::PostgresTarget::parse(
-            inputs.destination_commit.target.as_str(),
-        ) {
-            Ok(target) => target,
-            Err(error) => {
-                let report = self.fail_closed(
-                    "finalized_postgres_package_target_invalid",
-                    "inspect_missing_artifacts",
-                    format!(
-                        "Postgres resume requires the package destination commit target to parse as schema.table before mutation: {error}"
-                    ),
-                );
-                let _ = self.append_run_failed(&report);
-                return Ok(report);
-            }
-        };
-        let dedup = match postgres_resume_replay_dedup(self.context) {
-            Ok(dedup) => dedup,
-            Err(error) => {
-                let report = self.fail_closed(
-                    "finalized_postgres_package_policy_missing",
-                    "inspect_destination_policy",
-                    error.to_string(),
-                );
-                let _ = self.append_run_failed(&report);
-                return Ok(report);
-            }
-        };
-        let report = replay_postgres_package_from_artifacts(PackageArtifactPostgresReplayRequest {
+        let mut selected =
+            match self.selected_destination_or_report(&inputs.destination_commit.target)? {
+                Ok(destination) => destination,
+                Err(report) => return Ok(report),
+            };
+        let destination = selected.take()?;
+        let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
             package_dir: package.path.clone(),
             destination,
             checkpoint_store: &self.store,
-            target,
-            dedup,
-            existing_table: None,
             after_receipt_verified: None,
         })
-        .map(ResumeReplayReport::Postgres)
-        .map_err(|error| redact_postgres_resume_error(error, destination, secret_backed))?;
+        .map(ResumeReplayReport::Generic)
+        .map_err(|error| selected.redact_error(error))?;
         self.success_after_replay(package, &inputs.state_delta, report)
     }
+
     fn recover_durable_receipt(
         &self,
         package: &ResumePackageFacts,
         receipt: Receipt,
     ) -> Result<ResumeReport, CliError> {
-        match SelectedDestination::from_context(self.context, "resume")? {
-            SelectedDestination::DuckDb { path } => {
-                let destination = cdf_dest_duckdb::DuckDbDestination::new(&path)?;
-                let report =
-                    recover_duckdb_package_from_artifacts(PackageArtifactDuckDbRecoveryRequest {
-                        package_dir: package.path.clone(),
-                        destination: &destination,
-                        checkpoint_store: &self.store,
-                        receipt,
-                        after_receipt_verified: None,
-                    })
-                    .map(ResumeReplayReport::DuckDb)?;
-                self.success_after_receipt_recovery(package, report)
-            }
-            SelectedDestination::Parquet { root } => {
-                let destination = cdf_dest_parquet::ParquetDestination::new_filesystem(&root)?;
-                let report =
-                    recover_parquet_package_from_artifacts(PackageArtifactParquetRecoveryRequest {
-                        package_dir: package.path.clone(),
-                        destination: &destination,
-                        checkpoint_store: &self.store,
-                        receipt,
-                        after_receipt_verified: None,
-                    })
-                    .map(ResumeReplayReport::Parquet)?;
-                self.success_after_receipt_recovery(package, report)
-            }
-            SelectedDestination::Postgres {
-                destination,
-                secret_backed,
-            } => {
-                let result = recover_postgres_package_from_artifacts(
-                    PackageArtifactPostgresRecoveryRequest {
-                        package_dir: package.path.clone(),
-                        destination: &destination,
-                        checkpoint_store: &self.store,
-                        receipt,
-                        after_receipt_verified: None,
-                    },
-                )
-                .map(ResumeReplayReport::Postgres)
-                .map_err(|error| redact_postgres_resume_error(error, &destination, secret_backed));
-                self.success_after_receipt_recovery(package, result?)
-            }
-            SelectedDestination::Unsupported { guidance } => {
-                let report =
-                    self.fail_closed("unsupported_destination", "inspect_destination", guidance);
+        let inputs = package.reader.replay_inputs()?;
+        let mut selected =
+            match self.selected_destination_or_report(&inputs.destination_commit.target)? {
+                Ok(destination) => destination,
+                Err(report) => return Ok(report),
+            };
+        let destination = selected.take()?;
+        let report = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
+            package_dir: package.path.clone(),
+            checkpoint_store: &self.store,
+            destination,
+            receipt,
+            after_receipt_verified: None,
+        })
+        .map(ResumeReplayReport::Generic)
+        .map_err(|error| selected.redact_error(error))?;
+        self.success_after_receipt_recovery(package, report)
+    }
+
+    fn selected_destination_or_report(
+        &self,
+        target: &cdf_kernel::TargetName,
+    ) -> Result<Result<SelectedDestination, ResumeReport>, CliError> {
+        match SelectedDestination::from_context(self.context, "resume", target) {
+            Ok(destination) => Ok(Ok(destination)),
+            Err(error) if error.not_supported => {
+                let report = self.fail_closed(
+                    "unsupported_destination",
+                    "inspect_destination",
+                    error.message,
+                );
                 let _ = self.append_run_failed(&report);
-                Ok(report)
+                Ok(Err(report))
             }
+            Err(error) => Err(error),
         }
     }
 

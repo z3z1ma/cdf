@@ -71,6 +71,7 @@ impl<'a> ProjectRunRecorder<'a> {
 
     pub(super) fn append_replay_stage(&self, stage: RuntimeStage<'_>) -> Result<()> {
         match stage {
+            RuntimeStage::PackageReplayVerified | RuntimeStage::DestinationWriteReady => Ok(()),
             RuntimeStage::CheckpointProposed { delta } => {
                 let mut event = self.base_event(RunEventKind::CheckpointProposed);
                 event.checkpoint_id = Some(delta.checkpoint_id.clone());
