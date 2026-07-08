@@ -387,6 +387,39 @@ trust = "governed"
 }
 
 #[test]
+fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().join("fresh-project");
+
+    let report = write_local_project_scaffold(ProjectScaffoldOptions {
+        root: root.clone(),
+        project_name: None,
+        force: false,
+    })
+    .unwrap();
+
+    assert_eq!(report.project_name, "fresh-project");
+    assert_eq!(
+        report.created,
+        vec!["cdf.toml", "resources", "resources/files.toml", "data"]
+    );
+    assert!(root.join("cdf.toml").is_file());
+    assert!(root.join("resources/files.toml").is_file());
+    assert!(root.join("data").is_dir());
+    assert!(fs::read_dir(root.join("data")).unwrap().next().is_none());
+    assert!(!root.join(".cdf").exists());
+    assert!(!root.join("cdf.lock").exists());
+
+    let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
+    let resolver = FileResourceSourceResolver::new(&root);
+    let provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+    let validation = validate_project(&config, Some("dev"), &resolver, &provider).unwrap();
+
+    assert_eq!(validation.declarative_resources, 1);
+    assert!(validation.checked_secrets.is_empty());
+}
+
+#[test]
 fn declarative_sql_secret_is_collected_for_validation() {
     let project = BOOK_PROJECT.replace(
         "source = \"resources/github.toml\"",

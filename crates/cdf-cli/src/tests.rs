@@ -121,6 +121,199 @@ fn help_lists_required_command_surface() {
 }
 
 #[test]
+fn init_default_directory_creates_scaffold_and_validate_passes() {
+    let temp = TempDir::new("cdf-cli-init");
+    let target = temp.path().join("fresh-project");
+    let target_string = target.to_str().unwrap().to_owned();
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "init".to_owned(),
+        target_string.clone(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["ok"], true);
+    assert_eq!(json["command"], "init");
+    assert_eq!(json["result"]["project_name"], "fresh-project");
+    assert_eq!(
+        json["result"]["created"],
+        json!(["cdf.toml", "resources", "resources/files.toml", "data"])
+    );
+    assert_eq!(json["result"]["replaced"], json!([]));
+    assert_eq!(json["result"]["skipped"], json!([]));
+    assert!(target.join("cdf.toml").is_file());
+    assert!(target.join("resources/files.toml").is_file());
+    assert!(target.join("data").is_dir());
+    assert!(fs::read_dir(target.join("data")).unwrap().next().is_none());
+    assert!(!target.join(".cdf").exists());
+    assert!(!target.join("cdf.lock").exists());
+    assert!(!target.join(".cdf/packages").exists());
+    assert!(!target.join(".cdf/state.db").exists());
+    assert!(!target.join(".cdf/dev.duckdb").exists());
+
+    let project_text = fs::read_to_string(target.join("cdf.toml")).unwrap();
+    let resource_text = fs::read_to_string(target.join("resources/files.toml")).unwrap();
+    assert!(project_text.contains("default_environment = \"dev\""));
+    assert!(project_text.contains("[resources.\"local.*\"]"));
+    assert!(resource_text.contains("[resource.events]"));
+    assert!(!project_text.contains("secret://"));
+    assert!(!resource_text.contains("secret://"));
+
+    let validate = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "--project".to_owned(),
+        target_string,
+        "validate".to_owned(),
+    ]);
+    assert_eq!(validate.exit_code, 0, "stderr: {}", validate.stderr);
+    let validate_json = stderr_or_stdout_json(&validate.stdout);
+    assert_eq!(validate_json["result"]["declarative_resources"], 1);
+}
+
+#[test]
+fn init_name_sets_project_name_and_json_fields() {
+    let temp = TempDir::new("cdf-cli-init-name");
+    let target = temp.path().join("named-project");
+    let target_string = target.to_str().unwrap().to_owned();
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "init".to_owned(),
+        target_string.clone(),
+        "--name".to_owned(),
+        "warehouse-core".to_owned(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["root"], target_string);
+    assert_eq!(json["result"]["project_name"], "warehouse-core");
+    assert_eq!(json["result"]["force"], false);
+    assert_eq!(
+        fs::read_to_string(target.join("cdf.toml")).unwrap(),
+        concat!(
+            "[project]\n",
+            "name = \"warehouse-core\"\n",
+            "default_environment = \"dev\"\n",
+            "normalizer = \"namecase-v1\"\n",
+            "\n",
+            "[environments.dev]\n",
+            "state = \"sqlite://.cdf/state.db\"\n",
+            "packages = \".cdf/packages\"\n",
+            "destination = \"duckdb://.cdf/dev.duckdb\"\n",
+            "\n",
+            "[resources.\"local.*\"]\n",
+            "source = \"resources/files.toml\"\n",
+        )
+    );
+}
+
+#[test]
+fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
+    let temp = TempDir::new("cdf-cli-init-refuse");
+    let root = temp.path();
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(root.join("cdf.toml"), "keep project").unwrap();
+    fs::write(root.join("resources/files.toml"), "keep resource").unwrap();
+    fs::write(root.join("data/events.ndjson"), "keep data").unwrap();
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "init".to_owned(),
+        root.to_str().unwrap().to_owned(),
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["kind"], "contract");
+    let message = json["error"]["message"].as_str().unwrap();
+    assert!(message.contains("cdf.toml"));
+    assert!(message.contains("resources/files.toml"));
+    assert!(message.contains("data"));
+    assert_eq!(
+        fs::read_to_string(root.join("cdf.toml")).unwrap(),
+        "keep project"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("resources/files.toml")).unwrap(),
+        "keep resource"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("data/events.ndjson")).unwrap(),
+        "keep data"
+    );
+}
+
+#[test]
+fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
+    let temp = TempDir::new("cdf-cli-init-force");
+    let root = temp.path();
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::create_dir_all(root.join(".cdf/packages")).unwrap();
+    fs::write(root.join("cdf.toml"), "old project").unwrap();
+    fs::write(root.join("resources/files.toml"), "old resource").unwrap();
+    fs::write(root.join("data/existing.ndjson"), "keep input").unwrap();
+    fs::write(root.join("README.md"), "keep unrelated").unwrap();
+    fs::write(root.join(".cdf/state.db"), "keep state").unwrap();
+    fs::write(root.join("cdf.lock"), "keep lock").unwrap();
+
+    let result = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "init".to_owned(),
+        root.to_str().unwrap().to_owned(),
+        "--name".to_owned(),
+        "forced-project".to_owned(),
+        "--force".to_owned(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        json["result"]["replaced"],
+        json!(["cdf.toml", "resources/files.toml"])
+    );
+    assert_eq!(json["result"]["created"], json!([]));
+    assert_eq!(json["result"]["skipped"], json!(["resources", "data"]));
+    assert_eq!(json["result"]["force"], true);
+    assert!(
+        fs::read_to_string(root.join("cdf.toml"))
+            .unwrap()
+            .contains("name = \"forced-project\"")
+    );
+    assert!(
+        fs::read_to_string(root.join("resources/files.toml"))
+            .unwrap()
+            .contains("[resource.events]")
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("data/existing.ndjson")).unwrap(),
+        "keep input"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("README.md")).unwrap(),
+        "keep unrelated"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join(".cdf/state.db")).unwrap(),
+        "keep state"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("cdf.lock")).unwrap(),
+        "keep lock"
+    );
+    assert!(!root.join(".cdf/dev.duckdb").exists());
+}
+
+#[test]
 fn validate_json_reports_project_shape() {
     let project = TestProject::new();
     let result = run(["cdf", "--json", "--project", project.root_str(), "validate"]);

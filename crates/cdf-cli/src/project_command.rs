@@ -1,6 +1,10 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, env};
 
-use cdf_project::{FileResourceSourceResolver, generate_lockfile, validate_project};
+use cdf_kernel::CdfError;
+use cdf_project::{
+    FileResourceSourceResolver, ProjectScaffoldOptions, ProjectScaffoldReport, generate_lockfile,
+    validate_project, write_local_project_scaffold,
+};
 use serde_json::json;
 
 use crate::{
@@ -10,12 +14,50 @@ use crate::{
     output::{CliError, CommandOutput},
 };
 
-pub(crate) fn init(_args: InitArgs) -> Result<CommandOutput, CliError> {
-    Err(CliError::not_supported(
-        "init",
-        "project scaffold semantics are not exposed by cdf-project yet",
-        "project template/write API",
-    ))
+pub(crate) fn init(args: InitArgs) -> Result<CommandOutput, CliError> {
+    let root = args
+        .directory
+        .unwrap_or(env::current_dir().map_err(|error| {
+            CliError::from(CdfError::internal(format!(
+                "read current directory: {error}"
+            )))
+        })?);
+    let project_name = match args.name {
+        Some(name) if name.trim().is_empty() => {
+            return Err(CliError::usage("init --name cannot be empty"));
+        }
+        other => other,
+    };
+    let report = write_local_project_scaffold(ProjectScaffoldOptions {
+        root,
+        project_name,
+        force: args.force,
+    })?;
+    init_output(report)
+}
+
+fn init_output(report: ProjectScaffoldReport) -> Result<CommandOutput, CliError> {
+    let human = init_human_summary(&report);
+    output("init", human, report)
+}
+
+fn init_human_summary(report: &ProjectScaffoldReport) -> String {
+    format!(
+        "initialized CDF project {} at {}: created {}; replaced {}; skipped {}",
+        report.project_name,
+        report.root,
+        path_list(&report.created),
+        path_list(&report.replaced),
+        path_list(&report.skipped)
+    )
+}
+
+fn path_list(paths: &[String]) -> String {
+    if paths.is_empty() {
+        "none".to_owned()
+    } else {
+        paths.join(", ")
+    }
 }
 
 pub(crate) fn validate(cli: &Cli) -> Result<CommandOutput, CliError> {
