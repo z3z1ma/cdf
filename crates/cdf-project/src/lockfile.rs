@@ -1,5 +1,10 @@
 use crate::internal::*;
 use crate::*;
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_kernel::{
+    DestinationCommitRequest, IdempotencyToken, PackageHash, ResourceStream, StateSegment,
+    TargetName, WriteDisposition,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProjectValidationReport {
@@ -64,6 +69,56 @@ pub struct ContractSnapshot {
     pub schema_hash: Option<String>,
     pub policy_hash: Option<String>,
     pub validation_program_hash: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractSnapshotCounts {
+    pub frozen: usize,
+    pub passed: usize,
+    pub drifted: usize,
+    pub missing: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractFreezeReport {
+    pub registry: String,
+    pub resource_ids: Vec<String>,
+    pub counts: ContractSnapshotCounts,
+    pub snapshots: BTreeMap<String, ContractSnapshot>,
+    pub drift_details: Vec<ContractSnapshotDrift>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractTestReport {
+    pub registry: String,
+    pub resource_ids: Vec<String>,
+    pub counts: ContractSnapshotCounts,
+    pub snapshots: Vec<ContractSnapshotComparison>,
+    pub drift_details: Vec<ContractSnapshotDrift>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractSnapshotComparison {
+    pub resource_id: String,
+    pub verdict: ContractSnapshotVerdict,
+    pub frozen: ContractSnapshot,
+    pub current: ContractSnapshot,
+    pub drift_details: Vec<ContractSnapshotDrift>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContractSnapshotVerdict {
+    Pass,
+    Drift,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContractSnapshotDrift {
+    pub resource_id: String,
+    pub field: String,
+    pub frozen: Option<String>,
+    pub current: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -198,10 +253,10 @@ pub fn generate_lockfile(
         let descriptor = resource.descriptor().clone();
         let resource_id = descriptor.resource_id.to_string();
         let schema_hash = schema_hash_from_source(&descriptor.schema_source);
-        let contract = contract_snapshots
-            .get(&resource_id)
-            .cloned()
-            .or_else(|| contract_snapshot_from_descriptor(&descriptor));
+        let contract = Some(match contract_snapshots.get(&resource_id) {
+            Some(snapshot) => snapshot.clone(),
+            None => contract_snapshot_for_resource(resource)?,
+        });
         locked_resources.insert(
             resource_id,
             LockedResource {
@@ -238,6 +293,138 @@ pub fn generate_lockfile(
     })
 }
 
+pub fn contract_snapshots_for_resources(
+    resources: &[CompiledResource],
+    selector: Option<&str>,
+) -> Result<BTreeMap<String, ContractSnapshot>> {
+    let selected = selected_contract_resources(resources, selector)?;
+    let mut snapshots = BTreeMap::new();
+    for resource in selected {
+        snapshots.insert(
+            resource.descriptor().resource_id.to_string(),
+            contract_snapshot_for_resource(resource)?,
+        );
+    }
+    Ok(snapshots)
+}
+
+pub fn contract_snapshot_for_resource(resource: &CompiledResource) -> Result<ContractSnapshot> {
+    let descriptor = resource.descriptor();
+    let policy = ContractPolicy::for_trust(descriptor.trust_level.clone());
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_validation_program(&policy, &observed_schema)?;
+    Ok(ContractSnapshot {
+        contract_ref: descriptor.contract.as_ref().map(ToString::to_string),
+        schema_hash: schema_hash_from_source(&descriptor.schema_source),
+        policy_hash: Some(semantic_hash(&policy)?),
+        validation_program_hash: Some(semantic_hash(&validation_program)?),
+    })
+}
+
+pub fn freeze_contract_snapshots(
+    config: &ProjectConfig,
+    resources: &[CompiledResource],
+    existing_lock: Option<&CdfLock>,
+    destination_uri: &str,
+    selector: Option<&str>,
+) -> Result<(CdfLock, ContractFreezeReport)> {
+    let snapshots = contract_snapshots_for_resources(resources, selector)?;
+    let mut lock = match existing_lock {
+        Some(lock) => lock.clone(),
+        None => generate_lockfile(
+            config,
+            resources,
+            current_dependency_tuple(),
+            &destination_sheets_for_uri(destination_uri)?,
+            snapshots.clone(),
+        )?,
+    };
+
+    if existing_lock.is_some() {
+        for resource in selected_contract_resources(resources, selector)? {
+            let resource_id = resource.descriptor().resource_id.to_string();
+            let snapshot = snapshots
+                .get(&resource_id)
+                .expect("selected resource snapshot was computed")
+                .clone();
+            lock.resources.insert(
+                resource_id,
+                locked_resource_from_current(resource, snapshot)?,
+            );
+        }
+    }
+
+    let resource_ids = snapshots.keys().cloned().collect::<Vec<_>>();
+    let report = ContractFreezeReport {
+        registry: LOCK_FILE_NAME.to_owned(),
+        resource_ids,
+        counts: ContractSnapshotCounts {
+            frozen: snapshots.len(),
+            passed: 0,
+            drifted: 0,
+            missing: 0,
+        },
+        snapshots,
+        drift_details: Vec::new(),
+    };
+    Ok((lock, report))
+}
+
+pub fn test_contract_snapshots(
+    lock: &CdfLock,
+    resources: &[CompiledResource],
+    selector: Option<&str>,
+) -> Result<ContractTestReport> {
+    let current_snapshots = contract_snapshots_for_resources(resources, selector)?;
+    let mut comparisons = Vec::with_capacity(current_snapshots.len());
+    let mut all_drifts = Vec::new();
+
+    for (resource_id, current) in &current_snapshots {
+        let frozen = lock
+            .resources
+            .get(resource_id)
+            .and_then(|resource| resource.contract.as_ref())
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "{} has no frozen contract snapshot for `{resource_id}`; run `cdf contract freeze {resource_id}`",
+                    LOCK_FILE_NAME
+                ))
+            })?;
+        let drift_details = contract_snapshot_drift(resource_id, frozen, current);
+        let verdict = if drift_details.is_empty() {
+            ContractSnapshotVerdict::Pass
+        } else {
+            ContractSnapshotVerdict::Drift
+        };
+        all_drifts.extend(drift_details.clone());
+        comparisons.push(ContractSnapshotComparison {
+            resource_id: resource_id.clone(),
+            verdict,
+            frozen: frozen.clone(),
+            current: current.clone(),
+            drift_details,
+        });
+    }
+
+    let drifted = comparisons
+        .iter()
+        .filter(|comparison| comparison.verdict == ContractSnapshotVerdict::Drift)
+        .count();
+    let passed = comparisons.len() - drifted;
+    Ok(ContractTestReport {
+        registry: LOCK_FILE_NAME.to_owned(),
+        resource_ids: current_snapshots.keys().cloned().collect(),
+        counts: ContractSnapshotCounts {
+            frozen: 0,
+            passed,
+            drifted,
+            missing: 0,
+        },
+        snapshots: comparisons,
+        drift_details: all_drifts,
+    })
+}
+
 pub fn diff_lockfiles(before: &CdfLock, after: &CdfLock) -> Result<Vec<LockDiff>> {
     let before =
         serde_json::to_value(before).map_err(|error| CdfError::internal(error.to_string()))?;
@@ -246,4 +433,148 @@ pub fn diff_lockfiles(before: &CdfLock, after: &CdfLock) -> Result<Vec<LockDiff>
     let mut diffs = Vec::new();
     diff_json_values("$", Some(&before), Some(&after), &mut diffs);
     Ok(diffs)
+}
+
+fn current_dependency_tuple() -> DependencyTuple {
+    DependencyTuple {
+        cdf: env!("CARGO_PKG_VERSION").to_owned(),
+        arrow_rs: "59.1.0".to_owned(),
+        datafusion: None,
+        object_store: None,
+        duckdb_rs: None,
+        rust: None,
+    }
+}
+
+fn selected_contract_resources<'a>(
+    resources: &'a [CompiledResource],
+    selector: Option<&str>,
+) -> Result<Vec<&'a CompiledResource>> {
+    if resources.is_empty() {
+        return Err(CdfError::contract(
+            "no compiled project resources are available for contract snapshots",
+        ));
+    }
+    match selector {
+        Some(resource_id) => resources
+            .iter()
+            .find(|resource| resource.descriptor().resource_id.as_str() == resource_id)
+            .map(|resource| vec![resource])
+            .ok_or_else(|| CdfError::contract(format!("resource `{resource_id}` is not compiled"))),
+        None => {
+            let mut selected = resources.iter().collect::<Vec<_>>();
+            selected.sort_by(|left, right| {
+                left.descriptor()
+                    .resource_id
+                    .as_str()
+                    .cmp(right.descriptor().resource_id.as_str())
+            });
+            Ok(selected)
+        }
+    }
+}
+
+fn locked_resource_from_current(
+    resource: &CompiledResource,
+    contract: ContractSnapshot,
+) -> Result<LockedResource> {
+    let descriptor = resource.descriptor().clone();
+    Ok(LockedResource {
+        schema_hash: schema_hash_from_source(&descriptor.schema_source),
+        descriptor,
+        capabilities: resource.capabilities().clone(),
+        capability_sheet_hash: semantic_hash(resource.capabilities())?,
+        contract: Some(contract),
+    })
+}
+
+fn destination_sheets_for_uri(uri: &str) -> Result<Vec<DestinationSheet>> {
+    if let Some(path) = uri.strip_prefix("duckdb://") {
+        if path.trim().is_empty() {
+            return Err(CdfError::contract(
+                "duckdb:// destination path cannot be empty",
+            ));
+        }
+        return Ok(vec![
+            cdf_dest_duckdb::DuckDbDestination::new(path)?
+                .capabilities()
+                .sheet,
+        ]);
+    }
+    if uri.strip_prefix("parquet://").is_some() {
+        let request = DestinationCommitRequest {
+            package_hash: PackageHash::new("contract-freeze-snapshot")?,
+            target: TargetName::new("contract_freeze_snapshot")?,
+            disposition: WriteDisposition::Append,
+            segments: Vec::<StateSegment>::new(),
+            idempotency_token: IdempotencyToken::new("contract-freeze-snapshot")?,
+        };
+        let (sheet, _) = cdf_dest_parquet::ParquetDestination::dry_plan_commit(&request)?;
+        return Ok(vec![sheet]);
+    }
+    if uri.starts_with("postgres://") {
+        return Ok(vec![
+            cdf_dest_postgres::PostgresDestination::new()
+                .postgres_sheet()
+                .kernel
+                .clone(),
+        ]);
+    }
+    Err(CdfError::contract(
+        "destination URI is unsupported for lockfile generation; expected duckdb://, parquet://, or postgres://",
+    ))
+}
+
+fn contract_snapshot_drift(
+    resource_id: &str,
+    frozen: &ContractSnapshot,
+    current: &ContractSnapshot,
+) -> Vec<ContractSnapshotDrift> {
+    let mut drift = Vec::new();
+    push_snapshot_drift(
+        &mut drift,
+        resource_id,
+        "contract_ref",
+        &frozen.contract_ref,
+        &current.contract_ref,
+    );
+    push_snapshot_drift(
+        &mut drift,
+        resource_id,
+        "schema_hash",
+        &frozen.schema_hash,
+        &current.schema_hash,
+    );
+    push_snapshot_drift(
+        &mut drift,
+        resource_id,
+        "policy_hash",
+        &frozen.policy_hash,
+        &current.policy_hash,
+    );
+    push_snapshot_drift(
+        &mut drift,
+        resource_id,
+        "validation_program_hash",
+        &frozen.validation_program_hash,
+        &current.validation_program_hash,
+    );
+    drift
+}
+
+fn push_snapshot_drift(
+    drift: &mut Vec<ContractSnapshotDrift>,
+    resource_id: &str,
+    field: &str,
+    frozen: &Option<String>,
+    current: &Option<String>,
+) {
+    if frozen != current {
+        drift.push(ContractSnapshotDrift {
+            resource_id: resource_id.to_owned(),
+            field: field.to_owned(),
+            frozen: frozen.clone(),
+            current: current.clone(),
+        });
+    }
 }

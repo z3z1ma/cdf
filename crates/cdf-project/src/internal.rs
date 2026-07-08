@@ -252,21 +252,6 @@ pub(crate) fn schema_hash_from_source(schema_source: &SchemaSource) -> Option<St
     }
 }
 
-pub(crate) fn contract_snapshot_from_descriptor(
-    descriptor: &ResourceDescriptor,
-) -> Option<ContractSnapshot> {
-    let contract_ref = descriptor.contract.as_ref().map(ToString::to_string);
-    if contract_ref.is_none() && schema_hash_from_source(&descriptor.schema_source).is_none() {
-        return None;
-    }
-    Some(ContractSnapshot {
-        contract_ref,
-        schema_hash: schema_hash_from_source(&descriptor.schema_source),
-        policy_hash: None,
-        validation_program_hash: None,
-    })
-}
-
 pub(crate) fn semantic_hash(value: &impl Serialize) -> Result<String> {
     let bytes = serde_json::to_vec(value).map_err(|error| CdfError::internal(error.to_string()))?;
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))

@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-05-cli-surface.md
 Depends-On: .10x/specs/project-cli-observability-security.md, .10x/specs/types-contracts-normalization.md
 
@@ -39,3 +39,6 @@ None. If the registry file layout is not already specified enough for implementa
 ## Progress and notes
 
 - 2026-07-07: Split from `.10x/tickets/done/2026-07-07-cli-remaining-command-planners.md`. Current CLI supports `contract show`; freeze/test return not-supported because registry/snapshot helpers are not exposed yet.
+- 2026-07-08: Self-ratified `.10x/decisions/contract-freeze-lockfile-registry.md` before implementation. For this slice, `cdf.lock` is the project-local contract snapshot registry; the optional `contract` argument is interpreted as a resource id selector; omitted means all compiled resources. Freeze writes deterministic schema/policy/validation-program hashes into lock snapshots, and test compares current snapshots against frozen lock state.
+- 2026-07-08: Implemented project-owned contract snapshot helpers plus CLI `contract freeze`/`contract test` wiring. Focused CLI tests cover project-free `contract show`, freeze/write/pass, missing lock, missing selected snapshot, and schema/program drift; focused project tests cover preserving existing dependency/destination lock data and field-level drift reporting.
+- 2026-07-08: Parent review found and fixed a lockfile integration gap: generated lockfiles now compute full contract snapshots by default so `cdf diff schema` remains clean after `cdf contract freeze`. Closed with evidence `.10x/evidence/2026-07-08-cli-contract-registry-freeze-test.md` and review `.10x/reviews/2026-07-08-cli-contract-registry-freeze-test-review.md`.

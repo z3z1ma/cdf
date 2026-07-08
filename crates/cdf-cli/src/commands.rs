@@ -39,7 +39,7 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Sql(args) => crate::sql_command::sql(&cli, args),
         Command::Inspect(args) => crate::inspect_command::inspect(&cli, args),
         Command::DiffSchema => crate::project_command::diff_schema(&cli),
-        Command::Contract(command) => crate::contract_command::contract(command),
+        Command::Contract(command) => crate::contract_command::contract(&cli, command),
         Command::State(command) => crate::state_command::state(&cli, command),
         Command::Resume(args) => crate::resume_command::resume(&cli, args),
         Command::ReplayPackage(args) => crate::replay_command::replay_package(&cli, args),

@@ -248,6 +248,21 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
             .unwrap()
             .starts_with("sha256:")
     );
+    let contract = resource.contract.as_ref().unwrap();
+    assert!(
+        contract
+            .policy_hash
+            .as_ref()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        contract
+            .validation_program_hash
+            .as_ref()
+            .unwrap()
+            .starts_with("sha256:")
+    );
     assert_eq!(
         lock.destinations["duckdb"].sheet.type_mappings[0].fidelity,
         TypeMappingFidelity::Lossless
@@ -271,6 +286,93 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         diff.path
             .contains("destinations.duckdb.sheet.type_mappings")
     }));
+}
+
+#[test]
+fn contract_freeze_preserves_existing_dependency_and_destination_data() {
+    let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
+    let resolver =
+        InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
+    let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let sheet = destination_sheet("duckdb", TypeMappingFidelity::Lossless);
+    let dependency_tuple = DependencyTuple {
+        cdf: "0.1.0-old".to_owned(),
+        arrow_rs: "59.1.0-old".to_owned(),
+        datafusion: Some("pinned-datafusion".to_owned()),
+        object_store: Some("pinned-object-store".to_owned()),
+        duckdb_rs: Some("pinned-duckdb".to_owned()),
+        rust: Some("pinned-rust".to_owned()),
+    };
+    let existing = generate_lockfile(
+        &config,
+        &resources,
+        dependency_tuple.clone(),
+        std::slice::from_ref(&sheet),
+        BTreeMap::new(),
+    )
+    .unwrap();
+
+    let (lock, report) = freeze_contract_snapshots(
+        &config,
+        &resources,
+        Some(&existing),
+        "duckdb://ignored-by-existing-lock",
+        Some("github.issues"),
+    )
+    .unwrap();
+
+    assert_eq!(lock.dependency_tuple, dependency_tuple);
+    assert_eq!(lock.destinations, existing.destinations);
+    assert_eq!(report.resource_ids, vec!["github.issues"]);
+    let snapshot = lock.resources["github.issues"].contract.as_ref().unwrap();
+    assert!(
+        snapshot
+            .policy_hash
+            .as_ref()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        snapshot
+            .validation_program_hash
+            .as_ref()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+}
+
+#[test]
+fn contract_test_reports_field_level_snapshot_drift() {
+    let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
+    let resolver =
+        InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
+    let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let (lock, _) =
+        freeze_contract_snapshots(&config, &resources, None, "duckdb://.cdf/dev.duckdb", None)
+            .unwrap();
+    let changed_resource = GITHUB_RESOURCE.replace(
+        "  { name = \"updated_at\", type = \"timestamp_micros\", nullable = false, timezone = \"UTC\" },",
+        concat!(
+            "  { name = \"updated_at\", type = \"timestamp_micros\", nullable = false, timezone = \"UTC\" },\n",
+            "  { name = \"ingested_at\", type = \"int64\", nullable = true },"
+        ),
+    );
+    let changed_resolver =
+        InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", &changed_resource);
+    let changed_resources =
+        compile_project_declarative_resources(&config, &changed_resolver).unwrap();
+
+    let report = test_contract_snapshots(&lock, &changed_resources, Some("github.issues")).unwrap();
+
+    assert_eq!(report.counts.passed, 0);
+    assert_eq!(report.counts.drifted, 1);
+    let fields = report
+        .drift_details
+        .iter()
+        .map(|detail| detail.field.as_str())
+        .collect::<Vec<_>>();
+    assert!(fields.contains(&"schema_hash"));
+    assert!(fields.contains(&"validation_program_hash"));
 }
 
 fn destination_sheet(name: &str, fidelity: TypeMappingFidelity) -> DestinationSheet {

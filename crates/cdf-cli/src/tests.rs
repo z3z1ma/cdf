@@ -327,6 +327,174 @@ fn validate_json_reports_project_shape() {
 }
 
 #[test]
+fn contract_show_remains_project_free() {
+    let result = run(["cdf", "--json", "contract", "show", "--trust", "governed"]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "contract show");
+    assert_eq!(json["result"]["policy"], "governed");
+    assert_eq!(
+        json["result"]["contract"]["schema"]["review_artifact_required"],
+        true
+    );
+}
+
+#[test]
+fn contract_freeze_writes_lock_and_contract_test_passes() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "freeze",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(project.root.join("cdf.lock").is_file());
+    assert!(
+        !project.root.join(".cdf/dev.duckdb").exists(),
+        "contract freeze must not create destination data"
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["resource_ids"], json!(["local.events"]));
+    assert_eq!(json["result"]["counts"]["frozen"], 1);
+    let snapshot = &json["result"]["snapshots"]["local.events"];
+    assert!(
+        snapshot["schema_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        snapshot["policy_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        snapshot["validation_program_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+
+    let test = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "test",
+    ]);
+
+    assert_eq!(test.exit_code, 0, "stderr: {}", test.stderr);
+    let json = stderr_or_stdout_json(&test.stdout);
+    assert_eq!(json["result"]["counts"]["passed"], 1);
+    assert_eq!(json["result"]["counts"]["drifted"], 0);
+    assert_eq!(json["result"]["drift_details"], json!([]));
+
+    let diff = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "diff",
+        "schema",
+    ]);
+
+    assert_eq!(diff.exit_code, 0, "stderr: {}", diff.stderr);
+    let json = stderr_or_stdout_json(&diff.stdout);
+    assert_eq!(json["result"]["diffs"], json!([]));
+}
+
+#[test]
+fn contract_test_fails_closed_when_lock_is_missing() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "test",
+    ]);
+
+    assert_eq!(result.exit_code, 3);
+    let json = stderr_or_stdout_json(&result.stderr);
+    let message = json["error"]["message"].as_str().unwrap();
+    assert!(message.contains("cdf.lock"));
+    assert!(message.contains("cdf contract freeze"));
+}
+
+#[test]
+fn contract_test_reports_schema_and_program_drift() {
+    let project = TestProject::new();
+    let freeze = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "freeze",
+        "local.events",
+    ]);
+    assert_eq!(freeze.exit_code, 0, "stderr: {}", freeze.stderr);
+    write_resource_with_extra_contract_field(&project);
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "test",
+        "--contract",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 1, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["resource_ids"], json!(["local.events"]));
+    assert_eq!(json["result"]["counts"]["passed"], 0);
+    assert_eq!(json["result"]["counts"]["drifted"], 1);
+    let fields = json["result"]["drift_details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|detail| detail["field"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert!(fields.contains(&"schema_hash"));
+    assert!(fields.contains(&"validation_program_hash"));
+}
+
+#[test]
+fn contract_test_fails_closed_when_selected_snapshot_is_missing() {
+    let project = TestProject::new();
+    write_minimal_lockfile(&project);
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "contract",
+        "test",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 3);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("no frozen contract snapshot")
+    );
+}
+
+#[test]
 fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
     let project = TestProject::new();
     let package_root = project.root.join(".cdf/packages");
@@ -5028,6 +5196,20 @@ fn write_resource_disposition(project: &TestProject, disposition: &str) {
         RESOURCE.replace(
             "write_disposition = \"append\"",
             &format!("write_disposition = \"{disposition}\""),
+        ),
+    )
+    .unwrap();
+}
+
+fn write_resource_with_extra_contract_field(project: &TestProject) {
+    fs::write(
+        project.root.join("resources/files.toml"),
+        RESOURCE.replace(
+            "  { name = \"updated_at\", type = \"int64\", nullable = false },",
+            concat!(
+                "  { name = \"updated_at\", type = \"int64\", nullable = false },\n",
+                "  { name = \"ingested_at\", type = \"int64\", nullable = true },"
+            ),
         ),
     )
     .unwrap();
