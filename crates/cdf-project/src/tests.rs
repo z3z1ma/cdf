@@ -503,9 +503,16 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
     assert_eq!(report.project_name, "fresh-project");
     assert_eq!(
         report.created,
-        vec!["cdf.toml", "resources", "resources/files.toml", "data"]
+        vec![
+            "cdf.toml",
+            "README.md",
+            "resources",
+            "resources/files.toml",
+            "data"
+        ]
     );
     assert!(root.join("cdf.toml").is_file());
+    assert!(root.join("README.md").is_file());
     assert!(root.join("resources/files.toml").is_file());
     assert!(root.join("data").is_dir());
     assert!(fs::read_dir(root.join("data")).unwrap().next().is_none());
@@ -513,6 +520,13 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
     assert!(!root.join("cdf.lock").exists());
 
     let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
+    let readme = fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(readme.contains("docs/quickstart.md"));
+    assert!(readme.contains("cdf validate"));
+    assert!(readme.contains("cdf plan local.events --target local_events"));
+    assert!(readme.contains("cdf run --resource local.events"));
+    assert!(!readme.contains("secret://"));
+    assert!(!readme.contains(root.to_str().unwrap()));
     let resolver = FileResourceSourceResolver::new(&root);
     let provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
     let validation = validate_project(&config, Some("dev"), &resolver, &provider).unwrap();

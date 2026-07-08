@@ -188,11 +188,18 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
     assert_eq!(json["result"]["project_name"], "fresh-project");
     assert_eq!(
         json["result"]["created"],
-        json!(["cdf.toml", "resources", "resources/files.toml", "data"])
+        json!([
+            "cdf.toml",
+            "README.md",
+            "resources",
+            "resources/files.toml",
+            "data"
+        ])
     );
     assert_eq!(json["result"]["replaced"], json!([]));
     assert_eq!(json["result"]["skipped"], json!([]));
     assert!(target.join("cdf.toml").is_file());
+    assert!(target.join("README.md").is_file());
     assert!(target.join("resources/files.toml").is_file());
     assert!(target.join("data").is_dir());
     assert!(fs::read_dir(target.join("data")).unwrap().next().is_none());
@@ -203,11 +210,19 @@ fn init_default_directory_creates_scaffold_and_validate_passes() {
     assert!(!target.join(".cdf/dev.duckdb").exists());
 
     let project_text = fs::read_to_string(target.join("cdf.toml")).unwrap();
+    let readme_text = fs::read_to_string(target.join("README.md")).unwrap();
     let resource_text = fs::read_to_string(target.join("resources/files.toml")).unwrap();
     assert!(project_text.contains("default_environment = \"dev\""));
     assert!(project_text.contains("[resources.\"local.*\"]"));
+    assert!(readme_text.contains("docs/quickstart.md"));
+    assert!(readme_text.contains("cdf validate"));
+    assert!(readme_text.contains("cdf plan local.events --target local_events"));
+    assert!(readme_text.contains("cdf run --resource local.events"));
     assert!(resource_text.contains("[resource.events]"));
     assert!(!project_text.contains("secret://"));
+    assert!(!readme_text.contains("secret://"));
+    assert!(!readme_text.contains(&target_string));
+    assert!(!readme_text.contains(".cdf/"));
     assert!(!resource_text.contains("secret://"));
 
     let validate = run_dynamic(vec![
@@ -268,6 +283,7 @@ fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
     fs::create_dir_all(root.join("resources")).unwrap();
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(root.join("cdf.toml"), "keep project").unwrap();
+    fs::write(root.join("README.md"), "keep readme").unwrap();
     fs::write(root.join("resources/files.toml"), "keep resource").unwrap();
     fs::write(root.join("data/events.ndjson"), "keep data").unwrap();
 
@@ -283,11 +299,16 @@ fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
     assert_eq!(json["error"]["kind"], "contract");
     let message = json["error"]["message"].as_str().unwrap();
     assert!(message.contains("cdf.toml"));
+    assert!(message.contains("README.md"));
     assert!(message.contains("resources/files.toml"));
     assert!(message.contains("data"));
     assert_eq!(
         fs::read_to_string(root.join("cdf.toml")).unwrap(),
         "keep project"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("README.md")).unwrap(),
+        "keep readme"
     );
     assert_eq!(
         fs::read_to_string(root.join("resources/files.toml")).unwrap(),
@@ -327,7 +348,7 @@ fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(
         json["result"]["replaced"],
-        json!(["cdf.toml", "resources/files.toml"])
+        json!(["cdf.toml", "README.md", "resources/files.toml"])
     );
     assert_eq!(json["result"]["created"], json!([]));
     assert_eq!(json["result"]["skipped"], json!(["resources", "data"]));
@@ -346,10 +367,14 @@ fn init_force_replaces_scaffold_files_and_preserves_unrelated_runtime_paths() {
         fs::read_to_string(root.join("data/existing.ndjson")).unwrap(),
         "keep input"
     );
-    assert_eq!(
-        fs::read_to_string(root.join("README.md")).unwrap(),
-        "keep unrelated"
-    );
+    let readme_text = fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(readme_text.contains("docs/quickstart.md"));
+    assert!(readme_text.contains("cdf validate"));
+    assert!(readme_text.contains("cdf plan local.events --target local_events"));
+    assert!(readme_text.contains("cdf run --resource local.events"));
+    assert!(!readme_text.contains("secret://"));
+    assert!(!readme_text.contains(root.to_str().unwrap()));
+    assert!(!readme_text.contains(".cdf/"));
     assert_eq!(
         fs::read_to_string(root.join(".cdf/state.db")).unwrap(),
         "keep state"

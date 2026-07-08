@@ -2,8 +2,27 @@ use crate::*;
 use std::{fs, io::ErrorKind, path::Path};
 
 const RESOURCES_DIR: &str = "resources";
+const README_FILE: &str = "README.md";
 const RESOURCE_FILE: &str = "resources/files.toml";
 const DATA_DIR: &str = "data";
+
+const README_SCAFFOLD: &str = r#"# CDF project
+
+This scaffold was created by `cdf init`.
+
+Start with the CDF repository quickstart at `docs/quickstart.md`.
+
+From this project root, the supported first commands for the local
+`local.events` resource are:
+
+```bash
+cdf validate
+cdf plan local.events --target local_events
+cdf run --resource local.events --pipeline local.events --target local_events
+```
+
+Add newline-delimited JSON files under `data/` before running the resource.
+"#;
 
 const RESOURCE_SCAFFOLD: &str = r#"[source.local]
 kind = "files"
@@ -66,6 +85,13 @@ pub fn write_local_project_scaffold(
         options.force,
         &mut report,
     )?;
+    write_scaffold_file(
+        &options.root,
+        README_FILE,
+        README_SCAFFOLD,
+        options.force,
+        &mut report,
+    )?;
     ensure_scaffold_directory(&options.root, RESOURCES_DIR, options.force, &mut report)?;
     write_scaffold_file(
         &options.root,
@@ -112,7 +138,7 @@ fn ensure_no_unforced_overwrites(root: &Path, force: bool) -> Result<()> {
     }
 
     let mut conflicts = Vec::new();
-    for relative in [PROJECT_FILE_NAME, RESOURCE_FILE, DATA_DIR] {
+    for relative in [PROJECT_FILE_NAME, README_FILE, RESOURCE_FILE, DATA_DIR] {
         if symlink_metadata(root.join(relative))?.is_some() {
             conflicts.push(relative);
         }

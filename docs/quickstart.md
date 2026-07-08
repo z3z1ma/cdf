@@ -43,13 +43,12 @@ printf '%s\n' \
 Expected output is abbreviated because the temporary path differs:
 
 ```text
-initialized CDF project docs_quickstart at ...: created cdf.toml, resources, resources/files.toml, data; replaced none; skipped none
+initialized CDF project docs_quickstart at ...: created cdf.toml, README.md, resources, resources/files.toml, data; replaced none; skipped none
 ```
 
-`cdf init` currently creates `cdf.toml`, `resources/files.toml`, and `data/`.
-It does not create `README.md`, `.cdf/`, packages, checkpoints, destination
-files, lockfiles, or data files. The init README is owned by
-[WS6D](../.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md).
+`cdf init` currently creates `README.md`, `cdf.toml`, `resources/files.toml`,
+and `data/`. It does not create `.cdf/`, packages, checkpoints, destination
+files, lockfiles, or data files.
 
 ## Validate
 
