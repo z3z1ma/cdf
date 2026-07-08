@@ -19,7 +19,7 @@ This parent is a plan and orchestration record. Child tickets own execution. The
 - `.10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md`
 - `.10x/tickets/done/2026-07-07-p0-workstream-d-dependency-tuple-residual.md`
 - `.10x/tickets/2026-07-07-p0-workstream-e-contract-depth-program.md`
-- `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`
+- `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md`
 
 ## Stop-line rule
 
@@ -71,6 +71,7 @@ No implementation is authorized by this parent directly. No new warehouse/lakeho
 - 2026-07-08: Closed Workstream C child C5 at `.10x/tickets/done/2026-07-08-p0-c5-property-fuzz-targets.md`. The A-C stop-line remains active because Workstream C child C6 aggregate closure remains open.
 - 2026-07-08: Closed Workstream C at `.10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md`. Workstreams A, B, and C are now closed, so the A-C stop-line is lifted for new destination lanes, new source-archetype lanes, and resident streaming-supervisor implementation lanes. The broader P0 program remains active because Workstreams E and F remain open.
 - 2026-07-08: Activated Workstream E graph. P1 contract-depth parent `.10x/tickets/2026-07-08-p1-contract-depth-program.md`, ordered children E1-E6, and decision `.10x/decisions/contract-live-verdict-execution-semantics.md` are open; implementation has not started yet.
+- 2026-07-08: Closed Workstream F at `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md` with private `crates/cdf-benchmarks`, deterministic fixture specs, smoke/full/postgres Criterion suites, JSONL trend recording, scoped cargo-vet exemptions for benchmark-only dependencies, baseline evidence in `.10x/evidence/2026-07-08-p0-workstream-f-benchmark-gate.md`, and review in `.10x/reviews/2026-07-08-p0-workstream-f-benchmark-gate-review.md`. The broader P0 program remains active because Workstream E is not closed; E5 is blocked on anomaly-spike semantics and E6 depends on E5.
 
 ## Blockers
 

@@ -52,7 +52,7 @@ Tool availability check found `jscpd`, `rust-code-analysis-cli`, and `scc` insta
 
 The `.10x/` graph now has a P0 parent, six child owners, stop-line blockers on affected parent tickets, updated specs where the directive superseded optional session language, and a coverage-matrix row tracking the program.
 
-The benchmark gate has a single active owner: `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`.
+The benchmark gate had a single active owner at activation time: `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md`.
 
 ## Limits
 

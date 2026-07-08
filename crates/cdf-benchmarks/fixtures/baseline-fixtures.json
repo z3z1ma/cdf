@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "name": "tiny",
+      "rows": 8,
+      "batch_size": 8,
+      "wide_columns": 0
+    },
+    {
+      "name": "medium",
+      "rows": 2048,
+      "batch_size": 512,
+      "wide_columns": 0
+    },
+    {
+      "name": "wide",
+      "rows": 512,
+      "batch_size": 256,
+      "wide_columns": 64
+    }
+  ]
+}

@@ -72,8 +72,8 @@ No benchmark harness implementation, no generated benchmark fixtures committed t
 
 - 2026-07-07: Opened from qualitative performance discussion. Current claim to validate: CDF should be fast for governed, typed, batch-oriented local data movement, but should not claim to beat DuckDB/DataFusion/Polars in their native hot paths without evidence.
 - 2026-07-07: Activated for triage after the run spine parent closed. Scope remains research/record-only: inspect code paths, classify benchmark candidates, and open a bounded harness ticket if recommended; do not implement benches in this ticket.
-- 2026-07-07: Cancelled before closure because the user-ratified P0 structural-debt directive promoted the benchmark gate directly to implementation. The replacement active owner is `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`.
+- 2026-07-07: Cancelled before closure because the user-ratified P0 structural-debt directive promoted the benchmark gate directly to implementation. The replacement implementation owner is `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md`.
 
 ## Blockers
 
-Superseded by `.10x/tickets/2026-07-07-p0-workstream-f-benchmark-gate.md`.
+Superseded by `.10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md`.

@@ -36,6 +36,14 @@ criteria = "safe-to-deploy"
 version = "0.1.5"
 criteria = "safe-to-deploy"
 
+[[exemptions.anes]]
+version = "0.1.6"
+criteria = "safe-to-run"
+
+[[exemptions.anstyle]]
+version = "1.0.14"
+criteria = "safe-to-deploy"
+
 [[exemptions.arbitrary]]
 version = "1.4.2"
 criteria = "safe-to-deploy"
@@ -304,6 +312,30 @@ criteria = "safe-to-deploy"
 version = "0.10.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.ciborium]]
+version = "0.2.2"
+criteria = "safe-to-run"
+
+[[exemptions.ciborium-io]]
+version = "0.2.2"
+criteria = "safe-to-run"
+
+[[exemptions.ciborium-ll]]
+version = "0.2.2"
+criteria = "safe-to-run"
+
+[[exemptions.clap]]
+version = "4.6.1"
+criteria = "safe-to-deploy"
+
+[[exemptions.clap_builder]]
+version = "4.6.0"
+criteria = "safe-to-deploy"
+
+[[exemptions.clap_lex]]
+version = "1.1.0"
+criteria = "safe-to-deploy"
+
 [[exemptions.cmov]]
 version = "0.5.4"
 criteria = "safe-to-deploy"
@@ -339,6 +371,22 @@ criteria = "safe-to-deploy"
 [[exemptions.crc32fast]]
 version = "1.5.0"
 criteria = "safe-to-deploy"
+
+[[exemptions.criterion]]
+version = "0.5.1"
+criteria = "safe-to-run"
+
+[[exemptions.criterion-plot]]
+version = "0.5.0"
+criteria = "safe-to-run"
+
+[[exemptions.crossbeam-deque]]
+version = "0.8.7"
+criteria = "safe-to-run"
+
+[[exemptions.crossbeam-epoch]]
+version = "0.9.20"
+criteria = "safe-to-run"
 
 [[exemptions.crossbeam-utils]]
 version = "0.8.21"
@@ -668,6 +716,10 @@ criteria = "safe-to-deploy"
 version = "0.5.0"
 criteria = "safe-to-deploy"
 
+[[exemptions.hermit-abi]]
+version = "0.5.2"
+criteria = "safe-to-run"
+
 [[exemptions.hex]]
 version = "0.4.3"
 criteria = "safe-to-deploy"
@@ -763,6 +815,14 @@ criteria = "safe-to-deploy"
 [[exemptions.ipnet]]
 version = "2.12.0"
 criteria = "safe-to-deploy"
+
+[[exemptions.is-terminal]]
+version = "0.4.17"
+criteria = "safe-to-run"
+
+[[exemptions.itertools]]
+version = "0.10.5"
+criteria = "safe-to-run"
 
 [[exemptions.itertools]]
 version = "0.14.0"
@@ -916,6 +976,10 @@ criteria = "safe-to-deploy"
 version = "1.21.4"
 criteria = "safe-to-deploy"
 
+[[exemptions.oorandom]]
+version = "11.1.5"
+criteria = "safe-to-run"
+
 [[exemptions.parking_lot]]
 version = "0.12.5"
 criteria = "safe-to-deploy"
@@ -975,6 +1039,18 @@ criteria = "safe-to-deploy"
 [[exemptions.pkg-config]]
 version = "0.3.33"
 criteria = "safe-to-deploy"
+
+[[exemptions.plotters]]
+version = "0.3.7"
+criteria = "safe-to-run"
+
+[[exemptions.plotters-backend]]
+version = "0.3.7"
+criteria = "safe-to-run"
+
+[[exemptions.plotters-svg]]
+version = "0.3.7"
+criteria = "safe-to-run"
 
 [[exemptions.portable-atomic]]
 version = "1.13.1"
@@ -1123,6 +1199,14 @@ criteria = "safe-to-run"
 [[exemptions.rawpointer]]
 version = "0.2.1"
 criteria = "safe-to-deploy"
+
+[[exemptions.rayon]]
+version = "1.12.0"
+criteria = "safe-to-run"
+
+[[exemptions.rayon-core]]
+version = "1.13.0"
+criteria = "safe-to-run"
 
 [[exemptions.redox_syscall]]
 version = "0.5.18"
@@ -1395,6 +1479,10 @@ criteria = "safe-to-deploy"
 [[exemptions.tinystr]]
 version = "0.8.3"
 criteria = "safe-to-deploy"
+
+[[exemptions.tinytemplate]]
+version = "1.2.1"
+criteria = "safe-to-run"
 
 [[exemptions.tinyvec]]
 version = "1.11.0"
