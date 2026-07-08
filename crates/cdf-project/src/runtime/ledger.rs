@@ -1,5 +1,6 @@
 use super::{hooks::RuntimeStage, prelude::*};
 use cdf_contract::{AnomalyFact, ValidationDepth, ValidationTransitionTrigger};
+use std::time::Instant;
 
 pub(super) struct ValidationDepthTransitionRecord<'a> {
     pub(super) from_depth: ValidationDepth,
@@ -24,6 +25,7 @@ pub(super) struct ProjectRunRecorder<'a> {
     pub(super) events: RunEventFanout<'a>,
     pub(super) run_id: RunId,
     pub(super) context: ProjectRunRecorderContext,
+    started_at: Instant,
 }
 
 impl<'a> ProjectRunRecorder<'a> {
@@ -37,46 +39,101 @@ impl<'a> ProjectRunRecorder<'a> {
             events: RunEventFanout::new(ledger, event_sink),
             run_id,
             context,
+            started_at: Instant::now(),
         }
     }
 
     pub(super) fn append_run_started(&self) -> Result<()> {
         let mut event = self.base_event(RunEventKind::RunStarted);
-        event.details = RunEventDetails::new([(
-            "pipeline_id",
+        let mut details = details_for_phase("run");
+        details.insert(
+            "pipeline_id".to_owned(),
             RunEventValue::String(self.context.pipeline_id.as_str().to_owned()),
-        )]);
+        );
+        event.details = RunEventDetails {
+            attributes: details,
+        };
         self.append(event)
     }
 
     pub(super) fn append_plan_recorded(&self) -> Result<()> {
         let mut event = self.base_event(RunEventKind::PlanRecorded);
-        event.details = RunEventDetails::new([("planned_packages", RunEventValue::U64(1))]);
+        let mut details = details_for_phase("planning");
+        details.insert("planned_packages".to_owned(), RunEventValue::U64(1));
+        event.details = RunEventDetails {
+            attributes: details,
+        };
         self.append(event)
     }
 
     pub(super) fn append_package_started(&self) -> Result<()> {
-        self.append(self.base_event(RunEventKind::PackageStarted))
+        let mut event = self.base_event(RunEventKind::PackageStarted);
+        event.details = RunEventDetails {
+            attributes: details_for_phase("package"),
+        };
+        self.append(event)
+    }
+
+    pub(super) fn append_package_segment_recorded(
+        &self,
+        segment: &SegmentEntry,
+        segment_index: usize,
+        segment_count: usize,
+    ) -> Result<()> {
+        let mut event = self.base_event(RunEventKind::PackageSegmentRecorded);
+        let mut details = details_for_phase("package");
+        details.insert(
+            "segment_id".to_owned(),
+            RunEventValue::String(segment.segment_id.as_str().to_owned()),
+        );
+        details.insert(
+            "row_count".to_owned(),
+            RunEventValue::U64(segment.row_count),
+        );
+        details.insert(
+            "byte_count".to_owned(),
+            RunEventValue::U64(segment.byte_count),
+        );
+        details.insert(
+            "segment_index".to_owned(),
+            RunEventValue::U64(u64_from_usize(segment_index)?),
+        );
+        details.insert(
+            "segment_count".to_owned(),
+            RunEventValue::U64(u64_from_usize(segment_count)?),
+        );
+        event.details = RunEventDetails {
+            attributes: details,
+        };
+        self.append(event)
     }
 
     pub(super) fn append_package_finalized(
         &self,
         package_hash: &PackageHash,
         row_count: u64,
+        byte_count: u64,
+        batch_count: u64,
         segment_count: usize,
+        quarantine_record_count: u64,
     ) -> Result<()> {
         let mut event = self.base_event(RunEventKind::PackageFinalized);
         event.package_hash = Some(package_hash.clone());
-        event.details = RunEventDetails::new([
-            ("row_count", RunEventValue::U64(row_count)),
-            (
-                "segment_count",
-                RunEventValue::U64(
-                    u64::try_from(segment_count)
-                        .map_err(|error| CdfError::internal(error.to_string()))?,
-                ),
-            ),
-        ]);
+        let mut details = details_for_phase("package");
+        details.insert("row_count".to_owned(), RunEventValue::U64(row_count));
+        details.insert("byte_count".to_owned(), RunEventValue::U64(byte_count));
+        details.insert("batch_count".to_owned(), RunEventValue::U64(batch_count));
+        details.insert(
+            "segment_count".to_owned(),
+            RunEventValue::U64(u64_from_usize(segment_count)?),
+        );
+        details.insert(
+            "quarantine_record_count".to_owned(),
+            RunEventValue::U64(quarantine_record_count),
+        );
+        event.details = RunEventDetails {
+            attributes: details,
+        };
         self.append(event)
     }
 
@@ -100,11 +157,37 @@ impl<'a> ProjectRunRecorder<'a> {
                 let mut event = self.base_event(RunEventKind::CheckpointProposed);
                 event.checkpoint_id = Some(delta.checkpoint_id.clone());
                 event.package_hash = Some(delta.package_hash.clone());
+                event.details = checkpoint_delta_details("checkpoint", delta)?;
                 self.append(event)
             }
-            RuntimeStage::DestinationCommitStarted { plan_id } => {
+            RuntimeStage::DestinationCommitStarted {
+                plan_id,
+                segment_count,
+            } => {
                 let mut event = self.base_event(RunEventKind::DestinationCommitStarted);
                 event.plan_id = Some(plan_id.clone());
+                let mut details = details_for_phase("destination");
+                details.insert(
+                    "segment_count".to_owned(),
+                    RunEventValue::U64(u64_from_usize(segment_count)?),
+                );
+                event.details = RunEventDetails {
+                    attributes: details,
+                };
+                self.append(event)
+            }
+            RuntimeStage::DestinationSegmentAcknowledged { ack } => {
+                let mut event = self.base_event(RunEventKind::DestinationSegmentAcknowledged);
+                let mut details = details_for_phase("destination");
+                details.insert(
+                    "segment_id".to_owned(),
+                    RunEventValue::String(ack.segment_id.as_str().to_owned()),
+                );
+                details.insert("row_count".to_owned(), RunEventValue::U64(ack.row_count));
+                details.insert("byte_count".to_owned(), RunEventValue::U64(ack.byte_count));
+                event.details = RunEventDetails {
+                    attributes: details,
+                };
                 self.append(event)
             }
             RuntimeStage::DestinationReceiptRecorded { receipt } => {
@@ -112,6 +195,7 @@ impl<'a> ProjectRunRecorder<'a> {
                 event.package_hash = Some(receipt.package_hash.clone());
                 event.receipt_id = Some(receipt.receipt_id.clone());
                 event.destination_id = Some(receipt.destination.clone());
+                event.details = receipt_details(receipt)?;
                 self.append(event)
             }
             RuntimeStage::CheckpointCommitted { checkpoint } => {
@@ -122,25 +206,34 @@ impl<'a> ProjectRunRecorder<'a> {
                     .receipt
                     .as_ref()
                     .map(|receipt| receipt.receipt_id.clone());
+                event.details = checkpoint_details(checkpoint)?;
                 self.append(event)
             }
             RuntimeStage::PackageStatusUpdated { status } => {
                 let mut event = self.base_event(RunEventKind::PackageStatusUpdated);
-                event.details = RunEventDetails::new([(
-                    "status",
+                let mut details = details_for_phase("package");
+                details.insert(
+                    "status".to_owned(),
                     RunEventValue::String(status.as_str().to_owned()),
-                )]);
+                );
+                event.details = RunEventDetails {
+                    attributes: details,
+                };
                 self.append(event)
             }
         }
     }
 
     pub(super) fn append_run_succeeded(&self) -> Result<()> {
-        self.append(self.base_event(RunEventKind::RunSucceeded))
+        let mut event = self.base_event(RunEventKind::RunSucceeded);
+        event.details = self.run_terminal_details("run", None)?;
+        self.append(event)
     }
 
-    pub(super) fn append_run_failed(&self) -> Result<()> {
-        self.append(self.base_event(RunEventKind::RunFailed))
+    pub(super) fn append_run_failed(&self, error: &CdfError) -> Result<()> {
+        let mut event = self.base_event(RunEventKind::RunFailed);
+        event.details = self.run_terminal_details("run", Some(error))?;
+        self.append(event)
     }
 
     pub(super) fn snapshot(&self) -> Result<RunLedgerSnapshot> {
@@ -167,6 +260,38 @@ impl<'a> ProjectRunRecorder<'a> {
     fn append(&self, event: RunEventAppend) -> Result<()> {
         self.events.publish(&self.run_id, event)?;
         Ok(())
+    }
+
+    fn run_terminal_details(
+        &self,
+        phase: &str,
+        error: Option<&CdfError>,
+    ) -> Result<RunEventDetails> {
+        let mut details = details_for_phase(phase);
+        details.insert(
+            "elapsed_ms".to_owned(),
+            RunEventValue::U64(
+                u64::try_from(self.started_at.elapsed().as_millis()).map_err(|error| {
+                    CdfError::internal(format!("run elapsed time overflow: {error}"))
+                })?,
+            ),
+        );
+        if let Some(error) = error {
+            details.insert(
+                "error_kind".to_owned(),
+                RunEventValue::String(format!("{:?}", error.kind).to_ascii_lowercase()),
+            );
+            if let Some(retry_after_ms) = error.retry_after_ms {
+                details.insert(
+                    "retry_after_ms".to_owned(),
+                    RunEventValue::U64(retry_after_ms),
+                );
+                details.insert("backoff_notice".to_owned(), RunEventValue::Bool(true));
+            }
+        }
+        Ok(RunEventDetails {
+            attributes: details,
+        })
     }
 }
 
@@ -229,10 +354,89 @@ fn partition_id_for_scope(scope: &ScopeKey) -> Option<cdf_kernel::PartitionId> {
     }
 }
 
+fn details_for_phase(phase: &str) -> BTreeMap<String, RunEventValue> {
+    BTreeMap::from([("phase".to_owned(), RunEventValue::String(phase.to_owned()))])
+}
+
+fn u64_from_usize(value: usize) -> Result<u64> {
+    u64::try_from(value).map_err(|error| CdfError::internal(error.to_string()))
+}
+
+fn checkpoint_delta_details(phase: &str, delta: &StateDelta) -> Result<RunEventDetails> {
+    let mut details = details_for_phase(phase);
+    details.insert(
+        "segment_count".to_owned(),
+        RunEventValue::U64(u64_from_usize(delta.segments.len())?),
+    );
+    details.insert(
+        "row_count".to_owned(),
+        RunEventValue::U64(delta.segments.iter().map(|segment| segment.row_count).sum()),
+    );
+    details.insert(
+        "byte_count".to_owned(),
+        RunEventValue::U64(
+            delta
+                .segments
+                .iter()
+                .map(|segment| segment.byte_count)
+                .sum(),
+        ),
+    );
+    Ok(RunEventDetails {
+        attributes: details,
+    })
+}
+
+fn receipt_details(receipt: &Receipt) -> Result<RunEventDetails> {
+    let mut details = details_for_phase("destination");
+    details.insert(
+        "segment_ack_count".to_owned(),
+        RunEventValue::U64(u64_from_usize(receipt.segment_acks.len())?),
+    );
+    details.insert(
+        "rows_written".to_owned(),
+        RunEventValue::U64(receipt.counts.rows_written),
+    );
+    if let Some(rows_inserted) = receipt.counts.rows_inserted {
+        details.insert(
+            "rows_inserted".to_owned(),
+            RunEventValue::U64(rows_inserted),
+        );
+    }
+    if let Some(rows_updated) = receipt.counts.rows_updated {
+        details.insert("rows_updated".to_owned(), RunEventValue::U64(rows_updated));
+    }
+    if let Some(rows_deleted) = receipt.counts.rows_deleted {
+        details.insert("rows_deleted".to_owned(), RunEventValue::U64(rows_deleted));
+    }
+    details.insert(
+        "migration_count".to_owned(),
+        RunEventValue::U64(u64_from_usize(receipt.migrations.len())?),
+    );
+    Ok(RunEventDetails {
+        attributes: details,
+    })
+}
+
+fn checkpoint_details(checkpoint: &Checkpoint) -> Result<RunEventDetails> {
+    let mut details = checkpoint_delta_details("checkpoint", &checkpoint.delta)?.attributes;
+    details.insert(
+        "status".to_owned(),
+        RunEventValue::String(checkpoint.status.as_str().to_owned()),
+    );
+    Ok(RunEventDetails {
+        attributes: details,
+    })
+}
+
 fn validation_depth_transition_details(
     transition: ValidationDepthTransitionRecord<'_>,
 ) -> RunEventDetails {
     let mut attributes = BTreeMap::new();
+    attributes.insert(
+        "phase".to_owned(),
+        RunEventValue::String("validation".to_owned()),
+    );
     attributes.insert(
         "from_depth".to_owned(),
         RunEventValue::String(validation_depth_name(&transition.from_depth).to_owned()),

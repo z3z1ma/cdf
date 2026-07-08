@@ -70,8 +70,10 @@ pub enum RunEventKind {
     RunStarted,
     PlanRecorded,
     PackageStarted,
+    PackageSegmentRecorded,
     PackageFinalized,
     DestinationCommitStarted,
+    DestinationSegmentAcknowledged,
     DestinationReceiptRecorded,
     CheckpointProposed,
     CheckpointCommitted,
@@ -84,12 +86,14 @@ pub enum RunEventKind {
 }
 
 impl RunEventKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 16] = [
         Self::RunStarted,
         Self::PlanRecorded,
         Self::PackageStarted,
+        Self::PackageSegmentRecorded,
         Self::PackageFinalized,
         Self::DestinationCommitStarted,
+        Self::DestinationSegmentAcknowledged,
         Self::DestinationReceiptRecorded,
         Self::CheckpointProposed,
         Self::CheckpointCommitted,
@@ -106,8 +110,10 @@ impl RunEventKind {
             Self::RunStarted => "run_started",
             Self::PlanRecorded => "plan_recorded",
             Self::PackageStarted => "package_started",
+            Self::PackageSegmentRecorded => "package_segment_recorded",
             Self::PackageFinalized => "package_finalized",
             Self::DestinationCommitStarted => "destination_commit_started",
+            Self::DestinationSegmentAcknowledged => "destination_segment_acknowledged",
             Self::DestinationReceiptRecorded => "destination_receipt_recorded",
             Self::CheckpointProposed => "checkpoint_proposed",
             Self::CheckpointCommitted => "checkpoint_committed",
@@ -125,8 +131,10 @@ impl RunEventKind {
             "run_started" => Ok(Self::RunStarted),
             "plan_recorded" => Ok(Self::PlanRecorded),
             "package_started" => Ok(Self::PackageStarted),
+            "package_segment_recorded" => Ok(Self::PackageSegmentRecorded),
             "package_finalized" => Ok(Self::PackageFinalized),
             "destination_commit_started" => Ok(Self::DestinationCommitStarted),
+            "destination_segment_acknowledged" => Ok(Self::DestinationSegmentAcknowledged),
             "destination_receipt_recorded" => Ok(Self::DestinationReceiptRecorded),
             "checkpoint_proposed" => Ok(Self::CheckpointProposed),
             "checkpoint_committed" => Ok(Self::CheckpointCommitted),

@@ -5,10 +5,24 @@ pub type RuntimeStageHook<'a> = &'a dyn Fn(RuntimeStage<'_>) -> Result<()>;
 
 pub enum RuntimeStage<'a> {
     PackageReplayVerified,
-    CheckpointProposed { delta: &'a StateDelta },
+    CheckpointProposed {
+        delta: &'a StateDelta,
+    },
     DestinationWriteReady,
-    DestinationCommitStarted { plan_id: &'a PlanId },
-    DestinationReceiptRecorded { receipt: &'a Receipt },
-    CheckpointCommitted { checkpoint: &'a Checkpoint },
-    PackageStatusUpdated { status: &'a PackageStatus },
+    DestinationCommitStarted {
+        plan_id: &'a PlanId,
+        segment_count: usize,
+    },
+    DestinationSegmentAcknowledged {
+        ack: &'a SegmentAck,
+    },
+    DestinationReceiptRecorded {
+        receipt: &'a Receipt,
+    },
+    CheckpointCommitted {
+        checkpoint: &'a Checkpoint,
+    },
+    PackageStatusUpdated {
+        status: &'a PackageStatus,
+    },
 }

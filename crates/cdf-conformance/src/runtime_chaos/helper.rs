@@ -188,6 +188,7 @@ fn window_from_stage(stage: RuntimeStage<'_>) -> Option<(ChaosCrashWindow, Optio
         )),
         RuntimeStage::CheckpointProposed { .. }
         | RuntimeStage::DestinationCommitStarted { .. }
+        | RuntimeStage::DestinationSegmentAcknowledged { .. }
         | RuntimeStage::PackageStatusUpdated { .. } => None,
     }
 }

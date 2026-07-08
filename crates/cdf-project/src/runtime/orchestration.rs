@@ -94,7 +94,7 @@ pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunRep
     match run_project_inner(execution).await {
         Ok(report) => Ok(report),
         Err(error) => {
-            let _ = recorder.append_run_failed();
+            let _ = recorder.append_run_failed(&error);
             Err(error)
         }
     }
@@ -189,11 +189,26 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
     let reader = PackageReader::open(&execution.package_dir)?;
     let replay_inputs = reader.replay_inputs()?;
     let package_hash = replay_inputs.state_delta.package_hash.clone();
-    let row_count = output.output.profile.output_rows;
+    let profile = &output.output.profile;
+    let row_count = profile.output_rows;
     let segment_count = output.output.segments.len();
-    execution
-        .recorder
-        .append_package_finalized(&package_hash, row_count, segment_count)?;
+    for (index, segment) in output.output.segments.iter().enumerate() {
+        execution.recorder.append_package_segment_recorded(
+            segment,
+            index.saturating_add(1),
+            segment_count,
+        )?;
+    }
+    let quarantine_record_count = u64::try_from(reader.read_quarantine_records()?.len())
+        .map_err(|error| CdfError::internal(error.to_string()))?;
+    execution.recorder.append_package_finalized(
+        &package_hash,
+        row_count,
+        profile.output_bytes,
+        profile.output_batches,
+        segment_count,
+        quarantine_record_count,
+    )?;
     let has_quarantine_artifacts = output
         .output
         .manifest
@@ -256,8 +271,15 @@ fn notify_run_replay_stage(
         PackageReplayStage::CheckpointProposed { delta } => {
             recorder.append_replay_stage(RuntimeStage::CheckpointProposed { delta })
         }
-        PackageReplayStage::DestinationCommitStarted { plan_id } => {
-            recorder.append_replay_stage(RuntimeStage::DestinationCommitStarted { plan_id })
+        PackageReplayStage::DestinationCommitStarted {
+            plan_id,
+            segment_count,
+        } => recorder.append_replay_stage(RuntimeStage::DestinationCommitStarted {
+            plan_id,
+            segment_count,
+        }),
+        PackageReplayStage::DestinationSegmentAcknowledged { ack } => {
+            recorder.append_replay_stage(RuntimeStage::DestinationSegmentAcknowledged { ack })
         }
         PackageReplayStage::DestinationReceiptRecorded { receipt } => {
             recorder.append_replay_stage(RuntimeStage::DestinationReceiptRecorded { receipt })

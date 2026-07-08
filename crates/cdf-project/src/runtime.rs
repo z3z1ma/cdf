@@ -64,8 +64,8 @@ mod prelude {
         IncrementalShape, PackageHash, PartitionPlan, PipelineId, PlanId, QueryableResource,
         Receipt, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
         RunEventAppend, RunEventDetails, RunEventKind, RunEventSink, RunEventValue, RunId,
-        ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition,
-        StateDelta, StateSegment, TargetName, WriteDisposition,
+        ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId,
+        SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,

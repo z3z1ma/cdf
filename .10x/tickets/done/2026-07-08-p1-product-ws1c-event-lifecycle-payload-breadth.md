@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
@@ -31,7 +31,10 @@ Do not implement CLI rendering or tracing bridge. Do not add retry behavior sole
 ## Progress and notes
 
 - 2026-07-08: Split from WS1 because WS1A proved the foundation but did not add all quantitative payloads or lifecycle coverage named by P1.
+- 2026-07-08: Implemented additive event vocabulary for package segment progress and destination segment acknowledgment, widened SQLite run-ledger schema to v3 for durable persistence, enriched lifecycle payloads with trusted rows/bytes/batches/segments/phase/quarantine/receipt/checkpoint/elapsed/retry metadata, and updated focused lifecycle/redaction/order tests.
+- 2026-07-08: Added no-op conformance helper arms for the new public runtime stage so workspace checks remain exhaustive without changing crash-window semantics.
+- 2026-07-08: Closure evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`; adversarial review recorded in `.10x/reviews/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth-review.md`.
 
 ## Blockers
 
-Blocked until WS1B lands.
+None.

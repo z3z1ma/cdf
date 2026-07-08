@@ -741,6 +741,7 @@ fn lifecycle_failpoint_from_stage(
         )),
         RuntimeStage::CheckpointProposed { .. }
         | RuntimeStage::DestinationCommitStarted { .. }
+        | RuntimeStage::DestinationSegmentAcknowledged { .. }
         | RuntimeStage::PackageStatusUpdated { .. } => None,
     }
 }

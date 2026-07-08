@@ -1017,6 +1017,9 @@ fn package_replay_stage_name(stage: PackageReplayStage<'_>) -> &'static str {
         PackageReplayStage::CheckpointProposed { .. } => "checkpoint_proposed",
         PackageReplayStage::DestinationWriteReady => "destination_write_ready",
         PackageReplayStage::DestinationCommitStarted { .. } => "destination_commit_started",
+        PackageReplayStage::DestinationSegmentAcknowledged { .. } => {
+            "destination_segment_acknowledged"
+        }
         PackageReplayStage::DestinationReceiptRecorded { .. } => "destination_receipt_recorded",
         PackageReplayStage::CheckpointCommitted { .. } => "checkpoint_committed",
         PackageReplayStage::PackageStatusUpdated { .. } => "package_status_updated",
@@ -1870,10 +1873,12 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
             RunEventKind::RunStarted,
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
+            RunEventKind::PackageSegmentRecorded,
             RunEventKind::PackageFinalized,
             RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationSegmentAcknowledged,
             RunEventKind::DestinationReceiptRecorded,
             RunEventKind::CheckpointCommitted,
             RunEventKind::PackageStatusUpdated,
@@ -1888,12 +1893,49 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
     assert_eq!(report.row_count, 2);
     assert_eq!(
-        report.ledger_snapshot.events[3].package_hash,
+        report.ledger_snapshot.events[4].package_hash,
         Some(report.package_hash.clone())
     );
     assert_eq!(
-        report.ledger_snapshot.events[7].receipt_id,
+        report.ledger_snapshot.events[9].receipt_id,
         Some(report.receipt.receipt_id.clone())
+    );
+    assert_eq!(
+        report.ledger_snapshot.events[3]
+            .details
+            .attributes
+            .get("row_count"),
+        Some(&RunEventValue::U64(2))
+    );
+    assert_eq!(
+        report.ledger_snapshot.events[4]
+            .details
+            .attributes
+            .get("batch_count"),
+        Some(&RunEventValue::U64(1))
+    );
+    assert_eq!(
+        report.ledger_snapshot.events[4]
+            .details
+            .attributes
+            .get("quarantine_record_count"),
+        Some(&RunEventValue::U64(0))
+    );
+    assert_eq!(
+        report.ledger_snapshot.events[8]
+            .details
+            .attributes
+            .get("byte_count"),
+        report.ledger_snapshot.events[3]
+            .details
+            .attributes
+            .get("byte_count")
+    );
+    assert!(
+        report.ledger_snapshot.events[12]
+            .details
+            .attributes
+            .contains_key("elapsed_ms")
     );
 }
 
@@ -1989,10 +2031,12 @@ fn general_project_run_live_sink_drops_do_not_fail_run_or_truncate_ledger() {
             RunEventKind::RunStarted,
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
+            RunEventKind::PackageSegmentRecorded,
             RunEventKind::PackageFinalized,
             RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationSegmentAcknowledged,
             RunEventKind::DestinationReceiptRecorded,
             RunEventKind::CheckpointCommitted,
             RunEventKind::PackageStatusUpdated,
@@ -2679,10 +2723,12 @@ fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
             RunEventKind::RunStarted,
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
+            RunEventKind::PackageSegmentRecorded,
             RunEventKind::PackageFinalized,
             RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationSegmentAcknowledged,
             RunEventKind::DestinationReceiptRecorded,
             RunEventKind::CheckpointCommitted,
             RunEventKind::PackageStatusUpdated,
@@ -2744,10 +2790,12 @@ fn general_project_run_commits_file_resource_to_postgres_with_ledger_order() {
             RunEventKind::RunStarted,
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
+            RunEventKind::PackageSegmentRecorded,
             RunEventKind::PackageFinalized,
             RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationSegmentAcknowledged,
             RunEventKind::DestinationReceiptRecorded,
             RunEventKind::CheckpointCommitted,
             RunEventKind::PackageStatusUpdated,
@@ -3597,13 +3645,34 @@ fn general_project_run_records_failure_after_durable_receipt_without_advancing_s
             RunEventKind::RunStarted,
             RunEventKind::PlanRecorded,
             RunEventKind::PackageStarted,
+            RunEventKind::PackageSegmentRecorded,
             RunEventKind::PackageFinalized,
             RunEventKind::ValidationDepthTransitionRecorded,
             RunEventKind::CheckpointProposed,
             RunEventKind::DestinationCommitStarted,
+            RunEventKind::DestinationSegmentAcknowledged,
             RunEventKind::DestinationReceiptRecorded,
             RunEventKind::RunFailed,
         ]
+    );
+    assert!(
+        snapshot
+            .events
+            .last()
+            .unwrap()
+            .details
+            .attributes
+            .contains_key("elapsed_ms")
+    );
+    assert_eq!(
+        snapshot
+            .events
+            .last()
+            .unwrap()
+            .details
+            .attributes
+            .get("error_kind"),
+        Some(&RunEventValue::String("internal".to_owned()))
     );
 
     let store = SqliteCheckpointStore::open(&state_path).unwrap();
@@ -4200,6 +4269,7 @@ fn generic_package_replay_and_recovery_drive_mock_runtime_without_destination_br
             "checkpoint_proposed",
             "destination_write_ready",
             "destination_commit_started",
+            "destination_segment_acknowledged",
             "destination_receipt_recorded",
             "checkpoint_committed",
             "package_status_updated",

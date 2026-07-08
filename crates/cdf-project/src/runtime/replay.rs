@@ -14,12 +14,26 @@ pub(crate) type PackageReplayStageHook<'a> = &'a dyn Fn(PackageReplayStage<'_>) 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum PackageReplayStage<'a> {
     PackageReplayVerified,
-    CheckpointProposed { delta: &'a StateDelta },
+    CheckpointProposed {
+        delta: &'a StateDelta,
+    },
     DestinationWriteReady,
-    DestinationCommitStarted { plan_id: &'a PlanId },
-    DestinationReceiptRecorded { receipt: &'a Receipt },
-    CheckpointCommitted { checkpoint: &'a Checkpoint },
-    PackageStatusUpdated { status: &'a PackageStatus },
+    DestinationCommitStarted {
+        plan_id: &'a PlanId,
+        segment_count: usize,
+    },
+    DestinationSegmentAcknowledged {
+        ack: &'a SegmentAck,
+    },
+    DestinationReceiptRecorded {
+        receipt: &'a Receipt,
+    },
+    CheckpointCommitted {
+        checkpoint: &'a Checkpoint,
+    },
+    PackageStatusUpdated {
+        status: &'a PackageStatus,
+    },
 }
 
 #[derive(Default)]
@@ -247,13 +261,15 @@ where
         &hooks,
         PackageReplayStage::DestinationCommitStarted {
             plan_id: &prepared.plan.plan_id,
+            segment_count: prepared.commit.segments.len(),
         },
     ) {
         let _ = checkpoint_store.abandon(&checkpoint_id);
         return Err(error);
     }
 
-    let receipt = match commit_prepared_package_through_session(runtime, &reader, &prepared) {
+    let receipt = match commit_prepared_package_through_session(runtime, &reader, &prepared, &hooks)
+    {
         Ok(receipt) => receipt,
         Err(error) => {
             let _ = checkpoint_store.abandon(&checkpoint_id);
@@ -308,6 +324,7 @@ fn commit_prepared_package_through_session(
     runtime: &dyn ProjectDestinationRuntime,
     reader: &PackageReader,
     prepared: &super::destinations::PreparedDestinationCommit,
+    hooks: &PackageReplayHooks<'_>,
 ) -> Result<Receipt> {
     let mut session = runtime
         .protocol()
@@ -317,7 +334,7 @@ fn commit_prepared_package_through_session(
         return Err(error);
     }
     if let Err(error) =
-        write_package_segments_to_session(session.as_mut(), reader, &prepared.commit)
+        write_package_segments_to_session(session.as_mut(), reader, &prepared.commit, hooks)
     {
         let _ = session.abort();
         return Err(error);
@@ -396,10 +413,15 @@ fn write_package_segments_to_session(
     session: &mut dyn cdf_kernel::CommitSession,
     reader: &PackageReader,
     commit: &DestinationCommitRequest,
+    hooks: &PackageReplayHooks<'_>,
 ) -> Result<()> {
     reader.verify()?;
     for segment in reader.read_commit_segments(&commit.segments)? {
-        session.write_segment(segment)?;
+        let ack = session.write_segment(segment)?;
+        notify_destination_replay_stage(
+            hooks,
+            PackageReplayStage::DestinationSegmentAcknowledged { ack: &ack },
+        )?;
     }
     Ok(())
 }
@@ -458,8 +480,15 @@ fn notify_runtime_replay_stage(
             hook(RuntimeStage::CheckpointProposed { delta })
         }
         PackageReplayStage::DestinationWriteReady => hook(RuntimeStage::DestinationWriteReady),
-        PackageReplayStage::DestinationCommitStarted { plan_id } => {
-            hook(RuntimeStage::DestinationCommitStarted { plan_id })
+        PackageReplayStage::DestinationCommitStarted {
+            plan_id,
+            segment_count,
+        } => hook(RuntimeStage::DestinationCommitStarted {
+            plan_id,
+            segment_count,
+        }),
+        PackageReplayStage::DestinationSegmentAcknowledged { ack } => {
+            hook(RuntimeStage::DestinationSegmentAcknowledged { ack })
         }
         PackageReplayStage::DestinationReceiptRecorded { receipt } => {
             hook(RuntimeStage::DestinationReceiptRecorded { receipt })
