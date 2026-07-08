@@ -39,6 +39,7 @@ No live progress implementation except renderer primitives; WS5 owns event consu
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This workstream is the quality bar for the CLI face of the system.
+- 2026-07-08: Split decision child `.10x/tickets/2026-07-08-p1-product-ws3a-cli-design-language-decision.md` before renderer implementation.
 
 ## Blockers
 

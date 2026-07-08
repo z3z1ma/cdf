@@ -57,6 +57,7 @@ No human-output redesign beyond parser/help styling owned by the ratified parser
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive after the current CLI grammar was found operational but hostile to operators.
+- 2026-07-08: Split decision child `.10x/tickets/2026-07-08-p1-product-ws2a-cli-grammar-decision.md` before parser implementation.
 
 ## Blockers
 

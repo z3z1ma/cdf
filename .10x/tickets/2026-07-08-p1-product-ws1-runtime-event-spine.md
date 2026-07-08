@@ -39,6 +39,7 @@ No CLI spinner/progress UI in this workstream except test doubles. No OTLP expor
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This is the prerequisite for live progress and a durable observability bridge.
+- 2026-07-08: Split executable child `.10x/tickets/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md` for the shared event DTOs plus non-blocking live sink accepted by `ProjectRunRequest`.
 
 ## Blockers
 
