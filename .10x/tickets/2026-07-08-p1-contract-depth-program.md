@@ -1,0 +1,58 @@
+Status: open
+Created: 2026-07-08
+Updated: 2026-07-08
+Parent: .10x/tickets/2026-07-07-p0-workstream-e-contract-depth-program.md
+
+# P1 contract-depth program
+
+## Scope
+
+Implement contract-governed live movement: compiled row verdicts, quarantine routing, deterministic dedup, variant capture, trust-ring ledger events, and drift-quarantine conformance.
+
+This parent is a plan. Child tickets own executable implementation. Children must execute in order unless a later active record proves a dependency can be safely parallelized.
+
+## Governing records
+
+- `VISION.md` Chapter 11.
+- `.10x/specs/types-contracts-normalization.md`.
+- `.10x/specs/package-lifecycle-determinism.md`.
+- `.10x/specs/destination-receipts-guarantees.md`.
+- `.10x/specs/run-orchestration-ledger.md`.
+- `.10x/decisions/contract-live-verdict-execution-semantics.md`.
+- `.10x/knowledge/runtime-conformance-throughput-rule.md`.
+
+## Child tickets
+
+- `.10x/tickets/2026-07-08-p1-e1-row-level-verdicts-live-chain.md`
+- `.10x/tickets/2026-07-08-p1-e2-quarantine-routing-redaction.md`
+- `.10x/tickets/2026-07-08-p1-e3-merge-dedup-live-path.md`
+- `.10x/tickets/2026-07-08-p1-e4-variant-capture-evolution-event.md`
+- `.10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md`
+- `.10x/tickets/2026-07-08-p1-e6-drift-quarantine-conformance.md`
+
+## Acceptance criteria
+
+- Live runs execute the compiled validation program for row-level rules rather than schema/column coverage only.
+- Accepted rows continue through normalization, package writing, destination session commit, receipt verification, and checkpoint gating.
+- Rejected rows route to package quarantine artifacts with rule id, error code, source position, and redaction-by-tag.
+- Destination `_cdf_quarantine` mirrors are populated only where the destination sheet supports quarantine tables.
+- Merge dedup is deterministic under package redelivery and runs before destination mutation.
+- Variant capture and trust-ring promotion/demotion are recorded as package/run evidence.
+- Drift-quarantine conformance proves frozen drift is quarantined while accepted rows continue.
+- Contract throughput benchmarks record type/null/domain performance on 100k-row batches against the greater-than-1 GB/s spike target where the environment supports a stable measurement.
+
+## Evidence expectations
+
+Each child records focused evidence and adversarial review. Parent closure requires aggregate evidence mapping every Workstream E acceptance criterion, quality gates from `QUALITY.md` including jscpd and `rust-code-analysis-cli`, relevant conformance output, throughput benchmark output, quarantine/redaction adversarial checks, and final review.
+
+## Explicit exclusions
+
+No trust UI, no schema-on-read replacement for packages, no DataFusion multi-output-plan fork, no public performance claim, no destination quarantine mirror where the sheet declares unsupported, and no post-load modeling.
+
+## Progress and notes
+
+- 2026-07-08: Opened from P0 Workstream E after Workstreams A-C closed and the A-C stop-line lifted. `.10x/decisions/contract-live-verdict-execution-semantics.md` ratifies the live evaluator API and execution semantics required before implementation.
+
+## Blockers
+
+None.
