@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
-Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md, .10x/tickets/2026-07-08-p1-product-ws2c-product-grammar-semantics.md
+Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md, .10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md
 
 # P1 product WS4C: Error suggestions
 
