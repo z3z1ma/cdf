@@ -1,0 +1,5 @@
+Usage: cdf inspect destinations [OPTIONS]
+
+Options:
+      --no-color
+  -h, --help      Print help

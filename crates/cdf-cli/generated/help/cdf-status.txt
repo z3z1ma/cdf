@@ -1,0 +1,5 @@
+Usage: cdf status [OPTIONS]
+
+Options:
+      --no-color
+  -h, --help      Print help

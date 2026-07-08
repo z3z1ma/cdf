@@ -1,0 +1,16 @@
+Usage: cdf plan [OPTIONS] [RESOURCE]...
+
+Arguments:
+  [RESOURCE]...
+
+Options:
+      --no-color
+      --resource <RESOURCE>
+      --select <FIELDS>
+      --filter <EXPR>
+      --limit <N>
+      --order-by <FIELD[:asc|desc]>
+      --package-id <ID>
+      --to <DEST>
+      --target <TARGET>
+  -h, --help                         Print help

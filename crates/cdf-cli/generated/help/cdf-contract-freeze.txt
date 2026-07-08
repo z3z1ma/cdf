@@ -1,0 +1,9 @@
+Usage: cdf contract freeze [OPTIONS] [CONTRACT]...
+
+Arguments:
+  [CONTRACT]...
+
+Options:
+      --contract <CONTRACT>
+      --no-color
+  -h, --help                 Print help

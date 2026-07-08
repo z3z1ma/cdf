@@ -60,7 +60,8 @@ No human-output redesign beyond parser/help styling owned by the ratified parser
 - 2026-07-08: Split decision child `.10x/tickets/done/2026-07-08-p1-product-ws2a-cli-grammar-decision.md` before parser implementation.
 - 2026-07-08: Active grammar/parser decision recorded in `.10x/decisions/cli-command-grammar-and-parser.md`; implementation children split as WS2B parser foundation, WS2C product grammar semantics, and WS2D completions/man/help artifacts.
 - 2026-07-08: WS2B parser foundation closed at `.10x/tickets/done/2026-07-08-p1-product-ws2b-clap-parser-foundation.md`. `cdf-cli` now uses a clap v4 parser foundation while preserving dispatcher-facing command structs, JSON envelope compatibility, and global `--json`/`--project`/`--env` compatibility.
-- 2026-07-08: WS2C product grammar semantics closed at `.10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md`. Short `plan`/`explain`, `run`, `state`, `resume`, `replay`, and `backfill` forms now resolve through system-minted or project-derived defaults where ratified. WS2D remains for completions, man pages, and generated help artifacts.
+- 2026-07-08: WS2C product grammar semantics closed at `.10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md`. Short `plan`/`explain`, `run`, `state`, `resume`, `replay`, and `backfill` forms now resolve through system-minted or project-derived defaults where ratified.
+- 2026-07-08: WS2D completions/man/help artifacts closed at `.10x/tickets/done/2026-07-08-p1-product-ws2d-completions-manpages-help.md`. `cdf-cli` now has clap-derived bash/zsh/fish/PowerShell completions, man pages, help snapshots, freshness checks, and release packaging hooks for generated CLI artifacts.
 
 ## Blockers
 

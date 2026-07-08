@@ -151,4 +151,4 @@ This supports closing WS8B: the release workflow and reusable scripts produce fa
 
 ## Limits
 
-Actual hosted builds for the five target runners and actual GitHub prerelease upload remain future CI evidence. WS2D still owns generation of completions and man pages; WS8B only packages those artifacts when present and records their absence when not present.
+Actual hosted builds for the five target runners and actual GitHub prerelease upload remain future CI evidence. WS2D now owns the generator at `.10x/tickets/done/2026-07-08-p1-product-ws2d-completions-manpages-help.md`; WS8B only packages those artifacts when present and records their absence when not present.

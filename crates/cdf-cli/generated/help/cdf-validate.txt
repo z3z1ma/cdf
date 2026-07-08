@@ -1,0 +1,5 @@
+Usage: cdf validate [OPTIONS]
+
+Options:
+      --no-color
+  -h, --help      Print help

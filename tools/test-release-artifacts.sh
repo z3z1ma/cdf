@@ -87,7 +87,7 @@ tools/package-release-artifact.sh \
   --out-dir "$missing_generated_dist" >"${test_root}/package-missing-generated.out"
 tools/verify-release-artifacts.sh "$version" "$missing_generated_dist" "$target" >/dev/null
 tar -xzf "${missing_generated_dist}/cdf-${version}-${target}.tar.gz" -C "$extract_dir"
-grep -q 'p1-product-ws2d-completions-manpages-help.md' "${extract_dir}/cdf-${version}-${target}/generated/ARTIFACTS.txt" || fail 'missing generated artifact note did not name the WS2D ticket'
+grep -q 'cdf-generate-cli-artifacts' "${extract_dir}/cdf-${version}-${target}/generated/ARTIFACTS.txt" || fail 'missing generated artifact note did not name the generator'
 printf 'ok absent generated artifacts are recorded without blocking WS8B packaging\n'
 
 printf '%064d  cdf-%s-%s.tar.gz\n' 0 "$version" "$target" >"${dist_dir}/cdf-${version}-${target}.tar.gz.sha256"

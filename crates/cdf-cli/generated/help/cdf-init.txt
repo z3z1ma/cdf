@@ -1,0 +1,10 @@
+Usage: cdf init [OPTIONS] [DIR]...
+
+Arguments:
+  [DIR]...
+
+Options:
+      --name <NAME>
+      --no-color
+      --force
+  -h, --help         Print help

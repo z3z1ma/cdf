@@ -632,7 +632,7 @@ fn parse_package_archive(matches: &ArgMatches) -> Result<PackageArchiveArgs, Cli
     })
 }
 
-fn cli_command() -> ClapCommand {
+pub(crate) fn cli_command() -> ClapCommand {
     cmd("cdf")
         .version(VERSION)
         .about("Continuous Data Framework CLI")
@@ -839,7 +839,7 @@ fn values_arg(id: &'static str) -> Arg {
     Arg::new(id).num_args(0..).action(ArgAction::Append)
 }
 
-fn render_help(path: &[String]) -> Result<String, CliError> {
+pub(crate) fn render_help(path: &[String]) -> Result<String, CliError> {
     if !path.is_empty() {
         let mut argv = Vec::with_capacity(path.len() + 2);
         argv.push("cdf".to_owned());

@@ -1,0 +1,8 @@
+Usage: cdf sql [OPTIONS] [QUERY]...
+
+Arguments:
+  [QUERY]...
+
+Options:
+      --no-color
+  -h, --help      Print help

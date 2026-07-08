@@ -150,6 +150,13 @@ fn parser_preserves_json_anywhere_for_help_envelope() {
     );
 }
 
+#[cfg(feature = "cli-artifacts")]
+#[test]
+fn cli_generated_artifacts_match_committed_snapshots() {
+    crate::cli_artifacts::check_cli_artifacts(&crate::cli_artifacts::default_artifact_dir())
+        .unwrap();
+}
+
 #[test]
 fn renderer_migration_gate_rejects_raw_human_output_bypasses() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

@@ -1,0 +1,8 @@
+Usage: cdf replay [OPTIONS] [COMMAND]
+
+Commands:
+  package
+
+Options:
+      --no-color
+  -h, --help      Print help

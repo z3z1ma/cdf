@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws2-command-grammar-redesign.md
@@ -28,6 +28,22 @@ Generated artifact diff/freshness output, help snapshots, CI or local equivalent
 
 No grammar semantics changes. No docs quickstart; WS6 owns docs beyond generated command artifacts.
 
+## Progress and notes
+
+- 2026-07-08: Implemented `cdf-generate-cli-artifacts` behind the `cli-artifacts` feature. It generates completions, man pages, and help snapshots from `cdf-cli`'s clap command definition and checks committed generated artifacts for byte-for-byte freshness.
+- 2026-07-08: Added committed generated artifacts under `crates/cdf-cli/generated/`: bash, zsh, fish, and PowerShell completions; 42 man pages; and 42 help snapshots.
+- 2026-07-08: Wired fast quality to run the freshness test and release artifact CI to check committed freshness, generate `target/generated`, and package generated completions/man pages.
+- 2026-07-08: Updated release artifact smoke tests and supply-chain vet exemptions for the new generator-only crates.
+- 2026-07-08: Closure evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws2d-completions-manpages-help.md`; review recorded in `.10x/reviews/2026-07-08-p1-product-ws2d-completions-manpages-help-review.md`.
+
+## Evidence
+
+- `.10x/evidence/2026-07-08-p1-product-ws2d-completions-manpages-help.md`
+
+## Review
+
+- `.10x/reviews/2026-07-08-p1-product-ws2d-completions-manpages-help-review.md`
+
 ## Blockers
 
-None. WS2B parser foundation is done; generated artifacts remain this ticket's scope.
+None.

@@ -28,7 +28,7 @@ No shell installer implementation. No brew tap. No signing key infrastructure un
 
 ## Blockers
 
-None for WS8B implementation. Generated completions and man pages still depend on `.10x/tickets/2026-07-08-p1-product-ws2d-completions-manpages-help.md`; the release package records that dependency and includes those artifacts when the generator supplies them.
+None for WS8B implementation. Generated completions and man pages now land through `.10x/tickets/done/2026-07-08-p1-product-ws2d-completions-manpages-help.md`; the release package records absence for manual paths without generated artifacts and includes those artifacts when the generator supplies them.
 
 ## Progress and notes
 

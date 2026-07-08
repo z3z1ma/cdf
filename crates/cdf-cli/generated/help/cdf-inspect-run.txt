@@ -1,0 +1,8 @@
+Usage: cdf inspect run [OPTIONS] [RUN_ID]...
+
+Arguments:
+  [RUN_ID]...
+
+Options:
+      --no-color
+  -h, --help      Print help

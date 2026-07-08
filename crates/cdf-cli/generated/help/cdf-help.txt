@@ -1,0 +1,8 @@
+Usage: cdf help [OPTIONS] [COMMAND]...
+
+Arguments:
+  [COMMAND]...
+
+Options:
+      --no-color
+  -h, --help      Print help

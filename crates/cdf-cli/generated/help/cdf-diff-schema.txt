@@ -1,0 +1,5 @@
+Usage: cdf diff schema [OPTIONS]
+
+Options:
+      --no-color
+  -h, --help      Print help

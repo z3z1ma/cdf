@@ -1,0 +1,29 @@
+Continuous Data Framework CLI
+
+Usage: cdf [OPTIONS] [COMMAND]
+
+Commands:
+  help
+  version
+  init
+  validate
+  plan
+  explain
+  run
+  preview
+  sql
+  inspect
+  diff
+  contract
+  state
+  resume
+  replay
+  backfill
+  package
+  doctor
+  status
+
+Options:
+      --no-color
+  -h, --help      Print help
+  -V, --version   Print version

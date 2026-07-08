@@ -112,7 +112,7 @@ jobs:
           npx --yes jscpd@5 . \
             --reporters json,console \
             --output target/quality/reports/jscpd-slow \
-            --ignore "**/target/**,**/.git/**,**/reports/**" \
+            --ignore "**/target/**,**/.git/**,**/reports/**,**/generated/**" \
             --min-lines 12 \
             --min-tokens 80 \
             --threshold 10 \

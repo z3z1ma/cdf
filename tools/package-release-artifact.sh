@@ -54,7 +54,7 @@ copy_generated_dir() {
     cp -R "$source" "$destination"
     printf '%s: included from %s\n' "$label" "$source"
   else
-    printf '%s: not included; generator remains owned by .10x/tickets/2026-07-08-p1-product-ws2d-completions-manpages-help.md\n' "$label"
+    printf '%s: not included; run cdf-generate-cli-artifacts before packaging release artifacts\n' "$label"
   fi
 }
 

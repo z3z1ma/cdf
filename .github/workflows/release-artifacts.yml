@@ -125,6 +125,14 @@ jobs:
         shell: bash
         run: tools/verify-release-metadata.sh "${{ needs.metadata.outputs.version }}"
 
+      - name: Check generated CLI artifact freshness
+        shell: bash
+        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir crates/cdf-cli/generated --check
+
+      - name: Generate CLI artifacts
+        shell: bash
+        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir target/generated
+
       - name: Build cdf
         shell: bash
         run: cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}"

@@ -4,6 +4,8 @@ use std::ffi::OsString;
 
 mod args;
 mod backfill_command;
+#[cfg(feature = "cli-artifacts")]
+pub mod cli_artifacts;
 mod commands;
 mod context;
 mod contract_command;

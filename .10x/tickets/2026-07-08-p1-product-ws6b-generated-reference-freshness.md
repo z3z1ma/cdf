@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md
-Depends-On: .10x/specs/docs-onboarding-surface.md, .10x/tickets/2026-07-08-p1-product-ws2d-completions-manpages-help.md, .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
+Depends-On: .10x/specs/docs-onboarding-surface.md, .10x/tickets/done/2026-07-08-p1-product-ws2d-completions-manpages-help.md, .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
 
 # P1 product WS6B: Generated reference freshness
 

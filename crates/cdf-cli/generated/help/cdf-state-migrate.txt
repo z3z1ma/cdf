@@ -1,0 +1,5 @@
+Usage: cdf state migrate [OPTIONS]
+
+Options:
+      --no-color
+  -h, --help      Print help

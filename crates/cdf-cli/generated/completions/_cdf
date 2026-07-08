@@ -1,0 +1,760 @@
+#compdef cdf
+
+autoload -U is-at-least
+
+_cdf() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_cdf_commands" \
+"*::: :->cdf" \
+&& ret=0
+    case $state in
+    (cdf)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-command-$line[1]:"
+        case $line[1] in
+            (help)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::command:_default' \
+&& ret=0
+;;
+(version)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::extra:_default' \
+&& ret=0
+;;
+(init)
+_arguments "${_arguments_options[@]}" : \
+'--name=[]:NAME:_default' \
+'--force[]' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::directory:_default' \
+&& ret=0
+;;
+(validate)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::extra:_default' \
+&& ret=0
+;;
+(plan)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--select=[]:FIELDS:_default' \
+'*--filter=[]:EXPR:_default' \
+'--limit=[]:N:_default' \
+'*--order-by=[]:FIELD[:asc|desc]:_default' \
+'--package-id=[]:ID:_default' \
+'--to=[]:DEST:_default' \
+'--target=[]:TARGET:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(explain)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--select=[]:FIELDS:_default' \
+'*--filter=[]:EXPR:_default' \
+'--limit=[]:N:_default' \
+'*--order-by=[]:FIELD[:asc|desc]:_default' \
+'--package-id=[]:ID:_default' \
+'--to=[]:DEST:_default' \
+'--target=[]:TARGET:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(run)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--pipeline=[]:ID:_default' \
+'--to=[]:DEST:_default' \
+'--target=[]:TARGET:_default' \
+'--package-id=[]:ID:_default' \
+'--checkpoint-id=[]:ID:_default' \
+'--loop[]' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(preview)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--select=[]:FIELDS:_default' \
+'*--filter=[]:EXPR:_default' \
+'--limit=[]:N:_default' \
+'*--order-by=[]:FIELD[:asc|desc]:_default' \
+'--package-id=[]:ID:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(sql)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::query:_default' \
+&& ret=0
+;;
+(inspect)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__inspect_commands" \
+"*::: :->inspect" \
+&& ret=0
+
+    case $state in
+    (inspect)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-inspect-command-$line[1]:"
+        case $line[1] in
+            (project)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+(resources)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+(resource)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+(lock)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+(destinations)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+(destination)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+(package)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+(run)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(diff)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__diff_commands" \
+"*::: :->diff" \
+&& ret=0
+
+    case $state in
+    (diff)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-diff-command-$line[1]:"
+        case $line[1] in
+            (schema)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::extra:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(contract)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__contract_commands" \
+"*::: :->contract" \
+&& ret=0
+
+    case $state in
+    (contract)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-contract-command-$line[1]:"
+        case $line[1] in
+            (freeze)
+_arguments "${_arguments_options[@]}" : \
+'--contract=[]:CONTRACT:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::value:_default' \
+&& ret=0
+;;
+(show)
+_arguments "${_arguments_options[@]}" : \
+'--trust=[]:TRUST:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::value:_default' \
+&& ret=0
+;;
+(test)
+_arguments "${_arguments_options[@]}" : \
+'--contract=[]:CONTRACT:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::value:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(state)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__state_commands" \
+"*::: :->state" \
+&& ret=0
+
+    case $state in
+    (state)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-state-command-$line[1]:"
+        case $line[1] in
+            (show)
+_arguments "${_arguments_options[@]}" : \
+'--pipeline=[]:ID:_default' \
+'--resource=[]:RESOURCE:_default' \
+'*--scope=[]:KEY=VALUE:_default' \
+'--scope-json=[]:JSON:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(history)
+_arguments "${_arguments_options[@]}" : \
+'--pipeline=[]:ID:_default' \
+'--resource=[]:RESOURCE:_default' \
+'*--scope=[]:KEY=VALUE:_default' \
+'--scope-json=[]:JSON:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(rewind)
+_arguments "${_arguments_options[@]}" : \
+'--pipeline=[]:ID:_default' \
+'--resource=[]:RESOURCE:_default' \
+'*--scope=[]:KEY=VALUE:_default' \
+'--scope-json=[]:JSON:_default' \
+'--target-checkpoint=[]:CHECKPOINT:_default' \
+'--to=[]:CHECKPOINT:_default' \
+'--marker-checkpoint=[]:CHECKPOINT:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(migrate)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::extra:_default' \
+&& ret=0
+;;
+(recover)
+_arguments "${_arguments_options[@]}" : \
+'--package=[]:DIR:_default' \
+'--to=[]:DEST:_default' \
+'--receipt=[]:ID:_default' \
+'--target=[]:TARGET:_default' \
+'--merge-dedup=[]:POLICY:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(resume)
+_arguments "${_arguments_options[@]}" : \
+'--run=[]:RUN_ID:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::run_arg:_default' \
+&& ret=0
+;;
+(replay)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__replay_commands" \
+"*::: :->replay" \
+&& ret=0
+
+    case $state in
+    (replay)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-replay-command-$line[1]:"
+        case $line[1] in
+            (package)
+_arguments "${_arguments_options[@]}" : \
+'--to=[]:DEST:_default' \
+'--target=[]:TARGET:_default' \
+'--merge-dedup=[]:POLICY:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::package_dir:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(backfill)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--from=[]:CURSOR:_default' \
+'--to=[]:CURSOR:_default' \
+'--target=[]:TARGET:_default' \
+'--slice-size=[]:N:_default' \
+'--execute[]' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(package)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__package_commands" \
+"*::: :->package" \
+&& ret=0
+
+    case $state in
+    (package)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-package-command-$line[1]:"
+        case $line[1] in
+            (ls)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::packages_dir:_default' \
+&& ret=0
+;;
+(gc)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::packages_dir:_default' \
+&& ret=0
+;;
+(verify)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::package_dir:_default' \
+&& ret=0
+;;
+(archive)
+_arguments "${_arguments_options[@]}" : \
+'--format=[]:FORMAT:_default' \
+'--force[]' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::package_dir:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(doctor)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::extra:_default' \
+&& ret=0
+;;
+(status)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::extra:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_cdf_commands] )) ||
+_cdf_commands() {
+    local commands; commands=(
+'help:' \
+'version:' \
+'init:' \
+'validate:' \
+'plan:' \
+'explain:' \
+'run:' \
+'preview:' \
+'sql:' \
+'inspect:' \
+'diff:' \
+'contract:' \
+'state:' \
+'resume:' \
+'replay:' \
+'backfill:' \
+'package:' \
+'doctor:' \
+'status:' \
+    )
+    _describe -t commands 'cdf commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__backfill_commands] )) ||
+_cdf__subcmd__backfill_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf backfill commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__contract_commands] )) ||
+_cdf__subcmd__contract_commands() {
+    local commands; commands=(
+'freeze:' \
+'show:' \
+'test:' \
+    )
+    _describe -t commands 'cdf contract commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__contract__subcmd__freeze_commands] )) ||
+_cdf__subcmd__contract__subcmd__freeze_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf contract freeze commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__contract__subcmd__show_commands] )) ||
+_cdf__subcmd__contract__subcmd__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf contract show commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__contract__subcmd__test_commands] )) ||
+_cdf__subcmd__contract__subcmd__test_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf contract test commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__diff_commands] )) ||
+_cdf__subcmd__diff_commands() {
+    local commands; commands=(
+'schema:' \
+    )
+    _describe -t commands 'cdf diff commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__diff__subcmd__schema_commands] )) ||
+_cdf__subcmd__diff__subcmd__schema_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf diff schema commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__doctor_commands] )) ||
+_cdf__subcmd__doctor_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf doctor commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__explain_commands] )) ||
+_cdf__subcmd__explain_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf explain commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__help_commands] )) ||
+_cdf__subcmd__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf help commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__init_commands] )) ||
+_cdf__subcmd__init_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf init commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect_commands] )) ||
+_cdf__subcmd__inspect_commands() {
+    local commands; commands=(
+'project:' \
+'resources:' \
+'resource:' \
+'lock:' \
+'destinations:' \
+'destination:' \
+'package:' \
+'run:' \
+    )
+    _describe -t commands 'cdf inspect commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__destination_commands] )) ||
+_cdf__subcmd__inspect__subcmd__destination_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect destination commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__destinations_commands] )) ||
+_cdf__subcmd__inspect__subcmd__destinations_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect destinations commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__lock_commands] )) ||
+_cdf__subcmd__inspect__subcmd__lock_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect lock commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__package_commands] )) ||
+_cdf__subcmd__inspect__subcmd__package_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect package commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__project_commands] )) ||
+_cdf__subcmd__inspect__subcmd__project_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect project commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__resource_commands] )) ||
+_cdf__subcmd__inspect__subcmd__resource_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect resource commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__resources_commands] )) ||
+_cdf__subcmd__inspect__subcmd__resources_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect resources commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__inspect__subcmd__run_commands] )) ||
+_cdf__subcmd__inspect__subcmd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf inspect run commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__package_commands] )) ||
+_cdf__subcmd__package_commands() {
+    local commands; commands=(
+'ls:' \
+'gc:' \
+'verify:' \
+'archive:' \
+    )
+    _describe -t commands 'cdf package commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__package__subcmd__archive_commands] )) ||
+_cdf__subcmd__package__subcmd__archive_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf package archive commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__package__subcmd__gc_commands] )) ||
+_cdf__subcmd__package__subcmd__gc_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf package gc commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__package__subcmd__ls_commands] )) ||
+_cdf__subcmd__package__subcmd__ls_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf package ls commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__package__subcmd__verify_commands] )) ||
+_cdf__subcmd__package__subcmd__verify_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf package verify commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__plan_commands] )) ||
+_cdf__subcmd__plan_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf plan commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__preview_commands] )) ||
+_cdf__subcmd__preview_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf preview commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__replay_commands] )) ||
+_cdf__subcmd__replay_commands() {
+    local commands; commands=(
+'package:' \
+    )
+    _describe -t commands 'cdf replay commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__replay__subcmd__package_commands] )) ||
+_cdf__subcmd__replay__subcmd__package_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf replay package commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__resume_commands] )) ||
+_cdf__subcmd__resume_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf resume commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__run_commands] )) ||
+_cdf__subcmd__run_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf run commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__sql_commands] )) ||
+_cdf__subcmd__sql_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf sql commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__state_commands] )) ||
+_cdf__subcmd__state_commands() {
+    local commands; commands=(
+'show:' \
+'history:' \
+'rewind:' \
+'migrate:' \
+'recover:' \
+    )
+    _describe -t commands 'cdf state commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__state__subcmd__history_commands] )) ||
+_cdf__subcmd__state__subcmd__history_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf state history commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__state__subcmd__migrate_commands] )) ||
+_cdf__subcmd__state__subcmd__migrate_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf state migrate commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__state__subcmd__recover_commands] )) ||
+_cdf__subcmd__state__subcmd__recover_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf state recover commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__state__subcmd__rewind_commands] )) ||
+_cdf__subcmd__state__subcmd__rewind_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf state rewind commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__state__subcmd__show_commands] )) ||
+_cdf__subcmd__state__subcmd__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf state show commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__status_commands] )) ||
+_cdf__subcmd__status_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf status commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__validate_commands] )) ||
+_cdf__subcmd__validate_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf validate commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__version_commands] )) ||
+_cdf__subcmd__version_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf version commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_cdf" ]; then
+    _cdf "$@"
+else
+    compdef _cdf cdf
+fi

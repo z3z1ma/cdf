@@ -1,0 +1,11 @@
+Usage: cdf package [OPTIONS] [COMMAND]
+
+Commands:
+  ls
+  gc
+  verify
+  archive
+
+Options:
+      --no-color
+  -h, --help      Print help

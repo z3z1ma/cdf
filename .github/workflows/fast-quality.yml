@@ -71,6 +71,9 @@ jobs:
           cargo test -p cdf-package --locked --no-fail-fast
           cargo test -p cdf-conformance --locked --no-fail-fast
 
+      - name: Generated CLI artifact freshness
+        run: cargo test -p cdf-cli --locked --features cli-artifacts cli_generated_artifacts_match_committed_snapshots
+
       - name: Source-only secret scan
         run: |
           gitleaks detect \
@@ -86,7 +89,7 @@ jobs:
           npx --yes jscpd@5 . \
             --reporters json,console \
             --output target/quality/reports/jscpd-fast \
-            --ignore "**/target/**,**/.git/**,**/reports/**" \
+            --ignore "**/target/**,**/.git/**,**/reports/**,**/generated/**" \
             --min-lines 12 \
             --min-tokens 80 \
             --threshold 10 \

@@ -1,0 +1,12 @@
+Usage: cdf state [OPTIONS] [COMMAND]
+
+Commands:
+  show
+  history
+  rewind
+  migrate
+  recover
+
+Options:
+      --no-color
+  -h, --help      Print help

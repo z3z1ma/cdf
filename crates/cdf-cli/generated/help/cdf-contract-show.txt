@@ -1,0 +1,9 @@
+Usage: cdf contract show [OPTIONS] [TRUST]...
+
+Arguments:
+  [TRUST]...
+
+Options:
+      --no-color
+      --trust <TRUST>
+  -h, --help           Print help
