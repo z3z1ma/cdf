@@ -1,29 +1,29 @@
 {
-  "package_id": "live-local-file-v1",
-  "package_hash": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
-  "checkpoint_id": "checkpoint-live-local-file-v1",
-  "pipeline_id": "pipeline-live-local-file-v1",
+  "package_id": "live-local-file-postgres-v1",
+  "package_hash": "sha256:2c39d0a79a2bd936ebff4058c4b659cb71edf6f000a94d51d356c53907c30cbb",
+  "checkpoint_id": "checkpoint-live-local-file-postgres-v1",
+  "pipeline_id": "pipeline-live-local-file-postgres-v1",
   "resource_id": "local.events",
-  "destination": "duckdb",
-  "destination_target": "events",
+  "destination": "postgres",
+  "destination_target": "cdf_live_run_golden.events",
   "source_path_suffix": "events.ndjson",
   "source_sha256": "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
   "source_size_bytes": 46,
   "destination_rows": 2,
   "destination_row_counts": {
-    "mirror_load_rows": 1,
-    "mirror_state_row_count": 2,
-    "mirror_state_rows": 1,
-    "receipt_rows_written": 2
+    "load_rows": 1,
+    "receipt_rows_written": 2,
+    "state_rows": 1,
+    "target_rows": 2
   },
   "segment_count": 1,
   "mirror_load_rows": 1,
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
+    "package_hash": "sha256:2c39d0a79a2bd936ebff4058c4b659cb71edf6f000a94d51d356c53907c30cbb",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
+    "signature_signing_input": "sha256:2c39d0a79a2bd936ebff4058c4b659cb71edf6f000a94d51d356c53907c30cbb",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -45,8 +45,8 @@
       },
       {
         "path": "destination/commit_plan.json",
-        "byte_count": 506,
-        "sha256": "f9230cfd9c43caadc90284ed081aaf7d14a5b3fa9b45e99a0da16838cb611cb1"
+        "byte_count": 526,
+        "sha256": "a902de0ce64168e047205a513bf74ad8525263f315e22535aad5928385476584"
       },
       {
         "path": "lineage/lineage.json",
@@ -55,8 +55,8 @@
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 964,
-        "sha256": "dc988fde6826a3fac117c242db1b9b8aeb3da8a7415618ca2e249861936be561"
+        "byte_count": 973,
+        "sha256": "f0adcc68641b89943c9d28c76737664a1a64e1caaf2c96783924ed9df45d4de8"
       },
       {
         "path": "plan/scan.json",
@@ -80,8 +80,8 @@
       },
       {
         "path": "state/proposed_delta.json",
-        "byte_count": 833,
-        "sha256": "18f5001156dec8f12d300d0863ad01b84323dc94d051d26ca388f8a9c1365b7a"
+        "byte_count": 851,
+        "sha256": "8d069cd6154f0071cfb8b837e05636eae7fdaf67166b0e4eb6b392eac8edc07b"
       },
       {
         "path": "stats/profile.json",

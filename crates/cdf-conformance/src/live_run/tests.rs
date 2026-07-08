@@ -6,23 +6,32 @@ use std::{
 use cdf_kernel::{CheckpointStatus, CheckpointStore, ReceiptId, ResourceId, ScopeKey};
 use cdf_project::ProjectReceiptSource;
 
+use super::evidence::{
+    destination_row_counts, duckdb_row_counts, maybe_print_expected, run_live_fixture,
+};
 use super::*;
 use crate::package_replay::{
     assert_duplicate_replay_identity, assert_no_checkpoint_head,
     assert_no_second_destination_write, assert_recovery_committed_from_durable_receipt,
     recover_package_artifacts, replay_package_artifacts,
 };
+use crate::run_matrix::local_postgres::LivePostgres;
+
+const POSTGRES_REPEAT_COUNT: usize = 10;
 
 #[test]
-fn live_local_file_v1_matches_committed_golden_across_100_runs() {
+fn live_local_file_duckdb_v1_matches_committed_golden_across_100_runs() {
     let expected = live_local_file_v1_expected_evidence().unwrap();
 
     for run in 0..100 {
         let temp = tempfile::tempdir().unwrap();
         let spec = LiveLocalFileFixtureSpec::live_local_file_v1(temp.path()).unwrap();
-        let fixture = futures_executor::block_on(run_live_local_file_fixture(spec)).unwrap();
+        let handle = destinations::LiveRunDestinationHandle::duckdb(&spec);
+        let fixture = run_live_fixture(spec, &handle);
+        let row_counts = destination_row_counts(&fixture, &handle);
+        maybe_print_expected("duckdb", &fixture, row_counts.clone());
 
-        assert_live_run_matches_expected(&fixture, &expected);
+        assert_live_run_matches_expected(&fixture, &expected, row_counts.clone());
         assert_eq!(
             fixture.report.receipt.receipt_id.as_str(),
             format!(
@@ -31,9 +40,104 @@ fn live_local_file_v1_matches_committed_golden_across_100_runs() {
             )
         );
         assert_eq!(
-            live_run_expected_from_fixture(&fixture).package,
-            expected.package,
-            "run {run} produced different package evidence"
+            live_run_expected_from_fixture(&fixture, row_counts),
+            expected,
+            "run {run} produced different DuckDB live-run evidence"
+        );
+    }
+}
+
+#[test]
+fn live_local_file_parquet_v1_matches_committed_golden_across_100_runs() {
+    let expected = live_local_file_parquet_v1_expected_evidence().unwrap();
+
+    for run in 0..100 {
+        let temp = tempfile::tempdir().unwrap();
+        let spec = LiveLocalFileFixtureSpec::live_local_file_parquet_v1(temp.path()).unwrap();
+        let handle = destinations::LiveRunDestinationHandle::parquet(&spec);
+        let fixture = run_live_fixture(spec, &handle);
+        let row_counts = destination_row_counts(&fixture, &handle);
+        maybe_print_expected("parquet", &fixture, row_counts.clone());
+
+        assert_live_run_matches_expected(&fixture, &expected, row_counts.clone());
+        assert_eq!(
+            fixture.report.receipt.receipt_id.as_str(),
+            format!(
+                "parquet:{}:{}",
+                LIVE_LOCAL_FILE_V1_TARGET, expected.package.package_hash
+            )
+        );
+        assert_eq!(
+            live_run_expected_from_fixture(&fixture, row_counts),
+            expected,
+            "run {run} produced different Parquet live-run evidence"
+        );
+    }
+}
+
+#[test]
+fn live_local_file_postgres_v1_matches_committed_golden_across_bounded_repeats() {
+    let expected = live_local_file_postgres_v1_expected_evidence().unwrap();
+    let postgres = LivePostgres::start().expect(
+        "C4 live-run Postgres golden requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
+    );
+
+    // 10x: Postgres repeats reset and exercise a real database schema; keep this
+    // bounded so local conformance remains reasonable while DuckDB keeps 100 runs.
+    for run in 0..POSTGRES_REPEAT_COUNT {
+        let temp = tempfile::tempdir().unwrap();
+        let target = destinations::postgres_target_name(LIVE_LOCAL_FILE_V1_TARGET).unwrap();
+        let spec =
+            LiveLocalFileFixtureSpec::live_local_file_postgres_v1(temp.path(), target).unwrap();
+        let handle = destinations::LiveRunDestinationHandle::postgres(
+            postgres.url().to_owned(),
+            LIVE_LOCAL_FILE_V1_TARGET,
+        )
+        .unwrap();
+        let fixture = run_live_fixture(spec, &handle);
+        let row_counts = destination_row_counts(&fixture, &handle);
+        maybe_print_expected("postgres", &fixture, row_counts.clone());
+
+        assert_live_run_matches_expected(&fixture, &expected, row_counts.clone());
+        assert_eq!(
+            live_run_expected_from_fixture(&fixture, row_counts),
+            expected,
+            "run {run} produced different Postgres live-run evidence"
+        );
+    }
+}
+
+#[test]
+fn live_local_file_expected_fixtures_contain_required_evidence() {
+    for expected in [
+        live_local_file_v1_expected_evidence().unwrap(),
+        live_local_file_parquet_v1_expected_evidence().unwrap(),
+        live_local_file_postgres_v1_expected_evidence().unwrap(),
+    ] {
+        assert_eq!(expected.package_hash, expected.package.package_hash);
+        assert_eq!(expected.segment_count, LIVE_LOCAL_FILE_V1_SEGMENT_COUNT);
+        assert_eq!(expected.destination_rows, LIVE_LOCAL_FILE_V1_ROW_COUNT);
+        assert_eq!(
+            expected.source_path_suffix,
+            LIVE_LOCAL_FILE_V1_SOURCE_POSITION_PATH
+        );
+        assert_eq!(expected.source_sha256, LIVE_LOCAL_FILE_V1_SOURCE_SHA256);
+        assert_eq!(
+            expected.source_size_bytes,
+            LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES
+        );
+        assert_eq!(
+            expected.destination_row_counts.get("receipt_rows_written"),
+            Some(&LIVE_LOCAL_FILE_V1_ROW_COUNT)
+        );
+        assert!(!expected.package.identity_files.is_empty());
+        assert_eq!(
+            expected.package.segments.len(),
+            LIVE_LOCAL_FILE_V1_SEGMENT_COUNT
+        );
+        assert_eq!(
+            expected.package.segments[0].row_count,
+            LIVE_LOCAL_FILE_V1_ROW_COUNT
         );
     }
 }
@@ -150,27 +254,57 @@ fn negative_self_tests_catch_live_run_harness_gaps() {
     let temp = tempfile::tempdir().unwrap();
     let spec = LiveLocalFileFixtureSpec::live_local_file_v1(temp.path()).unwrap();
     let fixture = futures_executor::block_on(run_live_local_file_fixture(spec.clone())).unwrap();
-    let expected = live_run_expected_from_fixture(&fixture);
+    let row_counts = duckdb_row_counts(&fixture);
+    let expected = live_run_expected_from_fixture(&fixture, row_counts.clone());
 
     let mut corrupted_package = expected.clone();
     corrupted_package.package.package_hash = "sha256:wrong-live-package".to_owned();
-    assert_harness_panics(|| assert_live_run_matches_expected(&fixture, &corrupted_package));
+    corrupted_package.package_hash = "sha256:wrong-live-package".to_owned();
+    assert_harness_panics(|| {
+        assert_live_run_matches_expected(&fixture, &corrupted_package, row_counts.clone());
+    });
+
+    let mut wrong_top_level_hash = expected.clone();
+    wrong_top_level_hash.package_hash = "sha256:wrong-live-package".to_owned();
+    assert_harness_panics(|| {
+        assert_live_run_matches_expected(&fixture, &wrong_top_level_hash, row_counts.clone());
+    });
 
     let mut wrong_destination_rows = expected.clone();
     wrong_destination_rows.destination_rows += 1;
-    assert_harness_panics(|| assert_live_run_matches_expected(&fixture, &wrong_destination_rows));
+    assert_harness_panics(|| {
+        assert_live_run_matches_expected(&fixture, &wrong_destination_rows, row_counts.clone());
+    });
+
+    let mut wrong_destination_row_counts = expected.clone();
+    wrong_destination_row_counts
+        .destination_row_counts
+        .insert("receipt_rows_written".to_owned(), 99);
+    assert_harness_panics(|| {
+        assert_live_run_matches_expected(
+            &fixture,
+            &wrong_destination_row_counts,
+            row_counts.clone(),
+        );
+    });
 
     let mut wrong_source_path = expected.clone();
     wrong_source_path.source_path_suffix = "data/other.ndjson".to_owned();
-    assert_harness_panics(|| assert_live_run_matches_expected(&fixture, &wrong_source_path));
+    assert_harness_panics(|| {
+        assert_live_run_matches_expected(&fixture, &wrong_source_path, row_counts.clone());
+    });
 
     let mut wrong_source_size = expected.clone();
     wrong_source_size.source_size_bytes += 1;
-    assert_harness_panics(|| assert_live_run_matches_expected(&fixture, &wrong_source_size));
+    assert_harness_panics(|| {
+        assert_live_run_matches_expected(&fixture, &wrong_source_size, row_counts.clone());
+    });
 
     let mut wrong_source_hash = expected.clone();
     wrong_source_hash.source_sha256 = "bad-source-hash".to_owned();
-    assert_harness_panics(|| assert_live_run_matches_expected(&fixture, &wrong_source_hash));
+    assert_harness_panics(|| {
+        assert_live_run_matches_expected(&fixture, &wrong_source_hash, row_counts);
+    });
 
     let proposed_store =
         SqliteCheckpointStore::open(temp.path().join(".cdf/proposed-only.sqlite")).unwrap();

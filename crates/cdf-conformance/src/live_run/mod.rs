@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
 };
@@ -18,7 +19,7 @@ use serde_json::json;
 
 use crate::{
     golden_package::{
-        GoldenPackageEvidence, assert_golden_package_evidence_matches,
+        GoldenPackageEvidence, assert_verified_package_matches_golden,
         read_verified_golden_package_evidence,
     },
     package_replay::{
@@ -30,11 +31,23 @@ use crate::{
 
 pub const LIVE_LOCAL_FILE_V1_EXPECTED_JSON: &str =
     include_str!("../../golden/live-local-file-v1/expected.json");
+pub const LIVE_LOCAL_FILE_PARQUET_V1_EXPECTED_JSON: &str =
+    include_str!("../../golden/live-local-file-parquet-v1/expected.json");
+pub const LIVE_LOCAL_FILE_POSTGRES_V1_EXPECTED_JSON: &str =
+    include_str!("../../golden/live-local-file-postgres-v1/expected.json");
 pub const LIVE_LOCAL_FILE_V1_PACKAGE_ID: &str = "live-local-file-v1";
+pub const LIVE_LOCAL_FILE_PARQUET_V1_PACKAGE_ID: &str = "live-local-file-parquet-v1";
+pub const LIVE_LOCAL_FILE_POSTGRES_V1_PACKAGE_ID: &str = "live-local-file-postgres-v1";
 pub const LIVE_LOCAL_FILE_V1_CHECKPOINT_ID: &str = "checkpoint-live-local-file-v1";
+pub const LIVE_LOCAL_FILE_PARQUET_V1_CHECKPOINT_ID: &str = "checkpoint-live-local-file-parquet-v1";
+pub const LIVE_LOCAL_FILE_POSTGRES_V1_CHECKPOINT_ID: &str =
+    "checkpoint-live-local-file-postgres-v1";
 pub const LIVE_LOCAL_FILE_V1_PIPELINE_ID: &str = "pipeline-live-local-file-v1";
+pub const LIVE_LOCAL_FILE_PARQUET_V1_PIPELINE_ID: &str = "pipeline-live-local-file-parquet-v1";
+pub const LIVE_LOCAL_FILE_POSTGRES_V1_PIPELINE_ID: &str = "pipeline-live-local-file-postgres-v1";
 pub const LIVE_LOCAL_FILE_V1_RESOURCE_ID: &str = "local.events";
 pub const LIVE_LOCAL_FILE_V1_TARGET: &str = "events";
+pub const LIVE_LOCAL_FILE_POSTGRES_SCHEMA: &str = "cdf_live_run_golden";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_PATH: &str = "data/events.ndjson";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_POSITION_PATH: &str = "events.ndjson";
 pub const LIVE_LOCAL_FILE_V1_SOURCE_SHA256: &str =
@@ -89,6 +102,7 @@ pub struct LiveLocalFileFixtureSpec {
     pub checkpoint_id: CheckpointId,
     pub pipeline_id: PipelineId,
     pub target: TargetName,
+    pub destination: LiveRunGoldenDestination,
 }
 
 impl LiveLocalFileFixtureSpec {
@@ -103,6 +117,40 @@ impl LiveLocalFileFixtureSpec {
             checkpoint_id: CheckpointId::new(LIVE_LOCAL_FILE_V1_CHECKPOINT_ID)?,
             pipeline_id: PipelineId::new(LIVE_LOCAL_FILE_V1_PIPELINE_ID)?,
             target: TargetName::new(LIVE_LOCAL_FILE_V1_TARGET)?,
+            destination: LiveRunGoldenDestination::DuckDb,
+        })
+    }
+
+    pub fn live_local_file_parquet_v1(project_root: impl AsRef<Path>) -> Result<Self> {
+        let project_root = project_root.as_ref().to_path_buf();
+        Ok(Self {
+            package_root: project_root.join(".cdf/packages"),
+            destination_path: project_root.join(".cdf/lake"),
+            state_store_path: project_root.join(".cdf/state.sqlite"),
+            project_root,
+            package_id: LIVE_LOCAL_FILE_PARQUET_V1_PACKAGE_ID.to_owned(),
+            checkpoint_id: CheckpointId::new(LIVE_LOCAL_FILE_PARQUET_V1_CHECKPOINT_ID)?,
+            pipeline_id: PipelineId::new(LIVE_LOCAL_FILE_PARQUET_V1_PIPELINE_ID)?,
+            target: TargetName::new(LIVE_LOCAL_FILE_V1_TARGET)?,
+            destination: LiveRunGoldenDestination::ParquetFilesystem,
+        })
+    }
+
+    pub fn live_local_file_postgres_v1(
+        project_root: impl AsRef<Path>,
+        target: TargetName,
+    ) -> Result<Self> {
+        let project_root = project_root.as_ref().to_path_buf();
+        Ok(Self {
+            package_root: project_root.join(".cdf/packages"),
+            destination_path: project_root.join(".cdf/postgres-unused"),
+            state_store_path: project_root.join(".cdf/state.sqlite"),
+            project_root,
+            package_id: LIVE_LOCAL_FILE_POSTGRES_V1_PACKAGE_ID.to_owned(),
+            checkpoint_id: CheckpointId::new(LIVE_LOCAL_FILE_POSTGRES_V1_CHECKPOINT_ID)?,
+            pipeline_id: PipelineId::new(LIVE_LOCAL_FILE_POSTGRES_V1_PIPELINE_ID)?,
+            target,
+            destination: LiveRunGoldenDestination::Postgres,
         })
     }
 }
@@ -114,17 +162,39 @@ pub struct LiveLocalFileFixture {
     pub package_evidence: GoldenPackageEvidence,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LiveRunGoldenDestination {
+    #[serde(rename = "duckdb")]
+    DuckDb,
+    ParquetFilesystem,
+    Postgres,
+}
+
+impl LiveRunGoldenDestination {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DuckDb => "duckdb",
+            Self::ParquetFilesystem => "parquet_filesystem",
+            Self::Postgres => "postgres",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveRunGoldenEvidence {
     pub package_id: String,
+    pub package_hash: String,
     pub checkpoint_id: String,
     pub pipeline_id: String,
     pub resource_id: String,
-    pub target: String,
+    pub destination: LiveRunGoldenDestination,
+    pub destination_target: String,
     pub source_path_suffix: String,
     pub source_sha256: String,
     pub source_size_bytes: u64,
     pub destination_rows: u64,
+    pub destination_row_counts: BTreeMap<String, u64>,
     pub segment_count: usize,
     pub mirror_load_rows: usize,
     pub mirror_state_rows: usize,
@@ -132,11 +202,29 @@ pub struct LiveRunGoldenEvidence {
 }
 
 pub fn live_local_file_v1_expected_evidence() -> Result<LiveRunGoldenEvidence> {
-    serde_json::from_str(LIVE_LOCAL_FILE_V1_EXPECTED_JSON).map_err(|error| {
-        CdfError::data(format!(
-            "read live-local-file-v1 expected evidence: {error}"
-        ))
-    })
+    live_run_expected_evidence_from_json("live-local-file-v1", LIVE_LOCAL_FILE_V1_EXPECTED_JSON)
+}
+
+pub fn live_local_file_parquet_v1_expected_evidence() -> Result<LiveRunGoldenEvidence> {
+    live_run_expected_evidence_from_json(
+        "live-local-file-parquet-v1",
+        LIVE_LOCAL_FILE_PARQUET_V1_EXPECTED_JSON,
+    )
+}
+
+pub fn live_local_file_postgres_v1_expected_evidence() -> Result<LiveRunGoldenEvidence> {
+    live_run_expected_evidence_from_json(
+        "live-local-file-postgres-v1",
+        LIVE_LOCAL_FILE_POSTGRES_V1_EXPECTED_JSON,
+    )
+}
+
+fn live_run_expected_evidence_from_json(
+    fixture_name: &str,
+    json: &str,
+) -> Result<LiveRunGoldenEvidence> {
+    serde_json::from_str(json)
+        .map_err(|error| CdfError::data(format!("read {fixture_name} expected evidence: {error}")))
 }
 
 pub async fn run_live_local_file_fixture(
@@ -153,6 +241,16 @@ pub async fn run_live_local_file_fixture(
 
 pub async fn run_live_local_file_fixture_with_hook(
     spec: LiveLocalFileFixtureSpec,
+    after_receipt_verified: Option<cdf_project::ReceiptVerifiedHook<'_>>,
+) -> Result<ProjectRunReport> {
+    let destination =
+        ResolvedProjectDestination::duckdb(&spec.destination_path, spec.target.clone())?;
+    run_live_local_file_fixture_with_destination(spec, destination, after_receipt_verified).await
+}
+
+pub async fn run_live_local_file_fixture_with_destination(
+    spec: LiveLocalFileFixtureSpec,
+    destination: ResolvedProjectDestination,
     after_receipt_verified: Option<cdf_project::ReceiptVerifiedHook<'_>>,
 ) -> Result<ProjectRunReport> {
     write_live_fixture_files(&spec.project_root)?;
@@ -199,7 +297,7 @@ pub async fn run_live_local_file_fixture_with_hook(
         package_root: spec.package_root,
         state_store_path: spec.state_store_path,
         pipeline_id: spec.pipeline_id,
-        destination: ResolvedProjectDestination::duckdb(spec.destination_path, spec.target)?,
+        destination,
         package_id: spec.package_id,
         checkpoint_id: spec.checkpoint_id,
         run_id: None,
@@ -211,12 +309,14 @@ pub async fn run_live_local_file_fixture_with_hook(
 pub fn assert_live_run_matches_expected(
     fixture: &LiveLocalFileFixture,
     expected: &LiveRunGoldenEvidence,
+    destination_row_counts: BTreeMap<String, u64>,
 ) {
+    let actual_package =
+        assert_verified_package_matches_golden(&fixture.report.package_dir, &expected.package)
+            .unwrap();
+    assert_eq!(actual_package.package_hash, expected.package_hash);
     assert_eq!(fixture.report.package_id, expected.package_id);
-    assert_eq!(
-        fixture.report.package_hash.as_str(),
-        expected.package.package_hash
-    );
+    assert_eq!(fixture.report.package_hash.as_str(), expected.package_hash);
     assert_eq!(fixture.report.package_status, PackageStatus::Checkpointed);
     assert_eq!(
         fixture.report.checkpoint.status,
@@ -234,8 +334,13 @@ pub fn assert_live_run_matches_expected(
         fixture.report.checkpoint.delta.resource_id.as_str(),
         expected.resource_id
     );
-    assert_eq!(fixture.report.receipt.target.as_str(), expected.target);
+    assert_eq!(fixture.spec.destination, expected.destination);
+    assert_eq!(
+        fixture.report.receipt.target.as_str(),
+        expected.destination_target
+    );
     assert_eq!(fixture.report.row_count, expected.destination_rows);
+    assert_eq!(destination_row_counts, expected.destination_row_counts);
     assert_eq!(fixture.report.segment_count, expected.segment_count);
     assert_eq!(
         fixture.report.receipt.counts.rows_written,
@@ -274,35 +379,38 @@ pub fn assert_live_run_matches_expected(
         fixture.report.package_hash.as_str()
     );
 
-    let destination = DuckDbDestination::new(&fixture.spec.destination_path).unwrap();
-    assert!(
-        destination
-            .verify_receipt(&fixture.report.receipt)
-            .unwrap()
-            .verified,
-        "live run DuckDB receipt must verify"
-    );
-    let snapshot = destination.read_mirror_snapshot_read_only().unwrap();
-    assert_eq!(snapshot.loads.len(), expected.mirror_load_rows);
-    assert_eq!(snapshot.state.len(), expected.mirror_state_rows);
-    assert_eq!(
-        snapshot.state.iter().map(|row| row.row_count).sum::<u64>(),
-        expected.destination_rows
-    );
-    let case = live_replay_case(
-        &fixture.report.package_dir,
-        fixture.report.checkpoint.delta.clone(),
-        fixture.spec.target.clone(),
-    );
-    assert_duckdb_mirror_matches_receipt(&snapshot, &case, &fixture.report.receipt);
-
-    let actual = read_verified_golden_package_evidence(&fixture.report.package_dir).unwrap();
-    assert_golden_package_evidence_matches(&expected.package, &actual);
+    if expected.destination == LiveRunGoldenDestination::DuckDb {
+        let destination = DuckDbDestination::new(&fixture.spec.destination_path).unwrap();
+        assert!(
+            destination
+                .verify_receipt(&fixture.report.receipt)
+                .unwrap()
+                .verified,
+            "live run DuckDB receipt must verify"
+        );
+        let snapshot = destination.read_mirror_snapshot_read_only().unwrap();
+        assert_eq!(snapshot.loads.len(), expected.mirror_load_rows);
+        assert_eq!(snapshot.state.len(), expected.mirror_state_rows);
+        assert_eq!(
+            snapshot.state.iter().map(|row| row.row_count).sum::<u64>(),
+            expected.destination_rows
+        );
+        let case = live_replay_case(
+            &fixture.report.package_dir,
+            fixture.report.checkpoint.delta.clone(),
+            fixture.spec.target.clone(),
+        );
+        assert_duckdb_mirror_matches_receipt(&snapshot, &case, &fixture.report.receipt);
+    }
 }
 
-pub fn live_run_expected_from_fixture(fixture: &LiveLocalFileFixture) -> LiveRunGoldenEvidence {
+pub fn live_run_expected_from_fixture(
+    fixture: &LiveLocalFileFixture,
+    destination_row_counts: BTreeMap<String, u64>,
+) -> LiveRunGoldenEvidence {
     LiveRunGoldenEvidence {
         package_id: fixture.report.package_id.clone(),
+        package_hash: fixture.report.package_hash.as_str().to_owned(),
         checkpoint_id: fixture
             .report
             .checkpoint
@@ -324,11 +432,13 @@ pub fn live_run_expected_from_fixture(fixture: &LiveLocalFileFixture) -> LiveRun
             .resource_id
             .as_str()
             .to_owned(),
-        target: fixture.report.receipt.target.as_str().to_owned(),
+        destination: fixture.spec.destination,
+        destination_target: fixture.report.receipt.target.as_str().to_owned(),
         source_path_suffix: LIVE_LOCAL_FILE_V1_SOURCE_POSITION_PATH.to_owned(),
         source_sha256: LIVE_LOCAL_FILE_V1_SOURCE_SHA256.to_owned(),
         source_size_bytes: LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES,
         destination_rows: fixture.report.row_count,
+        destination_row_counts,
         segment_count: fixture.report.segment_count,
         mirror_load_rows: 1,
         mirror_state_rows: fixture.report.checkpoint.delta.segments.len(),
@@ -533,5 +643,9 @@ fn validation_program_json() -> serde_json::Value {
     })
 }
 
+#[cfg(test)]
+mod destinations;
+#[cfg(test)]
+mod evidence;
 #[cfg(test)]
 mod tests;

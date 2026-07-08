@@ -67,6 +67,7 @@ No implementation is authorized by this parent directly. No new warehouse/lakeho
 - 2026-07-08: Closed Workstream C child C1 at `.10x/tickets/done/2026-07-08-p0-c1-run-spine-matrix-foundation.md`. The A-C stop-line remains active because Workstream C children C2-C6 remain open.
 - 2026-07-08: Closed Workstream C child C2 at `.10x/tickets/done/2026-07-08-p0-c2-rest-sql-run-matrix.md`. The A-C stop-line remains active because Workstream C children C3-C6 remain open.
 - 2026-07-08: Closed Workstream C child C3 at `.10x/tickets/done/2026-07-08-p0-c3-cross-destination-chaos.md`. The A-C stop-line remains active because Workstream C children C4-C6 remain open.
+- 2026-07-08: Closed Workstream C child C4 at `.10x/tickets/done/2026-07-08-p0-c4-live-run-goldens-per-destination.md`. The A-C stop-line remains active because Workstream C children C5-C6 remain open.
 
 ## Blockers
 

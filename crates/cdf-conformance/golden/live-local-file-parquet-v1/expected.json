@@ -1,29 +1,28 @@
 {
-  "package_id": "live-local-file-v1",
-  "package_hash": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
-  "checkpoint_id": "checkpoint-live-local-file-v1",
-  "pipeline_id": "pipeline-live-local-file-v1",
+  "package_id": "live-local-file-parquet-v1",
+  "package_hash": "sha256:6bf121eb1151a7cad1468402671446f769300b73ddaa992dbce694dbdcb37cbe",
+  "checkpoint_id": "checkpoint-live-local-file-parquet-v1",
+  "pipeline_id": "pipeline-live-local-file-parquet-v1",
   "resource_id": "local.events",
-  "destination": "duckdb",
+  "destination": "parquet_filesystem",
   "destination_target": "events",
   "source_path_suffix": "events.ndjson",
   "source_sha256": "b8ecb46f86694505cef18e88722db9f4bc3a7c07cfb62230bf7ad123e61c9cb6",
   "source_size_bytes": 46,
   "destination_rows": 2,
   "destination_row_counts": {
-    "mirror_load_rows": 1,
-    "mirror_state_row_count": 2,
-    "mirror_state_rows": 1,
-    "receipt_rows_written": 2
+    "receipt_rows_written": 2,
+    "transaction_object_count": 1,
+    "transaction_row_count": 2
   },
   "segment_count": 1,
   "mirror_load_rows": 1,
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
+    "package_hash": "sha256:6bf121eb1151a7cad1468402671446f769300b73ddaa992dbce694dbdcb37cbe",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:fe59f30020872aa7d918de63408b070ffe0e61983f2431c4978e61fc05314e67",
+    "signature_signing_input": "sha256:6bf121eb1151a7cad1468402671446f769300b73ddaa992dbce694dbdcb37cbe",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -55,8 +54,8 @@
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 964,
-        "sha256": "dc988fde6826a3fac117c242db1b9b8aeb3da8a7415618ca2e249861936be561"
+        "byte_count": 972,
+        "sha256": "7710a23eb8f62accf718ef1a6c16e28b263828243d2cbd0a1b038745fad5864e"
       },
       {
         "path": "plan/scan.json",
@@ -80,8 +79,8 @@
       },
       {
         "path": "state/proposed_delta.json",
-        "byte_count": 833,
-        "sha256": "18f5001156dec8f12d300d0863ad01b84323dc94d051d26ca388f8a9c1365b7a"
+        "byte_count": 849,
+        "sha256": "aae16d726682c5327890b2eca7a03e08643cc6dafdc35b79115b580c72f851e7"
       },
       {
         "path": "stats/profile.json",
