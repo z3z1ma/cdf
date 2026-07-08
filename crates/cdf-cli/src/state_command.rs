@@ -7,6 +7,7 @@ use serde_json::{Map, Value, json};
 use crate::{
     args::{Cli, RewindArgs, StateCommand, StateScopeArgs},
     context::ProjectContext,
+    error_catalog,
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
@@ -82,11 +83,15 @@ fn state_pipeline_id(args: &StateScopeArgs) -> Result<PipelineId, CliError> {
 
 fn scope_key(args: &StateScopeArgs) -> Result<ScopeKey, CliError> {
     match (args.scope_json.as_deref(), args.scope.is_empty()) {
-        (Some(_), false) => Err(CliError::usage(
+        (Some(_), false) => Err(CliError::usage_with(
             "state command accepts either --scope-json or --scope key=value, not both",
+            error_catalog::STATE_SCOPE_ARGUMENT,
         )),
         (Some(scope_json), true) => serde_json::from_str(scope_json).map_err(|error| {
-            CliError::usage(format!("--scope-json must encode a ScopeKey: {error}"))
+            CliError::usage_with(
+                format!("--scope-json must encode a ScopeKey: {error}"),
+                error_catalog::STATE_SCOPE_ARGUMENT,
+            )
         }),
         (None, false) => scope_key_from_pairs(&args.scope),
         (None, true) => Ok(ScopeKey::Resource),
@@ -96,16 +101,26 @@ fn scope_key(args: &StateScopeArgs) -> Result<ScopeKey, CliError> {
 fn scope_key_from_pairs(pairs: &[String]) -> Result<ScopeKey, CliError> {
     let mut scope = Map::new();
     for pair in pairs {
-        let (key, value) = pair
-            .split_once('=')
-            .ok_or_else(|| CliError::usage("--scope values must be key=value pairs"))?;
+        let (key, value) = pair.split_once('=').ok_or_else(|| {
+            CliError::usage_with(
+                "--scope values must be key=value pairs",
+                error_catalog::STATE_SCOPE_ARGUMENT,
+            )
+        })?;
         if key.is_empty() {
-            return Err(CliError::usage("--scope key must not be empty"));
+            return Err(CliError::usage_with(
+                "--scope key must not be empty",
+                error_catalog::STATE_SCOPE_ARGUMENT,
+            ));
         }
         scope.insert(key.to_owned(), Value::String(value.to_owned()));
     }
-    serde_json::from_value(Value::Object(scope))
-        .map_err(|error| CliError::usage(format!("--scope must encode a ScopeKey: {error}")))
+    serde_json::from_value(Value::Object(scope)).map_err(|error| {
+        CliError::usage_with(
+            format!("--scope must encode a ScopeKey: {error}"),
+            error_catalog::STATE_SCOPE_ARGUMENT,
+        )
+    })
 }
 
 fn state_show_document(

@@ -9,7 +9,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Statement, params,
 use serde::Serialize;
 use serde_json::{Number, Value};
 
-use crate::{context::ProjectContext, output::CliError};
+use crate::{context::ProjectContext, error_catalog, output::CliError};
 
 const TABLES: &[&str] = &[
     "checkpoints",
@@ -471,8 +471,9 @@ fn query_rows(conn: &Connection, query: &str) -> Result<SystemSqlReport, CliErro
         .map(ToOwned::to_owned)
         .collect::<Vec<_>>();
     if columns.is_empty() {
-        return Err(CliError::usage(
+        return Err(CliError::usage_with(
             "sql requires a read-only query that returns columns",
+            error_catalog::SQL_QUERY,
         ));
     }
 
@@ -492,8 +493,9 @@ fn reject_non_readonly_statement(stmt: &Statement<'_>) -> Result<(), CliError> {
     if stmt.readonly() {
         Ok(())
     } else {
-        Err(CliError::usage(
+        Err(CliError::usage_with(
             "sql accepts one read-only SELECT or WITH query",
+            error_catalog::SQL_QUERY,
         ))
     }
 }
@@ -511,7 +513,10 @@ fn row_values(row: &Row<'_>, column_count: usize) -> Result<Vec<Value>, CliError
 pub(crate) fn read_only_query(query: &str) -> Result<&str, CliError> {
     let query = query.trim();
     if query.is_empty() {
-        return Err(CliError::usage("sql requires a query string"));
+        return Err(CliError::usage_with(
+            "sql requires a query string",
+            error_catalog::SQL_QUERY,
+        ));
     }
     let query = strip_trailing_semicolon(query)?;
     match leading_keyword(query).as_deref() {
@@ -519,8 +524,9 @@ pub(crate) fn read_only_query(query: &str) -> Result<&str, CliError> {
             reject_mutating_keywords(query)?;
             Ok(query)
         }
-        _ => Err(CliError::usage(
+        _ => Err(CliError::usage_with(
             "sql accepts one read-only SELECT or WITH query",
+            error_catalog::SQL_QUERY,
         )),
     }
 }
@@ -539,7 +545,10 @@ fn strip_trailing_semicolon(query: &str) -> Result<&str, CliError> {
     };
     let rest = &query[index + 1..];
     if has_code(rest)? {
-        return Err(CliError::usage("sql accepts one query statement"));
+        return Err(CliError::usage_with(
+            "sql accepts one query statement",
+            error_catalog::SQL_QUERY,
+        ));
     }
     Ok(query[..index].trim_end())
 }
@@ -572,8 +581,9 @@ fn reject_mutating_keywords(query: &str) -> Result<(), CliError> {
     let mut scanner = Scanner::new(query);
     while let Some(keyword) = scanner.next_keyword()? {
         if MUTATING_KEYWORDS.contains(&keyword.as_str()) {
-            return Err(CliError::usage(
+            return Err(CliError::usage_with(
                 "sql accepts one read-only SELECT or WITH query",
+                error_catalog::SQL_QUERY,
             ));
         }
     }
@@ -681,7 +691,10 @@ impl<'a> Scanner<'a> {
                 }
             }
         }
-        Err(CliError::usage("sql query contains an unterminated string"))
+        Err(CliError::usage_with(
+            "sql query contains an unterminated string",
+            error_catalog::SQL_QUERY,
+        ))
     }
 
     fn skip_line_comment(&mut self) {
@@ -699,8 +712,9 @@ impl<'a> Scanner<'a> {
                 return Ok(());
             }
         }
-        Err(CliError::usage(
+        Err(CliError::usage_with(
             "sql query contains an unterminated comment",
+            error_catalog::SQL_QUERY,
         ))
     }
 }
@@ -731,16 +745,21 @@ fn json_string<T: Serialize>(value: &T) -> Result<String, CliError> {
 
 fn json_scalar_string<T: Serialize>(value: &T) -> Result<String, CliError> {
     let value = serde_json::to_value(value).map_err(json_cli_error)?;
-    value
-        .as_str()
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CliError::from(CdfError::data("expected JSON string scalar")))
+    value.as_str().map(ToOwned::to_owned).ok_or_else(|| {
+        CliError::mapped(
+            CdfError::data("expected JSON string scalar"),
+            error_catalog::SQL_RESULT,
+        )
+    })
 }
 
 fn to_i64(value: impl TryInto<i64>) -> Result<i64, CliError> {
-    value
-        .try_into()
-        .map_err(|_| CliError::from(CdfError::internal("integer does not fit in i64")))
+    value.try_into().map_err(|_| {
+        CliError::mapped(
+            CdfError::internal("integer does not fit in i64"),
+            error_catalog::SQL_INTERNAL,
+        )
+    })
 }
 
 fn optional_to_i64<T>(value: Option<T>) -> Result<Option<i64>, CliError>
@@ -751,13 +770,19 @@ where
 }
 
 fn sqlite_cli_error(error: rusqlite::Error) -> CliError {
-    CliError::from(CdfError::internal(error.to_string()))
+    CliError::mapped(
+        CdfError::internal(error.to_string()),
+        error_catalog::SQL_INTERNAL,
+    )
 }
 
 fn query_cli_error(error: rusqlite::Error) -> CliError {
-    CliError::usage(format!("sql query failed: {error}"))
+    CliError::usage_with(
+        format!("sql query failed: {error}"),
+        error_catalog::SQL_QUERY,
+    )
 }
 
 fn json_cli_error(error: serde_json::Error) -> CliError {
-    CliError::from(CdfError::data(error.to_string()))
+    CliError::mapped(CdfError::data(error.to_string()), error_catalog::SQL_RESULT)
 }

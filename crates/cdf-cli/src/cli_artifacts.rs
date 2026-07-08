@@ -13,7 +13,7 @@ use clap_complete::{
 };
 use clap_mangen::Man;
 
-use crate::{args, output::CliError};
+use crate::{args, error_catalog, output::CliError};
 
 const COMPLETIONS_DIR: &str = "completions";
 const HELP_DIR: &str = "help";
@@ -190,10 +190,13 @@ fn read_tree_inner(
     files: &mut BTreeMap<PathBuf, Vec<u8>>,
 ) -> Result<(), CliError> {
     if !path.exists() {
-        return Err(CliError::usage(format!(
-            "generated CLI artifact directory does not exist: {}",
-            path.display()
-        )));
+        return Err(CliError::usage_with(
+            format!(
+                "generated CLI artifact directory does not exist: {}",
+                path.display()
+            ),
+            error_catalog::CLI_ARTIFACTS_USAGE,
+        ));
     }
     for entry in fs::read_dir(path).map_err(io_error("read generated artifact directory"))? {
         let entry = entry.map_err(io_error("read generated artifact entry"))?;
@@ -233,11 +236,14 @@ fn compare_trees(
     if drift.is_empty() {
         Ok(())
     } else {
-        Err(CliError::usage(format!(
-            "generated CLI artifacts are stale; run `cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir {}`:\n{}",
-            default_artifact_dir().display(),
-            drift.join("\n")
-        )))
+        Err(CliError::usage_with(
+            format!(
+                "generated CLI artifacts are stale; run `cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir {}`:\n{}",
+                default_artifact_dir().display(),
+                drift.join("\n")
+            ),
+            error_catalog::CLI_ARTIFACTS_USAGE,
+        ))
     }
 }
 
@@ -278,7 +284,10 @@ fn io_error(context: &'static str) -> impl Fn(io::Error) -> CliError {
 }
 
 fn internal(message: impl Into<String>) -> CliError {
-    CliError::from(CdfError::internal(message.into()))
+    CliError::mapped(
+        CdfError::internal(message.into()),
+        error_catalog::CLI_ARTIFACTS,
+    )
 }
 
 enum CompletionShell {

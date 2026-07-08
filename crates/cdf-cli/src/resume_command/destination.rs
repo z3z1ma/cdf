@@ -4,6 +4,7 @@ use cdf_project::ResolvedProjectDestination;
 use crate::{
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_environment_destination},
+    error_catalog,
     output::CliError,
 };
 
@@ -44,10 +45,11 @@ fn resume_destination_resolution_error(error: CdfError, command: &'static str) -
         || error.message.contains("malformed or non-local")
         || error.message.contains("is missing a scheme")
     {
-        CliError::not_supported(
+        CliError::not_supported_with(
             command,
             error.message,
             "registered project destination driver",
+            error_catalog::DESTINATION_NOT_SUPPORTED,
         )
     } else {
         error.into()

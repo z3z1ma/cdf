@@ -18,6 +18,7 @@ use crate::{
     commands::json_cli_error,
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_selected_destination},
+    error_catalog,
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     render::{
@@ -57,10 +58,11 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
     let plan = build_engine_plan(&context, &args)?;
     match preview_one_batch(&context, resource, &plan) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
-        Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported(
+        Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
             "preview",
             error.message,
             "resource runtime open implementation",
+            error_catalog::PREVIEW_RUNTIME_NOT_SUPPORTED,
         )),
         Err(error) => Err(error.into()),
     }
@@ -124,9 +126,10 @@ fn parse_order_by(raw: &str) -> Result<OrderBy, CliError> {
         "asc" => SortDirection::Asc,
         "desc" => SortDirection::Desc,
         other => {
-            return Err(CliError::usage(format!(
-                "unsupported order direction `{other}`"
-            )));
+            return Err(CliError::usage_with(
+                format!("unsupported order direction `{other}`"),
+                error_catalog::SCAN_ARGUMENT,
+            ));
         }
     };
     Ok(OrderBy {
@@ -228,10 +231,11 @@ fn plan_destination_resolution_error(command: &'static str, error: CdfError) -> 
         || error.message.contains("malformed or non-local")
         || error.message.contains("is missing a scheme")
     {
-        CliError::not_supported(
+        CliError::not_supported_with(
             command,
             error.message,
             "registered no-write project destination planner",
+            error_catalog::DESTINATION_NOT_SUPPORTED,
         )
     } else {
         error.into()

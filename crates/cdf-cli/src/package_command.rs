@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::{
     args::{Cli, PackageArchiveArgs, PackageCommand},
     context::ProjectContext,
+    error_catalog,
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
@@ -254,10 +255,10 @@ fn classify_package_artifact(
 
 fn package_archive(args: PackageArchiveArgs) -> Result<CommandOutput, CliError> {
     if args.format != "parquet" {
-        return Err(CliError::usage(format!(
-            "unsupported package archive format `{}`",
-            args.format
-        )));
+        return Err(CliError::usage_with(
+            format!("unsupported package archive format `{}`", args.format),
+            error_catalog::PACKAGE_ARGUMENT,
+        ));
     }
 
     let report = cdf_package::persist_package_parquet_archive(&args.package_dir, args.force)?;
@@ -305,9 +306,19 @@ fn list_packages(root: PathBuf) -> Result<Vec<PackageListEntry>, CliError> {
 
 fn sorted_child_entries(root: &Path) -> Result<Vec<fs::DirEntry>, CliError> {
     let mut entries = fs::read_dir(root)
-        .map_err(|error| CdfError::data(format!("read {}: {error}", root.display())))?
+        .map_err(|error| {
+            CliError::mapped(
+                CdfError::data(format!("read {}: {error}", root.display())),
+                error_catalog::PACKAGE_ARTIFACT,
+            )
+        })?
         .collect::<std::result::Result<Vec<_>, _>>()
-        .map_err(|error| CdfError::data(format!("read {}: {error}", root.display())))?;
+        .map_err(|error| {
+            CliError::mapped(
+                CdfError::data(format!("read {}: {error}", root.display())),
+                error_catalog::PACKAGE_ARTIFACT,
+            )
+        })?;
     entries.sort_by_key(|entry| entry.path());
     Ok(entries)
 }

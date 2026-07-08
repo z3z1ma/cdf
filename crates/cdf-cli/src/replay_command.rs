@@ -14,6 +14,7 @@ use crate::{
     args::{Cli, ReplayPackageArgs},
     context::ProjectContext,
     destination_uri::redact_error_value,
+    error_catalog,
     output::{CliError, CommandOutput},
     reports::{
         PreparedReplayReportRef, ReplayPackageCliReport, RunDestinationReport, replay_event_details,
@@ -137,8 +138,9 @@ pub(crate) fn build_replay_destination(
     let replay_policy;
     let destination_policy = if uri.starts_with("postgres://") {
         if args.target.is_none() {
-            return Err(CliError::usage(
+            return Err(CliError::usage_with(
                 "replay package to Postgres requires --target schema.table",
+                error_catalog::REPLAY_ARGUMENT,
             ));
         }
         replay_policy = replay_postgres_policy(args)?;
@@ -182,15 +184,21 @@ fn replay_target(
 ) -> Result<TargetName, CliError> {
     if uri.starts_with("postgres://") {
         let explicit = args.target.ok_or_else(|| {
-            CliError::usage("replay package to Postgres requires --target schema.table")
+            CliError::usage_with(
+                "replay package to Postgres requires --target schema.table",
+                error_catalog::REPLAY_ARGUMENT,
+            )
         })?;
         let target = replay_postgres_target(explicit)?;
         if target.display_name() != inputs.destination_commit.target.as_str() {
-            return Err(CliError::from(CdfError::contract(format!(
-                "explicit Postgres replay target {} does not match package destination commit target {}",
-                target.display_name(),
-                inputs.destination_commit.target
-            ))));
+            return Err(CliError::mapped(
+                CdfError::contract(format!(
+                    "explicit Postgres replay target {} does not match package destination commit target {}",
+                    target.display_name(),
+                    inputs.destination_commit.target
+                )),
+                error_catalog::REPLAY_PACKAGE_CONTRACT,
+            ));
         }
         return TargetName::new(target.display_name()).map_err(CliError::from);
     }
@@ -199,8 +207,9 @@ fn replay_target(
 
 fn replay_postgres_target(target: &str) -> Result<cdf_dest_postgres::PostgresTarget, CliError> {
     if target.split('.').count() != 2 {
-        return Err(CliError::usage(
+        return Err(CliError::usage_with(
             "replay package to Postgres requires --target schema.table",
+            error_catalog::REPLAY_ARGUMENT,
         ));
     }
     cdf_dest_postgres::PostgresTarget::parse(target).map_err(CliError::from)
@@ -212,13 +221,17 @@ fn replay_postgres_policy(
     let merge_dedup = match args.merge_dedup {
         Some("fail") => PostgresMergeDedupPolicy::Fail,
         Some(value) => {
-            return Err(CliError::usage(format!(
-                "unsupported Postgres replay --merge-dedup `{value}`; supported value is `fail`"
-            )));
+            return Err(CliError::usage_with(
+                format!(
+                    "unsupported Postgres replay --merge-dedup `{value}`; supported value is `fail`"
+                ),
+                error_catalog::REPLAY_ARGUMENT,
+            ));
         }
         None => {
-            return Err(CliError::usage(
+            return Err(CliError::usage_with(
                 "replay package to Postgres requires --merge-dedup fail",
+                error_catalog::REPLAY_ARGUMENT,
             ));
         }
     };
@@ -232,20 +245,22 @@ fn replay_destination_resolution_error(error: CdfError, uri: &str) -> CliError {
         .message
         .contains("no project destination driver registered")
     {
-        CliError::not_supported(
+        CliError::not_supported_with(
             "replay package",
             format!(
                 "destination URI `{uri}` is unsupported for package replay; supported destinations are duckdb://path, parquet://root, and postgres://..."
             ),
             "registered project destination driver",
+            error_catalog::DESTINATION_NOT_SUPPORTED,
         )
     } else if error.message.contains("malformed or non-local")
         || error.message.contains("is missing a scheme")
     {
-        CliError::not_supported(
+        CliError::not_supported_with(
             "replay package",
             error.message,
             "registered project destination driver",
+            error_catalog::DESTINATION_NOT_SUPPORTED,
         )
     } else {
         error.into()

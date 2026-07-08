@@ -53,37 +53,73 @@ pub struct CliError {
 }
 
 impl CliError {
-    pub fn usage(message: impl Into<String>) -> Self {
-        let mapping = error_catalog::USAGE;
+    fn from_mapping(
+        kind: ErrorKind,
+        message: impl Into<String>,
+        not_supported: bool,
+        mapping: error_catalog::ErrorMapping,
+    ) -> Self {
         Self {
-            kind: ErrorKind::Contract,
+            kind,
             message: message.into(),
             exit_code: mapping.exit_code,
-            not_supported: false,
+            not_supported,
             code: mapping.code.to_owned(),
             remediation: mapping.remediation.map(ErrorRemediation::from_template),
         }
     }
 
+    /// Generic parser/grammar mapping for direct `CliError::usage` sites.
+    /// Command modules should use `usage_with` when a narrower product code is
+    /// useful; pure CLI grammar errors intentionally share `CDF-CLI-USAGE`.
+    pub fn usage(message: impl Into<String>) -> Self {
+        Self::usage_with(message, error_catalog::USAGE)
+    }
+
+    pub(crate) fn usage_with(
+        message: impl Into<String>,
+        mapping: error_catalog::ErrorMapping,
+    ) -> Self {
+        Self::from_mapping(ErrorKind::Contract, message, false, mapping)
+    }
+
+    /// Generic not-supported mapping for direct `CliError::not_supported`
+    /// sites. Callers must name the required lower layer; command modules may
+    /// use `not_supported_with` for narrower product codes.
     pub fn not_supported(
         command: impl AsRef<str>,
         reason: impl AsRef<str>,
         required_lower_layer: impl AsRef<str>,
     ) -> Self {
-        let mapping = error_catalog::NOT_SUPPORTED;
-        Self {
-            kind: ErrorKind::Internal,
-            message: format!(
+        Self::not_supported_with(
+            command,
+            reason,
+            required_lower_layer,
+            error_catalog::NOT_SUPPORTED,
+        )
+    }
+
+    pub(crate) fn not_supported_with(
+        command: impl AsRef<str>,
+        reason: impl AsRef<str>,
+        required_lower_layer: impl AsRef<str>,
+        mapping: error_catalog::ErrorMapping,
+    ) -> Self {
+        Self::from_mapping(
+            ErrorKind::Internal,
+            format!(
                 "{} is not yet supported: {}; required lower layer: {}",
                 command.as_ref(),
                 reason.as_ref(),
                 required_lower_layer.as_ref()
             ),
-            exit_code: mapping.exit_code,
-            not_supported: true,
-            code: mapping.code.to_owned(),
-            remediation: mapping.remediation.map(ErrorRemediation::from_template),
-        }
+            true,
+            mapping,
+        )
+    }
+
+    pub(crate) fn mapped(error: CdfError, mapping: error_catalog::ErrorMapping) -> Self {
+        Self::from_mapping(error.kind, error.message, false, mapping)
     }
 
     fn body(&self) -> ErrorBody {
@@ -101,14 +137,7 @@ impl CliError {
 impl From<CdfError> for CliError {
     fn from(error: CdfError) -> Self {
         let mapping = error_catalog::generic_lower_layer_mapping(&error.kind);
-        Self {
-            kind: error.kind,
-            message: error.message,
-            exit_code: mapping.exit_code,
-            not_supported: false,
-            code: mapping.code.to_owned(),
-            remediation: mapping.remediation.map(ErrorRemediation::from_template),
-        }
+        Self::from_mapping(error.kind, error.message, false, mapping)
     }
 }
 
@@ -152,8 +181,12 @@ impl CommandOutput {
             command,
             exit_code,
             human: HumanOutput::Rendered(document),
-            json: serde_json::to_value(value)
-                .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?,
+            json: serde_json::to_value(value).map_err(|error| {
+                CliError::mapped(
+                    CdfError::internal(error.to_string()),
+                    error_catalog::CLI_JSON,
+                )
+            })?,
         })
     }
 }

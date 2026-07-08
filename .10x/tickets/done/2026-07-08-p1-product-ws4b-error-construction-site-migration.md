@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
@@ -31,6 +31,9 @@ Do not implement edit-distance suggestions except where needed to keep a migrate
 ## Progress and notes
 
 - 2026-07-08: Split from WS4. Source inspection found many construction sites across `args.rs`, command modules, and `system_sql.rs`; this child owns the inventory and migration.
+- 2026-07-08: Implemented command-family error mappings, migrated production construction sites where specific product codes were useful, documented generic parser/lower-layer mappings, added representative JSON code/remediation and redaction tests, and recorded evidence in `.10x/evidence/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`.
+- 2026-07-08: Closure review passed in `.10x/reviews/2026-07-08-p1-product-ws4b-error-construction-site-migration-review.md`; ticket moved to done.
+- 2026-07-08: Parent integration review repaired moved-ticket references and reran the WS4B quality gates; results appended to `.10x/evidence/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`.
 
 ## Blockers
 

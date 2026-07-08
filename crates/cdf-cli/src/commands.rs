@@ -4,6 +4,7 @@ use serde_json::json;
 
 use crate::{
     args::{Cli, Command},
+    error_catalog,
     output::{CliError, CommandOutput, InvocationResult},
     render::{RenderConfig, RenderDocument},
 };
@@ -72,5 +73,8 @@ pub(crate) fn report_output<T: Serialize>(
 }
 
 pub(crate) fn json_cli_error(error: serde_json::Error) -> CliError {
-    CliError::from(CdfError::internal(error.to_string()))
+    CliError::mapped(
+        CdfError::internal(error.to_string()),
+        error_catalog::CLI_JSON,
+    )
 }

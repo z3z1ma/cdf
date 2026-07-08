@@ -459,7 +459,7 @@ fn init_refuses_existing_scaffold_paths_without_force_and_preserves_contents() {
     ]);
 
     assert_ne!(result.exit_code, 0);
-    let json = stderr_or_stdout_json(&result.stderr);
+    let json = assert_json_error_code(&result, "CDF-PROJECT-CONTRACT");
     assert_eq!(json["error"]["kind"], "contract");
     let message = json["error"]["message"].as_str().unwrap();
     assert!(message.contains("cdf.toml"));
@@ -660,7 +660,7 @@ fn contract_test_fails_closed_when_lock_is_missing() {
     ]);
 
     assert_eq!(result.exit_code, 3);
-    let json = stderr_or_stdout_json(&result.stderr);
+    let json = assert_json_error_code(&result, "CDF-CONTRACT-LOCKFILE");
     let message = json["error"]["message"].as_str().unwrap();
     assert!(message.contains("cdf.lock"));
     assert!(message.contains("cdf contract freeze"));
@@ -722,7 +722,7 @@ fn contract_test_fails_closed_when_selected_snapshot_is_missing() {
     ]);
 
     assert_eq!(result.exit_code, 3);
-    let json = stderr_or_stdout_json(&result.stderr);
+    let json = assert_json_error_code(&result, "CDF-PROJECT-CONTRACT");
     assert!(
         json["error"]["message"]
             .as_str()
@@ -2192,7 +2192,7 @@ fn inspect_run_parser_rejects_missing_and_extra_args() {
         let result = run_dynamic(args.into_iter().map(str::to_owned).collect());
 
         assert_eq!(result.exit_code, 2, "stderr: {}", result.stderr);
-        let json = stderr_or_stdout_json(&result.stderr);
+        let json = assert_json_error_code(&result, "CDF-CLI-USAGE");
         assert_eq!(json["error"]["kind"], "contract");
         assert!(
             json["error"]["message"]
@@ -2587,6 +2587,29 @@ fn resume_bare_noops_when_no_interrupted_runs_and_accepts_positional_terminal_no
     assert_eq!(json["result"]["source_contact"], false);
     assert_eq!(json["result"]["mutation_required"], false);
     assert_eq!(json["result"]["mutated"], false);
+}
+
+#[test]
+fn resume_missing_state_path_error_has_code_and_project_path_context() {
+    let project = TestProject::new();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "resume",
+        "run-missing-state",
+    ]);
+
+    assert_eq!(result.exit_code, 5);
+    let json = assert_json_error_code(&result, "CDF-STATE-RESUME-LEDGER");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains(".cdf/state.db")
+    );
 }
 
 #[test]
@@ -3048,7 +3071,7 @@ fn run_missing_resource_still_fails_before_writes() {
 
     assert_eq!(result.exit_code, 2, "stderr: {}", result.stderr);
     assert_no_run_writes(&project, "pkg-run-missing");
-    let json = stderr_or_stdout_json(&result.stderr);
+    let json = assert_json_error_code(&result, "CDF-RUN-ARGUMENT");
     assert_eq!(json["error"]["kind"], "contract");
     assert!(
         json["error"]["message"]
@@ -4799,8 +4822,9 @@ fn sql_rejects_non_readonly_before_artifact_access() {
     ]);
 
     assert_eq!(result.exit_code, 2);
-    let json = stderr_or_stdout_json(&result.stderr);
+    let json = assert_json_error_code(&result, "CDF-SQL-QUERY");
     assert_eq!(json["error"]["kind"], "contract");
+    assert!(!result.stderr.contains("delete from packages"));
     assert!(
         json["error"]["message"]
             .as_str()
@@ -6332,6 +6356,74 @@ fn state_recover_fails_closed_on_zero_or_ambiguous_package_receipts() {
 }
 
 #[test]
+fn migrated_command_family_errors_include_code_and_remediation() {
+    let init = run_dynamic(vec![
+        "cdf".to_owned(),
+        "--json".to_owned(),
+        "init".to_owned(),
+        "--name".to_owned(),
+        String::new(),
+    ]);
+    assert_json_error_code(&init, "CDF-PROJECT-INIT-ARGUMENT");
+
+    let project = TestProject::new();
+    let scan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--order-by",
+        "id:sideways",
+    ]);
+    assert_json_error_code(&scan, "CDF-RUN-SCAN-ARGUMENT");
+
+    let run_result = run(["cdf", "--json", "run"]);
+    assert_json_error_code(&run_result, "CDF-RUN-ARGUMENT");
+
+    let run_loop = run(["cdf", "--json", "run", "local.events", "--loop"]);
+    let run_loop_json = assert_json_error_code(&run_loop, "CDF-RUN-LOOP-NOT-SUPPORTED");
+    assert_eq!(run_loop_json["error"]["not_supported"], true);
+
+    let replay_project = TestProject::new();
+    let package_dir = create_replay_package_fixture(
+        &replay_project,
+        "pkg-replay-error-code",
+        "checkpoint-replay-error-code",
+    );
+    let replay = replay_package_command_with_postgres_options(
+        &replay_project,
+        &package_dir,
+        "postgres://localhost/db",
+        Some("public.events"),
+        Some("later"),
+    );
+    assert_json_error_code(&replay, "CDF-PACKAGE-REPLAY-ARGUMENT");
+
+    let package = run([
+        "cdf", "--json", "package", "archive", ".", "--format", "json",
+    ]);
+    assert_json_error_code(&package, "CDF-PACKAGE-ARGUMENT");
+
+    let state = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "state",
+        "show",
+        "local.events",
+        "--scope",
+        "bad",
+    ]);
+    assert_json_error_code(&state, "CDF-STATE-SCOPE-ARGUMENT");
+
+    let sql = run(["cdf", "--json", "sql", "delete from packages"]);
+    assert_json_error_code(&sql, "CDF-SQL-QUERY");
+}
+
+#[test]
 fn unknown_command_returns_usage_exit_code() {
     let result = run(["cdf", "--json", "bogus"]);
 
@@ -7831,6 +7923,21 @@ fn build_archive_cli_package(root: &Path, package_id: &str) -> PathBuf {
 
 fn stderr_or_stdout_json(text: &str) -> Value {
     serde_json::from_str(text).unwrap()
+}
+
+fn assert_json_error_code(result: &crate::InvocationResult, code: &str) -> Value {
+    assert_ne!(result.exit_code, 0, "expected error result");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["ok"], false);
+    assert_eq!(json["error"]["code"], code);
+    assert!(
+        json["error"]["remediation"]["summary"]
+            .as_str()
+            .is_some_and(|summary| !summary.is_empty()),
+        "missing remediation summary for {code}: {}",
+        result.stderr
+    );
+    json
 }
 
 fn assert_gc_artifact(

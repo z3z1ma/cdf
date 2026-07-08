@@ -10,6 +10,7 @@ use serde::Serialize;
 use crate::{
     args::{Cli, InitArgs},
     context::{ProjectContext, require_lock},
+    error_catalog,
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
@@ -21,13 +22,17 @@ pub(crate) fn init(args: InitArgs) -> Result<CommandOutput, CliError> {
     let root = args
         .directory
         .unwrap_or(env::current_dir().map_err(|error| {
-            CliError::from(CdfError::internal(format!(
-                "read current directory: {error}"
-            )))
+            CliError::mapped(
+                CdfError::internal(format!("read current directory: {error}")),
+                error_catalog::PROJECT_IO,
+            )
         })?);
     let project_name = match args.name {
         Some(name) if name.trim().is_empty() => {
-            return Err(CliError::usage("init --name cannot be empty"));
+            return Err(CliError::usage_with(
+                "init --name cannot be empty",
+                error_catalog::PROJECT_INIT_ARGUMENT,
+            ));
         }
         other => other,
     };

@@ -12,6 +12,7 @@ use serde::Serialize;
 use crate::{
     args::{Cli, ResumeArgs},
     context::ProjectContext,
+    error_catalog,
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
@@ -25,10 +26,13 @@ pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliEr
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let state_path = context.state_store_path()?;
     if !state_path.exists() {
-        return Err(CliError::from(CdfError::data(format!(
-            "run ledger state database {} is missing",
-            state_path.display()
-        ))));
+        return Err(CliError::mapped(
+            CdfError::data(format!(
+                "run ledger state database {} is missing",
+                state_path.display()
+            )),
+            error_catalog::RESUME_LEDGER,
+        ));
     }
     let run_id = match args.run_id {
         Some(run_id) => RunId::new(run_id)?,
@@ -36,7 +40,7 @@ pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliEr
             ResumeSelection::None => return no_interrupted_runs_report(),
             ResumeSelection::One(run_id) => run_id,
             ResumeSelection::Many(run_ids) => {
-                return Err(CliError::not_supported(
+                return Err(CliError::not_supported_with(
                     "resume",
                     format!(
                         "bare resume found {} interrupted runs ({}); pass RUN_ID to resume one explicitly",
@@ -44,6 +48,7 @@ pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliEr
                         run_ids.join(", ")
                     ),
                     "multi-run resume drain",
+                    error_catalog::RESUME_MULTI_RUN_NOT_SUPPORTED,
                 ));
             }
         },

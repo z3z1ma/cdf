@@ -21,7 +21,7 @@ No blocking findings.
 
 The implementation changes the centralized envelope path rather than sweeping construction sites, matching WS4A scope and preserving WS4B's work. Existing JSON fields are retained and the new `code` and `remediation` fields are additive. Success envelopes are not touched.
 
-The generic lower-layer mapping preserves the existing exit-code taxonomy and is documented as the interim mapping while WS4B migrates call sites to specific product codes. The explicit match over every `ErrorKind` is acceptable despite cyclomatic 8 because it is the catalog table, not control-flow complexity in runtime behavior.
+The generic lower-layer mapping preserves the existing exit-code taxonomy for lower-crate errors whose domain semantics are not owned by a CLI call site. The explicit match over every `ErrorKind` is acceptable despite cyclomatic 8 because it is the catalog table, not control-flow complexity in runtime behavior.
 
 Plain human errors still start with the existing `error: <message>` text and append remediation only when present, so information does not regress before WS4D renderer integration.
 
@@ -29,7 +29,7 @@ Parent review reran full `cdf-cli` tests, clippy, fmt, Semgrep, Gitleaks, jscpd,
 
 ## Residual risk
 
-WS4B still needs to migrate individual construction sites from broad generic codes to specific stable product codes. WS4C and WS4D still own suggestions, generated docs, and renderer-integrated error presentation. CodeQL's Rust extraction diagnostics remain noisy, so its zero findings are useful but not a complete security proof.
+WS4B later migrated individual construction sites from broad generic codes to specific stable product codes. WS4C and WS4D still own suggestions, generated docs, and renderer-integrated error presentation. CodeQL's Rust extraction diagnostics remain noisy, so its zero findings are useful but not a complete security proof.
 
 ## Verdict
 

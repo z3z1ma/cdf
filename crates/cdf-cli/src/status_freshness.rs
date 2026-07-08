@@ -8,7 +8,7 @@ use cdf_package::read_receipts;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, params};
 use serde::Serialize;
 
-use crate::{context::ProjectContext, output::CliError};
+use crate::{context::ProjectContext, error_catalog, output::CliError};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct StatusReport {
@@ -253,8 +253,8 @@ impl LocalLedger {
                 None,
             )?),
             Self::Checkpoints(conn) => {
-                let scope_json = serde_json::to_string(&resource.state_scope)
-                    .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?;
+                let scope_json =
+                    serde_json::to_string(&resource.state_scope).map_err(status_internal)?;
                 let heads = committed_heads(conn, &resource.resource_id, &scope_json)?;
                 match heads.len() {
                     0 => receipt_only_resource(conn, resource, project_root, &scope_json, now_ms),
@@ -441,8 +441,7 @@ fn evaluable(
     Ok(StatusResource {
         resource_id: resource.resource_id,
         trust_level: resource.trust_level,
-        state_scope: serde_json::to_value(resource.state_scope)
-            .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?,
+        state_scope: serde_json::to_value(resource.state_scope).map_err(status_internal)?,
         max_age_ms: resource.max_age_ms,
         freshness_state,
         checkpoint,
@@ -463,8 +462,7 @@ fn non_evaluable(
     Ok(StatusResource {
         resource_id: resource.resource_id,
         trust_level: resource.trust_level,
-        state_scope: serde_json::to_value(resource.state_scope)
-            .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?,
+        state_scope: serde_json::to_value(resource.state_scope).map_err(status_internal)?,
         max_age_ms: resource.max_age_ms,
         freshness_state: FreshnessState::NonEvaluable,
         checkpoint,
@@ -854,9 +852,8 @@ fn age_ms(now_ms: i64, committed_at_ms: i64) -> u64 {
 fn now_ms() -> Result<i64, CliError> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| CliError::from(CdfError::internal(error.to_string())))?;
-    i64::try_from(elapsed.as_millis())
-        .map_err(|error| CliError::from(CdfError::internal(error.to_string())))
+        .map_err(status_internal)?;
+    i64::try_from(elapsed.as_millis()).map_err(status_internal)
 }
 
 fn trust_level_name(trust_level: &TrustLevel) -> &'static str {
@@ -869,5 +866,15 @@ fn trust_level_name(trust_level: &TrustLevel) -> &'static str {
 }
 
 fn sqlite_cli_error(error: rusqlite::Error) -> CliError {
-    CliError::from(CdfError::internal(error.to_string()))
+    CliError::mapped(
+        CdfError::internal(error.to_string()),
+        error_catalog::STATUS_FRESHNESS,
+    )
+}
+
+fn status_internal(error: impl std::fmt::Display) -> CliError {
+    CliError::mapped(
+        CdfError::internal(error.to_string()),
+        error_catalog::STATUS_FRESHNESS,
+    )
 }

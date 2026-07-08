@@ -9,7 +9,7 @@ use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::{context::ProjectContext, output::CliError};
+use crate::{context::ProjectContext, error_catalog, output::CliError};
 
 const EXAMPLE_LIMIT: usize = 5;
 
@@ -492,13 +492,17 @@ fn json_from_sql(error: serde_json::Error) -> rusqlite::Error {
 }
 
 fn sqlite_error(error: rusqlite::Error) -> CliError {
-    CliError::from(CdfError::data(format!(
-        "query SQLite checkpoint ledger for doctor drift check: {error}"
-    )))
+    CliError::mapped(
+        CdfError::data(format!(
+            "query SQLite checkpoint ledger for doctor drift check: {error}"
+        )),
+        error_catalog::DOCTOR_DRIFT,
+    )
 }
 
 fn json_error(error: serde_json::Error) -> CliError {
-    CliError::from(CdfError::data(format!(
-        "parse doctor drift JSON value: {error}"
-    )))
+    CliError::mapped(
+        CdfError::data(format!("parse doctor drift JSON value: {error}")),
+        error_catalog::DOCTOR_DRIFT,
+    )
 }

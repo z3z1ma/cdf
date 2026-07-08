@@ -10,6 +10,7 @@ use crate::{
     args::{Cli, RunArgs, ScanArgs},
     context::ProjectContext,
     destination_uri::{redact_error_value, resolve_selected_destination},
+    error_catalog,
     output::{CliError, CommandOutput},
     project_run_resource::build_project_run_resource,
     reports::{RunCliReport, RunDestinationReport},
@@ -20,10 +21,11 @@ pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
 
 pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     if args.loop_mode {
-        return Err(CliError::not_supported(
+        return Err(CliError::not_supported_with(
             "run --loop",
             "the local development loop supervisor is excluded from this explicit one-package run slice",
             "later loop/streaming supervisor",
+            error_catalog::RUN_LOOP_NOT_SUPPORTED,
         ));
     }
     let explicit = resolved_run_args(args)?;
@@ -78,10 +80,11 @@ fn run_destination_resolution_error(error: CdfError) -> CliError {
         || error.message.contains("malformed or non-local")
         || error.message.contains("is missing a scheme")
     {
-        CliError::not_supported(
+        CliError::not_supported_with(
             "run",
             error.message,
             "registered project destination driver",
+            error_catalog::DESTINATION_NOT_SUPPORTED,
         )
     } else {
         error.into()
@@ -89,9 +92,12 @@ fn run_destination_resolution_error(error: CdfError) -> CliError {
 }
 
 fn resolved_run_args(args: RunArgs) -> Result<ResolvedRunArgs, CliError> {
-    let resource_id = args
-        .resource_id
-        .ok_or_else(|| CliError::usage("run requires RESOURCE or --resource"))?;
+    let resource_id = args.resource_id.ok_or_else(|| {
+        CliError::usage_with(
+            "run requires RESOURCE or --resource",
+            error_catalog::RUN_ARGUMENT,
+        )
+    })?;
     let suffix = minted_run_suffix(&resource_id);
     let package_id = args.package_id.unwrap_or_else(|| format!("pkg-{suffix}"));
     let checkpoint_id = args
@@ -133,15 +139,15 @@ struct ResolvedRunArgs {
 
 pub(crate) fn ensure_parent_directory(path: &std::path::Path) -> Result<(), CliError> {
     let Some(parent) = path.parent() else {
-        return Err(CliError::from(CdfError::internal(format!(
-            "{} has no parent directory",
-            path.display()
-        ))));
+        return Err(CliError::mapped(
+            CdfError::internal(format!("{} has no parent directory", path.display())),
+            error_catalog::RUN_ARTIFACT_INTERNAL,
+        ));
     };
     fs::create_dir_all(parent).map_err(|error| {
-        CliError::from(CdfError::data(format!(
-            "create {}: {error}",
-            parent.display()
-        )))
+        CliError::mapped(
+            CdfError::data(format!("create {}: {error}", parent.display())),
+            error_catalog::RUN_ARTIFACT_PATH,
+        )
     })
 }

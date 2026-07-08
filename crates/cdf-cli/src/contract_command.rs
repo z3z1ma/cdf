@@ -11,6 +11,7 @@ use serde::Serialize;
 use crate::{
     args::{Cli, ContractCommand},
     context::ProjectContext,
+    error_catalog,
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
@@ -30,9 +31,10 @@ pub(crate) fn contract(cli: &Cli, command: ContractCommand) -> Result<CommandOut
                 "evolve" => ContractPolicy::evolve(),
                 "freeze" => ContractPolicy::freeze(),
                 other => {
-                    return Err(CliError::usage(format!(
-                        "unknown contract policy `{other}`"
-                    )));
+                    return Err(CliError::usage_with(
+                        format!("unknown contract policy `{other}`"),
+                        error_catalog::CONTRACT_ARGUMENT,
+                    ));
                 }
             };
             let report = ContractShowCliReport {
@@ -58,10 +60,10 @@ fn freeze(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError
     let encoded = lock_to_toml(&lock)?;
     let lock_path = context.root.join(LOCK_FILE_NAME);
     fs::write(&lock_path, encoded).map_err(|error| {
-        CliError::from(CdfError::contract(format!(
-            "write {}: {error}",
-            lock_path.display()
-        )))
+        CliError::mapped(
+            CdfError::contract(format!("write {}: {error}", lock_path.display())),
+            error_catalog::CONTRACT_LOCKFILE,
+        )
     })?;
     CommandOutput::rendered("contract freeze", contract_freeze_document(&report), report)
 }
@@ -69,11 +71,14 @@ fn freeze(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError
 fn test(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let lock = context.lock.as_ref().ok_or_else(|| {
-        CliError::from(CdfError::contract(format!(
-            "{} is missing under {}; run `cdf contract freeze` before `cdf contract test`",
-            LOCK_FILE_NAME,
-            context.root.display()
-        )))
+        CliError::mapped(
+            CdfError::contract(format!(
+                "{} is missing under {}; run `cdf contract freeze` before `cdf contract test`",
+                LOCK_FILE_NAME,
+                context.root.display()
+            )),
+            error_catalog::CONTRACT_LOCKFILE,
+        )
     })?;
     let report = test_contract_snapshots(lock, &context.resources, selector.as_deref())?;
     let exit_code = if report.counts.drifted == 0 { 0 } else { 1 };

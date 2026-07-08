@@ -15,7 +15,7 @@ Implementation may split into catalog spec, `CliError` migration, suggestion eng
 ## Child tickets
 
 - `.10x/tickets/done/2026-07-08-p1-product-ws4a-error-envelope-foundation.md`
-- `.10x/tickets/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4c-error-suggestions.md`
 - `.10x/tickets/2026-07-08-p1-product-ws4d-error-rendering-docs.md`
 
@@ -48,7 +48,8 @@ No exit-code changes. No breaking JSON field removals or renames. No broad CLI g
 - 2026-07-08: Opened from P1 product directive. This workstream lands with WS3's renderer rollout.
 - 2026-07-08: Shaped `.10x/specs/cli-error-experience-catalog.md` and split execution into WS4A-WS4D child tickets. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4-error-catalog-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws4-error-catalog-shaping-review.md`.
 - 2026-07-08: WS4A envelope foundation completed; evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4a-error-envelope-foundation.md` and review recorded in `.10x/reviews/2026-07-08-p1-product-ws4a-error-envelope-foundation-review.md`.
+- 2026-07-08: WS4B construction-site migration completed; evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4b-error-construction-site-migration.md` and review recorded in `.10x/reviews/2026-07-08-p1-product-ws4b-error-construction-site-migration-review.md`.
 
 ## Blockers
 
-Final human presentation and generated docs depend on WS3 renderer and WS6 generated-reference lanes. WS4A may proceed independently.
+Final human presentation and generated docs depend on WS3 renderer and WS6 generated-reference lanes. WS4C remains open for suggestion behavior.
