@@ -34,6 +34,6 @@ Pass. The child acceptance criteria are satisfied with focused tests, downstream
 
 `FileResource::new` currently requires at least one emitted `RecordBatch` to expose `ResourceStream::schema` without changing the public `FormatRead` struct shape. Empty-file resource semantics are not specified by this ticket and remain outside this closure.
 
-This slice covers file-source execution for CSV, JSON, NDJSON, and Parquet only. HTTP/API source execution, SQL snapshot/incremental source execution, boundedness honesty, suffix replay APIs, reference payload execution, chaos killpoints, live-run golden gates, and MVP killer-demo orchestration remain parent conformance scope.
+This slice covers file-source execution for CSV, JSON, NDJSON, and Parquet only. HTTP/API source execution, SQL snapshot/incremental source execution, boundedness honesty, suffix replay APIs, reference payload execution, chaos killpoints, live-run golden gates, and MVP acceptance demo orchestration remain parent conformance scope.
 
 CodeQL retains the known local Rust extractor macro-warning profile, but the final SARIF result count is 0 and the broader focused gates passed.

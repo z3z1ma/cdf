@@ -47,7 +47,7 @@ Before closure, run the relevant `QUALITY.md` security/supply-chain gates for th
 
 ## Explicit exclusions
 
-No native arrow-rs `parquet` dependency, no `paste` advisory exception, no Cargo advisory-policy change, no DataFusion file scan provider, no live HTTP/API execution, no SQL database snapshot resource execution, no position-replay suffix API beyond the current `PartitionPlan::start_position` and emitted batch positions, no chaos process-kill layer, no CLI changes, no package lifecycle changes, and no MVP killer-demo orchestration.
+No native arrow-rs `parquet` dependency, no `paste` advisory exception, no Cargo advisory-policy change, no DataFusion file scan provider, no live HTTP/API execution, no SQL database snapshot resource execution, no position-replay suffix API beyond the current `PartitionPlan::start_position` and emitted batch positions, no chaos process-kill layer, no CLI changes, no package lifecycle changes, and no MVP acceptance demo orchestration.
 
 Boundedness honesty remains parent scope until a public boundedness signal exists.
 

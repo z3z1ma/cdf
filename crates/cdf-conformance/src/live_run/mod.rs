@@ -646,7 +646,7 @@ fn validation_program_json() -> serde_json::Value {
 #[cfg(test)]
 mod destinations;
 #[cfg(test)]
-mod drift_quarantine;
+pub(crate) mod drift_quarantine;
 #[cfg(test)]
 mod evidence;
 #[cfg(test)]

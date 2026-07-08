@@ -31,7 +31,7 @@ Because this is a reusable conformance harness, mutation testing must include th
 
 ## Explicit exclusions
 
-No source data execution, no calls to unsupported `CompiledResource::open`, no data partition-union completeness proof, no position replay suffix checks, no chaos killpoints, no golden-package fixtures, no MVP killer-demo harness, no new production resource runtime behavior, no CLI changes, and no changes to destination or checkpoint semantics.
+No source data execution, no calls to unsupported `CompiledResource::open`, no data partition-union completeness proof, no position replay suffix checks, no chaos killpoints, no golden-package fixtures, no MVP acceptance demo harness, no new production resource runtime behavior, no CLI changes, and no changes to destination or checkpoint semantics.
 
 Full resource data completeness, replay, and boundedness honesty remain parent scope until an openable resource runtime or an explicit resource-level boundedness signal exists.
 

@@ -49,4 +49,4 @@ It also supports updating `.10x/knowledge/vision-coverage-matrix.md` so the P0 s
 
 ## Limits
 
-This does not close the overall CDF 1.0 standing goal. Remaining active work includes the MVP killer demo, broader CLI long tail, performance follow-on tickets after the benchmark gate, retention/GC, vault providers, future CDC/streaming/distributed lanes, and other active rows in the coverage matrix.
+This does not close the overall CDF 1.0 standing goal. Remaining active work includes the MVP acceptance demo, broader CLI long tail, performance follow-on tickets after the benchmark gate, retention/GC, vault providers, future CDC/streaming/distributed lanes, and other active rows in the coverage matrix.

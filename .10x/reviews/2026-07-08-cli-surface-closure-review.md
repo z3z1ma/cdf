@@ -28,4 +28,4 @@ Pass. The CLI parent is safe to close as an aggregate record. Remaining full-sys
 
 ## Residual risk
 
-End-to-end killer-demo polish and conformance-owned CLI scenario coverage still belong to `.10x/tickets/2026-07-05-conformance-chaos-golden.md` and the full-system parent. They are not closure blockers for the CLI-surface parent because the CLI command surfaces themselves now have bounded owners and evidence.
+End-to-end acceptance demo polish and conformance-owned CLI scenario coverage still belong to `.10x/tickets/2026-07-05-conformance-chaos-golden.md` and the full-system parent. They are not closure blockers for the CLI-surface parent because the CLI command surfaces themselves now have bounded owners and evidence.

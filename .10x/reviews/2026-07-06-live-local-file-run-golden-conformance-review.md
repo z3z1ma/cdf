@@ -27,7 +27,7 @@ No blocking findings.
 
 - The live fixture constructs the `EnginePlan` through deterministic JSON matching the current engine serialization shape. That is acceptable for this conformance slice because the golden gate is intended to fail on plan-shape drift, but broader runtime plan construction remains owned by the engine/declarative run surfaces.
 - Geiger remains tool-limited by dependency warnings. The evidence pairs that limit with direct first-party unsafe scans and `cargo careful`.
-- The parent conformance ticket still owns full lifecycle killpoints, MVP killer-demo orchestration, HTTP/API and SQL source execution conformance, boundedness honesty, and property/fuzz targets.
+- The parent conformance ticket still owns full lifecycle killpoints, MVP acceptance demo orchestration, HTTP/API and SQL source execution conformance, boundedness honesty, and property/fuzz targets.
 
 ## Verdict
 

@@ -46,7 +46,7 @@ This ticket intentionally provides the lower-layer primitive needed by later CLI
 
 ## References
 
-- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 checkpoint commit-gate invariant, Chapter 13 receipt verification and replay idempotency, Chapter 17 CLI replay/resume surface, Chapter 19 conformance/chaos/golden gates, and Chapter 22 MVP killer demo.
+- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 checkpoint commit-gate invariant, Chapter 13 receipt verification and replay idempotency, Chapter 17 CLI replay/resume surface, Chapter 19 conformance/chaos/golden gates, and Chapter 22 MVP acceptance demo.
 - `.10x/specs/architecture-layering-runtime.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/checkpoint-state-commit-gate.md`
@@ -60,7 +60,7 @@ This ticket intentionally provides the lower-layer primitive needed by later CLI
 
 ## Progress and notes
 
-- 2026-07-06: Split after parent inspection found several blocked surfaces share the same missing lower-layer API: CLI `run`/`resume`/`replay package`, chaos recovery, golden-package replay gates, and the MVP killer demo all need a receipt-verified package-to-checkpoint runtime primitive. Existing source already provides `execute_to_package`, `PackageReader`, DuckDB package commit/verify methods, and receipt-gated `CheckpointStore::commit`.
+- 2026-07-06: Split after parent inspection found several blocked surfaces share the same missing lower-layer API: CLI `run`/`resume`/`replay package`, chaos recovery, golden-package replay gates, and the MVP acceptance demo all need a receipt-verified package-to-checkpoint runtime primitive. Existing source already provides `execute_to_package`, `PackageReader`, DuckDB package commit/verify methods, and receipt-gated `CheckpointStore::commit`.
 - 2026-07-06: Read-only explorer Popper recommended narrowing this child from a generic `cdf-engine` abstraction to a prepared-package DuckDB/SQLite orchestrator in `cdf-project`. Rationale: `cdf-project` is the project/orchestration boundary, DuckDB is the MVP local-loop destination with concrete commit/verify APIs, and the public `DestinationProtocol` currently supports planning only, not finalization. The ticket was revised before implementation.
 - 2026-07-06: Do not implement in the ticket-creation turn. Assign to a worker in a later turn with the references above and a write boundary of `crates/cdf-project/**` plus justified minimal supporting edits.
 - 2026-07-06: Parent activated the ticket and assigned implementation to a worker. Worker owns the prepared-package runtime API, focused tests, and focused verification inside the scoped write boundary. Parent owns integration review, broader `QUALITY.md` closure evidence, final review record, parent-ticket updates, and commit.

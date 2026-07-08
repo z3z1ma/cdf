@@ -741,6 +741,7 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
+ "cdf-cli",
  "cdf-contract",
  "cdf-declarative",
  "cdf-dest-duckdb",
@@ -754,6 +755,7 @@ dependencies = [
  "cdf-project",
  "cdf-state-sqlite",
  "cdf-subprocess",
+ "duckdb",
  "futures-executor",
  "futures-util",
  "postgres",

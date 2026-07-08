@@ -23,4 +23,4 @@ Pass. The child acceptance criteria are satisfied with focused runtime tests, he
 
 ## Residual risk
 
-CodeQL was skipped under the active goal instruction to avoid CodeQL database recreation for this checkpoint. OSV still reports the ratified `RUSTSEC-2024-0436` `paste` advisory path through `parquet`; this is governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md` and not introduced by this ticket. Broader non-local-DuckDB lifecycle chaos and the MVP killer-demo remain parent scope.
+CodeQL was skipped under the active goal instruction to avoid CodeQL database recreation for this checkpoint. OSV still reports the ratified `RUSTSEC-2024-0436` `paste` advisory path through `parquet`; this is governed by `.10x/decisions/native-arrow-datafusion-parquet-policy.md` and not introduced by this ticket. Broader non-local-DuckDB lifecycle chaos and the MVP acceptance demo remain parent scope.

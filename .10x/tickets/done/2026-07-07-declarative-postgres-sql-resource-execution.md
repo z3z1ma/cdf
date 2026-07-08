@@ -52,7 +52,7 @@ Before closure, run relevant `QUALITY.md` gates, parallelized where practical: w
 
 No CLI `preview` or `run` widening to SQL resources, no package/checkpoint lifecycle changes, no run ledger/default ids, no `resume`, no `replay package`, no arbitrary declarative SQL `query` execution, no SQL writes, no DDL, no log-based CDC, no `cdc_apply`, no streaming supervisor, no connection pool, no vault-class secret provider, no DataFusion `TableProvider` rewrite beyond existing `QueryableResource` contracts, no non-Postgres SQL dialects, no external hosted database dependency, no live GitHub/API work, no CI workflow changes, and no `.gitignore` edits.
 
-The MVP killer-demo path remains parent scope until SQL and REST sources can be connected through `cdf run` with explicit runtime inputs in separate product-surface children.
+The MVP acceptance demo path remains parent scope until SQL and REST sources can be connected through `cdf run` with explicit runtime inputs in separate product-surface children.
 
 ## References
 

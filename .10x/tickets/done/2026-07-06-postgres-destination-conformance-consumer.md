@@ -40,7 +40,7 @@ Use mutation testing on the changed conformance-facing code if the implementatio
 
 ## Explicit exclusions
 
-No new Postgres production commit behavior, no new destination semantics, no CDC/`cdc_apply`, no concurrent writer stress, no CLI changes, no project runtime changes, no full process-kill chaos layer, no MVP killer-demo harness, and no changes to the current DuckDB-backed Parquet policy.
+No new Postgres production commit behavior, no new destination semantics, no CDC/`cdc_apply`, no concurrent writer stress, no CLI changes, no project runtime changes, no full process-kill chaos layer, no MVP acceptance demo harness, and no changes to the current DuckDB-backed Parquet policy.
 
 ## References
 

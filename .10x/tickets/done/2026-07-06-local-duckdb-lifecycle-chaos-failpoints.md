@@ -42,11 +42,11 @@ Before closure, run relevant `QUALITY.md` gates, parallelized where practical, i
 
 ## Explicit exclusions
 
-No package state/commit artifact schema changes, no CLI `resume` or `replay package`, no run-ledger default IDs, no generic destination finalization trait, no Postgres/Parquet chaos, no REST/SQL source execution, no full MVP killer-demo harness, no CI workflow changes, no native Arrow/DataFusion Parquet policy change, and no `.gitignore` edits.
+No package state/commit artifact schema changes, no CLI `resume` or `replay package`, no run-ledger default IDs, no generic destination finalization trait, no Postgres/Parquet chaos, no REST/SQL source execution, no full MVP acceptance demo harness, no CI workflow changes, no native Arrow/DataFusion Parquet policy change, and no `.gitignore` edits.
 
 ## References
 
-- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 commit-gate invariant, Chapter 19 chaos layer, and Chapter 22 killer demo.
+- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 commit-gate invariant, Chapter 19 chaos layer, and Chapter 22 acceptance demo.
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/checkpoint-state-commit-gate.md`
 - `.10x/specs/conformance-governance-roadmap.md`

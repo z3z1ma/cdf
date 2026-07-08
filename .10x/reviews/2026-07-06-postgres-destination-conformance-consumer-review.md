@@ -26,4 +26,4 @@ Pass. The child acceptance criteria are satisfied, with focused tests, live Post
 
 ## Residual risk
 
-This remains a planning-level destination conformance consumer plus existing live execution tests. It does not implement full process-kill chaos, CDC/`cdc_apply`, concurrent writer stress, or the MVP killer-demo harness; those remain parent conformance scope.
+This remains a planning-level destination conformance consumer plus existing live execution tests. It does not implement full process-kill chaos, CDC/`cdc_apply`, concurrent writer stress, or the MVP acceptance demo harness; those remain parent conformance scope.

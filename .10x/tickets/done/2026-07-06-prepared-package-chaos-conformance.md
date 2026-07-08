@@ -36,13 +36,13 @@ Significant closure must follow `QUALITY.md`. Reuse the CodeQL database path fro
 
 ## Explicit exclusions
 
-No general process-kill chaos runner beyond the narrow helper-process test needed for this hook, no CLI `resume` command, no CLI `replay package` command, no `cdf run` orchestration, no live source extraction, no generic destination finalize trait, no Postgres/Parquet replay chaos, no persisted golden-package fixture suite, no package archive behavior, no package GC retention policy, no CI workflow changes, no MVP killer-demo harness, and no post-checkpoint package-status failure hook.
+No general process-kill chaos runner beyond the narrow helper-process test needed for this hook, no CLI `resume` command, no CLI `replay package` command, no `cdf run` orchestration, no live source extraction, no generic destination finalize trait, no Postgres/Parquet replay chaos, no persisted golden-package fixture suite, no package archive behavior, no package GC retention policy, no CI workflow changes, no MVP acceptance demo harness, and no post-checkpoint package-status failure hook.
 
-The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still owns full lifecycle killpoints, golden-package determinism, MVP killer-demo evidence, resource data completeness, live Postgres conformance, and cross-destination chaos.
+The broader `.10x/tickets/2026-07-05-conformance-chaos-golden.md` parent still owns full lifecycle killpoints, golden-package determinism, MVP acceptance demo evidence, resource data completeness, live Postgres conformance, and cross-destination chaos.
 
 ## References
 
-- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 commit-gate invariant, Chapter 13 receipt verification/replay idempotency, Chapter 19 chaos/replay identity, and Chapter 22 MVP killer demo.
+- `VISION.md` Chapter 11 lifecycle/crash matrix, Chapter 12 commit-gate invariant, Chapter 13 receipt verification/replay idempotency, Chapter 19 chaos/replay identity, and Chapter 22 MVP acceptance demo.
 - `.10x/specs/conformance-governance-roadmap.md`
 - `.10x/specs/package-lifecycle-determinism.md`
 - `.10x/specs/checkpoint-state-commit-gate.md`

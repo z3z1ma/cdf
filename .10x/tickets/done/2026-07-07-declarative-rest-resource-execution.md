@@ -51,7 +51,7 @@ Before closure, run relevant `QUALITY.md` gates, parallelized where practical: w
 
 No live GitHub/API integration test, no CLI `run` widening to REST resources, no package/checkpoint lifecycle changes, no SQL source execution, no DataFusion `TableProvider` HTTP scan provider, no REST transform escape-hatch execution, no OAuth flow, no streaming supervisor, no run ledger/default ids, no `resume`, no `replay package`, no destination changes, no CI workflow changes, and no `.gitignore` edits.
 
-The MVP killer-demo path remains parent scope until this REST resource can be connected through `cdf run` with explicit runtime inputs in a separate child.
+The MVP acceptance demo path remains parent scope until this REST resource can be connected through `cdf run` with explicit runtime inputs in a separate child.
 
 ## References
 

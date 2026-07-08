@@ -14,7 +14,7 @@ Owns the decision/specification work for:
 
 - Run identity and run-ledger semantics.
 - Run-to-package, run-to-checkpoint, run-to-receipt, and run-to-verdict mapping.
-- Transition ordering and recovery story for `run`, `resume`, `replay package`, `inspect run`, and killer-demo crash windows.
+- Transition ordering and recovery story for `run`, `resume`, `replay package`, `inspect run`, and acceptance demo crash windows.
 - A driver-neutral commit-session abstraction that extends or complements `DestinationProtocol` without weakening destination receipt verification.
 - The executable child-ticket split for implementation after ratification.
 
@@ -31,7 +31,7 @@ This is a shaping/ratification ticket, not an executable implementation ticket.
 
 ## Evidence expectations
 
-Record source inspection and decision review evidence before opening executable implementation tickets. Evidence should cover the current specialized runtime APIs, destination protocol limitations, CLI blockers, observability blockers, and the VISION Chapter 23 killer-demo requirements.
+Record source inspection and decision review evidence before opening executable implementation tickets. Evidence should cover the current specialized runtime APIs, destination protocol limitations, CLI blockers, observability blockers, and the VISION Chapter 23 acceptance demo requirements.
 
 ## Explicit exclusions
 

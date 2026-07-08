@@ -43,7 +43,7 @@ Record conformance scenario output, package artifact inspection, destination rec
 
 ## Explicit exclusions
 
-No public demo script unless split from the broader MVP killer-demo owner. No new source archetype or destination.
+No public demo script unless split from the broader MVP acceptance demo owner. No new source archetype or destination.
 
 ## Progress and notes
 

@@ -76,4 +76,4 @@ Native coverage-guided fuzz targets were intentionally not created in C5; bounde
 
 OSV remains nonzero only for the already-ratified `paste 1.0.15` / `RUSTSEC-2024-0436` advisory. Cargo audit with the scoped ignore, cargo deny, and cargo vet are passing in the relevant child evidence.
 
-This evidence closes P0 Workstream C only. It does not close Workstream E contract-depth implementation, Workstream F benchmark gate, broader MVP killer-demo scope, or the full CDF 1.0 parent.
+This evidence closes P0 Workstream C only. It does not close Workstream E contract-depth implementation, Workstream F benchmark gate, broader MVP acceptance demo scope, or the full CDF 1.0 parent.

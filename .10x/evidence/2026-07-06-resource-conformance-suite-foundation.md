@@ -11,7 +11,7 @@ Relates-To: .10x/tickets/done/2026-07-06-resource-conformance-suite-foundation.m
 
 `crates/cdf-declarative` consumes the harness from REST, SQL, and file compiled-resource tests. The REST example expects cursor pushdown as inexact and a non-cursor predicate as unsupported; the SQL example expects exact predicate pushdown; the file example expects unsupported predicate classification.
 
-The implementation remains planning-only. It does not call `CompiledResource::open`, read source data, prove partition-union completeness, validate replay suffix behavior, add chaos killpoints, add golden packages, or implement the MVP killer-demo harness.
+The implementation remains planning-only. It does not call `CompiledResource::open`, read source data, prove partition-union completeness, validate replay suffix behavior, add chaos killpoints, add golden packages, or implement the MVP acceptance demo harness.
 
 ## Procedure
 
@@ -84,7 +84,7 @@ This evidence supports all acceptance criteria in `.10x/tickets/done/2026-07-06-
 
 ## Limits
 
-This evidence does not prove the remaining parent-ticket behavior: source data execution, partition-union completeness, data boundedness, replay suffix correctness, chaos lifecycle killpoints, golden-package hash comparisons, MVP killer-demo behavior, or live Postgres destination conformance.
+This evidence does not prove the remaining parent-ticket behavior: source data execution, partition-union completeness, data boundedness, replay suffix correctness, chaos lifecycle killpoints, golden-package hash comparisons, MVP acceptance demo behavior, or live Postgres destination conformance.
 
 `tools/codeql-rust-quality.sh` reused the durable CodeQL database path but refreshed it because source and lockfile inputs changed. CodeQL extractor metrics still include known macro-expansion and `--lockfile-path` extraction warnings recorded in `.10x/knowledge/quality-gate-execution.md`; SARIF findings were 0.
 

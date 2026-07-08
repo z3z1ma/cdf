@@ -34,7 +34,7 @@ While CDF depends on Apache DataFusion from a git source, CDF MUST NOT publish c
 
 MVP MUST include the kernel, engine, contract compiler, package builder/replayer, SQLite ledger, authoring tiers 0/1/2/4 for Arrow IPC and NDJSON, HTTP toolkit, DuckDB/Parquet/Postgres destinations, HTTP-paginated API/Postgres snapshot-incremental/Parquet-CSV-JSON file sources, append/replace/merge dispositions, CLI except package archive, conformance suites, chaos layer, golden packages, and dlt shim preview.
 
-MVP killer-demo acceptance MUST exercise Tier-0 GitHub issues, plan output, DuckDB load, `cdf sql`, contract freeze and drift quarantine, crash between destination commit and checkpoint commit, resume without source contact, replay into a second database, duplicate replay handling, and state history.
+MVP acceptance demo acceptance MUST exercise Tier-0 GitHub issues, plan output, DuckDB load, `cdf sql`, contract freeze and drift quarantine, crash between destination commit and checkpoint commit, resume without source contact, replay into a second database, duplicate replay handling, and state history.
 
 ## Fast-follow and beyond MVP
 
@@ -49,7 +49,7 @@ No UI is in scope for the kernel. A future UI, if any, sits above CLI/library su
 - No connector or destination is called supported until it passes the relevant conformance suite.
 - Chaos recovery proves no source cursor advances ahead of durable committed data.
 - Serialized artifact fixtures exist for each artifact version and migration.
-- The MVP killer demo runs under five minutes on a laptop with no network beyond GitHub.
+- The MVP acceptance demo runs under five minutes on a laptop with no network beyond GitHub.
 
 ## Explicit exclusions
 

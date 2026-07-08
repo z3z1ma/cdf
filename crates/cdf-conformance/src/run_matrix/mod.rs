@@ -178,6 +178,6 @@ mod rest_fixture;
 #[cfg(test)]
 mod sql_fixture;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;

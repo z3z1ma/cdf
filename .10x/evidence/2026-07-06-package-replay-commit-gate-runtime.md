@@ -81,6 +81,6 @@ This also supports the user's crate-organization requirement: the implementation
 
 ## Limits
 
-This evidence covers only the prepared-package DuckDB/SQLite runtime primitive. It does not implement live source extraction, full `cdf run`, CLI `resume` or `replay package` command wiring, a generic destination abstraction, package GC retention, chaos killpoints, golden fixtures, or the full MVP killer demo.
+This evidence covers only the prepared-package DuckDB/SQLite runtime primitive. It does not implement live source extraction, full `cdf run`, CLI `resume` or `replay package` command wiring, a generic destination abstraction, package GC retention, chaos killpoints, golden fixtures, or the full MVP acceptance demo.
 
 Miri did not execute the runtime assertion because the test path depends on `rusqlite` FFI, which Miri cannot call on macOS. The runtime surface itself adds no owned unsafe code, and Careful plus Geiger/source-search passed.

@@ -86,4 +86,4 @@ The evidence supports the package lifecycle spec's crash matrix and the checkpoi
 
 ## Limits
 
-This evidence does not cover Postgres or Parquet lifecycle chaos, generic destination finalization, CLI `resume`, `cdf replay package`, run-ledger default IDs, HTTP/API or SQL source execution, fuzz/property targets, or the full MVP killer-demo harness. Those remain parent or separate-ticket scope.
+This evidence does not cover Postgres or Parquet lifecycle chaos, generic destination finalization, CLI `resume`, `cdf replay package`, run-ledger default IDs, HTTP/API or SQL source execution, fuzz/property targets, or the full MVP acceptance demo harness. Those remain parent or separate-ticket scope.

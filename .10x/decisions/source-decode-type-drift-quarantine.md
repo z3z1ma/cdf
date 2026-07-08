@@ -42,7 +42,7 @@ This is a source/runtime side-channel into package evidence, not a DataFusion mu
 
 Treat all source decode type errors as fail-closed.
 
-- Rejected because it contradicts the P0 E6 and MVP killer-demo requirement that type drift quarantines offenders while accepted rows continue.
+- Rejected because it contradicts the P0 E6 and MVP acceptance demo requirement that type drift quarantines offenders while accepted rows continue.
 
 Coerce mismatched scalar values into the declared Arrow type and rely on row-domain or regex rules.
 

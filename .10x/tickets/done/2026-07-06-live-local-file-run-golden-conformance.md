@@ -31,7 +31,7 @@ No GitHub/API source execution, no SQL source execution, no contract-freeze/drif
 
 ## Progress and notes
 
-- 2026-07-06: Split from `.10x/tickets/2026-07-05-conformance-chaos-golden.md` after `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md` closed the public runtime primitive needed by conformance. The next MVP/killer-demo step is to make the conformance harness consume live local-file execution instead of only prepared package fixtures.
+- 2026-07-06: Split from `.10x/tickets/2026-07-05-conformance-chaos-golden.md` after `.10x/tickets/done/2026-07-06-local-file-run-duckdb-checkpoint.md` closed the public runtime primitive needed by conformance. The next MVP acceptance demo step is to make the conformance harness consume live local-file execution instead of only prepared package fixtures.
 - 2026-07-06: Worker implemented the live-run conformance module in `crates/cdf-conformance/src/live_run/` using the public `cdf_project::run_local_file_to_duckdb_checkpoint` primitive plus existing package replay assertions. The implementation avoids production runtime edits and avoids new dependency edges so `Cargo.lock` and supply-chain policy remain untouched.
 - 2026-07-06: Parent review and verification completed. The committed `live-local-file-v1` golden fixture now proves deterministic package evidence across 100 live local-file runs, verified DuckDB receipts, committed SQLite checkpoints, destination/mirror row counts, post-receipt recovery without the source file, duplicate/no-op replay, and negative self-test failures for corrupted expectations. Evidence is recorded in `.10x/evidence/2026-07-06-live-local-file-run-golden-conformance.md`; review passed in `.10x/reviews/2026-07-06-live-local-file-run-golden-conformance-review.md`.
 

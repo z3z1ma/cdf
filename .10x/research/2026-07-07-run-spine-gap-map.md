@@ -6,7 +6,7 @@ Updated: 2026-07-07
 
 ## Question
 
-What high-leverage architectural gap most directly blocks broader `cdf run`, `resume`, `replay package`, `inspect run`, multi-destination orchestration, and MVP killer-demo completion?
+What high-leverage architectural gap most directly blocks broader `cdf run`, `resume`, `replay package`, `inspect run`, multi-destination orchestration, and MVP acceptance demo completion?
 
 ## Sources and methods
 
@@ -27,7 +27,7 @@ What high-leverage architectural gap most directly blocks broader `cdf run`, `re
 - `DestinationProtocol` currently exposes `sheet()` and `plan_commit()` only. It does not define a driver-neutral commit session abstraction for beginning, writing/finalizing, verifying, and aborting package commits.
 - `cdf run` still rejects REST and SQL resources and non-local-DuckDB destinations in the CLI/project runtime path, even though lower-level REST execution and destination implementations exist or are emerging.
 - `inspect run` is explicitly blocked by unratified run-id minting, run-ledger ownership, run-to-package/checkpoint/receipt mapping, multi-resource/multi-package bounds, transition ordering storage, and verdict-summary ownership.
-- These gaps are related: without a ratified run model and driver-neutral commit session, new source/destination support keeps landing as vertical slices that cannot compose into the book-required general run and killer-demo path.
+- These gaps are related: without a ratified run model and driver-neutral commit session, new source/destination support keeps landing as vertical slices that cannot compose into the book-required general run and acceptance demo path.
 
 ## Conclusions
 
