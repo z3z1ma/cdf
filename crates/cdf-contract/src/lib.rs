@@ -1,6 +1,7 @@
 #![doc = "Schema contract compilation boundary for cdf."]
 
 mod compiler;
+mod evaluator;
 mod lattice;
 mod normalization;
 mod policy;
@@ -9,6 +10,7 @@ mod schema;
 mod transforms;
 
 pub use compiler::*;
+pub use evaluator::*;
 pub use lattice::*;
 pub use normalization::*;
 pub use policy::*;

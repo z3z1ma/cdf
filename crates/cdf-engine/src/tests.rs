@@ -7,9 +7,13 @@ use std::{
     },
 };
 
-use arrow_array::{Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray};
-use arrow_schema::{DataType, Field, Schema, SchemaRef};
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, Int32Array, RecordBatch, StringArray, TimestampMillisecondArray,
+};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use cdf_contract::{
+    ContractPolicy, ObservedSchema, RowRule, VerdictAction, compile_validation_program,
+};
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
     ContractRef, DeliveryGuarantee, EstimateSupport, FileManifest, FilePosition,
@@ -303,6 +307,113 @@ fn validation_program_output_name_can_cover_already_normalized_batch_field() {
     let field = schema.field(0);
     assert_eq!(field.name(), "customer_name");
     assert_eq!(source_name(field), Some("name"));
+}
+
+#[test]
+fn contract_exec_filters_quarantined_rows_before_normalize() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Domain {
+        column: "name".to_owned(),
+        allowed: vec!["two".to_owned(), "three".to_owned()],
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 2);
+    assert_eq!(output.segments.len(), 1);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let names = batches[0]
+        .column_by_name("name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(names.value(0), "two");
+    assert_eq!(names.value(1), "three");
+}
+
+#[test]
+fn reject_batch_contract_abort_prevents_packaged_manifest() {
+    let resource = MockResource::tier_a(sample_batches());
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.verdicts.violation = VerdictAction::RejectBatch;
+    policy.rows.rules = vec![RowRule::Domain {
+        column: "name".to_owned(),
+        allowed: vec!["missing".to_owned()],
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+
+    assert!(error.to_string().contains("reject_batch"));
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    assert_ne!(reader.manifest().lifecycle.status, PackageStatus::Packaged);
+}
+
+#[test]
+fn freshness_contract_writes_observed_at_context_when_rule_requires_it() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "updated_at",
+        DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+        false,
+    )]));
+    let batch = Batch::from_record_batch(
+        BatchId::new("freshness-batch").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-v1").unwrap(),
+        RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampMillisecondArray::from(vec![0]).with_timezone("UTC")) as ArrayRef,
+            ],
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let resource = MockResource::tier_a(vec![batch]);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Freshness {
+        column: "updated_at".to_owned(),
+        max_age_ms: 1,
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 0);
+    assert!(output.segments.is_empty());
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    assert!(
+        reader
+            .manifest()
+            .identity
+            .files
+            .iter()
+            .any(|file| { file.path == "plan/contract-evaluation-context.json" })
+    );
 }
 
 #[test]

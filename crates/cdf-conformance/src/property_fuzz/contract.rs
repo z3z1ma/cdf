@@ -1,16 +1,21 @@
 use std::collections::BTreeSet;
 
+use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    PromotionPolicy, RowDispositionKind, RowDispositionRule, RuleOutcome, ValidationProgram,
-    assert_verdict_lattice_total,
+    ContractEvaluationContext, ContractPolicy, ObservedSchema, PromotionPolicy, RowDispositionKind,
+    RowDispositionRule, RowRule, RuleOutcome, ValidationProgram, assert_verdict_lattice_total,
+    compile_validation_program, evaluate_record_batch,
 };
 use proptest::prelude::*;
+use std::sync::Arc;
 
 fn validation_program(row_dispositions: Vec<RowDispositionRule>) -> ValidationProgram {
     ValidationProgram {
         normalizer_version: "property-fuzz".to_owned(),
         schema_verdicts: Vec::new(),
         column_programs: Vec::new(),
+        row_rules: Vec::new(),
         row_dispositions,
         transforms: Vec::new(),
         promotion: PromotionPolicy::default(),
@@ -98,4 +103,35 @@ fn property_fuzz_verdict_lattice_accepts_every_outcome_permutation() {
     let mut rules = accept_rules_for_all_outcomes();
 
     assert_all_permutations_are_total(&mut rules, 0);
+}
+
+#[test]
+fn conformance_local_contract_evaluator_owns_row_verdict_path() {
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, false),
+    ]);
+    let mut policy = ContractPolicy::for_trust(cdf_kernel::TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Domain {
+        column: "status".to_owned(),
+        allowed: vec!["accepted".to_owned()],
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["accepted", "rejected"])),
+        ],
+    )
+    .unwrap();
+
+    let evaluation =
+        evaluate_record_batch(&program, &ContractEvaluationContext::default(), &batch).unwrap();
+
+    assert_eq!(evaluation.summary.input_rows, 2);
+    assert_eq!(evaluation.summary.accepted_rows, 1);
+    assert_eq!(evaluation.summary.quarantined_rows, 1);
+    assert_eq!(evaluation.quarantine_candidates[0].source_row_ordinal, 1);
 }

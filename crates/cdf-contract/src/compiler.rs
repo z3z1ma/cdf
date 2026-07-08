@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use arrow_schema::Field;
 use cdf_kernel::{CdfError, Result, TypeMapping, TypeMappingFidelity, semantic};
 use serde::{Deserialize, Serialize};
@@ -70,6 +72,7 @@ pub fn compile_validation_program(
         normalizer_version: policy.normalization.identifier.version.clone(),
         schema_verdicts: schema_verdicts(&policy.schema, &policy.normalization.nested),
         column_programs,
+        row_rules: row_rule_programs(policy, observed_schema),
         row_dispositions: row_dispositions(policy),
         transforms: policy.transforms.clone(),
         promotion: policy.promotion.clone(),
@@ -232,6 +235,94 @@ fn row_dispositions(policy: &ContractPolicy) -> Vec<RowDispositionRule> {
             disposition: action_to_row_disposition(&policy.verdicts.fatal),
         },
     ]
+}
+
+fn row_rule_programs(
+    policy: &ContractPolicy,
+    observed_schema: &ObservedSchema,
+) -> Vec<RowRuleProgram> {
+    let explicit_nullability_columns = policy
+        .rows
+        .rules
+        .iter()
+        .filter_map(|rule| match rule {
+            RowRule::Nullability { column } => Some(column.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let mut programs = Vec::new();
+
+    for field in &observed_schema.fields {
+        if field.nullable || explicit_nullability_columns.contains(field.source_name.as_str()) {
+            continue;
+        }
+        programs.push(RowRuleProgram {
+            rule_id: format!("nullability:{}", field.source_name),
+            predicate: RowRulePredicate::Nullability {
+                column: field.source_name.clone(),
+            },
+            missing_column: MissingColumnBehavior::Skip,
+        });
+    }
+
+    programs.extend(
+        policy
+            .rows
+            .rules
+            .iter()
+            .enumerate()
+            .map(|(index, rule)| row_rule_program_from_policy(index, rule)),
+    );
+    programs
+}
+
+fn row_rule_program_from_policy(index: usize, rule: &RowRule) -> RowRuleProgram {
+    let predicate = match rule {
+        RowRule::Nullability { column } => RowRulePredicate::Nullability {
+            column: column.clone(),
+        },
+        RowRule::Domain { column, allowed } => RowRulePredicate::Domain {
+            column: column.clone(),
+            allowed: allowed.clone(),
+        },
+        RowRule::Range { column, min, max } => RowRulePredicate::Range {
+            column: column.clone(),
+            min: min.clone(),
+            max: max.clone(),
+        },
+        RowRule::Regex { column, pattern } => RowRulePredicate::Regex {
+            column: column.clone(),
+            pattern: pattern.clone(),
+        },
+        RowRule::Freshness { column, max_age_ms } => RowRulePredicate::Freshness {
+            column: column.clone(),
+            max_age_ms: *max_age_ms,
+        },
+        RowRule::Dedup { keys, keep } => RowRulePredicate::Dedup {
+            keys: keys.clone(),
+            keep: match keep {
+                DedupKeep::First => DedupKeepProgram::First,
+                DedupKeep::Last => DedupKeepProgram::Last,
+                DedupKeep::Fail => DedupKeepProgram::Fail,
+            },
+        },
+    };
+    RowRuleProgram {
+        rule_id: format!("row-rule-{index:04}-{}", row_rule_kind(&predicate)),
+        predicate,
+        missing_column: MissingColumnBehavior::Error,
+    }
+}
+
+fn row_rule_kind(predicate: &RowRulePredicate) -> &'static str {
+    match predicate {
+        RowRulePredicate::Nullability { .. } => "nullability",
+        RowRulePredicate::Domain { .. } => "domain",
+        RowRulePredicate::Range { .. } => "range",
+        RowRulePredicate::Regex { .. } => "regex",
+        RowRulePredicate::Freshness { .. } => "freshness",
+        RowRulePredicate::Dedup { .. } => "dedup",
+    }
 }
 
 fn action_to_row_disposition(action: &VerdictAction) -> RowDispositionKind {

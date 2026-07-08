@@ -1,8 +1,13 @@
-use std::{path::Path, sync::Arc};
+use std::{
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
-use cdf_contract::ValidationProgram;
+use arrow_select::filter::filter_record_batch;
+use cdf_contract::{ContractEvaluationContext, ValidationProgram, evaluate_record_batch};
 use cdf_kernel::{CdfError, ResourceStream, Result, RunId, SegmentId, with_source_name};
 use cdf_package::{PackageBuilder, PackageStatus};
 use futures_util::StreamExt;
@@ -120,6 +125,14 @@ where
     builder.write_json_artifact("plan/scan.json", &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
     builder.write_json_artifact("plan/validation-program.json", &plan.validation_program)?;
+    let package_evaluation_context =
+        ContractEvaluationContext::observed_at(current_observed_at_ms()?);
+    if plan.validation_program.requires_observed_at_ms() {
+        builder.write_json_artifact(
+            "plan/contract-evaluation-context.json",
+            &package_evaluation_context,
+        )?;
+    }
 
     let mut profile = ExecutionProfile::default();
     let mut lineage = LineageSummary::default();
@@ -157,7 +170,14 @@ where
                     continue;
                 }
 
-                let output = apply_contract_exec(output, &plan.validation_program)?;
+                let evaluation_context = package_evaluation_context
+                    .clone()
+                    .with_source_position(batch.header.source_position.clone());
+                let output =
+                    apply_contract_exec(output, &plan.validation_program, &evaluation_context)?;
+                if output.num_rows() == 0 {
+                    continue;
+                }
                 let output = apply_normalize_exec(output, &plan.validation_program)?;
                 output_schema = Some(schema_artifact(output.schema().as_ref()));
                 profile.output_rows += output.num_rows() as u64;
@@ -273,20 +293,16 @@ fn apply_projection(batch: &RecordBatch, projection: Option<&[String]>) -> Resul
     batch.project(&indices).map_err(CdfError::from)
 }
 
-fn apply_contract_exec(batch: RecordBatch, program: &ValidationProgram) -> Result<RecordBatch> {
-    for field in batch.schema().fields() {
-        let field_name = field.name();
-        let covered = program
-            .column_programs
-            .iter()
-            .any(|column| column.source_name == *field_name || column.output_name == *field_name);
-        if !covered {
-            return Err(CdfError::contract(format!(
-                "validation program does not cover field {field_name:?}"
-            )));
-        }
+fn apply_contract_exec(
+    batch: RecordBatch,
+    program: &ValidationProgram,
+    context: &ContractEvaluationContext,
+) -> Result<RecordBatch> {
+    let evaluation = evaluate_record_batch(program, context, &batch)?;
+    if evaluation.summary.accepted_rows == evaluation.summary.input_rows {
+        return Ok(batch);
     }
-    Ok(batch)
+    filter_record_batch(&batch, &evaluation.accepted_rows).map_err(CdfError::from)
 }
 
 fn apply_normalize_exec(batch: RecordBatch, program: &ValidationProgram) -> Result<RecordBatch> {
@@ -329,4 +345,13 @@ fn schema_artifact(schema: &Schema) -> SchemaArtifact {
             })
             .collect(),
     }
+}
+
+fn current_observed_at_ms() -> Result<i64> {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| CdfError::internal(format!("system clock before Unix epoch: {error}")))?;
+    i64::try_from(duration.as_millis()).map_err(|_| {
+        CdfError::internal("system time milliseconds do not fit in i64 evaluation context")
+    })
 }

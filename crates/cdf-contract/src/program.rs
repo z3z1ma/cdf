@@ -13,6 +13,8 @@ pub struct ValidationProgram {
     pub normalizer_version: String,
     pub schema_verdicts: Vec<SchemaVerdictRule>,
     pub column_programs: Vec<ColumnProgram>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_rules: Vec<RowRuleProgram>,
     pub row_dispositions: Vec<RowDispositionRule>,
     pub transforms: Vec<TransformDescription>,
     pub promotion: PromotionPolicy,
@@ -40,6 +42,18 @@ impl ValidationProgram {
             RowDispositionKind::RejectRun => RuleDisposition::RejectRun { rule_id },
         }
     }
+
+    pub fn requires_observed_at_ms(&self) -> bool {
+        self.row_rules.iter().any(|rule| {
+            matches!(
+                &rule.predicate,
+                RowRulePredicate::Freshness {
+                    column: _,
+                    max_age_ms: _
+                }
+            )
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -66,6 +80,65 @@ pub struct ColumnProgram {
     pub steps: Vec<ColumnProgramStep>,
     pub nested_action: NestedAction,
     pub redaction: RedactionDecision,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RowRuleProgram {
+    pub rule_id: String,
+    pub predicate: RowRulePredicate,
+    #[serde(default, skip_serializing_if = "MissingColumnBehavior::is_error")]
+    pub missing_column: MissingColumnBehavior,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RowRulePredicate {
+    Nullability {
+        column: String,
+    },
+    Domain {
+        column: String,
+        allowed: Vec<String>,
+    },
+    Range {
+        column: String,
+        min: Option<String>,
+        max: Option<String>,
+    },
+    Regex {
+        column: String,
+        pattern: String,
+    },
+    Freshness {
+        column: String,
+        max_age_ms: u64,
+    },
+    Dedup {
+        keys: Vec<String>,
+        keep: DedupKeepProgram,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DedupKeepProgram {
+    First,
+    Last,
+    Fail,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MissingColumnBehavior {
+    #[default]
+    Error,
+    Skip,
+}
+
+impl MissingColumnBehavior {
+    fn is_error(&self) -> bool {
+        matches!(self, Self::Error)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

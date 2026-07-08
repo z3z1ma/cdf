@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
@@ -48,6 +48,15 @@ No quarantine artifact writing beyond returning quarantine candidates. No destin
 ## Dependencies
 
 None.
+
+## Progress And Notes
+
+- 2026-07-08: Implemented serialized row rule programs for generated non-null observed fields plus policy nullability, domain, range, regex, freshness, and dedup metadata. Explicit policy rules fail closed on missing columns; generated projection-sensitive nullability rules skip when their source column is absent from the batch.
+- 2026-07-08: Added a pure Arrow batch evaluator in `cdf-contract` that validates batch column coverage/types, returns accepted-row selection, quarantine candidates, and verdict summaries, and fails closed for missing freshness context, malformed regex/range literals, unsupported row-rule column types, and incompatible timestamp columns.
+- 2026-07-08: Wired `ContractExec` in the live engine path before normalization. Accepted rows are filtered into `NormalizeExec`; reject-batch and reject-run dispositions return contract errors before package finalization or destination mutation. The package still writes `plan/validation-program.json`; freshness packages also write `plan/contract-evaluation-context.json` with package-level `observed_at_ms`.
+- 2026-07-08: Added focused contract, engine, and conformance tests, including a local/non-public 100k-row type/null/domain benchmarkable path. Evidence is recorded in `.10x/evidence/2026-07-08-p1-e1-row-level-verdicts-live-chain.md`.
+- 2026-07-08: Parent review found and repaired an all-quarantined-batch edge where the live path could write a zero-row package segment. `execute_to_package_inner` now skips post-contract empty batches, and the freshness engine test asserts no data segments are emitted when all rows are rejected.
+- 2026-07-08: Parent review found no blocking issues and recorded the adversarial pass in `.10x/reviews/2026-07-08-p1-e1-row-level-verdicts-live-chain-review.md`. Live quarantine artifact writing remains excluded here and owned by `.10x/tickets/2026-07-08-p1-e2-quarantine-routing-redaction.md`; live merge/dedup enforcement remains owned by `.10x/tickets/2026-07-08-p1-e3-merge-dedup-live-path.md`.
 
 ## Blockers
 

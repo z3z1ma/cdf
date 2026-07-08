@@ -1,6 +1,9 @@
 use super::*;
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc, time::Instant};
 
+use arrow_array::{
+    ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
+};
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     TrustLevel, TypeMapping, TypeMappingFidelity, source_name, with_semantic, with_source_name,
@@ -14,6 +17,13 @@ fn validation_program_serializes_and_has_total_lattice() {
         compile_validation_program(&ContractPolicy::for_trust(TrustLevel::Governed), &observed)
             .unwrap();
 
+    assert!(program.row_rules.iter().any(|rule| {
+        rule.rule_id == "nullability:id"
+            && matches!(
+                rule.predicate,
+                RowRulePredicate::Nullability { ref column } if column == "id"
+            )
+    }));
     assert_verdict_lattice_total(&program).unwrap();
     for outcome in RuleOutcome::ALL {
         assert_ne!(
@@ -28,6 +38,223 @@ fn validation_program_serializes_and_has_total_lattice() {
     assert_eq!(
         program,
         serde_json::from_str::<ValidationProgram>(&json).unwrap()
+    );
+}
+
+#[test]
+fn row_evaluator_returns_accept_mask_quarantine_candidates_and_summary() {
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, false),
+        Field::new("code", DataType::Utf8, true),
+        Field::new("score", DataType::Int32, true),
+        Field::new("required_note", DataType::Utf8, true),
+    ]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![
+        RowRule::Domain {
+            column: "status".to_owned(),
+            allowed: vec!["open".to_owned()],
+        },
+        RowRule::Regex {
+            column: "code".to_owned(),
+            pattern: "^A-[0-9]+$".to_owned(),
+        },
+        RowRule::Range {
+            column: "score".to_owned(),
+            min: Some("0".to_owned()),
+            max: Some("10".to_owned()),
+        },
+        RowRule::Nullability {
+            column: "required_note".to_owned(),
+        },
+    ];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2, 3])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["open", "bad", "open"])),
+            Arc::new(StringArray::from(vec![
+                Some("A-1"),
+                Some("no"),
+                Some("A-2"),
+            ])),
+            Arc::new(Int32Array::from(vec![Some(5), Some(7), Some(11)])),
+            Arc::new(StringArray::from(vec![Some("kept"), None, Some("kept")])),
+        ],
+    )
+    .unwrap();
+
+    let evaluation =
+        evaluate_record_batch(&program, &ContractEvaluationContext::default(), &batch).unwrap();
+
+    assert!(evaluation.accepted_rows.value(0));
+    assert!(!evaluation.accepted_rows.value(1));
+    assert!(!evaluation.accepted_rows.value(2));
+    assert_eq!(evaluation.summary.input_rows, 3);
+    assert_eq!(evaluation.summary.accepted_rows, 1);
+    assert_eq!(evaluation.summary.quarantined_rows, 2);
+    assert_eq!(evaluation.summary.quarantine_candidate_count, 4);
+    assert!(evaluation.quarantine_candidates.iter().any(|candidate| {
+        candidate.source_row_ordinal == 1 && candidate.error_code == "domain_violation"
+    }));
+    assert!(evaluation.quarantine_candidates.iter().any(|candidate| {
+        candidate.source_row_ordinal == 1 && candidate.error_code == "regex_violation"
+    }));
+    assert!(evaluation.quarantine_candidates.iter().any(|candidate| {
+        candidate.source_row_ordinal == 2 && candidate.error_code == "range_violation"
+    }));
+}
+
+#[test]
+fn freshness_uses_observed_at_context_and_fails_closed_without_it() {
+    let schema = Schema::new(vec![Field::new(
+        "updated_at",
+        DataType::Timestamp(TimeUnit::Millisecond, Some("UTC".into())),
+        false,
+    )]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Freshness {
+        column: "updated_at".to_owned(),
+        max_age_ms: 1_000,
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    assert!(program.requires_observed_at_ms());
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(TimestampMillisecondArray::from(vec![9_500, 8_000]).with_timezone("UTC"))
+                as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let missing_context =
+        evaluate_record_batch(&program, &ContractEvaluationContext::default(), &batch).unwrap_err();
+    assert!(missing_context.to_string().contains("observed_at_ms"));
+
+    let evaluation = evaluate_record_batch(
+        &program,
+        &ContractEvaluationContext::observed_at(10_000),
+        &batch,
+    )
+    .unwrap();
+    assert!(evaluation.accepted_rows.value(0));
+    assert!(!evaluation.accepted_rows.value(1));
+}
+
+#[test]
+fn row_evaluator_fails_closed_on_missing_coverage_type_mismatch_and_bad_timestamp_rule() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let program = compile_validation_program(
+        &ContractPolicy::for_trust(TrustLevel::Governed),
+        &ObservedSchema::from_arrow(&schema),
+    )
+    .unwrap();
+    let uncovered = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new(
+            "other",
+            DataType::Int64,
+            false,
+        )])),
+        vec![Arc::new(Int64Array::from(vec![1])) as ArrayRef],
+    )
+    .unwrap();
+    let error = evaluate_record_batch(&program, &ContractEvaluationContext::default(), &uncovered)
+        .unwrap_err();
+    assert!(error.to_string().contains("does not cover field"));
+
+    let wrong_type = RecordBatch::try_new(
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)])),
+        vec![Arc::new(Int32Array::from(vec![1])) as ArrayRef],
+    )
+    .unwrap();
+    let error = evaluate_record_batch(&program, &ContractEvaluationContext::default(), &wrong_type)
+        .unwrap_err();
+    assert!(error.to_string().contains("expects"));
+
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Freshness {
+        column: "id".to_owned(),
+        max_age_ms: 1_000,
+    }];
+    let bad_freshness_program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let error = evaluate_record_batch(
+        &bad_freshness_program,
+        &ContractEvaluationContext::observed_at(10_000),
+        &RecordBatch::try_new(
+            Arc::new(schema),
+            vec![Arc::new(Int64Array::from(vec![1])) as ArrayRef],
+        )
+        .unwrap(),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("requires a timestamp column"));
+}
+
+#[test]
+fn reject_batch_disposition_aborts_evaluation() {
+    let schema = Schema::new(vec![Field::new("status", DataType::Utf8, false)]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.verdicts.violation = VerdictAction::RejectBatch;
+    policy.rows.rules = vec![RowRule::Domain {
+        column: "status".to_owned(),
+        allowed: vec!["open".to_owned()],
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(StringArray::from(vec!["closed"])) as ArrayRef],
+    )
+    .unwrap();
+
+    let error =
+        evaluate_record_batch(&program, &ContractEvaluationContext::default(), &batch).unwrap_err();
+
+    assert!(error.to_string().contains("reject_batch"));
+}
+
+#[test]
+fn local_non_public_type_null_domain_100k_rows_benchmarkable_path() {
+    let row_count = 100_000;
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("status", DataType::Utf8, false),
+    ]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Domain {
+        column: "status".to_owned(),
+        allowed: vec!["ok".to_owned()],
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let ids = (0..row_count as i64).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(Int64Array::from(ids)) as ArrayRef,
+            Arc::new(StringArray::from(vec!["ok"; row_count])),
+        ],
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let evaluation =
+        evaluate_record_batch(&program, &ContractEvaluationContext::default(), &batch).unwrap();
+    let elapsed = started.elapsed();
+
+    assert_eq!(evaluation.summary.input_rows, row_count as u64);
+    assert_eq!(evaluation.summary.accepted_rows, row_count as u64);
+    assert_eq!(evaluation.summary.quarantined_rows, 0);
+    println!(
+        "local_non_public_contract_eval_type_null_domain rows={} elapsed_ms={:.3}",
+        row_count,
+        elapsed.as_secs_f64() * 1000.0
     );
 }
 
