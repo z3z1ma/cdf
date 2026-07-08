@@ -23,7 +23,7 @@ The implementation did not add CLI rendering, tracing bridge, OTLP export, or re
 
 Inspected before editing:
 
-- `.10x/tickets/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
 - `.10x/specs/runtime-event-spine.md`
 - `.10x/specs/run-orchestration-ledger.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md`

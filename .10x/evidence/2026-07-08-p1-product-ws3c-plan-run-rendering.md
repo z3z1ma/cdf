@@ -25,7 +25,7 @@ Observed implementation facts:
 
 Inspected before editing:
 
-- `.10x/tickets/2026-07-08-p1-product-ws3c-plan-run-rendering.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws3c-plan-run-rendering.md`.
 - `.10x/decisions/cli-design-language-and-renderer.md`.
 - `.10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md`.
 - `.10x/evidence/2026-07-08-p1-product-ws3b-renderer-foundation.md`.

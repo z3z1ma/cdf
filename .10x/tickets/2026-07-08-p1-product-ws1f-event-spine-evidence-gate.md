@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
-Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md, .10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md, .10x/tickets/2026-07-08-p1-product-ws1e-tracing-bridge.md
+Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md, .10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md, .10x/tickets/2026-07-08-p1-product-ws1e-tracing-bridge.md
 
 # P1 product WS1F: Event spine evidence gate
 
@@ -34,4 +34,4 @@ Do not implement new product behavior except to repair WS1 evidence findings. CL
 
 ## Blockers
 
-Blocked until WS1C, WS1D, and WS1E land.
+Blocked until WS1D and WS1E land.

@@ -16,7 +16,7 @@ This workstream is broad enough to split before implementation if needed. The fi
 
 - `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`
-- `.10x/tickets/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1e-tracing-bridge.md`
 - `.10x/tickets/2026-07-08-p1-product-ws1f-event-spine-evidence-gate.md`

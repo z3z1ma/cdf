@@ -33,4 +33,4 @@ No OTLP exporter, no CLI progress renderer, and no new event vocabulary unless W
 
 ## Blockers
 
-Blocked until WS1B lands.
+None.
