@@ -3,7 +3,9 @@ use cdf_project::ResolvedProjectDestination;
 
 use crate::{
     context::ProjectContext,
-    destination_uri::{redact_error_value, resolve_environment_destination},
+    destination_uri::{
+        destination_error_suggestions, redact_error_value, resolve_environment_destination,
+    },
     error_catalog,
     output::CliError,
 };
@@ -20,7 +22,7 @@ impl SelectedDestination {
         target: &TargetName,
     ) -> Result<Self, CliError> {
         let resolved = resolve_environment_destination(context, target)
-            .map_err(|error| resume_destination_resolution_error(error, command))?;
+            .map_err(|error| resume_destination_resolution_error(context, error, command))?;
         Ok(Self {
             destination: Some(resolved.destination),
             secret_redaction: resolved.secret_redaction,
@@ -38,7 +40,12 @@ impl SelectedDestination {
     }
 }
 
-fn resume_destination_resolution_error(error: CdfError, command: &'static str) -> CliError {
+fn resume_destination_resolution_error(
+    context: &ProjectContext,
+    error: CdfError,
+    command: &'static str,
+) -> CliError {
+    let error = redact_error_value(error, None);
     if error
         .message
         .contains("no project destination driver registered")
@@ -51,6 +58,7 @@ fn resume_destination_resolution_error(error: CdfError, command: &'static str) -
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
+        .with_suggestions(destination_error_suggestions(context, None))
     } else {
         error.into()
     }

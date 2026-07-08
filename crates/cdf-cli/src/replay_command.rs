@@ -13,7 +13,7 @@ use cdf_state_sqlite::{RunEventAppend, RunEventKind, SqliteCheckpointStore, Sqli
 use crate::{
     args::{Cli, ReplayPackageArgs},
     context::ProjectContext,
-    destination_uri::redact_error_value,
+    destination_uri::{destination_error_suggestions, redact_destination_uri, redact_error_value},
     error_catalog,
     output::{CliError, CommandOutput},
     reports::{
@@ -153,8 +153,10 @@ pub(crate) fn build_replay_destination(
         .with_environment_name(&context.environment.name)
         .with_destination_policy(destination_policy)
         .with_secret_provider(&secret_provider);
-    let destination = resolve_project_run_destination(uri, &destination_context)
-        .map_err(|error| replay_destination_resolution_error(error, uri))?;
+    let destination =
+        resolve_project_run_destination(uri, &destination_context).map_err(|error| {
+            replay_destination_resolution_error(context, args.destination_uri, error, uri)
+        })?;
     let report = RunDestinationReport::from_project(&destination.describe(), destination.target());
     let secret_redaction = destination.secret_redaction().map(str::to_owned);
     let kind = match destination
@@ -240,7 +242,13 @@ fn replay_postgres_policy(
     })
 }
 
-fn replay_destination_resolution_error(error: CdfError, uri: &str) -> CliError {
+fn replay_destination_resolution_error(
+    context: &ProjectContext,
+    requested_destination: Option<&str>,
+    error: CdfError,
+    uri: &str,
+) -> CliError {
+    let error = redact_error_value(error, None);
     if error
         .message
         .contains("no project destination driver registered")
@@ -248,11 +256,16 @@ fn replay_destination_resolution_error(error: CdfError, uri: &str) -> CliError {
         CliError::not_supported_with(
             "replay package",
             format!(
-                "destination URI `{uri}` is unsupported for package replay; supported destinations are duckdb://path, parquet://root, and postgres://..."
+                "destination URI `{}` is unsupported for package replay; supported destinations are duckdb://path, parquet://root, and postgres://...",
+                redact_destination_uri(uri)
             ),
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
+        .with_suggestions(destination_error_suggestions(
+            context,
+            requested_destination,
+        ))
     } else if error.message.contains("malformed or non-local")
         || error.message.contains("is missing a scheme")
     {
@@ -262,6 +275,10 @@ fn replay_destination_resolution_error(error: CdfError, uri: &str) -> CliError {
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
+        .with_suggestions(destination_error_suggestions(
+            context,
+            requested_destination,
+        ))
     } else {
         error.into()
     }

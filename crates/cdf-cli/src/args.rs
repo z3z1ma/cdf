@@ -6,9 +6,28 @@ use std::{
 
 use clap::{Arg, ArgAction, ArgMatches, Command as ClapCommand, error::ErrorKind};
 
-use crate::output::CliError;
+use crate::{output::CliError, suggestions};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const ROOT_COMMANDS: &[&str] = &[
+    "help", "version", "init", "validate", "plan", "explain", "run", "preview", "sql", "inspect",
+    "diff", "contract", "state", "resume", "replay", "backfill", "package", "doctor", "status",
+];
+const INSPECT_NOUNS: &[&str] = &[
+    "project",
+    "resources",
+    "resource",
+    "lock",
+    "destinations",
+    "destination",
+    "package",
+    "run",
+];
+const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
+const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
+const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "migrate", "recover"];
+const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
+const PACKAGE_SUBCOMMANDS: &[&str] = &["ls", "gc", "verify", "archive"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Cli {
@@ -250,7 +269,9 @@ fn parse_command(args: &[String]) -> Result<Command, CliError> {
             Ok(Command::Help(error.to_string()))
         }
         Err(error) if error.kind() == ErrorKind::DisplayVersion => Ok(Command::Version),
-        Err(error) => Err(CliError::usage(error.to_string())),
+        Err(error) => {
+            Err(CliError::usage(error.to_string()).with_suggestions(command_suggestions(args)))
+        }
     }
 }
 
@@ -290,7 +311,8 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
             no_extra_values("status", &values(subcommand, "extra"))?;
             Ok(Command::Status)
         }
-        Some((other, _)) => Err(CliError::usage(format!("unknown command `{other}`"))),
+        Some((other, _)) => Err(CliError::usage(format!("unknown command `{other}`"))
+            .with_suggestions(command_suggestions(&[other.to_owned()]))),
         None => render_help(&[]).map(Command::Help),
     }
 }
@@ -415,7 +437,14 @@ fn parse_inspect(matches: &ArgMatches) -> Result<InspectArgs, CliError> {
             no_extra_values("inspect run", &values[1..])?;
             InspectNoun::Run(id)
         }
-        other => return Err(CliError::usage(format!("unknown inspect noun `{other}`"))),
+        other => {
+            return Err(unknown_subcommand_error(
+                &["inspect"],
+                other,
+                INSPECT_NOUNS,
+                "unknown inspect noun",
+            ));
+        }
     };
     Ok(InspectArgs { noun })
 }
@@ -426,7 +455,13 @@ fn parse_diff(matches: &ArgMatches) -> Result<Command, CliError> {
             no_extra_values("diff schema", &values(subcommand, "extra"))?;
             Ok(Command::DiffSchema)
         }
-        _ => Err(CliError::usage("diff requires subcommand `schema`")),
+        Some((other, _)) => Err(unknown_subcommand_error(
+            &["diff"],
+            other,
+            DIFF_SUBCOMMANDS,
+            "unknown diff subcommand",
+        )),
+        None => Err(CliError::usage("diff requires subcommand `schema`")),
     }
 }
 
@@ -458,9 +493,12 @@ fn parse_contract(matches: &ArgMatches) -> Result<ContractCommand, CliError> {
                 &values(matches, "value"),
             )?,
         }),
-        other => Err(CliError::usage(format!(
-            "unknown contract subcommand `{other}`"
-        ))),
+        other => Err(unknown_subcommand_error(
+            &["contract"],
+            other,
+            CONTRACT_SUBCOMMANDS,
+            "unknown contract subcommand",
+        )),
     }
 }
 
@@ -479,9 +517,12 @@ fn parse_state(matches: &ArgMatches) -> Result<StateCommand, CliError> {
             Ok(StateCommand::Migrate)
         }
         "recover" => parse_state_recover(matches).map(StateCommand::Recover),
-        other => Err(CliError::usage(format!(
-            "unknown state subcommand `{other}`"
-        ))),
+        other => Err(unknown_subcommand_error(
+            &["state"],
+            other,
+            STATE_SUBCOMMANDS,
+            "unknown state subcommand",
+        )),
     }
 }
 
@@ -541,7 +582,13 @@ fn parse_replay(matches: &ArgMatches) -> Result<Command, CliError> {
         Some(("package", subcommand)) => {
             parse_replay_package(subcommand).map(Command::ReplayPackage)
         }
-        _ => Err(CliError::usage("replay requires subcommand `package`")),
+        Some((other, _)) => Err(unknown_subcommand_error(
+            &["replay"],
+            other,
+            REPLAY_SUBCOMMANDS,
+            "unknown replay subcommand",
+        )),
+        None => Err(CliError::usage("replay requires subcommand `package`")),
     }
 }
 
@@ -613,9 +660,12 @@ fn parse_package(matches: &ArgMatches) -> Result<PackageCommand, CliError> {
             )?,
         }),
         "archive" => parse_package_archive(matches).map(PackageCommand::Archive),
-        other => Err(CliError::usage(format!(
-            "unknown package subcommand `{other}`"
-        ))),
+        other => Err(unknown_subcommand_error(
+            &["package"],
+            other,
+            PACKAGE_SUBCOMMANDS,
+            "unknown package subcommand",
+        )),
     }
 }
 
@@ -847,14 +897,8 @@ pub(crate) fn render_help(path: &[String]) -> Result<String, CliError> {
         argv.push("--help".to_owned());
         return match cli_command().try_get_matches_from(argv) {
             Err(error) if error.kind() == ErrorKind::DisplayHelp => Ok(error.to_string()),
-            Err(_) => Err(CliError::usage(format!(
-                "unknown help topic `{}`",
-                path.join(" ")
-            ))),
-            Ok(_) => Err(CliError::usage(format!(
-                "unknown help topic `{}`",
-                path.join(" ")
-            ))),
+            Err(_) => Err(unknown_help_topic_error(path)),
+            Ok(_) => Err(unknown_help_topic_error(path)),
         };
     }
 
@@ -966,6 +1010,69 @@ fn parse_u64(option: &str, value: &str) -> Result<u64, CliError> {
     value
         .parse()
         .map_err(|error| CliError::usage(format!("{option} must be an unsigned integer: {error}")))
+}
+
+fn unknown_subcommand_error(
+    path: &[&str],
+    value: &str,
+    candidates: &[&str],
+    message: &str,
+) -> CliError {
+    CliError::usage(format!("{message} `{value}`"))
+        .with_suggestions(command_path_suggestions(path, value, candidates))
+}
+
+fn unknown_help_topic_error(path: &[String]) -> CliError {
+    let topic = path.join(" ");
+    CliError::usage(format!("unknown help topic `{topic}`"))
+        .with_suggestions(command_suggestions(path))
+}
+
+fn command_suggestions(args: &[String]) -> Vec<String> {
+    let Some(first) = args.first() else {
+        return Vec::new();
+    };
+    if first.starts_with('-') {
+        return Vec::new();
+    }
+    if !ROOT_COMMANDS.contains(&first.as_str()) {
+        return command_path_suggestions(&[], first, ROOT_COMMANDS);
+    }
+    let Some(second) = args.get(1) else {
+        return Vec::new();
+    };
+    if second.starts_with('-') {
+        return Vec::new();
+    }
+    match first.as_str() {
+        "inspect" => command_path_suggestions(&["inspect"], second, INSPECT_NOUNS),
+        "diff" => command_path_suggestions(&["diff"], second, DIFF_SUBCOMMANDS),
+        "contract" => command_path_suggestions(&["contract"], second, CONTRACT_SUBCOMMANDS),
+        "state" => command_path_suggestions(&["state"], second, STATE_SUBCOMMANDS),
+        "replay" => command_path_suggestions(&["replay"], second, REPLAY_SUBCOMMANDS),
+        "package" => command_path_suggestions(&["package"], second, PACKAGE_SUBCOMMANDS),
+        _ => Vec::new(),
+    }
+}
+
+fn command_path_suggestions(path: &[&str], value: &str, candidates: &[&str]) -> Vec<String> {
+    suggestions::nearest(
+        value,
+        candidates.iter().map(|candidate| (*candidate).to_owned()),
+    )
+    .into_iter()
+    .take(1)
+    .map(|candidate| {
+        let mut command = String::from("cdf");
+        for segment in path {
+            command.push(' ');
+            command.push_str(segment);
+        }
+        command.push(' ');
+        command.push_str(&candidate);
+        command
+    })
+    .collect()
 }
 
 fn mint_cli_id(prefix: &str) -> String {

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
-Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md, .10x/tickets/2026-07-08-p1-product-ws4c-error-suggestions.md, .10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md
+Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md, .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md, .10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md
 
 # P1 product WS4D: Error rendering and generated docs
 
@@ -34,4 +34,4 @@ Do not change code assignments unless WS4B/WS4C left an explicit blocker. Do not
 
 ## Blockers
 
-Blocked until WS4C and WS6B land.
+Blocked until WS6B lands.

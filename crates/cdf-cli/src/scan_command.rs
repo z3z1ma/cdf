@@ -215,8 +215,10 @@ fn destination_plan_report(
     destination_uri: Option<&str>,
     command: &'static str,
 ) -> Result<DestinationPlanReport, CliError> {
-    let resolved = resolve_selected_destination(context, target, destination_uri)
-        .map_err(|error| plan_destination_resolution_error(command, error))?;
+    let resolved =
+        resolve_selected_destination(context, target, destination_uri).map_err(|error| {
+            plan_destination_resolution_error(command, context, destination_uri, error)
+        })?;
     let mut destination = resolved.destination;
     let plan = destination
         .plan_resource_commit(resource)
@@ -224,7 +226,13 @@ fn destination_plan_report(
     DestinationPlanReport::from_project(plan, resource).map_err(CliError::from)
 }
 
-fn plan_destination_resolution_error(command: &'static str, error: CdfError) -> CliError {
+fn plan_destination_resolution_error(
+    command: &'static str,
+    context: &ProjectContext,
+    destination_uri: Option<&str>,
+    error: CdfError,
+) -> CliError {
+    let error = redact_error_value(error, None);
     if error
         .message
         .contains("no project destination driver registered")
@@ -237,6 +245,10 @@ fn plan_destination_resolution_error(command: &'static str, error: CdfError) -> 
             "registered no-write project destination planner",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
+        .with_suggestions(crate::destination_uri::destination_error_suggestions(
+            context,
+            destination_uri,
+        ))
     } else {
         error.into()
     }

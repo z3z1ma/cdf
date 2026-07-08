@@ -6439,6 +6439,150 @@ fn unknown_command_returns_usage_exit_code() {
         "Correct the command arguments and run the command again."
     );
     assert!(json["error"]["remediation"]["steps"].is_array());
+    assert!(json["error"]["suggestions"].is_null());
+}
+
+#[test]
+fn unknown_command_and_subcommand_json_suggest_high_confidence_matches() {
+    let command = run(["cdf", "--json", "staus"]);
+
+    assert_eq!(command.exit_code, 2);
+    let json = assert_json_error_code(&command, "CDF-CLI-USAGE");
+    assert_eq!(json["error"]["suggestions"], json!(["cdf status"]));
+
+    let subcommand = run(["cdf", "--json", "inspect", "resorce"]);
+
+    assert_eq!(subcommand.exit_code, 2);
+    let json = assert_json_error_code(&subcommand, "CDF-CLI-USAGE");
+    assert_eq!(
+        json["error"]["suggestions"],
+        json!(["cdf inspect resource"])
+    );
+}
+
+#[test]
+fn unknown_resource_json_suggests_nearest_configured_resource_id() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "resource",
+        "local.eventz",
+    ]);
+
+    assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
+    let json = assert_json_error_code(&result, "CDF-PROJECT-CONTRACT");
+    assert_eq!(json["error"]["suggestions"], json!(["local.events"]));
+}
+
+#[test]
+fn unknown_resource_json_omits_suggestions_without_inventory() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf.toml"),
+        r#"
+[project]
+name = "cli_test"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+"#,
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "resource",
+        "local.eventz",
+    ]);
+
+    assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
+    let json = assert_json_error_code(&result, "CDF-PROJECT-CONTRACT");
+    assert!(json["error"]["suggestions"].is_null());
+}
+
+#[test]
+fn unknown_destination_json_suggests_environment_or_uri_shape_without_secrets() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf.toml"),
+        r#"
+[project]
+name = "cli_test"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[environments.prod]
+destination = "duckdb://.cdf/prod.duckdb"
+
+[resources."local.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+
+    let typo = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--to",
+        "prd",
+    ]);
+
+    assert_eq!(typo.exit_code, 78, "stderr: {}", typo.stderr);
+    let json = assert_json_error_code(&typo, "CDF-DEST-NOT-SUPPORTED");
+    assert_eq!(
+        json["error"]["suggestions"],
+        json!(["--env prod", "duckdb://path", "parquet://root"])
+    );
+
+    let package_dir = create_replay_package_fixture(
+        &project,
+        "pkg-replay-redacted-destination-suggestion",
+        "checkpoint-replay-redacted-destination-suggestion",
+    );
+    let redacted = replay_package_command(
+        &project,
+        &package_dir,
+        "dckdb://user:destination-secret@localhost/db",
+    );
+
+    assert_eq!(redacted.exit_code, 78, "stderr: {}", redacted.stderr);
+    assert_secret_absent(&redacted, "destination-secret");
+    let json = assert_json_error_code(&redacted, "CDF-DEST-NOT-SUPPORTED");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("dckdb://[redacted]@localhost/db")
+    );
+    assert_eq!(
+        json["error"]["suggestions"],
+        json!([
+            "duckdb://path",
+            "parquet://root",
+            "postgres://secret://env/NAME"
+        ])
+    );
 }
 
 #[test]

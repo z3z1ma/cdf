@@ -8,7 +8,9 @@ use serde::Serialize;
 use crate::{
     args::{BackfillArgs, Cli},
     context::ProjectContext,
-    destination_uri::{redact_error_value, resolve_environment_destination},
+    destination_uri::{
+        destination_error_suggestions, redact_error_value, resolve_environment_destination,
+    },
     error_catalog,
     output::{CliError, CommandOutput},
     project_run_resource::build_project_run_resource,
@@ -71,7 +73,7 @@ fn execute_slice(
     slice: &BackfillSlice,
 ) -> Result<BackfillSliceExecutionReport, CliError> {
     let resolved = resolve_environment_destination(context, target)
-        .map_err(backfill_destination_resolution_error)?;
+        .map_err(|error| backfill_destination_resolution_error(context, error))?;
     let destination = resolved.destination;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
@@ -104,7 +106,8 @@ fn execute_slice(
     })
 }
 
-fn backfill_destination_resolution_error(error: CdfError) -> CliError {
+fn backfill_destination_resolution_error(context: &ProjectContext, error: CdfError) -> CliError {
+    let error = redact_error_value(error, None);
     if error
         .message
         .contains("no project destination driver registered")
@@ -117,6 +120,7 @@ fn backfill_destination_resolution_error(error: CdfError) -> CliError {
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
+        .with_suggestions(destination_error_suggestions(context, None))
     } else {
         error.into()
     }

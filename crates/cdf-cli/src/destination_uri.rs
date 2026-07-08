@@ -3,7 +3,17 @@ use cdf_project::{
     ProjectResolutionContext, ResolvedProjectDestination, resolve_project_run_destination,
 };
 
-use crate::context::ProjectContext;
+use crate::{
+    context::ProjectContext,
+    render::redaction::{redact_exact, redact_uri_userinfo},
+    suggestions,
+};
+
+const DESTINATION_URI_SHAPES: &[&str] = &[
+    "duckdb://path",
+    "parquet://root",
+    "postgres://secret://env/NAME",
+];
 
 pub(crate) struct EnvironmentDestination {
     pub destination: ResolvedProjectDestination,
@@ -37,10 +47,40 @@ pub(crate) fn resolve_selected_destination(
 }
 
 pub(crate) fn redact_error_value(mut error: CdfError, secret: Option<&str>) -> CdfError {
+    error.message = redact_uri_userinfo(&error.message);
     if let Some(secret) = secret
         && !secret.is_empty()
     {
-        error.message = error.message.replace(secret, "[REDACTED]");
+        error.message = redact_exact(&error.message, Some(secret));
     }
     error
+}
+
+pub(crate) fn redact_destination_uri(value: &str) -> String {
+    redact_uri_userinfo(value)
+}
+
+pub(crate) fn destination_error_suggestions(
+    context: &ProjectContext,
+    requested_destination: Option<&str>,
+) -> Vec<String> {
+    let mut values = Vec::new();
+    if let Some(requested_destination) = requested_destination {
+        values.extend(
+            suggestions::nearest(
+                requested_destination,
+                context.config.environments.keys().cloned(),
+            )
+            .into_iter()
+            .map(|environment| format!("--env {environment}")),
+        );
+    }
+
+    for shape in DESTINATION_URI_SHAPES {
+        if values.len() >= 3 {
+            break;
+        }
+        values.push((*shape).to_owned());
+    }
+    values
 }

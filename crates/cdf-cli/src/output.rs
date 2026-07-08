@@ -20,6 +20,8 @@ pub struct ErrorBody {
     pub code: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<ErrorRemediation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -50,6 +52,7 @@ pub struct CliError {
     pub not_supported: bool,
     pub code: String,
     pub remediation: Option<ErrorRemediation>,
+    pub suggestions: Box<[String]>,
 }
 
 impl CliError {
@@ -66,6 +69,7 @@ impl CliError {
             not_supported,
             code: mapping.code.to_owned(),
             remediation: mapping.remediation.map(ErrorRemediation::from_template),
+            suggestions: Box::new([]),
         }
     }
 
@@ -122,6 +126,11 @@ impl CliError {
         Self::from_mapping(error.kind, error.message, false, mapping)
     }
 
+    pub(crate) fn with_suggestions(mut self, suggestions: Vec<String>) -> Self {
+        self.suggestions = suggestions.into_boxed_slice();
+        self
+    }
+
     fn body(&self) -> ErrorBody {
         ErrorBody {
             kind: self.kind.clone(),
@@ -130,6 +139,7 @@ impl CliError {
             not_supported: self.not_supported,
             code: self.code.clone(),
             remediation: self.remediation.clone(),
+            suggestions: self.suggestions.to_vec(),
         }
     }
 }
@@ -256,10 +266,11 @@ impl InvocationResult {
                 .remediation
                 .map(format_remediation)
                 .unwrap_or_default();
+            let suggestions = format_suggestions(&error.suggestions);
             Self {
                 exit_code: error.exit_code,
                 stdout: String::new(),
-                stderr: format!("error: {}{remediation}\n", error.message),
+                stderr: format!("error: {}{remediation}{suggestions}\n", error.message),
             }
         }
     }
@@ -270,6 +281,18 @@ fn format_remediation(remediation: ErrorRemediation) -> String {
     for step in &remediation.steps {
         text.push_str("\n  - ");
         text.push_str(step);
+    }
+    text
+}
+
+fn format_suggestions(suggestions: &[String]) -> String {
+    if suggestions.is_empty() {
+        return String::new();
+    }
+    let mut text = String::from("\nsuggestions:");
+    for suggestion in suggestions {
+        text.push_str("\n  - ");
+        text.push_str(suggestion);
     }
     text
 }

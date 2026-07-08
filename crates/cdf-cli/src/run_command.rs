@@ -9,7 +9,9 @@ use cdf_project::{ProjectRunRequest, run_project};
 use crate::{
     args::{Cli, RunArgs, ScanArgs},
     context::ProjectContext,
-    destination_uri::{redact_error_value, resolve_selected_destination},
+    destination_uri::{
+        destination_error_suggestions, redact_error_value, resolve_selected_destination,
+    },
     error_catalog,
     output::{CliError, CommandOutput},
     project_run_resource::build_project_run_resource,
@@ -51,7 +53,9 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         &explicit.target,
         explicit.destination_uri.as_deref(),
     )
-    .map_err(run_destination_resolution_error)?;
+    .map_err(|error| {
+        run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)
+    })?;
     let destination = resolved.destination;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
@@ -73,7 +77,12 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     CommandOutput::rendered("run", cli_report.render_document(), cli_report)
 }
 
-fn run_destination_resolution_error(error: CdfError) -> CliError {
+fn run_destination_resolution_error(
+    context: &ProjectContext,
+    destination_uri: Option<&str>,
+    error: CdfError,
+) -> CliError {
+    let error = redact_error_value(error, None);
     if error
         .message
         .contains("no project destination driver registered")
@@ -86,6 +95,7 @@ fn run_destination_resolution_error(error: CdfError) -> CliError {
             "registered project destination driver",
             error_catalog::DESTINATION_NOT_SUPPORTED,
         )
+        .with_suggestions(destination_error_suggestions(context, destination_uri))
     } else {
         error.into()
     }

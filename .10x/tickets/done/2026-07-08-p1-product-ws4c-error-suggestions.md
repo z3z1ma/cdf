@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
@@ -31,7 +31,19 @@ Do not change command grammar beyond WS2C decisions. Do not add interactive prom
 ## Progress and notes
 
 - 2026-07-08: Split from WS4. This depends on WS2C so suggestions target the ratified product grammar rather than the intermediate parser-only grammar.
+- 2026-07-08: Worker started implementation after reading governing WS4C, WS4A, WS4B, WS2C, spec, decision, evidence, and review records.
+- 2026-07-08: Implemented additive JSON suggestions for command/subcommand, resource, and destination errors; evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws4c-error-suggestions.md`.
+- 2026-07-08: Closure review passed in `.10x/reviews/2026-07-08-p1-product-ws4c-error-suggestions-review.md`; ticket moved to done.
+- 2026-07-08: Parent integration review reran quality gates and appended parent evidence in `.10x/evidence/2026-07-08-p1-product-ws4c-error-suggestions.md`.
 
 ## Blockers
 
 None. WS4A and WS2C are complete.
+
+## Evidence
+
+- `.10x/evidence/2026-07-08-p1-product-ws4c-error-suggestions.md`
+
+## Review
+
+- `.10x/reviews/2026-07-08-p1-product-ws4c-error-suggestions-review.md`

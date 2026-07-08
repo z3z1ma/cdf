@@ -30,6 +30,7 @@ mod sql_command;
 mod state_command;
 mod status_command;
 mod status_freshness;
+mod suggestions;
 mod system_sql;
 
 pub use output::InvocationResult;

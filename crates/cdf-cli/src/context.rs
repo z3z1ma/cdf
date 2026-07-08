@@ -1,10 +1,11 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    result::Result as StdResult,
 };
 
 use cdf_declarative::CompiledResource;
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{CdfError, Result as CdfResult};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, PROJECT_FILE_NAME,
@@ -13,7 +14,7 @@ use cdf_project::{
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
 
-use crate::output::CliError;
+use crate::{output::CliError, suggestions};
 
 #[derive(Debug)]
 pub struct ProjectContext {
@@ -53,7 +54,7 @@ pub enum DoctorProbe {
 }
 
 impl ProjectContext {
-    pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> Result<Self> {
+    pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
         let (root, project_file) = project_location(project_arg)?;
         let project_text = fs::read_to_string(&project_file).map_err(|error| {
             CdfError::contract(format!("read {}: {error}", project_file.display()))
@@ -76,11 +77,16 @@ impl ProjectContext {
         })
     }
 
-    pub fn resource(&self, id: &str) -> Result<&CompiledResource> {
+    pub fn resource(&self, id: &str) -> StdResult<&CompiledResource, CliError> {
         self.resources
             .iter()
             .find(|resource| resource.descriptor().resource_id.as_str() == id)
-            .ok_or_else(|| CdfError::contract(format!("resource `{id}` is not compiled")))
+            .ok_or_else(|| {
+                CliError::from(CdfError::contract(format!(
+                    "resource `{id}` is not compiled"
+                )))
+                .with_suggestions(self.resource_suggestions(id))
+            })
     }
 
     pub fn secret_provider(&self) -> DefaultSecretProvider {
@@ -94,11 +100,11 @@ impl ProjectContext {
         absolute_under_root(&self.root, &self.environment.packages)
     }
 
-    pub fn state_store_path(&self) -> Result<PathBuf> {
+    pub fn state_store_path(&self) -> CdfResult<PathBuf> {
         sqlite_uri_path(&self.root, &self.environment.state)
     }
 
-    pub fn state_store(&self) -> Result<SqliteCheckpointStore> {
+    pub fn state_store(&self) -> CdfResult<SqliteCheckpointStore> {
         SqliteCheckpointStore::open(self.state_store_path()?)
     }
 
@@ -112,9 +118,18 @@ impl ProjectContext {
             .strip_prefix("duckdb://")
             .map(|path| absolute_under_root(&self.root, path))
     }
+
+    fn resource_suggestions(&self, id: &str) -> Vec<String> {
+        suggestions::nearest(
+            id,
+            self.resources
+                .iter()
+                .map(|resource| resource.descriptor().resource_id.to_string()),
+        )
+    }
 }
 
-pub fn require_lock(context: &ProjectContext) -> Result<&CdfLock> {
+pub fn require_lock(context: &ProjectContext) -> CdfResult<&CdfLock> {
     context.lock.as_ref().ok_or_else(|| {
         CdfError::contract(format!(
             "{} is not present under {}",
@@ -124,7 +139,7 @@ pub fn require_lock(context: &ProjectContext) -> Result<&CdfLock> {
     })
 }
 
-pub fn project_location(project_arg: Option<&PathBuf>) -> Result<(PathBuf, PathBuf)> {
+pub fn project_location(project_arg: Option<&PathBuf>) -> CdfResult<(PathBuf, PathBuf)> {
     let candidate = match project_arg {
         Some(path) => path.clone(),
         None => std::env::current_dir().map_err(|error| CdfError::internal(error.to_string()))?,
@@ -141,7 +156,7 @@ pub fn project_location(project_arg: Option<&PathBuf>) -> Result<(PathBuf, PathB
     Ok((root, path))
 }
 
-fn load_lock(root: &Path) -> Result<Option<CdfLock>> {
+fn load_lock(root: &Path) -> CdfResult<Option<CdfLock>> {
     let path = root.join(LOCK_FILE_NAME);
     if !path.exists() {
         return Ok(None);
@@ -208,7 +223,7 @@ fn destination_runtime(root: &Path, uri: &str) -> DestinationRuntime {
     }
 }
 
-fn sqlite_uri_path(root: &Path, uri: &str) -> Result<PathBuf> {
+fn sqlite_uri_path(root: &Path, uri: &str) -> CdfResult<PathBuf> {
     uri.strip_prefix("sqlite://")
         .map(|path| absolute_under_root(root, path))
         .ok_or_else(|| {
