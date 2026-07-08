@@ -10,7 +10,7 @@ Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/specs/versioni
 
 Add CI coverage and local quality hooks proving deterministic Python bridge behavior across GIL and free-threaded interpreter configurations required by D-25.
 
-Primary write scope is `.github/workflows/**`, targeted helper scripts if needed, Python bridge CI fixtures, focused tests, and this ticket's records. Coordinate with `.10x/tickets/2026-07-08-p1-product-ws8a-ci-quality-workflows.md` so quality workflow ownership stays coherent.
+Primary write scope is `.github/workflows/**`, targeted helper scripts if needed, Python bridge CI fixtures, focused tests, and this ticket's records. Coordinate with `.10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md` so quality workflow ownership stays coherent.
 
 ## Acceptance criteria
 

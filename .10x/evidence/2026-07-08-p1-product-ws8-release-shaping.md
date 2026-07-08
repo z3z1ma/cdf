@@ -29,7 +29,7 @@ Inspected:
 Created:
 
 - `.10x/specs/versioning-lts-release-policy.md`.
-- `.10x/tickets/2026-07-08-p1-product-ws8a-ci-quality-workflows.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md`.
 - `.10x/tickets/2026-07-08-p1-product-ws8b-release-artifact-workflow.md`.
 - `.10x/tickets/2026-07-08-p1-product-ws8c-changelog-installer-channel.md`.
 

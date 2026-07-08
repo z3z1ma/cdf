@@ -1,0 +1,197 @@
+name: Slow Quality
+
+on:
+  schedule:
+    - cron: "23 8 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: slow-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  slow-quality:
+    name: Slow quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install Python scanner runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Install slow quality tools
+        run: |
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
+          cargo install --locked cargo-llvm-cov
+          cargo install --locked cargo-machete
+          cargo install --locked cargo-nextest
+          cargo install --locked cargo-semver-checks
+          cargo install --locked cargo-vet
+          cargo install --locked rust-code-analysis-cli
+          go install github.com/gitleaks/gitleaks/v8@v8.18.4
+          go install github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2
+          python -m pip install --user semgrep
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Prepare quality report directory
+        run: mkdir -p target/quality/reports
+
+      - name: Dependency metadata sanity
+        run: |
+          cargo metadata --format-version 1 --locked > target/quality/reports/cargo-metadata-slow.json
+          cargo tree --workspace --locked > target/quality/reports/cargo-tree-slow.txt
+          cargo tree --workspace --locked -d > target/quality/reports/cargo-tree-duplicates-slow.txt
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Compile checks
+        run: |
+          cargo check --workspace --all-targets --locked
+          cargo check --workspace --all-targets --all-features --locked
+          cargo check --workspace --all-targets --no-default-features --locked
+
+      - name: Clippy checks
+        run: |
+          cargo clippy --workspace --all-targets --locked -- -D warnings
+          cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: Full tests
+        run: |
+          cargo nextest run --workspace --locked
+          cargo test --workspace --doc --all-features --locked --no-fail-fast
+
+      - name: Conformance, golden, property, and chaos gates
+        run: |
+          cargo test -p cdf-conformance golden_package --locked --no-fail-fast
+          cargo test -p cdf-conformance property_fuzz --locked --no-fail-fast
+          cargo test -p cdf-conformance runtime_chaos --locked --no-fail-fast
+          cargo test -p cdf-conformance live_run --locked --no-fail-fast
+
+      - name: Benchmark smoke gate
+        run: CDF_BENCH_SUITE=smoke cargo bench -p cdf-benchmarks --bench baseline --locked
+
+      - name: Coverage summary
+        run: cargo llvm-cov --workspace --all-features --locked --summary-only
+
+      - name: Duplication check
+        run: |
+          npx --yes jscpd@5 . \
+            --reporters json,console \
+            --output target/quality/reports/jscpd-slow \
+            --ignore "**/target/**,**/.git/**,**/reports/**" \
+            --min-lines 12 \
+            --min-tokens 80 \
+            --threshold 10 \
+            --no-colors
+
+      - name: Rust complexity metrics
+        run: |
+          rust-code-analysis-cli \
+            -m \
+            -p crates \
+            -O json \
+            -o target/quality/reports/rust-code-analysis-slow
+
+      - name: Dependency hygiene metrics
+        run: cargo machete
+
+      - name: Semgrep
+        run: |
+          semgrep scan \
+            --config p/rust \
+            --error \
+            --json \
+            --output target/quality/reports/semgrep-rust-slow.json \
+            --exclude target \
+            --exclude reports \
+            .
+
+      - name: Source-only secret scan
+        run: |
+          gitleaks detect \
+            --no-git \
+            --source . \
+            --no-banner \
+            --redact \
+            --report-format json \
+            --report-path target/quality/reports/gitleaks-dir-slow.json
+
+      - name: Supply-chain gates
+        run: |
+          cargo deny --locked check
+          cargo audit --deny warnings --ignore RUSTSEC-2024-0436
+          cargo vet --locked --no-minimize-exemptions
+          osv-scanner scan source --lockfile Cargo.lock --format json > target/quality/reports/osv-slow.json
+
+      - name: Public API compatibility
+        run: cargo semver-checks --workspace --baseline-rev origin/${{ github.event.repository.default_branch }}
+
+      - name: Install CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          build-mode: manual
+
+      - name: Fingerprint Rust toolchain for CodeQL cache
+        id: rust-fingerprint
+        run: |
+          rustc -Vv
+          echo "value=$(rustc -Vv | sha256sum | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore reusable CodeQL database
+        uses: actions/cache@v4
+        with:
+          path: target/quality/codeql-db-rust
+          key: codeql-rust-${{ runner.os }}-${{ steps.rust-fingerprint.outputs.value }}-${{ hashFiles('Cargo.toml', 'Cargo.lock', 'crates/**/*.rs', 'crates/**/Cargo.toml') }}
+          restore-keys: |
+            codeql-rust-${{ runner.os }}-${{ steps.rust-fingerprint.outputs.value }}-
+
+      - name: CodeQL Rust analysis
+        run: tools/codeql-rust-quality.sh 2>&1 | tee target/quality/reports/codeql-rust-slow.log
+
+      - name: Upload CodeQL SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: target/quality/reports/codeql-rust-current.sarif
+
+      - name: Upload quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: slow-quality-reports
+          path: target/quality/reports
+          if-no-files-found: ignore

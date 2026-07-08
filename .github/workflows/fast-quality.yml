@@ -1,0 +1,106 @@
+name: Fast Quality
+
+on:
+  pull_request:
+  push:
+
+concurrency:
+  group: fast-quality-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fast-quality:
+    name: Fast quality gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Install fast quality tools
+        run: |
+          cargo install --locked cargo-audit
+          cargo install --locked cargo-deny
+          go install github.com/gitleaks/gitleaks/v8@v8.18.4
+
+      - name: Prepare quality report directory
+        run: mkdir -p target/quality/reports
+
+      - name: Dependency metadata sanity
+        run: |
+          cargo metadata --format-version 1 --locked > target/quality/reports/cargo-metadata-fast.json
+          cargo tree --workspace --locked > target/quality/reports/cargo-tree-fast.txt
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Compile check
+        run: cargo check --workspace --all-targets --locked
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Focused tests
+        run: |
+          cargo test -p cdf-kernel --locked --no-fail-fast
+          cargo test -p cdf-package --locked --no-fail-fast
+          cargo test -p cdf-conformance --locked --no-fail-fast
+
+      - name: Source-only secret scan
+        run: |
+          gitleaks detect \
+            --no-git \
+            --source . \
+            --no-banner \
+            --redact \
+            --report-format json \
+            --report-path target/quality/reports/gitleaks-dir-fast.json
+
+      - name: Duplication check
+        run: |
+          npx --yes jscpd@5 . \
+            --reporters json,console \
+            --output target/quality/reports/jscpd-fast \
+            --ignore "**/target/**,**/.git/**,**/reports/**" \
+            --min-lines 12 \
+            --min-tokens 80 \
+            --threshold 10 \
+            --no-colors
+
+      - name: Fast supply-chain gates
+        run: |
+          cargo deny --locked check advisories licenses sources
+          cargo audit --deny warnings --ignore RUSTSEC-2024-0436
+
+      - name: Upload quality reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fast-quality-reports
+          path: target/quality/reports
+          if-no-files-found: ignore

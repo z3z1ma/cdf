@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md
@@ -29,3 +29,9 @@ No release artifact publishing. No installer. No crates.io publication. No broad
 ## Blockers
 
 None.
+
+## Progress and notes
+
+- 2026-07-08: Activated for implementation. Read governing quality policy, release policy, CodeQL reuse knowledge, DataFusion crates.io tripwire, parent ticket, existing CodeQL helper, `deny.toml`, and cargo-vet supply-chain metadata before editing.
+- 2026-07-08: Added `.github/workflows/fast-quality.yml` and `.github/workflows/slow-quality.yml`. Fast quality covers PR/push formatting, linting, compile, focused tests, metadata sanity, source-only secret scanning, jscpd, and fast supply-chain gates. Slow quality covers scheduled/manual full practical cadence, including conformance/golden/property/chaos/live-run filters, benchmark smoke, Semgrep, CodeQL with reusable database cache, jscpd, Rust complexity, and slow supply-chain gates.
+- 2026-07-08: Recorded validation evidence in `.10x/evidence/2026-07-08-p1-product-ws8a-ci-quality-workflows.md` and closure review in `.10x/reviews/2026-07-08-p1-product-ws8a-ci-quality-workflows-review.md`.
