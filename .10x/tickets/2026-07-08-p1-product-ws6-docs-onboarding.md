@@ -41,7 +41,7 @@ No external docs site requirement. No marketing page. No duplication of full `VI
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This lane may start immediately but has explicit closure dependencies on grammar and error-catalog generation.
-- 2026-07-08: Ratified `.10x/specs/docs-onboarding-surface.md` and split execution into `.10x/tickets/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`, `.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md`, `.10x/tickets/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md`, and `.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
+- 2026-07-08: Ratified `.10x/specs/docs-onboarding-surface.md` and split execution into `.10x/tickets/done/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`, `.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md`, `.10x/tickets/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md`, and `.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
 
 ## Blockers
 

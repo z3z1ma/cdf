@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md
@@ -28,4 +28,10 @@ No generated command reference. No generated error catalog. No runnable examples
 
 ## Blockers
 
-Some final command/output snippets depend on WS2/WS3/WS4 rendering and grammar migration; this ticket may land a draft that links those blockers clearly.
+None.
+
+## Progress and notes
+
+- 2026-07-08: Created the initial `docs/` topology, quickstart, architecture overview, generated command/error placeholder indexes, and operator guides for recovery, replay, backfill, doctor/status in cron, release/install, and troubleshooting. Generated command reference and error catalog remain owned by WS6B; runnable examples remain owned by WS6C; init README remains owned by WS6D.
+- 2026-07-08: Verified current quickstart commands against the rebuilt CLI in temporary projects, including init, validate, plan, run, system-history SQL, package/state inspection, contract freeze/test, and clean-ledger replay. Verified crash/resume and drift-quarantine docs against the conformance MVP fixture. Evidence: `.10x/evidence/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`.
+- 2026-07-08: Closure review passed with residual risk limited to out-of-scope generated docs/examples/init/release work and unrelated concurrent CLI formatting dirt. Review: `.10x/reviews/2026-07-08-p1-product-ws6a-docs-topology-quickstart-review.md`.

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md
-Depends-On: .10x/specs/docs-onboarding-surface.md, .10x/tickets/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md
+Depends-On: .10x/specs/docs-onboarding-surface.md, .10x/tickets/done/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md
 
 # P1 product WS6D: Init README scaffold
 
