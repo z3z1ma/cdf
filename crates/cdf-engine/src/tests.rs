@@ -12,7 +12,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
-    ContractPolicy, ObservedSchema, RowRule, VerdictAction, compile_validation_program,
+    ContractPolicy, DedupKeep, ObservedSchema, RowRule, VerdictAction, compile_validation_program,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
@@ -182,6 +182,23 @@ fn tier_b_explain_serializes_honest_cdf_native_operator_metadata() {
         plan.explain.delivery_guarantee,
         DeliveryGuarantee::EffectivelyOncePerKey
     );
+}
+
+#[test]
+fn engine_plan_deserialization_defaults_legacy_missing_write_disposition_to_append() {
+    let resource =
+        MockResource::tier_a(sample_batches()).with_write_disposition(WriteDisposition::Append);
+    let input = plan_input(Vec::new(), None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let mut plan_json = serde_json::to_value(&plan).unwrap();
+    plan_json
+        .as_object_mut()
+        .unwrap()
+        .remove("write_disposition");
+
+    let decoded: EnginePlan = serde_json::from_value(plan_json).unwrap();
+
+    assert_eq!(decoded.write_disposition, WriteDisposition::Append);
 }
 
 #[test]
@@ -450,6 +467,244 @@ fn reject_batch_contract_abort_prevents_packaged_manifest() {
     assert!(error.to_string().contains("reject_batch"));
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     assert_ne!(reader.manifest().lifecycle.status, PackageStatus::Packaged);
+}
+
+#[test]
+fn merge_dedup_keep_last_runs_after_contract_filtering_and_before_normalize() {
+    let batches = vec![
+        batch_for_partition(
+            "batch-dedup-0",
+            "part-0",
+            vec![1, 2],
+            vec!["one-first", "two"],
+            vec![true, true],
+        ),
+        batch_for_partition(
+            "batch-dedup-1",
+            "part-0",
+            vec![1, 3, 1],
+            vec!["one-last", "three", "one-invalid"],
+            vec![true, true, true],
+        ),
+    ];
+    let resource = MockResource::tier_a(batches);
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![
+        RowRule::Domain {
+            column: "name".to_owned(),
+            allowed: vec![
+                "one-first".to_owned(),
+                "one-last".to_owned(),
+                "two".to_owned(),
+                "three".to_owned(),
+            ],
+        },
+        RowRule::Dedup {
+            keys: vec!["id".to_owned()],
+            keep: DedupKeep::Last,
+        },
+    ];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    rename_column_program_output(&mut input.validation_program, "name", "customer_name");
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 3);
+    assert_eq!(output.segments.len(), 2);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let first = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&first[0], "id"), vec![2]);
+    assert_eq!(batch_strings(&first, "customer_name"), vec!["two"]);
+    let second = reader.read_segment(&output.segments[1].segment_id).unwrap();
+    assert_eq!(batch_i32s(&second[0], "id"), vec![1, 3]);
+    assert_eq!(
+        batch_strings(&second, "customer_name"),
+        vec!["one-last", "three"]
+    );
+
+    let summary = reader.read_dedup_summary_json().unwrap().unwrap();
+    assert_eq!(summary["rule_id"], "row-rule-0001-dedup");
+    assert_eq!(summary["keep"], "last");
+    assert_eq!(summary["input_rows"], 4);
+    assert_eq!(summary["output_rows"], 3);
+    assert_eq!(summary["duplicate_key_count"], 1);
+    assert_eq!(summary["dropped_row_count"], 1);
+    assert_eq!(summary["dropped_rows"][0]["package_row_ordinal"], 0);
+    assert_eq!(summary["dropped_rows"][0]["kept_package_row_ordinal"], 2);
+    assert!(
+        reader
+            .manifest()
+            .identity
+            .files
+            .iter()
+            .any(|file| file.path == cdf_package::DEDUP_SUMMARY_FILE)
+    );
+}
+
+#[test]
+fn merge_dedup_keep_first_uses_package_order() {
+    let batches = vec![
+        batch_for_partition(
+            "batch-dedup-first-0",
+            "part-0",
+            vec![1, 2],
+            vec!["one-first", "two"],
+            vec![true, true],
+        ),
+        batch_for_partition(
+            "batch-dedup-first-1",
+            "part-0",
+            vec![1, 3],
+            vec!["one-last", "three"],
+            vec![true, true],
+        ),
+    ];
+    let resource = MockResource::tier_a(batches);
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::First,
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 3);
+    assert_eq!(output.segments.len(), 2);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let first = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&first[0], "id"), vec![1, 2]);
+    assert_eq!(batch_strings(&first, "name"), vec!["one-first", "two"]);
+    let second = reader.read_segment(&output.segments[1].segment_id).unwrap();
+    assert_eq!(batch_i32s(&second[0], "id"), vec![3]);
+    assert_eq!(batch_strings(&second, "name"), vec!["three"]);
+
+    let summary = reader.read_dedup_summary_json().unwrap().unwrap();
+    assert_eq!(summary["keep"], "first");
+    assert_eq!(summary["input_rows"], 4);
+    assert_eq!(summary["output_rows"], 3);
+    assert_eq!(summary["duplicate_key_count"], 1);
+    assert_eq!(summary["dropped_row_count"], 1);
+    assert_eq!(summary["dropped_rows"][0]["package_row_ordinal"], 2);
+    assert_eq!(summary["dropped_rows"][0]["kept_package_row_ordinal"], 0);
+}
+
+#[test]
+fn append_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary() {
+    let resource = MockResource::tier_a(vec![batch_for_partition(
+        "batch-append-dedup",
+        "part-0",
+        vec![1, 1],
+        vec!["one-first", "one-last"],
+        vec![true, true],
+    )])
+    .with_write_disposition(WriteDisposition::Append);
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::Last,
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 2);
+    assert_eq!(output.segments.len(), 1);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
+    assert_eq!(
+        batch_strings(&batches, "name"),
+        vec!["one-first", "one-last"]
+    );
+    assert!(reader.read_dedup_summary_json().unwrap().is_none());
+}
+
+#[test]
+fn replace_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary() {
+    let resource = MockResource::tier_a(vec![batch_for_partition(
+        "batch-replace-dedup",
+        "part-0",
+        vec![1, 1],
+        vec!["one-first", "one-last"],
+        vec![true, true],
+    )])
+    .with_write_disposition(WriteDisposition::Replace);
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::First,
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 2);
+    assert_eq!(output.segments.len(), 1);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
+    assert_eq!(
+        batch_strings(&batches, "name"),
+        vec!["one-first", "one-last"]
+    );
+    assert!(reader.read_dedup_summary_json().unwrap().is_none());
+}
+
+#[test]
+fn merge_dedup_fail_aborts_before_package_finalization() {
+    let resource = MockResource::tier_a(vec![batch_for_partition(
+        "batch-dedup-fail",
+        "part-0",
+        vec![1, 1],
+        vec!["one-first", "one-last"],
+        vec![true, true],
+    )]);
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::Fail,
+    }];
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+
+    assert!(error.to_string().contains("keep=fail aborts"));
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    assert_ne!(reader.manifest().lifecycle.status, PackageStatus::Packaged);
+    assert!(reader.manifest().identity.segments.is_empty());
+    assert!(reader.read_dedup_summary_json().unwrap().is_none());
 }
 
 #[test]
@@ -845,6 +1100,11 @@ impl MockResource {
             open_count: Arc::new(AtomicUsize::new(0)),
         }
     }
+
+    fn with_write_disposition(mut self, write_disposition: WriteDisposition) -> Self {
+        self.descriptor.write_disposition = write_disposition;
+        self
+    }
 }
 
 impl ResourceStream for MockResource {
@@ -1087,6 +1347,16 @@ fn batch_strings(batches: &[RecordBatch], column: &str) -> Vec<String> {
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+fn batch_i32s(batch: &RecordBatch, column: &str) -> Vec<i32> {
+    let index = batch.schema().index_of(column).unwrap();
+    let array = batch
+        .column(index)
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    (0..array.len()).map(|row| array.value(row)).collect()
 }
 
 async fn collect_execution_plan_partitions(

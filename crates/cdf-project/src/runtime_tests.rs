@@ -10,9 +10,11 @@ use std::{
     },
 };
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use cdf_contract::{ContractPolicy, ObservedSchema, RowRule, compile_validation_program};
+use cdf_contract::{
+    ContractPolicy, DedupKeep, ObservedSchema, RowRule, compile_validation_program,
+};
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresDestination, PostgresTarget};
@@ -191,6 +193,29 @@ fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let id: ArrayRef = std::sync::Arc::new(Int64Array::from(ids));
     let name: ArrayRef = std::sync::Arc::new(StringArray::from(names));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+fn package_id_name_rows(reader: &PackageReader) -> Vec<(i64, Option<String>)> {
+    let mut rows = Vec::new();
+    for (_segment, batches) in reader.read_all_segments().unwrap() {
+        for batch in batches {
+            let ids = batch
+                .column(batch.schema().index_of("id").unwrap())
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            let names = batch
+                .column(batch.schema().index_of("name").unwrap())
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..batch.num_rows() {
+                let name = (!names.is_null(row)).then(|| names.value(row).to_owned());
+                rows.push((ids.value(row), name));
+            }
+        }
+    }
+    rows
 }
 
 fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) -> PackageManifest {
@@ -1468,6 +1493,171 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
     assert_eq!(
         report.ledger_snapshot.events[6].receipt_id,
         Some(report.receipt.receipt_id.clone())
+    );
+}
+
+#[test]
+fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_redrive() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);
+    let source_path = temp.path().join("data/events.ndjson");
+    fs::write(
+        &source_path,
+        "{\"id\":1,\"name\":\"one-first\"}\n\
+         {\"id\":2,\"name\":\"two\"}\n\
+         {\"id\":1,\"name\":\"one-last\"}\n",
+    )
+    .unwrap();
+    let package_id = "pkg-merge-dedup-live-replay";
+    let package_root = temp.path().join(".cdf/packages");
+    let package_dir = package_root.join(package_id);
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut plan = live_plan(&resource, package_id);
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::Last,
+    }];
+    plan.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let mut request = project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-merge-dedup-live-replay",
+    );
+    request.plan = plan;
+
+    let report = futures_executor::block_on(run_project(request)).unwrap();
+
+    assert_eq!(report.package_status, PackageStatus::Checkpointed);
+    assert_eq!(report.checkpoint.status, CheckpointStatus::Committed);
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.segment_count, 1);
+    assert_eq!(report.receipt.disposition, WriteDisposition::Merge);
+    assert_eq!(report.receipt.counts.rows_written, 2);
+    assert_eq!(
+        report.receipt_source,
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
+            package_receipt_recorded: true
+        }
+    );
+
+    let reader = PackageReader::open(&package_dir).unwrap();
+    reader.verify().unwrap();
+    assert_eq!(reader.manifest().identity.segments.len(), 1);
+    assert_eq!(reader.manifest().identity.segments[0].row_count, 2);
+    assert_eq!(
+        package_id_name_rows(&reader),
+        vec![
+            (2, Some("two".to_owned())),
+            (1, Some("one-last".to_owned()))
+        ]
+    );
+    assert!(
+        reader
+            .manifest()
+            .identity
+            .files
+            .iter()
+            .any(|file| file.path == cdf_package::DEDUP_SUMMARY_FILE)
+    );
+    let summary = reader.read_dedup_summary_json().unwrap().unwrap();
+    assert_eq!(summary["rule_id"], "row-rule-0000-dedup");
+    assert_eq!(summary["keys"], serde_json::json!(["id"]));
+    assert_eq!(summary["keep"], "last");
+    assert_eq!(summary["input_rows"], 3);
+    assert_eq!(summary["output_rows"], 2);
+    assert_eq!(summary["duplicate_key_count"], 1);
+    assert_eq!(summary["dropped_row_count"], 1);
+    assert_eq!(summary["dropped_rows"][0]["package_row_ordinal"], 0);
+    assert_eq!(summary["dropped_rows"][0]["kept_package_row_ordinal"], 2);
+    let replay_inputs = reader.replay_inputs().unwrap();
+    assert_eq!(
+        replay_inputs.destination_commit.disposition,
+        WriteDisposition::Merge
+    );
+    assert_eq!(replay_inputs.merge_keys, vec!["id".to_owned()]);
+    assert_eq!(
+        replay_inputs
+            .destination_commit
+            .segments
+            .iter()
+            .map(|segment| segment.row_count)
+            .sum::<u64>(),
+        2
+    );
+
+    fs::remove_file(&source_path).unwrap();
+    let replay_duckdb_path = temp.path().join(".cdf/replay.duckdb");
+    let replay_destination = destination(&replay_duckdb_path);
+    let replay_store =
+        SqliteCheckpointStore::open(temp.path().join(".cdf/replay-state.db")).unwrap();
+    let replay = replay_package_from_artifacts(PackageArtifactReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: resolved_duckdb_destination(
+            &replay_destination,
+            replay_inputs.destination_commit.target.clone(),
+        ),
+        checkpoint_store: &replay_store,
+        after_receipt_verified: None,
+    })
+    .unwrap();
+
+    assert_eq!(replay.checkpoint.delta, report.checkpoint.delta);
+    assert_eq!(replay.receipt.disposition, WriteDisposition::Merge);
+    assert_eq!(replay.receipt.counts.rows_written, 2);
+    assert_eq!(
+        replay
+            .receipt
+            .segment_acks
+            .iter()
+            .map(|ack| ack.row_count)
+            .sum::<u64>(),
+        2
+    );
+    assert!(matches!(
+        replay.receipt_source,
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: false,
+            ..
+        }
+    ));
+    let replay_snapshot = replay_destination.read_mirror_snapshot_read_only().unwrap();
+    assert_eq!(replay_snapshot.loads.len(), 1);
+    assert_eq!(replay_snapshot.state.len(), 1);
+    assert_eq!(replay_snapshot.state[0].row_count, 2);
+
+    let duplicate_store =
+        SqliteCheckpointStore::open(temp.path().join(".cdf/replay-duplicate-state.db")).unwrap();
+    let duplicate = replay_package_from_artifacts(PackageArtifactReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: resolved_duckdb_destination(
+            &replay_destination,
+            replay_inputs.destination_commit.target,
+        ),
+        checkpoint_store: &duplicate_store,
+        after_receipt_verified: None,
+    })
+    .unwrap();
+    let duplicate_snapshot = replay_destination.read_mirror_snapshot_read_only().unwrap();
+
+    assert_eq!(duplicate_snapshot, replay_snapshot);
+    assert_eq!(duplicate.checkpoint.delta, report.checkpoint.delta);
+    assert_eq!(duplicate.receipt, replay.receipt);
+    assert_eq!(
+        duplicate.receipt_source,
+        ProjectReceiptSource::DestinationCommit {
+            duplicate: true,
+            package_receipt_recorded: false
+        }
     );
 }
 

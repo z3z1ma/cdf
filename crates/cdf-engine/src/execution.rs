@@ -8,9 +8,13 @@ use arrow_array::RecordBatch;
 use arrow_schema::{Field, Schema};
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, ValidationProgram, evaluate_record_batch,
+    ContractEvaluationContext, QuarantineCandidate, ValidationProgram,
+    evaluate_package_order_dedup, evaluate_record_batch,
 };
-use cdf_kernel::{CdfError, ResourceStream, Result, RunId, SegmentId, with_source_name};
+use cdf_kernel::{
+    CdfError, ResourceStream, Result, RunId, SegmentId, SourcePosition, WriteDisposition,
+    with_source_name,
+};
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -47,6 +51,19 @@ struct ExecutionTraceContext {
 struct ContractExecOutput {
     accepted: RecordBatch,
     quarantine_records: Vec<QuarantineRecord>,
+}
+
+struct PendingDedupBatch {
+    accepted: RecordBatch,
+    output_position: Option<SourcePosition>,
+}
+
+struct OutputWriteState<'a> {
+    profile: &'a mut ExecutionProfile,
+    lineage: &'a mut LineageSummary,
+    segments: &'a mut Vec<cdf_package::SegmentEntry>,
+    segment_positions: &'a mut Vec<EngineSegmentPosition>,
+    output_schema: &'a mut Option<SchemaArtifact>,
 }
 
 impl ExecutionTraceContext {
@@ -148,6 +165,9 @@ where
     let mut quarantine_part_count = 0_usize;
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = None;
+    let apply_merge_dedup = plan.write_disposition == WriteDisposition::Merge
+        && plan.validation_program.has_dedup_rule();
+    let mut pending_dedup_batches = Vec::new();
 
     for partition in plan.scan.partitions.clone() {
         if remaining_limit == Some(0) {
@@ -194,25 +214,46 @@ where
                 if output.num_rows() == 0 {
                     continue;
                 }
-                let output = apply_normalize_exec(output, &plan.validation_program)?;
-                output_schema = Some(schema_artifact(output.schema().as_ref()));
-                profile.output_rows += output.num_rows() as u64;
-                profile.output_bytes += output.get_array_memory_size() as u64;
-                profile.output_batches += 1;
-
-                let segment_id = SegmentId::new(format!("seg-{:06}", segments.len() + 1))?;
-                let segment = builder.write_segment(segment_id.clone(), &[output])?;
-                lineage.output_segments.push(segment_id);
-                segment_positions.push(EngineSegmentPosition {
-                    segment_id: segment.segment_id.clone(),
-                    output_position: batch.header.source_position.clone(),
-                });
-                segments.push(segment);
+                if apply_merge_dedup {
+                    pending_dedup_batches.push(PendingDedupBatch {
+                        accepted: output,
+                        output_position: batch.header.source_position.clone(),
+                    });
+                    continue;
+                }
+                write_output_batch(
+                    &mut builder,
+                    &plan.validation_program,
+                    output,
+                    batch.header.source_position.clone(),
+                    &mut OutputWriteState {
+                        profile: &mut profile,
+                        lineage: &mut lineage,
+                        segments: &mut segments,
+                        segment_positions: &mut segment_positions,
+                        output_schema: &mut output_schema,
+                    },
+                )?;
             }
             Ok(())
         }
         .instrument(partition_span)
         .await?;
+    }
+
+    if apply_merge_dedup {
+        apply_dedup_and_write_pending_batches(
+            &mut builder,
+            &plan.validation_program,
+            pending_dedup_batches,
+            &mut OutputWriteState {
+                profile: &mut profile,
+                lineage: &mut lineage,
+                segments: &mut segments,
+                segment_positions: &mut segment_positions,
+                output_schema: &mut output_schema,
+            },
+        )?;
     }
 
     builder.write_json_artifact(
@@ -250,6 +291,56 @@ where
         },
         segment_positions,
     })
+}
+
+fn apply_dedup_and_write_pending_batches(
+    builder: &mut PackageBuilder,
+    program: &ValidationProgram,
+    pending: Vec<PendingDedupBatch>,
+    state: &mut OutputWriteState<'_>,
+) -> Result<()> {
+    let accepted = pending
+        .iter()
+        .map(|batch| batch.accepted.clone())
+        .collect::<Vec<_>>();
+    let Some(dedup) = evaluate_package_order_dedup(program, &accepted)? else {
+        return Ok(());
+    };
+    builder.write_dedup_summary(&dedup.summary)?;
+
+    for (pending, retained_rows) in pending.into_iter().zip(dedup.retained_rows) {
+        let output =
+            filter_record_batch(&pending.accepted, &retained_rows).map_err(CdfError::from)?;
+        if output.num_rows() == 0 {
+            continue;
+        }
+        write_output_batch(builder, program, output, pending.output_position, state)?;
+    }
+    Ok(())
+}
+
+fn write_output_batch(
+    builder: &mut PackageBuilder,
+    program: &ValidationProgram,
+    output: RecordBatch,
+    output_position: Option<SourcePosition>,
+    state: &mut OutputWriteState<'_>,
+) -> Result<()> {
+    let output = apply_normalize_exec(output, program)?;
+    *state.output_schema = Some(schema_artifact(output.schema().as_ref()));
+    state.profile.output_rows += output.num_rows() as u64;
+    state.profile.output_bytes += output.get_array_memory_size() as u64;
+    state.profile.output_batches += 1;
+
+    let segment_id = SegmentId::new(format!("seg-{:06}", state.segments.len() + 1))?;
+    let segment = builder.write_segment(segment_id.clone(), &[output])?;
+    state.lineage.output_segments.push(segment_id);
+    state.segment_positions.push(EngineSegmentPosition {
+        segment_id: segment.segment_id.clone(),
+        output_position,
+    });
+    state.segments.push(segment);
+    Ok(())
 }
 
 fn package_execution_span(context: &ExecutionTraceContext) -> Span {

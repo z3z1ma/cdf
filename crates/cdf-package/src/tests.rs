@@ -400,6 +400,58 @@ fn quarantine_records_round_trip_as_parquet_identity_evidence() {
 }
 
 #[test]
+fn dedup_summary_round_trips_as_json_identity_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-dedup-summary-0001").unwrap();
+    let summary = serde_json::json!({
+        "rule_id": "row-rule-0000-dedup",
+        "keys": ["id"],
+        "keep": "last",
+        "input_rows": 3,
+        "output_rows": 2,
+        "duplicate_key_count": 1,
+        "dropped_row_count": 1,
+        "dropped_rows": [
+            {"package_row_ordinal": 0, "kept_package_row_ordinal": 2}
+        ]
+    });
+
+    builder.write_dedup_summary(&summary).unwrap();
+    let manifest = builder.finish().unwrap();
+    let reader = PackageReader::open(temp.path()).unwrap();
+
+    assert_eq!(reader.read_dedup_summary_json().unwrap(), Some(summary));
+    assert!(
+        manifest
+            .identity
+            .files
+            .iter()
+            .any(|file| file.path == DEDUP_SUMMARY_FILE)
+    );
+    assert!(
+        verify_package(temp.path())
+            .unwrap()
+            .checked_files
+            .iter()
+            .any(|file| file.path == DEDUP_SUMMARY_FILE)
+    );
+
+    let mut file = OpenOptions::new()
+        .append(true)
+        .open(temp.path().join(DEDUP_SUMMARY_FILE))
+        .unwrap();
+    file.write_all(b"tamper").unwrap();
+    file.sync_all().unwrap();
+    let error = verify_package(temp.path()).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("tampered identity file stats/dedup-summary.json"),
+        "{error}"
+    );
+}
+
+#[test]
 fn fixed_fixture_hash_is_deterministic_across_repeated_runs() {
     let first = tempfile::tempdir().unwrap();
     let second = tempfile::tempdir().unwrap();

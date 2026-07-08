@@ -10,9 +10,9 @@ use cdf_kernel::{
 
 use crate::{
     artifacts::{
-        DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, PackageReplayInputs,
-        STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
-        read_json_artifact,
+        DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
+        PackageReplayInputs, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE,
+        StateDeltaPreimage, read_json_artifact, read_optional_json_artifact,
     },
     model::{
         PackageManifest, PackageStatus, ReplayView, SegmentEntry, TombstoneReport,
@@ -142,6 +142,10 @@ impl PackageReader {
             }
         }
         Ok(records)
+    }
+
+    pub fn read_dedup_summary_json(&self) -> Result<Option<serde_json::Value>> {
+        read_optional_json_artifact(&self.package_dir, DEDUP_SUMMARY_FILE)
     }
 
     pub fn read_commit_segments(

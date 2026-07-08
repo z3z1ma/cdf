@@ -54,6 +54,12 @@ impl ValidationProgram {
             )
         })
     }
+
+    pub fn has_dedup_rule(&self) -> bool {
+        self.row_rules
+            .iter()
+            .any(|rule| matches!(rule.predicate, RowRulePredicate::Dedup { .. }))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

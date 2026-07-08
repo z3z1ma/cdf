@@ -16,6 +16,7 @@ use crate::{
 pub const STATE_INPUT_CHECKPOINT_FILE: &str = "state/input_checkpoint.json";
 pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
+pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateDeltaPreimage {
@@ -149,6 +150,18 @@ pub(crate) fn read_json_artifact<T: for<'de> Deserialize<'de>>(
     let bytes =
         fs::read(&path).map_err(|error| io_error(format!("read {}", path.display()), error))?;
     serde_json::from_slice(&bytes).map_err(json_error)
+}
+
+pub(crate) fn read_optional_json_artifact<T: for<'de> Deserialize<'de>>(
+    package_dir: &Path,
+    relative_path: &str,
+) -> Result<Option<T>> {
+    let path = package_path(package_dir, relative_path);
+    match fs::read(&path) {
+        Ok(bytes) => serde_json::from_slice(&bytes).map(Some).map_err(json_error),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(io_error(format!("read {}", path.display()), error)),
+    }
 }
 
 fn validate_input_checkpoint(

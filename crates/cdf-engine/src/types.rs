@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use cdf_contract::ValidationProgram;
 use cdf_kernel::{
     BatchId, DeliveryGuarantee, EstimateSupport, PushdownFidelity, ResourceId, ScanPlan,
-    ScanPredicate, ScanRequest, SegmentId, SourcePosition,
+    ScanPredicate, ScanRequest, SegmentId, SourcePosition, WriteDisposition,
 };
 use cdf_package::{PackageManifest, SegmentEntry};
 use serde::{Deserialize, Serialize};
@@ -34,10 +34,16 @@ pub struct EnginePlan {
     pub final_projection: Option<Vec<String>>,
     pub residual_predicates: Vec<ScanPredicate>,
     pub boundedness: PlanBoundedness,
+    #[serde(default = "default_write_disposition")]
+    pub write_disposition: WriteDisposition,
     pub validation_program: ValidationProgram,
     pub operator_chain: Vec<OperatorNode>,
     pub explain: ExplainData,
     pub package_id: String,
+}
+
+fn default_write_disposition() -> WriteDisposition {
+    WriteDisposition::Append
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

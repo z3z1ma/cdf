@@ -109,6 +109,101 @@ fn row_evaluator_returns_accept_mask_quarantine_candidates_and_summary() {
 }
 
 #[test]
+fn package_order_dedup_keeps_last_across_accepted_batches_and_summarizes_drops() {
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, false),
+    ]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::Last,
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let first = RecordBatch::try_new(
+        Arc::new(schema.clone()),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["one-first", "two"])),
+        ],
+    )
+    .unwrap();
+    let second = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![
+            Arc::new(Int64Array::from(vec![3, 1])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["three", "one-last"])),
+        ],
+    )
+    .unwrap();
+
+    let evaluation = evaluate_package_order_dedup(&program, &[first, second])
+        .unwrap()
+        .unwrap();
+
+    assert!(!evaluation.retained_rows[0].value(0));
+    assert!(evaluation.retained_rows[0].value(1));
+    assert!(evaluation.retained_rows[1].value(0));
+    assert!(evaluation.retained_rows[1].value(1));
+    assert_eq!(evaluation.summary.rule_id, "row-rule-0000-dedup");
+    assert_eq!(evaluation.summary.keep, DedupKeepProgram::Last);
+    assert_eq!(evaluation.summary.input_rows, 4);
+    assert_eq!(evaluation.summary.output_rows, 3);
+    assert_eq!(evaluation.summary.duplicate_key_count, 1);
+    assert_eq!(evaluation.summary.dropped_row_count, 1);
+    assert_eq!(
+        evaluation.summary.dropped_rows,
+        vec![DedupDroppedRow {
+            package_row_ordinal: 0,
+            kept_package_row_ordinal: 3,
+        }]
+    );
+}
+
+#[test]
+fn package_order_dedup_fail_aborts_on_duplicate_key() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::Fail,
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(Int64Array::from(vec![1, 1])) as ArrayRef],
+    )
+    .unwrap();
+
+    let error = evaluate_package_order_dedup(&program, &[batch]).unwrap_err();
+
+    assert!(error.to_string().contains("keep=fail aborts"));
+}
+
+#[test]
+fn package_order_dedup_fails_closed_on_null_key_value() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, true)]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.rows.rules = vec![RowRule::Dedup {
+        keys: vec!["id".to_owned()],
+        keep: DedupKeep::Last,
+    }];
+    let program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    let batch = RecordBatch::try_new(
+        Arc::new(schema),
+        vec![Arc::new(Int64Array::from(vec![Some(1), None])) as ArrayRef],
+    )
+    .unwrap();
+
+    let error = evaluate_package_order_dedup(&program, &[batch]).unwrap_err();
+
+    assert!(error.to_string().contains("found NULL key"));
+}
+
+#[test]
 fn freshness_uses_observed_at_context_and_fails_closed_without_it() {
     let schema = Schema::new(vec![Field::new(
         "updated_at",

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-contract-depth-program.md
-Depends-On: .10x/tickets/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/2026-07-08-p1-e4-variant-capture-evolution-event.md, .10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md
+Depends-On: .10x/tickets/done/2026-07-08-p1-e3-merge-dedup-live-path.md, .10x/tickets/2026-07-08-p1-e4-variant-capture-evolution-event.md, .10x/tickets/2026-07-08-p1-e5-trust-ring-ledger-events.md
 
 # P1 E6: Drift-quarantine conformance scenario
 

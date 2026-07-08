@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, fmt::Write};
+use std::{cmp::Ordering, collections::HashMap, fmt::Write};
 
 use arrow_array::{
     Array, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array,
@@ -15,8 +15,8 @@ use sha2::{Digest, Sha256};
 use crate::{
     policy::RedactionDecision,
     program::{
-        ColumnProgram, MissingColumnBehavior, RowRulePredicate, RuleDisposition, RuleOutcome,
-        ValidationProgram,
+        ColumnProgram, DedupKeepProgram, MissingColumnBehavior, RowRulePredicate, RowRuleProgram,
+        RuleDisposition, RuleOutcome, ValidationProgram,
     },
     schema::ArrowType,
 };
@@ -83,6 +83,30 @@ pub struct RuleVerdictSummary {
     pub error_code: String,
     pub checked_rows: u64,
     pub violation_count: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct PackageDedupEvaluation {
+    pub retained_rows: Vec<BooleanArray>,
+    pub summary: DedupSummary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DedupSummary {
+    pub rule_id: String,
+    pub keys: Vec<String>,
+    pub keep: DedupKeepProgram,
+    pub input_rows: u64,
+    pub output_rows: u64,
+    pub duplicate_key_count: u64,
+    pub dropped_row_count: u64,
+    pub dropped_rows: Vec<DedupDroppedRow>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DedupDroppedRow {
+    pub package_row_ordinal: u64,
+    pub kept_package_row_ordinal: u64,
 }
 
 pub fn evaluate_record_batch(
@@ -159,6 +183,108 @@ pub fn evaluate_record_batch(
     })
 }
 
+pub fn evaluate_package_order_dedup(
+    program: &ValidationProgram,
+    batches: &[RecordBatch],
+) -> Result<Option<PackageDedupEvaluation>> {
+    let Some(rule) = single_dedup_rule(program)? else {
+        return Ok(None);
+    };
+    let (keys, keep) = dedup_rule_parts(rule)?;
+    if keys.is_empty() {
+        return Err(CdfError::contract(format!(
+            "dedup row rule {:?} must declare at least one key",
+            rule.rule_id
+        )));
+    }
+    for key in keys {
+        if column_program_for_rule(program, key).is_none() {
+            return Err(CdfError::contract(format!(
+                "dedup row rule {:?} references unknown key {key:?}",
+                rule.rule_id
+            )));
+        }
+    }
+
+    let mut retained = batches
+        .iter()
+        .map(|batch| vec![false; batch.num_rows()])
+        .collect::<Vec<_>>();
+    let mut groups = HashMap::<Vec<String>, Vec<PackageRowRef>>::new();
+    let mut package_row_ordinal = 0_u64;
+
+    for (batch_index, batch) in batches.iter().enumerate() {
+        validate_covered_batch_schema(program, batch)?;
+        let columns = dedup_columns(program, batch, rule, keys)?;
+        for row_index in 0..batch.num_rows() {
+            let mut key = Vec::with_capacity(columns.len());
+            for (key_name, column) in keys.iter().zip(columns.iter()) {
+                let Some(value) = scalar_string(column.array, row_index)? else {
+                    return Err(CdfError::contract(format!(
+                        "dedup row rule {:?} found NULL key {key_name:?} at package row {}; dedup fails closed before destination mutation",
+                        rule.rule_id, package_row_ordinal
+                    )));
+                };
+                key.push(value);
+            }
+            if matches!(keep, DedupKeepProgram::Fail) && groups.contains_key(&key) {
+                return Err(CdfError::contract(format!(
+                    "dedup row rule {:?} found duplicate key at package row {}; keep=fail aborts before destination mutation",
+                    rule.rule_id, package_row_ordinal
+                )));
+            }
+            groups.entry(key).or_default().push(PackageRowRef {
+                batch_index,
+                row_index,
+                package_row_ordinal,
+            });
+            package_row_ordinal += 1;
+        }
+    }
+
+    let mut duplicate_key_count = 0_u64;
+    let mut dropped_rows = Vec::new();
+    for rows in groups.values() {
+        let kept = match keep {
+            DedupKeepProgram::First | DedupKeepProgram::Fail => rows[0],
+            DedupKeepProgram::Last => rows[rows.len() - 1],
+        };
+        retained[kept.batch_index][kept.row_index] = true;
+        if rows.len() > 1 {
+            duplicate_key_count += 1;
+        }
+        for row in rows {
+            if *row != kept {
+                dropped_rows.push(DedupDroppedRow {
+                    package_row_ordinal: row.package_row_ordinal,
+                    kept_package_row_ordinal: kept.package_row_ordinal,
+                });
+            }
+        }
+    }
+    dropped_rows.sort_by_key(|row| row.package_row_ordinal);
+
+    let output_rows = retained
+        .iter()
+        .flatten()
+        .filter(|retained| **retained)
+        .count() as u64;
+    let dropped_row_count = dropped_rows.len() as u64;
+    Ok(Some(PackageDedupEvaluation {
+        retained_rows: retained.into_iter().map(BooleanArray::from).collect(),
+        summary: DedupSummary {
+            rule_id: rule.rule_id.clone(),
+            keys: keys.to_vec(),
+            keep: keep.clone(),
+            input_rows: package_row_ordinal,
+            output_rows,
+            duplicate_key_count,
+            dropped_row_count,
+            dropped_rows,
+        },
+    }))
+}
+
 fn validate_covered_batch_schema(program: &ValidationProgram, batch: &RecordBatch) -> Result<()> {
     for field in batch.schema().fields() {
         let Some(column) = column_program_for_field(program, field.name()) else {
@@ -178,6 +304,56 @@ fn validate_covered_batch_schema(program: &ValidationProgram, batch: &RecordBatc
         }
     }
     Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PackageRowRef {
+    batch_index: usize,
+    row_index: usize,
+    package_row_ordinal: u64,
+}
+
+fn single_dedup_rule(program: &ValidationProgram) -> Result<Option<&RowRuleProgram>> {
+    let mut rules = program
+        .row_rules
+        .iter()
+        .filter(|rule| matches!(rule.predicate, RowRulePredicate::Dedup { .. }));
+    let first = rules.next();
+    if let Some(second) = rules.next() {
+        return Err(CdfError::contract(format!(
+            "multiple dedup row rules are not supported in one validation program: {:?} and {:?}",
+            first.expect("second exists only after first").rule_id,
+            second.rule_id
+        )));
+    }
+    Ok(first)
+}
+
+fn dedup_rule_parts(rule: &RowRuleProgram) -> Result<(&[String], &DedupKeepProgram)> {
+    match &rule.predicate {
+        RowRulePredicate::Dedup { keys, keep } => Ok((keys, keep)),
+        _ => Err(CdfError::internal(
+            "dedup rule helper called on non-dedup rule",
+        )),
+    }
+}
+
+fn dedup_columns<'a>(
+    program: &'a ValidationProgram,
+    batch: &'a RecordBatch,
+    rule: &RowRuleProgram,
+    keys: &[String],
+) -> Result<Vec<EvaluatedColumn<'a>>> {
+    keys.iter()
+        .map(|key| {
+            resolve_column(program, batch, key)?.ok_or_else(|| {
+                CdfError::contract(format!(
+                    "dedup row rule {:?} references missing field {key:?}",
+                    rule.rule_id
+                ))
+            })
+        })
+        .collect()
 }
 
 struct RuleEvaluation<'a> {

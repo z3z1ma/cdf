@@ -28,6 +28,7 @@ impl Planner {
     {
         validate_boundedness(&input.boundedness)?;
         validate_program(&input.validation_program)?;
+        let write_disposition = resource.descriptor().write_disposition.clone();
 
         let partitions = resource.plan_partitions(&input.request)?;
         let scan = ScanPlan {
@@ -38,10 +39,17 @@ impl Planner {
             unsupported_predicates: input.request.filters.clone(),
             estimated_rows: None,
             estimated_bytes: None,
-            delivery_guarantee: delivery_guarantee(resource.descriptor().write_disposition.clone()),
+            delivery_guarantee: delivery_guarantee(write_disposition.clone()),
         };
 
-        self.finish_plan(scan, input, false, false, EstimateSupport::None)
+        self.finish_plan(
+            scan,
+            input,
+            write_disposition,
+            false,
+            false,
+            EstimateSupport::None,
+        )
     }
 
     pub fn plan_tier_b<R>(&self, resource: &R, input: EnginePlanInput) -> Result<EnginePlan>
@@ -50,11 +58,13 @@ impl Planner {
     {
         validate_boundedness(&input.boundedness)?;
         validate_program(&input.validation_program)?;
+        let write_disposition = resource.descriptor().write_disposition.clone();
 
         let scan = resource.negotiate(&input.request)?;
         self.finish_plan(
             scan,
             input,
+            write_disposition,
             resource.capabilities().projection == CapabilitySupport::Supported,
             resource.capabilities().limits == CapabilitySupport::Supported,
             resource.capabilities().estimates.clone(),
@@ -65,6 +75,7 @@ impl Planner {
         &self,
         scan: ScanPlan,
         input: EnginePlanInput,
+        write_disposition: WriteDisposition,
         projection_pushed: bool,
         limit_pushed: bool,
         estimate_support: EstimateSupport,
@@ -93,6 +104,7 @@ impl Planner {
             final_projection,
             residual_predicates,
             boundedness: input.boundedness,
+            write_disposition,
             validation_program: input.validation_program,
             operator_chain,
             explain,

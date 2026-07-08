@@ -11,8 +11,8 @@ use serde::Serialize;
 
 use crate::{
     artifacts::{
-        DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, STATE_INPUT_CHECKPOINT_FILE,
-        STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
+        DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
+        STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
     },
     json::canonical_json_bytes,
     model::{FileEntry, MANIFEST_FILE, PackageManifest, PackageStatus, SegmentEntry, TRACE_FILE},
@@ -143,6 +143,10 @@ impl PackageBuilder {
     ) -> Result<FileEntry> {
         let bytes = quarantine_records_to_parquet_bytes(records)?;
         self.write_quarantine_artifact(file_name, &bytes)
+    }
+
+    pub fn write_dedup_summary<T: Serialize>(&self, summary: &T) -> Result<FileEntry> {
+        self.write_json_artifact(DEDUP_SUMMARY_FILE, summary)
     }
 
     pub fn write_lineage_artifact(
