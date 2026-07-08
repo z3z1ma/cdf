@@ -1,14 +1,21 @@
-Status: open
+Status: active
 Created: 2026-07-08
 Updated: 2026-07-08
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
-Depends-On: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md, .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
+Depends-On: .10x/specs/cli-live-progress.md, .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md, .10x/tickets/2026-07-08-p1-product-ws3-rendering-system-design-language.md
 
 # P1 product WS5: Live progress
 
 ## Scope
 
 Subscribe the renderer to the runtime event spine so run, replay, resume, and backfill show phase-structured live progress in interactive terminals and readable milestones in non-TTY logs.
+
+## Child tickets
+
+- `.10x/tickets/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
+- `.10x/tickets/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
+- `.10x/tickets/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
+- `.10x/tickets/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
 
 ## Required outcomes
 
@@ -38,7 +45,8 @@ No new lifecycle events beyond the WS1 event model without updating WS1. No arti
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This workstream waits for WS1 and WS3 implementation before execution.
+- 2026-07-08: Shaped `.10x/specs/cli-live-progress.md` and split execution into WS5A-WS5D child tickets. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws5-live-progress-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws5-live-progress-shaping-review.md`.
 
 ## Blockers
 
-Blocked on WS1 event spine and WS3 renderer foundation.
+Blocked on WS3 renderer foundation and WS2 verbosity/quiet grammar. WS1A event-sink foundation is done.

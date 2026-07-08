@@ -75,6 +75,7 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
 - 2026-07-08: Activation evidence recorded in `.10x/evidence/2026-07-08-p1-product-experience-program-activation.md`; activation review recorded in `.10x/reviews/2026-07-08-p1-product-experience-program-activation-review.md`.
 - 2026-07-08: WS7 Python front-door shaping added `.10x/specs/python-front-door-product-surface.md` and child tickets WS7A-WS7D, with evidence/review under `.10x/evidence/2026-07-08-p1-product-ws7-python-front-door-shaping.md` and `.10x/reviews/2026-07-08-p1-product-ws7-python-front-door-shaping-review.md`.
 - 2026-07-08: WS4 error-catalog shaping added `.10x/specs/cli-error-experience-catalog.md` and child tickets WS4A-WS4D, with evidence/review under `.10x/evidence/2026-07-08-p1-product-ws4-error-catalog-shaping.md` and `.10x/reviews/2026-07-08-p1-product-ws4-error-catalog-shaping-review.md`.
+- 2026-07-08: WS5 live-progress shaping added `.10x/specs/cli-live-progress.md` and child tickets WS5A-WS5D, with evidence/review under `.10x/evidence/2026-07-08-p1-product-ws5-live-progress-shaping.md` and `.10x/reviews/2026-07-08-p1-product-ws5-live-progress-shaping-review.md`.
 
 ## Blockers
 
