@@ -31,6 +31,7 @@ This ticket does not redesign the whole P1 renderer or non-source error catalog.
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-g1-source-diagnostics-and-deep-validate-foundation.md` for the first source-specific diagnostics and `cdf validate --deep` doorway.
 
 ## Blockers
 

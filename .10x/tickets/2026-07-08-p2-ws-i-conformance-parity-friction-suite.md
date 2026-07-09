@@ -37,6 +37,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-09: B1 closed the direct declarative-vocabulary guard for friction 3 through focused `cdf-declarative` tests. WS-I closure still requires replacing the remaining open-owner rows with actual regression tests/conformance scenarios or recorded exclusions.
 - 2026-07-09: D1 added local modest-N primitive coverage for friction rows 8 and 9: deterministic per-file partitions and preview/open path parity inside `cdf-declarative`, plus live local-file golden reruns. WS-I still owes S2/S8 conformance coverage for manifest incrementality, remote/public globs, no-op reruns, and parity across source archetypes.
 - 2026-07-09: B3 added focused local Parquet reader coverage for friction rows 4 and 5: declared-schema reads now reconcile physical Parquet types through the shared model, materialize `int32 -> int64` and `float32 -> float64`, fail closed for lossy narrowing, and preserve the undeclared physical path. WS-I still owes conformance-level S1/S2/S8 coverage and widening-lattice property tests.
+- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-i2-preview-run-parity-and-golden-path-matrix.md` for P2 scenario registry and preview/run parity matrix scaffolding.
 
 ## Blockers
 

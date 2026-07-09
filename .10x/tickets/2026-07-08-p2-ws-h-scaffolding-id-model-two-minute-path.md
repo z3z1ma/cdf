@@ -33,7 +33,8 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-09: Split `.10x/tickets/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md` for canonical compiled-id validation and inspection before `cdf add` and ad-hoc mode.
 - 2026-07-09: Closed `.10x/tickets/done/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md`; resource ids and mapping patterns are now legible through validation errors and `cdf inspect resources`.
+- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md` for the first `cdf add` surface, blocked on E2 for full HTTPS S1 coverage.
 
 ## Blockers
 
-Implementation waits for stable WS-A, WS-B, and WS-D shapes.
+H2's HTTPS path is blocked on `.10x/tickets/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md`; local Parquet scaffolding can proceed if isolated.
