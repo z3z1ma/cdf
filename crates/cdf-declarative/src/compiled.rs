@@ -37,6 +37,8 @@ use crate::sql_runtime::{
 #[derive(Clone, Debug)]
 pub struct CompiledResource {
     descriptor: ResourceDescriptor,
+    source_name: String,
+    resource_name: String,
     schema: SchemaRef,
     capabilities: ResourceCapabilities,
     plan: CompiledResourcePlan,
@@ -49,6 +51,14 @@ impl CompiledResource {
 
     pub fn capabilities(&self) -> &ResourceCapabilities {
         &self.capabilities
+    }
+
+    pub fn source_name(&self) -> &str {
+        &self.source_name
+    }
+
+    pub fn resource_name(&self) -> &str {
+        &self.resource_name
     }
 
     pub fn plan(&self) -> &CompiledResourcePlan {
@@ -328,6 +338,8 @@ fn compile_resource(
 
     Ok(CompiledResource {
         descriptor,
+        source_name: source_name.to_owned(),
+        resource_name: name.to_owned(),
         schema: Arc::new(schema),
         capabilities,
         plan,

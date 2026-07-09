@@ -284,8 +284,12 @@ fn inspect_human_outputs_use_renderer_for_project_inventory() {
     ]);
     assert_eq!(resources.exit_code, 0, "stderr: {}", resources.stderr);
     assert!(resources.stdout.contains("OK 1 compiled resource(s)"));
-    assert!(resources.stdout.contains("| resource     | trust"));
-    assert!(resources.stdout.contains("| local.events | governed"));
+    assert!(resources.stdout.contains("compiled id"));
+    assert!(resources.stdout.contains("local.events"));
+    assert!(resources.stdout.contains("local"));
+    assert!(resources.stdout.contains("events"));
+    assert!(resources.stdout.contains("resources/files.toml"));
+    assert!(resources.stdout.contains("matched local.*"));
 
     let resource = run([
         "cdf",
@@ -320,6 +324,63 @@ fn inspect_human_outputs_use_renderer_for_project_inventory() {
             .contains("environment  duckdb://.cdf/dev.duckdb")
     );
     assert!(destinations.stdout.contains("-> cdf plan"));
+}
+
+#[test]
+fn resource_mapping_pattern_mismatch_reports_validate_and_plan_commands() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("cdf.toml"),
+        r#"
+[project]
+name = "cli_test"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."yellow"]
+source = "resources/tlc.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("resources/tlc.toml"),
+        r#"
+[source.tlc]
+kind = "files"
+root = "data"
+
+[resource.yellow]
+glob = "*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#,
+    )
+    .unwrap();
+
+    let validate = run(["cdf", "--project", project.root_str(), "validate"]);
+    assert_ne!(validate.exit_code, 0);
+    assert!(validate.stderr.contains("cdf validate cannot load project"));
+    assert!(
+        validate
+            .stderr
+            .contains("resource mapping pattern `yellow`")
+    );
+    assert!(validate.stderr.contains("tlc.yellow"));
+    assert!(validate.stderr.contains("[resources.\"tlc.yellow\"]"));
+
+    let plan = run(["cdf", "--project", project.root_str(), "plan", "tlc.yellow"]);
+    assert_ne!(plan.exit_code, 0);
+    assert!(plan.stderr.contains("cdf plan cannot load project"));
+    assert!(!plan.stderr.contains("cdf validate cannot load project"));
+    assert!(plan.stderr.contains("resource mapping pattern `yellow`"));
+    assert!(plan.stderr.contains("tlc.yellow"));
+    assert!(plan.stderr.contains("[resources.\"tlc.yellow\"]"));
 }
 
 #[test]

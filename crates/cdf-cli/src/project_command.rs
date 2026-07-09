@@ -49,7 +49,8 @@ fn init_output(report: ProjectScaffoldReport) -> Result<CommandOutput, CliError>
 }
 
 pub(crate) fn validate(cli: &Cli) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context =
+        ProjectContext::load_for_command("validate", cli.project.as_ref(), cli.env.as_deref())?;
     let resolver = FileResourceSourceResolver::new(&context.root);
     let provider = context.secret_provider();
     let report = validate_project(

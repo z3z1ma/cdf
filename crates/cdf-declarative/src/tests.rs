@@ -130,6 +130,48 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
 }
 
 #[test]
+fn source_and_resource_names_form_canonical_compiled_id() {
+    let input = r#"
+[source.tlc]
+kind = "files"
+root = "data"
+
+[resource.yellow]
+glob = "*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let resources = compile_document(&parse_toml(input).unwrap()).unwrap();
+
+    assert_eq!(resources.len(), 1);
+    assert_eq!(resources[0].descriptor().resource_id.as_str(), "tlc.yellow");
+    assert_eq!(resources[0].source_name(), "tlc");
+    assert_eq!(resources[0].resource_name(), "yellow");
+}
+
+#[test]
+fn explicit_resource_id_is_preserved_for_existing_compatibility() {
+    let input = r#"
+[source.tlc]
+kind = "files"
+root = "data"
+
+[resource.yellow]
+id = "yellow"
+glob = "*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let resources = compile_document(&parse_toml(input).unwrap()).unwrap();
+
+    assert_eq!(resources[0].descriptor().resource_id.as_str(), "yellow");
+    assert_eq!(resources[0].source_name(), "tlc");
+    assert_eq!(resources[0].resource_name(), "yellow");
+}
+
+#[test]
 fn rest_cursor_pushdown_can_be_explicit_exact() {
     let input = BOOK_REST_EXAMPLE.replace(
         r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }"#,

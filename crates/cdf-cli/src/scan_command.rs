@@ -35,7 +35,8 @@ pub(crate) fn plan_or_explain(
     args: ScanArgs,
     command: &'static str,
 ) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context =
+        ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())?;
     let target = scan_target(&args)?;
     let plan = build_engine_plan(&context, &args)?;
     let report = scan_report(
@@ -53,7 +54,8 @@ pub(crate) fn plan_or_explain(
 }
 
 pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context =
+        ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
     let plan = build_engine_plan(&context, &args)?;
     match preview_one_batch(&context, resource, &plan) {

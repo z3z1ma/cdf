@@ -32,7 +32,8 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         ));
     }
     let explicit = resolved_run_args(args)?;
-    let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let context =
+        ProjectContext::load_for_command("run", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&explicit.resource_id)?;
     let run_resource = build_project_run_resource(&context, resource)?;
     let state_store_path = context.state_store_path()?;

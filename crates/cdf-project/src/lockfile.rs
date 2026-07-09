@@ -14,6 +14,21 @@ pub struct ProjectValidationReport {
     pub checked_secrets: Vec<SecretCheck>,
 }
 
+#[derive(Clone, Debug)]
+pub struct CompiledProjectResource {
+    pub resource: CompiledResource,
+    pub origin: ProjectResourceOrigin,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub struct ProjectResourceOrigin {
+    pub source_name: String,
+    pub resource_name: String,
+    pub source_file: Option<String>,
+    pub mapping_pattern: String,
+    pub mapping_status: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretCheck {
     pub uri: SecretRef,
@@ -164,7 +179,7 @@ pub fn compile_project_declarative_resources(
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
 ) -> Result<Vec<CompiledResource>> {
-    compile_project_declarative_resources_inner(config, resolver, None)
+    compile_project_declarative_resource_entries_inner(config, resolver, None).map(resource_entries)
 }
 
 pub fn compile_project_declarative_resources_with_root(
@@ -172,28 +187,133 @@ pub fn compile_project_declarative_resources_with_root(
     resolver: &dyn ResourceSourceResolver,
     project_root: impl AsRef<Path>,
 ) -> Result<Vec<CompiledResource>> {
-    compile_project_declarative_resources_inner(config, resolver, Some(project_root.as_ref()))
+    compile_project_declarative_resource_entries_inner(
+        config,
+        resolver,
+        Some(project_root.as_ref()),
+    )
+    .map(resource_entries)
 }
 
-fn compile_project_declarative_resources_inner(
+pub fn compile_project_declarative_resource_entries_with_root(
+    config: &ProjectConfig,
+    resolver: &dyn ResourceSourceResolver,
+    project_root: impl AsRef<Path>,
+) -> Result<Vec<CompiledProjectResource>> {
+    compile_project_declarative_resource_entries_inner(
+        config,
+        resolver,
+        Some(project_root.as_ref()),
+    )
+}
+
+fn compile_project_declarative_resource_entries_inner(
     config: &ProjectConfig,
     resolver: &dyn ResourceSourceResolver,
     project_root: Option<&Path>,
-) -> Result<Vec<CompiledResource>> {
-    let mut resources = Vec::new();
-    for mapping in config.resources.values() {
+) -> Result<Vec<CompiledProjectResource>> {
+    let mut entries = Vec::new();
+    for (pattern, mapping) in &config.resources {
         let ResourceSourceKind::DeclarativeFile { path } = mapping.source_kind() else {
             continue;
         };
         let document = parse_resolved_declarative_source(&resolver.resolve(&path)?)?;
-        match project_root {
-            Some(project_root) => {
-                resources.extend(compile_document_with_project_root(&document, project_root)?);
-            }
-            None => resources.extend(compile_document(&document)?),
+        let compiled = match project_root {
+            Some(project_root) => compile_document_with_project_root(&document, project_root)?,
+            None => compile_document(&document)?,
+        };
+        validate_mapping_pattern(pattern, &path, &compiled)?;
+        entries.extend(
+            compiled
+                .into_iter()
+                .filter(|resource| resource_id_matches_pattern(resource, pattern))
+                .map(|resource| CompiledProjectResource {
+                    origin: ProjectResourceOrigin {
+                        source_name: resource.source_name().to_owned(),
+                        resource_name: resource.resource_name().to_owned(),
+                        source_file: Some(path.clone()),
+                        mapping_pattern: pattern.clone(),
+                        mapping_status: "matched".to_owned(),
+                    },
+                    resource,
+                }),
+        );
+    }
+    Ok(entries)
+}
+
+fn resource_entries(entries: Vec<CompiledProjectResource>) -> Vec<CompiledResource> {
+    entries.into_iter().map(|entry| entry.resource).collect()
+}
+
+fn validate_mapping_pattern(
+    pattern: &str,
+    source_file: &str,
+    resources: &[CompiledResource],
+) -> Result<()> {
+    if resources
+        .iter()
+        .any(|resource| resource_id_matches_pattern(resource, pattern))
+    {
+        return Ok(());
+    }
+    let compiled_ids = resources
+        .iter()
+        .map(|resource| resource.descriptor().resource_id.as_str().to_owned())
+        .collect::<Vec<_>>();
+    let examples = resources
+        .first()
+        .map(|resource| {
+            format!(
+                "[resources.\"{}\"] or [resources.\"{}.*\"]",
+                resource.descriptor().resource_id,
+                resource.source_name()
+            )
+        })
+        .unwrap_or_else(|| "[resources.\"<source>.<resource>\"]".to_owned());
+    Err(CdfError::contract(format!(
+        "resource mapping pattern `{pattern}` for source `{source_file}` matched zero compiled resources; compiled resource ids from that file: {}; declarative resource ids compile as `<source>.<resource>`, so update the cdf.toml mapping to {examples}",
+        list_or_none(compiled_ids)
+    )))
+}
+
+fn resource_id_matches_pattern(resource: &CompiledResource, pattern: &str) -> bool {
+    wildcard_pattern_matches(pattern, resource.descriptor().resource_id.as_str())
+}
+
+fn wildcard_pattern_matches(pattern: &str, candidate: &str) -> bool {
+    let pattern = pattern.as_bytes();
+    let candidate = candidate.as_bytes();
+    let mut table = vec![vec![false; candidate.len() + 1]; pattern.len() + 1];
+    table[0][0] = true;
+    for index in 1..=pattern.len() {
+        if pattern[index - 1] == b'*' {
+            table[index][0] = table[index - 1][0];
         }
     }
-    Ok(resources)
+    for pattern_index in 1..=pattern.len() {
+        for candidate_index in 1..=candidate.len() {
+            table[pattern_index][candidate_index] = match pattern[pattern_index - 1] {
+                b'*' => {
+                    table[pattern_index - 1][candidate_index]
+                        || table[pattern_index][candidate_index - 1]
+                }
+                byte => {
+                    byte == candidate[candidate_index - 1]
+                        && table[pattern_index - 1][candidate_index - 1]
+                }
+            };
+        }
+    }
+    table[pattern.len()][candidate.len()]
+}
+
+fn list_or_none(items: Vec<String>) -> String {
+    if items.is_empty() {
+        "none".to_owned()
+    } else {
+        items.join(", ")
+    }
 }
 
 pub fn validate_project(
@@ -208,22 +328,24 @@ pub fn validate_project(
     validate_environment_uri_fields(&environment)?;
 
     let mut secret_refs = collect_secret_refs_from_environment(&environment)?;
-    let mut declarative_resources = 0;
+    let compiled_entries =
+        compile_project_declarative_resource_entries_inner(config, resolver, None)?;
+    let declarative_resources = compiled_entries.len();
     let mut external_resources = 0;
 
     for mapping in config.resources.values() {
         match mapping.source_kind() {
-            ResourceSourceKind::DeclarativeFile { path } => {
-                let document = parse_resolved_declarative_source(&resolver.resolve(&path)?)?;
-                let compiled = compile_document(&document)?;
-                declarative_resources += compiled.len();
-                secret_refs.extend(collect_secret_refs_from_declarative(&compiled)?);
-            }
+            ResourceSourceKind::DeclarativeFile { .. } => {}
             ResourceSourceKind::Python { .. }
             | ResourceSourceKind::Rust { .. }
             | ResourceSourceKind::External { .. } => external_resources += 1,
         }
     }
+    let compiled = compiled_entries
+        .iter()
+        .map(|entry| entry.resource.clone())
+        .collect::<Vec<_>>();
+    secret_refs.extend(collect_secret_refs_from_declarative(&compiled)?);
 
     let mut checked_secrets = Vec::new();
     for secret in dedupe_secret_refs(secret_refs) {

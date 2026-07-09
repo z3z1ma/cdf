@@ -9,12 +9,12 @@ use cdf_kernel::{CdfError, Result as CdfResult};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, PROJECT_FILE_NAME,
-    ProjectConfig, parse_cdf_toml, parse_lock,
+    ProjectConfig, ProjectResourceOrigin, parse_cdf_toml, parse_lock,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
 
-use crate::{output::CliError, suggestions};
+use crate::{error_catalog, output::CliError, suggestions};
 
 #[derive(Debug)]
 pub struct ProjectContext {
@@ -22,6 +22,7 @@ pub struct ProjectContext {
     pub config: ProjectConfig,
     pub environment: EffectiveEnvironment,
     pub resources: Vec<CompiledResource>,
+    pub resource_origins: Vec<ProjectResourceOrigin>,
     pub lock: Option<CdfLock>,
 }
 
@@ -54,6 +55,22 @@ pub enum DoctorProbe {
 }
 
 impl ProjectContext {
+    pub fn load_for_command(
+        command: &str,
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+    ) -> StdResult<Self, CliError> {
+        Self::load(project_arg, env_arg).map_err(|error| {
+            if error.message.contains("resource mapping pattern") {
+                return CliError::usage_with(
+                    format!("cdf {command} cannot load project: {}", error.message),
+                    error_catalog::PROJECT_RESOURCE_MAPPING,
+                );
+            }
+            CliError::from(error)
+        })
+    }
+
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
         let (root, project_file) = project_location(project_arg)?;
         let project_text = fs::read_to_string(&project_file).map_err(|error| {
@@ -63,9 +80,13 @@ impl ProjectContext {
         let env_name = env_arg.unwrap_or(&config.project.default_environment);
         let environment = config.effective_environment(env_name)?;
         let resolver = FileResourceSourceResolver::new(&root);
-        let resources = cdf_project::compile_project_declarative_resources_with_root(
+        let entries = cdf_project::compile_project_declarative_resource_entries_with_root(
             &config, &resolver, &root,
         )?;
+        let (resources, resource_origins) = entries
+            .into_iter()
+            .map(|entry| (entry.resource, entry.origin))
+            .unzip();
         let lock = load_lock(&root)?;
 
         Ok(Self {
@@ -73,6 +94,7 @@ impl ProjectContext {
             config,
             environment,
             resources,
+            resource_origins,
             lock,
         })
     }
@@ -87,6 +109,14 @@ impl ProjectContext {
                 )))
                 .with_suggestions(self.resource_suggestions(id))
             })
+    }
+
+    pub fn resource_origin(&self, id: &str) -> Option<&ProjectResourceOrigin> {
+        self.resources
+            .iter()
+            .zip(&self.resource_origins)
+            .find(|(resource, _)| resource.descriptor().resource_id.as_str() == id)
+            .map(|(_, origin)| origin)
     }
 
     pub fn secret_provider(&self) -> DefaultSecretProvider {

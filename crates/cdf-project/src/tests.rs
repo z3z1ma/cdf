@@ -511,6 +511,45 @@ fn declarative_resource_compilation_hook_uses_cdf_declarative() {
 }
 
 #[test]
+fn declarative_resource_mapping_pattern_must_match_compiled_id() {
+    let project = r#"
+[project]
+name = "tlc"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."yellow"]
+source = "resources/tlc.toml"
+"#;
+    let resource = r#"
+[source.tlc]
+kind = "files"
+root = "data"
+
+[resource.yellow]
+glob = "*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/tlc.toml", resource);
+
+    let error = compile_project_declarative_resources(&config, &resolver).unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("resource mapping pattern `yellow`"));
+    assert!(message.contains("tlc.yellow"));
+    assert!(message.contains("`<source>.<resource>`"));
+    assert!(message.contains("[resources.\"tlc.yellow\"]"));
+}
+
+#[test]
 fn declarative_file_roots_resolve_under_project_root_for_runtime_compile() {
     let temp = tempfile::tempdir().unwrap();
     fs::create_dir_all(temp.path().join("resources")).unwrap();
@@ -606,8 +645,8 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
 #[test]
 fn declarative_sql_secret_is_collected_for_validation() {
     let project = BOOK_PROJECT.replace(
-        "source = \"resources/github.toml\"",
-        "source = \"resources/sql.toml\"",
+        "[resources.\"github.*\"]\nsource = \"resources/github.toml\"",
+        "[resources.\"warehouse.*\"]\nsource = \"resources/sql.toml\"",
     );
     let sql_resource = r#"
 [source.warehouse]

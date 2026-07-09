@@ -19,7 +19,11 @@ pub(crate) fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, Cli
     match args.noun {
         InspectNoun::Package(path) => inspect_package(path),
         noun => {
-            let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+            let context = ProjectContext::load_for_command(
+                inspect_command_name(&noun),
+                cli.project.as_ref(),
+                cli.env.as_deref(),
+            )?;
             match noun {
                 InspectNoun::Project => {
                     let report = json!({
@@ -43,7 +47,10 @@ pub(crate) fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, Cli
                 }
                 InspectNoun::Resource(id) => {
                     let resource = context.resource(&id)?;
-                    let report = ResourceSummary::from_resource(resource);
+                    let report = ResourceSummary::from_resource(
+                        resource,
+                        context.resource_origin(resource.descriptor().resource_id.as_str()),
+                    );
                     CommandOutput::rendered(
                         "inspect resource",
                         inspect_resource_document(&report),
@@ -74,6 +81,18 @@ pub(crate) fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, Cli
     }
 }
 
+fn inspect_command_name(noun: &InspectNoun) -> &'static str {
+    match noun {
+        InspectNoun::Project => "inspect project",
+        InspectNoun::Resources => "inspect resources",
+        InspectNoun::Resource(_) => "inspect resource",
+        InspectNoun::Lock => "inspect lock",
+        InspectNoun::Destinations => "inspect destinations",
+        InspectNoun::Run(_) => "inspect run",
+        InspectNoun::Package(_) => "inspect package",
+    }
+}
+
 fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
     let reader = PackageReader::open(&path)?;
     CommandOutput::rendered(
@@ -86,13 +105,30 @@ fn inspect_package(path: PathBuf) -> Result<CommandOutput, CliError> {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct ResourceSummary {
     descriptor: cdf_kernel::ResourceDescriptor,
+    source_name: String,
+    resource_name: String,
+    source_file: Option<String>,
+    mapping_pattern: Option<String>,
+    mapping_status: Option<String>,
     capabilities: cdf_kernel::ResourceCapabilities,
 }
 
 impl ResourceSummary {
-    fn from_resource(resource: &cdf_declarative::CompiledResource) -> Self {
+    fn from_resource(
+        resource: &cdf_declarative::CompiledResource,
+        origin: Option<&cdf_project::ProjectResourceOrigin>,
+    ) -> Self {
         Self {
             descriptor: resource.descriptor().clone(),
+            source_name: origin
+                .map(|origin| origin.source_name.clone())
+                .unwrap_or_else(|| resource.source_name().to_owned()),
+            resource_name: origin
+                .map(|origin| origin.resource_name.clone())
+                .unwrap_or_else(|| resource.resource_name().to_owned()),
+            source_file: origin.and_then(|origin| origin.source_file.clone()),
+            mapping_pattern: origin.map(|origin| origin.mapping_pattern.clone()),
+            mapping_status: origin.map(|origin| origin.mapping_status.clone()),
             capabilities: resource.capabilities().clone(),
         }
     }
@@ -102,7 +138,12 @@ fn resource_summaries(context: &ProjectContext) -> Vec<ResourceSummary> {
     context
         .resources
         .iter()
-        .map(ResourceSummary::from_resource)
+        .map(|resource| {
+            ResourceSummary::from_resource(
+                resource,
+                context.resource_origin(resource.descriptor().resource_id.as_str()),
+            )
+        })
         .collect()
 }
 
@@ -134,17 +175,23 @@ fn inspect_project_document(context: &ProjectContext) -> RenderDocument {
 
 fn inspect_resources_document(resources: &[ResourceSummary]) -> RenderDocument {
     let table = resources.iter().fold(
-        Table::new(["resource", "trust", "cursor"]),
+        Table::new([
+            "compiled id",
+            "source",
+            "resource",
+            "source file",
+            "mapping",
+        ]),
         |table, resource| {
             table.row([
                 resource.descriptor.resource_id.to_string(),
-                format!("{:?}", resource.descriptor.trust_level).to_lowercase(),
+                resource.source_name.clone(),
+                resource.resource_name.clone(),
                 resource
-                    .descriptor
-                    .cursor
-                    .as_ref()
-                    .map(|cursor| cursor.field.clone())
-                    .unwrap_or_else(|| "none".to_owned()),
+                    .source_file
+                    .clone()
+                    .unwrap_or_else(|| "n/a".to_owned()),
+                mapping_display(resource),
             ])
         },
     );
@@ -172,6 +219,16 @@ fn inspect_resource_document(resource: &ResourceSummary) -> RenderDocument {
         .push(
             KeyValuePanel::new("Resource")
                 .row("id", resource.descriptor.resource_id.to_string())
+                .row("source", resource.source_name.clone())
+                .row("resource", resource.resource_name.clone())
+                .row(
+                    "source file",
+                    resource
+                        .source_file
+                        .clone()
+                        .unwrap_or_else(|| "n/a".to_owned()),
+                )
+                .row("mapping", mapping_display(resource))
                 .row(
                     "trust",
                     format!("{:?}", resource.descriptor.trust_level).to_lowercase(),
@@ -196,6 +253,15 @@ fn inspect_resource_document(resource: &ResourceSummary) -> RenderDocument {
             "cdf plan {}",
             resource.descriptor.resource_id
         )))
+}
+
+fn mapping_display(resource: &ResourceSummary) -> String {
+    match (&resource.mapping_status, &resource.mapping_pattern) {
+        (Some(status), Some(pattern)) => format!("{status} {pattern}"),
+        (Some(status), None) => status.clone(),
+        (None, Some(pattern)) => pattern.clone(),
+        (None, None) => "n/a".to_owned(),
+    }
 }
 
 fn inspect_lock_document(lock: &cdf_project::CdfLock) -> RenderDocument {

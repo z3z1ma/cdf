@@ -78,6 +78,15 @@ pub(crate) const PROJECT_IO: ErrorMapping = ErrorMapping {
     }),
 };
 
+pub(crate) const PROJECT_RESOURCE_MAPPING: ErrorMapping = ErrorMapping {
+    code: "CDF-PROJECT-RESOURCE-MAPPING",
+    exit_code: 3,
+    remediation: Some(RemediationTemplate {
+        summary: "Update the project resource mapping to a compiled resource id or source wildcard.",
+        steps: &["Run `cdf inspect resources` after correcting the `[resources]` key."],
+    }),
+};
+
 pub(crate) const CONTRACT_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-CONTRACT-ARGUMENT",
     exit_code: 2,
