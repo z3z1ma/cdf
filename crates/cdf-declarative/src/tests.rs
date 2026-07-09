@@ -1958,6 +1958,7 @@ fn file_glob_plans_deterministic_partition_per_match() {
             Some(resource.descriptor().resource_id.as_str())
         );
         assert!(partition.metadata.contains_key("bytes"));
+        assert!(partition.metadata.contains_key("sha256"));
         assert!(partition.metadata.contains_key("modified_ms"));
         assert!(partition.partition_id.as_str().starts_with("file-"));
         assert!(partition.start_position.is_none());
@@ -1965,6 +1966,25 @@ fn file_glob_plans_deterministic_partition_per_match() {
         let path = partition.metadata.get("path").unwrap();
         assert_eq!(partition.scope, ScopeKey::File { path: path.clone() });
     }
+}
+
+#[test]
+fn file_glob_partition_checksum_changes_when_file_content_changes() {
+    let (root, resource) = compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
+    let first = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap()
+        .remove(0);
+
+    fs::write(root.path().join("data/events.ndjson"), "{\"id\":2}\n").unwrap();
+    let second = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap()
+        .remove(0);
+
+    assert_eq!(first.metadata.get("path"), second.metadata.get("path"));
+    assert_eq!(first.metadata.get("bytes"), second.metadata.get("bytes"));
+    assert_ne!(first.metadata.get("sha256"), second.metadata.get("sha256"));
 }
 
 #[test]

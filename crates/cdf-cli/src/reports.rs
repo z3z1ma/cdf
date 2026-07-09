@@ -32,6 +32,8 @@ pub(crate) struct RunCliReport {
     receipt_source: RunReceiptSourceReport,
     row_count: u64,
     segment_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    file_manifest: Option<RunFileManifestReport>,
     ledger_events: RunLedgerSummary,
     writes: WriteEffects,
 }
@@ -65,17 +67,17 @@ impl RunCliReport {
             ),
             row_count: report.row_count,
             segment_count: report.segment_count,
+            file_manifest: report
+                .file_manifest
+                .as_ref()
+                .map(RunFileManifestReport::from_project),
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
-            writes: WriteEffects {
-                package: true,
-                destination: true,
-                checkpoint: true,
-            },
+            writes: run_write_effects(&report.receipt_source),
         }
     }
 
     pub(crate) fn render_document(&self) -> RenderDocument {
-        RenderDocument::new()
+        let document = RenderDocument::new()
             .push(SectionRule::new())
             .push(StatusLine::new(
                 StatusKind::Success,
@@ -112,7 +114,13 @@ impl RunCliReport {
                         "receipt segments",
                         self.receipt.segment_ack_count.to_string(),
                     ),
-            )
+            );
+        let document = if let Some(panel) = file_manifest_panel(self.file_manifest.as_ref()) {
+            document.blank_line().push(panel)
+        } else {
+            document
+        };
+        document
             .blank_line()
             .push(
                 KeyValuePanel::new("Verdicts")
@@ -446,6 +454,9 @@ enum RunReceiptSourceReport {
     DestinationCommitReceiptOnly {
         package_receipt_recorded: bool,
     },
+    FileManifestNoChangedFiles {
+        no_op: bool,
+    },
     SuppliedDurableReceipt,
 }
 
@@ -473,6 +484,9 @@ impl RunReceiptSourceReport {
             } => Self::DestinationCommitReceiptOnly {
                 package_receipt_recorded: *package_receipt_recorded,
             },
+            ProjectReceiptSource::FileManifestNoChangedFiles => {
+                Self::FileManifestNoChangedFiles { no_op: true }
+            }
             ProjectReceiptSource::SuppliedDurableReceipt => Self::SuppliedDurableReceipt,
         }
     }
@@ -485,6 +499,7 @@ impl RunReceiptSourceReport {
             | Self::DestinationCommit {
                 duplicate, no_op, ..
             } => Some((*duplicate, *no_op)),
+            Self::FileManifestNoChangedFiles { no_op } => Some((false, *no_op)),
             Self::DestinationCommitReceiptOnly { .. } | Self::SuppliedDurableReceipt => None,
         }
     }
@@ -494,6 +509,7 @@ impl RunReceiptSourceReport {
             Self::DuckDbCommit { .. } => "duck_db_commit",
             Self::DestinationCommit { .. } => "destination_commit",
             Self::DestinationCommitReceiptOnly { .. } => "destination_commit_receipt_only",
+            Self::FileManifestNoChangedFiles { .. } => "file_manifest_no_changed_files",
             Self::SuppliedDurableReceipt => "supplied_durable_receipt",
         }
     }
@@ -541,6 +557,14 @@ pub(crate) fn replay_event_details(
                 RunEventValue::Bool(*package_receipt_recorded),
             );
         }
+        ProjectReceiptSource::FileManifestNoChangedFiles => {
+            attributes.insert(
+                "receipt_source".to_owned(),
+                RunEventValue::String("file_manifest_no_changed_files".to_owned()),
+            );
+            attributes.insert("duplicate".to_owned(), RunEventValue::Bool(false));
+            attributes.insert("no_op".to_owned(), RunEventValue::Bool(true));
+        }
         ProjectReceiptSource::SuppliedDurableReceipt => {
             attributes.insert(
                 "receipt_source".to_owned(),
@@ -549,6 +573,52 @@ pub(crate) fn replay_event_details(
         }
     }
     RunEventDetails { attributes }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct RunFileManifestReport {
+    total_file_count: usize,
+    changed_file_count: usize,
+    unchanged_file_count: usize,
+    no_changed_files: bool,
+}
+
+impl RunFileManifestReport {
+    fn from_project(summary: &cdf_project::FileManifestRunSummary) -> Self {
+        Self {
+            total_file_count: summary.total_file_count,
+            changed_file_count: summary.changed_file_count,
+            unchanged_file_count: summary.unchanged_file_count,
+            no_changed_files: summary.total_file_count > 0 && summary.changed_file_count == 0,
+        }
+    }
+}
+
+fn file_manifest_panel(summary: Option<&RunFileManifestReport>) -> Option<KeyValuePanel> {
+    summary.map(|summary| {
+        KeyValuePanel::new("Files")
+            .row("total", summary.total_file_count.to_string())
+            .row("changed", summary.changed_file_count.to_string())
+            .row("unchanged", summary.unchanged_file_count.to_string())
+            .row("no changed files", yes_no(summary.no_changed_files))
+    })
+}
+
+fn run_write_effects(source: &ProjectReceiptSource) -> WriteEffects {
+    match source {
+        ProjectReceiptSource::FileManifestNoChangedFiles => WriteEffects {
+            package: false,
+            destination: false,
+            checkpoint: false,
+        },
+        ProjectReceiptSource::DestinationCommit { .. }
+        | ProjectReceiptSource::DestinationCommitReceiptOnly { .. }
+        | ProjectReceiptSource::SuppliedDurableReceipt => WriteEffects {
+            package: true,
+            destination: true,
+            checkpoint: true,
+        },
+    }
 }
 
 fn receipt_source_summary(source: &RunReceiptSourceReport) -> String {
@@ -746,6 +816,7 @@ mod tests {
             },
             row_count: 2,
             segment_count: 1,
+            file_manifest: None,
             ledger_events: RunLedgerSummary::default(),
             writes: WriteEffects::all(),
         };

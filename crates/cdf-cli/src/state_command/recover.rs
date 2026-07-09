@@ -264,6 +264,7 @@ fn receipt_source_name(source: &ProjectReceiptSource) -> &'static str {
         ProjectReceiptSource::DestinationCommitReceiptOnly { .. } => {
             "destination_commit_receipt_only"
         }
+        ProjectReceiptSource::FileManifestNoChangedFiles => "file_manifest_no_changed_files",
         ProjectReceiptSource::SuppliedDurableReceipt => "supplied_durable_receipt",
     }
 }

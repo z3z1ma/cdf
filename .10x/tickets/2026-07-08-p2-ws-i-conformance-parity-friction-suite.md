@@ -38,6 +38,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-09: D1 added local modest-N primitive coverage for friction rows 8 and 9: deterministic per-file partitions and preview/open path parity inside `cdf-declarative`, plus live local-file golden reruns. WS-I still owes S2/S8 conformance coverage for manifest incrementality, remote/public globs, no-op reruns, and parity across source archetypes.
 - 2026-07-09: B3 added focused local Parquet reader coverage for friction rows 4 and 5: declared-schema reads now reconcile physical Parquet types through the shared model, materialize `int32 -> int64` and `float32 -> float64`, fail closed for lossy narrowing, and preserve the undeclared physical path. WS-I still owes conformance-level S1/S2/S8 coverage and widening-lattice property tests.
 - 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-i2-preview-run-parity-and-golden-path-matrix.md` for P2 scenario registry and preview/run parity matrix scaffolding.
+- 2026-07-09: I2 closed as `.10x/tickets/done/2026-07-09-p2-ws-i2-preview-run-parity-and-golden-path-matrix.md` with evidence in `.10x/evidence/2026-07-09-p2-ws-a7-d3-i2-batch.md` and review in `.10x/reviews/2026-07-09-p2-ws-a7-d3-i2-batch-review.md`. The conformance crate now names S1-S8, records pending/excluded cells honestly, maps all eighteen frictions to actual tests or active owners, and asserts preview/run parity for currently supported local file, REST fixture, and Postgres table archetypes. Full S1-S8 green coverage remains open.
 
 ## Blockers
 

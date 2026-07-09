@@ -52,6 +52,7 @@ pub enum ProjectReceiptSource {
     DestinationCommitReceiptOnly {
         package_receipt_recorded: bool,
     },
+    FileManifestNoChangedFiles,
     SuppliedDurableReceipt,
 }
 
@@ -95,6 +96,7 @@ pub struct LocalFileDuckDbRunReport {
     pub receipt_source: ProjectReceiptSource,
     pub row_count: u64,
     pub segment_count: usize,
+    pub file_manifest: Option<FileManifestRunSummary>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -110,6 +112,14 @@ pub struct ProjectRunReport {
     pub receipt_source: ProjectReceiptSource,
     pub row_count: u64,
     pub segment_count: usize,
+    pub file_manifest: Option<FileManifestRunSummary>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileManifestRunSummary {
+    pub total_file_count: usize,
+    pub changed_file_count: usize,
+    pub unchanged_file_count: usize,
 }
 
 impl ProjectRunReport {
@@ -125,6 +135,7 @@ impl ProjectRunReport {
             receipt_source: self.receipt_source,
             row_count: self.row_count,
             segment_count: self.segment_count,
+            file_manifest: self.file_manifest,
         }
     }
 }

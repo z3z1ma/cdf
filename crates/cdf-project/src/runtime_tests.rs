@@ -58,16 +58,16 @@ use tracing::{
 };
 
 use crate::{
-    BackfillPlanRequest, DestinationReceiptReportingPolicy, LocalFileDuckDbRunRequest,
-    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayHooks,
-    PackageReplayStage, PreparedDestinationCommit, PreparedPackageRecoveryRequest,
-    PreparedPackageReplayRequest, ProjectDestinationDescription, ProjectDestinationDriver,
-    ProjectDestinationRegistry, ProjectDestinationRuntime, ProjectReceiptSource,
-    ProjectResolutionContext, ProjectRunReport, ProjectRunRequest, ProjectRunSource,
-    ResolvedProjectDestination, RuntimeStage, TracingRunEventSink, backfill_pipeline_id,
-    plan_backfill, recover_package_from_artifacts, recover_package_with_runtime,
-    recover_prepared_package, replay_package_from_artifacts, replay_package_with_runtime,
-    replay_prepared_package, replay_prepared_package_with_stage_hook,
+    BackfillPlanRequest, DestinationReceiptReportingPolicy, FileManifestRunSummary,
+    LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
+    PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
+    PreparedPackageRecoveryRequest, PreparedPackageReplayRequest, ProjectDestinationDescription,
+    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
+    ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport, ProjectRunRequest,
+    ProjectRunSource, ResolvedProjectDestination, RuntimeStage, TracingRunEventSink,
+    backfill_pipeline_id, plan_backfill, recover_package_from_artifacts,
+    recover_package_with_runtime, recover_prepared_package, replay_package_from_artifacts,
+    replay_package_with_runtime, replay_prepared_package, replay_prepared_package_with_stage_hook,
     run_local_file_to_duckdb_checkpoint, run_project, runtime::state_delta_from_run,
 };
 
@@ -117,6 +117,23 @@ glob = "events-*.ndjson"
 format = "ndjson"
 primary_key = ["id"]
 write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "name", type = "string", nullable = true },
+] }
+"#;
+const MULTI_FILE_RESOURCE_REPLACE: &str = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events-*.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "replace"
 trust = "governed"
 schema = { fields = [
   { name = "id", type = "int64", nullable = false },
@@ -1286,6 +1303,17 @@ fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::Compile
 }
 
 fn multi_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
+    multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_APPEND)
+}
+
+fn replace_multi_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
+    multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_REPLACE)
+}
+
+fn multi_file_resource_with_document(
+    root: &Path,
+    document: &str,
+) -> cdf_declarative::CompiledResource {
     fs::create_dir_all(root.join("data")).unwrap();
     fs::write(
         root.join("data/events-a.ndjson"),
@@ -1297,7 +1325,7 @@ fn multi_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
         "{\"id\":2,\"name\":\"grace\"}\n",
     )
     .unwrap();
-    let document = cdf_declarative::parse_toml(MULTI_FILE_RESOURCE_APPEND).unwrap();
+    let document = cdf_declarative::parse_toml(document).unwrap();
     cdf_declarative::compile_document_with_project_root(&document, root)
         .unwrap()
         .remove(0)
@@ -1586,6 +1614,40 @@ fn assert_run_artifact_identity_unchanged(report: &ProjectRunReport) {
     assert_eq!(report.receipt.package_hash, report.package_hash);
     assert_eq!(report.checkpoint.delta.package_hash, report.package_hash);
     assert_eq!(reader.manifest().lifecycle.status, report.package_status);
+}
+
+fn output_manifest(report: &ProjectRunReport) -> &FileManifest {
+    let SourcePosition::FileManifest(manifest) = &report.checkpoint.delta.output_position else {
+        panic!("checkpoint output position should be a file manifest");
+    };
+    manifest
+}
+
+fn output_manifest_paths(report: &ProjectRunReport) -> Vec<String> {
+    output_manifest(report)
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect()
+}
+
+fn output_manifest_file<'a>(report: &'a ProjectRunReport, path: &str) -> &'a FilePosition {
+    output_manifest(report)
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .unwrap_or_else(|| panic!("manifest omitted {path}"))
+}
+
+fn single_segment_manifest_path(report: &ProjectRunReport) -> String {
+    assert_eq!(report.checkpoint.delta.segments.len(), 1);
+    let SourcePosition::FileManifest(manifest) =
+        &report.checkpoint.delta.segments[0].output_position
+    else {
+        panic!("state segment should retain file manifest evidence");
+    };
+    assert_eq!(manifest.files.len(), 1);
+    manifest.files[0].path.clone()
 }
 
 fn parquet_project_run_request<'a>(
@@ -2208,6 +2270,204 @@ fn general_project_run_commits_multi_file_resource_manifest_checkpoint() {
 }
 
 #[test]
+fn file_manifest_append_run_skips_unchanged_files_and_loads_only_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let first = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-file-manifest-incremental-1",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-incremental-1",
+    )))
+    .unwrap();
+    assert_eq!(first.row_count, 2);
+    assert_eq!(first.segment_count, 2);
+    assert_eq!(
+        first.file_manifest,
+        Some(FileManifestRunSummary {
+            total_file_count: 2,
+            changed_file_count: 2,
+            unchanged_file_count: 0,
+        })
+    );
+    assert_eq!(
+        output_manifest_paths(&first),
+        vec!["events-a.ndjson", "events-b.ndjson"]
+    );
+    let first_b_sha = output_manifest_file(&first, "events-b.ndjson")
+        .sha256
+        .clone();
+
+    let unchanged = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-file-manifest-incremental-2",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-incremental-2",
+    )))
+    .unwrap();
+    assert_eq!(unchanged.row_count, 0);
+    assert_eq!(unchanged.segment_count, 0);
+    assert_eq!(
+        unchanged.receipt_source,
+        ProjectReceiptSource::FileManifestNoChangedFiles
+    );
+    assert_eq!(
+        unchanged.file_manifest,
+        Some(FileManifestRunSummary {
+            total_file_count: 2,
+            changed_file_count: 0,
+            unchanged_file_count: 2,
+        })
+    );
+    assert_eq!(unchanged.checkpoint, first.checkpoint);
+    assert_eq!(unchanged.receipt, first.receipt);
+    assert!(!unchanged.package_dir.exists());
+    assert_eq!(
+        unchanged.ledger_snapshot.events.len(),
+        3,
+        "no-op run should not emit package, destination, or checkpoint events"
+    );
+    assert_eq!(
+        unchanged.ledger_snapshot.events[1]
+            .details
+            .attributes
+            .get("planned_packages"),
+        Some(&RunEventValue::U64(0))
+    );
+
+    fs::write(
+        temp.path().join("data/events-c.ndjson"),
+        "{\"id\":3,\"name\":\"katherine\"}\n",
+    )
+    .unwrap();
+    let added = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-file-manifest-incremental-3",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-incremental-3",
+    )))
+    .unwrap();
+    assert_eq!(added.row_count, 1);
+    assert_eq!(added.segment_count, 1);
+    assert_eq!(single_segment_manifest_path(&added), "events-c.ndjson");
+    assert_eq!(
+        added.file_manifest,
+        Some(FileManifestRunSummary {
+            total_file_count: 3,
+            changed_file_count: 1,
+            unchanged_file_count: 2,
+        })
+    );
+    assert_eq!(
+        output_manifest_paths(&added),
+        vec!["events-a.ndjson", "events-b.ndjson", "events-c.ndjson"]
+    );
+    assert_eq!(
+        added.checkpoint.delta.parent_checkpoint_id.as_ref(),
+        Some(&first.checkpoint.delta.checkpoint_id)
+    );
+    let reader = PackageReader::open(&added.package_dir).unwrap();
+    assert_eq!(
+        package_id_name_rows(&reader),
+        vec![(3, Some("katherine".to_owned()))]
+    );
+
+    fs::write(
+        temp.path().join("data/events-b.ndjson"),
+        "{\"id\":4,\"name\":\"grace\"}\n",
+    )
+    .unwrap();
+    let changed = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-file-manifest-incremental-4",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-incremental-4",
+    )))
+    .unwrap();
+    assert_eq!(changed.row_count, 1);
+    assert_eq!(changed.segment_count, 1);
+    assert_eq!(single_segment_manifest_path(&changed), "events-b.ndjson");
+    assert_eq!(
+        changed.file_manifest,
+        Some(FileManifestRunSummary {
+            total_file_count: 3,
+            changed_file_count: 1,
+            unchanged_file_count: 2,
+        })
+    );
+    assert_eq!(
+        output_manifest_paths(&changed),
+        vec!["events-a.ndjson", "events-b.ndjson", "events-c.ndjson"]
+    );
+    assert_ne!(
+        output_manifest_file(&changed, "events-b.ndjson").sha256,
+        first_b_sha
+    );
+    let reader = PackageReader::open(&changed.package_dir).unwrap();
+    assert_eq!(
+        package_id_name_rows(&reader),
+        vec![(4, Some("grace".to_owned()))]
+    );
+}
+
+#[test]
+fn file_manifest_replace_run_keeps_planning_all_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = replace_multi_file_resource(temp.path());
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let first = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-file-manifest-replace-1",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-replace-1",
+    )))
+    .unwrap();
+    let second = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        "pkg-file-manifest-replace-2",
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-file-manifest-replace-2",
+    )))
+    .unwrap();
+
+    assert_eq!(first.row_count, 2);
+    assert_eq!(first.segment_count, 2);
+    assert_eq!(second.row_count, 2);
+    assert_eq!(second.segment_count, 2);
+    assert_eq!(
+        second.file_manifest,
+        Some(FileManifestRunSummary {
+            total_file_count: 2,
+            changed_file_count: 2,
+            unchanged_file_count: 0,
+        })
+    );
+    assert_eq!(
+        output_manifest_paths(&second),
+        vec!["events-a.ndjson", "events-b.ndjson"]
+    );
+}
+
+#[test]
 fn general_project_run_live_sink_events_match_persisted_ledger_order() {
     let temp = tempfile::tempdir().unwrap();
     let resource = live_file_resource(temp.path());
@@ -2457,6 +2717,12 @@ fn trust_ring_clean_stable_runs_gate_sampled_fast_path_promotion() {
         Some(&RunEventValue::String("new_resource".to_owned()))
     );
 
+    fs::write(
+        temp.path().join("data/events.ndjson"),
+        "{\"id\":3,\"name\":\"katherine\"}\n\
+         {\"id\":4,\"name\":\"dorothy\"}\n",
+    )
+    .unwrap();
     let second = project_run_request_with_policy(
         &resource,
         "pkg-trust-promotion-2",
@@ -2539,6 +2805,12 @@ fn trust_ring_schema_drift_demotes_sampled_fast_path() {
     );
 
     let drift_resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_APPEND_DRIFT);
+    fs::write(
+        temp.path().join("data/events.ndjson"),
+        "{\"id\":3,\"name\":\"katherine\",\"note\":\"schema drift\"}\n\
+         {\"id\":4,\"name\":\"dorothy\",\"note\":\"schema drift\"}\n",
+    )
+    .unwrap();
     let mut drift = parquet_project_run_request(
         &drift_resource,
         "pkg-trust-drift-schema",
@@ -2721,6 +2993,12 @@ fn trust_ring_explicit_anomaly_fact_demotes_sampled_fast_path() {
     );
     futures_executor::block_on(run_project(clean)).unwrap();
 
+    fs::write(
+        temp.path().join("data/events.ndjson"),
+        "{\"id\":3,\"name\":\"katherine\"}\n\
+         {\"id\":4,\"name\":\"dorothy\"}\n",
+    )
+    .unwrap();
     let mut anomaly = project_run_request_with_policy(
         &resource,
         "pkg-trust-anomaly-spike",
@@ -4266,6 +4544,80 @@ fn state_delta_aggregates_file_manifest_positions_deterministically() {
         delta.segments[1].output_position,
         file_position("/tmp/cdf/a.ndjson")
     );
+}
+
+#[test]
+fn state_delta_merges_append_file_manifest_output_with_head() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let previous = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-file-manifest-previous",
+        vec![
+            file_position_with_identity("events-a.ndjson", 11, Some("sha256:a".to_owned())),
+            file_position_with_identity("events-b.ndjson", 12, Some("sha256:b-old".to_owned())),
+        ],
+    )
+    .unwrap();
+    let head = Checkpoint {
+        delta: previous,
+        status: CheckpointStatus::Committed,
+        receipt: None,
+        is_head: true,
+        created_at_ms: 1,
+        committed_at_ms: Some(1),
+        rewind_target_checkpoint_id: None,
+    };
+    let package_id = "pkg-state-delta-file-manifest-merge-head";
+    let output = engine_output_with_positions(
+        &temp.path().join(package_id),
+        package_id,
+        vec![
+            file_position_with_identity("events-b.ndjson", 99, Some("sha256:b-new".to_owned())),
+            file_position_with_identity("events-c.ndjson", 13, Some("sha256:c".to_owned())),
+        ],
+    );
+    let request = state_delta_request(&resource, package_id, temp.path());
+
+    let delta = state_delta_from_run(
+        &request,
+        &output,
+        &SchemaHash::new(SCHEMA_HASH).unwrap(),
+        &resource.descriptor().state_scope,
+        Some(&head),
+    )
+    .unwrap();
+
+    let SourcePosition::FileManifest(manifest) = &delta.output_position else {
+        panic!("output position should be a file manifest");
+    };
+    assert_eq!(
+        manifest
+            .files
+            .iter()
+            .map(|file| (file.path.clone(), file.size_bytes, file.sha256.clone()))
+            .collect::<Vec<_>>(),
+        vec![
+            (
+                "events-a.ndjson".to_owned(),
+                11,
+                Some("sha256:a".to_owned())
+            ),
+            (
+                "events-b.ndjson".to_owned(),
+                99,
+                Some("sha256:b-new".to_owned()),
+            ),
+            (
+                "events-c.ndjson".to_owned(),
+                13,
+                Some("sha256:c".to_owned())
+            ),
+        ]
+    );
+    assert_eq!(delta.segments.len(), 2);
+    assert_eq!(delta.parent_checkpoint_id, Some(head.delta.checkpoint_id));
 }
 
 #[test]

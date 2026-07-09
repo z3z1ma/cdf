@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
@@ -32,6 +32,8 @@ This ticket does not implement remote manifest identity, HTTP template enumerati
 ## Progress and notes
 
 - 2026-07-09: Opened as the next WS-D child after D2. This is the critical S2 state step before public HTTPS globs and `cdf add` can honestly claim incremental forever.
+- 2026-07-09: Implemented local append `FileManifest` incrementality. Planned file partitions now carry stable `sha256` identity metadata, append runs compare planned identities to the committed checkpoint manifest, unchanged runs return an explicit no-changed-files report without package/destination/checkpoint writes, new or changed files are the only planned partitions, replace disposition still plans every file, and state-delta preimage generation merges changed append manifests with the checkpoint head.
+- 2026-07-09: Added focused runtime and declarative tests for unchanged no-op, new-file and changed-file planning, replace-disposition behavior, checkpoint manifest merging, partition checksum changes, and report rendering. Closure evidence is `.10x/evidence/2026-07-09-p2-ws-a7-d3-i2-batch.md`; closure review is `.10x/reviews/2026-07-09-p2-ws-a7-d3-i2-batch-review.md`.
 
 ## Blockers
 

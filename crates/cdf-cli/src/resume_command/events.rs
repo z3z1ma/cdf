@@ -74,6 +74,9 @@ pub(super) fn receipt_source_name(source: &ProjectReceiptSource, destination: &s
         ProjectReceiptSource::DestinationCommitReceiptOnly { .. } => {
             "destination_commit_receipt_only".to_owned()
         }
+        ProjectReceiptSource::FileManifestNoChangedFiles => {
+            "file_manifest_no_changed_files".to_owned()
+        }
         ProjectReceiptSource::SuppliedDurableReceipt => "supplied_durable_receipt".to_owned(),
     }
 }

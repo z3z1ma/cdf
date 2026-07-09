@@ -26,7 +26,8 @@ use cdf_kernel::{
 };
 use cdf_package::{PackageBuilder, PackageReader, PackageStatus};
 use cdf_project::{
-    PackageArtifactReplayRequest, ResolvedProjectDestination, replay_package_from_artifacts,
+    PackageArtifactReplayRequest, ResolvedProjectDestination, parse_lock,
+    replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
@@ -120,6 +121,18 @@ fn parser_provides_subcommand_help_at_nested_layers() {
     assert_eq!(schema.exit_code, 0);
     assert!(schema.stdout.contains("Usage: cdf schema discover"));
     assert!(schema.stdout.contains("--resource <RESOURCE>"));
+
+    for subcommand in ["pin", "show", "diff"] {
+        let result = run(["cdf", "schema", subcommand, "--help"]);
+
+        assert_eq!(result.exit_code, 0);
+        assert!(
+            result
+                .stdout
+                .contains(&format!("Usage: cdf schema {subcommand}"))
+        );
+        assert!(result.stdout.contains("--resource <RESOURCE>"));
+    }
 
     let rewind = run(["cdf", "state", "rewind", "--help"]);
 
@@ -1816,6 +1829,279 @@ fn schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret
     assert_secret_absent(&human, &source_dsn);
     assert_secret_absent(&human, "schema-discover-secret");
     assert!(human.stdout.contains("postgres-catalog"));
+}
+
+#[test]
+fn schema_pin_show_and_diff_local_parquet_snapshot_with_lockfile_reference() {
+    let project = TestProject::new();
+    write_minimal_lockfile(&project);
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+
+    assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let pin_json = stderr_or_stdout_json(&pin.stdout);
+    let pin_report = &pin_json["result"];
+    assert_eq!(pin_report["resource_id"], "local.events");
+    assert_eq!(pin_report["status"], "added");
+    assert_eq!(pin_report["writes"]["schema_snapshot"], true);
+    assert_eq!(pin_report["writes"]["lockfile"], true);
+    assert_eq!(pin_report["writes"]["package"], false);
+    assert_eq!(pin_report["fields"][0]["name"], "vendor_id");
+    let snapshot_path = pin_report["schema_snapshot_path"].as_str().unwrap();
+    assert!(project.root.join(snapshot_path).is_file());
+
+    let lock_text = fs::read_to_string(project.root.join("cdf.lock")).unwrap();
+    let lock = parse_lock(&lock_text).unwrap();
+    let locked = lock.resources.get("local.events").unwrap();
+    assert_eq!(locked.schema_snapshot.as_ref().unwrap().path, snapshot_path);
+    assert_eq!(
+        locked
+            .schema_snapshot
+            .as_ref()
+            .unwrap()
+            .schema_hash
+            .as_str(),
+        pin_report["schema_hash"].as_str().unwrap()
+    );
+
+    let show = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "show",
+        "local.events",
+    ]);
+
+    assert_eq!(show.exit_code, 0, "stderr: {}", show.stderr);
+    let show_json = stderr_or_stdout_json(&show.stdout);
+    let show_report = &show_json["result"];
+    assert_eq!(show_report["schema_hash"], pin_report["schema_hash"]);
+    assert_eq!(show_report["fields"][0]["source_name"], "VendorID");
+    assert_eq!(show_report["writes"]["schema_snapshot"], false);
+
+    let diff = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "diff",
+        "local.events",
+    ]);
+
+    assert_eq!(diff.exit_code, 0, "stderr: {}", diff.stderr);
+    let diff_json = stderr_or_stdout_json(&diff.stdout);
+    let diff_report = &diff_json["result"];
+    assert_eq!(diff_report["summary"]["changed"], false);
+    assert_eq!(diff_report["writes"]["schema_snapshot"], false);
+    assert_eq!(diff_report["writes"]["lockfile"], false);
+
+    let pin_again = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+
+    assert_eq!(pin_again.exit_code, 0, "stderr: {}", pin_again.stderr);
+    let pin_again_json = stderr_or_stdout_json(&pin_again.stdout);
+    assert_eq!(pin_again_json["result"]["status"], "unchanged");
+}
+
+#[test]
+fn schema_pin_without_lockfile_reports_unsupported_lockfile_reference() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["writes"]["schema_snapshot"], true);
+    assert_eq!(report["writes"]["lockfile"], false);
+    assert!(
+        report["unsupported"][0]
+            .as_str()
+            .unwrap()
+            .contains("cdf.lock is not present")
+    );
+    assert!(project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+}
+
+#[test]
+fn schema_diff_rest_compares_pinned_snapshot_to_fresh_probe_without_writes_or_secret_leak() {
+    let project = TestProject::new();
+    write_minimal_lockfile(&project);
+    fs::write(project.root.join("rest-token"), "rest-diff-secret\n").unwrap();
+    let (base_url, requests) = serve_json_sequence([
+        r#"{ "items": [{ "VendorID": 1, "updated_at": 10 }] }"#,
+        r#"{ "items": [{ "VendorID": 1, "updated_at": 10, "score": 4.5 }] }"#,
+    ]);
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+    fs::write(
+        project.root.join("resources/api.toml"),
+        rest_discover_resource_with_base_url(&base_url, "secret://file/rest-token"),
+    )
+    .unwrap();
+
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "api.items",
+    ]);
+
+    assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
+    assert_secret_absent(&pin, "rest-diff-secret");
+    let pinned_snapshot_count = fs::read_dir(project.root.join(".cdf/schemas"))
+        .unwrap()
+        .count();
+    assert_eq!(pinned_snapshot_count, 1);
+
+    let diff = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "diff",
+        "api.items",
+    ]);
+
+    assert_eq!(diff.exit_code, 0, "stderr: {}", diff.stderr);
+    assert_secret_absent(&diff, "rest-diff-secret");
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    assert_eq!(
+        fs::read_dir(project.root.join(".cdf/schemas"))
+            .unwrap()
+            .count(),
+        pinned_snapshot_count
+    );
+    let diff_json = stderr_or_stdout_json(&diff.stdout);
+    let report = &diff_json["result"];
+    assert_eq!(report["summary"]["changed"], true);
+    assert_eq!(report["summary"]["added_fields"], 1);
+    assert_eq!(report["added_fields"][0]["name"], "score");
+    assert_eq!(report["writes"]["schema_snapshot"], false);
+    assert_eq!(report["writes"]["lockfile"], false);
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.contains("authorization: Bearer rest-diff-secret"))
+    );
+}
+
+#[test]
+fn schema_pin_postgres_catalog_updates_lock_without_secret_leak() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("schema_pin_orders");
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"VendorID\" INTEGER NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            )",
+            table
+        ))
+        .unwrap();
+
+    let project = TestProject::new();
+    write_minimal_lockfile(&project);
+    let source_dsn = postgres.url.replacen(
+        "postgresql://cdf@",
+        "postgresql://cdf:schema-pin-secret@",
+        1,
+    );
+    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_discover_resource("secret://file/sql-dsn", &table),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "warehouse.orders",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
+    assert_secret_absent(&result, "schema-pin-secret");
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["writes"]["schema_snapshot"], true);
+    assert_eq!(report["writes"]["lockfile"], true);
+    assert_eq!(report["snapshot_metadata"]["probe"], "postgres-catalog");
+    assert_eq!(report["snapshot_metadata"]["table"], table);
+    assert_eq!(report["fields"][0]["source_name"], "VendorID");
+    let lock_text = fs::read_to_string(project.root.join("cdf.lock")).unwrap();
+    assert!(!lock_text.contains(&source_dsn));
+    assert!(!lock_text.contains("schema-pin-secret"));
+    assert!(
+        parse_lock(&lock_text)
+            .unwrap()
+            .resources
+            .get("warehouse.orders")
+            .unwrap()
+            .schema_snapshot
+            .is_some()
+    );
 }
 
 #[test]

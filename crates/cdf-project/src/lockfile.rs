@@ -496,6 +496,19 @@ pub fn freeze_contract_snapshots(
     Ok((lock, report))
 }
 
+pub fn pin_schema_snapshot_in_lockfile(
+    existing_lock: &CdfLock,
+    resource: &CompiledResource,
+) -> Result<CdfLock> {
+    let mut lock = existing_lock.clone();
+    let snapshot = contract_snapshot_for_resource(resource)?;
+    lock.resources.insert(
+        resource.descriptor().resource_id.to_string(),
+        locked_resource_from_current(resource, snapshot)?,
+    );
+    Ok(lock)
+}
+
 pub fn test_contract_snapshots(
     lock: &CdfLock,
     resources: &[CompiledResource],

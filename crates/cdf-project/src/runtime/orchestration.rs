@@ -136,8 +136,6 @@ struct ProjectRunExecution<'a> {
 
 async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<ProjectRunReport> {
     execution.recorder.append_run_started()?;
-    execution.recorder.append_plan_recorded()?;
-    execution.recorder.append_package_started()?;
 
     let resource = execution.resource.stream();
     let descriptor = resource.descriptor();
@@ -159,6 +157,20 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         &descriptor.resource_id,
         &scope,
     )?;
+    let manifest_plan =
+        plan_file_manifest_incrementality(execution.plan, descriptor, head.as_ref())?;
+    execution
+        .recorder
+        .append_plan_recorded(if manifest_plan.no_changed_files() {
+            0
+        } else {
+            1
+        })?;
+    if manifest_plan.no_changed_files() {
+        return no_changed_files_report(execution, head, manifest_plan.summary);
+    }
+
+    execution.recorder.append_package_started()?;
 
     let write_package_pre_finalize_artifacts =
         |builder: &cdf_package::PackageBuilder, draft: EnginePackageDraft<'_>| {
@@ -179,7 +191,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
             write_quarantine_mirror_outcome_artifact(builder, &quarantine_mirror)
         };
     let output = execute_to_package_with_segment_positions_and_pre_finalize(
-        execution.plan,
+        &manifest_plan.plan,
         resource,
         &execution.package_dir,
         &write_package_pre_finalize_artifacts,
@@ -260,6 +272,188 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         receipt_source: replay_report.receipt_source,
         row_count,
         segment_count,
+        file_manifest: manifest_plan.summary,
+    })
+}
+
+struct FileManifestPlanning {
+    plan: EnginePlan,
+    summary: Option<FileManifestRunSummary>,
+}
+
+impl FileManifestPlanning {
+    fn no_changed_files(&self) -> bool {
+        self.summary
+            .as_ref()
+            .is_some_and(|summary| summary.total_file_count > 0 && summary.changed_file_count == 0)
+    }
+}
+
+fn plan_file_manifest_incrementality(
+    plan: &EnginePlan,
+    descriptor: &ResourceDescriptor,
+    head: Option<&Checkpoint>,
+) -> Result<FileManifestPlanning> {
+    let Some(current_files) = file_positions_from_partitions(&plan.scan.partitions)? else {
+        return Ok(FileManifestPlanning {
+            plan: plan.clone(),
+            summary: None,
+        });
+    };
+    if descriptor.write_disposition != WriteDisposition::Append {
+        return Ok(FileManifestPlanning {
+            plan: plan.clone(),
+            summary: Some(FileManifestRunSummary {
+                total_file_count: current_files.len(),
+                changed_file_count: current_files.len(),
+                unchanged_file_count: 0,
+            }),
+        });
+    }
+
+    let previous_files = match head.map(|checkpoint| &checkpoint.delta.output_position) {
+        Some(SourcePosition::FileManifest(manifest)) => manifest_files_by_path(&manifest.files)?,
+        _ => BTreeMap::new(),
+    };
+    let changed_paths = current_files
+        .iter()
+        .filter(|file| {
+            previous_files
+                .get(file.path.as_str())
+                .is_none_or(|previous| !same_file_identity(previous, file))
+        })
+        .map(|file| file.path.clone())
+        .collect::<BTreeSet<_>>();
+    let changed_file_count = changed_paths.len();
+    let mut filtered = plan.clone();
+    filtered.scan.partitions.retain(|partition| {
+        partition
+            .metadata
+            .get("path")
+            .is_some_and(|path| changed_paths.contains(path))
+    });
+    filtered.explain.partitions.retain(|partition| {
+        filtered
+            .scan
+            .partitions
+            .iter()
+            .any(|planned| planned.partition_id.as_str() == partition.partition_id)
+    });
+
+    Ok(FileManifestPlanning {
+        plan: filtered,
+        summary: Some(FileManifestRunSummary {
+            total_file_count: current_files.len(),
+            changed_file_count,
+            unchanged_file_count: current_files.len().saturating_sub(changed_file_count),
+        }),
+    })
+}
+
+fn file_positions_from_partitions(
+    partitions: &[PartitionPlan],
+) -> Result<Option<Vec<FilePosition>>> {
+    if partitions
+        .iter()
+        .all(|partition| partition.metadata.get("kind").map(String::as_str) != Some("files"))
+    {
+        return Ok(None);
+    }
+    let mut files = Vec::with_capacity(partitions.len());
+    for partition in partitions {
+        if partition.metadata.get("kind").map(String::as_str) != Some("files") {
+            return Ok(None);
+        }
+        let path = partition.metadata.get("path").cloned().ok_or_else(|| {
+            CdfError::contract("file partition manifest comparison requires path metadata")
+        })?;
+        let size_bytes = partition
+            .metadata
+            .get("bytes")
+            .ok_or_else(|| {
+                CdfError::contract(format!(
+                    "file partition `{path}` manifest comparison requires bytes metadata"
+                ))
+            })?
+            .parse::<u64>()
+            .map_err(|error| {
+                CdfError::contract(format!(
+                    "file partition `{path}` has invalid bytes metadata: {error}"
+                ))
+            })?;
+        let sha256 = partition.metadata.get("sha256").cloned();
+        let etag = partition.metadata.get("etag").cloned();
+        if sha256.is_none() && etag.is_none() {
+            return Err(CdfError::contract(format!(
+                "file partition `{path}` manifest comparison requires checksum or ETag metadata"
+            )));
+        }
+        files.push(FilePosition {
+            path,
+            size_bytes,
+            etag,
+            sha256,
+        });
+    }
+    Ok(Some(files))
+}
+
+fn manifest_files_by_path(files: &[FilePosition]) -> Result<BTreeMap<&str, &FilePosition>> {
+    let mut by_path = BTreeMap::new();
+    for file in files {
+        if by_path.insert(file.path.as_str(), file).is_some() {
+            return Err(CdfError::data(format!(
+                "committed file manifest contains duplicate path `{}`",
+                file.path
+            )));
+        }
+    }
+    Ok(by_path)
+}
+
+fn same_file_identity(previous: &FilePosition, current: &FilePosition) -> bool {
+    previous.size_bytes == current.size_bytes
+        && match (
+            &previous.sha256,
+            &current.sha256,
+            &previous.etag,
+            &current.etag,
+        ) {
+            (Some(previous), Some(current), _, _) => previous == current,
+            (_, _, Some(previous), Some(current)) => previous == current,
+            _ => false,
+        }
+}
+
+fn no_changed_files_report(
+    execution: ProjectRunExecution<'_>,
+    head: Option<Checkpoint>,
+    summary: Option<FileManifestRunSummary>,
+) -> Result<ProjectRunReport> {
+    let checkpoint = head.ok_or_else(|| {
+        CdfError::internal("file manifest no-op requires a committed checkpoint head")
+    })?;
+    let receipt = checkpoint.receipt.clone().ok_or_else(|| {
+        CdfError::data(format!(
+            "checkpoint {} cannot satisfy a file manifest no-op because it has no receipt",
+            checkpoint.delta.checkpoint_id
+        ))
+    })?;
+    execution.recorder.append_run_succeeded()?;
+    let ledger_snapshot = execution.recorder.snapshot()?;
+    Ok(ProjectRunReport {
+        run_id: execution.recorder.run_id.clone(),
+        ledger_snapshot,
+        package_dir: execution.package_dir,
+        package_id: execution.package_id.to_owned(),
+        package_hash: checkpoint.delta.package_hash.clone(),
+        package_status: PackageStatus::Checkpointed,
+        checkpoint,
+        receipt,
+        receipt_source: ProjectReceiptSource::FileManifestNoChangedFiles,
+        row_count: 0,
+        segment_count: 0,
+        file_manifest: summary,
     })
 }
 

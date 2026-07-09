@@ -24,6 +24,7 @@ pub(crate) struct ResolvedFileMatch {
     path: PathBuf,
     path_text: String,
     size_bytes: u64,
+    sha256: String,
     modified_ms: Option<String>,
 }
 
@@ -202,6 +203,11 @@ fn validate_partition(
             "declarative file partition `{path}` changed size after planning"
         )));
     }
+    if partition.metadata.get("sha256").map(String::as_str) != Some(resolved.sha256.as_str()) {
+        return Err(CdfError::data(format!(
+            "declarative file partition `{path}` changed checksum after planning"
+        )));
+    }
     Ok(resolved.path.clone())
 }
 
@@ -217,6 +223,7 @@ fn partition_for_file_match(
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
     metadata.insert("path".to_owned(), file.path_text.clone());
     metadata.insert("bytes".to_owned(), file.size_bytes.to_string());
+    metadata.insert("sha256".to_owned(), file.sha256.clone());
     if let Some(modified_ms) = &file.modified_ms {
         metadata.insert("modified_ms".to_owned(), modified_ms.clone());
     }
@@ -495,12 +502,25 @@ fn resolved_file_match(root: &Path, path: PathBuf) -> Result<ResolvedFileMatch> 
         ))
     })?;
     let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
+    let sha256 = file_sha256(&path)?;
     Ok(ResolvedFileMatch {
         path,
         path_text,
         size_bytes: metadata.len(),
+        sha256,
         modified_ms,
     })
+}
+
+fn file_sha256(path: &Path) -> Result<String> {
+    let mut file = File::open(path).map_err(|error| {
+        CdfError::data(format!("open matched file {}: {error}", path.display()))
+    })?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|error| {
+        CdfError::data(format!("hash matched file {}: {error}", path.display()))
+    })?;
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn file_partition_id(path: &str) -> String {

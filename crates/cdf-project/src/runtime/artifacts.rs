@@ -190,7 +190,11 @@ fn state_delta_preimage_from_run_draft(
         .iter()
         .map(|(_, position)| position.clone())
         .collect::<Vec<_>>();
-    let output_position = aggregate_output_position(context, &output_positions)?;
+    let output_position = merge_append_file_manifest_output_position(
+        context,
+        head,
+        aggregate_output_position(context, &output_positions)?,
+    )?;
     let state_segments = segment_evidence
         .into_iter()
         .map(|(segment, segment_position)| StateSegment {
@@ -290,6 +294,42 @@ fn aggregate_file_manifest_output_position(
 
     Ok(SourcePosition::FileManifest(FileManifest {
         version: version.expect("positions is non-empty and all positions are file manifests"),
+        files: files.into_values().collect(),
+    }))
+}
+
+fn merge_append_file_manifest_output_position(
+    context: &StateCommitArtifactContext<'_>,
+    head: Option<&Checkpoint>,
+    output_position: SourcePosition,
+) -> Result<SourcePosition> {
+    if context.descriptor.write_disposition != WriteDisposition::Append {
+        return Ok(output_position);
+    }
+    let Some(SourcePosition::FileManifest(previous)) =
+        head.map(|checkpoint| &checkpoint.delta.output_position)
+    else {
+        return Ok(output_position);
+    };
+    let SourcePosition::FileManifest(current) = output_position else {
+        return Ok(output_position);
+    };
+    if previous.version != current.version {
+        return Err(CdfError::data(format!(
+            "resource `{}` cannot merge file manifest versions {} and {}",
+            context.descriptor.resource_id, previous.version, current.version
+        )));
+    }
+
+    let mut files = BTreeMap::<String, FilePosition>::new();
+    for file in &previous.files {
+        files.insert(file.path.clone(), file.clone());
+    }
+    for file in current.files {
+        files.insert(file.path.clone(), file);
+    }
+    Ok(SourcePosition::FileManifest(FileManifest {
+        version: previous.version,
         files: files.into_values().collect(),
     }))
 }

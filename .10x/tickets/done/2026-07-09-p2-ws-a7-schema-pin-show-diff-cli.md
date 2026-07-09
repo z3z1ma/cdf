@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
@@ -29,7 +29,9 @@ This ticket does not implement `cdf add`, remote file discovery, Python/WASM dis
 ## Progress and notes
 
 - 2026-07-09: Opened because WS-A still lacks the explicit `pin/show/diff` CLI surface required by the P2 directive.
+- 2026-07-09: Worker implementation added parser/help support and schema command handling for `cdf schema pin`, `cdf schema show`, and `cdf schema diff`; reused the generic dispatcher for local Parquet, Postgres catalog, and REST sample discovery; added snapshot show/diff reports, no-write diff behavior, pin snapshot writes, and an existing-lockfile resource update helper. Focused CLI tests were added for parser help, local Parquet pin/show/diff, unsupported no-lock pin reporting, REST changed diff/no-write/redaction, and Postgres pin/redaction when the live harness is available.
+- 2026-07-09: Parent integration fixed the concurrent file-runtime compile blocker, reran focused CLI schema tests, duplication checks, complexity checks, Rust quality gates, and security/supply-chain checks. Closure evidence is `.10x/evidence/2026-07-09-p2-ws-a7-d3-i2-batch.md`; closure review is `.10x/reviews/2026-07-09-p2-ws-a7-d3-i2-batch-review.md`.
 
 ## Blockers
 
-Project lockfile mutation support may need a narrow implementation inside this ticket; if the current lockfile model cannot store the refreshed snapshot reference without semantic churn, record the unsupported piece explicitly and still land show/diff plus snapshot writes.
+None. Creating a brand-new lockfile remains explicitly excluded from this child; `cdf schema pin` writes the snapshot and reports the unsupported lockfile-reference piece when no existing lockfile can be updated safely.

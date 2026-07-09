@@ -67,6 +67,7 @@ fn file_engine_plan_json(package_id: &str, disposition: MatrixDisposition) -> se
                 "glob": file_fixture::SOURCE_POSITION_PATH,
                 "path": file_fixture::SOURCE_POSITION_PATH,
                 "resource_id": file_fixture::RESOURCE_ID,
+                "sha256": file_fixture::SOURCE_SHA256,
             },
         }],
         "pushed_predicates": [],
@@ -130,6 +131,7 @@ fn file_engine_plan_json(package_id: &str, disposition: MatrixDisposition) -> se
                     "glob": file_fixture::SOURCE_POSITION_PATH,
                     "path": file_fixture::SOURCE_POSITION_PATH,
                     "resource_id": file_fixture::RESOURCE_ID,
+                    "sha256": file_fixture::SOURCE_SHA256,
                 },
             }],
             "estimates": {

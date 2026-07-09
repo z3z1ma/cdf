@@ -25,7 +25,7 @@ const INSPECT_NOUNS: &[&str] = &[
     "run",
 ];
 const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
-const SCHEMA_SUBCOMMANDS: &[&str] = &["discover"];
+const SCHEMA_SUBCOMMANDS: &[&str] = &["discover", "pin", "show", "diff"];
 const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
 const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "migrate", "recover"];
 const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
@@ -118,10 +118,18 @@ pub enum InspectNoun {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SchemaCommand {
     Discover(SchemaDiscoverArgs),
+    Pin(SchemaResourceArgs),
+    Show(SchemaResourceArgs),
+    Diff(SchemaResourceArgs),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaDiscoverArgs {
+    pub resource_id: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemaResourceArgs {
     pub resource_id: String,
 }
 
@@ -481,19 +489,24 @@ fn parse_diff(matches: &ArgMatches) -> Result<Command, CliError> {
 
 fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
     let Some((subcommand, matches)) = matches.subcommand() else {
-        return Err(CliError::usage("schema requires subcommand `discover`"));
+        return Err(CliError::usage(
+            "schema requires one of discover, pin, show, or diff",
+        ));
     };
     match subcommand {
         "discover" => {
-            let resource_id = resource_arg(
-                "schema discover",
-                &values(matches, "resource_arg"),
-                string_value(matches, "resource"),
-                "accepts at most one resource id",
-            )?
-            .ok_or_else(|| CliError::usage("schema discover requires a resource id"))?;
+            let resource_id = parse_schema_resource("schema discover", matches)?;
             Ok(SchemaCommand::Discover(SchemaDiscoverArgs { resource_id }))
         }
+        "pin" => Ok(SchemaCommand::Pin(SchemaResourceArgs {
+            resource_id: parse_schema_resource("schema pin", matches)?,
+        })),
+        "show" => Ok(SchemaCommand::Show(SchemaResourceArgs {
+            resource_id: parse_schema_resource("schema show", matches)?,
+        })),
+        "diff" => Ok(SchemaCommand::Diff(SchemaResourceArgs {
+            resource_id: parse_schema_resource("schema diff", matches)?,
+        })),
         other => Err(unknown_subcommand_error(
             &["schema"],
             other,
@@ -501,6 +514,16 @@ fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
             "unknown schema subcommand",
         )),
     }
+}
+
+fn parse_schema_resource(command: &str, matches: &ArgMatches) -> Result<String, CliError> {
+    resource_arg(
+        command,
+        &values(matches, "resource_arg"),
+        string_value(matches, "resource"),
+        "accepts at most one resource id",
+    )?
+    .ok_or_else(|| CliError::usage(format!("{command} requires a resource id")))
 }
 
 fn parse_contract(matches: &ArgMatches) -> Result<ContractCommand, CliError> {
@@ -799,11 +822,17 @@ fn run_command() -> ClapCommand {
 }
 
 fn schema_command() -> ClapCommand {
-    cmd("schema").subcommand(
-        cmd("discover")
-            .arg(values_arg("resource_arg").value_name("RESOURCE"))
-            .arg(option("resource", "resource", "RESOURCE")),
-    )
+    cmd("schema")
+        .subcommand(schema_resource_command("discover"))
+        .subcommand(schema_resource_command("pin"))
+        .subcommand(schema_resource_command("show"))
+        .subcommand(schema_resource_command("diff"))
+}
+
+fn schema_resource_command(name: &'static str) -> ClapCommand {
+    cmd(name)
+        .arg(values_arg("resource_arg").value_name("RESOURCE"))
+        .arg(option("resource", "resource", "RESOURCE"))
 }
 
 fn inspect_command() -> ClapCommand {

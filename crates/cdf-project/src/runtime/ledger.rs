@@ -56,10 +56,13 @@ impl<'a> ProjectRunRecorder<'a> {
         self.append(event)
     }
 
-    pub(super) fn append_plan_recorded(&self) -> Result<()> {
+    pub(super) fn append_plan_recorded(&self, planned_packages: u64) -> Result<()> {
         let mut event = self.base_event(RunEventKind::PlanRecorded);
         let mut details = details_for_phase("planning");
-        details.insert("planned_packages".to_owned(), RunEventValue::U64(1));
+        details.insert(
+            "planned_packages".to_owned(),
+            RunEventValue::U64(planned_packages),
+        );
         event.details = RunEventDetails {
             attributes: details,
         };
