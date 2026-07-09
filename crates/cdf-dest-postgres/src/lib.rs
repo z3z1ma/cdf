@@ -27,6 +27,7 @@ pub const CDF_LOADED_AT_COLUMN: &str = "_cdf_loaded_at_ms";
 pub const POSTGRES_XID_SQL: &str = "SELECT txid_current()::text AS xid";
 
 mod api;
+mod catalog;
 mod commit;
 mod ddl;
 mod dml;
@@ -44,6 +45,10 @@ mod tests;
 mod validate;
 
 pub use api::*;
+pub use catalog::{
+    POSTGRES_CATALOG_DISCOVERY_PROBE, PostgresCatalogDiscovery,
+    discover_postgres_table_catalog_schema,
+};
 pub use identifiers::*;
 pub use plan::*;
 pub use rows::{postgres_columns_for_schema, postgres_type_for_arrow};

@@ -476,6 +476,52 @@ fn local_parquet_discover_autopin_writes_normalized_snapshot_and_pins_clone() {
 }
 
 #[test]
+fn generic_schema_discovery_dispatch_preserves_local_parquet_behavior_without_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+
+    let discovery = discover_resource_schema(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap();
+
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["format"],
+        SCHEMA_DISCOVERY_FORMAT_PARQUET
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["cdf:normalizer"],
+        NORMALIZER_NAMECASE_V1
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["path"],
+        "vendors.parquet"
+    );
+    assert!(
+        discovery
+            .snapshot
+            .source_identity
+            .contains_key("footer_sha256")
+    );
+}
+
+#[test]
 fn local_parquet_discover_autopin_leaves_declared_resources_unprobed() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.missing");
@@ -534,6 +580,138 @@ fn local_parquet_discover_autopin_rejects_multi_file_glob_without_snapshot_write
     assert!(message.contains("multi-file Parquet discovery is unsupported"));
     assert!(message.contains("resolved to 2 files"));
     assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn generic_schema_discovery_dispatch_fails_closed_for_unsupported_rest_resource() {
+    let project = r#"
+[project]
+name = "api"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."api.*"]
+source = "resources/api.toml"
+"#;
+    let rest = r#"
+[source.api]
+kind = "rest"
+base_url = "https://example.com"
+
+[resource.items]
+path = "/items"
+records = "$"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
+    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resource = resources.remove(0);
+
+    let error = discover_resource_schema(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("unsupported schema discovery slice"));
+    assert!(message.contains("api.items"));
+    assert!(message.contains("REST resource discovery is not implemented"));
+}
+
+#[test]
+fn generic_schema_discovery_dispatch_fails_closed_for_sql_query_resource() {
+    let project = r#"
+[project]
+name = "warehouse"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."warehouse.*"]
+source = "resources/sql.toml"
+"#;
+    let sql = r#"
+[source.warehouse]
+kind = "sql"
+connection = "secret://env/POSTGRES_URL"
+dialect = "postgres"
+
+[resource.orders]
+query = "SELECT * FROM public.orders"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql);
+    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resource = resources.remove(0);
+
+    let error = discover_resource_schema(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("unsupported schema discovery slice"));
+    assert!(message.contains("warehouse.orders"));
+    assert!(message.contains("query resources are not supported"));
+}
+
+#[test]
+fn generic_schema_discovery_dispatch_fails_closed_for_non_postgres_sql_dialect() {
+    let project = r#"
+[project]
+name = "warehouse"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."warehouse.*"]
+source = "resources/sql.toml"
+"#;
+    let sql = r#"
+[source.warehouse]
+kind = "sql"
+connection = "secret://env/WAREHOUSE_URL"
+dialect = "mysql"
+
+[resource.orders]
+table = "orders"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/sql.toml", sql);
+    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resource = resources.remove(0);
+
+    let error = discover_resource_schema(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("unsupported schema discovery slice"));
+    assert!(message.contains("warehouse.orders"));
+    assert!(message.contains("SQL dialect `mysql` discovery is not implemented"));
 }
 
 fn write_discover_project(root: &Path, format: &str, glob: &str) {

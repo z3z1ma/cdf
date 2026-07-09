@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use cdf_project::{SchemaSnapshotDataType, discover_local_parquet_resource_schema};
+use cdf_project::{SchemaSnapshotDataType, discover_resource_schema};
 use serde::Serialize;
 
 use crate::{
@@ -26,7 +26,8 @@ fn discover(cli: &Cli, args: SchemaDiscoverArgs) -> Result<CommandOutput, CliErr
         cli.env.as_deref(),
     )?;
     let resource = context.resource(&args.resource_id)?;
-    let discovery = discover_local_parquet_resource_schema(resource)?;
+    let secret_provider = context.secret_provider();
+    let discovery = discover_resource_schema(resource, &secret_provider)?;
     let report = SchemaDiscoverReport::from_discovery(
         &context,
         &args.resource_id,

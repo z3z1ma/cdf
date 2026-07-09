@@ -3,7 +3,10 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use cdf_contract::{IdentifierPolicy, NORMALIZER_NAMECASE_V1, normalize_arrow_schema};
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, discover_local_parquet_schema,
+    postgres_table_target_for_sql_plan,
 };
+use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
+use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaSource,
 };
@@ -20,10 +23,50 @@ pub struct PreparedDiscoveredResource {
 }
 
 #[derive(Clone, Debug)]
+pub struct ResourceSchemaDiscovery {
+    pub normalized_schema: arrow_schema::SchemaRef,
+    pub snapshot: DiscoveredSchemaSnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveredSchemaSnapshot {
+    pub artifact: SchemaSnapshotArtifact,
+    pub reference: cdf_kernel::SchemaSnapshotReference,
+    pub source_identity: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct LocalParquetSchemaDiscovery {
     pub normalized_schema: arrow_schema::SchemaRef,
     pub snapshot: DiscoveredParquetSchemaSnapshot,
     pub partition: PartitionPlan,
+}
+
+pub fn discover_resource_schema(
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+) -> Result<ResourceSchemaDiscovery> {
+    ensure_discover_schema_mode(resource)?;
+    match resource.plan() {
+        CompiledResourcePlan::Files(_) => {
+            let discovery = discover_local_parquet_resource_schema(resource)?;
+            Ok(ResourceSchemaDiscovery {
+                normalized_schema: Arc::clone(&discovery.normalized_schema),
+                snapshot: DiscoveredSchemaSnapshot {
+                    artifact: discovery.snapshot.artifact,
+                    reference: discovery.snapshot.reference,
+                    source_identity: discovery.snapshot.source_identity,
+                },
+            })
+        }
+        CompiledResourcePlan::Sql(plan) => {
+            discover_postgres_resource_schema(resource, plan, secret_provider)
+        }
+        CompiledResourcePlan::Rest(_) => Err(unsupported_discover_slice(
+            resource.descriptor(),
+            "REST resource discovery is not implemented in this slice",
+        )),
+    }
 }
 
 pub fn discover_local_parquet_resource_schema(
@@ -73,6 +116,66 @@ pub fn discover_local_parquet_resource_schema(
         normalized_schema: normalized,
         snapshot,
         partition,
+    })
+}
+
+fn discover_postgres_resource_schema(
+    resource: &CompiledResource,
+    plan: &cdf_declarative::SqlResourcePlan,
+    secret_provider: &dyn SecretProvider,
+) -> Result<ResourceSchemaDiscovery> {
+    if let Some(dialect) = &plan.dialect
+        && !dialect.eq_ignore_ascii_case("postgres")
+    {
+        return Err(unsupported_discover_slice(
+            resource.descriptor(),
+            format!(
+                "SQL dialect `{dialect}` discovery is not implemented in this slice; only dialect `postgres` table resources support catalog discovery"
+            ),
+        ));
+    }
+    let target = postgres_table_target_for_sql_plan(plan).map_err(|error| {
+        unsupported_discover_slice(
+            resource.descriptor(),
+            format!(
+                "Postgres table catalog discovery is unavailable: {}",
+                error.message
+            ),
+        )
+    })?;
+    let secret = secret_provider.resolve(&plan.connection)?;
+    let probe = discover_postgres_table_catalog_schema(
+        secret.as_str()?,
+        &resource.descriptor().resource_id,
+        &target,
+    )?;
+    let normalized = normalize_arrow_schema(&probe.schema, &IdentifierPolicy::default())?;
+    let normalized = Arc::new(normalized);
+    let metadata = BTreeMap::from([
+        (
+            "probe".to_owned(),
+            POSTGRES_CATALOG_DISCOVERY_PROBE.to_owned(),
+        ),
+        ("source_kind".to_owned(), "sql".to_owned()),
+        ("dialect".to_owned(), "postgres".to_owned()),
+        ("table".to_owned(), target.display_name()),
+        (
+            "cdf:normalizer".to_owned(),
+            NORMALIZER_NAMECASE_V1.to_owned(),
+        ),
+    ]);
+    let artifact = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        normalized.as_ref(),
+        metadata,
+    )?;
+    Ok(ResourceSchemaDiscovery {
+        normalized_schema: normalized,
+        snapshot: DiscoveredSchemaSnapshot {
+            reference: artifact.reference(),
+            artifact,
+            source_identity: probe.source_identity,
+        },
     })
 }
 

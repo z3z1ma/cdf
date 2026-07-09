@@ -20,9 +20,9 @@ use cdf_conformance::resource::{
 };
 use cdf_kernel::{
     CheckpointId, ContractRef, CursorOrderingClaim, CursorPosition, CursorSpec, CursorValue,
-    PartitionId, PipelineId, PredicateId, QueryableResource, ResourceDescriptor, ResourceStream,
-    ScanPredicate, ScanRequest, SchemaSource, ScopeKey, SegmentId, SortDirection, SourcePosition,
-    TrustLevel,
+    PartitionId, PipelineId, PredicateId, QueryableResource, ResourceDescriptor, ResourceId,
+    ResourceStream, ScanPredicate, ScanRequest, SchemaSource, ScopeKey, SegmentId, SortDirection,
+    SourcePosition, TrustLevel,
 };
 use cdf_package::{
     PackageBuilder, PackageManifest, PackageReader, QuarantineObservedValue, QuarantineRecord,
@@ -402,6 +402,63 @@ fn session_commit(
         }));
     }
     session.finalize().unwrap()
+}
+
+#[test]
+fn live_postgres_catalog_discovery_reads_empty_table_metadata_only() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let target = env.target("catalog_discovery_types");
+    let mut client = env.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"VendorID\" INTEGER NOT NULL,
+                \"is_active\" BOOLEAN,
+                \"ratio\" DOUBLE PRECISION NOT NULL,
+                \"name\" TEXT,
+                \"service_date\" DATE NOT NULL,
+                \"created_at\" TIMESTAMP WITHOUT TIME ZONE,
+                \"updated_at\" TIMESTAMP WITH TIME ZONE,
+                \"request_uuid\" UUID
+            )",
+            target.sql()
+        ))
+        .unwrap();
+
+    let discovery = discover_postgres_table_catalog_schema(
+        &env.url,
+        &ResourceId::new("warehouse.orders").unwrap(),
+        &target,
+    )
+    .unwrap();
+
+    assert_eq!(discovery.source_identity["source_kind"], "sql");
+    assert_eq!(discovery.source_identity["dialect"], "postgres");
+    assert_eq!(discovery.source_identity["table"], target.display_name());
+    assert!(!format!("{discovery:?}").contains(&env.url));
+    let schema = discovery.schema;
+    let fields = schema.fields();
+    assert_eq!(fields.len(), 8);
+    assert_eq!(fields[0].name(), "VendorID");
+    assert_eq!(fields[0].data_type(), &DataType::Int64);
+    assert!(!fields[0].is_nullable());
+    assert_eq!(fields[0].metadata()["cdf:physical_type"], "integer");
+    assert_eq!(fields[1].data_type(), &DataType::Boolean);
+    assert!(fields[1].is_nullable());
+    assert_eq!(fields[2].data_type(), &DataType::Float64);
+    assert_eq!(fields[3].data_type(), &DataType::Utf8);
+    assert_eq!(fields[4].data_type(), &DataType::Date32);
+    assert_eq!(
+        fields[5].data_type(),
+        &DataType::Timestamp(TimeUnit::Microsecond, None)
+    );
+    assert_eq!(
+        fields[6].data_type(),
+        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+    );
+    assert_eq!(fields[7].data_type(), &DataType::Utf8);
 }
 
 #[test]

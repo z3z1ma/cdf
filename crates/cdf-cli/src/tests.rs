@@ -1569,6 +1569,118 @@ fn schema_discover_local_parquet_reports_schema_without_project_writes() {
 }
 
 #[test]
+fn schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("catalog_discover_orders");
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"VendorID\" INTEGER NOT NULL,
+                \"customer_uuid\" UUID,
+                \"updated_at\" TIMESTAMP WITH TIME ZONE
+            )",
+            table
+        ))
+        .unwrap();
+
+    let project = TestProject::new();
+    let source_dsn = postgres.url.replacen(
+        "postgresql://cdf@",
+        "postgresql://cdf:schema-discover-secret@",
+        1,
+    );
+    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_discover_resource("secret://file/sql-dsn", &table),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "discover",
+        "warehouse.orders",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
+    assert_secret_absent(&result, "schema-discover-secret");
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_id"], "warehouse.orders");
+    assert_eq!(report["writes"]["schema_snapshot"], false);
+    assert_eq!(report["writes"]["lockfile"], false);
+    assert_eq!(report["writes"]["package"], false);
+    assert_eq!(report["writes"]["destination"], false);
+    assert_eq!(report["writes"]["checkpoint"], false);
+    assert_eq!(report["snapshot_metadata"]["probe"], "postgres-catalog");
+    assert_eq!(report["snapshot_metadata"]["source_kind"], "sql");
+    assert_eq!(report["snapshot_metadata"]["dialect"], "postgres");
+    assert_eq!(report["snapshot_metadata"]["table"], table);
+    assert_eq!(report["snapshot_metadata"]["cdf:normalizer"], "namecase-v1");
+    assert!(
+        report["schema_snapshot_path"]
+            .as_str()
+            .unwrap()
+            .starts_with(".cdf/schemas/warehouse.orders@sha256:")
+    );
+    assert_eq!(report["fields"][0]["name"], "vendor_id");
+    assert_eq!(report["fields"][0]["nullable"], false);
+    assert_eq!(report["fields"][0]["source_name"], "VendorID");
+    assert_eq!(
+        report["fields"][0]["metadata"]["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(
+        report["fields"][0]["metadata"]["cdf:physical_type"],
+        "integer"
+    );
+    assert_eq!(report["fields"][1]["name"], "customer_uuid");
+    assert_eq!(report["fields"][1]["metadata"]["cdf:physical_type"], "uuid");
+    assert_eq!(report["fields"][2]["name"], "updated_at");
+    assert_eq!(
+        report["fields"][2]["metadata"]["cdf:physical_type"],
+        "timestamp with time zone"
+    );
+    assert_eq!(report["source_identity"]["source_kind"], "sql");
+    assert_eq!(report["source_identity"]["dialect"], "postgres");
+    assert_eq!(report["source_identity"]["table"], table);
+    assert_eq!(report["next_command"], "cdf plan warehouse.orders");
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "schema",
+        "discover",
+        "warehouse.orders",
+    ]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert_secret_absent(&human, &source_dsn);
+    assert_secret_absent(&human, "schema-discover-secret");
+    assert!(human.stdout.contains("postgres-catalog"));
+}
+
+#[test]
 fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
@@ -8288,6 +8400,22 @@ trust = "governed"
 schema = {{ fields = [
   {{ name = "id", type = "int64", nullable = false }},
 ] }}
+"#
+    )
+}
+
+fn sql_discover_resource(connection: &str, table: &str) -> String {
+    format!(
+        r#"
+[source.warehouse]
+kind = "sql"
+connection = "{connection}"
+dialect = "postgres"
+
+[resource.orders]
+table = "{table}"
+write_disposition = "append"
+trust = "governed"
 "#
     )
 }

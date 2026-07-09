@@ -1,10 +1,11 @@
 use super::*;
+use arrow_schema::{DataType, TimeUnit};
 use cdf_conformance::destination::{
     DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
 };
 use cdf_kernel::{
-    CheckpointId, CursorPosition, CursorValue, PartitionId, PipelineId, ScopeKey, SegmentId,
-    SourcePosition,
+    CheckpointId, CursorPosition, CursorValue, PartitionId, PipelineId, ResourceId, ScopeKey,
+    SegmentId, SourcePosition,
 };
 
 fn columns() -> Vec<PostgresColumn> {
@@ -13,6 +14,88 @@ fn columns() -> Vec<PostgresColumn> {
         PostgresColumn::new("name", "TEXT", true).unwrap(),
         PostgresColumn::new("amount", "NUMERIC(12,2)", true).unwrap(),
     ]
+}
+
+#[test]
+fn catalog_schema_maps_supported_postgres_types_to_runtime_arrow_subset() {
+    let schema = crate::catalog::schema_from_catalog_columns(
+        &ResourceId::new("warehouse.orders").unwrap(),
+        vec![
+            crate::catalog::PostgresCatalogColumn {
+                name: "VendorID".to_owned(),
+                observed_type: "integer".to_owned(),
+                nullable: false,
+            },
+            crate::catalog::PostgresCatalogColumn {
+                name: "is_active".to_owned(),
+                observed_type: "boolean".to_owned(),
+                nullable: true,
+            },
+            crate::catalog::PostgresCatalogColumn {
+                name: "ratio".to_owned(),
+                observed_type: "double precision".to_owned(),
+                nullable: false,
+            },
+            crate::catalog::PostgresCatalogColumn {
+                name: "customer_uuid".to_owned(),
+                observed_type: "uuid".to_owned(),
+                nullable: true,
+            },
+            crate::catalog::PostgresCatalogColumn {
+                name: "service_date".to_owned(),
+                observed_type: "date".to_owned(),
+                nullable: false,
+            },
+            crate::catalog::PostgresCatalogColumn {
+                name: "created_at".to_owned(),
+                observed_type: "timestamp without time zone".to_owned(),
+                nullable: true,
+            },
+            crate::catalog::PostgresCatalogColumn {
+                name: "updated_at".to_owned(),
+                observed_type: "timestamp with time zone".to_owned(),
+                nullable: false,
+            },
+        ],
+    )
+    .unwrap();
+
+    let fields = schema.fields();
+    assert_eq!(fields[0].data_type(), &DataType::Int64);
+    assert!(!fields[0].is_nullable());
+    assert_eq!(fields[0].metadata()["cdf:physical_type"], "integer");
+    assert_eq!(fields[1].data_type(), &DataType::Boolean);
+    assert!(fields[1].is_nullable());
+    assert_eq!(fields[2].data_type(), &DataType::Float64);
+    assert_eq!(fields[3].data_type(), &DataType::Utf8);
+    assert_eq!(fields[4].data_type(), &DataType::Date32);
+    assert_eq!(
+        fields[5].data_type(),
+        &DataType::Timestamp(TimeUnit::Microsecond, None)
+    );
+    assert_eq!(
+        fields[6].data_type(),
+        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+    );
+}
+
+#[test]
+fn catalog_schema_rejects_unsupported_type_with_resource_column_and_remediation() {
+    let error = crate::catalog::schema_from_catalog_columns(
+        &ResourceId::new("warehouse.orders").unwrap(),
+        vec![crate::catalog::PostgresCatalogColumn {
+            name: "amount".to_owned(),
+            observed_type: "numeric".to_owned(),
+            nullable: true,
+        }],
+    )
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("warehouse.orders"));
+    assert!(message.contains("amount"));
+    assert!(message.contains("numeric"));
+    assert!(message.contains("not yet supported by the Postgres discovery/execution slice"));
 }
 
 fn segment(id: &str, rows: u64) -> StateSegment {

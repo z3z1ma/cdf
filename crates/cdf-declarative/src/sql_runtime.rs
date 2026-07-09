@@ -214,6 +214,10 @@ pub(crate) fn sql_partition_for_plan(
     })
 }
 
+pub fn postgres_table_target_for_sql_plan(plan: &SqlResourcePlan) -> Result<PostgresTarget> {
+    postgres_table_target_for_runtime(plan)
+}
+
 fn postgres_table_target_for_runtime(plan: &SqlResourcePlan) -> Result<PostgresTarget> {
     if plan.query.is_some() {
         return Err(CdfError::contract(
