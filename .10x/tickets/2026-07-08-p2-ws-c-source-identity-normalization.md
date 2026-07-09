@@ -34,6 +34,7 @@ This ticket does not change the normalizer algorithm itself unless a bug is foun
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-c1-declarative-schema-normalization.md` for source-name defaults and `namecase-v1` normalization in declarative compiled schemas. Destination-specific sheet rules and package normalizer evidence remain later children.
 - 2026-07-09: Closed first executable child `.10x/tickets/done/2026-07-08-p2-ws-c1-declarative-schema-normalization.md`. Direct declarative compiled-schema source-name defaults, `VendorID` normalization, explicit `source_name` preservation, and collision diagnostics are covered. Destination-specific sheet rules, schema/package normalizer evidence, and broader live plan/run coverage remain open WS-C work.
+- 2026-07-09: Split `.10x/tickets/2026-07-09-p2-ws-c2-destination-identifier-policy-adapter.md` for adapting destination-sheet `IdentifierRules` into the contract normalizer before live plan/package integration.
 
 ## Blockers
 
