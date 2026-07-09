@@ -228,18 +228,13 @@ pub struct FieldDeclaration {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FieldTypeDeclaration {
-    String,
-    Utf8,
-    Int64,
-    UInt64,
-    Float64,
-    Boolean,
-    Date32,
-    TimestampMillis,
-    TimestampMicros,
-    Json,
+#[serde(transparent)]
+pub struct FieldTypeDeclaration(String);
+
+impl FieldTypeDeclaration {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

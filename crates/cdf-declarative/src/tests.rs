@@ -8,6 +8,7 @@ use arrow_array::{
     Array, BooleanArray, Date32Array, Float64Array, Int64Array, StringArray,
     TimestampMillisecondArray, UInt64Array,
 };
+use arrow_schema::{DataType, Field, Fields, TimeUnit};
 use cdf_conformance::resource::{
     PredicateExpectation, ResourceConformanceCase, ResourceExecutionConformanceCase,
     assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
@@ -1385,6 +1386,158 @@ resource:
 }
 
 #[test]
+fn declarative_arrow_type_strings_compile_from_toml() {
+    let input = r#"
+[source.local]
+kind = "files"
+root = "."
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "old_string", type = "string" },
+  { name = "old_json", type = "json" },
+  { name = "old_uint64", type = "u_int64" },
+  { name = "uint64", type = "uint64" },
+  { name = "int8", type = "int8" },
+  { name = "uint32", type = "uint32" },
+  { name = "float16", type = "float16" },
+  { name = "decimal", type = "decimal(38,9)" },
+  { name = "decimal256", type = "decimal256(76,10)" },
+  { name = "date64", type = "date(ms)" },
+  { name = "time64", type = "time64(ns)" },
+  { name = "timestamp", type = "timestamp(us, UTC)" },
+  { name = "duration", type = "duration(ms)" },
+  { name = "binary", type = "binary" },
+  { name = "large_binary", type = "large_binary" },
+  { name = "large_utf8", type = "large_utf8" },
+  { name = "items", type = "list<int64>" },
+  { name = "payload", type = "struct<amount: decimal(38,9), tags: list<utf8>>" },
+  { name = "counts", type = "map<utf8,int64>" },
+] }
+"#;
+
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let schema = resource.schema();
+    let field_type = |name: &str| schema.field_with_name(name).unwrap().data_type();
+
+    assert_eq!(field_type("old_string"), &DataType::Utf8);
+    assert_eq!(field_type("old_json"), &DataType::Utf8);
+    assert_eq!(field_type("old_uint64"), &DataType::UInt64);
+    assert_eq!(field_type("uint64"), &DataType::UInt64);
+    assert_eq!(field_type("int8"), &DataType::Int8);
+    assert_eq!(field_type("uint32"), &DataType::UInt32);
+    assert_eq!(field_type("float16"), &DataType::Float16);
+    assert_eq!(field_type("decimal"), &DataType::Decimal128(38, 9));
+    assert_eq!(field_type("decimal256"), &DataType::Decimal256(76, 10));
+    assert_eq!(field_type("date64"), &DataType::Date64);
+    assert_eq!(
+        field_type("time64"),
+        &DataType::Time64(TimeUnit::Nanosecond)
+    );
+    assert_eq!(
+        field_type("timestamp"),
+        &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+    );
+    assert_eq!(
+        field_type("duration"),
+        &DataType::Duration(TimeUnit::Millisecond)
+    );
+    assert_eq!(field_type("binary"), &DataType::Binary);
+    assert_eq!(field_type("large_binary"), &DataType::LargeBinary);
+    assert_eq!(field_type("large_utf8"), &DataType::LargeUtf8);
+    assert_eq!(
+        field_type("items"),
+        &DataType::new_list(DataType::Int64, true)
+    );
+    assert_eq!(
+        field_type("payload"),
+        &DataType::Struct(Fields::from(vec![
+            Field::new("amount", DataType::Decimal128(38, 9), true),
+            Field::new("tags", DataType::new_list(DataType::Utf8, true), true),
+        ]))
+    );
+    assert_eq!(
+        field_type("counts"),
+        &DataType::Map(
+            Arc::new(Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("key", DataType::Utf8, false),
+                    Field::new("value", DataType::Int64, true),
+                ])),
+                false,
+            )),
+            false,
+        )
+    );
+}
+
+#[test]
+fn declarative_arrow_type_strings_compile_from_yaml() {
+    let input = r#"
+source:
+  local:
+    kind: files
+    root: .
+resource:
+  events:
+    glob: "*.ndjson"
+    format: ndjson
+    write_disposition: append
+    trust: governed
+    schema:
+      fields:
+        - { name: id, type: int32, nullable: false }
+        - { name: tags, type: "list<large_utf8>" }
+        - { name: amount, type: "decimal128(20,4)" }
+"#;
+
+    let resource = compile_document(&parse_yaml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let schema = resource.schema();
+
+    assert_eq!(
+        schema.field_with_name("id").unwrap().data_type(),
+        &DataType::Int32
+    );
+    assert_eq!(
+        schema.field_with_name("tags").unwrap().data_type(),
+        &DataType::new_list(DataType::LargeUtf8, true)
+    );
+    assert_eq!(
+        schema.field_with_name("amount").unwrap().data_type(),
+        &DataType::Decimal128(20, 4)
+    );
+}
+
+#[test]
+fn declarative_arrow_type_error_names_offending_string() {
+    let input = r#"
+[source.local]
+kind = "files"
+root = "."
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [{ name = "items", type = "list<not_a_type>" }] }
+"#;
+
+    let error = compile_document(&parse_toml(input).unwrap()).unwrap_err();
+    assert!(error.to_string().contains("list<not_a_type>"));
+    assert!(error.to_string().contains("invalid declarative field type"));
+}
+
+#[test]
 fn file_runtime_rejects_partition_metadata_that_does_not_match_plan() {
     let input = r#"
 [source.local]
@@ -1478,6 +1631,19 @@ fn json_schema_artifact_exposes_editor_schema_model() {
     assert!(schema.contains("DeclarativeDocument"));
     assert!(schema.contains("link_header"));
     assert!(schema.contains("records_transform"));
+
+    let field_type_schema = artifact
+        .schema
+        .pointer("/$defs/FieldDeclaration/properties/type")
+        .unwrap();
+    let field_type_schema = resolve_schema_ref(&artifact.schema, field_type_schema);
+    assert_eq!(
+        field_type_schema
+            .get("type")
+            .and_then(serde_json::Value::as_str),
+        Some("string")
+    );
+    assert!(field_type_schema.get("enum").is_none());
 }
 
 #[test]
@@ -1887,6 +2053,20 @@ impl SecretProvider for RotatingSecretProvider {
             .map(SecretValue::new)
             .ok_or_else(|| CdfError::auth("rotating test secret provider exhausted"))
     }
+}
+
+fn resolve_schema_ref<'a>(
+    root: &'a serde_json::Value,
+    schema: &'a serde_json::Value,
+) -> &'a serde_json::Value {
+    let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) else {
+        return schema;
+    };
+    let pointer = reference
+        .strip_prefix('#')
+        .expect("local JSON Schema references must start with #");
+    root.pointer(pointer)
+        .expect("JSON Schema reference must resolve")
 }
 
 fn json_response(body: &str) -> HttpResponse {

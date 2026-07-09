@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-schema-discovery-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/types-contracts-normalization.md
 
@@ -33,6 +33,7 @@ This ticket does not implement destination-specific type mapping tables except w
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-b1-declarative-arrow-type-vocabulary.md` for the declarative Arrow vocabulary parser/compiler slice. Reconciliation core remains this workstream's next child.
+- 2026-07-09: B1 closed in `.10x/tickets/done/2026-07-08-p2-ws-b1-declarative-arrow-type-vocabulary.md`. Evidence: `.10x/evidence/2026-07-09-p2-ws-b1-declarative-arrow-type-vocabulary.md`. Review: `.10x/reviews/2026-07-09-p2-ws-b1-declarative-arrow-type-vocabulary-review.md`. Declarative Arrow type expressibility is implemented; observed-vs-declared reconciliation remains this workstream's next executable child.
 
 ## Blockers
 

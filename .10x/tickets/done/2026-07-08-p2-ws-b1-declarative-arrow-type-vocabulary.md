@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
 Depends-On: .10x/decisions/data-onramp-schema-discovery-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md
 
@@ -52,6 +52,7 @@ This ticket does not implement schema discovery probes, pinned snapshots, wideni
 ## Progress and notes
 
 - 2026-07-08: Opened as the first WS-B executable slice. Source inspection found the current vocabulary in `crates/cdf-declarative/src/declarations.rs` and Arrow mapping in `crates/cdf-declarative/src/compiled.rs`.
+- 2026-07-09: Implemented string-backed declarative field types, compiler lowering for the scoped Arrow vocabulary, focused TOML/YAML/error/JSON Schema tests, and closure records. Evidence: `.10x/evidence/2026-07-09-p2-ws-b1-declarative-arrow-type-vocabulary.md`. Review: `.10x/reviews/2026-07-09-p2-ws-b1-declarative-arrow-type-vocabulary-review.md`.
 
 ## Blockers
 
