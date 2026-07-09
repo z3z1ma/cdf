@@ -351,7 +351,10 @@ fn metadata_helpers_round_trip_cdf_annotations() {
 
     assert_eq!(source_name(&field), Some("Original Name"));
     assert_eq!(semantic(&field), Some("pii:email"));
+    let field = with_physical_type(field, "Int32");
+
     assert_eq!(null_origin(&field), Some("source_absent"));
+    assert_eq!(physical_type(&field), Some("Int32"));
     assert_eq!(
         field.metadata().get(SOURCE_NAME_METADATA_KEY),
         Some(&"Original Name".to_owned())

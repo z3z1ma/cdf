@@ -6,7 +6,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
-    TrustLevel, TypeMapping, TypeMappingFidelity, source_name, with_semantic, with_source_name,
+    TrustLevel, TypeMapping, TypeMappingFidelity, physical_type, source_name, with_semantic,
+    with_source_name,
 };
 
 #[test]
@@ -565,4 +566,206 @@ fn lossy_mapping_requires_explicit_policy_allowance() {
         validate_type_mapping(&allowed_policy, &mapping).unwrap(),
         TypeMappingDecision::AllowedLossyByContract
     );
+}
+
+#[test]
+fn schema_reconciliation_preserves_constraint_names_and_classifies_extra_fields() {
+    let observed = Schema::new(vec![
+        Field::new("VendorID", DataType::Int64, false),
+        Field::new("ignored_physical_column", DataType::Utf8, true),
+    ]);
+    let constraint = Schema::new(vec![with_source_name(
+        with_semantic(Field::new("vendor_id", DataType::Int64, false), "id"),
+        "VendorID",
+    )]);
+
+    let reconciliation =
+        reconcile_schema(&observed, &constraint, &ContractPolicy::default().types).unwrap();
+    let field = reconciliation.schema.field(0);
+
+    assert_eq!(field.name(), "vendor_id");
+    assert_eq!(source_name(field), Some("VendorID"));
+    assert_eq!(physical_type(field), Some("Int64"));
+    assert_eq!(field.metadata().get("cdf:semantic"), Some(&"id".to_owned()));
+    assert_eq!(
+        decision_for(&reconciliation.plan, "VendorID").decision,
+        FieldCoercionDecision::Preserved
+    );
+    assert_eq!(
+        decision_for(&reconciliation.plan, "ignored_physical_column").decision,
+        FieldCoercionDecision::Extra
+    );
+
+    let json = serde_json::to_string(&reconciliation.plan).unwrap();
+    assert_eq!(
+        reconciliation.plan,
+        serde_json::from_str::<SchemaCoercionPlan>(&json).unwrap()
+    );
+}
+
+#[test]
+fn schema_reconciliation_records_lossless_widenings_and_physical_type() {
+    let observed = Schema::new(vec![
+        Field::new("signed", DataType::Int32, false),
+        Field::new("unsigned", DataType::UInt8, false),
+        Field::new("float", DataType::Float32, false),
+        Field::new("decimal_ready", DataType::Int32, false),
+        Field::new("service_day", DataType::Date32, false),
+    ]);
+    let constraint = Schema::new(vec![
+        Field::new("signed", DataType::Int64, false),
+        Field::new("unsigned", DataType::UInt64, false),
+        Field::new("float", DataType::Float64, false),
+        Field::new("decimal_ready", DataType::Decimal128(12, 2), false),
+        Field::new(
+            "service_day",
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            false,
+        ),
+    ]);
+
+    let reconciliation =
+        reconcile_schema(&observed, &constraint, &ContractPolicy::default().types).unwrap();
+
+    for source in [
+        "signed",
+        "unsigned",
+        "float",
+        "decimal_ready",
+        "service_day",
+    ] {
+        assert_eq!(
+            decision_for(&reconciliation.plan, source).decision,
+            FieldCoercionDecision::Widened
+        );
+        assert!(physical_type(reconciliation.schema.field_with_name(source).unwrap()).is_some());
+    }
+    assert_eq!(
+        physical_type(reconciliation.schema.field_with_name("signed").unwrap()),
+        Some("Int32")
+    );
+    assert_eq!(
+        physical_type(
+            reconciliation
+                .schema
+                .field_with_name("service_day")
+                .unwrap()
+        ),
+        Some("Date32")
+    );
+}
+
+#[test]
+fn schema_reconciliation_missing_fields_fail_with_operator_fixes() {
+    let observed = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let constraint = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("amount", DataType::Decimal128(10, 2), false),
+    ]);
+
+    let report =
+        plan_schema_reconciliation(&observed, &constraint, &ContractPolicy::default().types)
+            .unwrap();
+    assert!(report.schema.is_none());
+    assert_eq!(report.errors.len(), 1);
+    assert_eq!(
+        decision_for(&report.plan, "amount").decision,
+        FieldCoercionDecision::Missing
+    );
+
+    let error = report.into_result().unwrap_err().to_string();
+    assert!(error.contains("amount"));
+    assert!(error.contains("Decimal128(10, 2)"));
+    assert!(error.contains("fix the source or discovery probe"));
+}
+
+#[test]
+fn schema_reconciliation_rejects_lossy_casts_until_policy_allows_them() {
+    let observed = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let constraint = Schema::new(vec![Field::new("id", DataType::Int32, false)]);
+
+    let denied =
+        plan_schema_reconciliation(&observed, &constraint, &ContractPolicy::default().types)
+            .unwrap();
+    assert_eq!(
+        decision_for(&denied.plan, "id").decision,
+        FieldCoercionDecision::LossyRejected
+    );
+    let error = denied.into_result().unwrap_err().to_string();
+    assert!(error.contains("observed type Int64"));
+    assert!(error.contains("declared type Int32"));
+    assert!(error.contains("enable allow_lossy_mapping"));
+
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.allow_lossy_mapping = true;
+    let allowed = reconcile_schema(&observed, &constraint, &type_policy).unwrap();
+
+    assert_eq!(
+        decision_for(&allowed.plan, "id").decision,
+        FieldCoercionDecision::LossyAllowed
+    );
+    assert_eq!(
+        physical_type(allowed.schema.field_with_name("id").unwrap()),
+        Some("Int64")
+    );
+}
+
+#[test]
+fn schema_reconciliation_keeps_string_parse_coercions_opt_in() {
+    let observed = Schema::new(vec![Field::new("created_at", DataType::Utf8, false)]);
+    let constraint = Schema::new(vec![Field::new(
+        "created_at",
+        DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+        false,
+    )]);
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = false;
+
+    let denied = plan_schema_reconciliation(&observed, &constraint, &type_policy).unwrap();
+    assert_eq!(
+        decision_for(&denied.plan, "created_at").decision,
+        FieldCoercionDecision::LossyRejected
+    );
+    let error = denied.into_result().unwrap_err().to_string();
+    assert!(error.contains("enable coerce_types"));
+
+    type_policy.coerce_types = true;
+    let allowed = reconcile_schema(&observed, &constraint, &type_policy).unwrap();
+    assert_eq!(
+        decision_for(&allowed.plan, "created_at").decision,
+        FieldCoercionDecision::CoercedByPolicy
+    );
+    assert_eq!(
+        physical_type(allowed.schema.field_with_name("created_at").unwrap()),
+        Some("Utf8")
+    );
+}
+
+#[test]
+fn schema_reconciliation_reports_unsupported_mappings() {
+    let observed = Schema::new(vec![Field::new_struct(
+        "payload",
+        vec![Field::new("id", DataType::Int64, false)],
+        false,
+    )]);
+    let constraint = Schema::new(vec![Field::new("payload", DataType::Int64, false)]);
+
+    let report =
+        plan_schema_reconciliation(&observed, &constraint, &ContractPolicy::default().types)
+            .unwrap();
+
+    assert_eq!(
+        decision_for(&report.plan, "payload").decision,
+        FieldCoercionDecision::Unsupported
+    );
+    let error = report.into_result().unwrap_err().to_string();
+    assert!(error.contains("unsupported schema reconciliation"));
+    assert!(error.contains("declared type Int64"));
+}
+
+fn decision_for<'a>(plan: &'a SchemaCoercionPlan, source_name: &str) -> &'a FieldCoercion {
+    plan.fields
+        .iter()
+        .find(|field| field.source_name == source_name)
+        .unwrap()
 }

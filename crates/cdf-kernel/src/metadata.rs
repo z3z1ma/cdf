@@ -3,6 +3,7 @@ use arrow_schema::Field;
 pub const SEMANTIC_METADATA_KEY: &str = "cdf:semantic";
 pub const SOURCE_NAME_METADATA_KEY: &str = "cdf:source_name";
 pub const NULL_ORIGIN_METADATA_KEY: &str = "cdf:null_origin";
+pub const PHYSICAL_TYPE_METADATA_KEY: &str = "cdf:physical_type";
 pub fn with_source_name(field: Field, source_name: impl Into<String>) -> Field {
     with_metadata_value(field, SOURCE_NAME_METADATA_KEY, source_name)
 }
@@ -25,6 +26,14 @@ pub fn with_null_origin(field: Field, null_origin: impl Into<String>) -> Field {
 
 pub fn null_origin(field: &Field) -> Option<&str> {
     metadata_value(field, NULL_ORIGIN_METADATA_KEY)
+}
+
+pub fn with_physical_type(field: Field, physical_type: impl Into<String>) -> Field {
+    with_metadata_value(field, PHYSICAL_TYPE_METADATA_KEY, physical_type)
+}
+
+pub fn physical_type(field: &Field) -> Option<&str> {
+    metadata_value(field, PHYSICAL_TYPE_METADATA_KEY)
 }
 
 pub fn with_cdf_metadata(

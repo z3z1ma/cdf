@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md
@@ -55,6 +55,7 @@ This ticket does not integrate Parquet, NDJSON, REST, SQL, discovery snapshots, 
 ## Progress and notes
 
 - 2026-07-09: Opened after B1 closed declarative type expressibility. Source inspection found existing `ObservedSchema`, `ArrowType`, type-policy flags, and schema verdict vocabulary in `cdf-contract`, but no shared observed-vs-constraint reconciler or `cdf:physical_type` provenance helper.
+- 2026-07-09: Implemented the format-independent reconciler in `cdf-contract`, added kernel `cdf:physical_type` metadata helpers, covered success/failure/provenance/serialization cases, and closed with evidence `.10x/evidence/2026-07-09-p2-ws-b2-schema-reconciliation-core.md` plus review `.10x/reviews/2026-07-09-p2-ws-b2-schema-reconciliation-core-review.md`.
 
 ## Blockers
 
