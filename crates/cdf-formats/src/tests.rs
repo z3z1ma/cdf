@@ -433,6 +433,55 @@ fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
 }
 
 #[test]
+fn local_parquet_schema_discovery_reads_footer_without_batches() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("orders.parquet");
+    write_parquet_file(&parquet_path, &[sample_batch()]);
+
+    let discovery = discover_local_parquet_schema(&parquet_path).unwrap();
+
+    assert_eq!(discovery.schema.as_ref(), sample_schema().as_ref());
+    assert_eq!(
+        discovery.source_identity.size_bytes,
+        fs::metadata(&parquet_path).unwrap().len()
+    );
+    assert_eq!(discovery.source_identity.row_count, 3);
+    assert_eq!(discovery.source_identity.row_group_count, 1);
+    assert!(
+        discovery
+            .source_identity
+            .footer_sha256
+            .starts_with("sha256:")
+    );
+    assert_eq!(discovery.source_identity.footer_sha256.len(), 71);
+}
+
+#[test]
+fn local_parquet_schema_discovery_is_repeatable_for_unchanged_file() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("orders.parquet");
+    write_parquet_file(&parquet_path, &[sample_batch()]);
+
+    let first = discover_local_parquet_schema(&parquet_path).unwrap();
+    let second = discover_local_parquet_schema(&parquet_path).unwrap();
+
+    assert_eq!(first.schema.as_ref(), second.schema.as_ref());
+    assert_eq!(first.source_identity, second.source_identity);
+}
+
+#[test]
+fn local_parquet_schema_discovery_rejects_non_parquet_input() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("bad.parquet");
+    fs::write(&parquet_path, b"not parquet").unwrap();
+
+    let error = discover_local_parquet_schema(&parquet_path).unwrap_err();
+
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(error.message.contains("Parquet metadata discovery"));
+}
+
+#[test]
 fn malformed_inputs_map_to_data_errors() {
     let error = read_arrow_ipc_stream(Cursor::new(b"not-ipc".as_slice()), &options("bad", "p0"))
         .unwrap_err();

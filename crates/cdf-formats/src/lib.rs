@@ -1,5 +1,6 @@
 #![doc = "External data format boundary for cdf."]
 
+mod parquet_discovery;
 mod readers;
 mod resource;
 mod schema;
@@ -7,6 +8,9 @@ mod schema;
 mod tests;
 mod types;
 
+pub use parquet_discovery::{
+    LocalParquetSchemaDiscovery, LocalParquetSourceIdentity, discover_local_parquet_schema,
+};
 pub use readers::{
     infer_ndjson_observed_schema, read_arrow_ipc_file, read_arrow_ipc_stream, read_csv_bytes,
     read_file_source, read_file_source_with_declared_schema, read_json_bytes, read_ndjson_bytes,

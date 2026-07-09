@@ -357,6 +357,68 @@ fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
 }
 
 #[test]
+fn local_parquet_discovery_handoff_builds_deterministic_snapshot() {
+    let resource_id = ResourceId::new("tlc.yellow").unwrap();
+    let schema = Schema::new(vec![
+        Field::new("VendorID", DataType::Int32, true),
+        Field::new(
+            "tpep_pickup_datetime",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+    ]);
+    let source_identity = BTreeMap::from([
+        ("footer_sha256".to_owned(), "sha256:footer".to_owned()),
+        ("size_bytes".to_owned(), "123".to_owned()),
+        (
+            "local_path".to_owned(),
+            "/tmp/private/orders.parquet".to_owned(),
+        ),
+    ]);
+
+    let handoff =
+        schema_snapshot_from_parquet_footer_schema(&resource_id, &schema, source_identity.clone())
+            .unwrap();
+    let repeated =
+        schema_snapshot_from_parquet_footer_schema(&resource_id, &schema, source_identity).unwrap();
+
+    assert_eq!(handoff.artifact, repeated.artifact);
+    assert_eq!(handoff.reference, handoff.artifact.reference());
+    assert_eq!(
+        handoff.source_identity["local_path"],
+        "/tmp/private/orders.parquet"
+    );
+    assert_eq!(
+        handoff.artifact.metadata["probe"],
+        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
+    );
+    assert_eq!(
+        handoff.artifact.metadata["format"],
+        SCHEMA_DISCOVERY_FORMAT_PARQUET
+    );
+    assert_eq!(
+        handoff.artifact.path,
+        format!(
+            ".cdf/schemas/tlc.yellow@{}.json",
+            handoff.artifact.schema_hash
+        )
+    );
+    assert_eq!(
+        handoff.artifact.hash_input["metadata"]["format"],
+        SCHEMA_DISCOVERY_FORMAT_PARQUET
+    );
+
+    let hash_input = serde_json::to_string(&handoff.artifact.hash_input).unwrap();
+    assert!(!hash_input.contains("/tmp/private/orders.parquet"));
+    assert!(!hash_input.contains("sha256:footer"));
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = SchemaSnapshotStore::new(temp.path());
+    store.write(&handoff.artifact).unwrap();
+    assert_eq!(store.read(&handoff.reference).unwrap(), handoff.artifact);
+}
+
+#[test]
 fn contract_freeze_preserves_existing_dependency_and_destination_data() {
     let config = parse_cdf_toml(BOOK_PROJECT).unwrap();
     let resolver =

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
@@ -48,6 +48,7 @@ This ticket does not implement HTTP ranged Parquet discovery, object-store disco
 ## Progress and notes
 
 - 2026-07-09: Opened after A1 established schema snapshot artifacts and E1 established a local/HTTP file transport facade. This child intentionally starts with local Parquet because the existing `cdf-formats` crate already owns Parquet Arrow dependencies and can prove the footer/schema probe shape before remote ranged transport is wired in.
+- 2026-07-09: Implemented and verified the local Parquet footer/schema probe plus project schema snapshot handoff. Evidence is `.10x/evidence/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md`; review is `.10x/reviews/2026-07-09-p2-ws-a2-local-parquet-discovery-probe-review.md`.
 
 ## Blockers
 
