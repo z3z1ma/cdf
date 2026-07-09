@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, fs};
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
@@ -28,19 +28,28 @@ use crate::{
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
-    reports::WriteEffects,
+    reports::{SchemaSnapshotActionReport, WriteEffects},
 };
+
+pub(crate) struct PreparedDiscoveryForCli {
+    pub(crate) resource: CompiledResource,
+    pub(crate) schema_snapshot: Option<SchemaSnapshotActionReport>,
+}
 
 pub(crate) fn plan_or_explain(
     cli: &Cli,
     args: ScanArgs,
     command: &'static str,
 ) -> Result<CommandOutput, CliError> {
-    let context =
-        ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())?;
+    let context = ProjectContext::load_for_command_with_locked_snapshots(
+        command,
+        cli.project.as_ref(),
+        cli.env.as_deref(),
+        !args.no_pin,
+    )?;
     let target = scan_target(&args)?;
     let resource = context.resource(&args.resource_id)?;
-    let prepared = prepare_discover_resource_for_cli(&context, resource)?;
+    let prepared = prepare_discover_resource_for_cli(&context, resource, args.no_pin)?;
     let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
     let plan = build_engine_plan_for_resource(runtime_resource.as_queryable(), &args)?;
     let report = scan_report(
@@ -50,6 +59,7 @@ pub(crate) fn plan_or_explain(
         &target,
         args.destination_uri.as_deref(),
         command,
+        prepared.schema_snapshot,
     )?;
     CommandOutput::rendered(
         command,
@@ -62,7 +72,7 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
-    let prepared = prepare_discover_resource_for_cli(&context, resource)?;
+    let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
     let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
     let plan = build_engine_plan_for_resource(runtime_resource.as_queryable(), &args)?;
     match preview_one_batch(&runtime_resource, &plan) {
@@ -80,36 +90,95 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
 pub(crate) fn prepare_discover_resource_for_cli(
     context: &ProjectContext,
     resource: &CompiledResource,
-) -> Result<cdf_project::PreparedDiscoveredResource, CliError> {
-    let secret_provider = context.secret_provider();
-    if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
-        && matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
+    no_pin: bool,
+) -> Result<PreparedDiscoveryForCli, CliError> {
+    if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
+        && !no_pin
     {
-        return Ok(
-            cdf_project::prepare_discover_resource_with_file_dependencies(
-                &context.root,
-                resource,
-                &secret_provider,
-                file_runtime_dependencies(context)?,
-            )?,
-        );
+        return Ok(PreparedDiscoveryForCli {
+            resource: resource.clone(),
+            schema_snapshot: Some(SchemaSnapshotActionReport {
+                outcome: "unchanged",
+                schema_hash: snapshot.schema_hash.to_string(),
+                path: snapshot.path.clone(),
+                snapshot_written: false,
+                lockfile_written: false,
+            }),
+        });
     }
-    if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
-        && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
+    let probe_resource = if no_pin
+        && resource
+            .descriptor()
+            .schema_source
+            .pinned_snapshot()
+            .is_some()
     {
+        resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema())
+    } else {
+        resource.clone()
+    };
+    if !matches!(
+        probe_resource.descriptor().schema_source,
+        SchemaSource::Discover
+    ) {
+        return Ok(PreparedDiscoveryForCli {
+            resource: resource.clone(),
+            schema_snapshot: None,
+        });
+    }
+    let secret_provider = context.secret_provider();
+    let discovery = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
+    {
+        cdf_project::discover_resource_schema_with_file_dependencies(
+            &probe_resource,
+            &secret_provider,
+            file_runtime_dependencies(context)?,
+        )?
+    } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
         let mut transport = ReqwestHttpTransport::new()?;
-        return Ok(cdf_project::prepare_discover_resource_with_rest_transport(
-            &context.root,
-            resource,
+        cdf_project::discover_resource_schema_with_rest_transport(
+            &probe_resource,
             &secret_provider,
             &mut transport,
-        )?);
-    }
-    Ok(cdf_project::prepare_discover_resource(
-        &context.root,
-        resource,
-        &secret_provider,
-    )?)
+        )?
+    } else {
+        cdf_project::discover_resource_schema(&probe_resource, &secret_provider)?
+    };
+    let artifact = discovery.snapshot.artifact.clone();
+    let outcome = if no_pin { "inspection_only" } else { "added" };
+    let prepared = cdf_project::apply_discovered_schema(&probe_resource, discovery);
+    let (snapshot_written, lockfile_written) = if no_pin {
+        (false, false)
+    } else {
+        let updated_lock = cdf_project::pin_schema_snapshot_in_project_lockfile(
+            &context.config,
+            &context.resources,
+            context.lock.as_ref(),
+            &context.environment.destination,
+            &prepared.resource,
+        )?;
+        let encoded = cdf_project::lock_to_toml(&updated_lock)?;
+        let snapshot_written =
+            cdf_project::SchemaSnapshotStore::new(&context.root).write_if_changed(&artifact)?;
+        let lock_path = context.root.join(cdf_project::LOCK_FILE_NAME);
+        let lockfile_written = fs::read_to_string(&lock_path).ok().as_deref() != Some(&encoded);
+        if lockfile_written {
+            fs::write(&lock_path, encoded).map_err(|error| {
+                CdfError::data(format!("write {}: {error}", lock_path.display()))
+            })?;
+        }
+        (snapshot_written, lockfile_written)
+    };
+    Ok(PreparedDiscoveryForCli {
+        resource: prepared.resource,
+        schema_snapshot: Some(SchemaSnapshotActionReport {
+            outcome,
+            schema_hash: artifact.schema_hash.to_string(),
+            path: artifact.path.clone(),
+            snapshot_written,
+            lockfile_written,
+        }),
+    })
 }
 
 pub(crate) fn build_engine_plan_for_resource(
@@ -188,6 +257,7 @@ fn scan_report(
     target: &TargetName,
     destination_uri: Option<&str>,
     command: &'static str,
+    schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> Result<ScanPlanReport, CliError> {
     let destination_plan =
         destination_plan_report(context, resource, target, destination_uri, command)?;
@@ -231,6 +301,7 @@ fn scan_report(
         },
         explain: plan.explain.clone(),
         package_id: plan.package_id.clone(),
+        schema_snapshot,
     })
 }
 
@@ -390,7 +461,7 @@ fn scan_report_document(
     let inexact = report.pushdown.inexact.len();
     let unsupported = report.pushdown.unsupported.len();
     let migrations = report.ddl_preview.migrations.len();
-    let mut document = RenderDocument::new()
+    let document = RenderDocument::new()
         .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
@@ -475,15 +546,26 @@ fn scan_report_document(
                     "advances after",
                     report.state_advancement.advances_after.clone(),
                 ),
-        )
-        .blank_line()
-        .push(
-            KeyValuePanel::new("Migration")
-                .row("supported", yes_no(report.ddl_preview.supported))
-                .row("support", report.ddl_preview.migration_support.clone())
-                .row("items", migrations.to_string())
-                .row("target", report.ddl_preview.target.clone()),
         );
+    let mut document = if let Some(snapshot) = &report.schema_snapshot {
+        document.blank_line().push(
+            KeyValuePanel::new("Schema Snapshot")
+                .row("outcome", snapshot.outcome)
+                .row("hash", snapshot.schema_hash.clone())
+                .row("path", snapshot.path.clone())
+                .row("snapshot written", yes_no(snapshot.snapshot_written))
+                .row("lockfile written", yes_no(snapshot.lockfile_written)),
+        )
+    } else {
+        document
+    };
+    document = document.blank_line().push(
+        KeyValuePanel::new("Migration")
+            .row("supported", yes_no(report.ddl_preview.supported))
+            .row("support", report.ddl_preview.migration_support.clone())
+            .row("items", migrations.to_string())
+            .row("target", report.ddl_preview.target.clone()),
+    );
 
     if !report.ddl_preview.migrations.is_empty() {
         let table = report.ddl_preview.migrations.iter().fold(
@@ -629,6 +711,8 @@ struct ScanPlanReport {
     state_advancement: StateAdvancementReport,
     explain: cdf_engine::ExplainData,
     package_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_snapshot: Option<SchemaSnapshotActionReport>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

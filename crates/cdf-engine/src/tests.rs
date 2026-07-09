@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt,
     sync::{
         Arc, Mutex,
@@ -17,6 +17,7 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
     ContractPolicy, DedupKeep, FieldCoercionDecision, NestedDataPolicy, ObservedSchema, RowRule,
     VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program,
+    reconcile_schema,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
@@ -26,7 +27,7 @@ use cdf_kernel::{
     PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
     ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
-    source_name, with_physical_type, with_semantic, with_source_name,
+    source_name, with_semantic,
 };
 use cdf_package::PackageStatus;
 use datafusion::{
@@ -395,6 +396,164 @@ fn package_artifacts_record_schema_coercion_evidence_and_physical_type_metadata(
             .unwrap()
             .values(),
         &[1, 2]
+    );
+}
+
+#[test]
+fn package_artifacts_preserve_exact_embedded_lossy_and_extra_reconciliation_decisions() {
+    let observed = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("source_only", DataType::Utf8, true),
+    ]);
+    let constraint = Schema::new(vec![Field::new("id", DataType::Int32, false)]);
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.allow_lossy_mapping = true;
+    let reconciliation = reconcile_schema(&observed, &constraint, &type_policy).unwrap();
+    let serialized_plan = serde_json::to_string(&reconciliation.plan).unwrap();
+    let schema = Arc::new(reconciliation.schema);
+    let record_batch =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int32Array::from(vec![1, 2]))]).unwrap();
+    let resource = MockResource::tier_a(vec![{
+        let mut batch = Batch::from_record_batch(
+            BatchId::new("batch-json-reconciled").unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("part-0").unwrap(),
+            SchemaHash::new("schema-json-reconciled").unwrap(),
+            record_batch,
+        )
+        .unwrap();
+        batch.header.schema_coercion_plan = Some(serialized_plan);
+        batch
+    }]);
+    let input = plan_input_for_schema(
+        Arc::new(constraint),
+        vec![],
+        None,
+        None,
+        PlanBoundedness::Bounded,
+    );
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    let evidence: cdf_contract::SchemaCoercionPlan = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/coercion-plan.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        coercion_decision(&evidence, "id").decision,
+        FieldCoercionDecision::LossyAllowed
+    );
+    assert_eq!(
+        coercion_decision(&evidence, "source_only").decision,
+        FieldCoercionDecision::Extra
+    );
+}
+
+#[test]
+fn package_execution_rejects_source_carried_coercion_metadata_without_trusted_header() {
+    let injected_plan = serde_json::json!({
+        "fields": [{
+            "source_name": "id",
+            "observed_name": "id",
+            "output_name": "id",
+            "observed_type": "Int64",
+            "constraint_type": "Int64",
+            "decision": "preserved",
+            "outcome": "pass",
+            "reason": "observed type already satisfies the constraint"
+        }]
+    })
+    .to_string();
+    let injected_schema = Arc::new(Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int64, false)],
+        HashMap::from([("cdf:schema_coercion_plan".to_owned(), injected_plan)]),
+    ));
+    let record_batch =
+        RecordBatch::try_new(injected_schema, vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
+    let batch = Batch::from_record_batch(
+        BatchId::new("batch-injected-coercion").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-injected-coercion").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    let resource = MockResource::tier_a(vec![batch]);
+    let input = plan_input_for_schema(
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+        vec![],
+        None,
+        None,
+        PlanBoundedness::Bounded,
+    );
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+    assert!(error.to_string().contains("without trusted batch evidence"));
+}
+
+#[test]
+fn package_execution_rejects_malformed_trusted_coercion_header() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let record_batch =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-malformed-coercion").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-malformed-coercion").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    batch.header.schema_coercion_plan = Some("{not-json".to_owned());
+    let resource = MockResource::tier_a(vec![batch]);
+    let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+    assert!(error.to_string().contains("not a valid coercion plan"));
+}
+
+#[test]
+fn package_execution_rejects_valid_header_only_coercion_injection() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let record_batch =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-header-only-coercion").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-header-only-coercion").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    batch.header.schema_coercion_plan = Some(
+        serde_json::json!({
+            "fields": [{
+                "source_name": "fabricated_extra",
+                "observed_name": "fabricated_extra",
+                "observed_type": "Utf8",
+                "decision": "extra",
+                "outcome": "admitted_as_variant",
+                "reason": "observed field is outside the constraint projection"
+            }]
+        })
+        .to_string(),
+    );
+    let resource = MockResource::tier_a(vec![batch]);
+    let input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("has no matching reserved Arrow schema metadata")
     );
 }
 
@@ -1865,13 +2024,22 @@ fn output_name_schema() -> SchemaRef {
 }
 
 fn parquet_reconciled_schema() -> SchemaRef {
-    Arc::new(Schema::new(vec![
-        with_physical_type(
-            with_source_name(Field::new("id", DataType::Int64, false), "id"),
-            "Int32",
-        ),
-        Field::new("name", DataType::Utf8, true),
-    ]))
+    Arc::new(parquet_reconciliation().schema)
+}
+
+fn parquet_reconciliation() -> cdf_contract::SchemaReconciliation {
+    reconcile_schema(
+        &Schema::new(vec![
+            Field::new("id", DataType::Int32, false),
+            Field::new("name", DataType::Utf8, true),
+        ]),
+        &Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new("name", DataType::Utf8, true),
+        ]),
+        &ContractPolicy::default().types,
+    )
+    .unwrap()
 }
 
 fn sample_batches() -> Vec<Batch> {
@@ -1905,7 +2073,9 @@ fn output_name_batches() -> Vec<Batch> {
 }
 
 fn parquet_reconciled_batch() -> Batch {
-    let schema = parquet_reconciled_schema();
+    let reconciliation = parquet_reconciliation();
+    let serialized_plan = serde_json::to_string(&reconciliation.plan).unwrap();
+    let schema = Arc::new(reconciliation.schema);
     let record_batch = RecordBatch::try_new(
         schema,
         vec![
@@ -1925,6 +2095,7 @@ fn parquet_reconciled_batch() -> Batch {
             byte_count: record_batch.get_array_memory_size() as u64,
             source_position: None,
             pre_contract_quarantine: Vec::new(),
+            schema_coercion_plan: Some(serialized_plan),
             watermarks: Vec::new(),
             stats: BatchStats::default(),
             cdc: None,
@@ -2005,6 +2176,7 @@ fn nested_variant_batch() -> Batch {
             byte_count: record_batch.get_array_memory_size() as u64,
             source_position: None,
             pre_contract_quarantine: Vec::new(),
+            schema_coercion_plan: None,
             watermarks: Vec::new(),
             stats: BatchStats::default(),
             cdc: None,
@@ -2051,6 +2223,7 @@ fn batch_for_partition_with_schema(
             byte_count: record_batch.get_array_memory_size() as u64,
             source_position: None,
             pre_contract_quarantine: Vec::new(),
+            schema_coercion_plan: None,
             watermarks: Vec::new(),
             stats: BatchStats::default(),
             cdc: None,

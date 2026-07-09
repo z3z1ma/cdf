@@ -33,6 +33,7 @@ This ticket does not redesign the whole P1 renderer or non-source error catalog.
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-09: Split executable child `.10x/tickets/done/2026-07-09-p2-ws-g1-source-diagnostics-and-deep-validate-foundation.md` for the first source-specific diagnostics and `cdf validate --deep` doorway.
 - 2026-07-09: G1 closed with evidence `.10x/evidence/2026-07-09-p2-e2-g1-b4-batch.md` and review `.10x/reviews/2026-07-09-p2-e2-g1-b4-batch-review.md`. `cdf validate --deep` now runs current no-write compiler-front-end checks and resource-not-compiled errors include compiled ids, origins, mapping status, likely causes, suggestions, and source-specific error code/remediation. Remaining WS-G scope: deeper type-mismatch remediation, full command-name sweep across future source failures, cloud/compression/Python/WASM deep-validate coverage, and final source-experience catalog closure.
+- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-g2-type-mismatch-diagnostics.md` for supported Parquet/JSON reconciliation mismatch specificity, command-context correctness, no-write deep validation, and redaction.
 
 ## Blockers
 

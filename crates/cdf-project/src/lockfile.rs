@@ -509,6 +509,44 @@ pub fn pin_schema_snapshot_in_lockfile(
     Ok(lock)
 }
 
+pub fn pin_schema_snapshot_in_project_lockfile(
+    config: &ProjectConfig,
+    resources: &[CompiledResource],
+    existing_lock: Option<&CdfLock>,
+    destination_uri: &str,
+    pinned_resource: &CompiledResource,
+) -> Result<CdfLock> {
+    if let Some(lock) = existing_lock {
+        return pin_schema_snapshot_in_lockfile(lock, pinned_resource);
+    }
+
+    let selected_id = pinned_resource.descriptor().resource_id.as_str();
+    let mut found = false;
+    let resources = resources
+        .iter()
+        .map(|resource| {
+            if resource.descriptor().resource_id.as_str() == selected_id {
+                found = true;
+                pinned_resource.clone()
+            } else {
+                resource.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !found {
+        return Err(CdfError::contract(format!(
+            "cannot pin schema snapshot for resource `{selected_id}` because it is not compiled in the project"
+        )));
+    }
+    generate_lockfile(
+        config,
+        &resources,
+        current_dependency_tuple(),
+        &destination_sheets_for_uri(destination_uri)?,
+        BTreeMap::new(),
+    )
+}
+
 pub fn test_contract_snapshots(
     lock: &CdfLock,
     resources: &[CompiledResource],

@@ -1,5 +1,9 @@
 use super::*;
-use std::{collections::BTreeMap, sync::Arc, time::Instant};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+    time::Instant,
+};
 
 use arrow_array::{
     ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray, TimestampMillisecondArray,
@@ -7,7 +11,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     IdentifierRules, TrustLevel, TypeMapping, TypeMappingFidelity, physical_type, source_name,
-    with_physical_type, with_semantic, with_source_name,
+    with_semantic, with_source_name,
 };
 
 #[test]
@@ -799,15 +803,21 @@ fn schema_reconciliation_records_lossless_widenings_and_physical_type() {
 
 #[test]
 fn schema_coercion_plan_from_reconciled_schema_records_widened_and_preserved_fields() {
-    let schema = Schema::new(vec![
-        with_physical_type(
-            with_source_name(Field::new("id", DataType::Int64, false), "id"),
-            "Int32",
-        ),
-        with_source_name(Field::new("name", DataType::Utf8, true), "name"),
+    let observed = Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, true),
     ]);
+    let constraint = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+    ]);
+    let schema = reconcile_schema(&observed, &constraint, &ContractPolicy::default().types)
+        .unwrap()
+        .schema;
 
-    let plan = schema_coercion_plan_from_reconciled_schema(&schema).unwrap();
+    let plan = schema_coercion_plan_from_reconciled_schema(&schema)
+        .unwrap()
+        .unwrap();
 
     let widened = decision_for(&plan, "id");
     assert_eq!(widened.decision, FieldCoercionDecision::Widened);
@@ -874,6 +884,119 @@ fn schema_reconciliation_rejects_lossy_casts_until_policy_allows_them() {
     assert_eq!(
         physical_type(allowed.schema.field_with_name("id").unwrap()),
         Some("Int64")
+    );
+    assert_eq!(
+        schema_coercion_plan_from_reconciled_schema(&allowed.schema),
+        Ok(Some(allowed.plan))
+    );
+}
+
+#[test]
+fn reconciled_schema_metadata_preserves_extra_field_decisions_for_package_evidence() {
+    let observed = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("source_only", DataType::Utf8, true),
+    ]);
+    let constraint = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+
+    let reconciliation =
+        reconcile_schema(&observed, &constraint, &ContractPolicy::default().types).unwrap();
+
+    assert_eq!(
+        decision_for(&reconciliation.plan, "source_only").decision,
+        FieldCoercionDecision::Extra
+    );
+    assert_eq!(
+        schema_coercion_plan_from_reconciled_schema(&reconciliation.schema),
+        Ok(Some(reconciliation.plan))
+    );
+}
+
+#[test]
+fn schema_coercion_evidence_rejects_malformed_and_false_metadata() {
+    let malformed = Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int64, false)],
+        HashMap::from([(
+            "cdf:schema_coercion_plan".to_owned(),
+            "{not-json".to_owned(),
+        )]),
+    );
+    let error = schema_coercion_plan_from_reconciled_schema(&malformed).unwrap_err();
+    assert_eq!(error.kind, cdf_kernel::ErrorKind::Data);
+    assert!(error.to_string().contains("not a valid coercion plan"));
+
+    let observed = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let constraint = Schema::new(vec![Field::new("id", DataType::Int32, false)]);
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.allow_lossy_mapping = true;
+    let reconciliation = reconcile_schema(&observed, &constraint, &type_policy).unwrap();
+    let mut false_plan = reconciliation.plan;
+    false_plan.fields[0].decision = FieldCoercionDecision::Widened;
+    false_plan.fields[0].reason = "lossless widening from Int64 to Int32".to_owned();
+    let false_schema = Schema::new_with_metadata(
+        reconciliation.schema.fields().clone(),
+        HashMap::from([(
+            "cdf:schema_coercion_plan".to_owned(),
+            serde_json::to_string(&false_plan).unwrap(),
+        )]),
+    );
+
+    let error = schema_coercion_plan_from_reconciled_schema(&false_schema).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("inconsistent with Int64 -> Int32")
+    );
+}
+
+#[test]
+fn source_schema_coercion_metadata_requires_trusted_batch_evidence() {
+    let source_carried = Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int64, false)],
+        HashMap::from([(
+            "cdf:schema_coercion_plan".to_owned(),
+            serde_json::json!({
+                "fields": [{
+                    "source_name": "id",
+                    "observed_name": "id",
+                    "output_name": "id",
+                    "observed_type": "Int64",
+                    "constraint_type": "Int64",
+                    "decision": "preserved",
+                    "outcome": "pass",
+                    "reason": "observed type already satisfies the constraint"
+                }]
+            })
+            .to_string(),
+        )]),
+    );
+
+    let error = reject_untrusted_schema_coercion_metadata(&source_carried).unwrap_err();
+    assert!(error.to_string().contains("without trusted batch evidence"));
+}
+
+#[test]
+fn trusted_batch_coercion_evidence_requires_matching_reserved_schema_metadata() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let header_only = serde_json::json!({
+        "fields": [{
+            "source_name": "id",
+            "observed_name": "id",
+            "output_name": "id",
+            "observed_type": "Int64",
+            "constraint_type": "Int64",
+            "decision": "preserved",
+            "outcome": "pass",
+            "reason": "observed type already satisfies the constraint"
+        }]
+    })
+    .to_string();
+
+    let error = schema_coercion_plan_from_trusted_json(&schema, &header_only).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("has no matching reserved Arrow schema metadata")
     );
 }
 

@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     fs,
     io::{Cursor, Read, Seek},
     path::Path,
@@ -13,8 +13,8 @@ use arrow_ipc::reader::{FileReader, StreamReader};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use cdf_contract::{
-    ContractPolicy, ObservedSchema, PiiRedactionPolicy, RedactionDecision, reconcile_schema,
-    redaction_decision_for_field,
+    ContractPolicy, ObservedSchema, PiiRedactionPolicy, RedactionDecision, SchemaCoercionPlan,
+    TypePolicy, reconcile_schema, redaction_decision_for_field,
 };
 use cdf_kernel::{
     Batch, BatchId, CdfError, FileManifest, FilePosition, PreContractObservedValue,
@@ -64,6 +64,15 @@ pub fn read_file_source_with_declared_schema(
     source: &FileSource,
     declared_schema: SchemaRef,
 ) -> Result<FormatRead> {
+    let type_policy = strict_source_type_policy();
+    read_file_source_with_declared_schema_and_type_policy(source, declared_schema, &type_policy)
+}
+
+pub fn read_file_source_with_declared_schema_and_type_policy(
+    source: &FileSource,
+    declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
+) -> Result<FormatRead> {
     let position = file_source_position(&source.path)?;
     let scope = ScopeKey::File {
         path: path_string(&source.path)?,
@@ -77,6 +86,7 @@ pub fn read_file_source_with_declared_schema(
                 &source.options,
                 options,
                 declared_schema,
+                type_policy,
                 scope,
                 Some(position),
             )
@@ -88,6 +98,7 @@ pub fn read_file_source_with_declared_schema(
                 &source.options,
                 options,
                 declared_schema,
+                type_policy,
                 scope,
                 Some(position),
             )
@@ -96,6 +107,7 @@ pub fn read_file_source_with_declared_schema(
             &source.path,
             &source.options,
             declared_schema,
+            type_policy,
             scope,
             Some(position),
         ),
@@ -234,11 +246,29 @@ pub fn read_ndjson_bytes_with_declared_schema(
     json_options: &JsonOptions,
     declared_schema: SchemaRef,
 ) -> Result<FormatRead> {
+    let type_policy = strict_source_type_policy();
+    read_ndjson_bytes_with_declared_schema_and_type_policy(
+        bytes,
+        options,
+        json_options,
+        declared_schema,
+        &type_policy,
+    )
+}
+
+pub fn read_ndjson_bytes_with_declared_schema_and_type_policy(
+    bytes: &[u8],
+    options: &ReadOptions,
+    json_options: &JsonOptions,
+    declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
+) -> Result<FormatRead> {
     read_ndjson_bytes_with_declared_schema_and_scope(
         bytes,
         options,
         json_options,
         declared_schema,
+        type_policy,
         ScopeKey::Resource,
         None,
     )
@@ -260,10 +290,12 @@ pub fn read_parquet_range_source_with_declared_schema(
     scope: ScopeKey,
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
+    let type_policy = strict_source_type_policy();
     read_parquet_chunk_reader_with_declared_schema_and_scope(
         reader,
         options,
         declared_schema,
+        &type_policy,
         scope,
         position,
     )
@@ -317,6 +349,7 @@ fn read_json_bytes_with_declared_schema_and_scope(
     options: &ReadOptions,
     json_options: &JsonOptions,
     declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
     scope: ScopeKey,
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
@@ -326,6 +359,7 @@ fn read_json_bytes_with_declared_schema_and_scope(
         options,
         json_options,
         declared_schema,
+        type_policy,
         scope,
         position,
     )
@@ -352,27 +386,58 @@ fn read_ndjson_bytes_with_scope(
 fn read_ndjson_bytes_with_declared_schema_and_scope(
     bytes: &[u8],
     options: &ReadOptions,
-    _json_options: &JsonOptions,
+    json_options: &JsonOptions,
     declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
     scope: ScopeKey,
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
-    let filtered = filter_declared_ndjson_rows(bytes, declared_schema.as_ref(), &position)?;
-    let mut reader = JsonReaderBuilder::new(declared_schema.clone())
+    let filtered =
+        filter_declared_ndjson_rows(bytes, declared_schema.as_ref(), type_policy, &position)?;
+    if filtered.accepted_rows == 0 {
+        return build_output_with_pre_contract_quarantine(
+            declared_schema.clone(),
+            vec![RecordBatch::new_empty(declared_schema)],
+            options,
+            scope,
+            position,
+            filtered.quarantine_facts,
+            None,
+        );
+    }
+
+    let (physical_schema, _) = infer_json_schema(
+        Cursor::new(filtered.accepted_ndjson.as_slice()),
+        json_options.max_read_records,
+    )
+    .map_err(CdfError::from)?;
+    let physical_schema = Arc::new(physical_schema);
+    let reconciliation = reconcile_schema(
+        physical_schema.as_ref(),
+        declared_schema.as_ref(),
+        type_policy,
+    )?;
+    let reconciliation_plan = reconciliation.plan;
+    let reconciled_schema = Arc::new(reconciliation.schema);
+    let mut reader = JsonReaderBuilder::new(physical_schema.clone())
         .with_batch_size(options.batch_size)
         .build(Cursor::new(filtered.accepted_ndjson))
         .map_err(CdfError::from)?;
-    let mut record_batches = collect_record_batches(&mut reader)?;
-    if record_batches.is_empty() && !filtered.quarantine_facts.is_empty() {
-        record_batches.push(RecordBatch::new_empty(declared_schema.clone()));
-    }
+    let physical_batches = collect_record_batches(&mut reader)?;
+    let record_batches = reconcile_record_batches(
+        physical_schema.as_ref(),
+        reconciled_schema.clone(),
+        physical_batches,
+        "JSON",
+    )?;
     build_output_with_pre_contract_quarantine(
-        declared_schema,
+        reconciled_schema,
         record_batches,
         options,
         scope,
         position,
         filtered.quarantine_facts,
+        Some(&reconciliation_plan),
     )
 }
 
@@ -408,6 +473,7 @@ fn read_parquet_file_with_declared_schema_and_scope(
     path: &Path,
     options: &ReadOptions,
     declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
     scope: ScopeKey,
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
@@ -417,6 +483,7 @@ fn read_parquet_file_with_declared_schema_and_scope(
         file,
         options,
         declared_schema,
+        type_policy,
         scope,
         position,
     )
@@ -426,6 +493,7 @@ fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'st
     reader: T,
     options: &ReadOptions,
     declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
     scope: ScopeKey,
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
@@ -433,57 +501,73 @@ fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'st
         .map_err(|error| parquet_data_error("read Parquet file metadata", error))?
         .with_batch_size(options.batch_size);
     let physical_schema = builder.schema().clone();
-    let mut type_policy = ContractPolicy::default().types;
-    type_policy.coerce_types = false;
     let reconciliation = reconcile_schema(
         physical_schema.as_ref(),
         declared_schema.as_ref(),
-        &type_policy,
+        type_policy,
     )?;
+    let reconciliation_plan = reconciliation.plan;
     let reconciled_schema = Arc::new(reconciliation.schema);
     let mut reader = builder
         .build()
         .map_err(|error| parquet_data_error("create Parquet record batch reader", error))?;
     let physical_batches = collect_record_batches(&mut reader)?;
-    let record_batches = reconcile_parquet_record_batches(
-        &physical_schema,
+    let record_batches = reconcile_record_batches(
+        physical_schema.as_ref(),
         reconciled_schema.clone(),
         physical_batches,
+        "Parquet",
     )?;
 
-    build_output(reconciled_schema, record_batches, options, scope, position)
+    build_output_with_pre_contract_quarantine(
+        reconciled_schema,
+        record_batches,
+        options,
+        scope,
+        position,
+        Vec::new(),
+        Some(&reconciliation_plan),
+    )
 }
 
-fn reconcile_parquet_record_batches(
+fn reconcile_record_batches(
     physical_schema: &Schema,
     reconciled_schema: SchemaRef,
     record_batches: Vec<RecordBatch>,
+    format_name: &str,
 ) -> Result<Vec<RecordBatch>> {
     record_batches
         .into_iter()
         .map(|batch| {
-            reconcile_parquet_record_batch(physical_schema, reconciled_schema.clone(), batch)
+            reconcile_record_batch(
+                physical_schema,
+                reconciled_schema.clone(),
+                batch,
+                format_name,
+            )
         })
         .collect()
 }
 
-fn reconcile_parquet_record_batch(
+fn reconcile_record_batch(
     physical_schema: &Schema,
     reconciled_schema: SchemaRef,
     batch: RecordBatch,
+    format_name: &str,
 ) -> Result<RecordBatch> {
     let columns = reconciled_schema
         .fields()
         .iter()
-        .map(|field| reconciled_parquet_column(physical_schema, &batch, field.as_ref()))
+        .map(|field| reconciled_column(physical_schema, &batch, field.as_ref(), format_name))
         .collect::<Result<Vec<_>>>()?;
     RecordBatch::try_new(reconciled_schema, columns).map_err(CdfError::from)
 }
 
-fn reconciled_parquet_column(
+fn reconciled_column(
     physical_schema: &Schema,
     batch: &RecordBatch,
     output_field: &Field,
+    format_name: &str,
 ) -> Result<ArrayRef> {
     let source = source_name(output_field).unwrap_or_else(|| output_field.name());
     let physical_index = physical_schema
@@ -492,7 +576,7 @@ fn reconciled_parquet_column(
         .position(|field| field_source_name(field.as_ref()) == source)
         .ok_or_else(|| {
             CdfError::internal(format!(
-                "reconciled Parquet field {:?} has no matching physical source field {source:?}",
+                "reconciled {format_name} field {:?} has no matching physical source field {source:?}",
                 output_field.name()
             ))
         })?;
@@ -502,13 +586,20 @@ fn reconciled_parquet_column(
     }
     if !can_cast_types(column.data_type(), output_field.data_type()) {
         return Err(CdfError::contract(format!(
-            "Parquet schema reconciliation selected unsupported materialized cast for field {:?}: observed type {}; declared type {}",
+            "{format_name} schema reconciliation selected unsupported materialized cast for field {:?}: observed type {}; declared type {}",
             source,
             column.data_type(),
             output_field.data_type()
         )));
     }
     cast(column.as_ref(), output_field.data_type()).map_err(CdfError::from)
+}
+
+fn strict_source_type_policy() -> TypePolicy {
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = false;
+    type_policy.allow_lossy_mapping = false;
+    type_policy
 }
 
 fn field_source_name(field: &Field) -> &str {
@@ -529,6 +620,7 @@ fn build_output(
         scope,
         position,
         Vec::new(),
+        None,
     )
 }
 
@@ -539,6 +631,7 @@ fn build_output_with_pre_contract_quarantine(
     scope: ScopeKey,
     position: Option<SourcePosition>,
     mut pre_contract_quarantine: Vec<PreContractQuarantineFact>,
+    schema_coercion_plan: Option<&SchemaCoercionPlan>,
 ) -> Result<FormatRead> {
     let schema = record_batches
         .first()
@@ -558,6 +651,10 @@ fn build_output_with_pre_contract_quarantine(
         freshness: None,
         trust_level: TrustLevel::Experimental,
     };
+    let schema_coercion_plan = schema_coercion_plan
+        .map(serde_json::to_string)
+        .transpose()
+        .map_err(|error| CdfError::internal(format!("serialize schema coercion plan: {error}")))?;
 
     let mut batches = Vec::with_capacity(record_batches.len());
     for (index, record_batch) in record_batches.into_iter().enumerate() {
@@ -575,6 +672,7 @@ fn build_output_with_pre_contract_quarantine(
             record_batch,
         )?;
         batch.header.source_position = position.clone();
+        batch.header.schema_coercion_plan = schema_coercion_plan.clone();
         if index == 0 {
             batch.header.pre_contract_quarantine = std::mem::take(&mut pre_contract_quarantine);
         }
@@ -601,24 +699,27 @@ fn discovered_schema_source(resource_id: &ResourceId, schema_hash: &SchemaHash) 
 
 struct DeclaredNdjsonFilter {
     accepted_ndjson: Vec<u8>,
+    accepted_rows: usize,
     quarantine_facts: Vec<PreContractQuarantineFact>,
 }
 
 fn filter_declared_ndjson_rows(
     bytes: &[u8],
     schema: &arrow_schema::Schema,
+    type_policy: &TypePolicy,
     position: &Option<SourcePosition>,
 ) -> Result<DeclaredNdjsonFilter> {
     validate_declared_json_schema(schema)?;
     let declared_fields = schema
         .fields()
         .iter()
-        .map(|field| field.name().as_str())
-        .collect::<BTreeSet<_>>();
+        .map(|field| (field_source_name(field.as_ref()), field.as_ref()))
+        .collect::<BTreeMap<_, _>>();
     let text = std::str::from_utf8(bytes).map_err(|error| {
         CdfError::data(format!("NDJSON file source is not valid UTF-8: {error}"))
     })?;
     let mut accepted_ndjson = Vec::new();
+    let mut accepted_rows = 0_usize;
     let mut quarantine_facts = Vec::new();
     let mut row_ordinal = 0_u64;
 
@@ -636,31 +737,21 @@ fn filter_declared_ndjson_rows(
                 line_index + 1
             ))
         })?;
-        if let Some(undeclared) = object
-            .keys()
-            .find(|name| !declared_fields.contains(name.as_str()))
-        {
-            return Err(CdfError::data(format!(
-                "NDJSON file source line {} contains undeclared field {undeclared:?}",
-                line_index + 1
-            )));
-        }
-
         let mut row_facts = Vec::new();
-        for field in schema.fields() {
-            let Some(value) = object.get(field.name()) else {
+        for (source, field) in &declared_fields {
+            let Some(value) = object.get(*source) else {
                 continue;
             };
             if value.is_null() {
                 continue;
             }
-            if declared_json_type_mismatch(field.as_ref(), value)? {
+            if declared_json_type_mismatch(field, value, type_policy)? {
                 row_facts.push(PreContractQuarantineFact {
                     source_row_ordinal: row_ordinal,
-                    rule_id: format!("source-decode:{}:type-mismatch", field.name()),
+                    rule_id: format!("source-decode:{source}:type-mismatch"),
                     error_code: "source_type_mismatch".to_owned(),
                     source_position: position.clone(),
-                    observed_value_redacted: redacted_declared_json_value(field.as_ref(), value)?,
+                    observed_value_redacted: redacted_declared_json_value(field, value)?,
                 });
             }
         }
@@ -668,6 +759,7 @@ fn filter_declared_ndjson_rows(
         if row_facts.is_empty() {
             serde_json::to_writer(&mut accepted_ndjson, &row).map_err(json_error)?;
             accepted_ndjson.push(b'\n');
+            accepted_rows += 1;
         } else {
             quarantine_facts.extend(row_facts);
         }
@@ -675,6 +767,7 @@ fn filter_declared_ndjson_rows(
     }
 
     Ok(DeclaredNdjsonFilter {
+        accepted_rows,
         accepted_ndjson,
         quarantine_facts,
     })
@@ -705,8 +798,13 @@ fn declared_json_type_supported(data_type: &DataType) -> bool {
             | DataType::UInt16
             | DataType::UInt32
             | DataType::UInt64
+            | DataType::Float16
             | DataType::Float32
             | DataType::Float64
+            | DataType::Decimal32(_, _)
+            | DataType::Decimal64(_, _)
+            | DataType::Decimal128(_, _)
+            | DataType::Decimal256(_, _)
             | DataType::Utf8
             | DataType::LargeUtf8
             | DataType::Date32
@@ -714,7 +812,11 @@ fn declared_json_type_supported(data_type: &DataType) -> bool {
     )
 }
 
-fn declared_json_type_mismatch(field: &Field, value: &Value) -> Result<bool> {
+fn declared_json_type_mismatch(
+    field: &Field,
+    value: &Value,
+    type_policy: &TypePolicy,
+) -> Result<bool> {
     if !is_json_scalar(value) {
         return Err(CdfError::data(format!(
             "NDJSON field {:?} expected scalar {}, got complex JSON value",
@@ -723,17 +825,26 @@ fn declared_json_type_mismatch(field: &Field, value: &Value) -> Result<bool> {
         )));
     }
     Ok(match field.data_type() {
-        DataType::Boolean => !value.is_boolean(),
-        DataType::Int8
-        | DataType::Int16
-        | DataType::Int32
-        | DataType::Int64
-        | DataType::UInt8
-        | DataType::UInt16
-        | DataType::UInt32
-        | DataType::UInt64
+        DataType::Boolean => !(value.is_boolean() || value.is_string() && type_policy.coerce_types),
+        DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
+            !(json_signed_integer(value)
+                || value.is_number() && type_policy.allow_lossy_mapping
+                || value.is_string() && type_policy.coerce_types)
+        }
+        DataType::UInt8 | DataType::UInt16 | DataType::UInt32 | DataType::UInt64 => {
+            !(json_unsigned_integer(value)
+                || value.is_number() && type_policy.allow_lossy_mapping
+                || value.is_string() && type_policy.coerce_types)
+        }
+        DataType::Float16
         | DataType::Float32
-        | DataType::Float64 => !value.is_number(),
+        | DataType::Float64
+        | DataType::Decimal32(_, _)
+        | DataType::Decimal64(_, _)
+        | DataType::Decimal128(_, _)
+        | DataType::Decimal256(_, _) => {
+            !(value.is_number() || value.is_string() && type_policy.coerce_types)
+        }
         DataType::Utf8 | DataType::LargeUtf8 | DataType::Date32 | DataType::Timestamp(_, _) => {
             !value.is_string()
         }
@@ -744,6 +855,14 @@ fn declared_json_type_mismatch(field: &Field, value: &Value) -> Result<bool> {
             )));
         }
     })
+}
+
+fn json_signed_integer(value: &Value) -> bool {
+    value.as_i64().is_some() || value.as_u64().is_some_and(|value| value <= i64::MAX as u64)
+}
+
+fn json_unsigned_integer(value: &Value) -> bool {
+    value.as_u64().is_some()
 }
 
 fn is_json_scalar(value: &Value) -> bool {

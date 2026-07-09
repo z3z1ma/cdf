@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{policy::TypePolicy, program::RuleOutcome};
 
+const SCHEMA_COERCION_PLAN_METADATA_KEY: &str = "cdf:schema_coercion_plan";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaReconciliation {
     pub schema: Schema,
@@ -93,63 +95,244 @@ pub fn reconcile_schema(
     plan_schema_reconciliation(observed, constraint, type_policy)?.into_result()
 }
 
-pub fn schema_coercion_plan_from_reconciled_schema(schema: &Schema) -> Option<SchemaCoercionPlan> {
-    let has_physical_provenance = schema
-        .fields()
-        .iter()
-        .any(|field| physical_type(field.as_ref()).is_some());
-    if !has_physical_provenance {
-        return None;
-    }
+pub fn schema_coercion_plan_from_reconciled_schema(
+    schema: &Schema,
+) -> Result<Option<SchemaCoercionPlan>> {
+    let Some(serialized) = schema.metadata().get(SCHEMA_COERCION_PLAN_METADATA_KEY) else {
+        return Ok(None);
+    };
+    let plan = parse_schema_coercion_plan(serialized)?;
+    validate_schema_coercion_plan(schema, &plan)?;
+    Ok(Some(plan))
+}
 
-    Some(SchemaCoercionPlan {
-        fields: schema
-            .fields()
-            .iter()
-            .map(|field| field_coercion_from_reconciled_field(field.as_ref()))
-            .collect(),
+pub fn schema_coercion_plan_from_trusted_json(
+    schema: &Schema,
+    serialized: &str,
+) -> Result<SchemaCoercionPlan> {
+    let plan = parse_schema_coercion_plan(serialized)?;
+    let metadata_plan = schema
+        .metadata()
+        .get(SCHEMA_COERCION_PLAN_METADATA_KEY)
+        .ok_or_else(|| {
+            invalid_coercion_evidence(
+                "trusted batch evidence has no matching reserved Arrow schema metadata",
+            )
+        })?;
+    let metadata_plan = parse_schema_coercion_plan(metadata_plan)?;
+    if metadata_plan != plan {
+        return Err(invalid_coercion_evidence(
+            "trusted batch evidence does not match Arrow schema metadata",
+        ));
+    }
+    validate_schema_coercion_plan(schema, &plan)?;
+    Ok(plan)
+}
+
+pub fn reject_untrusted_schema_coercion_metadata(schema: &Schema) -> Result<()> {
+    if schema
+        .metadata()
+        .contains_key(SCHEMA_COERCION_PLAN_METADATA_KEY)
+    {
+        return Err(invalid_coercion_evidence(
+            "Arrow schema carries coercion-plan metadata without trusted batch evidence",
+        ));
+    }
+    Ok(())
+}
+
+fn parse_schema_coercion_plan(serialized: &str) -> Result<SchemaCoercionPlan> {
+    serde_json::from_str(serialized).map_err(|error| {
+        invalid_coercion_evidence(format!("metadata is not a valid coercion plan: {error}"))
     })
 }
 
-fn field_coercion_from_reconciled_field(field: &Field) -> FieldCoercion {
+fn validate_schema_coercion_plan(schema: &Schema, plan: &SchemaCoercionPlan) -> Result<()> {
+    let mut seen_sources = BTreeSet::new();
+    let mut output_index = 0_usize;
+    let mut saw_extra = false;
+    let mut previous_extra = None::<&str>;
+
+    for decision in &plan.fields {
+        if !seen_sources.insert(decision.source_name.as_str()) {
+            return Err(invalid_coercion_evidence(format!(
+                "duplicate source field {:?}",
+                decision.source_name
+            )));
+        }
+
+        match decision.output_name.as_deref() {
+            Some(output_name) => {
+                if saw_extra {
+                    return Err(invalid_coercion_evidence(
+                        "output field decision appears after an extra-field decision",
+                    ));
+                }
+                let Some(field) = schema.fields().get(output_index) else {
+                    return Err(invalid_coercion_evidence(format!(
+                        "plan contains unexpected output field {output_name:?}"
+                    )));
+                };
+                validate_output_field_decision(field.as_ref(), decision)?;
+                output_index += 1;
+            }
+            None => {
+                saw_extra = true;
+                validate_extra_field_decision(decision)?;
+                if let Some(previous) = previous_extra
+                    && previous >= decision.source_name.as_str()
+                {
+                    return Err(invalid_coercion_evidence(
+                        "extra-field decisions are not in deterministic source-name order",
+                    ));
+                }
+                previous_extra = Some(decision.source_name.as_str());
+            }
+        }
+    }
+
+    if output_index != schema.fields().len() {
+        return Err(invalid_coercion_evidence(format!(
+            "plan covers {output_index} output fields but schema has {}",
+            schema.fields().len()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Result<()> {
     let source = field_source_name(field);
-    let observed_type = physical_type(field)
+    let observed = decision.observed_type.as_deref().ok_or_else(|| {
+        invalid_coercion_evidence(format!("field {source:?} has no observed type"))
+    })?;
+    let constraint = decision.constraint_type.as_deref().ok_or_else(|| {
+        invalid_coercion_evidence(format!("field {source:?} has no constraint type"))
+    })?;
+    let expected_observed = physical_type(field)
         .map(str::to_owned)
         .unwrap_or_else(|| field.data_type().to_string());
-    let constraint_type = field.data_type().to_string();
-    let (decision, outcome, reason) = if observed_type == constraint_type {
-        (
-            FieldCoercionDecision::Preserved,
+
+    if decision.source_name != source
+        || decision.output_name.as_deref() != Some(field.name())
+        || constraint != field.data_type().to_string()
+        || observed != expected_observed
+        || decision.observed_name.is_none()
+        || !decision.operator_fixes.is_empty()
+    {
+        return Err(invalid_coercion_evidence(format!(
+            "field {:?} does not match reconciled schema identity or types",
+            decision.source_name
+        )));
+    }
+
+    let (expected_outcome, expected_reason, relation_valid) = match decision.decision {
+        FieldCoercionDecision::Preserved => (
             RuleOutcome::Pass,
             "observed type already satisfies the constraint".to_owned(),
-        )
-    } else if is_lossless_widening_display(&observed_type, &constraint_type) {
-        (
-            FieldCoercionDecision::Widened,
+            observed == constraint,
+        ),
+        FieldCoercionDecision::Widened => (
             RuleOutcome::Coerced,
-            format!("lossless widening from {observed_type} to {constraint_type}"),
-        )
-    } else {
-        (
-            FieldCoercionDecision::CoercedByPolicy,
+            format!("lossless widening from {observed} to {constraint}"),
+            observed != constraint && is_lossless_widening_display(observed, constraint),
+        ),
+        FieldCoercionDecision::CoercedByPolicy => (
             RuleOutcome::Coerced,
-            format!(
-                "reconciled schema metadata records physical type {observed_type} for output type {constraint_type}"
-            ),
-        )
+            format!("explicit coerce_types policy permits parsing from {observed} to {constraint}"),
+            is_parse_coercion_display(observed, constraint),
+        ),
+        FieldCoercionDecision::LossyAllowed => (
+            RuleOutcome::Coerced,
+            format!("allow_lossy_mapping permits lossy cast from {observed} to {constraint}"),
+            is_lossy_mapping_display(observed, constraint),
+        ),
+        FieldCoercionDecision::LossyRejected
+        | FieldCoercionDecision::Unsupported
+        | FieldCoercionDecision::Missing
+        | FieldCoercionDecision::Extra => {
+            return Err(invalid_coercion_evidence(format!(
+                "field {source:?} carries non-success decision {:?}",
+                decision.decision
+            )));
+        }
     };
 
-    FieldCoercion {
-        source_name: source.clone(),
-        observed_name: Some(source),
-        output_name: Some(field.name().clone()),
-        observed_type: Some(observed_type),
-        constraint_type: Some(constraint_type),
-        decision,
-        outcome,
-        reason,
-        operator_fixes: Vec::new(),
+    if !relation_valid || decision.outcome != expected_outcome || decision.reason != expected_reason
+    {
+        return Err(invalid_coercion_evidence(format!(
+            "field {source:?} decision {:?} is inconsistent with {observed} -> {constraint}",
+            decision.decision
+        )));
     }
+    Ok(())
+}
+
+fn validate_extra_field_decision(decision: &FieldCoercion) -> Result<()> {
+    if decision.decision != FieldCoercionDecision::Extra
+        || decision.outcome != RuleOutcome::AdmittedAsVariant
+        || decision.observed_name.is_none()
+        || decision.observed_type.is_none()
+        || decision.constraint_type.is_some()
+        || !decision.operator_fixes.is_empty()
+        || decision.reason != "observed field is outside the constraint projection"
+    {
+        return Err(invalid_coercion_evidence(format!(
+            "extra-field decision {:?} is structurally inconsistent",
+            decision.source_name
+        )));
+    }
+    Ok(())
+}
+
+fn is_parse_coercion_display(observed: &str, constraint: &str) -> bool {
+    matches!(observed, "Utf8" | "LargeUtf8" | "Utf8View")
+        && (is_numeric_display(constraint)
+            || is_temporal_display(constraint)
+            || constraint == "Boolean")
+}
+
+fn is_lossy_mapping_display(observed: &str, constraint: &str) -> bool {
+    observed != constraint
+        && !is_lossless_widening_display(observed, constraint)
+        && !is_parse_coercion_display(observed, constraint)
+        && ((is_numeric_display(observed) && is_numeric_display(constraint))
+            || (observed.starts_with("Timestamp(") && matches!(constraint, "Date32" | "Date64"))
+            || (observed == "Date64" && constraint == "Date32"))
+}
+
+fn is_numeric_display(value: &str) -> bool {
+    matches!(
+        value,
+        "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "Float16"
+            | "Float32"
+            | "Float64"
+    ) || value.starts_with("Decimal32(")
+        || value.starts_with("Decimal64(")
+        || value.starts_with("Decimal128(")
+        || value.starts_with("Decimal256(")
+}
+
+fn is_temporal_display(value: &str) -> bool {
+    matches!(value, "Date32" | "Date64")
+        || value.starts_with("Time32(")
+        || value.starts_with("Time64(")
+        || value.starts_with("Timestamp(")
+        || value.starts_with("Duration(")
+}
+
+fn invalid_coercion_evidence(message: impl Into<String>) -> CdfError {
+    CdfError::data(format!(
+        "invalid schema coercion evidence: {}",
+        message.into()
+    ))
 }
 
 fn is_lossless_widening_display(observed: &str, constraint: &str) -> bool {
@@ -236,18 +419,24 @@ pub fn plan_schema_reconciliation(
         decisions.push(extra_field_decision(&source, &observed_field));
     }
 
+    let plan = SchemaCoercionPlan { fields: decisions };
     let schema = if errors.is_empty() {
-        Some(Schema::new_with_metadata(
-            output_fields,
-            constraint.metadata().clone(),
-        ))
+        let serialized_plan = serde_json::to_string(&plan).map_err(|error| {
+            CdfError::internal(format!("serialize schema coercion plan metadata: {error}"))
+        })?;
+        let mut metadata = constraint.metadata().clone();
+        metadata.insert(
+            SCHEMA_COERCION_PLAN_METADATA_KEY.to_owned(),
+            serialized_plan,
+        );
+        Some(Schema::new_with_metadata(output_fields, metadata))
     } else {
         None
     };
 
     Ok(SchemaReconciliationReport {
         schema,
-        plan: SchemaCoercionPlan { fields: decisions },
+        plan,
         errors,
     })
 }

@@ -13,4 +13,5 @@ Options:
       --package-id <ID>
       --to <DEST>
       --target <TARGET>
+      --no-pin
   -h, --help                         Print help

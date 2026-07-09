@@ -2,14 +2,15 @@ use std::{
     fs,
     path::{Path, PathBuf},
     result::Result as StdResult,
+    sync::Arc,
 };
 
 use cdf_declarative::CompiledResource;
-use cdf_kernel::{CdfError, Result as CdfResult};
+use cdf_kernel::{CdfError, Result as CdfResult, SchemaSource};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, PROJECT_FILE_NAME,
-    ProjectConfig, ProjectResourceOrigin, parse_cdf_toml, parse_lock,
+    ProjectConfig, ProjectResourceOrigin, SchemaSnapshotStore, parse_cdf_toml, parse_lock,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
@@ -60,15 +61,37 @@ impl ProjectContext {
         project_arg: Option<&PathBuf>,
         env_arg: Option<&str>,
     ) -> StdResult<Self, CliError> {
-        Self::load(project_arg, env_arg).map_err(|error| {
-            if error.message.contains("resource mapping pattern") {
-                return CliError::usage_with(
-                    format!("cdf {command} cannot load project: {}", error.message),
-                    error_catalog::PROJECT_RESOURCE_MAPPING,
-                );
-            }
-            CliError::from(error)
-        })
+        Self::load_for_command_with_locked_snapshots(command, project_arg, env_arg, true)
+    }
+
+    pub fn load_for_command_with_locked_snapshots(
+        command: &str,
+        project_arg: Option<&PathBuf>,
+        env_arg: Option<&str>,
+        hydrate_locked_snapshots: bool,
+    ) -> StdResult<Self, CliError> {
+        Self::load(project_arg, env_arg)
+            .and_then(|mut context| {
+                if hydrate_locked_snapshots
+                    && matches!(command, "plan" | "explain" | "preview" | "run")
+                {
+                    context.resources = hydrate_locked_schema_snapshots(
+                        &context.root,
+                        context.resources,
+                        context.lock.as_ref(),
+                    )?;
+                }
+                Ok(context)
+            })
+            .map_err(|error| {
+                if error.message.contains("resource mapping pattern") {
+                    return CliError::usage_with(
+                        format!("cdf {command} cannot load project: {}", error.message),
+                        error_catalog::PROJECT_RESOURCE_MAPPING,
+                    );
+                }
+                CliError::from(error)
+            })
     }
 
     pub fn load(project_arg: Option<&PathBuf>, env_arg: Option<&str>) -> CdfResult<Self> {
@@ -164,6 +187,52 @@ impl ProjectContext {
         )
         .with_suggestions(self.resource_suggestions(id))
     }
+}
+
+fn hydrate_locked_schema_snapshots(
+    root: &Path,
+    resources: Vec<CompiledResource>,
+    lock: Option<&CdfLock>,
+) -> CdfResult<Vec<CompiledResource>> {
+    let Some(lock) = lock else {
+        return Ok(resources);
+    };
+    let store = SchemaSnapshotStore::new(root);
+    resources
+        .into_iter()
+        .map(|resource| {
+            if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+                return Ok(resource);
+            }
+            let resource_id = resource.descriptor().resource_id.as_str();
+            let Some(locked) = lock.resources.get(resource_id) else {
+                return Ok(resource);
+            };
+            let Some(reference) = locked.schema_snapshot.as_ref() else {
+                return Ok(resource);
+            };
+            if locked.schema_hash.as_deref() != Some(reference.schema_hash.as_str())
+                || locked.descriptor.schema_source.pinned_snapshot() != Some(reference)
+            {
+                return Err(CdfError::data(format!(
+                    "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for resource `{resource_id}`"
+                )));
+            }
+            let artifact = store.read(reference)?;
+            if artifact.resource_id != resource_id {
+                return Err(CdfError::data(format!(
+                    "schema snapshot {} belongs to resource `{}` instead of locked resource `{resource_id}`",
+                    reference.path, artifact.resource_id
+                )));
+            }
+            Ok(resource.with_schema_source_and_schema(
+                SchemaSource::Discovered {
+                    snapshot: reference.clone(),
+                },
+                Arc::new(artifact.schema.to_arrow()?),
+            ))
+        })
+        .collect()
 }
 
 fn resource_not_compiled_message(

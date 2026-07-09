@@ -8,9 +8,9 @@ use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, SchemaCoercionPlan, ValidationProgram,
-    VerdictSummary, evaluate_package_order_dedup, evaluate_record_batch,
-    schema_coercion_plan_from_reconciled_schema,
+    ContractEvaluationContext, QuarantineCandidate, ValidationProgram, VerdictSummary,
+    evaluate_package_order_dedup, evaluate_record_batch, reject_untrusted_schema_coercion_metadata,
+    schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
     CdfError, PHYSICAL_TYPE_METADATA_KEY, PreContractObservedValue, PreContractQuarantineFact,
@@ -73,7 +73,6 @@ struct OutputWriteState<'a> {
     segments: &'a mut Vec<cdf_package::SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     output_schema: &'a mut Option<SchemaArtifact>,
-    schema_coercion: &'a mut Option<SchemaCoercionPlan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -229,6 +228,26 @@ where
                         "package execution requires in-memory Arrow record batches at MVP",
                     ));
                 };
+                let batch_coercion = match batch.header.schema_coercion_plan.as_deref() {
+                    Some(serialized) => Some(schema_coercion_plan_from_trusted_json(
+                        record_batch.schema().as_ref(),
+                        serialized,
+                    )?),
+                    None => {
+                        reject_untrusted_schema_coercion_metadata(record_batch.schema().as_ref())?;
+                        None
+                    }
+                };
+                if let Some(batch_coercion) = batch_coercion {
+                    if let Some(existing) = &schema_coercion
+                        && existing != &batch_coercion
+                    {
+                        return Err(CdfError::data(
+                            "input batches carry inconsistent schema coercion evidence",
+                        ));
+                    }
+                    schema_coercion = Some(batch_coercion);
+                }
 
                 let output = execute_batch(record_batch, plan, &mut remaining_limit)?;
                 if output.num_rows() == 0 {
@@ -278,7 +297,6 @@ where
                         segments: &mut segments,
                         segment_positions: &mut segment_positions,
                         output_schema: &mut output_schema,
-                        schema_coercion: &mut schema_coercion,
                     },
                 )?;
             }
@@ -299,7 +317,6 @@ where
                 segments: &mut segments,
                 segment_positions: &mut segment_positions,
                 output_schema: &mut output_schema,
-                schema_coercion: &mut schema_coercion,
             },
         )?;
     }
@@ -518,10 +535,6 @@ fn write_output_batch(
 ) -> Result<()> {
     let output = normalize_batch(output, program)?;
     *state.output_schema = Some(schema_artifact(output.schema().as_ref()));
-    if state.schema_coercion.is_none() {
-        *state.schema_coercion =
-            schema_coercion_plan_from_reconciled_schema(output.schema().as_ref());
-    }
     state.profile.output_rows += output.num_rows() as u64;
     state.profile.output_bytes += output.get_array_memory_size() as u64;
     state.profile.output_batches += 1;

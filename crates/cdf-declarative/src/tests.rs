@@ -2001,10 +2001,24 @@ fn file_glob_run_and_preview_open_the_requested_partition() {
     let preview_batches = drain_batches(
         futures_executor::block_on(resource.open_preview(partitions[0].clone())).unwrap(),
     );
+    let matching_run_batches =
+        drain_batches(futures_executor::block_on(resource.open(partitions[0].clone())).unwrap());
     let run_batches =
         drain_batches(futures_executor::block_on(resource.open(partitions[1].clone())).unwrap());
 
     assert_eq!(first_i64_value(&preview_batches), 1);
+    assert_eq!(preview_batches.len(), matching_run_batches.len());
+    for (preview, run) in preview_batches.iter().zip(&matching_run_batches) {
+        assert_eq!(preview.record_batch().unwrap(), run.record_batch().unwrap());
+        assert_eq!(
+            preview.header.observed_schema_hash,
+            run.header.observed_schema_hash
+        );
+        assert_eq!(
+            preview.header.pre_contract_quarantine,
+            run.header.pre_contract_quarantine
+        );
+    }
     assert_eq!(first_i64_value(&run_batches), 2);
 }
 

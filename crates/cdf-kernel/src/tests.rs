@@ -383,7 +383,7 @@ fn batch_wraps_arrow_record_batch_and_reports_counts() {
 }
 
 #[test]
-fn batch_header_serde_defaults_missing_pre_contract_quarantine() {
+fn batch_header_serde_defaults_missing_optional_evidence_fields() {
     let header = BatchHeader {
         batch_id: BatchId::new("batch-legacy").unwrap(),
         resource_id: ResourceId::new("orders").unwrap(),
@@ -393,6 +393,7 @@ fn batch_header_serde_defaults_missing_pre_contract_quarantine() {
         byte_count: 8,
         source_position: None,
         pre_contract_quarantine: Vec::new(),
+        schema_coercion_plan: None,
         watermarks: Vec::new(),
         stats: BatchStats::default(),
         cdc: None,
@@ -400,6 +401,7 @@ fn batch_header_serde_defaults_missing_pre_contract_quarantine() {
 
     let mut json = serde_json::to_value(&header).unwrap();
     assert!(json.get("pre_contract_quarantine").is_none());
+    assert!(json.get("schema_coercion_plan").is_none());
     json.as_object_mut()
         .unwrap()
         .remove("pre_contract_quarantine");
@@ -407,6 +409,7 @@ fn batch_header_serde_defaults_missing_pre_contract_quarantine() {
     let decoded: BatchHeader = serde_json::from_value(json).unwrap();
 
     assert!(decoded.pre_contract_quarantine.is_empty());
+    assert!(decoded.schema_coercion_plan.is_none());
 }
 
 #[test]

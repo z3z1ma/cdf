@@ -83,6 +83,7 @@ _arguments "${_arguments_options[@]}" : \
 '--package-id=[]:ID:_default' \
 '--to=[]:DEST:_default' \
 '--target=[]:TARGET:_default' \
+'--no-pin[]' \
 '--no-color[]' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -99,6 +100,7 @@ _arguments "${_arguments_options[@]}" : \
 '--package-id=[]:ID:_default' \
 '--to=[]:DEST:_default' \
 '--target=[]:TARGET:_default' \
+'--no-pin[]' \
 '--no-color[]' \
 '-h[Print help]' \
 '--help[Print help]' \

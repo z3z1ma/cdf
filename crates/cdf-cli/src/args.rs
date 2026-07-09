@@ -94,6 +94,7 @@ pub struct ScanArgs {
     pub limit: Option<u64>,
     pub order_by: Vec<String>,
     pub package_id: Option<String>,
+    pub no_pin: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -421,6 +422,7 @@ fn parse_scan(
         limit,
         order_by: values(matches, "order_by"),
         package_id: string_value(matches, "package_id"),
+        no_pin: accepts_target && matches.get_flag("no_pin"),
     })
 }
 
@@ -843,7 +845,8 @@ fn scan_command(name: &'static str, accepts_target: bool) -> ClapCommand {
     if accepts_target {
         command = command
             .arg(option("to", "to", "DEST"))
-            .arg(option("target", "target", "TARGET"));
+            .arg(option("target", "target", "TARGET"))
+            .arg(flag("no_pin", "no-pin"));
     }
     command
 }

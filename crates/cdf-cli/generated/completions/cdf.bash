@@ -336,7 +336,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__explain)
-            opts="-h --resource --select --filter --limit --order-by --package-id --to --target --no-color --help"
+            opts="-h --resource --select --filter --limit --order-by --package-id --to --target --no-pin --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -614,7 +614,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__plan)
-            opts="-h --resource --select --filter --limit --order-by --package-id --to --target --no-color --help"
+            opts="-h --resource --select --filter --limit --order-by --package-id --to --target --no-pin --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

@@ -6,7 +6,9 @@ use std::{
 };
 
 use arrow_array::{Int32Array, RecordBatch};
-use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
+use arrow_schema::{
+    DataType, Field, Fields, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode,
+};
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_declarative::{
     AuthDeclaration, CompiledResourcePlan, FileRuntimeDependencies, FileTransportFacade,
@@ -338,6 +340,7 @@ fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
     let repeated = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata).unwrap();
 
     assert_eq!(artifact.schema_hash, repeated.schema_hash);
+    assert_eq!(artifact.schema.to_arrow().unwrap(), schema);
     assert_eq!(
         artifact.path,
         format!(".cdf/schemas/github.issues@{}.json", artifact.schema_hash)
@@ -369,6 +372,76 @@ fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
     escaped.path = "../outside.json".to_owned();
     let error = store.read(&escaped).unwrap_err().to_string();
     assert!(error.contains("schema snapshot reference path"));
+}
+
+#[test]
+fn schema_snapshot_arrow_round_trip_covers_closed_type_vocabulary() {
+    let union = UnionFields::try_new(
+        [1, 3],
+        [
+            Field::new("integer", DataType::Int32, false),
+            Field::new("text", DataType::Utf8, true),
+        ],
+    )
+    .unwrap();
+    let fields = vec![
+        Field::new("decimal", DataType::Decimal256(76, 9), true),
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, Some("UTC".into())),
+            true,
+        ),
+        Field::new(
+            "interval",
+            DataType::Interval(IntervalUnit::MonthDayNano),
+            true,
+        ),
+        Field::new("binary_view", DataType::BinaryView, true),
+        Field::new("utf8_view", DataType::Utf8View, true),
+        Field::new(
+            "large_list_view",
+            DataType::LargeListView(Field::new("item", DataType::UInt16, true).into()),
+            true,
+        ),
+        Field::new(
+            "map",
+            DataType::Map(
+                Field::new(
+                    "entries",
+                    DataType::Struct(Fields::from(vec![
+                        Field::new("key", DataType::Utf8, false),
+                        Field::new("value", DataType::Float32, true),
+                    ])),
+                    false,
+                )
+                .into(),
+                false,
+            ),
+            true,
+        ),
+        Field::new("union", DataType::Union(union, UnionMode::Dense), true),
+        Field::new(
+            "dictionary",
+            DataType::Dictionary(Box::new(DataType::Int16), Box::new(DataType::LargeUtf8)),
+            true,
+        ),
+        Field::new(
+            "run_end_encoded",
+            DataType::RunEndEncoded(
+                Field::new("run_ends", DataType::Int32, false).into(),
+                Field::new("values", DataType::Utf8, true).into(),
+            ),
+            true,
+        ),
+    ];
+    let schema = Schema::new(fields);
+
+    assert_eq!(
+        SchemaSnapshotSchema::from_arrow(&schema)
+            .to_arrow()
+            .unwrap(),
+        schema
+    );
 }
 
 #[test]

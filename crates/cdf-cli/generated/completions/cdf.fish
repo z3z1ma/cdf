@@ -70,6 +70,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand plan" -l order-by -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l package-id -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l to -r
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l target -r
+complete -c cdf -n "__fish_cdf_using_subcommand plan" -l no-pin
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l resource -r
@@ -80,6 +81,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand explain" -l order-by -r
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l package-id -r
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l to -r
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l target -r
+complete -c cdf -n "__fish_cdf_using_subcommand explain" -l no-pin
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand explain" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand run" -l resource -r

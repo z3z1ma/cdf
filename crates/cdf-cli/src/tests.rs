@@ -937,7 +937,7 @@ fn add_http_parquet_pins_schema_with_bounded_fixture_requests() {
     let project = TestProject::new();
     write_vendor_parquet(&project.root.join("data/yellow.parquet"));
     let parquet = fs::read(project.root.join("data/yellow.parquet")).unwrap();
-    let (base_url, requests) = serve_parquet_file(parquet, 8);
+    let (base_url, requests) = serve_parquet_file(parquet, 16);
     let url = format!("{base_url}/yellow.parquet");
 
     let result = run([
@@ -964,6 +964,43 @@ fn add_http_parquet_pins_schema_with_bounded_fixture_requests() {
     assert!(resource_toml.contains("glob = \"yellow.parquet\""));
     assert!(!resource_toml.contains("primary_key"));
     assert!(!resource_toml.contains("merge_key"));
+
+    let before_no_pin = project_tree_snapshot(&project.root);
+    let no_pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "remote.yellow",
+        "--no-pin",
+    ]);
+    assert_eq!(no_pin.exit_code, 0, "stderr: {}", no_pin.stderr);
+    let no_pin_report = stderr_or_stdout_json(&no_pin.stdout);
+    assert_eq!(
+        no_pin_report["result"]["schema_snapshot"]["outcome"],
+        "inspection_only"
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before_no_pin);
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "remote.yellow",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    let plan_report = stderr_or_stdout_json(&plan.stdout);
+    assert_eq!(
+        plan_report["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+    assert_eq!(
+        plan_report["result"]["schema_snapshot"]["lockfile_written"],
+        false
+    );
 
     let requests = requests.lock().unwrap();
     assert!(
@@ -1300,6 +1337,7 @@ fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
             limit: Some(5),
             order_by: Vec::new(),
             package_id: Some("pkg-plan-rich".to_owned()),
+            no_pin: false,
         },
         "plan",
     )
@@ -2232,7 +2270,7 @@ fn schema_pin_show_and_diff_local_parquet_snapshot_with_lockfile_reference() {
 }
 
 #[test]
-fn schema_pin_without_lockfile_reports_unsupported_lockfile_reference() {
+fn schema_pin_without_lockfile_creates_semantic_lockfile_reference() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/vendors.parquet"));
@@ -2251,15 +2289,11 @@ fn schema_pin_without_lockfile_reports_unsupported_lockfile_reference() {
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
     assert_eq!(report["writes"]["schema_snapshot"], true);
-    assert_eq!(report["writes"]["lockfile"], false);
-    assert!(
-        report["unsupported"][0]
-            .as_str()
-            .unwrap()
-            .contains("cdf.lock is not present")
-    );
+    assert_eq!(report["writes"]["lockfile"], true);
+    assert_eq!(report["unsupported"], serde_json::json!([]));
     assert!(project.root.join(".cdf/schemas").exists());
-    assert!(!project.root.join("cdf.lock").exists());
+    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    assert!(lock.resources["local.events"].schema_snapshot.is_some());
 }
 
 #[test]
@@ -2430,6 +2464,9 @@ fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
+    assert_eq!(report["schema_snapshot"]["outcome"], "added");
+    assert_eq!(report["schema_snapshot"]["snapshot_written"], true);
+    assert_eq!(report["schema_snapshot"]["lockfile_written"], true);
     assert_eq!(report["resource_schema"]["schema_source"], "discovered");
     let snapshot_path = report["resource_schema"]["snapshot_path"].as_str().unwrap();
     assert!(snapshot_path.starts_with(".cdf/schemas/local.events@sha256:"));
@@ -2447,6 +2484,365 @@ fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
         snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
         "VendorID"
     );
+    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    assert_eq!(
+        lock.resources["local.events"]
+            .schema_snapshot
+            .as_ref()
+            .unwrap()
+            .schema_hash
+            .as_str(),
+        snapshot["schema_hash"].as_str().unwrap()
+    );
+}
+
+#[test]
+fn plan_discover_autopin_is_byte_stable_and_preserves_unrelated_semantic_locks() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let first = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    let first_report = stderr_or_stdout_json(&first.stdout);
+    assert_eq!(
+        first_report["result"]["schema_snapshot"]["outcome"],
+        "added"
+    );
+    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
+    let snapshot_path = first_report["result"]["schema_snapshot"]["path"]
+        .as_str()
+        .unwrap();
+    let snapshot_before = fs::read(project.root.join(snapshot_path)).unwrap();
+
+    let second = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+    let second_report = stderr_or_stdout_json(&second.stdout);
+    assert_eq!(
+        second_report["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+    assert_eq!(
+        second_report["result"]["schema_snapshot"]["snapshot_written"],
+        false
+    );
+    assert_eq!(
+        second_report["result"]["schema_snapshot"]["lockfile_written"],
+        false
+    );
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        lock_before
+    );
+    assert_eq!(
+        fs::read(project.root.join(snapshot_path)).unwrap(),
+        snapshot_before
+    );
+    let human = run([
+        "cdf",
+        "--no-color",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert!(human.stdout.contains("Schema Snapshot"), "{}", human.stdout);
+    assert!(human.stdout.contains("outcome"), "{}", human.stdout);
+    assert!(human.stdout.contains("unchanged"), "{}", human.stdout);
+
+    let mut lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    let unrelated = lock.resources["local.events"].clone();
+    lock.resources
+        .insert("unrelated.events".to_owned(), unrelated.clone());
+    fs::write(
+        project.root.join("cdf.lock"),
+        cdf_project::lock_to_toml(&lock).unwrap(),
+    )
+    .unwrap();
+    let third = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(third.exit_code, 0, "stderr: {}", third.stderr);
+    let updated = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    assert_eq!(updated.resources["unrelated.events"], unrelated);
+
+    write_vendor_score_parquet(&project.root.join("data/vendors.parquet"));
+    let locked_before_drift = fs::read(project.root.join("cdf.lock")).unwrap();
+    let snapshots_before_drift = schema_snapshot_paths(&project);
+    let pinned_hash = first_report["result"]["schema_snapshot"]["schema_hash"]
+        .as_str()
+        .unwrap();
+    let pinned_plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(pinned_plan.exit_code, 0, "stderr: {}", pinned_plan.stderr);
+    let pinned_plan_report = stderr_or_stdout_json(&pinned_plan.stdout);
+    assert_eq!(
+        pinned_plan_report["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+    assert_eq!(
+        pinned_plan_report["result"]["schema_snapshot"]["schema_hash"],
+        pinned_hash
+    );
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        locked_before_drift
+    );
+    assert_eq!(schema_snapshot_paths(&project), snapshots_before_drift);
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        locked_before_drift
+    );
+    assert_eq!(schema_snapshot_paths(&project), snapshots_before_drift);
+
+    let run_result = run_valid_run_resource(
+        &project,
+        "local.events",
+        "pkg-pinned-drift",
+        "checkpoint-pinned-drift",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    let run_report = stderr_or_stdout_json(&run_result.stdout);
+    assert_eq!(
+        run_report["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+    assert_eq!(run_report["result"]["schema_hash"], pinned_hash);
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        locked_before_drift
+    );
+    assert_eq!(schema_snapshot_paths(&project), snapshots_before_drift);
+
+    let inspection = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--no-pin",
+    ]);
+    assert_eq!(inspection.exit_code, 0, "stderr: {}", inspection.stderr);
+    let inspection_report = stderr_or_stdout_json(&inspection.stdout);
+    assert_eq!(
+        inspection_report["result"]["schema_snapshot"]["outcome"],
+        "inspection_only"
+    );
+    assert_ne!(
+        inspection_report["result"]["schema_snapshot"]["schema_hash"],
+        pinned_hash
+    );
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        locked_before_drift
+    );
+    assert_eq!(schema_snapshot_paths(&project), snapshots_before_drift);
+
+    let explicit_pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(explicit_pin.exit_code, 0, "stderr: {}", explicit_pin.stderr);
+    let explicit_pin_report = stderr_or_stdout_json(&explicit_pin.stdout);
+    assert_eq!(explicit_pin_report["result"]["status"], "refreshed");
+    assert_ne!(explicit_pin_report["result"]["schema_hash"], pinned_hash);
+    let refreshed_lock =
+        parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    assert_eq!(refreshed_lock.resources["unrelated.events"], unrelated);
+}
+
+#[test]
+fn plan_and_explain_no_pin_discover_without_project_writes() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+    let before = project_tree_snapshot(&project.root);
+
+    for command in ["plan", "explain"] {
+        let result = run([
+            "cdf",
+            "--json",
+            "--project",
+            project.root_str(),
+            command,
+            "local.events",
+            "--no-pin",
+        ]);
+        assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+        let report = stderr_or_stdout_json(&result.stdout);
+        assert_eq!(
+            report["result"]["schema_snapshot"]["outcome"],
+            "inspection_only"
+        );
+        assert_eq!(
+            report["result"]["schema_snapshot"]["snapshot_written"],
+            false
+        );
+        assert_eq!(
+            report["result"]["schema_snapshot"]["lockfile_written"],
+            false
+        );
+        assert_eq!(project_tree_snapshot(&project.root), before);
+    }
+}
+
+#[test]
+fn ordinary_plan_fails_closed_when_locked_snapshot_artifact_is_missing() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+    let first = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    let report = stderr_or_stdout_json(&first.stdout);
+    let snapshot_path = report["result"]["schema_snapshot"]["path"]
+        .as_str()
+        .unwrap();
+    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
+    fs::remove_file(project.root.join(snapshot_path)).unwrap();
+
+    let second = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+
+    assert_ne!(second.exit_code, 0);
+    let output = format!("{}{}", second.stdout, second.stderr);
+    assert!(output.contains(snapshot_path), "{output}");
+    assert!(!project.root.join(snapshot_path).exists());
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        lock_before
+    );
+
+    let inspection = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--no-pin",
+    ]);
+    assert_eq!(inspection.exit_code, 0, "stderr: {}", inspection.stderr);
+    let inspection_report = stderr_or_stdout_json(&inspection.stdout);
+    assert_eq!(
+        inspection_report["result"]["schema_snapshot"]["outcome"],
+        "inspection_only"
+    );
+    assert!(!project.root.join(snapshot_path).exists());
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        lock_before
+    );
+}
+
+#[test]
+fn no_pin_is_documented_for_plan_and_explain_but_rejected_by_run() {
+    for command in ["plan", "explain"] {
+        let help = run(["cdf", "help", command]);
+        assert_eq!(help.exit_code, 0, "stderr: {}", help.stderr);
+        assert!(help.stdout.contains("--no-pin"), "{}", help.stdout);
+    }
+
+    let run_help = run(["cdf", "help", "run"]);
+    assert_eq!(run_help.exit_code, 0, "stderr: {}", run_help.stderr);
+    assert!(!run_help.stdout.contains("--no-pin"));
+    let rejected = run(["cdf", "run", "local.events", "--no-pin"]);
+    assert_eq!(rejected.exit_code, 2);
+    assert!(rejected.stderr.contains("unexpected argument '--no-pin'"));
+}
+
+#[test]
+fn rest_plan_no_pin_is_write_free_and_redacts_resolved_secret() {
+    let project = TestProject::new();
+    fs::write(project.root.join("rest-token"), "rest-no-pin-secret\n").unwrap();
+    let (base_url, requests) =
+        serve_json_sequence([r#"{ "items": [{ "VendorID": 1, "updated_at": 10 }] }"#]);
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+    fs::write(
+        project.root.join("resources/api.toml"),
+        rest_discover_resource_with_base_url(&base_url, "secret://file/rest-token"),
+    )
+    .unwrap();
+    let before = project_tree_snapshot(&project.root);
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "api.items",
+        "--no-pin",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "rest-no-pin-secret");
+    let report = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(
+        report["result"]["schema_snapshot"]["outcome"],
+        "inspection_only"
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    assert_eq!(requests.lock().unwrap().len(), 1);
 }
 
 #[test]
@@ -2486,6 +2882,28 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
     )
     .unwrap();
 
+    let before_no_pin = project_tree_snapshot(&project.root);
+    let no_pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "warehouse.orders",
+        "--target",
+        "orders",
+        "--no-pin",
+    ]);
+    assert_eq!(no_pin.exit_code, 0, "stderr: {}", no_pin.stderr);
+    assert_secret_absent(&no_pin, &source_dsn);
+    assert_secret_absent(&no_pin, "source-discover-run-secret");
+    let no_pin_report = stderr_or_stdout_json(&no_pin.stdout);
+    assert_eq!(
+        no_pin_report["result"]["schema_snapshot"]["outcome"],
+        "inspection_only"
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before_no_pin);
+
     let plan = run([
         "cdf",
         "--json",
@@ -2524,6 +2942,9 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
     let snapshot_text = snapshot.to_string();
     assert!(!snapshot_text.contains(&source_dsn));
     assert!(!snapshot_text.contains("source-discover-run-secret"));
+    let lock_text = fs::read_to_string(project.root.join("cdf.lock")).unwrap();
+    assert!(!lock_text.contains(&source_dsn));
+    assert!(!lock_text.contains("source-discover-run-secret"));
     assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
     assert_eq!(
         snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
@@ -2566,6 +2987,9 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
     let run_json = stderr_or_stdout_json(&run_result.stdout);
     let run_report = &run_json["result"];
     assert_eq!(run_report["resource_id"], "warehouse.orders");
+    assert_eq!(run_report["schema_snapshot"]["outcome"], "unchanged");
+    assert_eq!(run_report["schema_snapshot"]["snapshot_written"], false);
+    assert_eq!(run_report["schema_snapshot"]["lockfile_written"], false);
     assert_eq!(run_report["target"], "orders");
     assert_eq!(run_report["schema_hash"], snapshot["schema_hash"]);
     assert_eq!(run_report["row_count"], 3);
@@ -2653,6 +3077,11 @@ fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leak
     let snapshot = read_snapshot_json(&project, snapshot_path);
     let snapshot_text = snapshot.to_string();
     assert!(!snapshot_text.contains("rest-autopin-secret"));
+    assert!(
+        !fs::read_to_string(project.root.join("cdf.lock"))
+            .unwrap()
+            .contains("rest-autopin-secret")
+    );
     let snapshot_fields = snapshot["schema"]["fields"].as_array().unwrap();
     assert!(
         snapshot_fields
@@ -2695,6 +3124,9 @@ fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leak
     let run_json = stderr_or_stdout_json(&run_result.stdout);
     let run_report = &run_json["result"];
     assert_eq!(run_report["resource_id"], "api.items");
+    assert_eq!(run_report["schema_snapshot"]["outcome"], "unchanged");
+    assert_eq!(run_report["schema_snapshot"]["snapshot_written"], false);
+    assert_eq!(run_report["schema_snapshot"]["lockfile_written"], false);
     assert_eq!(run_report["schema_hash"], snapshot["schema_hash"]);
     assert_eq!(run_report["row_count"], 2);
     assert_eq!(run_report["checkpoint"]["status"], "committed");
@@ -2728,7 +3160,7 @@ fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leak
     );
 
     let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 5);
+    assert_eq!(requests.len(), 3);
     assert!(
         requests
             .iter()
@@ -8360,6 +8792,33 @@ fn assert_no_preview_writes(project: &TestProject) {
     );
 }
 
+fn project_tree_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
+    fn visit(root: &Path, directory: &Path, files: &mut BTreeMap<String, Vec<u8>>) {
+        let mut entries = fs::read_dir(directory)
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect::<Vec<_>>();
+        entries.sort();
+        for path in entries {
+            if path.is_dir() {
+                visit(root, &path, files);
+            } else {
+                files.insert(
+                    path.strip_prefix(root)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace(std::path::MAIN_SEPARATOR, "/"),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+    }
+
+    let mut files = BTreeMap::new();
+    visit(root, root, &mut files);
+    files
+}
+
 fn assert_no_headless_progress_controls(output: &str) {
     assert!(
         !output.contains("\u{1b}["),
@@ -8970,18 +9429,41 @@ fn write_vendor_parquet(path: &Path) {
     fs::write(path, bytes).unwrap();
 }
 
+fn write_vendor_score_parquet(path: &Path) {
+    let fields = vec![
+        Field::new("VendorID", DataType::Int32, false),
+        Field::new("score", DataType::Int64, false),
+    ];
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int32Array::from_iter_values([1_i32, 2_i32])),
+        Arc::new(Int64Array::from_iter_values([10_i64, 20_i64])),
+    ];
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
 fn single_schema_snapshot_path(project: &TestProject) -> String {
-    let entries = fs::read_dir(project.root.join(".cdf/schemas"))
-        .unwrap()
-        .map(|entry| entry.unwrap().path())
-        .collect::<Vec<_>>();
+    let entries = schema_snapshot_paths(project);
     assert_eq!(entries.len(), 1);
-    entries[0]
-        .strip_prefix(&project.root)
+    entries[0].clone()
+}
+
+fn schema_snapshot_paths(project: &TestProject) -> Vec<String> {
+    let mut entries = fs::read_dir(project.root.join(".cdf/schemas"))
         .unwrap()
-        .to_str()
-        .unwrap()
-        .replace(std::path::MAIN_SEPARATOR, "/")
+        .map(|entry| {
+            entry
+                .unwrap()
+                .path()
+                .strip_prefix(&project.root)
+                .unwrap()
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/")
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
 }
 
 fn read_snapshot_json(project: &TestProject, relative_path: &str) -> Value {

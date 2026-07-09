@@ -35,6 +35,7 @@ impl Batch {
                 byte_count,
                 source_position: None,
                 pre_contract_quarantine: Vec::new(),
+                schema_coercion_plan: None,
                 watermarks: Vec::new(),
                 stats: BatchStats::default(),
                 cdc: None,
@@ -75,6 +76,8 @@ pub struct BatchHeader {
     pub source_position: Option<SourcePosition>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pre_contract_quarantine: Vec<PreContractQuarantineFact>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_coercion_plan: Option<String>,
     pub watermarks: Vec<Watermark>,
     pub stats: BatchStats,
     pub cdc: Option<CdcMetadata>,

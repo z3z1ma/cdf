@@ -9,7 +9,8 @@ use std::{
 };
 
 use arrow_array::{
-    Array, ArrayRef, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+    Array, ArrayRef, Decimal128Array, Float32Array, Float64Array, Int32Array, Int64Array,
+    RecordBatch, StringArray, TimestampMicrosecondArray,
 };
 use arrow_ipc::writer::{FileWriter, StreamWriter};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
@@ -17,7 +18,11 @@ use cdf_conformance::resource::{
     ResourceExecutionConformanceCase, assert_resource_stream_conformance,
     assert_resource_stream_execution_conformance,
 };
-use cdf_contract::{ArrowType, ContractPolicy, NORMALIZER_NAMECASE_V1};
+use cdf_contract::{
+    ArrowType, ContractPolicy, FieldCoercionDecision, NORMALIZER_NAMECASE_V1,
+    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_reconciled_schema,
+    schema_coercion_plan_from_trusted_json,
+};
 use cdf_kernel::{
     ErrorKind, PartitionId, PreContractObservedValue, ResourceId, ResourceStream, ScanRequest,
     SchemaHash, ScopeKey, SegmentId, SourcePosition, physical_type, source_name, with_semantic,
@@ -155,6 +160,74 @@ fn arrow_ipc_file_round_trips_kernel_batches_without_schema_loss() {
 }
 
 #[test]
+fn parquet_and_arrow_carried_coercion_metadata_is_not_trusted_as_internal_evidence() {
+    let source_plan = serde_json::json!({
+        "fields": [{
+            "source_name": "id",
+            "observed_name": "id",
+            "output_name": "id",
+            "observed_type": "Int64",
+            "constraint_type": "Int64",
+            "decision": "preserved",
+            "outcome": "pass",
+            "reason": "observed type already satisfies the constraint"
+        }]
+    })
+    .to_string();
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![Field::new("id", DataType::Int64, false)],
+        HashMap::from([("cdf:schema_coercion_plan".to_owned(), source_plan)]),
+    ));
+    let batch =
+        RecordBatch::try_new(schema.clone(), vec![Arc::new(Int64Array::from(vec![1]))]).unwrap();
+
+    let mut ipc = Cursor::new(Vec::new());
+    {
+        let mut writer = FileWriter::try_new(&mut ipc, schema.as_ref()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+    }
+    let ipc_read =
+        read_arrow_ipc_file(Cursor::new(ipc.into_inner()), &options("events", "ipc")).unwrap();
+    assert!(ipc_read.batches[0].header.schema_coercion_plan.is_none());
+    let ipc_error = reject_untrusted_schema_coercion_metadata(
+        ipc_read.batches[0]
+            .record_batch()
+            .unwrap()
+            .schema()
+            .as_ref(),
+    )
+    .unwrap_err();
+    assert!(
+        ipc_error
+            .to_string()
+            .contains("without trusted batch evidence")
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("injected.parquet");
+    write_parquet_file(&parquet_path, &[batch]);
+    let parquet_read = read_file_source(&FileSource::new(
+        parquet_path,
+        FileFormat::Parquet,
+        options("events", "parquet"),
+    ))
+    .unwrap();
+    assert!(
+        parquet_read.batches[0]
+            .header
+            .schema_coercion_plan
+            .is_none()
+    );
+    let parquet_schema = parquet_read.batches[0].record_batch().unwrap().schema();
+    assert!(
+        !parquet_schema
+            .metadata()
+            .contains_key("cdf:schema_coercion_plan")
+    );
+}
+
+#[test]
 fn ndjson_inference_feeds_contract_observed_schema() {
     let ndjson = br#"{"Order ID":1,"amount":10.5,"tags":["new","vip"]}
 {"Order ID":2,"amount":11.0,"tags":["repeat"]}
@@ -218,6 +291,14 @@ fn declared_ndjson_scalar_type_mismatch_quarantines_row_and_preserves_accepted_o
     assert_eq!([ids.value(0), ids.value(1)], [1, 3]);
     assert_eq!(event_types.value(0), "order.created");
     assert_eq!(event_types.value(1), "order.shipped");
+    assert_eq!(physical_type(batch.schema().field(1)), Some("Utf8"));
+    let coercion = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        coercion.fields[1].decision,
+        FieldCoercionDecision::Preserved
+    );
 
     let facts = &read.batches[0].header.pre_contract_quarantine;
     assert_eq!(facts.len(), 1);
@@ -230,6 +311,37 @@ fn declared_ndjson_scalar_type_mismatch_quarantines_row_and_preserves_accepted_o
             value: "42".to_owned()
         }
     );
+}
+
+#[test]
+fn declared_ndjson_source_name_override_scopes_localized_quarantine_to_source_field() {
+    let schema = Arc::new(Schema::new(vec![with_source_name(
+        Field::new("event_type", DataType::Utf8, false),
+        "Event Type",
+    )]));
+    let read = read_ndjson_bytes_with_declared_schema(
+        b"{\"Event Type\":\"created\"}\n{\"Event Type\":42}\n{\"Event Type\":\"shipped\"}\n",
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    let event_types = batch
+        .column_by_name("event_type")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(event_types.value(0), "created");
+    assert_eq!(event_types.value(1), "shipped");
+    assert_eq!(source_name(batch.schema().field(0)), Some("Event Type"));
+
+    let facts = &read.batches[0].header.pre_contract_quarantine;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].source_row_ordinal, 1);
+    assert_eq!(facts[0].rule_id, "source-decode:Event Type:type-mismatch");
 }
 
 #[test]
@@ -278,6 +390,281 @@ fn declared_ndjson_type_mismatch_hashes_pii_observed_value() {
                 .to_owned()
         }
     );
+}
+
+#[test]
+fn declared_ndjson_observes_then_materializes_lossless_integer_to_decimal_widening() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "amount",
+        DataType::Decimal128(20, 0),
+        false,
+    )]));
+
+    let read = read_ndjson_bytes_with_declared_schema(
+        b"{\"amount\":9007199254740991}\n{\"amount\":-42}\n",
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    let field = batch.schema().field(0).clone();
+    assert_eq!(field.data_type(), &DataType::Decimal128(20, 0));
+    assert_eq!(physical_type(&field), Some("Int64"));
+    let amounts = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .unwrap();
+    assert_eq!(amounts.values(), &[9_007_199_254_740_991_i128, -42_i128]);
+
+    let plan = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.fields.len(), 1);
+    assert_eq!(plan.fields[0].decision, FieldCoercionDecision::Widened);
+    assert_eq!(plan.fields[0].observed_type.as_deref(), Some("Int64"));
+    assert_eq!(
+        plan.fields[0].constraint_type.as_deref(),
+        Some("Decimal128(20, 0)")
+    );
+}
+
+#[test]
+fn declared_ndjson_projects_by_source_name_and_records_extra_observed_fields() {
+    let schema = Arc::new(Schema::new(vec![with_source_name(
+        Field::new("vendor_id", DataType::Int64, false),
+        "VendorID",
+    )]));
+
+    let read = read_ndjson_bytes_with_declared_schema(
+        b"{\"VendorID\":1,\"ignored\":\"first\"}\n{\"VendorID\":2,\"ignored\":\"second\"}\n",
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.num_columns(), 1);
+    assert!(batch.column_by_name("ignored").is_none());
+    assert_eq!(source_name(batch.schema().field(0)), Some("VendorID"));
+    assert_eq!(physical_type(batch.schema().field(0)), Some("Int64"));
+    let vendors = batch
+        .column_by_name("vendor_id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(vendors.values(), &[1, 2]);
+
+    let plan = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.fields.len(), 2);
+    assert_eq!(plan.fields[0].source_name, "VendorID");
+    assert_eq!(plan.fields[0].decision, FieldCoercionDecision::Preserved);
+    assert_eq!(plan.fields[1].source_name, "ignored");
+    assert_eq!(plan.fields[1].decision, FieldCoercionDecision::Extra);
+}
+
+#[test]
+fn declared_ndjson_parse_coercion_is_policy_gated_and_materialized_when_allowed() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "observed_at",
+        DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, None),
+        false,
+    )]));
+    let bytes = b"{\"observed_at\":\"2026-07-09T12:34:56.123456\"}\n";
+
+    let error = read_ndjson_bytes_with_declared_schema(
+        bytes,
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema.clone(),
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("field \"observed_at\""));
+    assert!(message.contains("observed type Utf8"));
+    assert!(message.contains("declared type Timestamp"), "{message}");
+    assert!(message.contains("change the declaration to Utf8"));
+    assert!(message.contains("enable coerce_types"));
+
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = true;
+    let read = read_ndjson_bytes_with_declared_schema_and_type_policy(
+        bytes,
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+        &type_policy,
+    )
+    .unwrap();
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(physical_type(batch.schema().field(0)), Some("Utf8"));
+    assert!(
+        batch
+            .column(0)
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .is_some()
+    );
+    let plan = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        plan.fields[0].decision,
+        FieldCoercionDecision::CoercedByPolicy
+    );
+    assert_eq!(
+        schema_coercion_plan_from_trusted_json(
+            batch.schema().as_ref(),
+            read.batches[0]
+                .header
+                .schema_coercion_plan
+                .as_deref()
+                .unwrap(),
+        )
+        .unwrap(),
+        plan
+    );
+}
+
+#[test]
+fn declared_ndjson_lossy_numeric_mapping_is_policy_gated_and_recorded_exactly() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let bytes = b"{\"id\":1}\n{\"id\":2}\n";
+
+    let error = read_ndjson_bytes_with_declared_schema(
+        bytes,
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema.clone(),
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("observed type Int64"));
+    assert!(message.contains("declared type Int32"));
+    assert!(message.contains("widen or change the declaration to Int64"));
+    assert!(message.contains("enable allow_lossy_mapping"));
+
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = false;
+    type_policy.allow_lossy_mapping = true;
+    let read = read_ndjson_bytes_with_declared_schema_and_type_policy(
+        bytes,
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+        &type_policy,
+    )
+    .unwrap();
+    let batch = read.batches[0].record_batch().unwrap();
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    assert_eq!(ids.values(), &[1, 2]);
+    let plan = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.fields[0].decision, FieldCoercionDecision::LossyAllowed);
+}
+
+#[test]
+fn declared_ndjson_string_decimal_parse_is_policy_enabled_and_materialized() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "amount",
+        DataType::Decimal128(10, 2),
+        false,
+    )]));
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = true;
+
+    let read = read_ndjson_bytes_with_declared_schema_and_type_policy(
+        b"{\"amount\":\"12.34\"}\n{\"amount\":\"-0.50\"}\n",
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+        &type_policy,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    let amounts = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .unwrap();
+    assert_eq!(amounts.values(), &[1_234_i128, -50_i128]);
+    assert!(read.batches[0].header.pre_contract_quarantine.is_empty());
+    let plan = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        plan.fields[0].decision,
+        FieldCoercionDecision::CoercedByPolicy
+    );
+}
+
+#[test]
+fn declared_ndjson_string_decimal_without_policy_is_localized_quarantine() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "amount",
+        DataType::Decimal128(10, 2),
+        false,
+    )]));
+
+    let read = read_ndjson_bytes_with_declared_schema(
+        b"{\"amount\":\"12.34\"}\n",
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.num_rows(), 0);
+    let facts = &read.batches[0].header.pre_contract_quarantine;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].source_row_ordinal, 0);
+    assert_eq!(facts[0].rule_id, "source-decode:amount:type-mismatch");
+    assert_eq!(facts[0].error_code, "source_type_mismatch");
+    assert_eq!(
+        facts[0].observed_value_redacted,
+        PreContractObservedValue::Preserved {
+            value: "12.34".to_owned()
+        }
+    );
+}
+
+#[test]
+fn declared_ndjson_fractional_drift_in_integer_field_is_localized_quarantine() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+
+    let read = read_ndjson_bytes_with_declared_schema(
+        b"{\"id\":1}\n{\"id\":2.5}\n{\"id\":3}\n",
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    let ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(ids.values(), &[1, 3]);
+    let facts = &read.batches[0].header.pre_contract_quarantine;
+    assert_eq!(facts.len(), 1);
+    assert_eq!(facts[0].source_row_ordinal, 1);
+    assert_eq!(facts[0].rule_id, "source-decode:id:type-mismatch");
+    assert_eq!(facts[0].error_code, "source_type_mismatch");
 }
 
 #[test]
@@ -347,6 +734,67 @@ fn csv_json_and_ndjson_file_sources_produce_descriptors_and_batches() {
     ))
     .unwrap();
     assert_eq!(json_object.batches[0].header.row_count, 1);
+}
+
+#[test]
+fn declared_json_document_and_ndjson_share_observation_reconciliation_front_end() {
+    let temp = tempfile::tempdir().unwrap();
+    let json_path = temp.path().join("events.json");
+    let ndjson_path = temp.path().join("events.ndjson");
+    fs::write(
+        &json_path,
+        r#"[{"VendorID":1,"ignored":"a"},{"VendorID":2,"ignored":"b"}]"#,
+    )
+    .unwrap();
+    fs::write(
+        &ndjson_path,
+        "{\"VendorID\":1,\"ignored\":\"a\"}\n{\"VendorID\":2,\"ignored\":\"b\"}\n",
+    )
+    .unwrap();
+    let declared = Arc::new(Schema::new(vec![with_source_name(
+        Field::new("vendor_id", DataType::Int64, false),
+        "VendorID",
+    )]));
+
+    let json = read_file_source_with_declared_schema(
+        &FileSource::new(
+            json_path,
+            FileFormat::Json(JsonOptions::default()),
+            options("events", "json"),
+        ),
+        declared.clone(),
+    )
+    .unwrap();
+    let ndjson = read_file_source_with_declared_schema(
+        &FileSource::new(
+            ndjson_path,
+            FileFormat::Ndjson(JsonOptions::default()),
+            options("events", "ndjson"),
+        ),
+        declared,
+    )
+    .unwrap();
+
+    let json_batch = json.batches[0].record_batch().unwrap();
+    let ndjson_batch = ndjson.batches[0].record_batch().unwrap();
+    assert_eq!(json_batch, ndjson_batch);
+    assert_eq!(json.schema_hash, ndjson.schema_hash);
+    assert_eq!(
+        json.batches[0].header.schema_coercion_plan,
+        ndjson.batches[0].header.schema_coercion_plan
+    );
+    let evidence = schema_coercion_plan_from_reconciled_schema(json_batch.schema().as_ref())
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        evidence
+            .fields
+            .iter()
+            .find(|field| field.source_name == "ignored")
+            .unwrap()
+            .decision,
+        FieldCoercionDecision::Extra
+    );
 }
 
 #[test]

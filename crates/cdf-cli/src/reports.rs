@@ -13,6 +13,15 @@ use crate::render::{
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct SchemaSnapshotActionReport {
+    pub(crate) outcome: &'static str,
+    pub(crate) schema_hash: String,
+    pub(crate) path: String,
+    pub(crate) snapshot_written: bool,
+    pub(crate) lockfile_written: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub(crate) struct RunCliReport {
     command: &'static str,
     run_id: String,
@@ -25,6 +34,8 @@ pub(crate) struct RunCliReport {
     package_hash: String,
     package_status: String,
     schema_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_snapshot: Option<SchemaSnapshotActionReport>,
     checkpoint_id: String,
     checkpoint: RunCheckpointReport,
     receipt_id: String,
@@ -42,6 +53,7 @@ impl RunCliReport {
     pub(crate) fn from_report(
         report: &ProjectRunReport,
         destination: RunDestinationReport,
+        schema_snapshot: Option<SchemaSnapshotActionReport>,
     ) -> Self {
         let destination_kind = destination.kind;
         Self {
@@ -57,6 +69,7 @@ impl RunCliReport {
             package_hash: report.package_hash.to_string(),
             package_status: report.package_status.as_str().to_owned(),
             schema_hash: report.checkpoint.delta.schema_hash.to_string(),
+            schema_snapshot,
             checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
             checkpoint: RunCheckpointReport::from_checkpoint(&report.checkpoint),
             receipt_id: report.receipt.receipt_id.to_string(),
@@ -100,21 +113,32 @@ impl RunCliReport {
                     .row("hash", self.package_hash.clone())
                     .row("schema", self.schema_hash.clone())
                     .row("dir", safe_display_value(&self.package_dir)),
-            )
-            .blank_line()
-            .push(
-                KeyValuePanel::new("Rows")
-                    .row("rows", humanize_rows(self.row_count))
-                    .row("segments", self.segment_count.to_string())
-                    .row(
-                        "receipt rows",
-                        humanize_rows(self.receipt.counts.rows_written),
-                    )
-                    .row(
-                        "receipt segments",
-                        self.receipt.segment_ack_count.to_string(),
-                    ),
             );
+        let document = if let Some(snapshot) = &self.schema_snapshot {
+            document.blank_line().push(
+                KeyValuePanel::new("Schema Snapshot")
+                    .row("outcome", snapshot.outcome)
+                    .row("hash", snapshot.schema_hash.clone())
+                    .row("path", snapshot.path.clone())
+                    .row("snapshot written", yes_no(snapshot.snapshot_written))
+                    .row("lockfile written", yes_no(snapshot.lockfile_written)),
+            )
+        } else {
+            document
+        };
+        let document = document.blank_line().push(
+            KeyValuePanel::new("Rows")
+                .row("rows", humanize_rows(self.row_count))
+                .row("segments", self.segment_count.to_string())
+                .row(
+                    "receipt rows",
+                    humanize_rows(self.receipt.counts.rows_written),
+                )
+                .row(
+                    "receipt segments",
+                    self.receipt.segment_ack_count.to_string(),
+                ),
+        );
         let document = if let Some(panel) = file_manifest_panel(self.file_manifest.as_ref()) {
             document.blank_line().push(panel)
         } else {
@@ -785,6 +809,7 @@ mod tests {
             package_hash: "sha256:package".to_owned(),
             package_status: "checkpointed".to_owned(),
             schema_hash: "sha256:schema".to_owned(),
+            schema_snapshot: None,
             checkpoint_id: "checkpoint-redacted".to_owned(),
             checkpoint: RunCheckpointReport {
                 checkpoint_id: "checkpoint-redacted".to_owned(),

@@ -402,6 +402,13 @@ fn prepare_discovered_schema(
 ) -> Result<PreparedDiscoveredResource> {
     let store = SchemaSnapshotStore::new(project_root);
     store.write(&discovery.snapshot.artifact)?;
+    Ok(apply_discovered_schema(resource, discovery))
+}
+
+pub fn apply_discovered_schema(
+    resource: &CompiledResource,
+    discovery: ResourceSchemaDiscovery,
+) -> PreparedDiscoveredResource {
     let pinned = resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
             snapshot: discovery.snapshot.reference.clone(),
@@ -409,10 +416,10 @@ fn prepare_discovered_schema(
         Arc::clone(&discovery.normalized_schema),
     );
 
-    Ok(PreparedDiscoveredResource {
+    PreparedDiscoveredResource {
         resource: pinned,
         discovery: Some(discovery),
-    })
+    }
 }
 
 fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {

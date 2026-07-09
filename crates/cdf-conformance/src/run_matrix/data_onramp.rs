@@ -1,5 +1,6 @@
 use cdf_kernel::{Batch, BatchStream, ResourceStream, Result};
 use futures_util::StreamExt;
+use std::{fs, path::Path};
 
 use super::{
     MatrixDestination, MatrixDisposition, RunMatrixCell, SourceArchetype, core, file_fixture,
@@ -8,6 +9,8 @@ use super::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CoverageStatus {
+    // All S1-S8 rows are currently pending; retain the terminal state for future registry updates.
+    #[allow(dead_code)]
     Covered,
     Excluded,
     Pending,
@@ -47,42 +50,38 @@ const WS_E: &str = ".10x/tickets/2026-07-08-p2-ws-e-remote-transports.md";
 const WS_F: &str = ".10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md";
 const WS_G: &str = ".10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md";
 const WS_H: &str = ".10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md";
-const A7: &str = ".10x/tickets/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md";
-const D3: &str = ".10x/tickets/2026-07-09-p2-ws-d3-file-manifest-incremental-noop.md";
-const E2: &str = ".10x/tickets/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md";
-const G1: &str =
-    ".10x/tickets/2026-07-09-p2-ws-g1-source-diagnostics-and-deep-validate-foundation.md";
-const H2: &str = ".10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md";
 
 const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S1",
         title: "Public HTTPS Parquet single file, zero typed schema fields, through cdf add and run",
         status: CoverageStatus::Pending,
-        rationale: "single-file local Parquet discovery exists, but HTTPS runtime and cdf add remain active work",
+        rationale: "deterministic HTTPS Parquet discovery/run and cdf add are covered primitives; the public TLC first-attempt flow and recorded live session remain pending",
         tests: &[
-            "crates/cdf-cli/src/tests.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
-            "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
+            "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
+            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
+            "crates/cdf-cli/src/tests.rs::add_http_parquet_pins_schema_with_bounded_fixture_requests",
         ],
-        tickets: &[E2, H2, WS_I],
+        tickets: &[WS_E, WS_H, WS_I],
     },
     P2Scenario {
         id: "S2",
         title: "Public HTTPS Parquet monthly glob with default FileManifest incrementality and no-change no-op rerun",
         status: CoverageStatus::Pending,
-        rationale: "local manifest aggregation exists, but incrementality, no-op rerun, and HTTPS glob coverage remain open",
+        rationale: "local manifest incrementality and no-op reruns are covered; HTTP template/glob enumeration and public monthly-file conformance remain pending",
         tests: &[
             "crates/cdf-declarative/src/tests.rs::file_glob_plans_deterministic_partition_per_match",
-            "crates/cdf-project/src/runtime_tests.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
+            "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
         ],
-        tickets: &[D3, E2, WS_I],
+        tickets: &[WS_D, WS_E, WS_I],
     },
     P2Scenario {
         id: "S3",
         title: "S3 compressed NDJSON recursive glob with transparent gzip and drift governed by contract policy",
         status: CoverageStatus::Pending,
-        rationale: "drift quarantine is covered locally; S3 transport, recursive globs, and transparent compression remain open",
+        rationale: "local gzip/zstd NDJSON decode and drift quarantine are covered primitives; S3 transport, recursive remote globs, remote compression, and per-file variance conformance remain pending",
         tests: &[
+            "crates/cdf-declarative/src/tests.rs::file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
         ],
         tickets: &[WS_D, WS_E, WS_I],
@@ -91,34 +90,34 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         id: "S4",
         title: "Postgres table discovery with optional schema block and cursor candidates",
         status: CoverageStatus::Pending,
-        rationale: "Postgres discover/preview/run primitives are covered; final S4 conformance ownership remains open",
+        rationale: "Postgres catalog discover/preview/run primitives are covered; cdf add, cursor-candidate suggestions, and final S4 conformance remain pending",
         tests: &[
             "crates/cdf-cli/src/tests.rs::schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak",
             "crates/cdf-cli/src/tests.rs::postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_leaks",
         ],
-        tickets: &[WS_A, WS_I],
+        tickets: &[WS_A, WS_H, WS_I],
     },
     P2Scenario {
         id: "S5",
         title: "REST API in discover mode with a recorded sample page and pinned snapshot",
         status: CoverageStatus::Pending,
-        rationale: "one-page REST discovery and auto-pin are covered; final S5 conformance closure remains open",
+        rationale: "one-page REST discovery and auto-pin are covered; recorded package fixture, cursor-bound scaffold flow, and final S5 conformance remain pending",
         tests: &[
             "crates/cdf-project/src/tests.rs::generic_schema_discovery_dispatch_samples_rest_without_snapshot_write",
             "crates/cdf-cli/src/tests.rs::rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leaks",
         ],
-        tickets: &[WS_A, WS_I],
+        tickets: &[WS_A, WS_H, WS_I],
     },
     P2Scenario {
         id: "S6",
         title: "Drift quarantines with accepted stream unblocked and file/column remediation rendered",
         status: CoverageStatus::Pending,
-        rationale: "accepted-stream quarantine conformance exists; source remediation rendering and deep validation remain open",
+        rationale: "accepted-stream quarantine and deep-validate foundations exist; incompatible per-file schema verdicts plus file/column remediation rendering remain pending",
         tests: &[
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_postgres_conformance_asserts_supported_mirror",
         ],
-        tickets: &[G1, WS_G, WS_I],
+        tickets: &[WS_D, WS_G, WS_I],
     },
     P2Scenario {
         id: "S7",
@@ -134,12 +133,12 @@ const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S8",
         title: "Preview/run parity per source archetype",
-        status: CoverageStatus::Covered,
-        rationale: "current local file, REST fixture, and Postgres table direct-preview streams match package-producing run row counts",
+        status: CoverageStatus::Pending,
+        rationale: "local file, REST fixture, and Postgres table row/schema fingerprints are partial evidence only; every required archetype must still share resolution, decode, discovery, reconciliation, normalization, and the full compiler front end",
         tests: &[
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
         ],
-        tickets: &[],
+        tickets: &[WS_A, WS_B, WS_C, WS_D, WS_E, WS_I],
     },
 ];
 
@@ -158,8 +157,10 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-cli/src/tests.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
             "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
+            "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
+            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],
-        open_tickets: &[E2, H2, WS_I],
+        open_tickets: &[WS_D, WS_E, WS_H, WS_I],
     },
     P2FrictionRow {
         id: 2,
@@ -167,8 +168,10 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-cli/src/tests.rs::schema_discover_local_parquet_reports_schema_without_project_writes",
             "crates/cdf-cli/src/tests.rs::schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_leak",
             "crates/cdf-cli/src/tests.rs::schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak",
+            "crates/cdf-cli/src/tests.rs::schema_pin_show_and_diff_local_parquet_snapshot_with_lockfile_reference",
+            "crates/cdf-cli/src/tests.rs::add_local_parquet_pins_schema_and_writes_resource_config",
         ],
-        open_tickets: &[A7, WS_H, WS_I],
+        open_tickets: &[WS_A, WS_H, WS_I],
     },
     P2FrictionRow {
         id: 3,
@@ -216,8 +219,9 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-declarative/src/tests.rs::file_glob_plans_deterministic_partition_per_match",
             "crates/cdf-project/src/runtime_tests.rs::general_project_run_commits_multi_file_resource_manifest_checkpoint",
+            "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
         ],
-        open_tickets: &[D3, E2, WS_I],
+        open_tickets: &[WS_D, WS_E, WS_I],
     },
     P2FrictionRow {
         id: 9,
@@ -225,7 +229,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-declarative/src/tests.rs::file_glob_run_and_preview_open_the_requested_partition",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
         ],
-        open_tickets: &[D3, E2],
+        open_tickets: &[WS_E, WS_I],
     },
     P2FrictionRow {
         id: 10,
@@ -238,36 +242,51 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     },
     P2FrictionRow {
         id: 11,
-        closed_tests: &[],
-        open_tickets: &[G1, WS_G],
+        closed_tests: &[
+            "crates/cdf-cli/src/tests.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
+        ],
+        open_tickets: &[WS_G, WS_I],
     },
     P2FrictionRow {
         id: 12,
-        closed_tests: &[],
-        open_tickets: &[G1, WS_G],
+        closed_tests: &[
+            "crates/cdf-cli/src/scan_command.rs::tests::plan_error_wording_uses_plan_command_name",
+            "crates/cdf-cli/src/tests.rs::resource_mapping_pattern_mismatch_reports_validate_and_plan_commands",
+        ],
+        open_tickets: &[WS_G, WS_I],
     },
     P2FrictionRow {
         id: 13,
-        closed_tests: &[],
-        open_tickets: &[G1, WS_G],
+        closed_tests: &[
+            "crates/cdf-cli/src/tests.rs::resource_not_compiled_error_names_compiled_ids_origins_and_fix",
+        ],
+        open_tickets: &[WS_G, WS_I],
     },
     P2FrictionRow {
         id: 14,
-        closed_tests: &[],
-        open_tickets: &[G1, WS_G],
+        closed_tests: &[
+            "crates/cdf-cli/src/tests.rs::validate_deep_reports_source_front_end_checks_without_writes",
+        ],
+        open_tickets: &[WS_G, WS_I],
     },
     P2FrictionRow {
         id: 15,
         closed_tests: &[
             "crates/cdf-declarative/src/file_transport.rs::tests::file_transport_http_metadata_and_bounded_range_use_http_client",
             "crates/cdf-declarative/src/file_transport.rs::tests::file_transport_http_range_rejects_unbounded_or_ignored_range",
+            "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
+            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
         ],
-        open_tickets: &[E2, WS_I],
+        open_tickets: &[WS_D, WS_E, WS_I],
     },
     P2FrictionRow {
         id: 16,
-        closed_tests: &[],
-        open_tickets: &[WS_D, WS_I],
+        closed_tests: &[
+            "crates/cdf-formats/src/tests.rs::compression_ndjson_file_sources_decode_and_preserve_compressed_identity",
+            "crates/cdf-declarative/src/tests.rs::file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson",
+            "crates/cdf-declarative/src/tests.rs::file_runtime_explicit_compression_mismatch_names_file_and_signals",
+        ],
+        open_tickets: &[WS_D, WS_E, WS_I],
     },
     P2FrictionRow {
         id: 17,
@@ -285,8 +304,10 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-formats/src/tests.rs::parquet_file_source_produces_descriptor_batches_and_file_manifest",
             "crates/cdf-formats/src/tests.rs::declared_parquet_int32_declared_int64_materializes_lossless_widening",
             "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
+            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
+            "crates/cdf-cli/src/tests.rs::add_http_parquet_pins_schema_with_bounded_fixture_requests",
         ],
-        open_tickets: &[E2, H2, D3, WS_I],
+        open_tickets: &[WS_D, WS_E, WS_H, WS_I],
     },
 ];
 
@@ -343,7 +364,7 @@ fn p2_data_onramp_scenario_matrix_records_s1_through_s8() {
 
     assert_eq!(scenario("S1").status, CoverageStatus::Pending);
     assert_eq!(scenario("S2").status, CoverageStatus::Pending);
-    assert_eq!(scenario("S8").status, CoverageStatus::Covered);
+    assert_eq!(scenario("S8").status, CoverageStatus::Pending);
 }
 
 #[test]
@@ -385,9 +406,48 @@ fn p2_friction_registry_maps_closed_slices_to_tests_and_open_rows_to_tickets() {
             .closed_tests
             .contains(&"crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes")
     );
+    assert!(friction(11).closed_tests.iter().any(|test| {
+        test.contains("resource_not_compiled_error_names_compiled_ids_origins_and_fix")
+    }));
+    assert!(friction(14).closed_tests.iter().any(|test| {
+        test.contains("validate_deep_reports_source_front_end_checks_without_writes")
+    }));
+    assert!(friction(16).closed_tests.iter().any(|test| {
+        test.contains("file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson")
+    }));
+}
+
+#[test]
+fn p2_registry_named_tests_resolve_to_test_functions() {
+    for scenario in P2_SCENARIOS {
+        for test in scenario.tests {
+            assert_named_test_exists(scenario.id, test);
+        }
+    }
+    for row in P2_FRICTIONS {
+        for test in row.closed_tests {
+            assert_named_test_exists(&format!("friction {}", row.id), test);
+        }
+    }
+}
+
+#[test]
+fn p2_active_owner_validation_reads_status_and_rejects_invalid_owners() {
+    let status = ticket_owner_status(WS_I).expect("WS-I must remain a nonterminal owner");
+    assert!(matches!(status.as_str(), "open" | "active" | "blocked"));
+
+    let missing = ticket_owner_status(".10x/tickets/2099-01-01-missing.md").unwrap_err();
+    assert!(missing.contains("cannot be read"), "{missing}");
+
+    let terminal =
+        ticket_owner_status(".10x/tickets/done/2026-07-09-p2-ws-a7-schema-pin-show-diff-cli.md")
+            .unwrap_err();
+    assert!(terminal.contains("terminal status `done`"), "{terminal}");
+
+    let not_a_ticket = ticket_owner_status(".10x/specs/data-onramp-conformance.md").unwrap_err();
     assert!(
-        !friction(11).open_tickets.is_empty(),
-        "open diagnostics row stays tied to G tickets"
+        not_a_ticket.contains("not a ticket record"),
+        "{not_a_ticket}"
     );
 }
 
@@ -443,15 +503,55 @@ fn assert_active_tickets(label: &str, tickets: &[&str]) {
         "{label} must name active ticket owners"
     );
     for ticket in tickets {
-        assert!(
-            ticket.starts_with(".10x/tickets/"),
-            "{label} ticket must live under .10x/tickets/: {ticket}"
-        );
-        assert!(
-            !ticket.starts_with(".10x/tickets/done/"),
-            "{label} must not use terminal tickets as active owners: {ticket}"
-        );
+        ticket_owner_status(ticket)
+            .unwrap_or_else(|error| panic!("{label} must name an active ticket owner: {error}"));
     }
+}
+
+fn ticket_owner_status(ticket: &str) -> std::result::Result<String, String> {
+    if !ticket.starts_with(".10x/tickets/") {
+        return Err(format!("`{ticket}` is not a ticket record"));
+    }
+
+    let contents = fs::read_to_string(workspace_root().join(ticket))
+        .map_err(|error| format!("ticket owner `{ticket}` cannot be read: {error}"))?;
+    let status = contents
+        .lines()
+        .find_map(|line| line.strip_prefix("Status: "))
+        .ok_or_else(|| format!("ticket owner `{ticket}` has no Status header"))?;
+
+    match status {
+        "open" | "active" | "blocked" => Ok(status.to_owned()),
+        "done" | "cancelled" => Err(format!(
+            "ticket owner `{ticket}` has terminal status `{status}`"
+        )),
+        other => Err(format!(
+            "ticket owner `{ticket}` has unsupported status `{other}`"
+        )),
+    }
+}
+
+fn assert_named_test_exists(label: &str, test: &str) {
+    let (path, _) = test
+        .split_once("::")
+        .unwrap_or_else(|| panic!("{label} test must name a source path and function: {test}"));
+    let function = test
+        .rsplit("::")
+        .next()
+        .unwrap_or_else(|| panic!("{label} test must name a function: {test}"));
+    let contents = fs::read_to_string(workspace_root().join(path))
+        .unwrap_or_else(|error| panic!("{label} test source `{path}` cannot be read: {error}"));
+    assert!(
+        contents.contains(&format!("fn {function}(")),
+        "{label} names missing test function `{function}` in `{path}`"
+    );
+}
+
+fn workspace_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("cdf-conformance must be located under <workspace>/crates")
 }
 
 fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<PreviewFingerprint> {

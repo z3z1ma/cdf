@@ -4,7 +4,9 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use arrow_schema::{DataType, Field, IntervalUnit, Schema, TimeUnit, UnionMode};
+use arrow_schema::{
+    DataType, Field, Fields, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode,
+};
 use cdf_kernel::{CdfError, ResourceId, Result, SchemaHash, SchemaSnapshotReference};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -180,6 +182,16 @@ impl SchemaSnapshotSchema {
             metadata: metadata_map(&schema.metadata),
         }
     }
+
+    pub fn to_arrow(&self) -> Result<Schema> {
+        Ok(Schema::new_with_metadata(
+            self.fields
+                .iter()
+                .map(SchemaSnapshotField::to_arrow)
+                .collect::<Result<Vec<_>>>()?,
+            self.metadata.clone().into_iter().collect(),
+        ))
+    }
 }
 
 impl SchemaSnapshotField {
@@ -191,6 +203,13 @@ impl SchemaSnapshotField {
             metadata: metadata_map(field.metadata()),
         }
     }
+
+    fn to_arrow(&self) -> Result<Field> {
+        Ok(
+            Field::new(&self.name, self.data_type.to_arrow()?, self.nullable)
+                .with_metadata(self.metadata.clone().into_iter().collect()),
+        )
+    }
 }
 
 impl SchemaSnapshotDataType {
@@ -201,6 +220,125 @@ impl SchemaSnapshotDataType {
             .or_else(|| Self::binary_from_arrow(data_type))
             .or_else(|| Self::text_from_arrow(data_type))
             .unwrap_or_else(|| Self::nested_from_arrow(data_type))
+    }
+
+    fn to_arrow(&self) -> Result<DataType> {
+        match self {
+            Self::Null => Ok(DataType::Null),
+            Self::Boolean => Ok(DataType::Boolean),
+            Self::Int { signed, bits } => integer_data_type(*signed, *bits),
+            Self::Float { bits } => match bits {
+                16 => Ok(DataType::Float16),
+                32 => Ok(DataType::Float32),
+                64 => Ok(DataType::Float64),
+                _ => Err(snapshot_type_error(format!("float{bits}"))),
+            },
+            Self::Decimal {
+                bits,
+                precision,
+                scale,
+            } => match bits {
+                32 => Ok(DataType::Decimal32(*precision, *scale)),
+                64 => Ok(DataType::Decimal64(*precision, *scale)),
+                128 => Ok(DataType::Decimal128(*precision, *scale)),
+                256 => Ok(DataType::Decimal256(*precision, *scale)),
+                _ => Err(snapshot_type_error(format!("decimal{bits}"))),
+            },
+            Self::Timestamp { unit, timezone } => Ok(DataType::Timestamp(
+                unit.to_arrow(),
+                timezone.as_deref().map(Into::into),
+            )),
+            Self::Date { unit } => match unit {
+                SchemaSnapshotDateUnit::Day => Ok(DataType::Date32),
+                SchemaSnapshotDateUnit::Millisecond => Ok(DataType::Date64),
+            },
+            Self::Time { unit, bits } => match (bits, unit) {
+                (32, SchemaSnapshotTimeUnit::Second | SchemaSnapshotTimeUnit::Millisecond) => {
+                    Ok(DataType::Time32(unit.to_arrow()))
+                }
+                (64, SchemaSnapshotTimeUnit::Microsecond | SchemaSnapshotTimeUnit::Nanosecond) => {
+                    Ok(DataType::Time64(unit.to_arrow()))
+                }
+                _ => Err(snapshot_type_error(format!("time{bits}({unit:?})"))),
+            },
+            Self::Duration { unit } => Ok(DataType::Duration(unit.to_arrow())),
+            Self::Interval { unit } => Ok(DataType::Interval(unit.to_arrow())),
+            Self::Binary { offset_width: 32 } => Ok(DataType::Binary),
+            Self::Binary { offset_width: 64 } => Ok(DataType::LargeBinary),
+            Self::Binary { offset_width } => Err(snapshot_type_error(format!(
+                "binary(offset={offset_width})"
+            ))),
+            Self::FixedSizeBinary { byte_width } => Ok(DataType::FixedSizeBinary(*byte_width)),
+            Self::BinaryView => Ok(DataType::BinaryView),
+            Self::Utf8 { offset_width: 32 } => Ok(DataType::Utf8),
+            Self::Utf8 { offset_width: 64 } => Ok(DataType::LargeUtf8),
+            Self::Utf8 { offset_width } => {
+                Err(snapshot_type_error(format!("utf8(offset={offset_width})")))
+            }
+            Self::Utf8View => Ok(DataType::Utf8View),
+            Self::List {
+                field,
+                offset_width: 32,
+                view: false,
+            } => Ok(DataType::List(field.to_arrow()?.into())),
+            Self::List {
+                field,
+                offset_width: 64,
+                view: false,
+            } => Ok(DataType::LargeList(field.to_arrow()?.into())),
+            Self::List {
+                field,
+                offset_width: 32,
+                view: true,
+            } => Ok(DataType::ListView(field.to_arrow()?.into())),
+            Self::List {
+                field,
+                offset_width: 64,
+                view: true,
+            } => Ok(DataType::LargeListView(field.to_arrow()?.into())),
+            Self::List {
+                offset_width, view, ..
+            } => Err(snapshot_type_error(format!(
+                "list(offset={offset_width}, view={view})"
+            ))),
+            Self::FixedSizeList { field, length } => {
+                Ok(DataType::FixedSizeList(field.to_arrow()?.into(), *length))
+            }
+            Self::Struct { fields } => Ok(DataType::Struct(Fields::from(
+                fields
+                    .iter()
+                    .map(SchemaSnapshotField::to_arrow)
+                    .collect::<Result<Vec<_>>>()?,
+            ))),
+            Self::Union { mode, fields } => {
+                let union_fields = UnionFields::try_new(
+                    fields.iter().map(|field| field.type_id),
+                    fields
+                        .iter()
+                        .map(|field| field.field.to_arrow())
+                        .collect::<Result<Vec<_>>>()?,
+                )
+                .map_err(|error| {
+                    CdfError::data(format!("invalid schema snapshot union: {error}"))
+                })?;
+                Ok(DataType::Union(union_fields, mode.to_arrow()))
+            }
+            Self::Dictionary {
+                key_type,
+                value_type,
+            } => Ok(DataType::Dictionary(
+                Box::new(key_type.to_arrow()?),
+                Box::new(value_type.to_arrow()?),
+            )),
+            Self::Map { field, sorted } => Ok(DataType::Map(field.to_arrow()?.into(), *sorted)),
+            Self::RunEndEncoded { run_ends, values } => Ok(DataType::RunEndEncoded(
+                run_ends.to_arrow()?.into(),
+                values.to_arrow()?.into(),
+            )),
+            Self::Other { display } => Err(CdfError::data(format!(
+                "schema snapshot type `{display}` cannot be reconstructed as an Arrow data type"
+            ))),
+        }
     }
 
     fn primitive_from_arrow(data_type: &DataType) -> Option<Self> {
@@ -393,6 +531,15 @@ impl SchemaSnapshotTimeUnit {
             TimeUnit::Nanosecond => Self::Nanosecond,
         }
     }
+
+    fn to_arrow(&self) -> TimeUnit {
+        match self {
+            Self::Second => TimeUnit::Second,
+            Self::Millisecond => TimeUnit::Millisecond,
+            Self::Microsecond => TimeUnit::Microsecond,
+            Self::Nanosecond => TimeUnit::Nanosecond,
+        }
+    }
 }
 
 impl SchemaSnapshotIntervalUnit {
@@ -401,6 +548,14 @@ impl SchemaSnapshotIntervalUnit {
             IntervalUnit::YearMonth => Self::YearMonth,
             IntervalUnit::DayTime => Self::DayTime,
             IntervalUnit::MonthDayNano => Self::MonthDayNano,
+        }
+    }
+
+    fn to_arrow(&self) -> IntervalUnit {
+        match self {
+            Self::YearMonth => IntervalUnit::YearMonth,
+            Self::DayTime => IntervalUnit::DayTime,
+            Self::MonthDayNano => IntervalUnit::MonthDayNano,
         }
     }
 }
@@ -412,6 +567,36 @@ impl SchemaSnapshotUnionMode {
             UnionMode::Dense => Self::Dense,
         }
     }
+
+    fn to_arrow(&self) -> UnionMode {
+        match self {
+            Self::Sparse => UnionMode::Sparse,
+            Self::Dense => UnionMode::Dense,
+        }
+    }
+}
+
+fn integer_data_type(signed: bool, bits: u8) -> Result<DataType> {
+    match (signed, bits) {
+        (true, 8) => Ok(DataType::Int8),
+        (true, 16) => Ok(DataType::Int16),
+        (true, 32) => Ok(DataType::Int32),
+        (true, 64) => Ok(DataType::Int64),
+        (false, 8) => Ok(DataType::UInt8),
+        (false, 16) => Ok(DataType::UInt16),
+        (false, 32) => Ok(DataType::UInt32),
+        (false, 64) => Ok(DataType::UInt64),
+        _ => Err(snapshot_type_error(format!(
+            "{}int{bits}",
+            if signed { "" } else { "u" }
+        ))),
+    }
+}
+
+fn snapshot_type_error(data_type: String) -> CdfError {
+    CdfError::data(format!(
+        "schema snapshot contains unsupported Arrow type encoding `{data_type}`"
+    ))
 }
 
 fn metadata_map(metadata: &std::collections::HashMap<String, String>) -> BTreeMap<String, String> {
@@ -540,12 +725,36 @@ impl SchemaSnapshotStore {
         Ok(path)
     }
 
+    pub fn write_if_changed(&self, artifact: &SchemaSnapshotArtifact) -> Result<bool> {
+        artifact.validate_hash_input()?;
+        let path = self.project_root.join(&artifact.path);
+        let encoded = canonical_json_bytes(artifact)?;
+        if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
+            return Ok(false);
+        }
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| CdfError::data(format!("create {}: {error}", parent.display())))?;
+        }
+        fs::write(&path, encoded)
+            .map_err(|error| CdfError::data(format!("write {}: {error}", path.display())))?;
+        Ok(true)
+    }
+
     pub fn read(&self, reference: &SchemaSnapshotReference) -> Result<SchemaSnapshotArtifact> {
         let path = self.artifact_path(reference)?;
         let bytes = fs::read(&path)
             .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
         let artifact = serde_json::from_slice::<SchemaSnapshotArtifact>(&bytes)
             .map_err(|error| CdfError::data(format!("parse {}: {error}", path.display())))?;
+        if artifact.version != SCHEMA_SNAPSHOT_ARTIFACT_VERSION {
+            return Err(CdfError::data(format!(
+                "schema snapshot {} uses unsupported artifact version {}; expected {}",
+                path.display(),
+                artifact.version,
+                SCHEMA_SNAPSHOT_ARTIFACT_VERSION
+            )));
+        }
         artifact.validate_hash_input()?;
         if artifact.schema_hash != reference.schema_hash {
             return Err(CdfError::data(format!(
@@ -553,6 +762,12 @@ impl SchemaSnapshotStore {
                 path.display(),
                 artifact.schema_hash,
                 reference.schema_hash
+            )));
+        }
+        if artifact.reference() != *reference {
+            return Err(CdfError::data(format!(
+                "schema snapshot {} does not match its locked path and metadata reference",
+                path.display()
             )));
         }
         Ok(artifact)

@@ -4,7 +4,8 @@ use cdf_declarative::{CompiledResource, CompiledResourcePlan};
 use cdf_kernel::{CdfError, ResourceStream, SchemaSnapshotReference, SchemaSource};
 use cdf_project::{
     LOCK_FILE_NAME, SchemaSnapshotArtifact, SchemaSnapshotDataType, SchemaSnapshotField,
-    SchemaSnapshotStore, discover_resource_schema, lock_to_toml, pin_schema_snapshot_in_lockfile,
+    SchemaSnapshotStore, discover_resource_schema, lock_to_toml,
+    pin_schema_snapshot_in_project_lockfile,
 };
 use serde::Serialize;
 
@@ -48,7 +49,7 @@ fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
     let previous = pinned_snapshot_reference(&context, resource).cloned();
     let discovery = discover_for_cli(&context, resource)?;
     let store = SchemaSnapshotStore::new(&context.root);
-    store.write(&discovery.snapshot.artifact)?;
+    let snapshot_written = store.write_if_changed(&discovery.snapshot.artifact)?;
     let pinned_resource = resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
             snapshot: discovery.snapshot.reference.clone(),
@@ -60,7 +61,7 @@ fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
         Some(previous) if previous.schema_hash == discovery.snapshot.artifact.schema_hash => {
             "unchanged"
         }
-        Some(_) => "changed",
+        Some(_) => "refreshed",
         None => "added",
     };
     let report = SchemaPinReport::from_pin(
@@ -69,6 +70,7 @@ fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
         status,
         &discovery.snapshot.artifact,
         &discovery.snapshot.source_identity,
+        snapshot_written,
         lockfile,
     );
     CommandOutput::rendered("schema pin", schema_pin_document(&report), report)
@@ -162,22 +164,23 @@ fn update_lockfile(
     context: &ProjectContext,
     pinned_resource: &CompiledResource,
 ) -> Result<SchemaLockfileWrite, CliError> {
-    let Some(lock) = &context.lock else {
-        return Ok(SchemaLockfileWrite {
-            written: false,
-            unsupported_reason: Some(format!(
-                "{LOCK_FILE_NAME} is not present; schema pin wrote the snapshot but cannot safely create dependency tuple and destination lock context in this slice"
-            )),
-        });
-    };
-    let updated = pin_schema_snapshot_in_lockfile(lock, pinned_resource)?;
+    let updated = pin_schema_snapshot_in_project_lockfile(
+        &context.config,
+        &context.resources,
+        context.lock.as_ref(),
+        &context.environment.destination,
+        pinned_resource,
+    )?;
     let encoded = lock_to_toml(&updated)?;
     let path = context.root.join(LOCK_FILE_NAME);
-    fs::write(&path, encoded).map_err(|error| {
-        CliError::from(CdfError::data(format!("write {}: {error}", path.display())))
-    })?;
+    let written = fs::read_to_string(&path).ok().as_deref() != Some(&encoded);
+    if written {
+        fs::write(&path, encoded).map_err(|error| {
+            CliError::from(CdfError::data(format!("write {}: {error}", path.display())))
+        })?;
+    }
     Ok(SchemaLockfileWrite {
-        written: true,
+        written,
         unsupported_reason: None,
     })
 }
@@ -345,6 +348,7 @@ impl SchemaPinReport {
         status: &str,
         artifact: &SchemaSnapshotArtifact,
         source_identity: &BTreeMap<String, String>,
+        snapshot_written: bool,
         lockfile: SchemaLockfileWrite,
     ) -> Self {
         let unsupported = lockfile.unsupported_reason.into_iter().collect::<Vec<_>>();
@@ -353,7 +357,7 @@ impl SchemaPinReport {
             status: status.to_owned(),
             source_identity: source_identity.clone(),
             writes: SchemaWrites {
-                schema_snapshot: true,
+                schema_snapshot: snapshot_written,
                 lockfile: lockfile.written,
                 package: false,
                 destination: false,

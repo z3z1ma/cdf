@@ -33,6 +33,7 @@ This ticket does not implement SCD2 or new destination disposition families.
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-f1-append-default-merge-key-error.md` for append default and merge-key validation in declarative compilation.
 - 2026-07-09: F1 closed in `.10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md`; declarative compilation now defaults append keylessly, merge requires explicit `merge_key`, and the local append scaffold omits key fields.
+- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-f2-s7-key-disposition-experience.md` for exact validate/plan/preview/run S7 behavior, command-correct merge remediation, and current scaffold/message/example audit. Exact-row dedup remains outside this child pending ratification.
 
 ## Blockers
 
