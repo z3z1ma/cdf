@@ -106,6 +106,23 @@ schema = { fields = [
   { name = "name", type = "string", nullable = true },
 ] }
 "#;
+const MULTI_FILE_RESOURCE_APPEND: &str = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events-*.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "name", type = "string", nullable = true },
+] }
+"#;
 
 struct RecordingRunEventSink {
     capacity: Option<usize>,
@@ -1268,6 +1285,24 @@ fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::Compile
         .remove(0)
 }
 
+fn multi_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(
+        root.join("data/events-a.ndjson"),
+        "{\"id\":1,\"name\":\"ada\"}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("data/events-b.ndjson"),
+        "{\"id\":2,\"name\":\"grace\"}\n",
+    )
+    .unwrap();
+    let document = cdf_declarative::parse_toml(MULTI_FILE_RESOURCE_APPEND).unwrap();
+    cdf_declarative::compile_document_with_project_root(&document, root)
+        .unwrap()
+        .remove(0)
+}
+
 fn rest_resource() -> cdf_declarative::CompiledResource {
     let document = cdf_declarative::parse_toml(REST_RESOURCE).unwrap();
     cdf_declarative::compile_document(&document)
@@ -1611,13 +1646,21 @@ fn postgres_project_run_request<'a>(
 }
 
 fn file_position(path: &str) -> SourcePosition {
+    file_position_with_identity(path, 42, Some(format!("sha256:{path}")))
+}
+
+fn file_position_with_identity(
+    path: &str,
+    size_bytes: u64,
+    sha256: Option<String>,
+) -> SourcePosition {
     SourcePosition::FileManifest(FileManifest {
         version: 1,
         files: vec![FilePosition {
             path: path.to_owned(),
-            size_bytes: 42,
+            size_bytes,
             etag: None,
-            sha256: Some(format!("sha256:{path}")),
+            sha256,
         }],
     })
 }
@@ -2112,6 +2155,56 @@ fn general_project_run_records_ledger_events_in_commit_gate_order() {
             .attributes
             .contains_key("elapsed_ms")
     );
+}
+
+#[test]
+fn general_project_run_commits_multi_file_resource_manifest_checkpoint() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = multi_file_resource(temp.path());
+    let package_id = "pkg-general-multi-file-manifest";
+    let package_root = temp.path().join(".cdf/packages");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+
+    let report = futures_executor::block_on(run_project(project_run_request(
+        &resource,
+        package_id,
+        &package_root,
+        &duckdb_path,
+        &state_path,
+        "run-general-multi-file-manifest",
+    )))
+    .unwrap();
+
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.segment_count, 2);
+    let SourcePosition::FileManifest(manifest) = &report.checkpoint.delta.output_position else {
+        panic!("checkpoint output position should be a file manifest");
+    };
+    let manifest_paths = manifest
+        .files
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(manifest_paths, vec!["events-a.ndjson", "events-b.ndjson"]);
+    assert!(manifest.files.iter().all(|file| file.size_bytes > 0));
+    assert!(manifest.files.iter().all(|file| file.sha256.is_some()));
+
+    let mut segment_paths = report
+        .checkpoint
+        .delta
+        .segments
+        .iter()
+        .map(|segment| match &segment.output_position {
+            SourcePosition::FileManifest(manifest) => {
+                assert_eq!(manifest.files.len(), 1);
+                manifest.files[0].path.clone()
+            }
+            other => panic!("state segment should retain file manifest evidence: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    segment_paths.sort();
+    assert_eq!(segment_paths, manifest_paths);
 }
 
 #[test]
@@ -4079,58 +4172,85 @@ fn live_file_run_rejects_plan_package_id_mismatch_before_writes() {
 }
 
 #[test]
-fn state_delta_rejects_divergent_segment_source_positions() {
+fn state_delta_aggregates_file_manifest_positions_deterministically() {
     let temp = tempfile::tempdir().unwrap();
     let resource = live_file_resource(temp.path());
-    let package_dir = temp.path().join("pkg-state-delta-divergent");
-    let manifest = build_package(
-        &package_dir,
-        "pkg-state-delta-divergent",
-        PackageStatus::Packaged,
-    );
-    let first = manifest.identity.segments[0].clone();
-    let mut second = first.clone();
-    second.segment_id = SegmentId::new("seg-000002").unwrap();
-    second.path = "data/seg-000002.arrow".to_owned();
-    let mut manifest = manifest;
-    manifest.identity.segments = vec![first.clone(), second.clone()];
-    let output = EngineRunOutputWithSegmentPositions {
-        output: EngineRunOutput {
-            manifest,
-            segments: vec![first.clone(), second.clone()],
-            profile: ExecutionProfile::default(),
-            lineage: LineageSummary::default(),
-        },
-        segment_positions: vec![
-            EngineSegmentPosition {
-                segment_id: first.segment_id.clone(),
-                output_position: Some(file_position("/tmp/cdf/a.ndjson")),
-            },
-            EngineSegmentPosition {
-                segment_id: second.segment_id.clone(),
-                output_position: Some(file_position("/tmp/cdf/b.ndjson")),
-            },
-        ],
-    };
-    let request = LocalFileDuckDbRunRequest {
-        resource: &resource,
-        plan: live_plan(&resource, "pkg-state-delta-divergent"),
-        package_root: temp.path().to_path_buf(),
-        destination_path: temp.path().join("dev.duckdb"),
-        state_store_path: temp.path().join("state.db"),
-        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
-        target: TargetName::new("events").unwrap(),
-        package_id: "pkg-state-delta-divergent".to_owned(),
-        checkpoint_id: CheckpointId::new("checkpoint-state-delta-divergent").unwrap(),
-        after_receipt_verified: None,
-    };
 
-    let error = state_delta_from_run(
-        &request,
-        &output,
-        &SchemaHash::new(SCHEMA_HASH).unwrap(),
-        &resource.descriptor().state_scope,
-        None,
+    let delta = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-file-manifest-aggregate",
+        vec![
+            file_position("/tmp/cdf/z.ndjson"),
+            file_position("/tmp/cdf/a.ndjson"),
+            file_position("/tmp/cdf/a.ndjson"),
+        ],
+    )
+    .unwrap();
+
+    let SourcePosition::FileManifest(manifest) = &delta.output_position else {
+        panic!("output position should be a file manifest");
+    };
+    assert_eq!(
+        manifest
+            .files
+            .iter()
+            .map(|file| file.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/tmp/cdf/a.ndjson", "/tmp/cdf/z.ndjson"]
+    );
+    assert_eq!(delta.segments.len(), 3);
+    assert_eq!(
+        delta.segments[0].output_position,
+        file_position("/tmp/cdf/z.ndjson")
+    );
+    assert_eq!(
+        delta.segments[1].output_position,
+        file_position("/tmp/cdf/a.ndjson")
+    );
+}
+
+#[test]
+fn state_delta_rejects_conflicting_duplicate_file_manifest_entries() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+
+    let error = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-file-manifest-conflict",
+        vec![
+            file_position_with_identity("/tmp/cdf/a.ndjson", 42, Some("sha256:first".to_owned())),
+            file_position_with_identity("/tmp/cdf/a.ndjson", 42, Some("sha256:second".to_owned())),
+        ],
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("conflicting file manifest evidence")
+    );
+}
+
+#[test]
+fn state_delta_rejects_mixed_file_and_non_file_source_positions() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+
+    let error = state_delta_for_positions(
+        &resource,
+        temp.path(),
+        "pkg-state-delta-mixed-file-log",
+        vec![
+            file_position("/tmp/cdf/a.ndjson"),
+            SourcePosition::Log(LogPosition {
+                version: 1,
+                log: "orders".to_owned(),
+                offset: 11,
+                sequence: None,
+            }),
+        ],
     )
     .unwrap_err();
 
@@ -4139,6 +4259,44 @@ fn state_delta_rejects_divergent_segment_source_positions() {
             .to_string()
             .contains("divergent segment source positions")
     );
+}
+
+#[test]
+fn state_delta_normalizes_file_manifest_entries_for_file_scope() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-state-delta-file-scope-normalize";
+    let output = engine_output_with_positions(
+        &temp.path().join(package_id),
+        package_id,
+        vec![file_position("/tmp/cdf/events-a.ndjson")],
+    );
+    let request = state_delta_request(&resource, package_id, temp.path());
+    let scope = ScopeKey::File {
+        path: "events-a.ndjson".to_owned(),
+    };
+
+    let delta = state_delta_from_run(
+        &request,
+        &output,
+        &SchemaHash::new(SCHEMA_HASH).unwrap(),
+        &scope,
+        None,
+    )
+    .unwrap();
+
+    let SourcePosition::FileManifest(output_manifest) = &delta.output_position else {
+        panic!("output position should be a file manifest");
+    };
+    assert_eq!(output_manifest.files[0].path, "events-a.ndjson");
+    assert_eq!(
+        output_manifest.files[0].sha256.as_deref(),
+        Some("sha256:/tmp/cdf/events-a.ndjson")
+    );
+    let SourcePosition::FileManifest(segment_manifest) = &delta.segments[0].output_position else {
+        panic!("state segment should retain file manifest evidence");
+    };
+    assert_eq!(segment_manifest.files[0].path, "events-a.ndjson");
 }
 
 #[test]

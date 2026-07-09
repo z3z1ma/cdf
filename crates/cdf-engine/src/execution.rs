@@ -13,7 +13,7 @@ use cdf_contract::{
 };
 use cdf_kernel::{
     CdfError, PreContractObservedValue, PreContractQuarantineFact, ResourceStream, Result, RunId,
-    SegmentId, SourcePosition, WriteDisposition, semantic,
+    ScopeKey, SegmentId, SourcePosition, WriteDisposition, semantic,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -188,6 +188,7 @@ where
         if remaining_limit == Some(0) {
             break;
         }
+        let partition_scope = partition.scope.clone();
 
         let partition_span = trace_context
             .map(|context| partition_execution_span(context, partition.partition_id.as_str()))
@@ -226,10 +227,14 @@ where
                 if output.num_rows() == 0 {
                     continue;
                 }
+                let batch_source_position = normalize_source_position_for_partition(
+                    batch.header.source_position.clone(),
+                    &partition_scope,
+                );
 
                 let evaluation_context = package_evaluation_context
                     .clone()
-                    .with_source_position(batch.header.source_position.clone());
+                    .with_source_position(batch_source_position.clone());
                 let ContractExecOutput {
                     accepted,
                     quarantine_records,
@@ -251,7 +256,7 @@ where
                 if apply_merge_dedup {
                     pending_dedup_batches.push(PendingDedupBatch {
                         accepted: output,
-                        output_position: batch.header.source_position.clone(),
+                        output_position: batch_source_position,
                     });
                     continue;
                 }
@@ -259,7 +264,7 @@ where
                     &mut builder,
                     &plan.validation_program,
                     output,
-                    batch.header.source_position.clone(),
+                    batch_source_position,
                     &mut OutputWriteState {
                         profile: &mut profile,
                         lineage: &mut lineage,
@@ -371,6 +376,21 @@ fn apply_dedup_and_write_pending_batches(
         write_output_batch(builder, program, output, pending.output_position, state)?;
     }
     Ok(())
+}
+
+fn normalize_source_position_for_partition(
+    position: Option<SourcePosition>,
+    scope: &ScopeKey,
+) -> Option<SourcePosition> {
+    match (position, scope) {
+        (Some(SourcePosition::FileManifest(mut manifest)), ScopeKey::File { path }) => {
+            for file in &mut manifest.files {
+                file.path = path.clone();
+            }
+            Some(SourcePosition::FileManifest(manifest))
+        }
+        (position, _) => position,
+    }
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {

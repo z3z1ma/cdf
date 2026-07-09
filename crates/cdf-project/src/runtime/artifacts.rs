@@ -1,7 +1,7 @@
 use super::prelude::*;
 #[cfg(test)]
 use super::types::LocalFileDuckDbRunRequest;
-use cdf_kernel::CapabilitySupport;
+use cdf_kernel::{CapabilitySupport, FileManifest, FilePosition};
 
 const QUARANTINE_MIRROR_OUTCOME_FILE: &str = "destination/quarantine-mirror.json";
 
@@ -234,9 +234,64 @@ fn aggregate_output_position(
     }
     if context.descriptor.cursor.is_some() {
         aggregate_cursor_output_position(context, positions)
+    } else if positions
+        .iter()
+        .all(|position| matches!(position, SourcePosition::FileManifest(_)))
+    {
+        aggregate_file_manifest_output_position(context, positions)
     } else {
         identical_output_position(positions)
     }
+}
+
+fn aggregate_file_manifest_output_position(
+    context: &StateCommitArtifactContext<'_>,
+    positions: &[SourcePosition],
+) -> Result<SourcePosition> {
+    let mut version = None;
+    let mut files = BTreeMap::<String, FilePosition>::new();
+
+    for position in positions {
+        let SourcePosition::FileManifest(manifest) = position else {
+            unreachable!("aggregate_output_position routes only file manifest positions");
+        };
+        match version {
+            Some(version) if version != manifest.version => {
+                return Err(CdfError::data(format!(
+                    "resource `{}` produced mixed file manifest versions",
+                    context.descriptor.resource_id
+                )));
+            }
+            Some(_) => {}
+            None => version = Some(manifest.version),
+        }
+        for file in &manifest.files {
+            match files.get(&file.path) {
+                Some(existing) if existing != file => {
+                    return Err(CdfError::data(format!(
+                        "resource `{}` produced conflicting file manifest evidence for `{}`",
+                        context.descriptor.resource_id, file.path
+                    )));
+                }
+                Some(_) => {}
+                None => {
+                    files.insert(file.path.clone(), file.clone());
+                }
+            }
+        }
+    }
+
+    if files.is_empty() {
+        return Err(CdfError::data(format!(
+            "resource `{}` produced file manifest source positions with no file entries",
+            context.descriptor.resource_id
+        )));
+    }
+
+    Ok(SourcePosition::FileManifest(FileManifest {
+        version: version.expect("positions is non-empty and all positions are file manifests"),
+        files: files.into_values().collect(),
+    }))
 }
 
 fn identical_output_position(positions: &[SourcePosition]) -> Result<SourcePosition> {
