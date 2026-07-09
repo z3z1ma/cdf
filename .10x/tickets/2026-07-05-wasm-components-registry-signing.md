@@ -29,6 +29,7 @@ WASI 1.0 freeze changes require a later decision if they alter the interface.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-08: Split child `.10x/tickets/2026-07-08-wasm-wit-interface-foundation.md` for the first reviewable WIT package/world artifact. Host execution, sandbox denial, registry admission, signing, and conformance-on-component remain parent scope.
 
 ## Blockers
 
