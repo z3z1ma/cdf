@@ -39,9 +39,7 @@ pub(crate) fn plan_or_explain(
         ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())?;
     let target = scan_target(&args)?;
     let resource = context.resource(&args.resource_id)?;
-    let secret_provider = context.secret_provider();
-    let prepared =
-        cdf_project::prepare_discover_resource(&context.root, resource, &secret_provider)?;
+    let prepared = prepare_discover_resource_for_cli(&context, resource)?;
     let plan = build_engine_plan_for_resource(&prepared.resource, &args)?;
     let report = scan_report(
         &context,
@@ -62,9 +60,7 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
-    let secret_provider = context.secret_provider();
-    let prepared =
-        cdf_project::prepare_discover_resource(&context.root, resource, &secret_provider)?;
+    let prepared = prepare_discover_resource_for_cli(&context, resource)?;
     let plan = build_engine_plan_for_resource(&prepared.resource, &args)?;
     match preview_one_batch(&context, &prepared.resource, &plan) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
@@ -76,6 +72,29 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         )),
         Err(error) => Err(error.into()),
     }
+}
+
+pub(crate) fn prepare_discover_resource_for_cli(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+) -> Result<cdf_project::PreparedDiscoveredResource, CliError> {
+    let secret_provider = context.secret_provider();
+    if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
+        && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
+    {
+        let mut transport = ReqwestHttpTransport::new()?;
+        return Ok(cdf_project::prepare_discover_resource_with_rest_transport(
+            &context.root,
+            resource,
+            &secret_provider,
+            &mut transport,
+        )?);
+    }
+    Ok(cdf_project::prepare_discover_resource(
+        &context.root,
+        resource,
+        &secret_provider,
+    )?)
 }
 
 pub(crate) fn build_engine_plan_for_resource(

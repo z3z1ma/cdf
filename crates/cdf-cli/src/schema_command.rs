@@ -1,11 +1,14 @@
 use std::collections::BTreeMap;
 
+use cdf_declarative::CompiledResourcePlan;
+use cdf_kernel::SchemaSource;
 use cdf_project::{SchemaSnapshotDataType, discover_resource_schema};
 use serde::Serialize;
 
 use crate::{
     args::{Cli, SchemaCommand, SchemaDiscoverArgs},
     context::ProjectContext,
+    http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     render::{
         RenderDocument,
@@ -27,7 +30,18 @@ fn discover(cli: &Cli, args: SchemaDiscoverArgs) -> Result<CommandOutput, CliErr
     )?;
     let resource = context.resource(&args.resource_id)?;
     let secret_provider = context.secret_provider();
-    let discovery = discover_resource_schema(resource, &secret_provider)?;
+    let discovery = if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
+        && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
+    {
+        let mut transport = ReqwestHttpTransport::new()?;
+        cdf_project::discover_resource_schema_with_rest_transport(
+            resource,
+            &secret_provider,
+            &mut transport,
+        )?
+    } else {
+        discover_resource_schema(resource, &secret_provider)?
+    };
     let report = SchemaDiscoverReport::from_discovery(
         &context,
         &args.resource_id,

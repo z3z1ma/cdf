@@ -3,10 +3,10 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use cdf_contract::{IdentifierPolicy, NORMALIZER_NAMECASE_V1, normalize_arrow_schema};
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, discover_local_parquet_schema,
-    postgres_table_target_for_sql_plan,
+    discover_rest_sample_schema, postgres_table_target_for_sql_plan,
 };
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
-use cdf_http::SecretProvider;
+use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     CdfError, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaSource,
 };
@@ -46,6 +46,22 @@ pub fn discover_resource_schema(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
 ) -> Result<ResourceSchemaDiscovery> {
+    discover_resource_schema_inner(resource, secret_provider, None)
+}
+
+pub fn discover_resource_schema_with_rest_transport(
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    rest_transport: &mut dyn HttpTransport,
+) -> Result<ResourceSchemaDiscovery> {
+    discover_resource_schema_inner(resource, secret_provider, Some(rest_transport))
+}
+
+fn discover_resource_schema_inner(
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    rest_transport: Option<&mut dyn HttpTransport>,
+) -> Result<ResourceSchemaDiscovery> {
     ensure_discover_schema_mode(resource)?;
     match resource.plan() {
         CompiledResourcePlan::Files(_) => {
@@ -62,10 +78,13 @@ pub fn discover_resource_schema(
         CompiledResourcePlan::Sql(plan) => {
             discover_postgres_resource_schema(resource, plan, secret_provider)
         }
-        CompiledResourcePlan::Rest(_) => Err(unsupported_discover_slice(
-            resource.descriptor(),
-            "REST resource discovery is not implemented in this slice",
-        )),
+        CompiledResourcePlan::Rest(_) => match rest_transport {
+            Some(transport) => discover_rest_resource_schema(resource, secret_provider, transport),
+            None => Err(unsupported_discover_slice(
+                resource.descriptor(),
+                "REST resource discovery requires an explicit HTTP transport",
+            )),
+        },
     }
 }
 
@@ -149,8 +168,6 @@ fn discover_postgres_resource_schema(
         &resource.descriptor().resource_id,
         &target,
     )?;
-    let normalized = normalize_arrow_schema(&probe.schema, &IdentifierPolicy::default())?;
-    let normalized = Arc::new(normalized);
     let metadata = BTreeMap::from([
         (
             "probe".to_owned(),
@@ -164,6 +181,39 @@ fn discover_postgres_resource_schema(
             NORMALIZER_NAMECASE_V1.to_owned(),
         ),
     ]);
+    build_schema_discovery(resource, &probe.schema, metadata, probe.source_identity)
+}
+
+fn discover_rest_resource_schema(
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    rest_transport: &mut dyn HttpTransport,
+) -> Result<ResourceSchemaDiscovery> {
+    let probe = discover_rest_sample_schema(resource, rest_transport, secret_provider)?;
+    let metadata = BTreeMap::from([
+        ("probe".to_owned(), "rest-sample-page".to_owned()),
+        ("source_kind".to_owned(), "rest".to_owned()),
+        (
+            "cdf:normalizer".to_owned(),
+            NORMALIZER_NAMECASE_V1.to_owned(),
+        ),
+    ]);
+    build_schema_discovery(
+        resource,
+        probe.schema.as_ref(),
+        metadata,
+        probe.source_identity,
+    )
+}
+
+fn build_schema_discovery(
+    resource: &CompiledResource,
+    schema: &arrow_schema::Schema,
+    metadata: BTreeMap<String, String>,
+    source_identity: BTreeMap<String, String>,
+) -> Result<ResourceSchemaDiscovery> {
+    let normalized = normalize_arrow_schema(schema, &IdentifierPolicy::default())?;
+    let normalized = Arc::new(normalized);
     let artifact = SchemaSnapshotArtifact::new(
         &resource.descriptor().resource_id,
         normalized.as_ref(),
@@ -174,7 +224,7 @@ fn discover_postgres_resource_schema(
         snapshot: DiscoveredSchemaSnapshot {
             reference: artifact.reference(),
             artifact,
-            source_identity: probe.source_identity,
+            source_identity,
         },
     })
 }
@@ -215,6 +265,24 @@ pub fn prepare_discover_resource(
     }
 
     let discovery = discover_resource_schema(resource, secret_provider)?;
+    prepare_discovered_schema(project_root, resource, discovery)
+}
+
+pub fn prepare_discover_resource_with_rest_transport(
+    project_root: impl AsRef<Path>,
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    rest_transport: &mut dyn HttpTransport,
+) -> Result<PreparedDiscoveredResource> {
+    if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+        return Ok(PreparedDiscoveredResource {
+            resource: resource.clone(),
+            discovery: None,
+        });
+    }
+
+    let discovery =
+        discover_resource_schema_with_rest_transport(resource, secret_provider, rest_transport)?;
     prepare_discovered_schema(project_root, resource, discovery)
 }
 

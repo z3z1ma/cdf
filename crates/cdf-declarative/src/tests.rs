@@ -267,6 +267,122 @@ fn rest_runtime_executes_json_pages_with_explicit_dependencies() {
 }
 
 #[test]
+fn rest_sample_discovery_infers_scalars_and_uses_runtime_request_path() {
+    let input = REST_RUNTIME_EXAMPLE
+        .replace(
+        r#"schema = { fields = [
+  { name = "id", type = "uint64", nullable = false },
+  { name = "name", type = "string", nullable = false },
+  { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
+  { name = "active", type = "boolean", nullable = false },
+  { name = "score", type = "float64", nullable = true },
+] }"#,
+        "",
+        )
+        .replace(
+            r#"paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }"#,
+            r#"paginate = { kind = "page_number", query_param = "page", start_page = 7 }"#,
+        );
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let mut transport = RecordingTransport::new([json_response(
+        r#"{
+            "items": [
+                { "id": 9223372036854775808, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5, "meta": { "tier": "gold" } },
+                { "id": 9223372036854775809, "name": null, "updated_at": "2026-07-03T00:00:00Z", "active": false, "score": 9, "meta": ["vip"], "late_field": "appeared" },
+                { "id": 9223372036854775810, "updated_at": "2026-07-04T00:00:00Z", "active": true, "score": null, "meta": "plain" }
+            ],
+            "next_token": "not-followed"
+        }"#,
+    )]);
+    let secret_provider = StaticSecretProvider::new([("secret://env/API_TOKEN", "sample-secret")]);
+
+    let discovery =
+        discover_rest_sample_schema(&resource, &mut transport, &secret_provider).unwrap();
+
+    let schema = Arc::clone(&discovery.schema);
+    assert_eq!(
+        schema.field_with_name("active").unwrap().data_type(),
+        &DataType::Boolean
+    );
+    assert_eq!(
+        schema.field_with_name("id").unwrap().data_type(),
+        &DataType::UInt64
+    );
+    assert_eq!(
+        schema.field_with_name("score").unwrap().data_type(),
+        &DataType::Float64
+    );
+    assert_eq!(
+        schema.field_with_name("name").unwrap().data_type(),
+        &DataType::Utf8
+    );
+    assert!(schema.field_with_name("name").unwrap().is_nullable());
+    assert_eq!(
+        schema.field_with_name("meta").unwrap().data_type(),
+        &DataType::Utf8
+    );
+    assert!(schema.field_with_name("late_field").unwrap().is_nullable());
+    assert_eq!(discovery.source_identity["source_kind"], "rest");
+    assert_eq!(discovery.source_identity["sample_pages"], "1");
+    assert_eq!(discovery.source_identity["sample_records"], "3");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].url,
+        "https://api.example.com/v1/items?existing=1&from_path=yes&state=all&page=7"
+    );
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer sample-secret")
+    );
+    assert!(!format!("{discovery:?}").contains("sample-secret"));
+}
+
+#[test]
+fn rest_runtime_executes_with_discovered_snapshot_hash() {
+    let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
+        .unwrap()
+        .remove(0);
+    let schema = resource.schema();
+    let snapshot_hash = SchemaHash::new("sha256:rest-discovered").unwrap();
+    let resource = resource.with_schema_source_and_schema(
+        SchemaSource::Discovered {
+            snapshot: cdf_kernel::SchemaSnapshotReference {
+                schema_hash: snapshot_hash.clone(),
+                path: ".cdf/schemas/api.items@sha256:rest-discovered.json".to_owned(),
+                metadata: BTreeMap::from([("probe".to_owned(), "rest-sample-page".to_owned())]),
+            },
+        },
+        schema,
+    );
+    let request = rest_cursor_request(&resource, "updated_at >= \"2026-07-01T00:00:00Z\"");
+    let plan = resource.negotiate(&request).unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"{
+            "items": [
+                { "id": 1, "name": "ada", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 4.5 }
+            ]
+        }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].header.observed_schema_hash, snapshot_hash);
+}
+
+#[test]
 fn rest_runtime_satisfies_execution_conformance_helper() {
     let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
         .unwrap()

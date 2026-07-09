@@ -3229,6 +3229,64 @@ fn general_project_run_executes_deterministic_rest_resource_stream() {
 }
 
 #[test]
+fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
+    let temp = tempfile::tempdir().unwrap();
+    let compiled = rest_runtime_resource();
+    let schema = compiled.schema();
+    let schema_hash = SchemaHash::new("sha256:rest-discovered-runtime").unwrap();
+    let compiled = compiled.with_schema_source_and_schema(
+        SchemaSource::Discovered {
+            snapshot: cdf_kernel::SchemaSnapshotReference {
+                schema_hash: schema_hash.clone(),
+                path: ".cdf/schemas/api.items@sha256:rest-discovered-runtime.json".to_owned(),
+                metadata: BTreeMap::from([("probe".to_owned(), "rest-sample-page".to_owned())]),
+            },
+        },
+        schema,
+    );
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": 1, "updated_at": 10 },
+            { "id": 2, "updated_at": 20 }
+        ] }"#,
+    )]);
+    let resource = compiled
+        .to_rest_resource(
+            cdf_declarative::RestRuntimeDependencies::new(transport.clone()).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let package_id = "pkg-general-rest-discovered-runtime";
+    let state_path = temp.path().join(".cdf/state.db");
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::rest(&resource),
+        plan: live_plan(resource.compiled(), package_id),
+        package_root: temp.path().join(".cdf/packages"),
+        state_store_path: state_path,
+        pipeline_id: PipelineId::new("pipeline-live").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-general-rest-discovered-runtime").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path,
+            TargetName::new("items").unwrap(),
+        )
+        .unwrap(),
+        run_id: Some(RunId::new("run-general-rest-discovered-runtime").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.checkpoint.delta.schema_hash, schema_hash);
+    assert_eq!(report.receipt.schema_hash, schema_hash);
+    assert_eq!(transport.requests().len(), 1);
+}
+
+#[test]
 fn general_project_run_rejects_unsupported_parquet_disposition_before_writes() {
     let temp = tempfile::tempdir().unwrap();
     let resource = simple_file_resource(temp.path(), SIMPLE_FILE_RESOURCE_MERGE);

@@ -1630,6 +1630,83 @@ fn schema_discover_local_parquet_reports_schema_without_project_writes() {
 }
 
 #[test]
+fn schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_leak() {
+    let project = TestProject::new();
+    fs::write(project.root.join("rest-token"), "rest-schema-secret\n").unwrap();
+    let (base_url, requests) = serve_json_sequence([r#"{ "items": [
+        { "VendorID": 1, "updated_at": 10, "active": true, "score": 4.5 },
+        { "VendorID": 2, "updated_at": 20, "active": false, "score": null },
+        { "VendorID": 3, "updated_at": 30, "active": true }
+    ] }"#]);
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+    fs::write(
+        project.root.join("resources/api.toml"),
+        rest_discover_resource_with_base_url(&base_url, "secret://file/rest-token"),
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "discover",
+        "api.items",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, "rest-schema-secret");
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_id"], "api.items");
+    assert_eq!(report["writes"]["schema_snapshot"], false);
+    assert_eq!(report["writes"]["package"], false);
+    assert_eq!(report["writes"]["destination"], false);
+    assert_eq!(report["writes"]["checkpoint"], false);
+    assert_eq!(report["snapshot_metadata"]["probe"], "rest-sample-page");
+    assert_eq!(report["snapshot_metadata"]["source_kind"], "rest");
+    assert_eq!(report["snapshot_metadata"]["cdf:normalizer"], "namecase-v1");
+    assert!(
+        report["schema_snapshot_path"]
+            .as_str()
+            .unwrap()
+            .starts_with(".cdf/schemas/api.items@sha256:")
+    );
+    let fields = report["fields"].as_array().unwrap();
+    assert!(fields.iter().any(|field| field["name"] == "active"));
+    let score = fields
+        .iter()
+        .find(|field| field["name"] == "score")
+        .unwrap();
+    assert_eq!(score["nullable"], true);
+    let vendor = fields
+        .iter()
+        .find(|field| field["name"] == "vendor_id")
+        .unwrap();
+    assert_eq!(vendor["source_name"], "VendorID");
+    assert_eq!(report["source_identity"]["record_selector"], "$.items");
+    assert_eq!(report["source_identity"]["sample_pages"], "1");
+    assert_eq!(report["source_identity"]["sample_records"], "3");
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("GET /items HTTP/1.1"));
+    assert!(requests[0].contains("authorization: Bearer rest-schema-secret"));
+}
+
+#[test]
 fn schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak() {
     let Some(postgres) = LivePostgres::start() else {
         return;
@@ -1929,6 +2006,142 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
     assert_eq!(
         head.delta.checkpoint_id.as_str(),
         "checkpoint-run-postgres-discover"
+    );
+}
+
+#[test]
+fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leaks() {
+    let project = TestProject::new();
+    fs::write(project.root.join("rest-token"), "rest-autopin-secret\n").unwrap();
+    let body = r#"{ "items": [
+        { "VendorID": 1, "updated_at": 10 },
+        { "VendorID": 2, "updated_at": 20 }
+    ] }"#;
+    let (base_url, requests) = serve_json_sequence([body, body, body, body, body]);
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+    fs::write(
+        project.root.join("resources/api.toml"),
+        rest_discover_resource_with_base_url(&base_url, "secret://file/rest-token"),
+    )
+    .unwrap();
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "api.items",
+        "--target",
+        "items",
+    ]);
+
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    assert_secret_absent(&plan, "rest-autopin-secret");
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    let plan_report = &plan_json["result"];
+    assert_eq!(
+        plan_report["resource_schema"]["schema_source"],
+        "discovered"
+    );
+    assert_eq!(
+        plan_report["resource_schema"]["snapshot_metadata"]["probe"],
+        "rest-sample-page"
+    );
+    let snapshot_path = plan_report["resource_schema"]["snapshot_path"]
+        .as_str()
+        .unwrap();
+    let snapshot = read_snapshot_json(&project, snapshot_path);
+    let snapshot_text = snapshot.to_string();
+    assert!(!snapshot_text.contains("rest-autopin-secret"));
+    let snapshot_fields = snapshot["schema"]["fields"].as_array().unwrap();
+    assert!(
+        snapshot_fields
+            .iter()
+            .any(|field| field["name"] == "updated_at")
+    );
+    let vendor = snapshot_fields
+        .iter()
+        .find(|field| field["name"] == "vendor_id")
+        .unwrap();
+    assert_eq!(vendor["metadata"]["cdf:source_name"], "VendorID");
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "api.items",
+    ]);
+
+    assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
+    assert_secret_absent(&preview, "rest-autopin-secret");
+    assert_no_preview_writes(&project);
+    let preview_json = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_json["result"]["resource"], "api.items");
+    assert_eq!(preview_json["result"]["partition"], "rest");
+    assert_eq!(preview_json["result"]["row_count"], 2);
+
+    let run_result = run_valid_run_resource_target(
+        &project,
+        "api.items",
+        "pkg-run-rest-discover",
+        "checkpoint-run-rest-discover",
+        "items",
+    );
+
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    assert_secret_absent(&run_result, "rest-autopin-secret");
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    let run_report = &run_json["result"];
+    assert_eq!(run_report["resource_id"], "api.items");
+    assert_eq!(run_report["schema_hash"], snapshot["schema_hash"]);
+    assert_eq!(run_report["row_count"], 2);
+    assert_eq!(run_report["checkpoint"]["status"], "committed");
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows = conn
+        .prepare("SELECT vendor_id, updated_at FROM items ORDER BY vendor_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![(1, 10), (2, 20)]);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("api.items").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed REST discover run head");
+    assert_eq!(
+        head.delta.schema_hash.as_str(),
+        snapshot["schema_hash"].as_str().unwrap()
+    );
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-run-rest-discover"
+    );
+
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.contains("authorization: Bearer rest-autopin-secret"))
     );
 }
 
@@ -8560,6 +8773,26 @@ schema = {{ fields = [
     )
 }
 
+fn rest_discover_resource_with_base_url(base_url: &str, token: &str) -> String {
+    format!(
+        r#"
+[source.api]
+kind = "rest"
+base_url = "{base_url}"
+auth = {{ kind = "bearer", token = "{token}" }}
+egress_allowlist = ["127.0.0.1"]
+
+[resource.items]
+path = "/items"
+records = "$.items"
+primary_key = ["vendor_id"]
+cursor = {{ field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }}
+write_disposition = "append"
+trust = "governed"
+"#
+    )
+}
+
 fn rest_resource_with_exact_cursor_base_url(base_url: &str, token: &str) -> String {
     rest_resource_with_base_url(base_url, token).replace(
         r#"cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }"#,
@@ -8584,6 +8817,37 @@ fn serve_json_once(body: &str) -> String {
         stream.flush().unwrap();
     });
     format!("http://{address}")
+}
+
+fn serve_json_sequence<I>(bodies: I) -> (String, Arc<Mutex<Vec<String>>>)
+where
+    I: IntoIterator,
+    I::Item: Into<String>,
+{
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let bodies = bodies.into_iter().map(Into::into).collect::<Vec<_>>();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests_for_thread = Arc::clone(&requests);
+    thread::spawn(move || {
+        for body in bodies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 4096];
+            let bytes_read = stream.read(&mut request).unwrap_or(0);
+            requests_for_thread
+                .lock()
+                .unwrap()
+                .push(String::from_utf8_lossy(&request[..bytes_read]).into_owned());
+            let response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+    (format!("http://{address}"), requests)
 }
 
 fn serve_json_once_capturing_request(body: &str) -> (String, Arc<Mutex<Option<String>>>) {

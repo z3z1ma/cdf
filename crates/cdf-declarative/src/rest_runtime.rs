@@ -8,7 +8,7 @@ use arrow_array::{
     ArrayRef, BooleanArray, Date32Array, Float64Array, Int64Array, RecordBatch, StringArray,
     TimestampMicrosecondArray, TimestampMillisecondArray, UInt64Array,
 };
-use arrow_schema::{DataType, SchemaRef, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport,
     Paginator, RateLimiter, RetryBudget, RetryDecision, RetryPolicy, RetryUnit, SecretProvider,
@@ -17,7 +17,7 @@ use cdf_http::{
 use cdf_kernel::{
     Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue, PartitionPlan,
     QueryableResource, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
-    SchemaHash, SchemaSource, SourcePosition,
+    SchemaHash, SchemaSource, SourcePosition, source_name,
 };
 use futures_util::stream;
 use serde_json::{Map, Value};
@@ -80,6 +80,12 @@ impl fmt::Debug for RestRuntimeDependencies {
 pub struct RestResource {
     compiled: CompiledResource,
     dependencies: RestRuntimeDependencies,
+}
+
+#[derive(Clone, Debug)]
+pub struct RestSampleSchemaDiscovery {
+    pub schema: SchemaRef,
+    pub source_identity: BTreeMap<String, String>,
 }
 
 impl RestResource {
@@ -261,7 +267,7 @@ fn execute_rest(
     dependencies: RestRuntimeDependencies,
 ) -> Result<Vec<Batch>> {
     validate_partition(descriptor, plan, partition)?;
-    let schema_hash = declared_schema_hash(descriptor)?;
+    let schema_hash = execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
         return Err(CdfError::data(
             "declarative REST execution requires a declared schema with at least one field",
@@ -324,6 +330,79 @@ fn execute_rest(
     Ok(batches)
 }
 
+pub fn discover_rest_sample_schema(
+    resource: &CompiledResource,
+    transport: &mut dyn HttpTransport,
+    secret_provider: &dyn SecretProvider,
+) -> Result<RestSampleSchemaDiscovery> {
+    let descriptor = resource.descriptor();
+    let CompiledResourcePlan::Rest(plan) = resource.plan() else {
+        return Err(CdfError::contract(
+            "only compiled REST resources can be sampled for REST schema discovery",
+        ));
+    };
+    let partition = resource
+        .plan_partitions(&ScanRequest {
+            resource_id: descriptor.resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: descriptor.state_scope.clone(),
+        })?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "REST discovery for resource `{}` expected one REST partition",
+                descriptor.resource_id
+            ))
+        })?;
+    validate_partition(descriptor, plan, &partition)?;
+
+    let mut auth_session = plan.auth.clone().map(AuthSession::new);
+    let mut retry_budget = RetryBudget::new(RetryPolicy::default());
+    let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
+    let base_request_url = build_request_url(plan, &partition)?;
+    let paginator = plan.pagination.clone().map(Paginator::new);
+    let url = match &paginator {
+        Some(paginator) => paginator.first_request(&base_request_url).url,
+        None => base_request_url,
+    };
+    let mut send_context = RestSendContext {
+        transport,
+        secret_provider: Some(secret_provider),
+        auth_refresh: None,
+    };
+    let response = send_page_with_transport(
+        &mut send_context,
+        plan,
+        &url,
+        &mut auth_session,
+        &mut retry_budget,
+        &mut limiter,
+    )?;
+    let body = response
+        .body()
+        .ok_or_else(|| CdfError::data("REST HTTP response did not include a JSON body"))?;
+    let decoded = decode_response_page(body, &plan.record_selector)?;
+    let schema = Arc::new(infer_rest_sample_schema(&decoded.records)?);
+    let source_identity = BTreeMap::from([
+        ("source_kind".to_owned(), "rest".to_owned()),
+        ("path".to_owned(), plan.path.clone()),
+        ("record_selector".to_owned(), plan.record_selector.clone()),
+        ("sample_pages".to_owned(), "1".to_owned()),
+        (
+            "sample_records".to_owned(),
+            decoded.records.len().to_string(),
+        ),
+    ]);
+    Ok(RestSampleSchemaDiscovery {
+        schema,
+        source_identity,
+    })
+}
+
 fn validate_partition(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
@@ -364,20 +443,56 @@ fn validate_partition(
     Ok(())
 }
 
-fn declared_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
+fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
     match &descriptor.schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
-        SchemaSource::Discover
-        | SchemaSource::Discovered { .. }
-        | SchemaSource::Hints { .. }
-        | SchemaSource::Contract { .. } => Err(CdfError::data(
-            "declarative REST execution requires a declared schema hash",
-        )),
+        SchemaSource::Discovered { snapshot } => Ok(snapshot.schema_hash.clone()),
+        SchemaSource::Discover | SchemaSource::Hints { .. } | SchemaSource::Contract { .. } => {
+            Err(CdfError::data(
+                "declarative REST execution requires a declared or discovered schema hash",
+            ))
+        }
     }
+}
+
+struct RestSendContext<'a> {
+    transport: &'a mut dyn HttpTransport,
+    secret_provider: Option<&'a dyn SecretProvider>,
+    auth_refresh: Option<&'a Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
 }
 
 fn send_page(
     dependencies: &RestRuntimeDependencies,
+    plan: &RestResourcePlan,
+    url: &str,
+    auth_session: &mut Option<AuthSession>,
+    retry_budget: &mut RetryBudget,
+    limiter: &mut RateLimiter,
+) -> Result<HttpResponse> {
+    let mut transport = dependencies
+        .transport
+        .lock()
+        .map_err(|_| CdfError::internal("REST HTTP transport mutex was poisoned during send"))?;
+    let mut send_context = RestSendContext {
+        transport: &mut **transport,
+        secret_provider: dependencies
+            .secret_provider
+            .as_deref()
+            .map(|provider| provider as &dyn SecretProvider),
+        auth_refresh: dependencies.auth_refresh.as_ref(),
+    };
+    send_page_with_transport(
+        &mut send_context,
+        plan,
+        url,
+        auth_session,
+        retry_budget,
+        limiter,
+    )
+}
+
+fn send_page_with_transport(
+    context: &mut RestSendContext<'_>,
     plan: &RestResourcePlan,
     url: &str,
     auth_session: &mut Option<AuthSession>,
@@ -395,43 +510,33 @@ fn send_page(
             ));
         }
 
-        let mut request = HttpRequest::new(HttpMethod::Get, url.to_owned());
-        validate_http_url(&request.url)?;
-        plan.allowlist.check(&request)?;
-        if let Some(session) = auth_session {
-            let provider = dependencies.secret_provider.as_deref().ok_or_else(|| {
-                CdfError::auth(
-                    "REST resource auth requires an explicit SecretProvider runtime dependency",
-                )
-            })?;
-            session.apply(provider, &mut request)?;
-        }
-
-        let response = {
-            let mut transport = dependencies.transport.lock().map_err(|_| {
-                CdfError::internal("REST HTTP transport mutex was poisoned during send")
-            })?;
-            match send_with_policy(&mut **transport, &plan.allowlist, request) {
-                Ok(response) => response,
-                Err(error) => match retry_budget.next_retry(
-                    &error,
-                    &RetryUnit::Request {
-                        method: HttpMethod::Get,
-                        idempotency_key: false,
-                    },
-                ) {
-                    RetryDecision::Retry { .. } => continue,
-                    RetryDecision::GiveUp { error } => return Err(error),
+        let response = send_page_once(
+            &mut *context.transport,
+            context.secret_provider,
+            plan,
+            url,
+            auth_session,
+        );
+        let response = match response {
+            Ok(response) => response,
+            Err(error) => match retry_budget.next_retry(
+                &error,
+                &RetryUnit::Request {
+                    method: HttpMethod::Get,
+                    idempotency_key: false,
                 },
-            }
+            ) {
+                RetryDecision::Retry { .. } => continue,
+                RetryDecision::GiveUp { error } => return Err(error),
+            },
         };
         limiter.observe_response(&response, 0);
 
         if matches!(response.status, 401 | 403)
             && auth_session.is_some()
-            && let Some(hook) = dependencies.auth_refresh.as_ref()
+            && let Some(hook) = context.auth_refresh
         {
-            let provider = dependencies.secret_provider.as_deref().ok_or_else(|| {
+            let provider = context.secret_provider.ok_or_else(|| {
                 CdfError::auth(
                     "REST auth refresh requires an explicit SecretProvider runtime dependency",
                 )
@@ -461,6 +566,27 @@ fn send_page(
 
         return Ok(response);
     }
+}
+
+fn send_page_once(
+    transport: &mut dyn HttpTransport,
+    secret_provider: Option<&dyn SecretProvider>,
+    plan: &RestResourcePlan,
+    url: &str,
+    auth_session: &mut Option<AuthSession>,
+) -> Result<HttpResponse> {
+    let mut request = HttpRequest::new(HttpMethod::Get, url.to_owned());
+    validate_http_url(&request.url)?;
+    plan.allowlist.check(&request)?;
+    if let Some(session) = auth_session {
+        let provider = secret_provider.ok_or_else(|| {
+            CdfError::auth(
+                "REST resource auth requires an explicit SecretProvider runtime dependency",
+            )
+        })?;
+        session.apply(provider, &mut request)?;
+    }
+    send_with_policy(transport, &plan.allowlist, request)
 }
 
 #[derive(Debug)]
@@ -528,6 +654,125 @@ fn top_level_pagination_fields(root: &Value) -> BTreeMap<String, String> {
         .iter()
         .filter_map(|(key, value)| scalar_marker(value).map(|value| (key.clone(), value)))
         .collect()
+}
+
+fn infer_rest_sample_schema(records: &[Map<String, Value>]) -> Result<Schema> {
+    if records.is_empty() {
+        return Err(CdfError::data(
+            "REST schema discovery selector yielded no records to sample",
+        ));
+    }
+    let mut fields = BTreeMap::<String, InferredRestField>::new();
+    let mut records_seen = 0_usize;
+    for record in records {
+        for field in fields.values_mut() {
+            field.seen_in_current_record = false;
+        }
+        for (name, value) in record {
+            match fields.entry(name.clone()) {
+                std::collections::btree_map::Entry::Occupied(mut entry) => {
+                    entry.get_mut().observe(name, value)?;
+                }
+                std::collections::btree_map::Entry::Vacant(entry) => {
+                    let mut field = InferredRestField {
+                        nullable: records_seen > 0,
+                        ..InferredRestField::default()
+                    };
+                    field.observe(name, value)?;
+                    entry.insert(field);
+                }
+            }
+        }
+        for field in fields.values_mut() {
+            if !field.seen_in_current_record {
+                field.nullable = true;
+            }
+        }
+        records_seen = records_seen.saturating_add(1);
+    }
+    let fields = fields
+        .into_iter()
+        .map(|(name, field)| Ok(Field::new(name, field.data_type()?, field.nullable)))
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Schema::new(fields))
+}
+
+#[derive(Clone, Debug, Default)]
+struct InferredRestField {
+    nullable: bool,
+    kind: Option<InferredRestKind>,
+    seen_in_current_record: bool,
+}
+
+impl InferredRestField {
+    fn observe(&mut self, field: &str, value: &Value) -> Result<()> {
+        self.seen_in_current_record = true;
+        if value.is_null() {
+            self.nullable = true;
+            return Ok(());
+        }
+        let observed = InferredRestKind::from_value(field, value)?;
+        self.kind = Some(match self.kind.take() {
+            Some(current) => current.merge(field, observed)?,
+            None => observed,
+        });
+        Ok(())
+    }
+
+    fn data_type(&self) -> Result<DataType> {
+        Ok(match self.kind {
+            Some(InferredRestKind::Boolean) => DataType::Boolean,
+            Some(InferredRestKind::Int64) => DataType::Int64,
+            Some(InferredRestKind::UInt64) => DataType::UInt64,
+            Some(InferredRestKind::Float64) => DataType::Float64,
+            Some(InferredRestKind::Utf8) | None => DataType::Utf8,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InferredRestKind {
+    Boolean,
+    Int64,
+    UInt64,
+    Float64,
+    Utf8,
+}
+
+impl InferredRestKind {
+    fn from_value(field: &str, value: &Value) -> Result<Self> {
+        Ok(match value {
+            Value::Bool(_) => Self::Boolean,
+            Value::Number(number) if number.as_i64().is_some() => Self::Int64,
+            Value::Number(number) if number.as_u64().is_some() => Self::UInt64,
+            Value::Number(number) if number.as_f64().is_some() => Self::Float64,
+            Value::Number(_) => {
+                return Err(CdfError::data(format!(
+                    "REST field `{field}` contains a number outside supported int64/uint64/float64 inference"
+                )));
+            }
+            Value::String(_) | Value::Array(_) | Value::Object(_) => Self::Utf8,
+            Value::Null => unreachable!("null handled before inference"),
+        })
+    }
+
+    fn merge(self, field: &str, observed: Self) -> Result<Self> {
+        use InferredRestKind::*;
+        Ok(match (self, observed) {
+            (Boolean, Boolean) => Boolean,
+            (Int64, Int64) => Int64,
+            (UInt64, UInt64) => UInt64,
+            (Float64, Float64) => Float64,
+            (Utf8, Utf8) => Utf8,
+            (Utf8, _) | (_, Utf8) | (Boolean, _) | (_, Boolean) => Utf8,
+            (Float64, _) | (_, Float64) => Float64,
+            (Int64, UInt64) | (UInt64, Int64) => {
+                return Err(CdfError::data(format!(
+                    "REST field `{field}` mixes signed and unsigned integer values that cannot be inferred losslessly"
+                )));
+            }
+        })
+    }
 }
 
 fn records_to_batch(
@@ -663,7 +908,8 @@ fn optional_value<'a>(
     record: &'a Map<String, Value>,
     field: &arrow_schema::Field,
 ) -> Result<Option<&'a Value>> {
-    match record.get(field.name()) {
+    let key = source_name(field).unwrap_or_else(|| field.name().as_str());
+    match record.get(key) {
         Some(Value::Null) | None if field.is_nullable() => Ok(None),
         Some(Value::Null) | None => Err(CdfError::data(format!(
             "REST record is missing non-nullable field `{}`",
@@ -678,8 +924,9 @@ fn max_cursor_for_field(
     records: &[Map<String, Value>],
 ) -> Result<ObservedCursor> {
     let mut max_value = None;
+    let key = source_name(field).unwrap_or_else(|| field.name().as_str());
     for record in records {
-        let value = record.get(field.name()).ok_or_else(|| {
+        let value = record.get(key).ok_or_else(|| {
             CdfError::data(format!(
                 "REST cursor field `{}` is missing from an accepted record",
                 field.name()

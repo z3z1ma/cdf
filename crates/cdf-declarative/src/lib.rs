@@ -16,5 +16,7 @@ pub use compiled::{
 };
 pub use declarations::*;
 pub use file_transport::*;
-pub use rest_runtime::{RestResource, RestRuntimeDependencies};
+pub use rest_runtime::{
+    RestResource, RestRuntimeDependencies, RestSampleSchemaDiscovery, discover_rest_sample_schema,
+};
 pub use sql_runtime::{SqlResource, SqlRuntimeDependencies, postgres_table_target_for_sql_plan};

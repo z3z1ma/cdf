@@ -1,14 +1,18 @@
 use super::*;
 use crate::internal::*;
-use std::sync::Arc;
+use std::{
+    collections::{BTreeMap, VecDeque},
+    sync::{Arc, Mutex},
+};
 
 use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use cdf_declarative::{AuthDeclaration, CompiledResourcePlan, SourceDeclaration};
+use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{
-    CapabilitySupport, ConcurrencyLimit, DestinationId, DestinationSheet, IdempotencySupport,
-    IdentifierRules, ResourceId, ResourceStream, SchemaSource, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, WriteDisposition, source_name,
+    CapabilitySupport, CdfError, ConcurrencyLimit, DestinationId, DestinationSheet,
+    IdempotencySupport, IdentifierRules, ResourceId, ResourceStream, SchemaSource,
+    TransactionSupport, TypeMapping, TypeMappingFidelity, WriteDisposition, source_name,
 };
 
 const BOOK_PROJECT: &str = r#"
@@ -618,7 +622,8 @@ fn local_parquet_discover_autopin_rejects_multi_file_glob_without_snapshot_write
 }
 
 #[test]
-fn generic_schema_discovery_dispatch_fails_closed_for_unsupported_rest_resource() {
+fn generic_schema_discovery_dispatch_samples_rest_without_snapshot_write() {
+    let temp = tempfile::tempdir().unwrap();
     let project = r#"
 [project]
 name = "api"
@@ -636,11 +641,14 @@ source = "resources/api.toml"
     let rest = r#"
 [source.api]
 kind = "rest"
-base_url = "https://example.com"
+base_url = "https://api.example.test"
+auth = { kind = "bearer", token = "secret://env/API_TOKEN" }
+egress_allowlist = ["api.example.test"]
 
 [resource.items]
 path = "/items"
-records = "$"
+records = "$.items"
+cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
 write_disposition = "append"
 trust = "governed"
 "#;
@@ -648,17 +656,151 @@ trust = "governed"
     let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
     let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
     let resource = resources.remove(0);
+    let mut transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "VendorID": 1, "updated_at": 10, "active": true, "score": 4.5 },
+            { "VendorID": 2, "updated_at": 20, "active": false, "score": null },
+            { "VendorID": 3, "updated_at": 30, "active": true }
+        ] }"#,
+    )]);
+    let secret_provider =
+        StaticSecretProvider::new([("secret://env/API_TOKEN", "rest-discover-secret")]);
 
-    let error = discover_resource_schema(
+    let discovery =
+        discover_resource_schema_with_rest_transport(&resource, &secret_provider, &mut transport)
+            .unwrap();
+
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        "rest-sample-page"
+    );
+    assert_eq!(discovery.snapshot.artifact.metadata["source_kind"], "rest");
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["cdf:normalizer"],
+        NORMALIZER_NAMECASE_V1
+    );
+    assert!(
+        discovery
+            .snapshot
+            .artifact
+            .schema
+            .fields
+            .iter()
+            .any(|field| field.name == "active")
+    );
+    let score = discovery
+        .snapshot
+        .artifact
+        .schema
+        .fields
+        .iter()
+        .find(|field| field.name == "score")
+        .unwrap();
+    assert!(score.nullable);
+    assert!(
+        discovery
+            .snapshot
+            .artifact
+            .schema
+            .fields
+            .iter()
+            .any(|field| field.name == "updated_at")
+    );
+    let vendor = discovery
+        .snapshot
+        .artifact
+        .schema
+        .fields
+        .iter()
+        .find(|field| field.name == "vendor_id")
+        .unwrap();
+    assert_eq!(vendor.metadata["cdf:source_name"], "VendorID");
+    assert_eq!(discovery.snapshot.source_identity["source_kind"], "rest");
+    assert_eq!(discovery.snapshot.source_identity["path"], "/items");
+    assert_eq!(discovery.snapshot.source_identity["sample_pages"], "1");
+    assert_eq!(discovery.snapshot.source_identity["sample_records"], "3");
+
+    let requests = transport.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://api.example.test/items");
+    assert_eq!(
+        requests[0].headers.get("authorization").map(String::as_str),
+        Some("Bearer rest-discover-secret")
+    );
+    let artifact_text = serde_json::to_string(&discovery.snapshot.artifact).unwrap();
+    assert!(!artifact_text.contains("rest-discover-secret"));
+}
+
+#[test]
+fn generic_discover_prepare_autopins_rest_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    let project = r#"
+[project]
+name = "api"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."api.*"]
+source = "resources/api.toml"
+"#;
+    let rest = r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.test"
+
+[resource.items]
+path = "/items"
+records = "$.items"
+cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
+write_disposition = "append"
+trust = "governed"
+"#;
+    let config = parse_cdf_toml(project).unwrap();
+    let resolver = InMemoryResourceSourceResolver::new().with_toml("resources/api.toml", rest);
+    let mut resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let resource = resources.remove(0);
+    let mut transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "VendorID": 1, "updated_at": 10 },
+            { "VendorID": 2, "updated_at": 20 }
+        ] }"#,
+    )]);
+    let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+
+    let prepared = prepare_discover_resource_with_rest_transport(
+        temp.path(),
         &resource,
-        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        &secret_provider,
+        &mut transport,
     )
-    .unwrap_err();
+    .unwrap();
 
-    let message = error.to_string();
-    assert!(message.contains("unsupported schema discovery slice"));
-    assert!(message.contains("api.items"));
-    assert!(message.contains("REST resource discovery is not implemented"));
+    let discovery = prepared.discovery.as_ref().unwrap();
+    let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
+    assert!(snapshot_path.is_file());
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected REST auto-pin to set discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+    assert_eq!(
+        prepared
+            .resource
+            .schema()
+            .field_with_name("vendor_id")
+            .unwrap()
+            .metadata()["cdf:source_name"],
+        "VendorID"
+    );
 }
 
 #[test]
@@ -747,6 +889,79 @@ trust = "governed"
     assert!(message.contains("unsupported schema discovery slice"));
     assert!(message.contains("warehouse.orders"));
     assert!(message.contains("SQL dialect `mysql` discovery is not implemented"));
+}
+
+fn json_response(body: &str) -> HttpResponse {
+    HttpResponse::new(200).with_body(body.as_bytes().to_vec())
+}
+
+#[derive(Clone, Default)]
+struct RecordingTransport {
+    state: Arc<Mutex<RecordingTransportState>>,
+}
+
+#[derive(Default)]
+struct RecordingTransportState {
+    requests: Vec<HttpRequest>,
+    responses: VecDeque<HttpResponse>,
+}
+
+impl RecordingTransport {
+    fn new<I>(responses: I) -> Self
+    where
+        I: IntoIterator<Item = HttpResponse>,
+    {
+        Self {
+            state: Arc::new(Mutex::new(RecordingTransportState {
+                requests: Vec::new(),
+                responses: responses.into_iter().collect(),
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<HttpRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+}
+
+impl HttpTransport for RecordingTransport {
+    fn send(&mut self, request: HttpRequest) -> Result<HttpResponse> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request);
+        state
+            .responses
+            .pop_front()
+            .ok_or_else(|| CdfError::internal("test transport exhausted responses"))
+    }
+}
+
+struct StaticSecretProvider {
+    values: BTreeMap<String, String>,
+}
+
+impl StaticSecretProvider {
+    fn new<I, K, V>(values: I) -> Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        Self {
+            values: values
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        }
+    }
+}
+
+impl SecretProvider for StaticSecretProvider {
+    fn resolve(&self, uri: &SecretUri) -> Result<SecretValue> {
+        self.values
+            .get(uri.as_str())
+            .map(|value| SecretValue::new(value.clone()))
+            .ok_or_else(|| CdfError::auth(format!("missing test secret `{uri}`")))
+    }
 }
 
 fn write_discover_project(root: &Path, format: &str, glob: &str) {
