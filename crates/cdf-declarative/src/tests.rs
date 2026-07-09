@@ -20,7 +20,8 @@ use cdf_http::{
 use cdf_kernel::{
     CdfError, CursorOrderingClaim, CursorValue, DeliveryGuarantee, ErrorKind, IncrementalShape,
     PartitionId, PredicateId, PushdownFidelity, QueryableResource, ResourceStream, ScanPredicate,
-    ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection, SourcePosition, source_name,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection, SourcePosition,
+    WriteDisposition, source_name,
 };
 use futures_util::StreamExt;
 
@@ -37,6 +38,7 @@ params = { state = "all", per_page = 100 }
 paginate = { kind = "link_header" }
 records = "$"
 primary_key = ["id"]
+merge_key = ["id"]
 cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
 write_disposition = "merge"
 contract = "governed"
@@ -53,6 +55,7 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
     let resource = &resources[0];
     assert_eq!(resource.descriptor().resource_id.as_str(), "github.issues");
     assert_eq!(resource.descriptor().primary_key, vec!["id"]);
+    assert_eq!(resource.descriptor().merge_key, vec!["id"]);
     assert_eq!(
         resource.descriptor().cursor.as_ref().unwrap().ordering,
         CursorOrderingClaim::Inexact
@@ -1322,6 +1325,7 @@ resource:
     source: warehouse
     table: public.orders
     primary_key: [id]
+    merge_key: [id]
     cursor: { field: updated_at, ordering: exact, lag: 0ms }
     write_disposition: merge
     trust: governed
@@ -1333,7 +1337,6 @@ resource:
     source: local
     glob: events/*.json
     format: ndjson
-    primary_key: [event_id]
     write_disposition: append
     trust: experimental
     partition: { by: file }
@@ -1383,6 +1386,101 @@ resource:
         PushdownFidelity::Exact
     );
     assert_eq!(sql_resource.schema().fields().len(), 2);
+}
+
+#[test]
+fn disposition_append_default_and_explicit_forms_are_keyless() {
+    for (name, disposition_line) in [
+        ("defaulted", ""),
+        ("explicit", "write_disposition = \"append\""),
+    ] {
+        let input = format!(
+            r#"
+[source.local]
+kind = "files"
+root = "/"
+
+[resource.{name}]
+glob = "*.ndjson"
+format = "ndjson"
+{disposition_line}
+trust = "governed"
+schema = {{ fields = [{{ name = "payload", type = "utf8" }}] }}
+"#
+        );
+        let resource = compile_document(&parse_toml(&input).unwrap())
+            .unwrap()
+            .remove(0);
+        assert_eq!(
+            resource.descriptor().write_disposition,
+            WriteDisposition::Append
+        );
+        assert!(resource.descriptor().primary_key.is_empty());
+        assert!(resource.descriptor().merge_key.is_empty());
+    }
+}
+
+#[test]
+fn disposition_merge_requires_explicit_merge_key_with_remediation() {
+    let input = r#"
+[source.local]
+kind = "files"
+root = "/"
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+primary_key = ["id"]
+write_disposition = "merge"
+trust = "governed"
+schema = { fields = [{ name = "id", type = "int64" }] }
+"#;
+
+    let error = compile_document(&parse_toml(input).unwrap()).unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("resource `events`"));
+    assert!(message.contains("missing merge_key"));
+    assert!(message.contains("add `merge_key = [...]`"));
+    assert!(message.contains("use `write_disposition = \"append\"`"));
+}
+
+#[test]
+fn disposition_merge_with_explicit_merge_key_compiles() {
+    let input = r#"
+[source.local]
+kind = "files"
+root = "/"
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+merge_key = ["id"]
+write_disposition = "merge"
+trust = "governed"
+schema = { fields = [{ name = "id", type = "int64" }] }
+"#;
+
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    assert!(resource.descriptor().primary_key.is_empty());
+    assert_eq!(resource.descriptor().merge_key, vec!["id"]);
+    assert_eq!(
+        resource.descriptor().write_disposition,
+        WriteDisposition::Merge
+    );
+    let request = ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: ScopeKey::Resource,
+    };
+    assert_eq!(
+        resource.negotiate(&request).unwrap().delivery_guarantee,
+        DeliveryGuarantee::EffectivelyOncePerKey
+    );
 }
 
 #[test]
@@ -1619,7 +1717,6 @@ root = "/"
 [resource.events]
 glob = "*.ndjson"
 format = "ndjson"
-primary_key = ["id"]
 write_disposition = "append"
 trust = "governed"
 "#;
@@ -1663,7 +1760,7 @@ path = "/issues"
 records = "$"
 primary_key = ["id"]
 cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
-write_disposition = "merge"
+write_disposition = "append"
 trust = "governed"
 schema = { fields = [{ name = "updated_at", type = "timestamp_micros" }] }
 "#;
@@ -1684,7 +1781,7 @@ path = "/issues"
 records = "$"
 primary_key = ["id"]
 cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
-write_disposition = "merge"
+write_disposition = "append"
 trust = "governed"
 sample = { fields = ["id"] }
 "#;
@@ -1955,6 +2052,7 @@ dialect = "postgres"
 [resource.orders]
 table = "public.orders"
 primary_key = ["id"]
+merge_key = ["id"]
 cursor = { field = "updated_at", ordering = "exact", lag = "0ms" }
 write_disposition = "merge"
 trust = "governed"
@@ -1977,6 +2075,7 @@ params = { state = "all" }
 paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }
 records = "$.items"
 primary_key = ["id"]
+merge_key = ["id"]
 cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }
 write_disposition = "merge"
 trust = "governed"

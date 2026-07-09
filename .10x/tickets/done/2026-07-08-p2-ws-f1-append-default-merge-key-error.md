@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-f-keys-dispositions.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md
 
@@ -43,6 +43,11 @@ This ticket does not implement `cdf add` key suggestions, exact-row dedup, or de
 ## Progress and notes
 
 - 2026-07-08: Opened after source inspection found `compile_resource` currently requires `write_disposition` and defaults missing `merge_key` to `primary_key`.
+- 2026-07-09: Implemented append defaulting in declarative compilation, removed the `merge_key <- primary_key` fallback, and added compile-time remediation for merge declarations missing `merge_key`.
+- 2026-07-09: Added disposition tests for omitted append, explicit keyless append, missing merge key, and explicit merge key success. Updated successful merge fixtures to declare `merge_key` explicitly.
+- 2026-07-09: Source scan found the generated local project scaffold emitted `primary_key = ["id"]` for append. Removed that scaffold key and reran the scaffold validation test. Other append/key hits in the scoped scan were test fixtures or ticket prose, not shipped append scaffolds/docs.
+- 2026-07-09: Compatibility conclusion: no existing compatibility test required retaining implicit `merge_key` from `primary_key`; fallback removed for new declarations.
+- 2026-07-09: Evidence recorded in `.10x/evidence/2026-07-09-p2-ws-f1-append-default-merge-key-error.md`; review recorded in `.10x/reviews/2026-07-09-p2-ws-f1-append-default-merge-key-error-review.md`.
 
 ## Blockers
 

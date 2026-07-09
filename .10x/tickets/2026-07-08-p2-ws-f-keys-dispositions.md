@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md
 
@@ -32,6 +32,7 @@ This ticket does not implement SCD2 or new destination disposition families.
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-f1-append-default-merge-key-error.md` for append default and merge-key validation in declarative compilation.
+- 2026-07-09: F1 closed in `.10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md`; declarative compilation now defaults append keylessly, merge requires explicit `merge_key`, and the local append scaffold omits key fields.
 
 ## Blockers
 

@@ -571,6 +571,7 @@ id = "local.events"
 glob = "events.ndjson"
 format = "ndjson"
 primary_key = ["id"]
+merge_key = ["id"]
 write_disposition = "merge"
 trust = "governed"
 schema = { fields = [

@@ -31,7 +31,6 @@ root = "data"
 [resource.events]
 glob = "*.ndjson"
 format = "ndjson"
-primary_key = ["id"]
 write_disposition = "append"
 trust = "governed"
 schema = { fields = [

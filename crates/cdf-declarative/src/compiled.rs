@@ -277,7 +277,6 @@ fn compile_resource(
     project_root: Option<&Path>,
 ) -> Result<CompiledResource> {
     validate_escape_hatch(resource)?;
-    validate_fields(name, resource)?;
 
     let resource_id = resource
         .id
@@ -287,13 +286,9 @@ fn compile_resource(
     let schema = compile_schema(resource)?;
     let schema_source = compile_schema_source(&resource_id, resource)?;
     let cursor = compile_cursor(resource.cursor.as_ref())?;
-    let write_disposition = resource
-        .write_disposition
-        .as_ref()
-        .ok_or_else(|| {
-            CdfError::contract(format!("resource `{name}` must declare write_disposition"))
-        })
-        .map(to_write_disposition)??;
+    let write_disposition = compile_write_disposition(resource)?;
+    let merge_key = compile_merge_key(name, resource, &write_disposition)?;
+    validate_fields(name, resource)?;
     let trust_level = compile_trust(resource)?;
     let contract = resource
         .contract
@@ -304,10 +299,7 @@ fn compile_resource(
         resource_id: descriptor_resource_id,
         schema_source,
         primary_key: resource.primary_key.clone(),
-        merge_key: resource
-            .merge_key
-            .clone()
-            .unwrap_or_else(|| resource.primary_key.clone()),
+        merge_key,
         cursor,
         write_disposition,
         contract,
@@ -797,7 +789,7 @@ fn state_scope(resource: &ResourceDeclaration) -> Result<ScopeKey> {
 
 fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
     match descriptor.write_disposition {
-        WriteDisposition::Merge if !descriptor.primary_key.is_empty() => {
+        WriteDisposition::Merge if !descriptor.merge_key.is_empty() => {
             DeliveryGuarantee::EffectivelyOncePerKey
         }
         WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
@@ -1245,6 +1237,33 @@ fn to_write_disposition(disposition: &WriteDispositionDeclaration) -> Result<Wri
         WriteDispositionDeclaration::Merge => WriteDisposition::Merge,
         WriteDispositionDeclaration::CdcApply => WriteDisposition::CdcApply,
     })
+}
+
+fn compile_write_disposition(resource: &ResourceDeclaration) -> Result<WriteDisposition> {
+    resource
+        .write_disposition
+        .as_ref()
+        .map(to_write_disposition)
+        .transpose()
+        .map(|disposition| disposition.unwrap_or(WriteDisposition::Append))
+}
+
+fn compile_merge_key(
+    name: &str,
+    resource: &ResourceDeclaration,
+    write_disposition: &WriteDisposition,
+) -> Result<Vec<String>> {
+    match write_disposition {
+        WriteDisposition::Merge => match &resource.merge_key {
+            Some(keys) if !keys.is_empty() => Ok(keys.clone()),
+            _ => Err(CdfError::contract(format!(
+                "resource `{name}` declares write_disposition = \"merge\" but is missing merge_key; add `merge_key = [...]` or use `write_disposition = \"append\"`"
+            ))),
+        },
+        WriteDisposition::Append | WriteDisposition::Replace | WriteDisposition::CdcApply => {
+            Ok(resource.merge_key.clone().unwrap_or_default())
+        }
+    }
 }
 
 fn to_trust_level(trust: &TrustDeclaration) -> TrustLevel {

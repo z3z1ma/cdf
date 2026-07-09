@@ -50,6 +50,7 @@ auth = { kind = "bearer", token = "secret://env/GITHUB_TOKEN" }
 path = "/repos/{owner}/{repo}/issues"
 records = "$"
 primary_key = ["id"]
+merge_key = ["id"]
 cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "5m" }
 write_disposition = "merge"
 trust = "governed"
@@ -549,6 +550,7 @@ connection = "secret://env/POSTGRES_URL"
 [resource.orders]
 table = "public.orders"
 primary_key = ["id"]
+merge_key = ["id"]
 write_disposition = "merge"
 trust = "governed"
 "#;
