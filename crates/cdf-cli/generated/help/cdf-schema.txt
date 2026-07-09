@@ -1,0 +1,11 @@
+Usage: cdf schema [OPTIONS] [COMMAND]
+
+Commands:
+  discover
+  pin
+  show
+  diff
+
+Options:
+      --no-color
+  -h, --help      Print help

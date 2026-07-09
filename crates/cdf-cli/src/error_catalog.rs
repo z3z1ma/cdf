@@ -87,6 +87,18 @@ pub(crate) const PROJECT_RESOURCE_MAPPING: ErrorMapping = ErrorMapping {
     }),
 };
 
+pub(crate) const RESOURCE_NOT_COMPILED: ErrorMapping = ErrorMapping {
+    code: "CDF-RESOURCE-NOT-COMPILED",
+    exit_code: 3,
+    remediation: Some(RemediationTemplate {
+        summary: "Use one of the compiled resource ids or repair the project resource mapping.",
+        steps: &[
+            "Run `cdf inspect resources` to see compiled ids and their source files.",
+            "If the id is expected, update the `[resources]` mapping to `<source>.<resource>` or `<source>.*`.",
+        ],
+    }),
+};
+
 pub(crate) const CONTRACT_ARGUMENT: ErrorMapping = ErrorMapping {
     code: "CDF-CONTRACT-ARGUMENT",
     exit_code: 2,

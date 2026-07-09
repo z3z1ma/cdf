@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
@@ -29,7 +29,9 @@ This ticket does not implement arbitrary HTTP directory listing, HTTP glob/templ
 ## Progress and notes
 
 - 2026-07-09: Opened after E1 facade closure and A6 REST discovery closure. This child owns the first production remote-file path needed for S1.
+- 2026-07-09: Implemented HTTPS single-file file-source runtime integration. `cdf-declarative` now exposes a `FileRuntimeDependencies` facade for local/HTTP file metadata, ranged reads, and reads; HTTP(S) single-file resources compile without local path assumptions; egress allowlist and auth checks fail before client use; `cdf-formats` gained range-backed Parquet discovery/read support; `cdf-project` discovery/prepare and run resources pass file runtime dependencies through plan/preview/run; and `cdf-cli` wires the reqwest-backed file transport into `schema discover`, `plan`, `preview`, and `run`.
+- 2026-07-09: Focused tests cover bounded HTTPS Parquet footer discovery without runtime artifacts, auto-pin plan/preview/run over an HTTP Parquet fixture, egress/auth fail-closed behavior, HTTP range contract enforcement, and no secret-bearing debug output. Closure evidence: `.10x/evidence/2026-07-09-p2-e2-g1-b4-batch.md`. Review: `.10x/reviews/2026-07-09-p2-e2-g1-b4-batch-review.md`.
 
 ## Blockers
 
-None for single-file HTTPS with deterministic fixtures.
+None for the scoped single-file HTTPS slice.

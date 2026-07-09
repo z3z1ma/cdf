@@ -1,33 +1,56 @@
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, RestResource, RestRuntimeDependencies, SqlResource,
+    CompiledResource, CompiledResourcePlan, FileResource, FileRuntimeDependencies,
+    FileTransportFacade, RestResource, RestRuntimeDependencies, SqlResource,
     SqlRuntimeDependencies,
 };
+use cdf_kernel::{BatchStream, BoxFuture, PartitionPlan, QueryableResource, ResourceStream};
 use cdf_project::ProjectRunSource;
 
 use crate::{context::ProjectContext, http_transport::ReqwestHttpTransport, output::CliError};
 
-pub(crate) enum CliProjectRunSource<'a> {
-    LocalFile(&'a CompiledResource),
+pub(crate) enum CliProjectRunSource {
+    File(Box<FileResource>),
     Rest(Box<RestResource>),
     Sql(Box<SqlResource>),
 }
 
-impl<'a> CliProjectRunSource<'a> {
-    pub(crate) fn as_project_resource(&'a self) -> ProjectRunSource<'a> {
+impl CliProjectRunSource {
+    pub(crate) fn as_project_resource(&self) -> ProjectRunSource<'_> {
         match self {
-            Self::LocalFile(resource) => ProjectRunSource::local_file(resource),
+            Self::File(resource) => ProjectRunSource::file(resource.as_ref()),
             Self::Rest(resource) => ProjectRunSource::rest(resource.as_ref()),
             Self::Sql(resource) => ProjectRunSource::sql(resource.as_ref()),
         }
     }
+
+    pub(crate) fn as_queryable(&self) -> &dyn QueryableResource {
+        match self {
+            Self::File(resource) => resource.as_ref(),
+            Self::Rest(resource) => resource.as_ref(),
+            Self::Sql(resource) => resource.as_ref(),
+        }
+    }
+
+    pub(crate) fn open_preview(
+        &self,
+        partition: PartitionPlan,
+    ) -> BoxFuture<'_, cdf_kernel::Result<BatchStream>> {
+        match self {
+            Self::File(resource) => resource.open_preview(partition),
+            Self::Rest(resource) => resource.open(partition),
+            Self::Sql(resource) => resource.open(partition),
+        }
+    }
 }
 
-pub(crate) fn build_project_run_resource<'a>(
+pub(crate) fn build_project_run_resource(
     context: &ProjectContext,
-    resource: &'a CompiledResource,
-) -> Result<CliProjectRunSource<'a>, CliError> {
+    resource: &CompiledResource,
+) -> Result<CliProjectRunSource, CliError> {
     match resource.plan() {
-        CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::LocalFile(resource)),
+        CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::File(Box::new(
+            resource.to_file_resource(file_runtime_dependencies(context)?)?,
+        ))),
         CompiledResourcePlan::Rest(_) => {
             let dependencies = RestRuntimeDependencies::new(ReqwestHttpTransport::new()?)
                 .with_secret_provider(context.secret_provider());
@@ -43,4 +66,13 @@ pub(crate) fn build_project_run_resource<'a>(
             )))
         }
     }
+}
+
+pub(crate) fn file_runtime_dependencies(
+    context: &ProjectContext,
+) -> Result<FileRuntimeDependencies, CliError> {
+    let facade = FileTransportFacade::new()
+        .with_http_transport(ReqwestHttpTransport::new()?)
+        .with_secret_provider(context.secret_provider());
+    Ok(FileRuntimeDependencies::new(facade))
 }

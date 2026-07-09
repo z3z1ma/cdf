@@ -44,7 +44,7 @@ mod prelude {
 
     pub(super) use arrow_schema::{DataType, Schema, TimeUnit};
     pub(super) use cdf_declarative::{
-        CompiledResource, CompiledResourcePlan, RestResource, SqlResource,
+        CompiledResource, CompiledResourcePlan, FileResource, RestResource, SqlResource,
     };
     pub(super) use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
     pub(super) use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};

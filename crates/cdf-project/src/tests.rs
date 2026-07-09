@@ -7,12 +7,20 @@ use std::{
 
 use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
-use cdf_declarative::{AuthDeclaration, CompiledResourcePlan, SourceDeclaration};
-use cdf_http::{HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue};
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_declarative::{
+    AuthDeclaration, CompiledResourcePlan, FileRuntimeDependencies, FileTransportFacade,
+    HttpFileRequest, HttpFileResponse, HttpFileTransport, SourceDeclaration,
+};
+use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
+use cdf_http::{
+    HttpMethod, HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue,
+};
 use cdf_kernel::{
-    CapabilitySupport, CdfError, ConcurrencyLimit, DestinationId, DestinationSheet,
-    IdempotencySupport, IdentifierRules, ResourceId, ResourceStream, SchemaSource,
-    TransactionSupport, TypeMapping, TypeMappingFidelity, WriteDisposition, source_name,
+    CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, DestinationId, DestinationSheet,
+    IdempotencySupport, IdentifierRules, PipelineId, QueryableResource, ResourceId, ResourceStream,
+    RunId, ScanRequest, SchemaSource, SourcePosition, TargetName, TransactionSupport, TypeMapping,
+    TypeMappingFidelity, WriteDisposition, source_name,
 };
 
 const BOOK_PROJECT: &str = r#"
@@ -561,6 +569,200 @@ fn generic_discover_prepare_preserves_local_parquet_autopin_behavior() {
 }
 
 #[test]
+fn http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes_with_rows(10_000);
+    assert!(parquet.len() > 16 * 1024);
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    let dependencies = http_file_dependencies(transport.clone());
+
+    let discovery = discover_resource_schema_with_file_dependencies(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies,
+    )
+    .unwrap();
+
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert!(!temp.path().join(".cdf/packages").exists());
+    assert!(!temp.path().join(".cdf/state.db").exists());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
+    );
+    assert_eq!(discovery.snapshot.artifact.metadata["source_kind"], "files");
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["url"],
+        "https://data.example.test/trip-data/vendors.parquet"
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["size_bytes"],
+        parquet.len().to_string()
+    );
+    assert_eq!(
+        discovery.snapshot.source_identity["etag"],
+        "\"fixture-etag\""
+    );
+    assert_eq!(discovery.snapshot.source_identity["row_count"], "10000");
+    assert!(discovery.snapshot.source_identity["footer_sha256"].starts_with("sha256:"));
+    let requests = transport.requests();
+    assert_only_bounded_http_file_gets(&requests);
+    assert_http_file_gets_download_less_than_fixture(&requests, parquet.len());
+}
+
+#[test]
+fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes();
+    write_http_discover_project(temp.path(), "");
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    let dependencies = http_file_dependencies(transport.clone());
+    let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+
+    let prepared = prepare_discover_resource_with_file_dependencies(
+        temp.path(),
+        &resource,
+        &secret_provider,
+        dependencies.clone(),
+    )
+    .unwrap();
+    let discovery = prepared.discovery.as_ref().unwrap();
+    assert!(
+        temp.path()
+            .join(&discovery.snapshot.artifact.path)
+            .is_file()
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected HTTP Parquet auto-pin to set discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+
+    let file_resource = prepared
+        .resource
+        .to_file_resource(dependencies.clone())
+        .unwrap();
+    let plan = live_plan_for_stream(&file_resource, "pkg-http-parquet-runtime");
+    assert_eq!(plan.scan.partitions.len(), 1);
+    let partition = plan.scan.partitions[0].clone();
+    assert_eq!(
+        partition.metadata["path"],
+        "https://data.example.test/trip-data/vendors.parquet"
+    );
+    assert_eq!(partition.metadata["bytes"], parquet.len().to_string());
+    assert_eq!(partition.metadata["etag"], "\"fixture-etag\"");
+    assert_eq!(
+        partition.metadata["bytes_loaded"],
+        parquet.len().to_string()
+    );
+
+    let preview_stream = futures_executor::block_on(file_resource.open_preview(partition)).unwrap();
+    let preview_rows = futures_executor::block_on_stream(preview_stream)
+        .map(|batch| batch.unwrap().header.row_count)
+        .sum::<u64>();
+    assert_eq!(preview_rows, 2);
+
+    let duckdb_path = temp.path().join(".cdf/dev.duckdb");
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::file(&file_resource),
+        plan,
+        package_root: temp.path().join(".cdf/packages"),
+        state_store_path: temp.path().join(".cdf/state.db"),
+        pipeline_id: PipelineId::new("pipeline-http").unwrap(),
+        package_id: "pkg-http-parquet-runtime".to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-http-parquet-runtime").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            duckdb_path,
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
+        run_id: Some(RunId::new("run-http-parquet-runtime").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    assert_eq!(report.row_count, 2);
+    assert_eq!(report.segment_count, 1);
+    let SourcePosition::FileManifest(manifest) = &report.checkpoint.delta.output_position else {
+        panic!("checkpoint output position should be a file manifest");
+    };
+    assert_eq!(manifest.files.len(), 1);
+    assert_eq!(
+        manifest.files[0].path,
+        "https://data.example.test/trip-data/vendors.parquet"
+    );
+    assert_eq!(manifest.files[0].size_bytes, parquet.len() as u64);
+    assert_eq!(manifest.files[0].etag.as_deref(), Some("\"fixture-etag\""));
+    assert_eq!(manifest.files[0].sha256, None);
+    assert_only_bounded_http_file_gets(&transport.requests());
+}
+
+#[test]
+fn http_file_discovery_egress_and_auth_fail_before_transport_use() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet = vendor_parquet_bytes();
+    write_http_discover_project(temp.path(), r#"egress_allowlist = ["other.example.test"]"#);
+    let resource = compile_single_project_resource(temp.path());
+    let transport = RecordingHttpFileTransport::new(parquet.clone());
+    let dependencies = http_file_dependencies(transport.clone());
+
+    let error = discover_resource_schema_with_file_dependencies(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies,
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("egress"));
+    assert!(transport.requests().is_empty());
+
+    let auth_temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(
+        auth_temp.path(),
+        r#"
+auth = { kind = "bearer", token = "secret://env/HTTP_TOKEN" }
+egress_allowlist = ["data.example.test"]
+"#,
+    );
+    let auth_resource = compile_single_project_resource(auth_temp.path());
+    let auth_transport = RecordingHttpFileTransport::new(parquet);
+    let auth_dependencies = FileRuntimeDependencies::new(
+        FileTransportFacade::new()
+            .with_http_transport(auth_transport.clone())
+            .with_secret_provider(StaticSecretProvider::new([(
+                "secret://env/HTTP_TOKEN",
+                "super-secret-http-token",
+            )])),
+    );
+
+    let auth_error = discover_resource_schema_with_file_dependencies(
+        &auth_resource,
+        &StaticSecretProvider::new([("secret://env/HTTP_TOKEN", "super-secret-http-token")]),
+        auth_dependencies,
+    )
+    .unwrap_err();
+    let message = auth_error.to_string();
+    assert!(message.contains("credential resolution is not implemented"));
+    assert!(!message.contains("super-secret-http-token"));
+    assert!(auth_transport.requests().is_empty());
+}
+
+#[test]
 fn local_parquet_discover_autopin_leaves_declared_resources_unprobed() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.missing");
@@ -933,6 +1135,213 @@ impl HttpTransport for RecordingTransport {
             .pop_front()
             .ok_or_else(|| CdfError::internal("test transport exhausted responses"))
     }
+}
+
+#[derive(Clone)]
+struct RecordingHttpFileTransport {
+    state: Arc<Mutex<RecordingHttpFileTransportState>>,
+}
+
+struct RecordingHttpFileTransportState {
+    requests: Vec<HttpFileRequest>,
+    body: Vec<u8>,
+    etag: String,
+}
+
+impl RecordingHttpFileTransport {
+    fn new(body: Vec<u8>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(RecordingHttpFileTransportState {
+                requests: Vec::new(),
+                body,
+                etag: "\"fixture-etag\"".to_owned(),
+            })),
+        }
+    }
+
+    fn requests(&self) -> Vec<HttpFileRequest> {
+        self.state.lock().unwrap().requests.clone()
+    }
+}
+
+impl HttpFileTransport for RecordingHttpFileTransport {
+    fn send(&mut self, request: HttpFileRequest) -> Result<HttpFileResponse> {
+        let mut state = self.state.lock().unwrap();
+        state.requests.push(request.clone());
+        match request.method {
+            HttpMethod::Head => Ok(HttpFileResponse::new(200)
+                .with_header("Content-Length", state.body.len().to_string())
+                .with_header("ETag", state.etag.clone())
+                .with_header("Last-Modified", "Wed, 08 Jul 2026 12:00:00 GMT")),
+            HttpMethod::Get => {
+                let range = request.headers.get("range").ok_or_else(|| {
+                    CdfError::data("test HTTP file transport requires ranged GET")
+                })?;
+                let (start, end) = parse_http_fixture_range(range, state.body.len())?;
+                let bytes = state.body[start..=end].to_vec();
+                Ok(HttpFileResponse::new(206)
+                    .with_header(
+                        "Content-Range",
+                        format!("bytes {start}-{end}/{}", state.body.len()),
+                    )
+                    .with_body(bytes))
+            }
+            _ => Ok(HttpFileResponse::new(405)),
+        }
+    }
+}
+
+fn parse_http_fixture_range(range: &str, len: usize) -> Result<(usize, usize)> {
+    let raw = range
+        .strip_prefix("bytes=")
+        .ok_or_else(|| CdfError::data(format!("invalid test range header `{range}`")))?;
+    let (start, end) = raw
+        .split_once('-')
+        .ok_or_else(|| CdfError::data(format!("invalid test range header `{range}`")))?;
+    let start = start
+        .parse::<usize>()
+        .map_err(|error| CdfError::data(format!("invalid range start: {error}")))?;
+    let end = end
+        .parse::<usize>()
+        .map_err(|error| CdfError::data(format!("invalid range end: {error}")))?;
+    if start > end || end >= len {
+        return Err(CdfError::data(format!(
+            "test range {start}-{end} exceeds fixture length {len}"
+        )));
+    }
+    Ok((start, end))
+}
+
+fn vendor_parquet_bytes() -> Vec<u8> {
+    vendor_parquet_bytes_with_rows(2)
+}
+
+fn vendor_parquet_bytes_with_rows(row_count: i32) -> Vec<u8> {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "VendorID",
+        DataType::Int32,
+        false,
+    )]));
+    let values = (0..row_count).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(values))]).unwrap();
+    cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap()
+}
+
+fn write_http_discover_project(root: &Path, source_extra: &str) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "http_files"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."remote.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        format!(
+            r#"
+[source.remote]
+kind = "files"
+root = "https://data.example.test/trip-data"
+{source_extra}
+
+[resource.events]
+glob = "vendors.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn http_file_dependencies(transport: RecordingHttpFileTransport) -> FileRuntimeDependencies {
+    FileRuntimeDependencies::new(FileTransportFacade::new().with_http_transport(transport))
+}
+
+fn live_plan_for_stream(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
+    Planner::new()
+        .plan_tier_b(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                boundedness: PlanBoundedness::Bounded,
+                package_id: package_id.to_owned(),
+            },
+        )
+        .unwrap()
+}
+
+fn assert_only_bounded_http_file_gets(requests: &[HttpFileRequest]) {
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.method == HttpMethod::Head),
+        "expected an HTTP HEAD metadata request, got {requests:?}"
+    );
+    let get_requests = requests
+        .iter()
+        .filter(|request| request.method == HttpMethod::Get)
+        .collect::<Vec<_>>();
+    assert!(
+        !get_requests.is_empty(),
+        "expected bounded HTTP GET requests, got {requests:?}"
+    );
+    for request in get_requests {
+        let range = request
+            .headers
+            .get("range")
+            .expect("HTTP file GET should carry Range header");
+        assert!(
+            range.starts_with("bytes="),
+            "HTTP file GET should use byte range, got {range}"
+        );
+    }
+}
+
+fn assert_http_file_gets_download_less_than_fixture(
+    requests: &[HttpFileRequest],
+    fixture_len: usize,
+) {
+    let downloaded = requests
+        .iter()
+        .filter(|request| request.method == HttpMethod::Get)
+        .map(|request| {
+            let range = request
+                .headers
+                .get("range")
+                .expect("HTTP file GET should carry Range header");
+            let (start, end) = parse_http_fixture_range(range, fixture_len).unwrap();
+            end - start + 1
+        })
+        .sum::<usize>();
+    assert!(
+        downloaded < fixture_len,
+        "expected discovery to use partial ranged reads, downloaded {downloaded} of {fixture_len} bytes"
+    );
 }
 
 struct StaticSecretProvider {

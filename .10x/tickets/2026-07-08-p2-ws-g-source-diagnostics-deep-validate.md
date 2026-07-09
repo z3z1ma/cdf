@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/cli-error-experience-catalog.md
 
@@ -31,8 +31,9 @@ This ticket does not redesign the whole P1 renderer or non-source error catalog.
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
-- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-g1-source-diagnostics-and-deep-validate-foundation.md` for the first source-specific diagnostics and `cdf validate --deep` doorway.
+- 2026-07-09: Split executable child `.10x/tickets/done/2026-07-09-p2-ws-g1-source-diagnostics-and-deep-validate-foundation.md` for the first source-specific diagnostics and `cdf validate --deep` doorway.
+- 2026-07-09: G1 closed with evidence `.10x/evidence/2026-07-09-p2-e2-g1-b4-batch.md` and review `.10x/reviews/2026-07-09-p2-e2-g1-b4-batch-review.md`. `cdf validate --deep` now runs current no-write compiler-front-end checks and resource-not-compiled errors include compiled ids, origins, mapping status, likely causes, suggestions, and source-specific error code/remediation. Remaining WS-G scope: deeper type-mismatch remediation, full command-name sweep across future source failures, cloud/compression/Python/WASM deep-validate coverage, and final source-experience catalog closure.
 
 ## Blockers
 
-Depends on enough WS-A/B/C/D shape to make deep validate meaningful; early catalog work can proceed independently.
+None for the next focused diagnostics child; deeper checks depend on future WS-D/E/H source surfaces as they land.

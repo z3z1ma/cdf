@@ -13,6 +13,7 @@ use crate::{
     context::ProjectContext,
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
+    project_run_resource::file_runtime_dependencies,
     render::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
@@ -129,6 +130,17 @@ fn discover_for_cli_resource(
 ) -> Result<cdf_project::ResourceSchemaDiscovery, CliError> {
     let secret_provider = context.secret_provider();
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
+        && matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
+    {
+        return Ok(
+            cdf_project::discover_resource_schema_with_file_dependencies(
+                resource,
+                &secret_provider,
+                file_runtime_dependencies(context)?,
+            )?,
+        );
+    }
+    if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
         && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
     {
         let mut transport = ReqwestHttpTransport::new()?;
@@ -140,6 +152,10 @@ fn discover_for_cli_resource(
     } else {
         Ok(discover_resource_schema(resource, &secret_provider)?)
     }
+}
+
+fn is_http_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
+    plan.root.starts_with("http://") || plan.root.starts_with("https://")
 }
 
 fn update_lockfile(

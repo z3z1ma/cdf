@@ -57,6 +57,7 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (validate)
 _arguments "${_arguments_options[@]}" : \
+'--deep[]' \
 '--no-color[]' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -236,6 +237,61 @@ _arguments "${_arguments_options[@]}" : \
 '-h[Print help]' \
 '--help[Print help]' \
 '*::extra:_default' \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(schema)
+_arguments "${_arguments_options[@]}" : \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_cdf__subcmd__schema_commands" \
+"*::: :->schema" \
+&& ret=0
+
+    case $state in
+    (schema)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:cdf-schema-command-$line[1]:"
+        case $line[1] in
+            (discover)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(pin)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(show)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
+(diff)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
 && ret=0
 ;;
         esac
@@ -508,6 +564,7 @@ _cdf_commands() {
 'sql:' \
 'inspect:' \
 'diff:' \
+'schema:' \
 'contract:' \
 'state:' \
 'resume:' \
@@ -695,6 +752,36 @@ _cdf__subcmd__resume_commands() {
 _cdf__subcmd__run_commands() {
     local commands; commands=()
     _describe -t commands 'cdf run commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__schema_commands] )) ||
+_cdf__subcmd__schema_commands() {
+    local commands; commands=(
+'discover:' \
+'pin:' \
+'show:' \
+'diff:' \
+    )
+    _describe -t commands 'cdf schema commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__schema__subcmd__diff_commands] )) ||
+_cdf__subcmd__schema__subcmd__diff_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf schema diff commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__schema__subcmd__discover_commands] )) ||
+_cdf__subcmd__schema__subcmd__discover_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf schema discover commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__schema__subcmd__pin_commands] )) ||
+_cdf__subcmd__schema__subcmd__pin_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf schema pin commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__schema__subcmd__show_commands] )) ||
+_cdf__subcmd__schema__subcmd__show_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf schema show commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__sql_commands] )) ||
 _cdf__subcmd__sql_commands() {

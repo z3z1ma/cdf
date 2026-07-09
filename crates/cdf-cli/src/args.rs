@@ -45,7 +45,7 @@ pub enum Command {
     Help(String),
     Version,
     Init(InitArgs),
-    Validate,
+    Validate(ValidateArgs),
     Plan(ScanArgs),
     Explain(ScanArgs),
     Run(RunArgs),
@@ -69,6 +69,11 @@ pub struct InitArgs {
     pub directory: Option<PathBuf>,
     pub name: Option<String>,
     pub force: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ValidateArgs {
+    pub deep: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -305,7 +310,9 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
         Some(("init", subcommand)) => parse_init(subcommand).map(Command::Init),
         Some(("validate", subcommand)) => {
             no_extra_values("validate", &values(subcommand, "extra"))?;
-            Ok(Command::Validate)
+            Ok(Command::Validate(ValidateArgs {
+                deep: subcommand.get_flag("deep"),
+            }))
         }
         Some(("plan", subcommand)) => parse_scan("plan", subcommand, true).map(Command::Plan),
         Some(("explain", subcommand)) => {
@@ -758,7 +765,11 @@ pub(crate) fn cli_command() -> ClapCommand {
                 .arg(option("name", "name", "NAME"))
                 .arg(flag("force", "force")),
         )
-        .subcommand(cmd("validate").arg(values_arg("extra").hide(true)))
+        .subcommand(
+            cmd("validate")
+                .arg(flag("deep", "deep"))
+                .arg(values_arg("extra").hide(true)),
+        )
         .subcommand(scan_command("plan", true))
         .subcommand(scan_command("explain", true))
         .subcommand(run_command())

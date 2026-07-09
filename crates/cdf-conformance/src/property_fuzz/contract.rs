@@ -1,12 +1,17 @@
 use std::collections::BTreeSet;
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, ArrayRef, Date32Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
+    Int64Array, RecordBatch, StringArray, TimestampMicrosecondArray, UInt8Array, UInt16Array,
+    UInt32Array, UInt64Array,
+};
+use arrow_cast::cast::cast;
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    ContractEvaluationContext, ContractPolicy, NestedAction, ObservedSchema, PromotionPolicy,
-    RowDispositionKind, RowDispositionRule, RowRule, RuleOutcome, VARIANT_COLUMN_NAME,
-    VARIANT_SEMANTIC_TAG, ValidationProgram, assert_verdict_lattice_total,
-    compile_validation_program, evaluate_record_batch,
+    ContractEvaluationContext, ContractPolicy, FieldCoercionDecision, NestedAction, ObservedSchema,
+    PromotionPolicy, RowDispositionKind, RowDispositionRule, RowRule, RuleOutcome,
+    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, ValidationProgram, assert_verdict_lattice_total,
+    compile_validation_program, evaluate_record_batch, reconcile_schema,
 };
 use proptest::prelude::*;
 use std::sync::Arc;
@@ -98,6 +103,128 @@ proptest! {
 
         prop_assert_eq!(assert_verdict_lattice_total(&program).is_ok(), expected);
     }
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(64))]
+
+    #[test]
+    fn property_fuzz_signed_integer_widening_composes_without_value_loss(
+        values in prop::collection::vec(any::<i8>(), 0..=128)
+    ) {
+        assert_widening_decision(&DataType::Int8, &DataType::Int16);
+        assert_widening_decision(&DataType::Int16, &DataType::Int32);
+        assert_widening_decision(&DataType::Int32, &DataType::Int64);
+
+        let i8_array = Int8Array::from(values.clone());
+        let i16_step = cast(&i8_array, &DataType::Int16).unwrap();
+        let i32_step = cast(i16_step.as_ref(), &DataType::Int32).unwrap();
+        let i64_step = cast(i32_step.as_ref(), &DataType::Int64).unwrap();
+        let i64_direct = cast(&i8_array, &DataType::Int64).unwrap();
+
+        let i16_step = i16_step.as_any().downcast_ref::<Int16Array>().unwrap();
+        let i32_step = i32_step.as_any().downcast_ref::<Int32Array>().unwrap();
+        let i64_step = i64_step.as_any().downcast_ref::<Int64Array>().unwrap();
+        let i64_direct = i64_direct.as_any().downcast_ref::<Int64Array>().unwrap();
+
+        for (index, value) in values.iter().copied().enumerate() {
+            prop_assert_eq!(i16_step.value(index), i16::from(value));
+            prop_assert_eq!(i32_step.value(index), i32::from(value));
+            prop_assert_eq!(i64_step.value(index), i64::from(value));
+            prop_assert_eq!(i64_direct.value(index), i64_step.value(index));
+        }
+    }
+
+    #[test]
+    fn property_fuzz_unsigned_integer_widening_composes_without_value_loss(
+        values in prop::collection::vec(any::<u8>(), 0..=128)
+    ) {
+        assert_widening_decision(&DataType::UInt8, &DataType::UInt16);
+        assert_widening_decision(&DataType::UInt16, &DataType::UInt32);
+        assert_widening_decision(&DataType::UInt32, &DataType::UInt64);
+
+        let u8_array = UInt8Array::from(values.clone());
+        let u16_step = cast(&u8_array, &DataType::UInt16).unwrap();
+        let u32_step = cast(u16_step.as_ref(), &DataType::UInt32).unwrap();
+        let u64_step = cast(u32_step.as_ref(), &DataType::UInt64).unwrap();
+        let u64_direct = cast(&u8_array, &DataType::UInt64).unwrap();
+
+        let u16_step = u16_step.as_any().downcast_ref::<UInt16Array>().unwrap();
+        let u32_step = u32_step.as_any().downcast_ref::<UInt32Array>().unwrap();
+        let u64_step = u64_step.as_any().downcast_ref::<UInt64Array>().unwrap();
+        let u64_direct = u64_direct.as_any().downcast_ref::<UInt64Array>().unwrap();
+
+        for (index, value) in values.iter().copied().enumerate() {
+            prop_assert_eq!(u16_step.value(index), u16::from(value));
+            prop_assert_eq!(u32_step.value(index), u32::from(value));
+            prop_assert_eq!(u64_step.value(index), u64::from(value));
+            prop_assert_eq!(u64_direct.value(index), u64_step.value(index));
+        }
+    }
+
+    #[test]
+    fn property_fuzz_float_widening_preserves_finite_float32_values(
+        raw_values in prop::collection::vec(-1_000_000i32..=1_000_000, 0..=128)
+    ) {
+        assert_widening_decision(&DataType::Float32, &DataType::Float64);
+
+        let values = raw_values
+            .into_iter()
+            .map(|value| value as f32 / 8.0)
+            .collect::<Vec<_>>();
+        let float32_array = Float32Array::from(values.clone());
+        let float64_array = cast(&float32_array, &DataType::Float64).unwrap();
+        let float64_array = float64_array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap();
+
+        for (index, value) in values.iter().copied().enumerate() {
+            prop_assert_eq!(float64_array.value(index), f64::from(value));
+        }
+    }
+
+    #[test]
+    fn property_fuzz_date32_to_timestamp_widening_preserves_day_instants(
+        values in prop::collection::vec(-100_000i32..=100_000, 0..=128)
+    ) {
+        let timestamp_type = DataType::Timestamp(arrow_schema::TimeUnit::Microsecond, Some("UTC".into()));
+        assert_widening_decision(&DataType::Date32, &timestamp_type);
+
+        let date32_array = Date32Array::from(values.clone());
+        let timestamp_array = cast(&date32_array, &timestamp_type).unwrap();
+        let timestamp_array = timestamp_array
+            .as_any()
+            .downcast_ref::<TimestampMicrosecondArray>()
+            .unwrap();
+
+        for (index, value) in values.iter().copied().enumerate() {
+            prop_assert_eq!(timestamp_array.value(index), i64::from(value) * 86_400_000_000);
+        }
+    }
+}
+
+fn assert_widening_decision(observed_type: &DataType, constraint_type: &DataType) {
+    let observed = Schema::new(vec![Field::new("value", observed_type.clone(), false)]);
+    let constraint = Schema::new(vec![Field::new("value", constraint_type.clone(), false)]);
+    let reconciliation =
+        reconcile_schema(&observed, &constraint, &ContractPolicy::default().types).unwrap();
+    let decision = reconciliation
+        .plan
+        .fields
+        .iter()
+        .find(|field| field.source_name == "value")
+        .unwrap();
+
+    assert_eq!(decision.decision, FieldCoercionDecision::Widened);
+    assert_eq!(
+        reconciliation
+            .schema
+            .field_with_name("value")
+            .unwrap()
+            .data_type(),
+        constraint_type
+    );
 }
 
 #[test]

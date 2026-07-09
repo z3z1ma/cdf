@@ -58,6 +58,9 @@ _cdf() {
             cdf,run)
                 cmd="cdf__subcmd__run"
                 ;;
+            cdf,schema)
+                cmd="cdf__subcmd__schema"
+                ;;
             cdf,sql)
                 cmd="cdf__subcmd__sql"
                 ;;
@@ -124,6 +127,18 @@ _cdf() {
             cdf__subcmd__replay,package)
                 cmd="cdf__subcmd__replay__subcmd__package"
                 ;;
+            cdf__subcmd__schema,diff)
+                cmd="cdf__subcmd__schema__subcmd__diff"
+                ;;
+            cdf__subcmd__schema,discover)
+                cmd="cdf__subcmd__schema__subcmd__discover"
+                ;;
+            cdf__subcmd__schema,pin)
+                cmd="cdf__subcmd__schema__subcmd__pin"
+                ;;
+            cdf__subcmd__schema,show)
+                cmd="cdf__subcmd__schema__subcmd__show"
+                ;;
             cdf__subcmd__state,history)
                 cmd="cdf__subcmd__state__subcmd__history"
                 ;;
@@ -146,7 +161,7 @@ _cdf() {
 
     case "${cmd}" in
         cdf)
-            opts="-h -V --no-color --help --version help version init validate plan explain run preview sql inspect diff contract state resume replay backfill package doctor status"
+            opts="-h -V --no-color --help --version help version init validate plan explain run preview sql inspect diff schema contract state resume replay backfill package doctor status"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -761,6 +776,92 @@ _cdf() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        cdf__subcmd__schema)
+            opts="-h --no-color --help discover pin show diff"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        cdf__subcmd__schema__subcmd__diff)
+            opts="-h --resource --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --resource)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        cdf__subcmd__schema__subcmd__discover)
+            opts="-h --resource --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --resource)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        cdf__subcmd__schema__subcmd__pin)
+            opts="-h --resource --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --resource)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        cdf__subcmd__schema__subcmd__show)
+            opts="-h --resource --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --resource)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         cdf__subcmd__sql)
             opts="-h --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -954,7 +1055,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__validate)
-            opts="-h --no-color --help"
+            opts="-h --deep --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

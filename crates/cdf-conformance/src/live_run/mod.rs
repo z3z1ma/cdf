@@ -529,6 +529,7 @@ fn live_engine_plan_json(package_id: &str) -> serde_json::Value {
                 "glob": "events.ndjson",
                 "path": "events.ndjson",
                 "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
+                "sha256": LIVE_LOCAL_FILE_V1_SOURCE_SHA256,
             },
         }],
         "pushed_predicates": [],
@@ -592,6 +593,7 @@ fn live_engine_plan_json(package_id: &str) -> serde_json::Value {
                     "glob": "events.ndjson",
                     "path": "events.ndjson",
                     "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
+                    "sha256": LIVE_LOCAL_FILE_V1_SOURCE_SHA256,
                 },
             }],
             "estimates": {

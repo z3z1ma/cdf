@@ -1,14 +1,12 @@
 use std::collections::BTreeMap;
 
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
-use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, RestRuntimeDependencies, SqlRuntimeDependencies,
-};
+use cdf_declarative::{CompiledResource, CompiledResourcePlan};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
-    PartitionPlan, PredicateId, ResourceStream, ScanPredicate, ScanRequest, SchemaSource,
-    SortDirection, TargetName, TransactionSupport, WriteDisposition,
+    PartitionPlan, PredicateId, QueryableResource, ResourceStream, ScanPredicate, ScanRequest,
+    SchemaSource, SortDirection, TargetName, TransactionSupport, WriteDisposition,
 };
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -21,6 +19,9 @@ use crate::{
     error_catalog,
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
+    project_run_resource::{
+        CliProjectRunSource, build_project_run_resource, file_runtime_dependencies,
+    },
     render::{
         RenderDocument,
         humanize::{humanize_bytes, humanize_rows},
@@ -40,7 +41,8 @@ pub(crate) fn plan_or_explain(
     let target = scan_target(&args)?;
     let resource = context.resource(&args.resource_id)?;
     let prepared = prepare_discover_resource_for_cli(&context, resource)?;
-    let plan = build_engine_plan_for_resource(&prepared.resource, &args)?;
+    let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
+    let plan = build_engine_plan_for_resource(runtime_resource.as_queryable(), &args)?;
     let report = scan_report(
         &context,
         &prepared.resource,
@@ -61,8 +63,9 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
     let prepared = prepare_discover_resource_for_cli(&context, resource)?;
-    let plan = build_engine_plan_for_resource(&prepared.resource, &args)?;
-    match preview_one_batch(&context, &prepared.resource, &plan) {
+    let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
+    let plan = build_engine_plan_for_resource(runtime_resource.as_queryable(), &args)?;
+    match preview_one_batch(&runtime_resource, &plan) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
             "preview",
@@ -79,6 +82,18 @@ pub(crate) fn prepare_discover_resource_for_cli(
     resource: &CompiledResource,
 ) -> Result<cdf_project::PreparedDiscoveredResource, CliError> {
     let secret_provider = context.secret_provider();
+    if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
+        && matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
+    {
+        return Ok(
+            cdf_project::prepare_discover_resource_with_file_dependencies(
+                &context.root,
+                resource,
+                &secret_provider,
+                file_runtime_dependencies(context)?,
+            )?,
+        );
+    }
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
         && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
     {
@@ -98,7 +113,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
 }
 
 pub(crate) fn build_engine_plan_for_resource(
-    resource: &CompiledResource,
+    resource: &dyn QueryableResource,
     args: &ScanArgs,
 ) -> Result<EnginePlan, CliError> {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
@@ -250,8 +265,20 @@ fn destination_plan_report(
     let mut destination = resolved.destination;
     let plan = destination
         .plan_resource_commit(resource)
-        .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
+        .map_err(|error| {
+            let mut error = redact_error_value(error, resolved.secret_redaction.as_deref());
+            error.message = command_correct_scan_message(command, error.message);
+            CliError::from(error)
+        })?;
     DestinationPlanReport::from_project(plan, resource).map_err(CliError::from)
+}
+
+fn command_correct_scan_message(command: &str, message: String) -> String {
+    if command == "run" {
+        message
+    } else {
+        message.replace("cdf run ", &format!("cdf {command} "))
+    }
 }
 
 fn plan_destination_resolution_error(
@@ -291,8 +318,7 @@ fn partition_report(partition: &PartitionPlan) -> PartitionReport {
 }
 
 fn preview_one_batch(
-    context: &ProjectContext,
-    resource: &CompiledResource,
+    resource: &CliProjectRunSource,
     plan: &EnginePlan,
 ) -> cdf_kernel::Result<PreviewReport> {
     validate_preview_direct_stream_plan(plan)?;
@@ -302,7 +328,7 @@ fn preview_one_batch(
         .first()
         .ok_or_else(|| CdfError::data("preview plan has no partitions"))?
         .clone();
-    let mut stream = open_preview_stream(context, resource, partition)?;
+    let mut stream = futures_executor::block_on(resource.open_preview(partition))?;
     let batch = futures_executor::block_on(async { stream.next().await })
         .ok_or_else(|| CdfError::data("resource produced no preview batch"))??;
     let writes = WriteEffects::default();
@@ -345,34 +371,14 @@ fn validate_preview_direct_stream_plan(plan: &EnginePlan) -> cdf_kernel::Result<
     Ok(())
 }
 
-fn open_preview_stream(
-    context: &ProjectContext,
-    resource: &CompiledResource,
-    partition: PartitionPlan,
-) -> cdf_kernel::Result<cdf_kernel::BatchStream> {
-    match resource.plan() {
-        CompiledResourcePlan::Files(_) => {
-            futures_executor::block_on(resource.open_preview(partition))
-        }
-        CompiledResourcePlan::Rest(_) => {
-            let dependencies = RestRuntimeDependencies::new(ReqwestHttpTransport::new()?)
-                .with_secret_provider(context.secret_provider());
-            let rest = resource.to_rest_resource(dependencies)?;
-            futures_executor::block_on(rest.open(partition))
-        }
-        CompiledResourcePlan::Sql(_) => {
-            let dependencies =
-                SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
-            let sql = resource.to_sql_resource(dependencies)?;
-            futures_executor::block_on(sql.open(partition))
-        }
-    }
-}
-
 fn lower_runtime_missing(error: &CdfError) -> bool {
     error
         .message
         .contains("execution is outside the MVP compiler crate")
+}
+
+fn is_http_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
+    plan.root.starts_with("http://") || plan.root.starts_with("https://")
 }
 
 fn scan_report_document(
@@ -594,6 +600,17 @@ mod render_tests {
         assert!(!command.contains("secret-value"));
         assert!(!command.contains("--package-id"));
         assert!(!command.contains("--checkpoint-id"));
+    }
+
+    #[test]
+    fn plan_error_wording_uses_plan_command_name() {
+        assert_eq!(
+            command_correct_scan_message(
+                "plan",
+                "cdf run requires a pinned schema hash".to_owned()
+            ),
+            "cdf plan requires a pinned schema hash"
+        );
     }
 }
 

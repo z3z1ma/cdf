@@ -1,3 +1,5 @@
+mod deep_validate;
+
 use std::{collections::BTreeMap, env};
 
 use cdf_kernel::CdfError;
@@ -8,7 +10,7 @@ use cdf_project::{
 use serde::Serialize;
 
 use crate::{
-    args::{Cli, InitArgs},
+    args::{Cli, InitArgs, ValidateArgs},
     context::{ProjectContext, require_lock},
     error_catalog,
     output::{CliError, CommandOutput},
@@ -48,7 +50,10 @@ fn init_output(report: ProjectScaffoldReport) -> Result<CommandOutput, CliError>
     CommandOutput::rendered("init", init_document(&report), report)
 }
 
-pub(crate) fn validate(cli: &Cli) -> Result<CommandOutput, CliError> {
+pub(crate) fn validate(cli: &Cli, args: ValidateArgs) -> Result<CommandOutput, CliError> {
+    if args.deep {
+        return deep_validate::run(cli);
+    }
     let context =
         ProjectContext::load_for_command("validate", cli.project.as_ref(), cli.env.as_deref())?;
     let resolver = FileResourceSourceResolver::new(&context.root);

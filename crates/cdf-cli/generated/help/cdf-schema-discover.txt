@@ -1,0 +1,9 @@
+Usage: cdf schema discover [OPTIONS] [RESOURCE]...
+
+Arguments:
+  [RESOURCE]...
+
+Options:
+      --no-color
+      --resource <RESOURCE>
+  -h, --help                 Print help

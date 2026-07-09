@@ -43,7 +43,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     let run_resource = build_project_run_resource(&context, resource)?;
     let state_store_path = context.state_store_path()?;
     let plan = build_engine_plan_for_resource(
-        resource,
+        run_resource.as_queryable(),
         &ScanArgs {
             resource_id: explicit.resource_id.clone(),
             destination_uri: None,

@@ -34,7 +34,8 @@ Arbitrary web directory scraping is out of scope. HTTP glob support is limited t
 - 2026-07-08: Split first executable child `.10x/tickets/done/2026-07-08-p2-ws-e1-file-transport-facade-local-http.md` for the local/HTTP facade and ranged-read foundation.
 - 2026-07-09: WS-E1 closed with local/HTTP(S) facade, deterministic metadata records, bounded HTTP ranged-read tests, explicit HTTP listing rejection, and allowlist/auth API hooks. Remaining WS-E scope still owns production integration, cloud transports, credential resolution, doctor probes, HTTP template enumeration, compression, and full remote conformance.
 - 2026-07-09: Parent verification for WS-E1 added debug redaction for URL-bearing public transport/request metadata surfaces and recorded full quality evidence, including reusable-DB CodeQL. No WS-E1 blocker remains.
-- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md` for production HTTPS single-file runtime integration and remote Parquet ranged discovery.
+- 2026-07-09: Split executable child `.10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md` for production HTTPS single-file runtime integration and remote Parquet ranged discovery.
+- 2026-07-09: E2 closed with evidence `.10x/evidence/2026-07-09-p2-e2-g1-b4-batch.md` and review `.10x/reviews/2026-07-09-p2-e2-g1-b4-batch-review.md`. Deterministic HTTPS single-file Parquet now supports bounded discovery and plan/preview/run through the file transport facade. Remaining WS-E scope: HTTP template/glob enumeration, S3/GCS/Azure object-store transports, cloud credential handling, doctor probes, remote multi-file manifest behavior, and live-tier evidence.
 
 ## Blockers
 

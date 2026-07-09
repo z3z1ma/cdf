@@ -103,12 +103,7 @@ impl ProjectContext {
         self.resources
             .iter()
             .find(|resource| resource.descriptor().resource_id.as_str() == id)
-            .ok_or_else(|| {
-                CliError::from(CdfError::contract(format!(
-                    "resource `{id}` is not compiled"
-                )))
-                .with_suggestions(self.resource_suggestions(id))
-            })
+            .ok_or_else(|| self.resource_not_compiled_error(id))
     }
 
     pub fn resource_origin(&self, id: &str) -> Option<&ProjectResourceOrigin> {
@@ -157,6 +152,49 @@ impl ProjectContext {
                 .map(|resource| resource.descriptor().resource_id.to_string()),
         )
     }
+
+    fn resource_not_compiled_error(&self, id: &str) -> CliError {
+        CliError::mapped(
+            CdfError::contract(resource_not_compiled_message(
+                id,
+                &self.resources,
+                &self.resource_origins,
+            )),
+            error_catalog::RESOURCE_NOT_COMPILED,
+        )
+        .with_suggestions(self.resource_suggestions(id))
+    }
+}
+
+fn resource_not_compiled_message(
+    id: &str,
+    resources: &[CompiledResource],
+    origins: &[ProjectResourceOrigin],
+) -> String {
+    let compiled = resources
+        .iter()
+        .zip(origins)
+        .map(|(resource, origin)| {
+            format!(
+                "`{}` from {} (mapping `{}` {})",
+                resource.descriptor().resource_id,
+                origin
+                    .source_file
+                    .as_deref()
+                    .unwrap_or("<external or unknown source>"),
+                origin.mapping_pattern,
+                origin.mapping_status
+            )
+        })
+        .collect::<Vec<_>>();
+    let compiled = if compiled.is_empty() {
+        "none".to_owned()
+    } else {
+        compiled.join(", ")
+    };
+    format!(
+        "resource `{id}` is not compiled; compiled resource ids: {compiled}; likely causes: the resource id does not use `<source>.<resource>`, the `[resources]` mapping did not select the source file, the source file failed to parse, or the glob/resource declaration matched nothing"
+    )
 }
 
 pub fn require_lock(context: &ProjectContext) -> CdfResult<&CdfLock> {

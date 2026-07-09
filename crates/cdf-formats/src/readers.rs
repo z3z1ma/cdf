@@ -23,9 +23,11 @@ use cdf_kernel::{
     source_name,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
+use parquet::file::reader::ChunkReader;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::parquet_discovery::RangeChunkReader;
 use crate::schema::schema_hash;
 use crate::{CsvOptions, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions};
 
@@ -190,6 +192,31 @@ pub fn read_ndjson_bytes_with_declared_schema(
     )
 }
 
+pub fn read_parquet_range_source(
+    reader: RangeChunkReader,
+    options: &ReadOptions,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    read_parquet_chunk_reader_with_scope(reader, options, scope, position)
+}
+
+pub fn read_parquet_range_source_with_declared_schema(
+    reader: RangeChunkReader,
+    options: &ReadOptions,
+    declared_schema: SchemaRef,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    read_parquet_chunk_reader_with_declared_schema_and_scope(
+        reader,
+        options,
+        declared_schema,
+        scope,
+        position,
+    )
+}
+
 pub fn infer_ndjson_observed_schema(
     bytes: &[u8],
     json_options: &JsonOptions,
@@ -305,7 +332,16 @@ fn read_parquet_file_with_scope(
 ) -> Result<FormatRead> {
     let file = fs::File::open(path)
         .map_err(|error| io_data_error(format!("open {}", path.display()), error))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+    read_parquet_chunk_reader_with_scope(file, options, scope, position)
+}
+
+fn read_parquet_chunk_reader_with_scope<T: ChunkReader + 'static>(
+    reader: T,
+    options: &ReadOptions,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(reader)
         .map_err(|error| parquet_data_error("read Parquet file metadata", error))?
         .with_batch_size(options.batch_size);
     let schema = builder.schema().clone();
@@ -325,7 +361,23 @@ fn read_parquet_file_with_declared_schema_and_scope(
 ) -> Result<FormatRead> {
     let file = fs::File::open(path)
         .map_err(|error| io_data_error(format!("open {}", path.display()), error))?;
-    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+    read_parquet_chunk_reader_with_declared_schema_and_scope(
+        file,
+        options,
+        declared_schema,
+        scope,
+        position,
+    )
+}
+
+fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'static>(
+    reader: T,
+    options: &ReadOptions,
+    declared_schema: SchemaRef,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    let builder = ParquetRecordBatchReaderBuilder::try_new(reader)
         .map_err(|error| parquet_data_error("read Parquet file metadata", error))?
         .with_batch_size(options.batch_size);
     let physical_schema = builder.schema().clone();

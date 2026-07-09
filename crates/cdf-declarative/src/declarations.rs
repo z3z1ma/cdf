@@ -41,6 +41,9 @@ pub struct SqlSourceDeclaration {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct FileSourceDeclaration {
     pub root: String,
+    pub auth: Option<AuthDeclaration>,
+    #[serde(default)]
+    pub egress_allowlist: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

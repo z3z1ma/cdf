@@ -1,4 +1,5 @@
-use cdf_http::{HttpMethod, HttpRequest, HttpResponse, HttpTransport};
+use cdf_declarative::{HttpFileRequest, HttpFileResponse, HttpFileTransport};
+use cdf_http::{HeaderMap, HttpMethod, HttpRequest, HttpResponse, HttpTransport};
 use cdf_kernel::{CdfError, Result};
 
 pub(crate) struct ReqwestHttpTransport {
@@ -16,14 +17,47 @@ impl ReqwestHttpTransport {
 
 impl HttpTransport for ReqwestHttpTransport {
     fn send(&mut self, request: HttpRequest) -> Result<HttpResponse> {
-        let method = reqwest_method(&request.method)?;
-        let mut builder = self.client.request(method, &request.url);
-        for (name, value) in &request.headers {
+        let raw = self.send_raw(&request.method, &request.url, &request.headers, "REST")?;
+        let mut response = HttpResponse::new(raw.status).with_body(raw.body);
+        for (name, value) in raw.headers {
+            response = response.with_header(name, value);
+        }
+        Ok(response)
+    }
+}
+
+impl HttpFileTransport for ReqwestHttpTransport {
+    fn send(&mut self, request: HttpFileRequest) -> Result<HttpFileResponse> {
+        let raw = self.send_raw(
+            &request.method,
+            &request.url,
+            &request.headers,
+            "file transport",
+        )?;
+        let mut response = HttpFileResponse::new(raw.status).with_body(raw.body);
+        for (name, value) in raw.headers {
+            response = response.with_header(name, value);
+        }
+        Ok(response)
+    }
+}
+
+impl ReqwestHttpTransport {
+    fn send_raw(
+        &mut self,
+        method: &HttpMethod,
+        url: &str,
+        headers: &HeaderMap,
+        context: &str,
+    ) -> Result<RawHttpResponse> {
+        let method = reqwest_method(method)?;
+        let mut builder = self.client.request(method, url);
+        for (name, value) in headers {
             builder = builder.header(name.as_str(), value.as_str());
         }
-        let response = builder
-            .send()
-            .map_err(|error| CdfError::transient(format!("send REST HTTP request: {error}")))?;
+        let response = builder.send().map_err(|error| {
+            CdfError::transient(format!("send {context} HTTP request: {error}"))
+        })?;
         let status = response.status().as_u16();
         let headers = response
             .headers()
@@ -36,14 +70,20 @@ impl HttpTransport for ReqwestHttpTransport {
             })
             .collect::<Vec<_>>();
         let body = response.bytes().map_err(|error| {
-            CdfError::transient(format!("read REST HTTP response body: {error}"))
+            CdfError::transient(format!("read {context} HTTP response body: {error}"))
         })?;
-        let mut response = HttpResponse::new(status).with_body(body.to_vec());
-        for (name, value) in headers {
-            response = response.with_header(name, value);
-        }
-        Ok(response)
+        Ok(RawHttpResponse {
+            status,
+            headers,
+            body: body.to_vec(),
+        })
     }
+}
+
+struct RawHttpResponse {
+    status: u16,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
 }
 
 fn reqwest_method(method: &HttpMethod) -> Result<reqwest::Method> {

@@ -108,6 +108,12 @@ fn help_lists_required_command_surface() {
 
 #[test]
 fn parser_provides_subcommand_help_at_nested_layers() {
+    let validate = run(["cdf", "validate", "--help"]);
+
+    assert_eq!(validate.exit_code, 0);
+    assert!(validate.stdout.contains("Usage: cdf validate"));
+    assert!(validate.stdout.contains("--deep"));
+
     let plan = run(["cdf", "plan", "--help"]);
 
     assert_eq!(plan.exit_code, 0);
@@ -702,6 +708,97 @@ fn validate_json_reports_project_shape() {
     assert_eq!(json["command"], "validate");
     assert_eq!(json["result"]["environment"]["name"], "dev");
     assert_eq!(json["result"]["declarative_resources"], 1);
+}
+
+#[test]
+fn validate_deep_reports_source_front_end_checks_without_writes() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["command"], "validate");
+    assert_eq!(json["result"]["mode"], "deep");
+    assert_eq!(json["result"]["summary"]["resources"], 1);
+    assert_eq!(json["result"]["summary"]["failed"], 0);
+    assert_eq!(json["result"]["summary"]["partitions"], 1);
+    assert_eq!(json["result"]["summary"]["discovery_probes"], 1);
+    assert_eq!(json["result"]["writes"]["package"], false);
+    assert_eq!(json["result"]["writes"]["destination"], false);
+    assert_eq!(json["result"]["writes"]["checkpoint"], false);
+    assert_eq!(json["result"]["writes"]["schema_snapshot"], false);
+    assert_eq!(json["result"]["writes"]["lockfile"], false);
+
+    let resource = &json["result"]["resources"][0];
+    assert_eq!(resource["resource_id"], "local.events");
+    assert_eq!(resource["source_file"], "resources/files.toml");
+    assert_eq!(resource["mapping_pattern"], "local.*");
+    assert_eq!(resource["mapping_status"], "matched");
+    assert_eq!(resource["schema_source"], "discovered");
+    assert_eq!(resource["partitions"]["count"], 1);
+    assert_eq!(resource["partitions"]["files"][0], "vendors.parquet");
+    assert_eq!(resource["discovery"]["status"], "ok");
+    assert!(
+        resource["discovery"]["schema_hash"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert!(
+        resource["discovery"]["snapshot_path"]
+            .as_str()
+            .unwrap()
+            .starts_with(".cdf/schemas/local.events@sha256:")
+    );
+    assert_eq!(resource["validation_program"]["status"], "ok");
+    assert_eq!(resource["identifier_normalization"]["status"], "ok");
+    assert_eq!(resource["destination"]["status"], "ok");
+}
+
+#[test]
+fn resource_not_compiled_error_names_compiled_ids_origins_and_fix() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.eventz",
+    ]);
+
+    assert_eq!(result.exit_code, 3);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["code"], "CDF-RESOURCE-NOT-COMPILED");
+    assert_eq!(
+        json["error"]["remediation"]["summary"],
+        "Use one of the compiled resource ids or repair the project resource mapping."
+    );
+    let message = json["error"]["message"].as_str().unwrap();
+    assert!(message.contains("resource `local.eventz` is not compiled"));
+    assert!(message.contains("compiled resource ids: `local.events`"));
+    assert!(message.contains("resources/files.toml"));
+    assert!(message.contains("mapping `local.*` matched"));
+    assert!(message.contains("likely causes"));
+    assert!(message.contains("<source>.<resource>"));
+    assert!(!message.contains("cdf run requires"));
+    assert_eq!(json["error"]["suggestions"][0], "local.events");
 }
 
 #[test]
@@ -4097,6 +4194,15 @@ fn resume_stale_package_status_fails_closed_when_current_head_is_different() {
         "checkpoint-resume-wrong-head-old",
     );
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        concat!(
+            "{\"id\":1,\"updated_at\":1783296000000000}\n",
+            "{\"id\":2,\"updated_at\":1783296060000000}\n",
+            "{\"id\":3,\"updated_at\":1783296120000000}\n"
+        ),
+    )
+    .unwrap();
     let second = run_valid_run_args(
         &project,
         "pkg-resume-wrong-head-current",
@@ -7156,6 +7262,15 @@ fn state_product_grammar_uses_default_pipeline_scope_pairs_and_rewind_marker() {
         "checkpoint-state-product-first",
     ]);
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        concat!(
+            "{\"id\":1,\"updated_at\":1783296000000000}\n",
+            "{\"id\":2,\"updated_at\":1783296060000000}\n",
+            "{\"id\":3,\"updated_at\":1783296120000000}\n"
+        ),
+    )
+    .unwrap();
     let second = run([
         "cdf",
         "--json",
@@ -7318,6 +7433,15 @@ fn state_rewind_human_headless_render_reports_marker_and_packages_ahead() {
         "checkpoint-state-human-first",
     ]);
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        concat!(
+            "{\"id\":1,\"updated_at\":1783296000000000}\n",
+            "{\"id\":2,\"updated_at\":1783296060000000}\n",
+            "{\"id\":3,\"updated_at\":1783296120000000}\n"
+        ),
+    )
+    .unwrap();
     let second = run([
         "cdf",
         "--json",
@@ -7807,7 +7931,7 @@ fn unknown_resource_json_suggests_nearest_configured_resource_id() {
     ]);
 
     assert_eq!(result.exit_code, 3, "stderr: {}", result.stderr);
-    let json = assert_json_error_code(&result, "CDF-PROJECT-CONTRACT");
+    let json = assert_json_error_code(&result, "CDF-RESOURCE-NOT-COMPILED");
     assert_eq!(json["error"]["suggestions"], json!(["local.events"]));
 }
 

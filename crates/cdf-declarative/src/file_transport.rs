@@ -563,6 +563,11 @@ fn validate_http_file_url(url: &str) -> Result<()> {
     if authority.trim().is_empty() || authority.contains(char::is_whitespace) {
         return Err(CdfError::contract("HTTP(S) file URL must include a host"));
     }
+    if authority.contains('@') {
+        return Err(CdfError::contract(
+            "HTTP(S) file URL must not include userinfo; use secret:// auth references",
+        ));
+    }
     Ok(())
 }
 

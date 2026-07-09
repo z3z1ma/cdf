@@ -34,7 +34,7 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
             json!({ "version": VERSION }),
         )?),
         Command::Init(args) => crate::project_command::init(args),
-        Command::Validate => crate::project_command::validate(&cli),
+        Command::Validate(args) => crate::project_command::validate(&cli, args),
         Command::Plan(args) => crate::scan_command::plan_or_explain(&cli, args, "plan"),
         Command::Explain(args) => crate::scan_command::plan_or_explain(&cli, args, "explain"),
         Command::Run(args) => crate::run_command::run(&cli, args),

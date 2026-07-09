@@ -1,8 +1,20 @@
-use std::{collections::BTreeMap, fs, path::Path, time::UNIX_EPOCH};
+use std::{
+    collections::BTreeMap,
+    fs,
+    io::{self, Read},
+    path::Path,
+    sync::Arc,
+    time::UNIX_EPOCH,
+};
 
 use arrow_schema::SchemaRef;
+use bytes::Bytes;
 use cdf_kernel::{CdfError, Result};
 use parquet::arrow::arrow_reader::{ArrowReaderMetadata, ArrowReaderOptions};
+use parquet::{
+    errors::{ParquetError, Result as ParquetResult},
+    file::reader::{ChunkReader, Length},
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -75,6 +87,129 @@ pub fn discover_local_parquet_schema(
     })
 }
 
+pub fn discover_parquet_schema_from_chunk_reader<T: ChunkReader>(
+    reader: &T,
+    size_bytes: u64,
+    modified_unix_millis: Option<u64>,
+) -> Result<LocalParquetSchemaDiscovery> {
+    let reader_metadata = ArrowReaderMetadata::load(reader, ArrowReaderOptions::new())
+        .map_err(parquet_discovery_error)?;
+    let parquet_metadata = reader_metadata.metadata();
+    let file_metadata = parquet_metadata.file_metadata();
+    let row_count = u64::try_from(file_metadata.num_rows()).map_err(|_| {
+        CdfError::data("Parquet metadata discovery found a negative file row count")
+    })?;
+    let row_group_count = parquet_metadata.num_row_groups();
+    let identity = LocalParquetSourceIdentity {
+        size_bytes,
+        modified_unix_millis,
+        row_count,
+        row_group_count,
+        footer_sha256: footer_sha256(&reader_metadata)?,
+    };
+
+    Ok(LocalParquetSchemaDiscovery {
+        schema: reader_metadata.schema().clone(),
+        source_identity: identity,
+    })
+}
+
+pub struct RangeChunkReader {
+    size_bytes: u64,
+    read_range: Arc<dyn Fn(u64, usize) -> Result<Vec<u8>> + Send + Sync>,
+}
+
+impl RangeChunkReader {
+    pub fn new(
+        size_bytes: u64,
+        read_range: impl Fn(u64, usize) -> Result<Vec<u8>> + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            size_bytes,
+            read_range: Arc::new(read_range),
+        }
+    }
+}
+
+impl Length for RangeChunkReader {
+    fn len(&self) -> u64 {
+        self.size_bytes
+    }
+}
+
+impl ChunkReader for RangeChunkReader {
+    type T = RangeRead;
+
+    fn get_read(&self, start: u64) -> ParquetResult<Self::T> {
+        if start > self.size_bytes {
+            return Err(ParquetError::EOF(format!(
+                "expected to read at offset {start}, while file has length {}",
+                self.size_bytes
+            )));
+        }
+        Ok(RangeRead {
+            size_bytes: self.size_bytes,
+            offset: start,
+            read_range: Arc::clone(&self.read_range),
+        })
+    }
+
+    fn get_bytes(&self, start: u64, length: usize) -> ParquetResult<Bytes> {
+        let end = start
+            .checked_add(u64::try_from(length).map_err(|error| {
+                ParquetError::General(format!("range length conversion failed: {error}"))
+            })?)
+            .ok_or_else(|| ParquetError::General("range end overflow".to_owned()))?;
+        if end > self.size_bytes {
+            return Err(ParquetError::EOF(format!(
+                "expected to read {length} bytes at offset {start}, while file has length {}",
+                self.size_bytes
+            )));
+        }
+        let bytes = (self.read_range)(start, length).map_err(cdf_to_parquet_error)?;
+        if bytes.len() != length {
+            return Err(ParquetError::EOF(format!(
+                "expected to read {length} bytes at offset {start}, read {}",
+                bytes.len()
+            )));
+        }
+        Ok(Bytes::from(bytes))
+    }
+}
+
+pub struct RangeRead {
+    size_bytes: u64,
+    offset: u64,
+    read_range: Arc<dyn Fn(u64, usize) -> Result<Vec<u8>> + Send + Sync>,
+}
+
+impl Read for RangeRead {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if buffer.is_empty() || self.offset >= self.size_bytes {
+            return Ok(0);
+        }
+        let remaining = self.size_bytes - self.offset;
+        let length = buffer
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let bytes = (self.read_range)(self.offset, length)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        if bytes.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "range reader returned no bytes before EOF",
+            ));
+        }
+        let count = bytes.len().min(buffer.len());
+        buffer[..count].copy_from_slice(&bytes[..count]);
+        self.offset = self
+            .offset
+            .checked_add(u64::try_from(count).map_err(io::Error::other)?)
+            .ok_or_else(|| io::Error::other("range reader offset overflow"))?;
+        Ok(count)
+    }
+}
+
 #[derive(Serialize)]
 struct FooterFingerprint {
     arrow_schema_hash: String,
@@ -143,4 +278,8 @@ fn io_data_error(context: impl Into<String>, error: impl std::fmt::Display) -> C
 
 fn parquet_discovery_error(error: impl std::fmt::Display) -> CdfError {
     CdfError::data(format!("Parquet metadata discovery failed: {error}"))
+}
+
+fn cdf_to_parquet_error(error: CdfError) -> ParquetError {
+    ParquetError::General(error.to_string())
 }

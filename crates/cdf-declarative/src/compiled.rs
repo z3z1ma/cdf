@@ -25,8 +25,10 @@ use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
 use crate::file_runtime::{
-    file_partitions_for_plan, open_file_resource, open_file_resource_preview,
+    FileRuntimeDependencies, file_partitions_for_plan, open_file_resource,
+    open_file_resource_preview,
 };
+use crate::file_transport::{FileIdentityMetadata, FileTransportResource};
 use crate::rest_runtime::{
     CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA, cursor_pushdown_value,
 };
@@ -138,6 +140,8 @@ pub struct FileResourcePlan {
     pub root: String,
     pub glob: String,
     pub format: FileFormatDeclaration,
+    pub auth: Option<AuthScheme>,
+    pub allowlist: EgressAllowlist,
 }
 
 pub fn compile_document(document: &DeclarativeDocument) -> Result<Vec<CompiledResource>> {
@@ -193,6 +197,42 @@ pub fn discover_local_parquet_schema(path: impl AsRef<Path>) -> Result<LocalParq
     })
 }
 
+pub fn discover_transport_parquet_schema(
+    resource: FileTransportResource,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<LocalParquetSchemaProbe> {
+    let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
+    let size_bytes = metadata.size_bytes.ok_or_else(|| {
+        CdfError::data(format!(
+            "HTTP(S) Parquet discovery for `{}` did not receive Content-Length metadata",
+            metadata.location
+        ))
+    })?;
+    let range_reader = dependencies.range_reader(resource, size_bytes);
+    let discovery =
+        cdf_formats::discover_parquet_schema_from_chunk_reader(&range_reader, size_bytes, None)?;
+    let mut source_identity = discovery.source_identity.cache_evidence();
+    append_transport_source_identity(&mut source_identity, metadata);
+    Ok(LocalParquetSchemaProbe {
+        schema: discovery.schema,
+        source_identity,
+    })
+}
+
+fn append_transport_source_identity(
+    source_identity: &mut BTreeMap<String, String>,
+    metadata: FileIdentityMetadata,
+) {
+    let sha256 = metadata.sha256().map(str::to_owned);
+    source_identity.insert("url".to_owned(), metadata.location);
+    if let Some(etag) = metadata.etag {
+        source_identity.insert("etag".to_owned(), etag);
+    }
+    if let Some(sha256) = sha256 {
+        source_identity.insert("sha256".to_owned(), sha256);
+    }
+}
+
 impl ResourceStream for CompiledResource {
     fn descriptor(&self) -> &ResourceDescriptor {
         &self.descriptor
@@ -232,7 +272,18 @@ impl QueryableResource for CompiledResource {
                 request.resource_id, self.descriptor.resource_id
             )));
         }
+        let partitions =
+            partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))?;
+        self.negotiate_with_partitions(request, partitions)
+    }
+}
 
+impl CompiledResource {
+    pub(crate) fn negotiate_with_partitions(
+        &self,
+        request: &ScanRequest,
+        partitions: Vec<PartitionPlan>,
+    ) -> Result<ScanPlan> {
         let mut pushed_predicates = Vec::new();
         let mut unsupported_predicates = Vec::new();
         for predicate in &request.filters {
@@ -248,12 +299,7 @@ impl QueryableResource for CompiledResource {
         Ok(ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
-            partitions: partitions_for_plan(
-                &self.descriptor,
-                &self.schema,
-                &self.plan,
-                Some(request),
-            )?,
+            partitions,
             pushed_predicates,
             unsupported_predicates,
             estimated_rows: None,
@@ -532,6 +578,11 @@ fn compile_file_plan(
     resource: &ResourceDeclaration,
     project_root: Option<&Path>,
 ) -> Result<FileResourcePlan> {
+    let allowlist = if source.egress_allowlist.is_empty() {
+        EgressAllowlist::allow_any()
+    } else {
+        EgressAllowlist::from_hosts(source.egress_allowlist.clone())
+    };
     Ok(FileResourcePlan {
         source: source_name.to_owned(),
         root: compile_file_root(&source.root, project_root)?,
@@ -541,10 +592,15 @@ fn compile_file_plan(
         format: resource.format.clone().ok_or_else(|| {
             CdfError::contract("file resources must declare format before compilation")
         })?,
+        auth: source.auth.as_ref().map(compile_auth).transpose()?,
+        allowlist,
     })
 }
 
 fn compile_file_root(root: &str, project_root: Option<&Path>) -> Result<String> {
+    if is_remote_file_root(root) || root.starts_with("file://") {
+        return Ok(root.to_owned());
+    }
     let root_path = PathBuf::from(root);
     if root_path.is_absolute() {
         return path_to_string(&root_path);
@@ -558,6 +614,10 @@ fn compile_file_root(root: &str, project_root: Option<&Path>) -> Result<String> 
         Some(project_root) => path_to_string(&absolute_project_root(project_root)?.join(root_path)),
         None => Ok(root.to_owned()),
     }
+}
+
+fn is_remote_file_root(root: &str) -> bool {
+    root.starts_with("http://") || root.starts_with("https://")
 }
 
 fn absolute_project_root(project_root: &Path) -> Result<PathBuf> {

@@ -37,6 +37,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('sql', 'sql', [CompletionResultType]::ParameterValue, 'sql')
             [CompletionResult]::new('inspect', 'inspect', [CompletionResultType]::ParameterValue, 'inspect')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'diff')
+            [CompletionResult]::new('schema', 'schema', [CompletionResultType]::ParameterValue, 'schema')
             [CompletionResult]::new('contract', 'contract', [CompletionResultType]::ParameterValue, 'contract')
             [CompletionResult]::new('state', 'state', [CompletionResultType]::ParameterValue, 'state')
             [CompletionResult]::new('resume', 'resume', [CompletionResultType]::ParameterValue, 'resume')
@@ -68,6 +69,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;validate' {
+            [CompletionResult]::new('--deep', '--deep', [CompletionResultType]::ParameterName, 'deep')
             [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
@@ -202,6 +204,44 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;diff;schema' {
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'cdf;schema' {
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('discover', 'discover', [CompletionResultType]::ParameterValue, 'discover')
+            [CompletionResult]::new('pin', 'pin', [CompletionResultType]::ParameterValue, 'pin')
+            [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'show')
+            [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'diff')
+            break
+        }
+        'cdf;schema;discover' {
+            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'resource')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'cdf;schema;pin' {
+            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'resource')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'cdf;schema;show' {
+            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'resource')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'cdf;schema;diff' {
+            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'resource')
             [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')

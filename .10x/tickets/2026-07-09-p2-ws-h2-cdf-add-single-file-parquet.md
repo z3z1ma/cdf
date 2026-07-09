@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md
-Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a3-local-parquet-discover-autopin.md, .10x/tickets/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md, .10x/specs/data-onramp-source-experience-cli.md
+Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a3-local-parquet-discover-autopin.md, .10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md, .10x/specs/data-onramp-source-experience-cli.md
 
 # P2 WS-H2 cdf add single-file Parquet
 
@@ -29,7 +29,8 @@ This ticket does not implement Postgres `cdf add`, REST `cdf add`, interactive r
 ## Progress and notes
 
 - 2026-07-09: Opened as the first `cdf add` child. It intentionally depends on the E2 production HTTPS path for the full S1 URL case.
+- 2026-07-09: E2 closed in `.10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md`, so the HTTPS portion is unblocked. This ticket is executable for local and deterministic HTTPS single-file Parquet.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md` for the HTTPS portion. Local Parquet scaffolding can be prepared first if write scopes stay isolated.
+None.

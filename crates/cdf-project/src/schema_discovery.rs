@@ -2,8 +2,10 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use cdf_contract::{IdentifierPolicy, NORMALIZER_NAMECASE_V1, normalize_arrow_schema};
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, FileFormatDeclaration, discover_local_parquet_schema,
-    discover_rest_sample_schema, postgres_table_target_for_sql_plan,
+    CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
+    FileTransportLocation, FileTransportResource, discover_local_parquet_schema,
+    discover_rest_sample_schema, discover_transport_parquet_schema,
+    postgres_table_target_for_sql_plan,
 };
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
@@ -46,7 +48,7 @@ pub fn discover_resource_schema(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
 ) -> Result<ResourceSchemaDiscovery> {
-    discover_resource_schema_inner(resource, secret_provider, None)
+    discover_resource_schema_inner(resource, secret_provider, None, None)
 }
 
 pub fn discover_resource_schema_with_rest_transport(
@@ -54,18 +56,27 @@ pub fn discover_resource_schema_with_rest_transport(
     secret_provider: &dyn SecretProvider,
     rest_transport: &mut dyn HttpTransport,
 ) -> Result<ResourceSchemaDiscovery> {
-    discover_resource_schema_inner(resource, secret_provider, Some(rest_transport))
+    discover_resource_schema_inner(resource, secret_provider, Some(rest_transport), None)
+}
+
+pub fn discover_resource_schema_with_file_dependencies(
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    file_dependencies: FileRuntimeDependencies,
+) -> Result<ResourceSchemaDiscovery> {
+    discover_resource_schema_inner(resource, secret_provider, None, Some(file_dependencies))
 }
 
 fn discover_resource_schema_inner(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
     rest_transport: Option<&mut dyn HttpTransport>,
+    file_dependencies: Option<FileRuntimeDependencies>,
 ) -> Result<ResourceSchemaDiscovery> {
     ensure_discover_schema_mode(resource)?;
     match resource.plan() {
         CompiledResourcePlan::Files(_) => {
-            let discovery = discover_local_parquet_resource_schema(resource)?;
+            let discovery = discover_parquet_resource_schema(resource, file_dependencies)?;
             Ok(ResourceSchemaDiscovery {
                 normalized_schema: Arc::clone(&discovery.normalized_schema),
                 snapshot: DiscoveredSchemaSnapshot {
@@ -85,6 +96,27 @@ fn discover_resource_schema_inner(
                 "REST resource discovery requires an explicit HTTP transport",
             )),
         },
+    }
+}
+
+fn discover_parquet_resource_schema(
+    resource: &CompiledResource,
+    file_dependencies: Option<FileRuntimeDependencies>,
+) -> Result<LocalParquetSchemaDiscovery> {
+    match resource.plan() {
+        CompiledResourcePlan::Files(plan) if is_http_root(&plan.root) => {
+            let dependencies = file_dependencies.ok_or_else(|| {
+                unsupported_discover_slice(
+                    resource.descriptor(),
+                    "HTTP(S) Parquet discovery requires explicit file transport dependencies",
+                )
+            })?;
+            discover_http_parquet_resource_schema(resource, dependencies)
+        }
+        CompiledResourcePlan::Files(_) => discover_local_parquet_resource_schema(resource),
+        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Err(
+            unsupported_discover_slice(resource.descriptor(), "resource is not a file resource"),
+        ),
     }
 }
 
@@ -125,6 +157,62 @@ pub fn discover_local_parquet_resource_schema(
         normalized.as_ref(),
         metadata,
     )?;
+    let snapshot = DiscoveredParquetSchemaSnapshot {
+        reference: artifact.reference(),
+        artifact,
+        source_identity: probe.source_identity,
+    };
+
+    Ok(LocalParquetSchemaDiscovery {
+        normalized_schema: normalized,
+        snapshot,
+        partition,
+    })
+}
+
+fn discover_http_parquet_resource_schema(
+    resource: &CompiledResource,
+    dependencies: FileRuntimeDependencies,
+) -> Result<LocalParquetSchemaDiscovery> {
+    ensure_discover_schema_mode(resource)?;
+    let (plan, partition) = single_http_parquet_partition(resource, &dependencies)?;
+    let url = partition.metadata.get("path").cloned().ok_or_else(|| {
+        CdfError::contract(format!(
+            "HTTP(S) Parquet discovery for resource `{}` expected file partition URL metadata",
+            resource.descriptor().resource_id
+        ))
+    })?;
+    let resource_request = FileTransportResource {
+        location: FileTransportLocation::HttpUrl { url },
+        egress_allowlist: plan.allowlist.clone(),
+        auth: plan.auth.clone(),
+    };
+    let mut probe = discover_transport_parquet_schema(resource_request, &dependencies)?;
+    let normalized = normalize_arrow_schema(probe.schema.as_ref(), &IdentifierPolicy::default())?;
+    let normalized = Arc::new(normalized);
+    let metadata = BTreeMap::from([
+        (
+            "probe".to_owned(),
+            SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER.to_owned(),
+        ),
+        (
+            "format".to_owned(),
+            SCHEMA_DISCOVERY_FORMAT_PARQUET.to_owned(),
+        ),
+        ("source_kind".to_owned(), "files".to_owned()),
+        (
+            "cdf:normalizer".to_owned(),
+            NORMALIZER_NAMECASE_V1.to_owned(),
+        ),
+    ]);
+    let artifact = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        normalized.as_ref(),
+        metadata,
+    )?;
+    probe
+        .source_identity
+        .insert("transport".to_owned(), "https".to_owned());
     let snapshot = DiscoveredParquetSchemaSnapshot {
         reference: artifact.reference(),
         artifact,
@@ -268,6 +356,27 @@ pub fn prepare_discover_resource(
     prepare_discovered_schema(project_root, resource, discovery)
 }
 
+pub fn prepare_discover_resource_with_file_dependencies(
+    project_root: impl AsRef<Path>,
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    file_dependencies: FileRuntimeDependencies,
+) -> Result<PreparedDiscoveredResource> {
+    if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+        return Ok(PreparedDiscoveredResource {
+            resource: resource.clone(),
+            discovery: None,
+        });
+    }
+
+    let discovery = discover_resource_schema_with_file_dependencies(
+        resource,
+        secret_provider,
+        file_dependencies,
+    )?;
+    prepare_discovered_schema(project_root, resource, discovery)
+}
+
 pub fn prepare_discover_resource_with_rest_transport(
     project_root: impl AsRef<Path>,
     resource: &CompiledResource,
@@ -361,6 +470,52 @@ fn single_local_parquet_partition(
             partitions.len()
         ))),
     }
+}
+
+fn single_http_parquet_partition<'a>(
+    resource: &'a CompiledResource,
+    dependencies: &FileRuntimeDependencies,
+) -> Result<(&'a cdf_declarative::FileResourcePlan, PartitionPlan)> {
+    let plan = match resource.plan() {
+        CompiledResourcePlan::Files(plan) => plan,
+        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
+            return Err(unsupported_discover_slice(
+                resource.descriptor(),
+                "HTTP(S) Parquet discovery only supports file resources",
+            ));
+        }
+    };
+    if plan.format != FileFormatDeclaration::Parquet {
+        return Err(unsupported_discover_slice(
+            resource.descriptor(),
+            format!(
+                "only HTTP(S) single-file Parquet discovery is implemented in this slice; resource uses format = {:?}",
+                plan.format
+            ),
+        ));
+    }
+    let runtime = resource.to_file_resource(dependencies.clone())?;
+    let partitions = runtime.plan_partitions(&discovery_scan_request(resource.descriptor())?)?;
+    match partitions.as_slice() {
+        [partition] => Ok((plan, partition.clone())),
+        [] => Err(CdfError::data(format!(
+            "HTTP(S) Parquet discovery for resource `{}` matched no file for `{}` and glob `{}`",
+            resource.descriptor().resource_id,
+            plan.root,
+            plan.glob
+        ))),
+        _ => Err(CdfError::contract(format!(
+            "multi-file HTTP(S) Parquet discovery is unsupported for resource `{}`; glob `{}` under `{}` resolved to {} files",
+            resource.descriptor().resource_id,
+            plan.glob,
+            plan.root,
+            partitions.len()
+        ))),
+    }
+}
+
+fn is_http_root(root: &str) -> bool {
+    root.starts_with("http://") || root.starts_with("https://")
 }
 
 fn discovery_scan_request(descriptor: &ResourceDescriptor) -> Result<ScanRequest> {

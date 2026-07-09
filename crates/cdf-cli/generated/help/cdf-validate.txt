@@ -1,5 +1,6 @@
 Usage: cdf validate [OPTIONS]
 
 Options:
+      --deep
       --no-color
   -h, --help      Print help

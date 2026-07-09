@@ -9,6 +9,7 @@ pub struct ProjectRunSource<'a> {
 #[derive(Clone, Copy)]
 enum ProjectRunSourceValidation<'a> {
     LocalFile(&'a CompiledResource),
+    File(&'a FileResource),
     Rest(&'a RestResource),
     Sql(&'a SqlResource),
     Prevalidated,
@@ -36,6 +37,13 @@ impl<'a> ProjectRunSource<'a> {
         Self {
             resource,
             validation: ProjectRunSourceValidation::LocalFile(resource),
+        }
+    }
+
+    pub fn file(resource: &'a FileResource) -> Self {
+        Self {
+            resource,
+            validation: ProjectRunSourceValidation::File(resource),
         }
     }
 
@@ -74,6 +82,7 @@ impl<'a> ProjectRunSource<'a> {
             ProjectRunSourceValidation::LocalFile(resource) => {
                 validate_local_file_run_resource(resource)
             }
+            ProjectRunSourceValidation::File(resource) => resource.validate_runtime_dependencies(),
             ProjectRunSourceValidation::Rest(resource) => resource.validate_runtime_dependencies(),
             ProjectRunSourceValidation::Sql(resource) => resource.validate_runtime_dependencies(),
             ProjectRunSourceValidation::Prevalidated => Ok(()),

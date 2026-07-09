@@ -38,6 +38,7 @@ complete -c cdf -n "__fish_cdf_needs_command" -f -a "preview"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "sql"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "inspect"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "diff"
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "schema"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "contract"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "state"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "resume"
@@ -54,6 +55,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand init" -l name -r
 complete -c cdf -n "__fish_cdf_using_subcommand init" -l force
 complete -c cdf -n "__fish_cdf_using_subcommand init" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand validate" -l deep
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand plan" -l resource -r
@@ -126,6 +128,24 @@ complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcom
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcommand_from schema" -f -a "schema"
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "discover"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "pin"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "show"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "diff"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l resource -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -l resource -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from pin" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from show" -l resource -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from show" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from show" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from diff" -l resource -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from diff" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from diff" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and not __fish_seen_subcommand_from freeze show test" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and not __fish_seen_subcommand_from freeze show test" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and not __fish_seen_subcommand_from freeze show test" -f -a "freeze"

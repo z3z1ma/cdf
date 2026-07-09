@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md, .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md, .10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
 
@@ -33,8 +33,9 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-09: Split `.10x/tickets/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md` for canonical compiled-id validation and inspection before `cdf add` and ad-hoc mode.
 - 2026-07-09: Closed `.10x/tickets/done/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md`; resource ids and mapping patterns are now legible through validation errors and `cdf inspect resources`.
-- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md` for the first `cdf add` surface, blocked on E2 for full HTTPS S1 coverage.
+- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md` for the first `cdf add` surface.
+- 2026-07-09: E2 closed in `.10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md`, unblocking H2 for local and deterministic HTTPS single-file Parquet.
 
 ## Blockers
 
-H2's HTTPS path is blocked on `.10x/tickets/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md`; local Parquet scaffolding can proceed if isolated.
+None for H2's scoped local/deterministic HTTPS single-file Parquet `cdf add` work.
