@@ -1,3 +1,11 @@
-/target/
+bin/
+target/
+
+mutants.out/
+
+__pycache__/
+node_modules/
+
+.venv
+
 /reports/ai-quality
-/mutants.out
