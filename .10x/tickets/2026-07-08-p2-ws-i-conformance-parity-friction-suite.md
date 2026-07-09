@@ -32,6 +32,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-i1-friction-regression-registry.md` to map the eighteen P2 frictions to existing tests or explicit open coverage gaps before implementation lanes start closing.
 
 ## Blockers
 

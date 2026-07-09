@@ -32,6 +32,7 @@ This ticket does not implement destination-specific type mapping tables except w
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-b1-declarative-arrow-type-vocabulary.md` for the declarative Arrow vocabulary parser/compiler slice. Reconciliation core remains this workstream's next child.
 
 ## Blockers
 

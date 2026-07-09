@@ -32,6 +32,7 @@ This ticket does not change the normalizer algorithm itself unless a bug is foun
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-c1-declarative-schema-normalization.md` for source-name defaults and `namecase-v1` normalization in declarative compiled schemas. Destination-specific sheet rules and package normalizer evidence remain later children.
 
 ## Blockers
 

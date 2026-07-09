@@ -31,6 +31,7 @@ This ticket does not implement SCD2 or new destination disposition families.
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-f1-append-default-merge-key-error.md` for append default and merge-key validation in declarative compilation.
 
 ## Blockers
 
