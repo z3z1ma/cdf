@@ -228,6 +228,67 @@ fn renderer_migration_gate_rejects_raw_human_output_bypasses() {
     );
 }
 
+#[test]
+fn progress_enabled_human_commands_route_through_progress_renderer() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let expectations: &[(&str, &[&str])] = &[
+        (
+            "run_command.rs",
+            &[
+                "let progress = human_progress_sink(cli.json, cli.no_color);",
+                "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
+                "event_sink,",
+                "error.with_progress(progress.snapshot())",
+                "CommandOutput::rendered_with_progress(\"run\"",
+            ],
+        ),
+        (
+            "replay_command.rs",
+            &[
+                "let progress = human_progress_sink(cli.json, cli.no_color);",
+                "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
+                "ReplayProgressRecorder::new(",
+                "error.with_progress(progress.snapshot())",
+                "CommandOutput::rendered_with_progress(",
+            ],
+        ),
+        (
+            "resume_command.rs",
+            &[
+                "let progress = human_progress_sink(json_mode, no_color);",
+                "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
+                "sink.try_emit(event)",
+                "ResumeAttempt::new(context, &run_ledger, &snapshot, event_sink)?",
+                "finish_resume_report(report, progress.map(|progress| progress.snapshot()))",
+            ],
+        ),
+        (
+            "resume_command/report.rs",
+            &["CommandOutput::rendered_with_progress_and_exit_code("],
+        ),
+        (
+            "backfill_command.rs",
+            &[
+                "let progress = human_progress_sink(cli.json, cli.no_color);",
+                "let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);",
+                "execute_slice(&context, &target, source, &pipeline_id, slice, event_sink)",
+                "progress.as_ref().map(|progress| progress.snapshot())",
+                "CommandOutput::rendered_with_progress(",
+            ],
+        ),
+    ];
+
+    for (relative, patterns) in expectations {
+        let text = fs::read_to_string(src.join(relative)).unwrap();
+        for pattern in *patterns {
+            assert!(
+                text.contains(pattern),
+                "{relative} no longer routes human progress through `{pattern}`"
+            );
+        }
+    }
+}
+
 fn collect_rust_files(root: &Path, files: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(root).unwrap() {
         let entry = entry.unwrap();
@@ -2645,7 +2706,7 @@ fn run_human_output_mentions_receipt_verified_commit_gate() {
     ]);
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
-    assert!(!result.stdout.contains("\u{1b}["));
+    assert_no_headless_progress_controls(&result.stdout);
     for expected in [
         "[plan] running run started",
         "[gate] succeeded run succeeded",
@@ -3356,6 +3417,7 @@ fn resume_finalized_package_human_progress_replays_without_source_contact() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert!(!project.root.join("data/events.ndjson").exists());
+    assert_no_headless_progress_controls(&result.stdout);
     for expected in [
         "[package] running package finalized",
         "[package] failed run failed",
@@ -4563,7 +4625,7 @@ fn replay_package_failure_human_stderr_includes_progress_context() {
 
     assert_ne!(second.exit_code, 0);
     assert!(second.stdout.is_empty());
-    assert!(!second.stderr.contains("\u{1b}["));
+    assert_no_headless_progress_controls(&second.stderr);
     for expected in [
         "[package] running package finalized",
         "[package] failed run failed",
@@ -4608,7 +4670,7 @@ fn replay_package_human_headless_render_reports_receipt_checkpoint_and_duplicate
     ]);
 
     assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
-    assert!(!second.stdout.contains("\u{1b}["));
+    assert_no_headless_progress_controls(&second.stdout);
     for expected in [
         "[commit] succeeded replay recorded",
         "duplicate=true",
@@ -7464,6 +7526,17 @@ fn assert_no_preview_writes(project: &TestProject) {
     assert!(
         !project.root.join(".cdf/parquet").exists(),
         "preview must not create destination root"
+    );
+}
+
+fn assert_no_headless_progress_controls(output: &str) {
+    assert!(
+        !output.contains("\u{1b}["),
+        "headless output must not contain ANSI controls:\n{output}"
+    );
+    assert!(
+        !output.contains('\r'),
+        "headless output must not contain carriage-return progress controls:\n{output}"
     );
 }
 
