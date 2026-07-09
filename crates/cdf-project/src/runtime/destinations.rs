@@ -1,6 +1,10 @@
 use super::{hooks::ReceiptVerifiedHook, prelude::*, types::ProjectReceiptSource};
 use crate::DestinationPolicy;
+use cdf_contract::{
+    IdentifierPolicy, identifier_policy_from_destination_rules, normalize_arrow_schema,
+};
 use cdf_kernel::{CapabilitySupport, CommitPlan, DestinationSheet};
+use std::sync::Arc;
 
 mod duckdb;
 mod parquet;
@@ -106,6 +110,13 @@ pub struct DestinationCommitPlanningInputs {
 pub struct DestinationCommitPlanningOutcome {
     pub sheet: DestinationSheet,
     pub plan: CommitPlan,
+}
+
+#[derive(Clone, Debug)]
+pub struct DestinationOutputSchema {
+    pub schema: arrow_schema::SchemaRef,
+    pub schema_hash: SchemaHash,
+    pub identifier_policy: Option<IdentifierPolicy>,
 }
 
 impl DestinationCommitPlanningOutcome {
@@ -329,6 +340,7 @@ pub trait ProjectDestinationRuntime {
     fn validate_run_preflight(
         &mut self,
         _resource: &dyn ResourceStream,
+        _output_schema: &Schema,
         _schema_hash: &SchemaHash,
     ) -> Result<()> {
         Ok(())
@@ -337,6 +349,7 @@ pub trait ProjectDestinationRuntime {
     fn plan_resource_commit(
         &mut self,
         _resource: &dyn ResourceStream,
+        _output_schema: &Schema,
         inputs: &DestinationCommitPlanningInputs,
     ) -> Result<DestinationCommitPlanningOutcome> {
         let plan = self.protocol().plan_commit(&inputs.destination_commit)?;
@@ -426,6 +439,36 @@ impl ResolvedProjectDestination {
 
     pub fn target(&self) -> &TargetName {
         &self.target
+    }
+
+    pub fn column_identifier_policy(&self) -> Result<Option<IdentifierPolicy>> {
+        if !matches!(
+            self.describe().schemes.first(),
+            Some(&("duckdb" | "postgres"))
+        ) {
+            return Ok(None);
+        }
+        let rules = &self.runtime.protocol().sheet().identifier_rules;
+        match rules.normalizer.as_str() {
+            "namecase-v1" | "namecase-v1/postgres-quoted-v1" => {
+                identifier_policy_from_destination_rules(rules).map(Some)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    pub fn output_schema(&self, resource: &dyn ResourceStream) -> Result<DestinationOutputSchema> {
+        let identifier_policy = self.column_identifier_policy()?;
+        let schema = match &identifier_policy {
+            Some(policy) => Arc::new(normalize_arrow_schema(resource.schema().as_ref(), policy)?),
+            None => resource.schema(),
+        };
+        let schema_hash = super::validation::pinned_schema_hash(resource)?;
+        Ok(DestinationOutputSchema {
+            schema,
+            schema_hash,
+            identifier_policy,
+        })
     }
 
     pub fn describe(&self) -> ProjectDestinationDescription {

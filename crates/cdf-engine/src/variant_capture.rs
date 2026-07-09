@@ -7,7 +7,7 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{ColumnProgram, NestedAction, ValidationProgram};
-use cdf_kernel::{CdfError, Result, with_semantic, with_source_name};
+use cdf_kernel::{CdfError, Result, source_name, with_semantic, with_source_name};
 use serde::{Deserialize, Serialize};
 use serde_json::{Number, Value};
 
@@ -106,10 +106,13 @@ fn column_program_for_field<'a>(
     field: &Field,
     program: &'a ValidationProgram,
 ) -> Result<&'a ColumnProgram> {
+    let field_source_name = source_name(field).unwrap_or_else(|| field.name());
     program
         .column_programs
         .iter()
-        .find(|column| column.source_name == *field.name() || column.output_name == *field.name())
+        .find(|column| {
+            column.source_name == field_source_name || column.output_name == *field.name()
+        })
         .ok_or_else(|| {
             CdfError::contract(format!(
                 "validation program does not cover field {:?}",

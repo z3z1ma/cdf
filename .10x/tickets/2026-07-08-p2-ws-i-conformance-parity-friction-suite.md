@@ -43,6 +43,8 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-09: E2/G1 closure added deterministic fixture coverage for single-file HTTPS Parquet discovery/run and source diagnostics/deep validate. Evidence: `.10x/evidence/2026-07-09-p2-e2-g1-b4-batch.md`. WS-I still owns final public-data S1/S2, remote glob, compression, cloud, and recorded-session conformance.
 - 2026-07-09: Split executable child, now terminal at `.10x/tickets/done/2026-07-09-p2-ws-i3-matrix-friction-reconciliation.md`, after audit found stale terminal owners and under-indexed G1/D4/E2/H2 coverage in the executable P2 registry. I3 is ownership/evidence repair only and does not promote any pending golden path.
 - 2026-07-09: I3 closed as `.10x/tickets/done/2026-07-09-p2-ws-i3-matrix-friction-reconciliation.md` with `.10x/evidence/2026-07-09-p2-a8-b6-i3-integration.md` and `.10x/reviews/2026-07-09-p2-a8-b6-i3-integration-review.md`. The registry now rejects stale owners and missing test functions while keeping all S1-S8 rows pending until runtime acceptance is complete.
+- 2026-07-09: Split executable child, now terminal at `.10x/tickets/done/2026-07-09-p2-ws-i4-s5-s7-standalone-conformance.md`, for exact deterministic S5 REST discover/pin/package and S7 key/disposition scenarios. Only those two matrix rows may be promoted by the child.
+- 2026-07-09: I4 closed as `.10x/tickets/done/2026-07-09-p2-ws-i4-s5-s7-standalone-conformance.md` with `.10x/evidence/2026-07-09-p2-c3-i4-integration.md` and `.10x/reviews/2026-07-09-p2-c3-i4-integration-review.md`. S5 and S7 are now standalone deterministic conformance scenarios and the only promoted P2 rows; S1-S4/S6/S8 remain pending.
 
 ## Blockers
 

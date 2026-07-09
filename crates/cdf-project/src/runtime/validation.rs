@@ -1,6 +1,7 @@
 use super::{
     destinations::ProjectDestinationDescription, prelude::*, resources::ProjectRunSource, types::*,
 };
+use cdf_contract::{ObservedSchema, normalize_schema};
 
 pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) -> Result<()> {
     request.resource.validate_supported()?;
@@ -24,11 +25,22 @@ pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) 
             disposition
         )));
     }
-    let schema_hash = pinned_schema_hash(request.resource.stream())?;
-    request
+    let output = request
         .destination
-        .runtime_mut()
-        .validate_run_preflight(request.resource.stream(), &schema_hash)?;
+        .output_schema(request.resource.stream())?;
+    if let Some(identifier_policy) = &output.identifier_policy
+        && request.plan.validation_program.identifier_policy != *identifier_policy
+    {
+        return Err(CdfError::contract(format!(
+            "run plan identifier policy does not match resolved destination sheet: planned {:?}, destination {:?}; rebuild the plan for the selected destination",
+            request.plan.validation_program.identifier_policy, identifier_policy
+        )));
+    }
+    request.destination.runtime_mut().validate_run_preflight(
+        request.resource.stream(),
+        output.schema.as_ref(),
+        &output.schema_hash,
+    )?;
     Ok(())
 }
 
@@ -91,11 +103,53 @@ fn validate_run_plan(
             plan.package_id, package_id
         )));
     }
+    validate_normalization_program(resource, plan)?;
     if plan.scan.request.scope != descriptor.state_scope {
         return Err(CdfError::contract(
             "run plan scope must come from the current resource descriptor state scope",
         ));
     }
+    Ok(())
+}
+
+fn validate_normalization_program(resource: &dyn ResourceStream, plan: &EnginePlan) -> Result<()> {
+    let program = &plan.validation_program;
+    if program.normalizer_version != program.identifier_policy.version {
+        return Err(CdfError::contract(format!(
+            "run plan normalization program is stale: normalizer_version {:?} does not match identifier policy version {:?}; rebuild the plan for the selected destination",
+            program.normalizer_version, program.identifier_policy.version
+        )));
+    }
+
+    let observed = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let expected = normalize_schema(&observed, &program.identifier_policy)?;
+    if program.column_programs.len() != expected.fields.len() {
+        return Err(CdfError::contract(format!(
+            "run plan normalization program is stale: planned {} columns but resource schema has {}; rebuild the plan for the selected destination",
+            program.column_programs.len(),
+            expected.fields.len()
+        )));
+    }
+
+    for (index, (planned, expected)) in program
+        .column_programs
+        .iter()
+        .zip(expected.fields.iter())
+        .enumerate()
+    {
+        if planned.source_name != expected.source_name
+            || planned.output_name != expected.output_name
+        {
+            return Err(CdfError::contract(format!(
+                "run plan normalization program is stale at column {index}: resource source {:?} must normalize to {:?} under the serialized identifier policy, but the plan names source {:?} and output {:?}; rebuild the plan for the selected destination",
+                expected.source_name,
+                expected.output_name,
+                planned.source_name,
+                planned.output_name
+            )));
+        }
+    }
+
     Ok(())
 }
 

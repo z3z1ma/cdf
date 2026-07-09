@@ -80,6 +80,24 @@ fn validation_program_coercion_evidence_is_optional_and_round_trips() {
 }
 
 #[test]
+fn legacy_validation_program_without_identifier_policy_uses_versioned_default() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let observed = ObservedSchema::from_arrow(&schema);
+    let program =
+        compile_validation_program(&ContractPolicy::for_trust(TrustLevel::Governed), &observed)
+            .unwrap();
+    let mut legacy_json = serde_json::to_value(&program).unwrap();
+    legacy_json
+        .as_object_mut()
+        .unwrap()
+        .remove("identifier_policy");
+
+    let legacy = serde_json::from_value::<ValidationProgram>(legacy_json).unwrap();
+    assert_eq!(legacy.identifier_policy, IdentifierPolicy::default());
+    assert_eq!(legacy.normalizer_version, legacy.identifier_policy.version);
+}
+
+#[test]
 fn row_evaluator_returns_accept_mask_quarantine_candidates_and_summary() {
     let schema = Schema::new(vec![
         Field::new("id", DataType::Int64, false),

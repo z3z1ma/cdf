@@ -3,7 +3,6 @@ use super::{
         DestinationCommitPlanningInputs, ProjectDestinationDescription, ResolvedProjectDestination,
     },
     prelude::*,
-    validation::pinned_schema_hash,
 };
 use cdf_kernel::{CommitPlan, DestinationSheet, ForeignState};
 
@@ -38,9 +37,12 @@ impl ResolvedProjectDestination {
     ) -> Result<ProjectDestinationCommitPlan> {
         let description = self.describe();
         let target = self.target().clone();
-        let schema_hash = pinned_schema_hash(resource)?;
+        let output = self.output_schema(resource)?;
+        let schema_hash = output.schema_hash;
         let inputs = destination_planning_inputs(resource, &target, &schema_hash)?;
-        let outcome = self.runtime_mut().plan_resource_commit(resource, &inputs)?;
+        let outcome =
+            self.runtime_mut()
+                .plan_resource_commit(resource, output.schema.as_ref(), &inputs)?;
         let synthetic = ProjectDestinationSyntheticInput {
             package_hash: inputs.destination_commit.package_hash.clone(),
             idempotency_token: inputs.destination_commit.idempotency_token.clone(),

@@ -7,10 +7,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use arrow_array::{
-    Array, BooleanArray, Date32Array, Float64Array, Int64Array, StringArray,
-    TimestampMillisecondArray, UInt64Array,
-};
+use arrow_array::{Array, BooleanArray, Decimal128Array, Float64Array, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Fields, TimeUnit};
 use cdf_conformance::resource::{
     PredicateExpectation, ResourceConformanceCase, ResourceExecutionConformanceCase,
@@ -24,7 +21,7 @@ use cdf_kernel::{
     CdfError, CursorOrderingClaim, CursorValue, DeliveryGuarantee, ErrorKind, IncrementalShape,
     PartitionId, PredicateId, PushdownFidelity, QueryableResource, ResourceStream, ScanPredicate,
     ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection, SourcePosition,
-    WriteDisposition, source_name,
+    WriteDisposition, physical_type, source_name,
 };
 use futures_util::StreamExt;
 use tempfile::TempDir;
@@ -242,13 +239,13 @@ fn rest_runtime_executes_json_pages_with_explicit_dependencies() {
     let ids = first
         .column(0)
         .as_any()
-        .downcast_ref::<UInt64Array>()
+        .downcast_ref::<Int64Array>()
         .unwrap();
     assert_eq!(ids.value(0), 1);
     assert_eq!(ids.value(1), 2);
 
-    let first_position = cursor_micros(&batches[0].header.source_position);
-    let second_position = cursor_micros(&batches[1].header.source_position);
+    let first_position = cursor_string(&batches[0].header.source_position);
+    let second_position = cursor_string(&batches[1].header.source_position);
     assert!(second_position > first_position);
 
     let requests = transport.requests();
@@ -381,6 +378,164 @@ fn rest_runtime_executes_with_discovered_snapshot_hash() {
 
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].header.observed_schema_hash, snapshot_hash);
+}
+
+#[test]
+fn rest_runtime_reconciles_observed_schema_with_drift_source_names_and_exact_evidence() {
+    let input = r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.com"
+egress_allowlist = ["api.example.com"]
+
+[resource.metrics]
+path = "/metrics"
+records = "$.items"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "vendor_id", source_name = "VendorID", type = "int64", nullable = false },
+  { name = "amount", type = "decimal(20,0)", nullable = false },
+] }
+"#;
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let partition = rest_partition(&resource);
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "VendorID": 1, "amount": 10, "source_only": "kept-as-evidence" },
+            { "VendorID": 2, "amount": "bad", "source_only": "drifted" }
+        ] }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(RestRuntimeDependencies::new(transport))
+        .unwrap();
+
+    let batches = drain_batches(futures_executor::block_on(rest.open(partition)).unwrap());
+
+    assert_eq!(batches.len(), 1);
+    let batch = &batches[0];
+    let record_batch = batch.record_batch().unwrap();
+    assert_eq!(record_batch.num_rows(), 1);
+    assert_eq!(
+        source_name(record_batch.schema().field(0)),
+        Some("VendorID")
+    );
+    assert_eq!(physical_type(record_batch.schema().field(0)), Some("Int64"));
+    assert_eq!(physical_type(record_batch.schema().field(1)), Some("Int64"));
+    let amounts = record_batch
+        .column_by_name("amount")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Decimal128Array>()
+        .unwrap();
+    assert_eq!(amounts.values(), &[10]);
+    assert_eq!(batch.header.pre_contract_quarantine.len(), 1);
+    assert_eq!(
+        batch.header.pre_contract_quarantine[0].rule_id,
+        "source-decode:amount:type-mismatch"
+    );
+    assert_eq!(
+        batch.header.pre_contract_quarantine[0].error_code,
+        "source_type_mismatch"
+    );
+
+    let plan = cdf_contract::schema_coercion_plan_from_trusted_json(
+        record_batch.schema().as_ref(),
+        batch.header.schema_coercion_plan.as_deref().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        plan.fields
+            .iter()
+            .find(|field| field.source_name == "amount")
+            .unwrap()
+            .decision,
+        cdf_contract::FieldCoercionDecision::Widened
+    );
+    assert_eq!(
+        plan.fields
+            .iter()
+            .find(|field| field.source_name == "source_only")
+            .unwrap()
+            .decision,
+        cdf_contract::FieldCoercionDecision::Extra
+    );
+}
+
+#[test]
+fn rest_runtime_multi_page_reconciliation_is_stable_and_ordered() {
+    let input = rest_decimal_pages_input();
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let partition = rest_partition(&resource);
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [{ "id": 1, "amount": 10, "source_only": "a" }], "next_token": "n2" }"#,
+        ),
+        json_response(r#"{ "items": [{ "id": 2, "amount": 20, "source_only": "b" }] }"#),
+    ]);
+    let rest = resource
+        .to_rest_resource(RestRuntimeDependencies::new(transport))
+        .unwrap();
+
+    let batches = drain_batches(futures_executor::block_on(rest.open(partition)).unwrap());
+
+    assert_eq!(batches.len(), 2);
+    assert_eq!(
+        batches[0].header.schema_coercion_plan,
+        batches[1].header.schema_coercion_plan
+    );
+    let first_ids = batches[0]
+        .record_batch()
+        .unwrap()
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    let second_ids = batches[1]
+        .record_batch()
+        .unwrap()
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(first_ids.value(0), 1);
+    assert_eq!(second_ids.value(0), 2);
+}
+
+#[test]
+fn rest_runtime_multi_page_reconciliation_fails_closed_on_inconsistent_plans() {
+    let input = rest_decimal_pages_input();
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0);
+    let partition = rest_partition(&resource);
+    let transport = RecordingTransport::new([
+        json_response(
+            r#"{ "items": [{ "id": 1, "amount": 10, "source_only": "a" }], "next_token": "n2" }"#,
+        ),
+        json_response(
+            r#"{ "items": [{ "id": 2, "amount": 20, "source_only": "b", "page_two_only": true }] }"#,
+        ),
+    ]);
+    let rest = resource
+        .to_rest_resource(RestRuntimeDependencies::new(transport.clone()))
+        .unwrap();
+
+    let error = expect_open_error(futures_executor::block_on(rest.open(partition)));
+
+    assert_eq!(error.kind, ErrorKind::Data);
+    assert!(
+        error
+            .to_string()
+            .contains("inconsistent schema coercion plans")
+    );
+    assert_eq!(transport.requests().len(), 2);
 }
 
 #[test]
@@ -820,8 +975,9 @@ fn rest_runtime_requires_non_nullable_record_fields() {
             ] }"#,
         )],
     );
-    assert_eq!(error.kind, ErrorKind::Data);
-    assert!(error.to_string().contains("non-nullable field `name`"));
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("field \"name\""));
+    assert!(error.to_string().contains("was not observed"));
 }
 
 #[test]
@@ -836,12 +992,13 @@ fn rest_runtime_fails_closed_for_cursor_field_absence() {
             r#"{ "items": [{ "id": 1, "name": "ada", "active": true, "score": 4.5 }] }"#,
         )],
     );
-    assert_eq!(error.kind, ErrorKind::Data);
-    assert!(error.to_string().contains("cursor field `updated_at`"));
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("field \"updated_at\""));
+    assert!(error.to_string().contains("was not observed"));
 }
 
 #[test]
-fn rest_runtime_fails_closed_for_schema_coercion_error_without_partial_stream() {
+fn rest_runtime_localizes_later_page_scalar_drift_without_partial_loss() {
     let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
@@ -863,11 +1020,16 @@ fn rest_runtime_fails_closed_for_schema_coercion_error_without_partial_stream() 
         )
         .unwrap();
 
-    let error = expect_open_error(futures_executor::block_on(
-        rest.open(plan.partitions[0].clone()),
-    ));
-    assert_eq!(error.kind, ErrorKind::Data);
-    assert!(error.to_string().contains("id"));
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[0].header.row_count, 1);
+    assert_eq!(batches[1].header.row_count, 0);
+    assert_eq!(batches[1].header.pre_contract_quarantine.len(), 1);
+    assert_eq!(
+        batches[1].header.pre_contract_quarantine[0].error_code,
+        "source_type_mismatch"
+    );
     assert_eq!(transport.requests().len(), 2);
 }
 
@@ -1152,7 +1314,7 @@ fn rest_runtime_supports_top_level_array_selector() {
 }
 
 #[test]
-fn rest_runtime_materializes_scalar_values_and_timestamp_cursor_max() {
+fn rest_runtime_localizes_scalar_drift_and_preserves_page_cursor_advancement() {
     let resource = compile_document(&parse_toml(REST_RUNTIME_EXAMPLE).unwrap())
         .unwrap()
         .remove(0);
@@ -1165,14 +1327,14 @@ fn rest_runtime_materializes_scalar_values_and_timestamp_cursor_max() {
     let transport = RecordingTransport::new([
         json_response(
             r#"{ "items": [
-                { "id": "42", "name": 123, "updated_at": "2026-07-01T00:00:00Z", "active": "false", "score": "6.25" },
+                { "id": 42, "name": "first", "updated_at": "2026-07-01T00:00:00Z", "active": false, "score": 6.25 },
                 { "id": 7, "name": true, "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 9.5 },
-                { "id": 8, "name": { "nested": true }, "updated_at": "2026-07-02T00:00:00Z", "active": "TRUE", "score": null }
+                { "id": 8, "name": "third", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": null }
             ], "next_token": "n2" }"#,
         ),
         json_response(
             r#"{ "items": [
-                { "id": 9, "name": "page2", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 1.0 }
+                { "id": 9, "name": "page2", "updated_at": "2026-06-30T00:00:00Z", "active": true, "score": 1.0 }
             ] }"#,
         ),
     ]);
@@ -1187,29 +1349,31 @@ fn rest_runtime_materializes_scalar_values_and_timestamp_cursor_max() {
     let batches =
         drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
     assert_eq!(batches.len(), 2);
+    assert_eq!(
+        cursor_string(&batches[0].header.source_position),
+        "2026-07-03T00:00:00Z"
+    );
     assert!(
-        cursor_micros(&batches[0].header.source_position)
-            > cursor_micros(&batches[1].header.source_position)
+        cursor_string(&batches[0].header.source_position)
+            > cursor_string(&batches[1].header.source_position)
     );
 
     let first = batches[0].record_batch().unwrap();
     let ids = first
         .column(0)
         .as_any()
-        .downcast_ref::<UInt64Array>()
+        .downcast_ref::<Int64Array>()
         .unwrap();
     assert_eq!(ids.value(0), 42);
-    assert_eq!(ids.value(1), 7);
-    assert_eq!(ids.value(2), 8);
+    assert_eq!(ids.value(1), 8);
 
     let names = first
         .column(1)
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap();
-    assert_eq!(names.value(0), "123");
-    assert_eq!(names.value(1), "true");
-    assert_eq!(names.value(2), r#"{"nested":true}"#);
+    assert_eq!(names.value(0), "first");
+    assert_eq!(names.value(1), "third");
 
     let active = first
         .column(3)
@@ -1218,7 +1382,6 @@ fn rest_runtime_materializes_scalar_values_and_timestamp_cursor_max() {
         .unwrap();
     assert!(!active.value(0));
     assert!(active.value(1));
-    assert!(active.value(2));
 
     let scores = first
         .column(4)
@@ -1226,23 +1389,22 @@ fn rest_runtime_materializes_scalar_values_and_timestamp_cursor_max() {
         .downcast_ref::<Float64Array>()
         .unwrap();
     assert!((scores.value(0) - 6.25).abs() < f64::EPSILON);
-    assert!((scores.value(1) - 9.5).abs() < f64::EPSILON);
-    assert!(scores.is_null(2));
+    assert!(scores.is_null(1));
+    assert_eq!(batches[0].header.pre_contract_quarantine.len(), 1);
+    assert_eq!(
+        batches[0].header.pre_contract_quarantine[0].error_code,
+        "source_type_mismatch"
+    );
 }
 
 #[test]
-fn rest_runtime_materializes_int64_date32_and_timestamp_millis_values() {
-    let input = REST_RUNTIME_EXAMPLE
-        .replace(
-            r#"{ name = "id", type = "u_int64", nullable = false }"#,
-            r#"{ name = "id", type = "int64", nullable = false }"#,
-        )
-        .replace(
-            r#"{ name = "score", type = "float64", nullable = true }"#,
-            r#"{ name = "score", type = "float64", nullable = true },
+fn rest_runtime_parse_coercions_fail_closed_without_compiled_policy() {
+    let input = REST_RUNTIME_EXAMPLE.replace(
+        r#"{ name = "score", type = "float64", nullable = true }"#,
+        r#"{ name = "score", type = "float64", nullable = true },
     { name = "event_day", type = "date32", nullable = false },
     { name = "seen_at", type = "timestamp_millis", nullable = false, timezone = "UTC" }"#,
-        );
+    );
     let resource = compile_document(&parse_toml(&input).unwrap())
         .unwrap()
         .remove(0);
@@ -1254,8 +1416,8 @@ fn rest_runtime_materializes_int64_date32_and_timestamp_millis_values() {
         .unwrap();
     let transport = RecordingTransport::new([json_response(
         r#"{ "items": [
-            { "id": "-5", "name": "ada", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0, "event_day": "1970-01-02", "seen_at": "1970-01-01T00:00:01.234Z" },
-            { "id": 7, "name": "grace", "updated_at": "2026-07-02T00:00:00Z", "active": false, "score": 2.0, "event_day": 2, "seen_at": 5678 }
+            { "id": -5, "name": "ada", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0, "event_day": "1970-01-02", "seen_at": "1970-01-01T00:00:01.234Z" },
+            { "id": 7, "name": "grace", "updated_at": "2026-07-02T00:00:00Z", "active": false, "score": 2.0, "event_day": "1970-01-03", "seen_at": "1970-01-01T00:00:05.678Z" }
         ] }"#,
     )]);
     let rest = resource
@@ -1266,32 +1428,11 @@ fn rest_runtime_materializes_int64_date32_and_timestamp_millis_values() {
         )
         .unwrap();
 
-    let batches =
-        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
-    let first = batches[0].record_batch().unwrap();
-    let ids = first
-        .column(0)
-        .as_any()
-        .downcast_ref::<Int64Array>()
-        .unwrap();
-    assert_eq!(ids.value(0), -5);
-    assert_eq!(ids.value(1), 7);
-
-    let event_days = first
-        .column(5)
-        .as_any()
-        .downcast_ref::<Date32Array>()
-        .unwrap();
-    assert_eq!(event_days.value(0), 1);
-    assert_eq!(event_days.value(1), 2);
-
-    let seen_at = first
-        .column(6)
-        .as_any()
-        .downcast_ref::<TimestampMillisecondArray>()
-        .unwrap();
-    assert_eq!(seen_at.value(0), 1234);
-    assert_eq!(seen_at.value(1), 5678);
+    let error = expect_open_error(futures_executor::block_on(
+        rest.open(plan.partitions[0].clone()),
+    ));
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(error.to_string().contains("enable coerce_types"));
 }
 
 #[test]
@@ -1333,23 +1474,6 @@ fn rest_runtime_uses_type_specific_cursor_maxima() {
             ] }"#,
         ),
         CursorValue::I64(7)
-    );
-
-    let uint_cursor_input = REST_RUNTIME_EXAMPLE.replace(
-        r#"cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag = "0ms" }"#,
-        r#"cursor = { field = "id", param = "after_id", ordering = "best_effort", lag = "0ms" }"#,
-    );
-    assert_eq!(
-        first_cursor_value(
-            &uint_cursor_input,
-            "id >= 0",
-            r#"{ "items": [
-                { "id": 1, "name": "low", "updated_at": "2026-07-01T00:00:00Z", "active": true, "score": 1.0 },
-                { "id": 10, "name": "high", "updated_at": "2026-07-02T00:00:00Z", "active": true, "score": 2.0 },
-                { "id": 5, "name": "mid", "updated_at": "2026-07-03T00:00:00Z", "active": true, "score": 3.0 }
-            ] }"#,
-        ),
-        CursorValue::U64(10)
     );
 }
 
@@ -1609,7 +1733,7 @@ schema = { fields = [{ name = "id", type = "int64" }] }
 
     let error = compile_document(&parse_toml(input).unwrap()).unwrap_err();
     let message = error.to_string();
-    assert!(message.contains("resource `events`"));
+    assert!(message.contains("resource `local.events`"));
     assert!(message.contains("missing merge_key"));
     assert!(message.contains("add `merge_key = [...]`"));
     assert!(message.contains("use `write_disposition = \"append\"`"));
@@ -2548,9 +2672,9 @@ cursor = { field = "updated_at", param = "since", ordering = "best_effort", lag 
 write_disposition = "merge"
 trust = "governed"
 schema = { fields = [
-    { name = "id", type = "u_int64", nullable = false },
+    { name = "id", type = "int64", nullable = false },
     { name = "name", type = "string", nullable = false },
-    { name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" },
+    { name = "updated_at", type = "string", nullable = false },
     { name = "active", type = "boolean", nullable = false },
     { name = "score", type = "float64", nullable = true },
 ] }
@@ -2876,11 +3000,11 @@ fn declared_schema_hash(resource: &CompiledResource) -> SchemaHash {
     }
 }
 
-fn cursor_micros(position: &Option<SourcePosition>) -> i64 {
+fn cursor_string(position: &Option<SourcePosition>) -> String {
     match position {
         Some(SourcePosition::Cursor(position)) => match &position.value {
-            CursorValue::TimestampMicros { micros, .. } => *micros,
-            other => panic!("expected timestamp cursor position, got {other:?}"),
+            CursorValue::String(value) => value.clone(),
+            other => panic!("expected string cursor position, got {other:?}"),
         },
         other => panic!("expected cursor source position, got {other:?}"),
     }
@@ -2893,19 +3017,50 @@ fn first_cursor_value(input: &str, expression: &str, body: &str) -> CursorValue 
     let plan = resource
         .negotiate(&rest_cursor_request(&resource, expression))
         .unwrap();
-    let rest = resource
-        .to_rest_resource(
-            RestRuntimeDependencies::new(RecordingTransport::new([json_response(body)]))
-                .with_secret_provider(StaticSecretProvider::new([(
-                    "secret://env/API_TOKEN",
-                    "token-1",
-                )])),
-        )
-        .unwrap();
+    let dependencies = RestRuntimeDependencies::new(RecordingTransport::new([json_response(body)]))
+        .with_secret_provider(StaticSecretProvider::new([(
+            "secret://env/API_TOKEN",
+            "token-1",
+        )]));
+    let rest = resource.to_rest_resource(dependencies).unwrap();
     let batches =
         drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
     match &batches[0].header.source_position {
         Some(SourcePosition::Cursor(position)) => position.value.clone(),
         other => panic!("expected cursor source position, got {other:?}"),
     }
+}
+
+fn rest_partition(resource: &CompiledResource) -> cdf_kernel::PartitionPlan {
+    resource
+        .plan_partitions(&ScanRequest {
+            resource_id: resource.descriptor().resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: resource.descriptor().state_scope.clone(),
+        })
+        .unwrap()
+        .remove(0)
+}
+
+fn rest_decimal_pages_input() -> &'static str {
+    r#"
+[source.api]
+kind = "rest"
+base_url = "https://api.example.com"
+egress_allowlist = ["api.example.com"]
+
+[resource.metrics]
+path = "/metrics"
+records = "$.items"
+paginate = { kind = "next_token", query_param = "page_token", response_field = "next_token" }
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "amount", type = "decimal(20,0)", nullable = false },
+] }
+"#
 }

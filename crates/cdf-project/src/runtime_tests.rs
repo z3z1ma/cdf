@@ -1188,6 +1188,7 @@ impl ProjectDestinationRuntime for MockProjectDestinationRuntime {
     fn validate_run_preflight(
         &mut self,
         _resource: &dyn ResourceStream,
+        _output_schema: &Schema,
         _schema_hash: &SchemaHash,
     ) -> Result<()> {
         Ok(())
@@ -1302,6 +1303,40 @@ fn simple_file_resource(root: &Path, document: &str) -> cdf_declarative::Compile
         .remove(0)
 }
 
+fn long_identifier_file_resource(
+    root: &Path,
+    source_name: &str,
+) -> cdf_declarative::CompiledResource {
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(
+        root.join("data/events.ndjson"),
+        format!("{{\"VendorID\":1,\"{source_name}\":10}}\n"),
+    )
+    .unwrap();
+    let document = cdf_declarative::parse_toml(&format!(
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+id = "local.events"
+glob = "events.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+  {{ name = "VendorID", type = "int64", nullable = false }},
+  {{ name = "{source_name}", type = "int64", nullable = false }},
+] }}
+"#,
+    ))
+    .unwrap();
+    cdf_declarative::compile_document_with_project_root(&document, root)
+        .unwrap()
+        .remove(0)
+}
+
 fn multi_file_resource(root: &Path) -> cdf_declarative::CompiledResource {
     multi_file_resource_with_document(root, MULTI_FILE_RESOURCE_APPEND)
 }
@@ -1392,6 +1427,18 @@ fn sql_runtime_resource(table: &str) -> cdf_declarative::CompiledResource {
 }
 
 fn live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> EnginePlan {
+    let destination = ResolvedProjectDestination::duckdb(
+        "/tmp/cdf-plan-policy-only.duckdb",
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+    let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = identifier_policy;
+    live_plan_with_policy(resource, package_id, &policy)
+}
+
+fn default_live_plan(resource: &cdf_declarative::CompiledResource, package_id: &str) -> EnginePlan {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
@@ -1420,7 +1467,22 @@ fn live_plan_with_policy(
     package_id: &str,
     policy: &ContractPolicy,
 ) -> EnginePlan {
-    let mut plan = live_plan(resource, package_id);
+    let destination = ResolvedProjectDestination::duckdb(
+        "/tmp/cdf-plan-policy-only.duckdb",
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+    let mut policy = policy.clone();
+    policy.normalization.identifier = destination.column_identifier_policy().unwrap().unwrap();
+    live_plan_with_exact_policy(resource, package_id, &policy)
+}
+
+fn live_plan_with_exact_policy(
+    resource: &cdf_declarative::CompiledResource,
+    package_id: &str,
+    policy: &ContractPolicy,
+) -> EnginePlan {
+    let mut plan = default_live_plan(resource, package_id);
     plan.validation_program = compile_validation_program(
         policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
@@ -1436,7 +1498,7 @@ fn state_delta_request<'a>(
 ) -> LocalFileDuckDbRunRequest<'a> {
     LocalFileDuckDbRunRequest {
         resource,
-        plan: live_plan(resource, package_id),
+        plan: default_live_plan(resource, package_id),
         package_root: root.to_path_buf(),
         destination_path: root.join("dev.duckdb"),
         state_store_path: root.join("state.db"),
@@ -1547,6 +1609,8 @@ fn destination_planning_facade_rejects_parquet_merge_without_writes() {
         TargetName::new("events").unwrap(),
     )
     .unwrap();
+
+    assert_eq!(destination.column_identifier_policy().unwrap(), None);
 
     let error = destination.plan_resource_commit(&resource).unwrap_err();
 
@@ -1660,7 +1724,7 @@ fn parquet_project_run_request<'a>(
 ) -> ProjectRunRequest<'a> {
     ProjectRunRequest {
         resource: ProjectRunSource::local_file(resource),
-        plan: live_plan(resource, package_id),
+        plan: default_live_plan(resource, package_id),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -1686,21 +1750,25 @@ fn postgres_project_run_request<'a>(
     state_path: &Path,
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
+    let destination = ResolvedProjectDestination::postgres(
+        database_url.to_owned(),
+        target,
+        MergeDedupPolicy::Last,
+        None,
+    )
+    .unwrap();
+    let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = identifier_policy;
     ProjectRunRequest {
         resource: ProjectRunSource::local_file(resource),
-        plan: live_plan(resource, package_id),
+        plan: live_plan_with_exact_policy(resource, package_id, &policy),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
-        destination: ResolvedProjectDestination::postgres(
-            database_url.to_owned(),
-            target,
-            MergeDedupPolicy::Last,
-            None,
-        )
-        .unwrap(),
+        destination,
         run_id: Some(RunId::new(run_id).unwrap()),
         event_sink: None,
         after_receipt_verified: None,
@@ -3139,11 +3207,8 @@ fn merge_dedup_live_run_records_deduped_package_replay_identity_and_duplicate_re
         keys: vec!["id".to_owned()],
         keep: DedupKeep::Last,
     }];
-    plan.validation_program = compile_validation_program(
-        &policy,
-        &ObservedSchema::from_arrow(resource.schema().as_ref()),
-    )
-    .unwrap();
+    plan.validation_program =
+        live_plan_with_policy(&resource, package_id, &policy).validation_program;
     let mut request = project_run_request(
         &resource,
         package_id,
@@ -3297,11 +3362,8 @@ fn project_run_records_non_mirror_outcome_for_unsupported_quarantine_sheet() {
         min: None,
         max: Some("1".to_owned()),
     }];
-    plan.validation_program = compile_validation_program(
-        &policy,
-        &ObservedSchema::from_arrow(resource.schema().as_ref()),
-    )
-    .unwrap();
+    plan.validation_program =
+        live_plan_with_policy(&resource, package_id, &policy).validation_program;
 
     let report = futures_executor::block_on(run_local_file_to_duckdb_checkpoint(
         LocalFileDuckDbRunRequest {
@@ -3481,6 +3543,164 @@ fn general_project_run_commits_file_resource_to_postgres_with_ledger_order() {
         .unwrap()
         .get(0);
     assert_eq!(rows, 2);
+}
+
+#[test]
+fn postgres_destination_policy_truncates_package_and_committed_column_identically() {
+    const LONG_SOURCE: &str =
+        "this_is_a_very_long_vendor_identifier_column_name_that_exceeds_sixty_three_bytes_total";
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let temp = tempfile::tempdir().unwrap();
+    let resource = long_identifier_file_resource(temp.path(), LONG_SOURCE);
+    let package_id = "pkg-postgres-destination-normalization";
+    let package_root = temp.path().join(".cdf/packages");
+    let state_path = temp.path().join(".cdf/state.db");
+    let target = PostgresTarget::new(Some(&postgres.schema), "normalized_events").unwrap();
+    let destination = ResolvedProjectDestination::postgres(
+        postgres.url.clone(),
+        target,
+        MergeDedupPolicy::Last,
+        None,
+    )
+    .unwrap();
+    let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
+    let expected = cdf_contract::normalize_identifier(LONG_SOURCE, &identifier_policy).unwrap();
+    assert_eq!(expected.len(), 63);
+    assert_eq!(
+        expected,
+        cdf_contract::normalize_identifier(LONG_SOURCE, &identifier_policy).unwrap()
+    );
+    let mut contract = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    contract.normalization.identifier = identifier_policy.clone();
+
+    let report = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::local_file(&resource),
+        plan: live_plan_with_exact_policy(&resource, package_id, &contract),
+        package_root,
+        state_store_path: state_path,
+        pipeline_id: PipelineId::new("pipeline-postgres-destination-normalization").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-postgres-destination-normalization").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-postgres-destination-normalization").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap();
+
+    let validation: serde_json::Value = serde_json::from_slice(
+        &fs::read(report.package_dir.join("plan/validation-program.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(validation["identifier_policy"]["max_length"], 63);
+    let output: serde_json::Value =
+        serde_json::from_slice(&fs::read(report.package_dir.join("schema/output.json")).unwrap())
+            .unwrap();
+    assert_eq!(output["fields"][0]["name"], "vendor_id");
+    assert_eq!(output["fields"][1]["name"], expected);
+    assert_eq!(
+        output["fields"][1]["metadata"]["cdf:source_name"],
+        LONG_SOURCE
+    );
+
+    let mut client = postgres.client();
+    let columns = client
+        .query(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = 'normalized_events' ORDER BY ordinal_position",
+            &[&postgres.schema],
+        )
+        .unwrap()
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect::<Vec<_>>();
+    assert_eq!(&columns[..2], &["vendor_id".to_owned(), expected]);
+}
+
+#[test]
+fn stale_long_name_column_program_cannot_spoof_destination_policy_before_writes() {
+    const LONG_SOURCE: &str =
+        "this_is_a_very_long_vendor_identifier_column_name_that_exceeds_sixty_three_bytes_total";
+    let temp = tempfile::tempdir().unwrap();
+    let resource = long_identifier_file_resource(temp.path(), LONG_SOURCE);
+    let package_id = "pkg-stale-long-name-normalization";
+    let package_root = temp.path().join(".cdf/packages");
+    let destination_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let destination =
+        ResolvedProjectDestination::duckdb(&destination_path, TargetName::new("events").unwrap())
+            .unwrap();
+    let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
+    let mut plan = default_live_plan(&resource, package_id);
+    assert_ne!(
+        plan.validation_program.column_programs[1].output_name,
+        cdf_contract::normalize_identifier(LONG_SOURCE, &identifier_policy).unwrap()
+    );
+    plan.validation_program.normalizer_version = identifier_policy.version.clone();
+    plan.validation_program.identifier_policy = identifier_policy;
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::local_file(&resource),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-stale-long-name-normalization").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-stale-long-name-normalization").unwrap(),
+        destination,
+        run_id: Some(RunId::new("run-stale-long-name-normalization").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("normalization program is stale at column 1"));
+    assert!(message.contains(LONG_SOURCE));
+    assert!(message.contains("rebuild the plan for the selected destination"));
+    assert!(!package_root.join(package_id).exists());
+    assert!(!destination_path.exists());
+    assert!(!state_path.exists());
+}
+
+#[test]
+fn stale_normalizer_version_fails_before_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = live_file_resource(temp.path());
+    let package_id = "pkg-stale-normalizer-version";
+    let package_root = temp.path().join(".cdf/packages");
+    let destination_path = temp.path().join(".cdf/dev.duckdb");
+    let state_path = temp.path().join(".cdf/state.db");
+    let mut plan = live_plan(&resource, package_id);
+    plan.validation_program.normalizer_version = "namecase-v0-stale".to_owned();
+
+    let error = futures_executor::block_on(run_project(ProjectRunRequest {
+        resource: ProjectRunSource::local_file(&resource),
+        plan,
+        package_root: package_root.clone(),
+        state_store_path: state_path.clone(),
+        pipeline_id: PipelineId::new("pipeline-stale-normalizer-version").unwrap(),
+        package_id: package_id.to_owned(),
+        checkpoint_id: CheckpointId::new("checkpoint-stale-normalizer-version").unwrap(),
+        destination: ResolvedProjectDestination::duckdb(
+            &destination_path,
+            TargetName::new("events").unwrap(),
+        )
+        .unwrap(),
+        run_id: Some(RunId::new("run-stale-normalizer-version").unwrap()),
+        event_sink: None,
+        after_receipt_verified: None,
+    }))
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("normalization program is stale"));
+    assert!(message.contains("normalizer_version"));
+    assert!(message.contains("rebuild the plan for the selected destination"));
+    assert!(!package_root.join(package_id).exists());
+    assert!(!destination_path.exists());
+    assert!(!state_path.exists());
 }
 
 #[test]

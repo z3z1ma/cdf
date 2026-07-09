@@ -33,6 +33,13 @@ use crate::{
 pub type PackagePreFinalizeHook<'a> =
     dyn Fn(&PackageBuilder, EnginePackageDraft<'_>) -> Result<()> + 'a;
 
+pub fn normalize_record_batch(
+    batch: RecordBatch,
+    program: &ValidationProgram,
+) -> Result<RecordBatch> {
+    normalize_batch(batch, program)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct SchemaArtifact {
     fields: Vec<SchemaFieldArtifact>,
@@ -533,7 +540,7 @@ fn write_output_batch(
     output_position: Option<SourcePosition>,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
-    let output = normalize_batch(output, program)?;
+    let output = normalize_record_batch(output, program)?;
     *state.output_schema = Some(schema_artifact(output.schema().as_ref()));
     state.profile.output_rows += output.num_rows() as u64;
     state.profile.output_bytes += output.get_array_memory_size() as u64;

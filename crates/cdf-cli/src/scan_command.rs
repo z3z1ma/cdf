@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, fs};
 
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{ContractPolicy, IdentifierPolicy, ObservedSchema, compile_validation_program};
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
@@ -15,7 +15,7 @@ use crate::{
     args::{Cli, ScanArgs},
     commands::json_cli_error,
     context::ProjectContext,
-    destination_uri::{redact_error_value, resolve_selected_destination},
+    destination_uri::{EnvironmentDestination, redact_error_value, resolve_selected_destination},
     error_catalog,
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
@@ -50,15 +50,21 @@ pub(crate) fn plan_or_explain(
     let target = scan_target(&args)?;
     let resource = context.resource(&args.resource_id)?;
     let prepared = prepare_discover_resource_for_cli(&context, resource, args.no_pin)?;
+    let resolved =
+        resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
+    let identifier_policy = resolved.destination.column_identifier_policy()?;
     let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
-    let plan = build_engine_plan_for_resource(runtime_resource.as_queryable(), &args)?;
+    let plan = build_engine_plan_for_resource(
+        runtime_resource.as_queryable(),
+        &args,
+        identifier_policy.as_ref(),
+    )?;
     let report = scan_report(
         &context,
         &prepared.resource,
         &plan,
-        &target,
-        args.destination_uri.as_deref(),
         command,
+        resolved,
         prepared.schema_snapshot,
     )?;
     CommandOutput::rendered(
@@ -73,8 +79,20 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
     let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
+    let target = scan_target(&args)?;
+    let resolved = resolve_scan_destination(
+        &context,
+        &target,
+        args.destination_uri.as_deref(),
+        "preview",
+    )?;
+    let identifier_policy = resolved.destination.column_identifier_policy()?;
     let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
-    let plan = build_engine_plan_for_resource(runtime_resource.as_queryable(), &args)?;
+    let plan = build_engine_plan_for_resource(
+        runtime_resource.as_queryable(),
+        &args,
+        identifier_policy.as_ref(),
+    )?;
     match preview_one_batch(&runtime_resource, &plan) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
@@ -184,9 +202,13 @@ pub(crate) fn prepare_discover_resource_for_cli(
 pub(crate) fn build_engine_plan_for_resource(
     resource: &dyn QueryableResource,
     args: &ScanArgs,
+    identifier_policy: Option<&IdentifierPolicy>,
 ) -> Result<EnginePlan, CliError> {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    if let Some(identifier_policy) = identifier_policy {
+        policy.normalization.identifier = identifier_policy.clone();
+    }
     let validation_program = compile_validation_program(&policy, &observed_schema)?;
     let request = scan_request(resource.descriptor(), args)?;
     let input = EnginePlanInput {
@@ -254,18 +276,21 @@ fn scan_report(
     context: &ProjectContext,
     resource: &CompiledResource,
     plan: &EnginePlan,
-    target: &TargetName,
-    destination_uri: Option<&str>,
     command: &'static str,
+    resolved: EnvironmentDestination,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> Result<ScanPlanReport, CliError> {
-    let destination_plan =
-        destination_plan_report(context, resource, target, destination_uri, command)?;
+    let destination_plan = destination_plan_report(resolved, resource, command)?;
     Ok(ScanPlanReport {
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
         resource_id: plan.scan.request.resource_id.to_string(),
-        resource_schema: resource_schema_report(resource, &destination_plan.schema_hash),
+        resource_schema: resource_schema_report(
+            resource,
+            &destination_plan.schema_hash,
+            &plan.validation_program,
+        ),
+        normalization: plan.validation_program.identifier_policy.clone(),
         will_fetch: FetchReport {
             partitions: plan.scan.partitions.iter().map(partition_report).collect(),
             projection: plan.scan.request.projection.clone().unwrap_or_default(),
@@ -323,16 +348,10 @@ pub(crate) fn default_target_for_resource(resource_id: &str) -> String {
 }
 
 fn destination_plan_report(
-    context: &ProjectContext,
+    resolved: EnvironmentDestination,
     resource: &cdf_declarative::CompiledResource,
-    target: &TargetName,
-    destination_uri: Option<&str>,
     command: &'static str,
 ) -> Result<DestinationPlanReport, CliError> {
-    let resolved =
-        resolve_selected_destination(context, target, destination_uri).map_err(|error| {
-            plan_destination_resolution_error(command, context, destination_uri, error)
-        })?;
     let mut destination = resolved.destination;
     let plan = destination
         .plan_resource_commit(resource)
@@ -342,6 +361,17 @@ fn destination_plan_report(
             CliError::from(error)
         })?;
     DestinationPlanReport::from_project(plan, resource).map_err(CliError::from)
+}
+
+fn resolve_scan_destination(
+    context: &ProjectContext,
+    target: &TargetName,
+    destination_uri: Option<&str>,
+    command: &'static str,
+) -> Result<EnvironmentDestination, CliError> {
+    resolve_selected_destination(context, target, destination_uri).map_err(|error| {
+        plan_destination_resolution_error(command, context, destination_uri, error)
+    })
 }
 
 fn command_correct_scan_message(command: &str, message: String) -> String {
@@ -402,6 +432,13 @@ fn preview_one_batch(
     let mut stream = futures_executor::block_on(resource.open_preview(partition))?;
     let batch = futures_executor::block_on(async { stream.next().await })
         .ok_or_else(|| CdfError::data("resource produced no preview batch"))??;
+    let normalized = cdf_engine::normalize_record_batch(
+        batch
+            .record_batch()
+            .ok_or_else(|| CdfError::data("resource preview requires an Arrow record batch"))?
+            .clone(),
+        &plan.validation_program,
+    )?;
     let writes = WriteEffects::default();
     Ok(PreviewReport {
         resource: batch.header.resource_id.to_string(),
@@ -412,6 +449,13 @@ fn preview_one_batch(
         partition_id: batch.header.partition_id.to_string(),
         row_count: batch.header.row_count,
         byte_count: batch.header.byte_count,
+        fields: normalized
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().clone())
+            .collect(),
+        normalization: plan.validation_program.identifier_policy.clone(),
         write_effects: writes.clone(),
         writes,
     })
@@ -520,6 +564,7 @@ fn scan_report_document(
         .push(
             KeyValuePanel::new("Contract")
                 .row("schema", report.resource_schema.schema_hash.clone())
+                .row("normalizer", report.normalization.version.clone())
                 .row(
                     "schema source",
                     report.resource_schema.schema_source.clone(),
@@ -638,7 +683,9 @@ fn preview_document(report: &PreviewReport) -> RenderDocument {
                 .row("partition", report.partition.clone())
                 .row("batch", report.batch.clone())
                 .row("rows", humanize_rows(report.row_count))
-                .row("bytes", humanize_bytes(report.byte_count)),
+                .row("bytes", humanize_bytes(report.byte_count))
+                .row("normalizer", report.normalization.version.clone())
+                .row("fields", report.fields.join(", ")),
         )
         .blank_line()
         .push(
@@ -702,6 +749,7 @@ struct ScanPlanReport {
     environment: String,
     resource_id: String,
     resource_schema: ResourceSchemaReport,
+    normalization: IdentifierPolicy,
     will_fetch: FetchReport,
     pushdown: PushdownReport,
     destination: DestinationReport,
@@ -804,6 +852,8 @@ struct PreviewReport {
     partition_id: String,
     row_count: u64,
     byte_count: u64,
+    fields: Vec<String>,
+    normalization: IdentifierPolicy,
     write_effects: WriteEffects,
     writes: WriteEffects,
 }
@@ -882,6 +932,7 @@ impl DestinationPlanReport {
 fn resource_schema_report(
     resource: &cdf_declarative::CompiledResource,
     schema_hash: &cdf_kernel::SchemaHash,
+    program: &cdf_contract::ValidationProgram,
 ) -> ResourceSchemaReport {
     let snapshot = resource.descriptor().schema_source.pinned_snapshot();
     ResourceSchemaReport {
@@ -895,8 +946,9 @@ fn resource_schema_report(
             .schema()
             .fields()
             .iter()
-            .map(|field| ResourceSchemaFieldReport {
-                name: field.name().clone(),
+            .zip(&program.column_programs)
+            .map(|(field, column)| ResourceSchemaFieldReport {
+                name: column.output_name.clone(),
                 data_type: format!("{:?}", field.data_type()),
                 nullable: field.is_nullable(),
             })

@@ -8,10 +8,11 @@ use arrow_array::{
 use arrow_cast::cast::cast;
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    ContractEvaluationContext, ContractPolicy, FieldCoercionDecision, NestedAction, ObservedSchema,
-    PromotionPolicy, RowDispositionKind, RowDispositionRule, RowRule, RuleOutcome,
-    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, ValidationProgram, assert_verdict_lattice_total,
-    compile_validation_program, evaluate_record_batch, reconcile_schema,
+    ContractEvaluationContext, ContractPolicy, FieldCoercionDecision, IdentifierPolicy,
+    NestedAction, ObservedSchema, PromotionPolicy, RowDispositionKind, RowDispositionRule, RowRule,
+    RuleOutcome, VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, ValidationProgram,
+    assert_verdict_lattice_total, compile_validation_program, evaluate_record_batch,
+    reconcile_schema,
 };
 use proptest::prelude::*;
 use std::sync::Arc;
@@ -19,6 +20,7 @@ use std::sync::Arc;
 fn validation_program(row_dispositions: Vec<RowDispositionRule>) -> ValidationProgram {
     ValidationProgram {
         normalizer_version: "property-fuzz".to_owned(),
+        identifier_policy: IdentifierPolicy::default(),
         schema_coercion: None,
         schema_verdicts: Vec::new(),
         column_programs: Vec::new(),

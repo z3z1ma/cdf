@@ -121,6 +121,7 @@ impl ProjectDestinationRuntime for FilesystemParquetProjectDestinationRuntime {
     fn plan_resource_commit(
         &mut self,
         _resource: &dyn ResourceStream,
+        _output_schema: &Schema,
         inputs: &DestinationCommitPlanningInputs,
     ) -> Result<DestinationCommitPlanningOutcome> {
         let (sheet, plan) = ParquetDestination::dry_plan_commit(&inputs.destination_commit)?;

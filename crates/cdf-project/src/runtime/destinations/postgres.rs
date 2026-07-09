@@ -109,6 +109,7 @@ impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
     fn validate_run_preflight(
         &mut self,
         resource: &dyn ResourceStream,
+        output_schema: &Schema,
         schema_hash: &SchemaHash,
     ) -> Result<()> {
         let replay = self.replay.as_ref().ok_or_else(|| {
@@ -133,7 +134,7 @@ impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
             replay.target.clone(),
             replay.dedup.clone(),
             replay.existing_table.clone(),
-            postgres_columns_from_schema(resource)?,
+            postgres_columns_for_schema(output_schema)?,
         )?;
         self.destination.plan_load(input)?;
         Ok(())
@@ -142,6 +143,7 @@ impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
     fn plan_resource_commit(
         &mut self,
         resource: &dyn ResourceStream,
+        output_schema: &Schema,
         inputs: &DestinationCommitPlanningInputs,
     ) -> Result<DestinationCommitPlanningOutcome> {
         let replay = self.replay.as_ref().ok_or_else(|| {
@@ -159,7 +161,7 @@ impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
             replay.target.clone(),
             replay.dedup.clone(),
             replay.existing_table.clone(),
-            postgres_columns_from_schema(resource)?,
+            postgres_columns_for_schema(output_schema)?,
         )?;
         let load_plan = self.destination.plan_load(load_input)?;
         Ok(DestinationCommitPlanningOutcome::new(
@@ -279,10 +281,6 @@ pub(crate) fn validate_postgres_replay_target(
 
 fn postgres_merge_keys_from_artifacts(keys: &[String]) -> Result<Vec<PostgresIdentifier>> {
     keys.iter().map(PostgresIdentifier::user).collect()
-}
-
-fn postgres_columns_from_schema(resource: &dyn ResourceStream) -> Result<Vec<PostgresColumn>> {
-    postgres_columns_for_schema(resource.schema().as_ref())
 }
 
 fn postgres_columns_from_package(reader: &PackageReader) -> Result<Vec<PostgresColumn>> {

@@ -5,7 +5,8 @@ use std::{
 };
 
 use cdf_contract::{
-    ContractPolicy, DedupKeep, ObservedSchema, RowRule, compile_validation_program,
+    ContractPolicy, DedupKeep, IdentifierPolicy, ObservedSchema, RowRule,
+    compile_validation_program,
 };
 use cdf_declarative::CompiledResource;
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
@@ -110,7 +111,8 @@ pub(super) fn run_scenario(
     let package_id = format!("pkg-e6-drift-quarantine-{run_label}");
     let checkpoint_id = CheckpointId::new(format!("checkpoint-e6-drift-quarantine-{run_label}"))?;
     let run_id = RunId::new(format!("run-e6-drift-quarantine-{run_label}"))?;
-    let plan = drift_quarantine_plan(&resource, &package_id)?;
+    let identifier_policy = destination.column_identifier_policy()?;
+    let plan = drift_quarantine_plan(&resource, &package_id, identifier_policy.as_ref())?;
     assert_frozen_contract_program(&plan);
 
     fs::create_dir_all(&spec.package_root)
@@ -189,8 +191,15 @@ fn compile_resource(project_root: &Path) -> Result<CompiledResource> {
     Ok(resource)
 }
 
-fn drift_quarantine_plan(resource: &CompiledResource, package_id: &str) -> Result<EnginePlan> {
+fn drift_quarantine_plan(
+    resource: &CompiledResource,
+    package_id: &str,
+    identifier_policy: Option<&IdentifierPolicy>,
+) -> Result<EnginePlan> {
     let mut policy = ContractPolicy::freeze();
+    if let Some(identifier_policy) = identifier_policy {
+        policy.normalization.identifier = identifier_policy.clone();
+    }
     policy.promotion.allow_sampled_fast_path = true;
     policy.promotion.clean_runs_required = 1;
     policy.promotion.demote_on_quarantine = true;

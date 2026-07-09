@@ -1,25 +1,45 @@
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{ContractPolicy, IdentifierPolicy, ObservedSchema, compile_validation_program};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{QueryableResource, Result, ScanRequest};
 use serde_json::json;
 
 use super::{MatrixDisposition, file_fixture};
 
-pub(crate) fn file_engine_plan(
+pub(crate) fn file_engine_plan<R>(
+    resource: &R,
     package_id: &str,
     disposition: MatrixDisposition,
-) -> Result<EnginePlan> {
-    serde_json::from_value(file_engine_plan_json(package_id, disposition)).map_err(|error| {
-        cdf_kernel::CdfError::data(format!("build run matrix engine plan: {error}"))
-    })
+    identifier_policy: Option<&IdentifierPolicy>,
+) -> Result<EnginePlan>
+where
+    R: QueryableResource + ?Sized,
+{
+    let mut plan: EnginePlan =
+        serde_json::from_value(file_engine_plan_json(package_id, disposition)).map_err(
+            |error| cdf_kernel::CdfError::data(format!("build run matrix engine plan: {error}")),
+        )?;
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    if let Some(identifier_policy) = identifier_policy {
+        policy.normalization.identifier = identifier_policy.clone();
+    }
+    plan.validation_program = compile_validation_program(&policy, &observed_schema)?;
+    Ok(plan)
 }
 
-pub(crate) fn planned_engine_plan<R>(resource: &R, package_id: &str) -> Result<EnginePlan>
+pub(crate) fn planned_engine_plan<R>(
+    resource: &R,
+    package_id: &str,
+    identifier_policy: Option<&IdentifierPolicy>,
+) -> Result<EnginePlan>
 where
     R: QueryableResource + ?Sized,
 {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    if let Some(identifier_policy) = identifier_policy {
+        policy.normalization.identifier = identifier_policy.clone();
+    }
     let validation_program = compile_validation_program(&policy, &observed_schema)?;
     Planner::new().plan_tier_b(
         resource,

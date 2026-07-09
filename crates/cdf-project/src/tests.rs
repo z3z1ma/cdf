@@ -1346,7 +1346,13 @@ fn http_file_dependencies(transport: RecordingHttpFileTransport) -> FileRuntimeD
 
 fn live_plan_for_stream(resource: &dyn QueryableResource, package_id: &str) -> EnginePlan {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let destination = ResolvedProjectDestination::duckdb(
+        "/tmp/cdf-project-plan-policy-only.duckdb",
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = destination.column_identifier_policy().unwrap().unwrap();
     let validation_program = compile_validation_program(&policy, &observed_schema).unwrap();
     Planner::new()
         .plan_tier_b(
@@ -1779,12 +1785,15 @@ fn local_project_scaffold_writes_valid_project_without_runtime_artifacts() {
 
     let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
     let readme = fs::read_to_string(root.join("README.md")).unwrap();
+    let resource = fs::read_to_string(root.join("resources/files.toml")).unwrap();
     assert!(readme.contains("docs/quickstart.md"));
     assert!(readme.contains("cdf validate"));
     assert!(readme.contains("cdf plan local.events --target local_events"));
     assert!(readme.contains("cdf run --resource local.events"));
     assert!(!readme.contains("secret://"));
     assert!(!readme.contains(root.to_str().unwrap()));
+    assert!(!resource.contains("primary_key"));
+    assert!(!resource.contains("merge_key"));
     let resolver = FileResourceSourceResolver::new(&root);
     let provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
     let validation = validate_project(&config, Some("dev"), &resolver, &provider).unwrap();

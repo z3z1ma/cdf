@@ -70,7 +70,7 @@ pub fn normalize_arrow_schema(schema: &Schema, policy: &IdentifierPolicy) -> Res
         })
         .collect::<Vec<_>>();
 
-    Ok(Schema::new(fields))
+    Ok(Schema::new_with_metadata(fields, schema.metadata().clone()))
 }
 
 pub fn normalize_identifier(source_name: &str, policy: &IdentifierPolicy) -> Result<String> {

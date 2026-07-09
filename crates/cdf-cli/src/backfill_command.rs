@@ -1,3 +1,4 @@
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_kernel::{CdfError, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
     BackfillPlan, BackfillPlanRequest, BackfillSlice, ProjectRunRequest, ProjectRunSource,
@@ -89,12 +90,22 @@ fn execute_slice(
     let resolved = resolve_environment_destination(context, target)
         .map_err(|error| backfill_destination_resolution_error(context, error))?;
     let destination = resolved.destination;
+    let identifier_policy = destination.column_identifier_policy()?;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
     let scoped = WindowScopedResource::new(source.queryable(), slice.scope.clone());
+    let mut engine_plan = slice.engine_plan.clone();
+    if let Some(identifier_policy) = identifier_policy {
+        let mut policy = ContractPolicy::for_trust(source.descriptor().trust_level.clone());
+        policy.normalization.identifier = identifier_policy;
+        engine_plan.validation_program = compile_validation_program(
+            &policy,
+            &ObservedSchema::from_arrow(source.queryable().schema().as_ref()),
+        )?;
+    }
     let run = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::new(&scoped),
-        plan: slice.engine_plan.clone(),
+        plan: engine_plan,
         package_root: context.package_root(),
         state_store_path: context.state_store_path()?,
         pipeline_id: pipeline_id.clone(),

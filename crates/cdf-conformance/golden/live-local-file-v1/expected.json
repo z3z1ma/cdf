@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-v1",
-  "package_hash": "sha256:cddf7ef98b17297cba72c4a04f8c42df896b41e095c207457d1ce4fa7de8e485",
+  "package_hash": "sha256:0839903f3e9000b46209836a3eda03792f8557bb70940bbe6be287cb4ef9d656",
   "checkpoint_id": "checkpoint-live-local-file-v1",
   "pipeline_id": "pipeline-live-local-file-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:cddf7ef98b17297cba72c4a04f8c42df896b41e095c207457d1ce4fa7de8e485",
+    "package_hash": "sha256:0839903f3e9000b46209836a3eda03792f8557bb70940bbe6be287cb4ef9d656",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:cddf7ef98b17297cba72c4a04f8c42df896b41e095c207457d1ce4fa7de8e485",
+    "signature_signing_input": "sha256:0839903f3e9000b46209836a3eda03792f8557bb70940bbe6be287cb4ef9d656",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -65,8 +65,8 @@
       },
       {
         "path": "plan/validation-program.json",
-        "byte_count": 1296,
-        "sha256": "a32db2b5e2a3f06a21353fee411aeb4f1aad8a2287dd771ed3e01c0fe94e2b4c"
+        "byte_count": 1429,
+        "sha256": "84171f36dc3ec9f342471769eb13b11e33df746e6ad0abf98b1e3e44f3798e2c"
       },
       {
         "path": "schema/coercion-plan.json",

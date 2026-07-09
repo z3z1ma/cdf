@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md
@@ -32,7 +32,10 @@ Cloud-specific errors, future compression/format-detection diagnostics, Python/W
 ## Progress and notes
 
 - 2026-07-09: Opened after G1 established the deep-validation doorway and B6 made reconciliation decisions exact; the remaining gap is preserving that specificity through CLI command/error rendering.
+- 2026-07-09: Read-only preflight found the current deep-validation check compares the constraint schema to itself and plan does no physical reconciliation. Structured reconciliation errors and bounded Parquet footer probes already exist, but JSON inspection is currently unbounded, row-local JSON gates have no ratified warning representation, and Tier-0 resource declarations cannot express the `coerce_types` / `allow_lossy_mapping` fixes named by the reconciler. No implementation was started. The preflight also identified a required source-location redactor that removes every query value rather than relying on secret-looking parameter names.
 
 ## Blockers
 
-None for the supported source set.
+- Ratify the JSON/NDJSON compiler-probe bound. Recommended contract: stop at the first of 4,096 records or 8 MiB of decoded input and record both limits plus actual sampled counts.
+- Ratify row-local mismatch rendering. Recommended contract: `cdf validate --deep` emits typed warnings for quarantinable row-local mismatches; plan/preview/run keep them as governed non-fatal outcomes.
+- Ratify the Tier-0 override surface for existing type-policy fields. Recommended contract: optional `[resource.<name>.types]` / `types = { coerce_types = ..., allow_lossy_mapping = ... }`; both allowances remain `false` unless explicitly written, while non-allowance fidelity fields may continue to derive from the governing contract.

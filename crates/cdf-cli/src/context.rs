@@ -84,6 +84,15 @@ impl ProjectContext {
                 Ok(context)
             })
             .map_err(|error| {
+                if error.message.contains("missing merge_key") {
+                    return CliError::mapped(
+                        CdfError::contract(format!(
+                            "cdf {command} cannot compile the selected resource: {}",
+                            error.message
+                        )),
+                        error_catalog::PROJECT_MERGE_KEY,
+                    );
+                }
                 if error.message.contains("resource mapping pattern") {
                     return CliError::usage_with(
                         format!("cdf {command} cannot load project: {}", error.message),

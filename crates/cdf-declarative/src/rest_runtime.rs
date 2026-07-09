@@ -4,11 +4,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use arrow_array::{
-    ArrayRef, BooleanArray, Date32Array, Float64Array, Int64Array, RecordBatch, StringArray,
-    TimestampMicrosecondArray, TimestampMillisecondArray, UInt64Array,
-};
+use arrow_array::RecordBatch;
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use cdf_formats::{JsonOptions, ReadOptions, read_ndjson_bytes_with_declared_schema};
 use cdf_http::{
     AuthRefreshHook, AuthScheme, AuthSession, HttpMethod, HttpRequest, HttpResponse, HttpTransport,
     Paginator, RateLimiter, RetryBudget, RetryDecision, RetryPolicy, RetryUnit, SecretProvider,
@@ -285,6 +283,7 @@ fn execute_rest(
     });
     let mut batches = Vec::new();
     let mut page_index = 0_usize;
+    let mut reconciliation_plan = None::<String>;
 
     while let Some(url) = next_url {
         let mut response = send_page(
@@ -303,7 +302,17 @@ fn execute_rest(
         response.page.fields = decoded.pagination_fields;
 
         if !decoded.records.is_empty() {
-            let (record_batch, position) = records_to_batch(&schema, descriptor, &decoded.records)?;
+            let page = reconcile_rest_page(&schema, descriptor, partition, &decoded.records)?;
+            if let Some(page_plan) = &page.schema_coercion_plan {
+                if let Some(previous) = &reconciliation_plan
+                    && previous != page_plan
+                {
+                    return Err(CdfError::data(
+                        "REST pages produced inconsistent schema coercion plans",
+                    ));
+                }
+                reconciliation_plan = Some(page_plan.clone());
+            }
             let mut batch = Batch::from_record_batch(
                 BatchId::new(format!(
                     "{}-{}-{:06}",
@@ -314,9 +323,11 @@ fn execute_rest(
                 descriptor.resource_id.clone(),
                 partition.partition_id.clone(),
                 schema_hash.clone(),
-                record_batch,
+                page.record_batch,
             )?;
-            batch.header.source_position = position;
+            batch.header.source_position = page.source_position;
+            batch.header.pre_contract_quarantine = page.pre_contract_quarantine;
+            batch.header.schema_coercion_plan = page.schema_coercion_plan;
             batches.push(batch);
         }
 
@@ -775,148 +786,89 @@ impl InferredRestKind {
     }
 }
 
-fn records_to_batch(
+struct ReconciledRestPage {
+    record_batch: RecordBatch,
+    source_position: Option<SourcePosition>,
+    pre_contract_quarantine: Vec<cdf_kernel::PreContractQuarantineFact>,
+    schema_coercion_plan: Option<String>,
+}
+
+fn reconcile_rest_page(
+    schema: &SchemaRef,
+    descriptor: &ResourceDescriptor,
+    partition: &PartitionPlan,
+    records: &[Map<String, Value>],
+) -> Result<ReconciledRestPage> {
+    let mut ndjson = Vec::new();
+    for record in records {
+        serde_json::to_writer(&mut ndjson, record)
+            .map_err(|error| CdfError::data(format!("serialize REST record: {error}")))?;
+        ndjson.push(b'\n');
+    }
+    let read_options = ReadOptions::new(
+        descriptor.resource_id.clone(),
+        partition.partition_id.clone(),
+    )
+    .with_batch_size(records.len().max(1))?;
+    let read = read_ndjson_bytes_with_declared_schema(
+        &ndjson,
+        &read_options,
+        &JsonOptions::default(),
+        schema.clone(),
+    )?;
+    let [format_batch] = read.batches.as_slice() else {
+        return Err(CdfError::internal(
+            "REST page reconciliation expected exactly one format batch",
+        ));
+    };
+    let source_position = rest_page_cursor_position(schema, descriptor, records)?;
+    let mut pre_contract_quarantine = format_batch.header.pre_contract_quarantine.clone();
+    for fact in &mut pre_contract_quarantine {
+        fact.source_position = source_position.clone();
+    }
+
+    Ok(ReconciledRestPage {
+        record_batch: format_batch
+            .record_batch()
+            .ok_or_else(|| CdfError::internal("REST format batch has no Arrow payload"))?
+            .clone(),
+        source_position,
+        pre_contract_quarantine,
+        schema_coercion_plan: format_batch.header.schema_coercion_plan.clone(),
+    })
+}
+
+fn rest_page_cursor_position(
     schema: &SchemaRef,
     descriptor: &ResourceDescriptor,
     records: &[Map<String, Value>],
-) -> Result<(RecordBatch, Option<SourcePosition>)> {
-    let mut arrays = Vec::with_capacity(schema.fields().len());
-    let mut cursor = None;
-
-    for field in schema.fields() {
-        arrays.push(array_for_field(field.as_ref(), records)?);
-        if descriptor
-            .cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.field == field.name().as_str())
-        {
-            cursor = Some(max_cursor_for_field(field.as_ref(), records)?);
-        }
+) -> Result<Option<SourcePosition>> {
+    let Some(cursor_spec) = &descriptor.cursor else {
+        return Ok(None);
+    };
+    if records.is_empty() {
+        return Ok(None);
     }
-
-    let record_batch = RecordBatch::try_new(schema.clone(), arrays).map_err(CdfError::from)?;
-    let source_position = match (&descriptor.cursor, cursor) {
-        (Some(cursor_spec), Some(value)) => Some(SourcePosition::Cursor(CursorPosition {
-            version: 1,
-            field: cursor_spec.field.clone(),
-            value: value.into_cursor_value(),
-        })),
-        (Some(cursor_spec), None) => {
-            return Err(CdfError::data(format!(
+    let field = schema
+        .fields()
+        .iter()
+        .map(|field| field.as_ref())
+        .find(|field| {
+            cursor_spec.field == field.name().as_str()
+                || source_name(field).is_some_and(|source| cursor_spec.field == source)
+        })
+        .ok_or_else(|| {
+            CdfError::data(format!(
                 "REST cursor field `{}` is missing from declared schema",
                 cursor_spec.field
-            )));
-        }
-        (None, _) => None,
-    };
-    Ok((record_batch, source_position))
-}
-
-fn array_for_field(
-    field: &arrow_schema::Field,
-    records: &[Map<String, Value>],
-) -> Result<ArrayRef> {
-    let name = field.name();
-    match field.data_type() {
-        DataType::Utf8 => Ok(Arc::new(StringArray::from(
-            records
-                .iter()
-                .map(|record| match optional_value(record, field)? {
-                    Some(value) => string_value(name, value).map(Some),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Int64 => Ok(Arc::new(Int64Array::from(
-            records
-                .iter()
-                .map(|record| match optional_value(record, field)? {
-                    Some(value) => i64_value(name, value).map(Some),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::UInt64 => Ok(Arc::new(UInt64Array::from(
-            records
-                .iter()
-                .map(|record| match optional_value(record, field)? {
-                    Some(value) => u64_value(name, value).map(Some),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Float64 => Ok(Arc::new(Float64Array::from(
-            records
-                .iter()
-                .map(|record| match optional_value(record, field)? {
-                    Some(value) => f64_value(name, value).map(Some),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Boolean => Ok(Arc::new(BooleanArray::from(
-            records
-                .iter()
-                .map(|record| match optional_value(record, field)? {
-                    Some(value) => bool_value(name, value).map(Some),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Date32 => Ok(Arc::new(Date32Array::from(
-            records
-                .iter()
-                .map(|record| match optional_value(record, field)? {
-                    Some(value) => date32_value(name, value).map(Some),
-                    None => Ok(None),
-                })
-                .collect::<Result<Vec<_>>>()?,
-        ))),
-        DataType::Timestamp(TimeUnit::Millisecond, timezone) => {
-            let array = TimestampMillisecondArray::from(
-                records
-                    .iter()
-                    .map(|record| match optional_value(record, field)? {
-                        Some(value) => timestamp_millis_value(name, value).map(Some),
-                        None => Ok(None),
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-            )
-            .with_timezone_opt(timezone.clone());
-            Ok(Arc::new(array))
-        }
-        DataType::Timestamp(TimeUnit::Microsecond, timezone) => {
-            let array = TimestampMicrosecondArray::from(
-                records
-                    .iter()
-                    .map(|record| match optional_value(record, field)? {
-                        Some(value) => timestamp_micros_value(name, value).map(Some),
-                        None => Ok(None),
-                    })
-                    .collect::<Result<Vec<_>>>()?,
-            )
-            .with_timezone_opt(timezone.clone());
-            Ok(Arc::new(array))
-        }
-        other => Err(CdfError::data(format!(
-            "REST schema field `{name}` has unsupported Arrow type {other}"
-        ))),
-    }
-}
-
-fn optional_value<'a>(
-    record: &'a Map<String, Value>,
-    field: &arrow_schema::Field,
-) -> Result<Option<&'a Value>> {
-    let key = source_name(field).unwrap_or_else(|| field.name().as_str());
-    match record.get(key) {
-        Some(Value::Null) | None if field.is_nullable() => Ok(None),
-        Some(Value::Null) | None => Err(CdfError::data(format!(
-            "REST record is missing non-nullable field `{}`",
-            field.name()
-        ))),
-        Some(value) => Ok(Some(value)),
-    }
+            ))
+        })?;
+    let value = max_cursor_for_field(field, records)?;
+    Ok(Some(SourcePosition::Cursor(CursorPosition {
+        version: 1,
+        field: cursor_spec.field.clone(),
+        value: value.into_cursor_value(),
+    })))
 }
 
 fn max_cursor_for_field(
@@ -1088,6 +1040,7 @@ fn f64_value(field: &str, value: &Value) -> Result<f64> {
     Ok(parsed)
 }
 
+#[cfg(test)]
 fn bool_value(field: &str, value: &Value) -> Result<bool> {
     match value {
         Value::Bool(value) => Ok(*value),

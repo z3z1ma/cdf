@@ -7,7 +7,7 @@ use arrow_array::{
     UInt16Array, UInt32Array, UInt64Array,
 };
 use arrow_schema::{DataType, TimeUnit};
-use cdf_kernel::{CdfError, Result, SourcePosition};
+use cdf_kernel::{CdfError, Result, SourcePosition, source_name};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -287,7 +287,8 @@ pub fn evaluate_package_order_dedup(
 
 fn validate_covered_batch_schema(program: &ValidationProgram, batch: &RecordBatch) -> Result<()> {
     for field in batch.schema().fields() {
-        let Some(column) = column_program_for_field(program, field.name()) else {
+        let field_source_name = source_name(field).unwrap_or_else(|| field.name());
+        let Some(column) = column_program_for_field(program, field_source_name) else {
             return Err(CdfError::contract(format!(
                 "validation program does not cover field {:?}",
                 field.name()
@@ -562,7 +563,20 @@ fn resolve_column<'a>(
     let schema = batch.schema();
     let index = schema
         .index_of(&program_column.source_name)
-        .or_else(|_| schema.index_of(&program_column.output_name));
+        .or_else(|_| schema.index_of(&program_column.output_name))
+        .or_else(|_| {
+            schema
+                .fields()
+                .iter()
+                .position(|field| {
+                    source_name(field).is_some_and(|name| name == program_column.source_name)
+                })
+                .ok_or_else(|| {
+                    arrow_schema::ArrowError::SchemaError(
+                        "source metadata field not found".to_owned(),
+                    )
+                })
+        });
     let Ok(index) = index else {
         return Ok(None);
     };

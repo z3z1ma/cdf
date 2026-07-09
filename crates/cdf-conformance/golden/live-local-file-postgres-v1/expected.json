@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-postgres-v1",
-  "package_hash": "sha256:961cd2bec42159a95111ea2cae4c90c075f61eee554453b76408cca48ee74033",
+  "package_hash": "sha256:eef97da8cc1e54ea9a2c6277bebeececc1361b59d3a0a3f3963460b09f48acf4",
   "checkpoint_id": "checkpoint-live-local-file-postgres-v1",
   "pipeline_id": "pipeline-live-local-file-postgres-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:961cd2bec42159a95111ea2cae4c90c075f61eee554453b76408cca48ee74033",
+    "package_hash": "sha256:eef97da8cc1e54ea9a2c6277bebeececc1361b59d3a0a3f3963460b09f48acf4",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:961cd2bec42159a95111ea2cae4c90c075f61eee554453b76408cca48ee74033",
+    "signature_signing_input": "sha256:eef97da8cc1e54ea9a2c6277bebeececc1361b59d3a0a3f3963460b09f48acf4",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -65,8 +65,8 @@
       },
       {
         "path": "plan/validation-program.json",
-        "byte_count": 1296,
-        "sha256": "a32db2b5e2a3f06a21353fee411aeb4f1aad8a2287dd771ed3e01c0fe94e2b4c"
+        "byte_count": 1388,
+        "sha256": "c432d057dbde87b24b72a3c60c3d398edfd5166a286bde4cfb0fbbd3348fad92"
       },
       {
         "path": "schema/coercion-plan.json",

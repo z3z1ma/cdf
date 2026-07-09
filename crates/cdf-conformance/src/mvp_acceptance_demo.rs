@@ -104,7 +104,12 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert_eq!(contract_test_json["result"]["counts"]["passed"], 1);
 
     let (resource, transport) = github_issues_resource().unwrap();
-    let plan = engine_plan(&resource, PACKAGE_ID).unwrap();
+    let destination = ResolvedProjectDestination::duckdb(
+        project.destination_path(),
+        TargetName::new(TARGET).unwrap(),
+    )
+    .unwrap();
+    let plan = engine_plan(&resource, PACKAGE_ID, &destination).unwrap();
     assert_plan_matches_github_issues(&plan);
 
     let receipt_gate_observed = Cell::new(false);
@@ -130,11 +135,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
             pipeline_id: PipelineId::new(PIPELINE_ID).unwrap(),
             package_id: PACKAGE_ID.to_owned(),
             checkpoint_id: CheckpointId::new(CHECKPOINT_ID).unwrap(),
-            destination: ResolvedProjectDestination::duckdb(
-                project.destination_path(),
-                TargetName::new(TARGET).unwrap(),
-            )
-            .unwrap(),
+            destination,
             run_id: Some(RunId::new(RUN_ID).unwrap()),
             event_sink: None,
             after_receipt_verified: Some(&gate),
@@ -473,9 +474,17 @@ fn github_issues_resource() -> Result<(RestResource, RecordingTransport)> {
     Ok((resource, transport))
 }
 
-fn engine_plan(resource: &RestResource, package_id: &str) -> Result<EnginePlan> {
+fn engine_plan(
+    resource: &RestResource,
+    package_id: &str,
+    destination: &ResolvedProjectDestination,
+) -> Result<EnginePlan> {
     let observed_schema = cdf_contract::ObservedSchema::from_arrow(resource.schema().as_ref());
-    let policy = cdf_contract::ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let mut policy =
+        cdf_contract::ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    if let Some(identifier_policy) = destination.column_identifier_policy()? {
+        policy.normalization.identifier = identifier_policy;
+    }
     let validation_program = cdf_contract::compile_validation_program(&policy, &observed_schema)?;
     Planner::new().plan_tier_b(
         resource,
@@ -529,13 +538,7 @@ fn assert_checkpoint_position(position: &SourcePosition) {
     };
     assert_eq!(cursor.version, 1);
     assert_eq!(cursor.field, "updated_at");
-    assert_eq!(
-        cursor.value,
-        CursorValue::TimestampMicros {
-            micros: 1_783_505_700_000_000,
-            timezone: None,
-        }
-    );
+    assert_eq!(cursor.value, CursorValue::I64(1_783_505_700_000_000));
 }
 
 fn read_accepted_issues(database_path: &Path) -> Result<Vec<(i64, String)>> {
@@ -604,7 +607,7 @@ schema = { fields = [
   { name = "number", type = "int64", nullable = false },
   { name = "title", type = "string", nullable = false },
   { name = "state", type = "string", nullable = false },
-  { name = "updated_at", type = "timestamp_micros", nullable = false },
+  { name = "updated_at", type = "int64", nullable = false },
   { name = "html_url", type = "string", nullable = false },
   { name = "user_login", type = "string", nullable = false },
 ] }
@@ -616,7 +619,7 @@ const GITHUB_ISSUES_RESPONSE: &str = r#"[
     "number": 101,
     "title": "Fix flaky package replay",
     "state": "open",
-    "updated_at": "2026-07-08T10:00:00Z",
+    "updated_at": 1783504800000000,
     "html_url": "https://github.example/acme/cdf/issues/101",
     "user_login": "ada"
   },
@@ -625,7 +628,7 @@ const GITHUB_ISSUES_RESPONSE: &str = r#"[
     "number": 102,
     "title": "Document drift quarantine",
     "state": "open",
-    "updated_at": "2026-07-08T10:15:00Z",
+    "updated_at": 1783505700000000,
     "html_url": "https://github.example/acme/cdf/issues/102",
     "user_login": "grace"
   }

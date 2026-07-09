@@ -198,6 +198,20 @@ pub fn discover_local_parquet_schema(path: impl AsRef<Path>) -> Result<LocalParq
     })
 }
 
+#[derive(Clone, Debug)]
+pub struct LocalArrowIpcSchemaProbe {
+    pub schema: SchemaRef,
+    pub source_identity: BTreeMap<String, String>,
+}
+
+pub fn discover_local_arrow_ipc_schema(path: impl AsRef<Path>) -> Result<LocalArrowIpcSchemaProbe> {
+    let discovery = cdf_formats::discover_local_arrow_ipc_schema(path)?;
+    Ok(LocalArrowIpcSchemaProbe {
+        schema: discovery.schema,
+        source_identity: discovery.source_identity.cache_evidence(),
+    })
+}
+
 pub fn discover_transport_parquet_schema(
     resource: FileTransportResource,
     dependencies: &FileRuntimeDependencies,
@@ -366,7 +380,7 @@ fn compile_resource(
     let schema_source = compile_schema_source(&resource_id, resource)?;
     let cursor = compile_cursor(resource.cursor.as_ref())?;
     let write_disposition = compile_write_disposition(resource)?;
-    let merge_key = compile_merge_key(name, resource, &write_disposition)?;
+    let merge_key = compile_merge_key(&resource_id, resource, &write_disposition)?;
     validate_fields(name, resource)?;
     let trust_level = compile_trust(resource)?;
     let contract = resource
@@ -1355,7 +1369,7 @@ fn compile_write_disposition(resource: &ResourceDeclaration) -> Result<WriteDisp
 }
 
 fn compile_merge_key(
-    name: &str,
+    resource_id: &str,
     resource: &ResourceDeclaration,
     write_disposition: &WriteDisposition,
 ) -> Result<Vec<String>> {
@@ -1363,7 +1377,7 @@ fn compile_merge_key(
         WriteDisposition::Merge => match &resource.merge_key {
             Some(keys) if !keys.is_empty() => Ok(keys.clone()),
             _ => Err(CdfError::contract(format!(
-                "resource `{name}` declares write_disposition = \"merge\" but is missing merge_key; add `merge_key = [...]` or use `write_disposition = \"append\"`"
+                "resource `{resource_id}` declares write_disposition = \"merge\" but is missing merge_key; add `merge_key = [...]` or use `write_disposition = \"append\"`"
             ))),
         },
         WriteDisposition::Append | WriteDisposition::Replace | WriteDisposition::CdcApply => {

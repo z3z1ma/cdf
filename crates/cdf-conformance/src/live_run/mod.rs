@@ -284,12 +284,24 @@ pub async fn run_live_local_file_fixture_with_destination(
         )));
     }
 
-    let plan =
-        serde_json::from_value(live_engine_plan_json(&spec.package_id)).map_err(|error| {
+    let identifier_policy = destination
+        .column_identifier_policy()?
+        .map(serde_json::to_value)
+        .transpose()
+        .map_err(|error| {
             CdfError::data(format!(
-                "build live-local-file-v1 engine plan from fixture json: {error}"
+                "serialize live-run destination identifier policy: {error}"
             ))
         })?;
+    let plan = serde_json::from_value(live_engine_plan_json(
+        &spec.package_id,
+        identifier_policy.as_ref(),
+    ))
+    .map_err(|error| {
+        CdfError::data(format!(
+            "build live-local-file-v1 engine plan from fixture json: {error}"
+        ))
+    })?;
 
     run_project(ProjectRunRequest {
         resource: ProjectRunSource::local_file(&resource),
@@ -506,8 +518,15 @@ fn assert_source_position_matches_expected(delta: &StateDelta, expected: &LiveRu
     }
 }
 
-fn live_engine_plan_json(package_id: &str) -> serde_json::Value {
-    let validation_program = validation_program_json();
+fn live_engine_plan_json(
+    package_id: &str,
+    identifier_policy: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let mut validation_program = validation_program_json();
+    if let Some(identifier_policy) = identifier_policy {
+        validation_program["normalizer_version"] = identifier_policy["version"].clone();
+        validation_program["identifier_policy"] = identifier_policy.clone();
+    }
     let scope = json!({ "kind": "file", "path": "events.ndjson" });
     let scan = json!({
         "plan_id": "plan-local.events",

@@ -44,7 +44,9 @@ pub(crate) fn execute_cell(
     let target = target_for_cell(cell, postgres)?;
     let destination =
         MatrixDestinationHandle::new(cell.destination, temp.path(), target, postgres)?;
-    let plan = source.engine_plan(&package_id, cell.disposition)?;
+    let resolved_destination = destination.resolved()?;
+    let identifier_policy = resolved_destination.column_identifier_policy()?;
+    let plan = source.engine_plan(&package_id, cell.disposition, identifier_policy.as_ref())?;
     assert_plan_honesty(&plan, source.compiled(), &package_id);
 
     let gate_observed = Cell::new(false);
@@ -66,7 +68,7 @@ pub(crate) fn execute_cell(
         pipeline_id: pipeline_id.clone(),
         package_id: package_id.clone(),
         checkpoint_id: checkpoint_id.clone(),
-        destination: destination.resolved()?,
+        destination: resolved_destination,
         run_id: Some(run_id),
         event_sink: None,
         after_receipt_verified: Some(&hook),
@@ -183,11 +185,18 @@ impl MatrixSource {
         &self,
         package_id: &str,
         disposition: MatrixDisposition,
+        identifier_policy: Option<&cdf_contract::IdentifierPolicy>,
     ) -> Result<cdf_engine::EnginePlan> {
         match self {
-            Self::File(_) => plan_json::file_engine_plan(package_id, disposition),
-            Self::Rest { resource, .. } => plan_json::planned_engine_plan(resource, package_id),
-            Self::Sql(resource) => plan_json::planned_engine_plan(resource, package_id),
+            Self::File(resource) => {
+                plan_json::file_engine_plan(resource, package_id, disposition, identifier_policy)
+            }
+            Self::Rest { resource, .. } => {
+                plan_json::planned_engine_plan(resource, package_id, identifier_policy)
+            }
+            Self::Sql(resource) => {
+                plan_json::planned_engine_plan(resource, package_id, identifier_policy)
+            }
         }
     }
 

@@ -87,6 +87,18 @@ pub(crate) const PROJECT_RESOURCE_MAPPING: ErrorMapping = ErrorMapping {
     }),
 };
 
+pub(crate) const PROJECT_MERGE_KEY: ErrorMapping = ErrorMapping {
+    code: "CDF-PROJECT-MERGE-KEY",
+    exit_code: 3,
+    remediation: Some(RemediationTemplate {
+        summary: "Choose append or declare the merge identity before contacting the source or destination.",
+        steps: &[
+            "Add `merge_key = [...]` when rows should merge by an explicit identity.",
+            "Otherwise use `write_disposition = \"append\"` to append rows without a key.",
+        ],
+    }),
+};
+
 pub(crate) const RESOURCE_NOT_COMPILED: ErrorMapping = ErrorMapping {
     code: "CDF-RESOURCE-NOT-COMPILED",
     exit_code: 3,
