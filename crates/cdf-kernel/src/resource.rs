@@ -33,13 +33,42 @@ pub enum SchemaSource {
         schema_hash: SchemaHash,
         source: String,
     },
+    Discover,
     Discovered {
-        schema_hash: Option<SchemaHash>,
+        snapshot: SchemaSnapshotReference,
+    },
+    Hints {
+        source: String,
+        hints_hash: Option<SchemaHash>,
+        snapshot: Option<SchemaSnapshotReference>,
     },
     Contract {
         contract: ContractRef,
         schema_hash: Option<SchemaHash>,
     },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaSnapshotReference {
+    pub schema_hash: SchemaHash,
+    pub path: String,
+    pub metadata: BTreeMap<String, String>,
+}
+
+impl SchemaSource {
+    pub fn pinned_snapshot(&self) -> Option<&SchemaSnapshotReference> {
+        match self {
+            SchemaSource::Discovered { snapshot } => Some(snapshot),
+            SchemaSource::Hints {
+                snapshot: Some(snapshot),
+                ..
+            } => Some(snapshot),
+            SchemaSource::Declared { .. }
+            | SchemaSource::Discover
+            | SchemaSource::Hints { snapshot: None, .. }
+            | SchemaSource::Contract { .. } => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

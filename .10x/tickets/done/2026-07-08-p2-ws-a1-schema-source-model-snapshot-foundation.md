@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
 Depends-On: .10x/decisions/data-onramp-schema-discovery-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md
 
@@ -48,6 +48,8 @@ This ticket does not implement Parquet/REST/SQL discovery probes, first-use auto
 ## Progress and notes
 
 - 2026-07-08: Opened after inspection found `SchemaSource::Discovered { schema_hash: Option<SchemaHash> }` in `cdf-kernel` and fail-closed discovered-schema checks in `crates/cdf-project/src/runtime/validation.rs`.
+- 2026-07-09: Implemented the schema-source split, recursive project-owned schema snapshot artifact/store, lockfile snapshot reference plumbing, and pinned-schema validation path. Closure evidence is `.10x/evidence/2026-07-09-p2-ws-a1-schema-source-model-snapshot-foundation.md`; review is `.10x/reviews/2026-07-09-p2-ws-a1-schema-source-model-snapshot-foundation-review.md`.
+- 2026-07-09: Parent integration added cross-crate compatibility updates for existing descriptor/test constructors, hardened snapshot reference path validation against traversal, reduced the schema snapshot Arrow type conversion complexity hotspot, regenerated the live-run golden expected hashes for the ratified model change, and reran the full workspace plus QUALITY scanner gates recorded in the evidence.
 
 ## Blockers
 

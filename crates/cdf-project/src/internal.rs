@@ -247,7 +247,13 @@ pub(crate) fn dedupe_secret_refs(refs: Vec<SecretRef>) -> Vec<SecretRef> {
 pub(crate) fn schema_hash_from_source(schema_source: &SchemaSource) -> Option<String> {
     match schema_source {
         SchemaSource::Declared { schema_hash, .. } => Some(schema_hash.to_string()),
-        SchemaSource::Discovered { schema_hash } => schema_hash.as_ref().map(ToString::to_string),
+        SchemaSource::Discover => None,
+        SchemaSource::Discovered { snapshot } => Some(snapshot.schema_hash.to_string()),
+        SchemaSource::Hints {
+            snapshot: Some(snapshot),
+            ..
+        } => Some(snapshot.schema_hash.to_string()),
+        SchemaSource::Hints { snapshot: None, .. } => None,
         SchemaSource::Contract { schema_hash, .. } => schema_hash.as_ref().map(ToString::to_string),
     }
 }

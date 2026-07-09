@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use crate::*;
 
 pub(crate) fn import_arrow_stream(object: &Bound<'_, PyAny>) -> Result<Vec<RecordBatch>> {
@@ -42,10 +44,15 @@ pub(crate) fn descriptor_for(
     state_scope: ScopeKey,
     observed_schema_hash: SchemaHash,
 ) -> ResourceDescriptor {
+    let snapshot_path = format!(".cdf/schemas/{resource_id}@{observed_schema_hash}.json");
     ResourceDescriptor {
         resource_id,
         schema_source: SchemaSource::Discovered {
-            schema_hash: Some(observed_schema_hash),
+            snapshot: SchemaSnapshotReference {
+                schema_hash: observed_schema_hash,
+                path: snapshot_path,
+                metadata: BTreeMap::from([("probe".to_owned(), "python-arrow".to_owned())]),
+            },
         },
         primary_key: Vec::new(),
         merge_key: Vec::new(),

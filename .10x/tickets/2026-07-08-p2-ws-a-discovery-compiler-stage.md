@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-schema-discovery-reconciliation.md, .10x/specs/data-onramp-schema-intelligence.md
 
@@ -32,7 +32,8 @@ This ticket does not implement file manifest incrementality, remote transport cr
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
-- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md` for the schema-source model and snapshot artifact foundation before per-source probes.
+- 2026-07-08: Split first executable child `.10x/tickets/done/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md` for the schema-source model and snapshot artifact foundation before per-source probes.
+- 2026-07-09: Child A1 closed with evidence `.10x/evidence/2026-07-09-p2-ws-a1-schema-source-model-snapshot-foundation.md` and review `.10x/reviews/2026-07-09-p2-ws-a1-schema-source-model-snapshot-foundation-review.md`.
 
 ## Blockers
 

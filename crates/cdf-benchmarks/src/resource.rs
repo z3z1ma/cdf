@@ -9,8 +9,8 @@ use cdf_formats::schema_hash;
 use cdf_http::{HttpRequest, HttpResponse, HttpTransport};
 use cdf_kernel::{
     Batch, BatchId, BatchStream, CdfError, PartitionId, PartitionPlan, ResourceDescriptor,
-    ResourceId, ResourceStream, Result as CdfResult, ScanRequest, SchemaSource, ScopeKey,
-    TrustLevel, WriteDisposition,
+    ResourceId, ResourceStream, Result as CdfResult, ScanRequest, SchemaSnapshotReference,
+    SchemaSource, ScopeKey, TrustLevel, WriteDisposition,
 };
 use futures_util::stream;
 
@@ -40,7 +40,11 @@ impl MemoryResource {
         let descriptor = ResourceDescriptor {
             resource_id: resource_id.clone(),
             schema_source: SchemaSource::Discovered {
-                schema_hash: Some(schema_hash.clone()),
+                snapshot: SchemaSnapshotReference {
+                    schema_hash: schema_hash.clone(),
+                    path: format!(".cdf/schemas/{resource_id}@{schema_hash}.json"),
+                    metadata: BTreeMap::from([("probe".to_owned(), "benchmark".to_owned())]),
+                },
             },
             primary_key: vec!["id".to_owned()],
             merge_key: vec!["id".to_owned()],

@@ -183,11 +183,27 @@ fn assert_schema_source_evidence(schema_source: &SchemaSource, schema_has_fields
                 "declared schema source must name its source evidence"
             );
         }
-        SchemaSource::Discovered { schema_hash } => {
+        SchemaSource::Discover => {
+            assert!(
+                !schema_has_fields,
+                "discovered Arrow schemas with fields must carry pinned schema snapshot evidence"
+            );
+        }
+        SchemaSource::Discovered { snapshot } => {
+            assert!(
+                !snapshot.schema_hash.as_str().trim().is_empty(),
+                "pinned discovered schemas must carry schema hash evidence"
+            );
+            assert!(
+                !snapshot.path.trim().is_empty(),
+                "pinned discovered schemas must carry snapshot path evidence"
+            );
+        }
+        SchemaSource::Hints { snapshot, .. } => {
             if schema_has_fields {
                 assert!(
-                    schema_hash.is_some(),
-                    "discovered Arrow schemas with fields must carry schema hash evidence"
+                    snapshot.is_some(),
+                    "hinted Arrow schemas with fields must carry pinned schema snapshot evidence"
                 );
             }
         }
@@ -786,8 +802,7 @@ mod tests {
                     resource.descriptor.primary_key = vec!["missing_id".to_owned()];
                 }
                 Fault::MissingSchemaEvidence => {
-                    resource.descriptor.schema_source =
-                        SchemaSource::Discovered { schema_hash: None };
+                    resource.descriptor.schema_source = SchemaSource::Discover;
                 }
                 Fault::InvalidCheckpointScope => {
                     resource.descriptor.state_scope = ScopeKey::Resource;

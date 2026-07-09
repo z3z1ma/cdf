@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md
@@ -46,6 +46,8 @@ This ticket does not integrate destination-derived policies into `cdf-project` p
 ## Progress and notes
 
 - 2026-07-09: Opened after C1 closed automatic declarative source-name metadata and default `namecase-v1` normalization. Source inspection found destination sheets already expose `IdentifierRules`, while `cdf-declarative` currently calls `IdentifierPolicy::default()` directly.
+- 2026-07-09: Implemented the public destination-rule adapter in `cdf-contract`. `IdentifierPolicy::from_destination_rules`, `TryFrom<&IdentifierRules>`, and `identifier_policy_from_destination_rules` now convert DuckDB `namecase-v1` and Postgres `namecase-v1/postgres-quoted-v1` rules into normalizer policies. DuckDB's unbounded `max_length = None` is preserved, Postgres `max_length = Some(63)` is preserved, the current DuckDB regex pattern is enforced after normalization, and unsupported object-key rules fail with an explicit adapter-not-implemented error. Evidence recorded in `.10x/evidence/2026-07-09-p2-ws-c2-destination-identifier-policy-adapter.md`; review recorded in `.10x/reviews/2026-07-09-p2-ws-c2-destination-identifier-policy-adapter-review.md`.
+- 2026-07-09: Parent integration added a serde default regression test so older serialized `IdentifierPolicy` values missing `max_length` keep the 63-byte default cap rather than becoming unbounded. Final repo-wide workspace and QUALITY scanner gates are recorded in the evidence.
 
 ## Blockers
 

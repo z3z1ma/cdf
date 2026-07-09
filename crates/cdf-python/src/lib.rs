@@ -11,7 +11,7 @@ use cdf_formats::{FormatRead, JsonOptions, ReadOptions, read_ndjson_bytes, schem
 use cdf_http::{HttpRequest, Redactor, SecretProvider, SecretUri, TraceEvent};
 use cdf_kernel::{
     Batch, BatchId, CdfError, PartitionId, ResourceDescriptor, ResourceId, Result, SchemaHash,
-    SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
 };
 use pyo3::{
     Bound, PyAny, Python,

@@ -24,8 +24,9 @@ use cdf_kernel::{
     FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId, PartitionPlan,
     PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact, PredicateId,
     PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SchemaSource,
-    ScopeKey, SourcePosition, TrustLevel, WriteDisposition, source_name, with_semantic,
+    ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    source_name, with_semantic,
 };
 use cdf_package::PackageStatus;
 use datafusion::{
@@ -1749,10 +1750,15 @@ fn retain_column_program_by_output(
 }
 
 fn descriptor() -> ResourceDescriptor {
+    let schema_hash = SchemaHash::new("schema-v1").unwrap();
     ResourceDescriptor {
         resource_id: ResourceId::new("orders").unwrap(),
         schema_source: SchemaSource::Discovered {
-            schema_hash: Some(SchemaHash::new("schema-v1").unwrap()),
+            snapshot: SchemaSnapshotReference {
+                schema_hash,
+                path: ".cdf/schemas/orders@schema-v1.json".to_owned(),
+                metadata: BTreeMap::from([("probe".to_owned(), "engine-test".to_owned())]),
+            },
         },
         primary_key: vec!["id".to_owned()],
         merge_key: vec!["id".to_owned()],

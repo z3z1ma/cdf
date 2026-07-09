@@ -512,6 +512,43 @@ fn artifact_values_serde_round_trip() {
 }
 
 #[test]
+fn schema_source_modes_serde_round_trip() {
+    let snapshot = SchemaSnapshotReference {
+        schema_hash: SchemaHash::new("sha256:snapshot").unwrap(),
+        path: ".cdf/schemas/orders@sha256:snapshot.json".to_owned(),
+        metadata: BTreeMap::from([("probe".to_owned(), "parquet-footer".to_owned())]),
+    };
+    let sources = vec![
+        SchemaSource::Declared {
+            schema_hash: SchemaHash::new("sha256:declared").unwrap(),
+            source: "declarative:orders".to_owned(),
+        },
+        SchemaSource::Discover,
+        SchemaSource::Discovered {
+            snapshot: snapshot.clone(),
+        },
+        SchemaSource::Hints {
+            source: "declarative:orders".to_owned(),
+            hints_hash: Some(SchemaHash::new("sha256:hints").unwrap()),
+            snapshot: Some(snapshot.clone()),
+        },
+    ];
+
+    for source in sources {
+        let json = serde_json::to_string(&source).unwrap();
+        assert_eq!(source, serde_json::from_str::<SchemaSource>(&json).unwrap());
+    }
+    assert_eq!(
+        SchemaSource::Discovered {
+            snapshot: snapshot.clone(),
+        }
+        .pinned_snapshot(),
+        Some(&snapshot)
+    );
+    assert_eq!(SchemaSource::Discover.pinned_snapshot(), None);
+}
+
+#[test]
 fn checkpoint_contract_values_serde_round_trip() {
     let (delta, receipt) = sample_state_delta_and_receipt();
     assert_eq!(CHECKPOINT_STATE_VERSION, 1);

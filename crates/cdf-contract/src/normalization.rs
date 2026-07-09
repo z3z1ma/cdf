@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 
 use arrow_schema::Schema;
 use cdf_kernel::{CdfError, Result, with_source_name};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use unicode_normalization::UnicodeNormalization;
 
@@ -77,7 +78,9 @@ pub fn normalize_identifier(source_name: &str, policy: &IdentifierPolicy) -> Res
     let nfc = source_name.nfc().collect::<String>();
     let snake = lower_snake_case(&nfc);
     let filtered = filter_identifier_charset(&snake, &policy.charset);
-    truncate_identifier(&filtered, source_name, policy.max_length)
+    let normalized = truncate_identifier(&filtered, source_name, policy.max_length)?;
+    validate_allowed_pattern(&normalized, source_name, policy)?;
+    Ok(normalized)
 }
 pub(crate) fn validate_normalizer(policy: &IdentifierPolicy) -> Result<()> {
     if policy.version != NORMALIZER_NAMECASE_V1 {
@@ -86,10 +89,19 @@ pub(crate) fn validate_normalizer(policy: &IdentifierPolicy) -> Result<()> {
             policy.version
         )));
     }
-    if policy.max_length < 10 {
+    if let Some(max_length) = policy.max_length
+        && max_length < 10
+    {
         return Err(CdfError::contract(
             "identifier max_length must leave room for hash suffix",
         ));
+    }
+    if let Some(pattern) = &policy.allowed_pattern {
+        Regex::new(pattern).map_err(|error| {
+            CdfError::contract(format!(
+                "invalid identifier allowed_pattern {pattern:?}: {error}"
+            ))
+        })?;
     }
     Ok(())
 }
@@ -145,8 +157,14 @@ fn filter_identifier_charset(input: &str, charset: &IdentifierCharset) -> String
     }
 }
 
-fn truncate_identifier(normalized: &str, source_name: &str, max_length: u16) -> Result<String> {
-    let max_length = usize::from(max_length);
+fn truncate_identifier(
+    normalized: &str,
+    source_name: &str,
+    max_length: Option<u16>,
+) -> Result<String> {
+    let Some(max_length) = max_length.map(usize::from) else {
+        return Ok(normalized.to_owned());
+    };
     if normalized.len() <= max_length {
         return Ok(normalized.to_owned());
     }
@@ -164,6 +182,27 @@ fn truncate_identifier(normalized: &str, source_name: &str, max_length: u16) -> 
         prefix.trim_end_matches('_'),
         hash8(source_name)
     ))
+}
+
+fn validate_allowed_pattern(
+    normalized: &str,
+    source_name: &str,
+    policy: &IdentifierPolicy,
+) -> Result<()> {
+    let Some(pattern) = &policy.allowed_pattern else {
+        return Ok(());
+    };
+    let regex = Regex::new(pattern).map_err(|error| {
+        CdfError::contract(format!(
+            "invalid identifier allowed_pattern {pattern:?}: {error}"
+        ))
+    })?;
+    if !regex.is_match(normalized) {
+        return Err(CdfError::contract(format!(
+            "identifier {normalized:?} normalized from {source_name:?} does not match destination allowed_pattern {pattern:?}; add an explicit rename"
+        )));
+    }
+    Ok(())
 }
 
 fn push_separator(out: &mut String) {

@@ -6,8 +6,8 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
-    TrustLevel, TypeMapping, TypeMappingFidelity, physical_type, source_name, with_semantic,
-    with_source_name,
+    IdentifierRules, TrustLevel, TypeMapping, TypeMappingFidelity, physical_type, source_name,
+    with_semantic, with_source_name,
 };
 
 #[test]
@@ -461,7 +461,7 @@ fn normalizer_preserves_source_names_and_rejects_collisions() {
 #[test]
 fn namecase_v1_truncates_with_stable_hash_suffix() {
     let policy = IdentifierPolicy {
-        max_length: 20,
+        max_length: Some(20),
         ..IdentifierPolicy::default()
     };
     let normalized = normalize_identifier("Very Long Source Identifier Name", &policy).unwrap();
@@ -472,6 +472,115 @@ fn namecase_v1_truncates_with_stable_hash_suffix() {
         normalized,
         normalize_identifier("Very Long Source Identifier Name", &policy).unwrap()
     );
+}
+
+#[test]
+fn identifier_policy_serde_missing_max_length_keeps_default_cap() {
+    let policy = serde_json::from_value::<IdentifierPolicy>(serde_json::json!({
+        "version": "namecase-v1",
+        "charset": "ascii_lower_snake"
+    }))
+    .unwrap();
+
+    assert_eq!(policy.max_length, Some(63));
+    assert_eq!(
+        normalize_identifier(
+            "Very Long Source Identifier Name Repeated Until It Exceeds The Default Cap",
+            &policy,
+        )
+        .unwrap()
+        .len(),
+        63
+    );
+}
+
+#[test]
+fn destination_identifier_policy_preserves_postgres_max_length() {
+    let policy = IdentifierPolicy::from_destination_rules(&IdentifierRules {
+        normalizer: "namecase-v1/postgres-quoted-v1".to_owned(),
+        max_length: Some(63),
+        allowed_pattern: Some(
+            "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*".to_owned(),
+        ),
+    })
+    .unwrap();
+
+    let normalized = normalize_identifier(
+        "Very Long Source Identifier Name Repeated Until It Exceeds Postgres Limit",
+        &policy,
+    )
+    .unwrap();
+
+    assert_eq!(policy.version, NORMALIZER_NAMECASE_V1);
+    assert_eq!(policy.max_length, Some(63));
+    assert_eq!(normalized.len(), 63);
+    assert_eq!(
+        normalized,
+        normalize_identifier(
+            "Very Long Source Identifier Name Repeated Until It Exceeds Postgres Limit",
+            &policy,
+        )
+        .unwrap()
+    );
+}
+
+#[test]
+fn destination_identifier_policy_rejects_duckdb_pattern_miss() {
+    let policy = identifier_policy_from_destination_rules(&IdentifierRules {
+        normalizer: "namecase-v1".to_owned(),
+        max_length: None,
+        allowed_pattern: Some("^[a-z_][a-z0-9_]*$".to_owned()),
+    })
+    .unwrap();
+
+    let long_duckdb_name = normalize_identifier(&format!("a{}", "b".repeat(80)), &policy).unwrap();
+    assert_eq!(policy.max_length, None);
+    assert_eq!(long_duckdb_name.len(), 81);
+
+    let error = normalize_identifier("123 Source Name", &policy).unwrap_err();
+
+    assert!(error.to_string().contains("allowed_pattern"));
+    assert!(error.to_string().contains("123_source_name"));
+}
+
+#[test]
+fn destination_identifier_policy_rejects_unsupported_rules() {
+    let error = IdentifierPolicy::from_destination_rules(&IdentifierRules {
+        normalizer: "object-key-component-v1".to_owned(),
+        max_length: None,
+        allowed_pattern: None,
+    })
+    .unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("object-key-component-v1"));
+    assert!(
+        message
+            .contains("live column normalization for that rule is not implemented by this adapter")
+    );
+}
+
+#[test]
+fn destination_identifier_policy_keeps_collision_behavior_stable() {
+    let policy = IdentifierPolicy::from_destination_rules(&IdentifierRules {
+        normalizer: "namecase-v1/postgres-quoted-v1".to_owned(),
+        max_length: Some(63),
+        allowed_pattern: Some(
+            "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*".to_owned(),
+        ),
+    })
+    .unwrap();
+    let schema = Schema::new(vec![
+        Field::new("userName", DataType::Utf8, true),
+        Field::new("user_name", DataType::Utf8, true),
+    ]);
+    let error = normalize_schema(&ObservedSchema::from_arrow(&schema), &policy).unwrap_err();
+    let message = error.to_string();
+
+    assert!(message.contains("identifier collision after namecase-v1"));
+    assert!(message.contains("userName"));
+    assert!(message.contains("user_name"));
+    assert!(message.contains("user_name"));
 }
 
 #[test]

@@ -18,7 +18,7 @@ use cdf_conformance::resource::{
 use cdf_contract::{ContractPolicy, NORMALIZER_NAMECASE_V1};
 use cdf_kernel::{
     ErrorKind, PartitionId, PreContractObservedValue, ResourceId, ResourceStream, ScanRequest,
-    SchemaHash, SchemaSource, ScopeKey, SegmentId, SourcePosition, with_semantic, with_source_name,
+    SchemaHash, ScopeKey, SegmentId, SourcePosition, with_semantic, with_source_name,
 };
 
 fn options(resource: &str, partition: &str) -> ReadOptions {
@@ -111,10 +111,11 @@ fn arrow_ipc_stream_round_trips_kernel_batches_without_schema_loss() {
         input.schema().field_with_name("id").unwrap().metadata()
     );
     assert_eq!(
-        read.descriptor.schema_source,
-        SchemaSource::Discovered {
-            schema_hash: Some(read.schema_hash.clone())
-        }
+        read.descriptor
+            .schema_source
+            .pinned_snapshot()
+            .map(|snapshot| &snapshot.schema_hash),
+        Some(&read.schema_hash)
     );
 }
 
@@ -351,10 +352,11 @@ fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
     let read = read_file_source(&source).unwrap();
 
     assert_eq!(
-        read.descriptor.schema_source,
-        SchemaSource::Discovered {
-            schema_hash: Some(read.schema_hash.clone())
-        }
+        read.descriptor
+            .schema_source
+            .pinned_snapshot()
+            .map(|snapshot| &snapshot.schema_hash),
+        Some(&read.schema_hash)
     );
     assert!(matches!(read.descriptor.state_scope, ScopeKey::File { .. }));
     assert_eq!(

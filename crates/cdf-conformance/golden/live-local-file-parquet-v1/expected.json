@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-parquet-v1",
-  "package_hash": "sha256:1743dc3400fe7e00f182bfe1570f59deef54c81a2d68ead9436f144fa93ddc82",
+  "package_hash": "sha256:0529f44e0d2b677e45f0ad1a833ae3326507d854b2c53a14bf78ef0aec08db81",
   "checkpoint_id": "checkpoint-live-local-file-parquet-v1",
   "pipeline_id": "pipeline-live-local-file-parquet-v1",
   "resource_id": "local.events",
@@ -20,9 +20,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:1743dc3400fe7e00f182bfe1570f59deef54c81a2d68ead9436f144fa93ddc82",
+    "package_hash": "sha256:0529f44e0d2b677e45f0ad1a833ae3326507d854b2c53a14bf78ef0aec08db81",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:1743dc3400fe7e00f182bfe1570f59deef54c81a2d68ead9436f144fa93ddc82",
+    "signature_signing_input": "sha256:0529f44e0d2b677e45f0ad1a833ae3326507d854b2c53a14bf78ef0aec08db81",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -44,8 +44,8 @@
       },
       {
         "path": "destination/commit_plan.json",
-        "byte_count": 506,
-        "sha256": "3a06b32d071215e45368557b07f7c97b3af74dd92b06d32c42993abe2ec0537d"
+        "byte_count": 502,
+        "sha256": "f4d110b8db6484636b894005c6233174333033f19de12ac968141153200fd28d"
       },
       {
         "path": "lineage/lineage.json",

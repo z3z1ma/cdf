@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     io::{Cursor, Read, Seek},
     path::Path,
@@ -16,8 +16,8 @@ use cdf_contract::{
 };
 use cdf_kernel::{
     Batch, BatchId, CdfError, FileManifest, FilePosition, PreContractObservedValue,
-    PreContractQuarantineFact, ResourceDescriptor, Result, SchemaSource, ScopeKey, SourcePosition,
-    TrustLevel, WriteDisposition,
+    PreContractQuarantineFact, ResourceDescriptor, ResourceId, Result, SchemaHash,
+    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -339,9 +339,7 @@ fn build_output_with_pre_contract_quarantine(
     let schema_hash = schema_hash(schema.as_ref())?;
     let descriptor = ResourceDescriptor {
         resource_id: options.resource_id.clone(),
-        schema_source: SchemaSource::Discovered {
-            schema_hash: Some(schema_hash.clone()),
-        },
+        schema_source: discovered_schema_source(&options.resource_id, &schema_hash),
         primary_key: Vec::new(),
         merge_key: Vec::new(),
         cursor: None,
@@ -380,6 +378,16 @@ fn build_output_with_pre_contract_quarantine(
         schema_hash,
         batches,
     })
+}
+
+fn discovered_schema_source(resource_id: &ResourceId, schema_hash: &SchemaHash) -> SchemaSource {
+    SchemaSource::Discovered {
+        snapshot: SchemaSnapshotReference {
+            schema_hash: schema_hash.clone(),
+            path: format!(".cdf/schemas/{resource_id}@{schema_hash}.json"),
+            metadata: BTreeMap::from([("probe".to_owned(), "format-read".to_owned())]),
+        },
+    }
 }
 
 struct DeclaredNdjsonFilter {

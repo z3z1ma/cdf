@@ -1,4 +1,4 @@
-use cdf_kernel::TrustLevel;
+use cdf_kernel::{CdfError, IdentifierRules, Result, TrustLevel};
 use serde::{Deserialize, Serialize};
 
 use crate::schema::ArrowType;
@@ -6,6 +6,11 @@ use crate::schema::ArrowType;
 pub const NORMALIZER_NAMECASE_V1: &str = "namecase-v1";
 pub const VARIANT_COLUMN_NAME: &str = "_cdf_variant";
 pub const VARIANT_SEMANTIC_TAG: &str = "json";
+
+const NORMALIZER_POSTGRES_QUOTED_V1: &str = "namecase-v1/postgres-quoted-v1";
+const DUCKDB_NAMECASE_ALLOWED_PATTERN: &str = "^[a-z_][a-z0-9_]*$";
+const POSTGRES_QUOTED_ALLOWED_PATTERN: &str =
+    "quoted UTF-8 identifier without NUL; cdf reserves _cdf_*";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContractPolicy {
@@ -334,18 +339,91 @@ impl Default for NormalizationPolicy {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct IdentifierPolicy {
     pub version: String,
-    pub max_length: u16,
+    #[serde(default = "default_identifier_max_length")]
+    pub max_length: Option<u16>,
     pub charset: IdentifierCharset,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_pattern: Option<String>,
 }
 
 impl Default for IdentifierPolicy {
     fn default() -> Self {
         Self {
             version: NORMALIZER_NAMECASE_V1.to_owned(),
-            max_length: 63,
+            max_length: Some(63),
             charset: IdentifierCharset::AsciiLowerSnake,
+            allowed_pattern: None,
         }
     }
+}
+
+fn default_identifier_max_length() -> Option<u16> {
+    Some(63)
+}
+
+impl IdentifierPolicy {
+    pub fn from_destination_rules(rules: &IdentifierRules) -> Result<Self> {
+        let policy = Self {
+            max_length: rules.max_length,
+            allowed_pattern: destination_allowed_pattern(rules)?,
+            ..Self::default()
+        };
+
+        if let Some(max_length) = policy.max_length
+            && max_length < 10
+        {
+            return Err(CdfError::contract(format!(
+                "destination identifier rule {:?} max_length {} must leave room for hash suffix",
+                rules.normalizer, max_length
+            )));
+        }
+
+        Ok(policy)
+    }
+}
+
+impl TryFrom<&IdentifierRules> for IdentifierPolicy {
+    type Error = CdfError;
+
+    fn try_from(rules: &IdentifierRules) -> std::result::Result<Self, Self::Error> {
+        Self::from_destination_rules(rules)
+    }
+}
+
+pub fn identifier_policy_from_destination_rules(
+    rules: &IdentifierRules,
+) -> Result<IdentifierPolicy> {
+    IdentifierPolicy::from_destination_rules(rules)
+}
+
+fn destination_allowed_pattern(rules: &IdentifierRules) -> Result<Option<String>> {
+    match rules.normalizer.as_str() {
+        NORMALIZER_NAMECASE_V1 => match rules.allowed_pattern.as_deref() {
+            None => Ok(None),
+            Some(DUCKDB_NAMECASE_ALLOWED_PATTERN) => Ok(rules.allowed_pattern.clone()),
+            Some(pattern) => Err(destination_rule_adapter_error(
+                rules.normalizer.as_str(),
+                Some(pattern),
+            )),
+        },
+        NORMALIZER_POSTGRES_QUOTED_V1 => match rules.allowed_pattern.as_deref() {
+            None | Some(POSTGRES_QUOTED_ALLOWED_PATTERN) => Ok(None),
+            Some(pattern) => Err(destination_rule_adapter_error(
+                rules.normalizer.as_str(),
+                Some(pattern),
+            )),
+        },
+        rule => Err(destination_rule_adapter_error(rule, None)),
+    }
+}
+
+fn destination_rule_adapter_error(rule: &str, allowed_pattern: Option<&str>) -> CdfError {
+    let pattern_context = allowed_pattern
+        .map(|pattern| format!(" with allowed_pattern {pattern:?}"))
+        .unwrap_or_default();
+    CdfError::contract(format!(
+        "destination identifier rule {rule:?}{pattern_context}: live column normalization for that rule is not implemented by this adapter"
+    ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

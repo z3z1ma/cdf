@@ -2,8 +2,8 @@ use crate::internal::*;
 use crate::*;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_kernel::{
-    DestinationCommitRequest, IdempotencyToken, PackageHash, ResourceStream, StateSegment,
-    TargetName, WriteDisposition,
+    DestinationCommitRequest, IdempotencyToken, PackageHash, ResourceStream,
+    SchemaSnapshotReference, StateSegment, TargetName, WriteDisposition,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -60,6 +60,8 @@ pub struct LockedResource {
     pub capabilities: ResourceCapabilities,
     pub capability_sheet_hash: String,
     pub schema_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_snapshot: Option<SchemaSnapshotReference>,
     pub contract: Option<ContractSnapshot>,
 }
 
@@ -253,6 +255,7 @@ pub fn generate_lockfile(
         let descriptor = resource.descriptor().clone();
         let resource_id = descriptor.resource_id.to_string();
         let schema_hash = schema_hash_from_source(&descriptor.schema_source);
+        let schema_snapshot = descriptor.schema_source.pinned_snapshot().cloned();
         let contract = Some(match contract_snapshots.get(&resource_id) {
             Some(snapshot) => snapshot.clone(),
             None => contract_snapshot_for_resource(resource)?,
@@ -264,6 +267,7 @@ pub fn generate_lockfile(
                 capabilities: resource.capabilities().clone(),
                 capability_sheet_hash: semantic_hash(resource.capabilities())?,
                 schema_hash,
+                schema_snapshot,
                 contract,
             },
         );
@@ -481,6 +485,7 @@ fn locked_resource_from_current(
     let descriptor = resource.descriptor().clone();
     Ok(LockedResource {
         schema_hash: schema_hash_from_source(&descriptor.schema_source),
+        schema_snapshot: descriptor.schema_source.pinned_snapshot().cloned(),
         descriptor,
         capabilities: resource.capabilities().clone(),
         capability_sheet_hash: semantic_hash(resource.capabilities())?,

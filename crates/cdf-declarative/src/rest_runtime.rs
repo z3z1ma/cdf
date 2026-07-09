@@ -367,7 +367,10 @@ fn validate_partition(
 fn declared_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
     match &descriptor.schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
-        SchemaSource::Discovered { .. } | SchemaSource::Contract { .. } => Err(CdfError::data(
+        SchemaSource::Discover
+        | SchemaSource::Discovered { .. }
+        | SchemaSource::Hints { .. }
+        | SchemaSource::Contract { .. } => Err(CdfError::data(
             "declarative REST execution requires a declared schema hash",
         )),
     }
@@ -1236,7 +1239,7 @@ mod tests {
     fn predicate_literal_extraction_is_cursor_only() {
         let descriptor = ResourceDescriptor {
             resource_id: cdf_kernel::ResourceId::new("api.items").unwrap(),
-            schema_source: SchemaSource::Discovered { schema_hash: None },
+            schema_source: SchemaSource::Discover,
             primary_key: Vec::new(),
             merge_key: Vec::new(),
             cursor: Some(cdf_kernel::CursorSpec {

@@ -11,7 +11,7 @@ use super::{
     resources::ProjectRunSource,
     types::*,
     validation::{
-        declared_schema_hash, ensure_parent_directory, refuse_existing_package_dir,
+        ensure_parent_directory, pinned_schema_hash, refuse_existing_package_dir,
         validate_explicit_package_id, validate_project_run_request,
     },
 };
@@ -43,7 +43,7 @@ pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunRep
     validate_project_run_request(&mut request)?;
     validate_explicit_package_id(&request.package_id)?;
 
-    let schema_hash = declared_schema_hash(request.resource.stream())?;
+    let schema_hash = pinned_schema_hash(request.resource.stream())?;
     let package_dir = request.package_root.join(&request.package_id);
     refuse_existing_package_dir(&package_dir)?;
     ensure_parent_directory(&request.state_store_path)?;

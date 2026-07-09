@@ -372,7 +372,7 @@ fn compile_schema_source(
             schema_hash: schema_hash(schema)?,
             source: format!("declarative:{resource_id}"),
         }),
-        None => Ok(SchemaSource::Discovered { schema_hash: None }),
+        None => Ok(SchemaSource::Discover),
     }
 }
 

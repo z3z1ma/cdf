@@ -3778,7 +3778,7 @@ fn run_discovered_schema_resource_fails_before_writes() {
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("declared schema")
+            .contains("pinned schema")
     );
 }
 
@@ -7537,14 +7537,14 @@ fn write_resource_glob(project: &TestProject, glob: &str) {
 }
 
 fn write_resource_disposition(project: &TestProject, disposition: &str) {
-    fs::write(
-        project.root.join("resources/files.toml"),
-        RESOURCE.replace(
-            "write_disposition = \"append\"",
-            &format!("write_disposition = \"{disposition}\""),
-        ),
-    )
-    .unwrap();
+    let mut resource = RESOURCE.replace(
+        "write_disposition = \"append\"",
+        &format!("write_disposition = \"{disposition}\""),
+    );
+    if disposition == "merge" {
+        resource = resource.replace("primary_key = [\"id\"]", "merge_key = [\"id\"]");
+    }
+    fs::write(project.root.join("resources/files.toml"), resource).unwrap();
 }
 
 fn write_resource_with_extra_contract_field(project: &TestProject) {

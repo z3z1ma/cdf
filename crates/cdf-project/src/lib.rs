@@ -31,6 +31,7 @@ mod runtime;
 #[cfg(test)]
 mod runtime_tests;
 mod scaffold;
+mod schema_snapshot;
 mod secrets;
 mod sources;
 #[cfg(test)]
@@ -41,5 +42,6 @@ pub use lockfile::*;
 pub use models::*;
 pub use runtime::*;
 pub use scaffold::*;
+pub use schema_snapshot::*;
 pub use secrets::*;
 pub use sources::*;

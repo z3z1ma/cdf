@@ -1232,7 +1232,10 @@ fn field_by_name<'a>(schema: &'a Schema, name: &str) -> Option<&'a Field> {
 fn declared_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
     match &descriptor.schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
-        SchemaSource::Discovered { .. } | SchemaSource::Contract { .. } => Err(CdfError::data(
+        SchemaSource::Discover
+        | SchemaSource::Discovered { .. }
+        | SchemaSource::Hints { .. }
+        | SchemaSource::Contract { .. } => Err(CdfError::data(
             "Postgres table source execution requires a declared schema hash",
         )),
     }

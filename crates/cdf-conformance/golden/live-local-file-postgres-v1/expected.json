@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-postgres-v1",
-  "package_hash": "sha256:9f4dc09019ffbe99879ce9f6b5624d23db475611abcea48c0bd0b28f9114e93b",
+  "package_hash": "sha256:b9b8a2858ba30bbc79dc764d2ff24b4a8cecffba566522f2bfce031776ff5392",
   "checkpoint_id": "checkpoint-live-local-file-postgres-v1",
   "pipeline_id": "pipeline-live-local-file-postgres-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:9f4dc09019ffbe99879ce9f6b5624d23db475611abcea48c0bd0b28f9114e93b",
+    "package_hash": "sha256:b9b8a2858ba30bbc79dc764d2ff24b4a8cecffba566522f2bfce031776ff5392",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:9f4dc09019ffbe99879ce9f6b5624d23db475611abcea48c0bd0b28f9114e93b",
+    "signature_signing_input": "sha256:b9b8a2858ba30bbc79dc764d2ff24b4a8cecffba566522f2bfce031776ff5392",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -45,8 +45,8 @@
       },
       {
         "path": "destination/commit_plan.json",
-        "byte_count": 526,
-        "sha256": "f7fabe98f6358e4792f37b1c7945e3319aa65ca65b029ff487d3223836010266"
+        "byte_count": 522,
+        "sha256": "f93ca74443efa675c906fe2225b3f2972d0f72cba6c1665df0044eeab18bddab"
       },
       {
         "path": "lineage/lineage.json",

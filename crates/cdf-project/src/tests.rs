@@ -1,9 +1,11 @@
 use super::*;
 use crate::internal::*;
+use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use cdf_declarative::{AuthDeclaration, CompiledResourcePlan, SourceDeclaration};
 use cdf_kernel::{
     CapabilitySupport, ConcurrencyLimit, DestinationId, DestinationSheet, IdempotencySupport,
-    IdentifierRules, TransactionSupport, TypeMapping, TypeMappingFidelity, WriteDisposition,
+    IdentifierRules, ResourceId, TransactionSupport, TypeMapping, TypeMappingFidelity,
+    WriteDisposition,
 };
 
 const BOOK_PROJECT: &str = r#"
@@ -287,6 +289,71 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         diff.path
             .contains("destinations.duckdb.sheet.type_mappings")
     }));
+}
+
+#[test]
+fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
+    let resource_id = ResourceId::new("github.issues").unwrap();
+    let schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(
+            "updated_at",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            true,
+        ),
+        Field::new(
+            "payload",
+            DataType::Struct(Fields::from(vec![Field::new(
+                "source",
+                DataType::Utf8,
+                true,
+            )])),
+            true,
+        ),
+    ]);
+    let metadata = BTreeMap::from([
+        (
+            "cdf:normalizer".to_owned(),
+            NORMALIZER_NAMECASE_V1.to_owned(),
+        ),
+        ("probe".to_owned(), "parquet-footer".to_owned()),
+    ]);
+
+    let artifact = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata.clone()).unwrap();
+    let repeated = SchemaSnapshotArtifact::new(&resource_id, &schema, metadata).unwrap();
+
+    assert_eq!(artifact.schema_hash, repeated.schema_hash);
+    assert_eq!(
+        artifact.path,
+        format!(".cdf/schemas/github.issues@{}.json", artifact.schema_hash)
+    );
+    assert_eq!(artifact.hash_input["resource_id"], "github.issues");
+    assert_eq!(artifact.hash_input["metadata"]["probe"], "parquet-footer");
+    assert_eq!(
+        artifact.hash_input["schema"]["fields"][2]["data_type"]["kind"],
+        "struct"
+    );
+    assert_eq!(
+        artifact.hash_input["schema"]["fields"][2]["data_type"]["fields"][0]["name"],
+        "source"
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = SchemaSnapshotStore::new(temp.path());
+    let path = store.write(&artifact).unwrap();
+    assert_eq!(path, temp.path().join(&artifact.path));
+    assert_eq!(store.read(&artifact.reference()).unwrap(), artifact);
+
+    let mut tampered = artifact.clone();
+    tampered
+        .metadata
+        .insert("probe".to_owned(), "changed".to_owned());
+    assert!(tampered.validate_hash_input().is_err());
+
+    let mut escaped = artifact.reference();
+    escaped.path = "../outside.json".to_owned();
+    let error = store.read(&escaped).unwrap_err().to_string();
+    assert!(error.contains("schema snapshot reference path"));
 }
 
 #[test]

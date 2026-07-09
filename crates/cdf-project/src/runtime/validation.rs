@@ -24,7 +24,7 @@ pub(super) fn validate_project_run_request(request: &mut ProjectRunRequest<'_>) 
             disposition
         )));
     }
-    let schema_hash = declared_schema_hash(request.resource.stream())?;
+    let schema_hash = pinned_schema_hash(request.resource.stream())?;
     request
         .destination
         .runtime_mut()
@@ -99,19 +99,22 @@ fn validate_run_plan(
     Ok(())
 }
 
-pub(super) fn declared_schema_hash(resource: &dyn ResourceStream) -> Result<SchemaHash> {
+pub(super) fn pinned_schema_hash(resource: &dyn ResourceStream) -> Result<SchemaHash> {
     match &resource.descriptor().schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
-        SchemaSource::Discovered { schema_hash: None } => Err(CdfError::contract(
-            "cdf run requires a declared schema with a concrete schema hash; discovered schema resources are unsupported in this slice",
+        SchemaSource::Discovered { snapshot } => Ok(snapshot.schema_hash.clone()),
+        SchemaSource::Hints {
+            snapshot: Some(snapshot),
+            ..
+        } => Ok(snapshot.schema_hash.clone()),
+        SchemaSource::Discover => Err(CdfError::contract(
+            "cdf run requires a pinned schema hash; discover-mode resources must be pinned before package-producing execution",
         )),
-        SchemaSource::Discovered {
-            schema_hash: Some(_),
-        } => Err(CdfError::contract(
-            "cdf run requires SchemaSource::Declared; discovered schema hashes are unsupported in this slice",
+        SchemaSource::Hints { snapshot: None, .. } => Err(CdfError::contract(
+            "cdf run requires a pinned schema hash; schema hints must be reconciled and pinned before package-producing execution",
         )),
         SchemaSource::Contract { .. } => Err(CdfError::contract(
-            "cdf run requires SchemaSource::Declared; contract-sourced schemas are unsupported in this slice",
+            "cdf run requires a declared or pinned discovered schema hash; contract-sourced schemas are unsupported in this slice",
         )),
     }
 }
@@ -144,5 +147,103 @@ pub(super) fn validate_explicit_package_id(package_id: &str) -> Result<()> {
         _ => Err(CdfError::contract(
             "run package id must be one path component under the environment package root",
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeMap, sync::Arc};
+
+    use arrow_schema::{Schema, SchemaRef};
+    use cdf_kernel::{BatchStream, BoxFuture, SchemaSnapshotReference, TrustLevel};
+
+    use super::*;
+
+    struct TestResource {
+        descriptor: ResourceDescriptor,
+        schema: SchemaRef,
+    }
+
+    impl TestResource {
+        fn new(schema_source: SchemaSource) -> Self {
+            Self {
+                descriptor: ResourceDescriptor {
+                    resource_id: ResourceId::new("orders").unwrap(),
+                    schema_source,
+                    primary_key: Vec::new(),
+                    merge_key: Vec::new(),
+                    cursor: None,
+                    write_disposition: WriteDisposition::Append,
+                    contract: None,
+                    state_scope: ScopeKey::Resource,
+                    freshness: None,
+                    trust_level: TrustLevel::Experimental,
+                },
+                schema: Arc::new(Schema::empty()),
+            }
+        }
+    }
+
+    impl ResourceStream for TestResource {
+        fn descriptor(&self) -> &ResourceDescriptor {
+            &self.descriptor
+        }
+
+        fn schema(&self) -> SchemaRef {
+            Arc::clone(&self.schema)
+        }
+
+        fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+            unreachable!("validation tests do not plan partitions")
+        }
+
+        fn open(&self, _partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+            Box::pin(async { unreachable!("validation tests do not open resources") })
+        }
+    }
+
+    fn snapshot() -> SchemaSnapshotReference {
+        SchemaSnapshotReference {
+            schema_hash: SchemaHash::new("sha256:snapshot").unwrap(),
+            path: ".cdf/schemas/orders@sha256:snapshot.json".to_owned(),
+            metadata: BTreeMap::from([("probe".to_owned(), "parquet-footer".to_owned())]),
+        }
+    }
+
+    #[test]
+    fn pinned_schema_hash_accepts_declared_and_discovered_snapshot() {
+        let declared = TestResource::new(SchemaSource::Declared {
+            schema_hash: SchemaHash::new("sha256:declared").unwrap(),
+            source: "declarative:orders".to_owned(),
+        });
+        assert_eq!(
+            pinned_schema_hash(&declared).unwrap(),
+            SchemaHash::new("sha256:declared").unwrap()
+        );
+
+        let discovered = TestResource::new(SchemaSource::Discovered {
+            snapshot: snapshot(),
+        });
+        assert_eq!(
+            pinned_schema_hash(&discovered).unwrap(),
+            SchemaHash::new("sha256:snapshot").unwrap()
+        );
+    }
+
+    #[test]
+    fn pinned_schema_hash_rejects_unpinned_discover_and_hints() {
+        let discover_error = pinned_schema_hash(&TestResource::new(SchemaSource::Discover))
+            .unwrap_err()
+            .to_string();
+        assert!(discover_error.contains("must be pinned"));
+
+        let hints_error = pinned_schema_hash(&TestResource::new(SchemaSource::Hints {
+            source: "declarative:orders".to_owned(),
+            hints_hash: None,
+            snapshot: None,
+        }))
+        .unwrap_err()
+        .to_string();
+        assert!(hints_error.contains("schema hints"));
     }
 }
