@@ -1,4 +1,4 @@
-use cdf_kernel::{CdfError, PipelineId, TargetName};
+use cdf_kernel::{CdfError, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
     BackfillPlan, BackfillPlanRequest, BackfillSlice, ProjectRunRequest, ProjectRunSource,
     WindowScopedResource, backfill_pipeline_id, plan_backfill, run_project,
@@ -13,6 +13,7 @@ use crate::{
     },
     error_catalog,
     output::{CliError, CommandOutput},
+    progress::{ProgressSnapshot, human_progress_sink},
     project_run_resource::build_project_run_resource,
     render::{
         RenderDocument,
@@ -51,18 +52,30 @@ pub(crate) fn backfill(cli: &Cli, args: BackfillArgs) -> Result<CommandOutput, C
     let source = run_resource.as_project_resource();
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;
+    let progress = human_progress_sink(cli.json, cli.no_color);
+    let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let mut reports = Vec::with_capacity(plan.slices.len());
     for slice in &plan.slices {
-        reports.push(execute_slice(
-            &context,
-            &target,
-            source,
-            &pipeline_id,
-            slice,
-        )?);
+        let report = execute_slice(&context, &target, source, &pipeline_id, slice, event_sink)
+            .map_err(|error| {
+                annotate_backfill_slice_error(
+                    error,
+                    slice,
+                    progress.as_ref().map(|progress| progress.snapshot()),
+                )
+            })?;
+        reports.push(report);
     }
     let report = BackfillCliReport::executed(&plan, args.slice_size, reports);
-    CommandOutput::rendered("backfill", report.render_document(), report)
+    match progress {
+        Some(progress) => CommandOutput::rendered_with_progress(
+            "backfill",
+            report.render_document(),
+            report,
+            progress.snapshot(),
+        ),
+        None => CommandOutput::rendered("backfill", report.render_document(), report),
+    }
 }
 
 fn execute_slice(
@@ -71,6 +84,7 @@ fn execute_slice(
     source: ProjectRunSource<'_>,
     pipeline_id: &PipelineId,
     slice: &BackfillSlice,
+    event_sink: Option<&dyn RunEventSink>,
 ) -> Result<BackfillSliceExecutionReport, CliError> {
     let resolved = resolve_environment_destination(context, target)
         .map_err(|error| backfill_destination_resolution_error(context, error))?;
@@ -88,7 +102,7 @@ fn execute_slice(
         checkpoint_id: slice.checkpoint_id()?,
         destination,
         run_id: None,
-        event_sink: None,
+        event_sink,
         after_receipt_verified: None,
     }))
     .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
@@ -104,6 +118,49 @@ fn execute_slice(
         destination: destination_report
             .with_receipt_destination(run.receipt.destination.to_string()),
     })
+}
+
+fn annotate_backfill_slice_error(
+    mut error: CliError,
+    slice: &BackfillSlice,
+    progress: Option<ProgressSnapshot>,
+) -> CliError {
+    let recovery_command = progress
+        .as_ref()
+        .and_then(|progress| progress.latest_run_id_for_package(&slice.package_id))
+        .map(|run_id| format!("cdf resume {run_id}"));
+    let mutation_status = if recovery_command.is_some() {
+        "run ledger recorded this slice; package, destination, receipt, or checkpoint artifacts may need recovery"
+    } else {
+        "no run id was recorded; destination and checkpoint mutation were not started"
+    };
+    let next_recovery = recovery_command
+        .as_deref()
+        .unwrap_or("not available before a run id is recorded");
+    let original_message = error.message;
+    error.message = format!(
+        "backfill slice {} ({}..{}) failed; package {}; checkpoint {}; mutation status: {}; next recovery command: {}; lower-layer error: {}",
+        slice.ordinal,
+        safe_display_value(&slice.start),
+        safe_display_value(&slice.end),
+        safe_display_value(&slice.package_id),
+        safe_display_value(&slice.checkpoint_id),
+        mutation_status,
+        next_recovery,
+        original_message
+    );
+
+    if let Some(command) = recovery_command {
+        let mut suggestions = error.suggestions.to_vec();
+        if !suggestions.iter().any(|suggestion| suggestion == &command) {
+            suggestions.push(command);
+        }
+        error = error.with_suggestions(suggestions);
+    }
+    if let Some(progress) = progress {
+        error = error.with_progress(progress);
+    }
+    error
 }
 
 fn backfill_destination_resolution_error(context: &ProjectContext, error: CdfError) -> CliError {
@@ -238,6 +295,22 @@ impl BackfillCliReport {
         document = document.blank_line().push(table);
 
         if executed {
+            document = document.blank_line().push(
+                KeyValuePanel::new("Summary")
+                    .row(
+                        "slices succeeded",
+                        format!(
+                            "{}/{}",
+                            self.slices
+                                .iter()
+                                .filter(|slice| slice.status == "succeeded")
+                                .count(),
+                            self.slices.len()
+                        ),
+                    )
+                    .row("rows", humanize_rows(self.executed_row_count()))
+                    .row("segments", self.executed_segment_count().to_string()),
+            );
             document = document
                 .blank_line()
                 .push(NextCommand::new("cdf state history <resource>"));
@@ -249,6 +322,22 @@ impl BackfillCliReport {
         }
 
         document
+    }
+
+    fn executed_row_count(&self) -> u64 {
+        self.slices
+            .iter()
+            .filter_map(|slice| slice.executed.as_ref())
+            .map(|executed| executed.row_count)
+            .sum()
+    }
+
+    fn executed_segment_count(&self) -> usize {
+        self.slices
+            .iter()
+            .filter_map(|slice| slice.executed.as_ref())
+            .map(|executed| executed.segment_count)
+            .sum()
     }
 }
 

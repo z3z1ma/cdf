@@ -14,7 +14,7 @@ Subscribe the renderer to the runtime event spine so run, replay, resume, and ba
 
 - `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
-- `.10x/tickets/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
 - `.10x/tickets/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
 
 ## Required outcomes
@@ -50,6 +50,7 @@ No new lifecycle events beyond the WS1 event model without updating WS1. No arti
 - 2026-07-08: WS3D static recovery/state/backfill rendering is done, so later WS5 progress children no longer depend on that rendering slice.
 - 2026-07-08: WS5A progress sink/renderer foundation is done in `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`; evidence is `.10x/evidence/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md` and review is `.10x/reviews/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation-review.md`.
 - 2026-07-08: WS5B run/replay/resume progress is done in `.10x/tickets/done/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`; evidence is `.10x/evidence/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md` and review is `.10x/reviews/2026-07-08-p1-product-ws5b-run-replay-resume-progress-review.md`.
+- 2026-07-08: WS5C backfill/multi-slice progress is done in `.10x/tickets/done/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`; evidence is `.10x/evidence/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md` and review is `.10x/reviews/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress-review.md`.
 
 ## Blockers
 

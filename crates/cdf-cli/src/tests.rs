@@ -1181,37 +1181,14 @@ fn backfill_execute_sql_cursor_window_commits_window_scope() {
     let Some(postgres) = LivePostgres::start() else {
         return;
     };
-    let table = postgres.table("backfill_source_orders");
-    let mut client = postgres.client();
-    client
-        .batch_execute(&format!(
-            "CREATE TABLE {} (
-                \"id\" BIGINT NOT NULL,
-                \"updated_at\" BIGINT NOT NULL
-            );
-            INSERT INTO {} (\"id\", \"updated_at\") VALUES (1, 5), (2, 15), (3, 25)",
-            table, table
-        ))
-        .unwrap();
-
+    let table = seed_ordered_cursor_table(
+        &postgres,
+        "backfill_source_orders",
+        "(1, 5), (2, 15), (3, 25)",
+    );
     let project = TestProject::new();
-    let source_dsn = postgres.url.replacen(
-        "postgresql://cdf@",
-        "postgresql://cdf:source-backfill-secret@",
-        1,
-    );
-    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
-    write_secret_project(
-        &project,
-        "duckdb://.cdf/dev.duckdb",
-        None,
-        Some("secret://file/sql-dsn"),
-    );
-    fs::write(
-        project.root.join("resources/sql.toml"),
-        sql_resource_with_ordered_cursor("secret://file/sql-dsn", &table),
-    )
-    .unwrap();
+    let source_dsn =
+        write_sql_project_with_secret(&project, &postgres, &table, "source-backfill-secret");
 
     let result = run([
         "cdf",
@@ -1232,6 +1209,8 @@ fn backfill_execute_sql_cursor_window_commits_window_scope() {
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
     assert_secret_absent(&result, "source-backfill-secret");
+    assert!(!result.stdout.contains("Run progress"));
+    assert!(!result.stderr.contains("[plan]"));
     let json = stderr_or_stdout_json(&result.stdout);
     let report = &json["result"];
     assert_eq!(report["mode"], "execute");
@@ -1282,6 +1261,122 @@ fn backfill_execute_sql_cursor_window_commits_window_scope() {
             .is_none(),
         "backfill must not advance the resource-scope head"
     );
+}
+
+#[test]
+fn backfill_execute_human_progress_reports_each_slice_and_summary() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = seed_ordered_cursor_table(
+        &postgres,
+        "backfill_progress_orders",
+        "(1, 5), (2, 15), (3, 25)",
+    );
+    let project = TestProject::new();
+    let source_dsn = write_sql_project_with_secret(
+        &project,
+        &postgres,
+        &table,
+        "source-backfill-progress-secret",
+    );
+
+    let result = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "backfill",
+        "warehouse.orders",
+        "--from",
+        "0",
+        "--to",
+        "20",
+        "--target",
+        "orders",
+        "--slice-size",
+        "10",
+        "--execute",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_secret_absent(&result, &source_dsn);
+    assert_secret_absent(&result, "source-backfill-progress-secret");
+    assert!(result.stderr.is_empty());
+    assert!(!result.stdout.contains("\u{1b}["));
+    for expected in [
+        "[plan] running run started",
+        "scope=window:0..10",
+        "scope=window:10..20",
+        "[gate] succeeded run succeeded",
+        "OK executed backfill warehouse.orders -> orders",
+        "Summary",
+        "slices succeeded  2/2",
+        "rows              2",
+        "segments          2",
+        "-> cdf state history <resource>",
+    ] {
+        assert!(
+            result.stdout.contains(expected),
+            "missing {expected:?} in:\n{}",
+            result.stdout
+        );
+    }
+}
+
+#[test]
+fn backfill_execute_human_failure_reports_failed_slice_and_recovery_guidance() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = seed_ordered_cursor_table(&postgres, "backfill_progress_failure_orders", "(1, 5)");
+    let project = TestProject::new();
+    write_sql_project_with_secret(
+        &project,
+        &postgres,
+        &table,
+        "source-backfill-failure-secret",
+    );
+
+    let args = || {
+        vec![
+            "cdf".to_owned(),
+            "--project".to_owned(),
+            project.root_str().to_owned(),
+            "backfill".to_owned(),
+            "warehouse.orders".to_owned(),
+            "--from".to_owned(),
+            "0".to_owned(),
+            "--to".to_owned(),
+            "10".to_owned(),
+            "--target".to_owned(),
+            "orders".to_owned(),
+            "--execute".to_owned(),
+        ]
+    };
+    let first = run_dynamic(args());
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+
+    let second = run_dynamic(args());
+
+    assert_ne!(second.exit_code, 0);
+    assert!(second.stdout.is_empty());
+    assert!(!second.stderr.contains("\u{1b}["));
+    for expected in [
+        "backfill slice 1 (0..10) failed",
+        "package cdf-backfill-pkg-",
+        "checkpoint cdf-backfill-cp-",
+        "mutation status:",
+        "next recovery command:",
+        "not available before a run id is recorded",
+    ] {
+        assert!(
+            second.stderr.contains(expected),
+            "missing {expected:?} in:\n{}",
+            second.stderr
+        );
+    }
+    assert!(!second.stderr.contains("suggestions:"));
+    assert!(!second.stderr.contains("cdf resume "));
 }
 
 #[test]
@@ -7925,6 +8020,48 @@ schema = {{ fields = [
 ] }}
 "#
     )
+}
+
+fn seed_ordered_cursor_table(postgres: &LivePostgres, table: &str, values: &str) -> String {
+    let table = postgres.table(table);
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"id\" BIGINT NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            );
+            INSERT INTO {} (\"id\", \"updated_at\") VALUES {}",
+            table, table, values
+        ))
+        .unwrap();
+    table
+}
+
+fn write_sql_project_with_secret(
+    project: &TestProject,
+    postgres: &LivePostgres,
+    table: &str,
+    password: &str,
+) -> String {
+    let source_dsn = postgres.url.replacen(
+        "postgresql://cdf@",
+        &format!("postgresql://cdf:{password}@"),
+        1,
+    );
+    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    write_secret_project(
+        project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_resource_with_ordered_cursor("secret://file/sql-dsn", table),
+    )
+    .unwrap();
+    source_dsn
 }
 
 fn assert_secret_absent(result: &crate::InvocationResult, secret: &str) {

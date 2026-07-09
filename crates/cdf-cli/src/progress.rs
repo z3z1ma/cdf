@@ -1,12 +1,14 @@
 #![allow(dead_code)] // 10x: progress still has grammar/backfill-only helpers until WS5C and display flag wiring land.
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     sync::Mutex,
     time::Duration,
 };
 
-use cdf_kernel::{RunEvent, RunEventKind, RunEventSink, RunEventSinkResult, RunEventValue};
+use cdf_kernel::{
+    RunEvent, RunEventKind, RunEventSink, RunEventSinkResult, RunEventValue, ScopeKey,
+};
 
 use crate::render::{
     RenderConfig, RenderDocument,
@@ -133,6 +135,7 @@ impl ProgressStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ProgressMilestone {
+    run_id: String,
     sequence: u64,
     timestamp_ms: i64,
     phase: ProgressPhase,
@@ -165,6 +168,25 @@ impl ProgressSnapshot {
 
     pub(crate) fn last_disposition(&self) -> Option<ProgressEventDisposition> {
         self.last_disposition
+    }
+
+    pub(crate) fn latest_run_id(&self) -> Option<&str> {
+        self.milestones
+            .last()
+            .map(|milestone| milestone.run_id.as_str())
+    }
+
+    pub(crate) fn latest_run_id_for_package(&self, package_id: &str) -> Option<&str> {
+        self.milestones
+            .iter()
+            .rev()
+            .find(|milestone| {
+                milestone
+                    .fields
+                    .iter()
+                    .any(|(key, value)| key == "package" && value == package_id)
+            })
+            .map(|milestone| milestone.run_id.as_str())
     }
 
     pub(crate) fn render(&self, config: &ProgressConfig) -> String {
@@ -252,8 +274,9 @@ impl ProgressSnapshot {
 #[derive(Debug)]
 struct ProgressState {
     current_phase: ProgressPhase,
-    seen_sequences: BTreeSet<u64>,
-    max_sequence: Option<u64>,
+    active_run_id: Option<String>,
+    seen_sequences: BTreeSet<(String, u64)>,
+    max_sequence_by_run: BTreeMap<String, u64>,
     terminal: Option<TerminalState>,
     milestones: VecDeque<ProgressMilestone>,
     dropped_count: u64,
@@ -264,8 +287,9 @@ impl Default for ProgressState {
     fn default() -> Self {
         Self {
             current_phase: ProgressPhase::Plan,
+            active_run_id: None,
             seen_sequences: BTreeSet::new(),
-            max_sequence: None,
+            max_sequence_by_run: BTreeMap::new(),
             terminal: None,
             milestones: VecDeque::new(),
             dropped_count: 0,
@@ -280,19 +304,30 @@ impl ProgressState {
         event: &RunEvent,
         config: &ProgressConfig,
     ) -> ProgressEventDisposition {
-        if self.seen_sequences.contains(&event.sequence) {
+        let run_id = event.run_id.as_str().to_owned();
+        let sequence_key = (run_id.clone(), event.sequence);
+        if self.seen_sequences.contains(&sequence_key) {
             return self.record_disposition(ProgressEventDisposition::Duplicate);
         }
         if self
-            .max_sequence
-            .is_some_and(|max_sequence| event.sequence < max_sequence)
+            .max_sequence_by_run
+            .get(&run_id)
+            .is_some_and(|max_sequence| event.sequence < *max_sequence)
         {
-            self.seen_sequences.insert(event.sequence);
+            self.seen_sequences.insert(sequence_key);
             return self.record_disposition(ProgressEventDisposition::OutOfOrder);
         }
 
-        self.seen_sequences.insert(event.sequence);
-        self.max_sequence = Some(event.sequence);
+        self.seen_sequences.insert(sequence_key);
+        self.max_sequence_by_run
+            .entry(run_id.clone())
+            .and_modify(|max_sequence| *max_sequence = (*max_sequence).max(event.sequence))
+            .or_insert(event.sequence);
+
+        if self.active_run_id.as_deref() != Some(run_id.as_str()) {
+            self.active_run_id = Some(run_id);
+            self.terminal = None;
+        }
 
         if let Some(terminal) = self.terminal {
             if terminal == TerminalState::Failed && can_follow_failed_terminal(event.kind) {
@@ -413,6 +448,7 @@ impl ProgressMilestone {
         verbosity: DisplayVerbosity,
     ) -> Self {
         Self {
+            run_id: redact_uri_userinfo(event.run_id.as_str()),
             sequence: event.sequence,
             timestamp_ms: event.timestamp_ms,
             phase,
@@ -470,14 +506,17 @@ fn can_follow_failed_terminal(kind: RunEventKind) -> bool {
 
 fn milestone_fields(event: &RunEvent, verbosity: DisplayVerbosity) -> Vec<(String, String)> {
     let mut fields = Vec::new();
+    fields.push(("run".to_owned(), redact_uri_userinfo(event.run_id.as_str())));
     push_optional(&mut fields, "resource", event.resource_id.as_ref());
+    if let Some(scope) = &event.scope {
+        fields.push(("scope".to_owned(), display_scope(scope)));
+    }
     push_optional_str(&mut fields, "package", event.package_id.as_deref());
     push_optional(&mut fields, "checkpoint", event.checkpoint_id.as_ref());
     push_optional(&mut fields, "receipt", event.receipt_id.as_ref());
     push_metric_fields(&mut fields, event);
 
     if verbosity == DisplayVerbosity::Verbose {
-        fields.push(("run".to_owned(), redact_uri_userinfo(event.run_id.as_str())));
         fields.push(("event".to_owned(), event.kind.as_str().to_owned()));
         fields.push(("sequence".to_owned(), event.sequence.to_string()));
         push_optional(&mut fields, "package_hash", event.package_hash.as_ref());
@@ -497,6 +536,40 @@ fn milestone_fields(event: &RunEvent, verbosity: DisplayVerbosity) -> Vec<(Strin
 fn push_optional<T: AsRef<str>>(fields: &mut Vec<(String, String)>, key: &str, value: Option<&T>) {
     if let Some(value) = value {
         push_optional_str(fields, key, Some(value.as_ref()));
+    }
+}
+
+fn display_scope(scope: &ScopeKey) -> String {
+    match scope {
+        ScopeKey::Resource => "resource".to_owned(),
+        ScopeKey::Partition { partition_id } => {
+            format!("partition:{}", redact_uri_userinfo(partition_id.as_str()))
+        }
+        ScopeKey::Window { start, end } => {
+            format!(
+                "window:{}..{}",
+                redact_uri_userinfo(start),
+                redact_uri_userinfo(end)
+            )
+        }
+        ScopeKey::File { path } => format!("file:{}", redact_uri_userinfo(path)),
+        ScopeKey::Stream { name } => format!("stream:{}", redact_uri_userinfo(name)),
+        ScopeKey::SchemaContract { contract } => {
+            format!("schema_contract:{}", redact_uri_userinfo(contract.as_str()))
+        }
+        ScopeKey::DestinationLoad {
+            destination,
+            target,
+        } => format!(
+            "destination_load:{}:{}",
+            redact_uri_userinfo(destination.as_str()),
+            redact_uri_userinfo(target.as_str())
+        ),
+        ScopeKey::Composite { parts } => parts
+            .iter()
+            .map(display_scope)
+            .collect::<Vec<_>>()
+            .join("+"),
     }
 }
 
@@ -634,10 +707,14 @@ mod tests {
     }
 
     fn event(sequence: u64, kind: RunEventKind) -> RunEvent {
+        event_for_run("run-progress-test", sequence, kind)
+    }
+
+    fn event_for_run(run_id: &str, sequence: u64, kind: RunEventKind) -> RunEvent {
         let mut attributes = BTreeMap::new();
         attributes.insert("row_count".to_owned(), RunEventValue::U64(12_345));
         RunEvent {
-            run_id: RunId::new("run-progress-test").unwrap(),
+            run_id: RunId::new(run_id).unwrap(),
             sequence,
             timestamp_ms: 1_725_000_000_000 + i64::try_from(sequence).unwrap(),
             kind,
@@ -829,6 +906,60 @@ mod tests {
     }
 
     #[test]
+    fn restarted_sequences_from_distinct_runs_remain_visible_for_multi_slice_progress() {
+        let sink = sink(DisplayVerbosity::Normal);
+
+        for event in [
+            event_for_run("run-progress-slice-1", 1, RunEventKind::RunStarted),
+            event_for_run("run-progress-slice-1", 2, RunEventKind::RunSucceeded),
+            event_for_run("run-progress-slice-2", 1, RunEventKind::RunStarted),
+            event_for_run("run-progress-slice-2", 2, RunEventKind::RunSucceeded),
+        ] {
+            assert_eq!(sink.try_emit(&event), RunEventSinkResult::Accepted);
+        }
+
+        let snapshot = sink.snapshot();
+        assert_eq!(snapshot.milestones().len(), 4);
+        assert_eq!(snapshot.latest_run_id(), Some("run-progress-slice-2"));
+        assert_eq!(
+            snapshot.last_disposition(),
+            Some(ProgressEventDisposition::Terminal)
+        );
+        let rendered = snapshot.render(&ProgressConfig::new(
+            headless_config(),
+            DisplayVerbosity::Normal,
+        ));
+        assert!(rendered.contains("run=run-progress-slice-1"));
+        assert!(rendered.contains("run=run-progress-slice-2"));
+    }
+
+    #[test]
+    fn latest_run_id_for_package_uses_matching_slice_package_only() {
+        let sink = sink(DisplayVerbosity::Normal);
+        let mut first = event_for_run("run-progress-slice-1", 1, RunEventKind::RunStarted);
+        first.package_id = Some("pkg-progress-slice-1".to_owned());
+        let mut second = event_for_run("run-progress-slice-2", 1, RunEventKind::RunStarted);
+        second.package_id = Some("pkg-progress-slice-2".to_owned());
+
+        assert_eq!(sink.try_emit(&first), RunEventSinkResult::Accepted);
+        assert_eq!(sink.try_emit(&second), RunEventSinkResult::Accepted);
+
+        let snapshot = sink.snapshot();
+        assert_eq!(
+            snapshot.latest_run_id_for_package("pkg-progress-slice-1"),
+            Some("run-progress-slice-1")
+        );
+        assert_eq!(
+            snapshot.latest_run_id_for_package("pkg-progress-slice-2"),
+            Some("run-progress-slice-2")
+        );
+        assert_eq!(
+            snapshot.latest_run_id_for_package("pkg-progress-slice-3"),
+            None
+        );
+    }
+
+    #[test]
     fn backpressure_drops_nonterminal_events_without_blocking() {
         let sink = bounded_sink(1);
 
@@ -925,7 +1056,7 @@ mod tests {
 
         assert_eq!(
             rendered,
-            "1725000000001 [package] running package finalized resource=local.events package=pkg-progress-test checkpoint=chk-progress-test receipt=receipt-progress-test row_count=12.3k\n"
+            "1725000000001 [package] running package finalized run=run-progress-test resource=local.events package=pkg-progress-test checkpoint=chk-progress-test receipt=receipt-progress-test row_count=12.3k\n"
         );
         assert!(!rendered.contains("\u{1b}["));
         assert!(!rendered.contains('\r'));

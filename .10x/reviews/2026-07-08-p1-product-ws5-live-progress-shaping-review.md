@@ -13,7 +13,7 @@ The WS5 shaping records:
 - `.10x/specs/cli-live-progress.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
-- `.10x/tickets/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
 - `.10x/tickets/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
 - `.10x/evidence/2026-07-08-p1-product-ws5-live-progress-shaping.md`
 
