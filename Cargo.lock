@@ -795,6 +795,7 @@ dependencies = [
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "flate2",
  "futures-executor",
  "futures-util",
  "hex",
@@ -805,6 +806,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "toml",
+ "zstd",
 ]
 
 [[package]]
@@ -892,6 +894,7 @@ dependencies = [
  "cdf-contract",
  "cdf-kernel",
  "cdf-package",
+ "flate2",
  "futures-executor",
  "futures-util",
  "hex",
@@ -900,6 +903,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "zstd",
 ]
 
 [[package]]

@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
 Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md, .10x/tickets/done/2026-07-07-run-spine-implementation-program.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 
@@ -24,7 +24,7 @@ Primary write scope is the Python resource adapter in `crates/cdf-project/src/ru
 
 ## Evidence expectations
 
-Record end-to-end run evidence, replay evidence, resume/no-source-contact evidence, duplicate handling evidence, destination matrix evidence, package verification, trait-level receipt verification, focused conformance coverage if a runtime path changed, and mandatory scoped quality checks from `QUALITY.md`, including CodeQL using a reusable database, jscpd, and complexity reports.
+Record end-to-end run evidence, replay evidence, resume/no-source-contact evidence, duplicate handling evidence, destination matrix evidence, package verification, trait-level receipt verification, focused conformance coverage if a runtime path changed, and the `QUALITY.md` profile selected for the touched vectors. Use the reusable CodeQL database when that profile selects CodeQL.
 
 ## Explicit exclusions
 

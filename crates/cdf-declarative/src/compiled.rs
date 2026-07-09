@@ -140,6 +140,7 @@ pub struct FileResourcePlan {
     pub root: String,
     pub glob: String,
     pub format: FileFormatDeclaration,
+    pub compression: FileCompressionDeclaration,
     pub auth: Option<AuthScheme>,
     pub allowlist: EgressAllowlist,
 }
@@ -592,6 +593,10 @@ fn compile_file_plan(
         format: resource.format.clone().ok_or_else(|| {
             CdfError::contract("file resources must declare format before compilation")
         })?,
+        compression: resource
+            .compression
+            .clone()
+            .unwrap_or(FileCompressionDeclaration::Auto),
         auth: source.auth.as_ref().map(compile_auth).transpose()?,
         allowlist,
     })

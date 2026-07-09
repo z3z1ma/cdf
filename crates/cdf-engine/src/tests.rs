@@ -8,15 +8,15 @@ use std::{
 };
 
 use arrow_array::{
-    Array, ArrayRef, BooleanArray, Int32Array, ListArray, RecordBatch, StringArray, StructArray,
-    TimestampMillisecondArray,
+    Array, ArrayRef, BooleanArray, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
+    StructArray, TimestampMillisecondArray,
     builder::{Int32Builder, MapBuilder, StringBuilder},
     types::Int32Type,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
-    ContractPolicy, DedupKeep, NestedDataPolicy, ObservedSchema, RowRule, VARIANT_COLUMN_NAME,
-    VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program,
+    ContractPolicy, DedupKeep, FieldCoercionDecision, NestedDataPolicy, ObservedSchema, RowRule,
+    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
@@ -26,7 +26,7 @@ use cdf_kernel::{
     PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
     ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
-    source_name, with_semantic,
+    source_name, with_physical_type, with_semantic, with_source_name,
 };
 use cdf_package::PackageStatus;
 use datafusion::{
@@ -329,6 +329,73 @@ fn validation_program_output_name_can_cover_already_normalized_batch_field() {
     let field = schema.field(0);
     assert_eq!(field.name(), "customer_name");
     assert_eq!(source_name(field), Some("name"));
+}
+
+#[test]
+fn package_artifacts_record_schema_coercion_evidence_and_physical_type_metadata() {
+    let resource = MockResource::tier_a(vec![parquet_reconciled_batch()]);
+    let input = plan_input_for_schema(
+        parquet_reconciled_schema(),
+        vec![],
+        None,
+        None,
+        PlanBoundedness::Bounded,
+    );
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 2);
+
+    let validation_program: cdf_contract::ValidationProgram = serde_json::from_slice(
+        &std::fs::read(temp.path().join("plan/validation-program.json")).unwrap(),
+    )
+    .unwrap();
+    let plan_evidence = validation_program
+        .schema_coercion
+        .as_ref()
+        .expect("validation program should carry schema coercion evidence");
+    let widened = coercion_decision(plan_evidence, "id");
+    assert_eq!(widened.decision, FieldCoercionDecision::Widened);
+    assert_eq!(widened.observed_type.as_deref(), Some("Int32"));
+    assert_eq!(widened.constraint_type.as_deref(), Some("Int64"));
+
+    let preserved = coercion_decision(plan_evidence, "name");
+    assert_eq!(preserved.decision, FieldCoercionDecision::Preserved);
+    assert_eq!(preserved.observed_type.as_deref(), Some("Utf8"));
+    assert_eq!(preserved.constraint_type.as_deref(), Some("Utf8"));
+
+    let schema_evidence: cdf_contract::SchemaCoercionPlan = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/coercion-plan.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(&schema_evidence, plan_evidence);
+
+    let output_schema: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(temp.path().join("schema/output.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        output_schema["fields"][0]["metadata"]["cdf:physical_type"],
+        "Int32"
+    );
+    assert_eq!(
+        output_schema["fields"][0]["metadata"]["cdf:source_name"],
+        "id"
+    );
+    assert!(output_schema["fields"][1].get("metadata").is_none());
+
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(
+        batches[0]
+            .column_by_name("id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values(),
+        &[1, 2]
+    );
 }
 
 #[test]
@@ -1749,6 +1816,16 @@ fn retain_column_program_by_output(
         .retain(|column| column.output_name == output_name);
 }
 
+fn coercion_decision<'a>(
+    plan: &'a cdf_contract::SchemaCoercionPlan,
+    source_name: &str,
+) -> &'a cdf_contract::FieldCoercion {
+    plan.fields
+        .iter()
+        .find(|field| field.source_name == source_name)
+        .unwrap()
+}
+
 fn descriptor() -> ResourceDescriptor {
     let schema_hash = SchemaHash::new("schema-v1").unwrap();
     ResourceDescriptor {
@@ -1787,6 +1864,16 @@ fn output_name_schema() -> SchemaRef {
     ]))
 }
 
+fn parquet_reconciled_schema() -> SchemaRef {
+    Arc::new(Schema::new(vec![
+        with_physical_type(
+            with_source_name(Field::new("id", DataType::Int64, false), "id"),
+            "Int32",
+        ),
+        Field::new("name", DataType::Utf8, true),
+    ]))
+}
+
 fn sample_batches() -> Vec<Batch> {
     vec![
         batch_for_partition(
@@ -1815,6 +1902,35 @@ fn output_name_batches() -> Vec<Batch> {
         vec!["one", "two", "three"],
         vec![false, true, true],
     )]
+}
+
+fn parquet_reconciled_batch() -> Batch {
+    let schema = parquet_reconciled_schema();
+    let record_batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["one", "two"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    Batch {
+        header: BatchHeader {
+            batch_id: BatchId::new("batch-parquet-reconciled").unwrap(),
+            resource_id: ResourceId::new("orders").unwrap(),
+            partition_id: PartitionId::new("part-0").unwrap(),
+            observed_schema_hash: SchemaHash::new("schema-v1").unwrap(),
+            row_count: record_batch.num_rows() as u64,
+            byte_count: record_batch.get_array_memory_size() as u64,
+            source_position: None,
+            pre_contract_quarantine: Vec::new(),
+            watermarks: Vec::new(),
+            stats: BatchStats::default(),
+            cdc: None,
+        },
+        payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
+    }
 }
 
 fn batch_with_file_position() -> Batch {

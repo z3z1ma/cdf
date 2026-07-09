@@ -16,6 +16,9 @@ _cdf() {
             ",$1")
                 cmd="cdf"
                 ;;
+            cdf,add)
+                cmd="cdf__subcmd__add"
+                ;;
             cdf,backfill)
                 cmd="cdf__subcmd__backfill"
                 ;;
@@ -161,8 +164,22 @@ _cdf() {
 
     case "${cmd}" in
         cdf)
-            opts="-h -V --no-color --help --version help version init validate plan explain run preview sql inspect diff schema contract state resume replay backfill package doctor status"
+            opts="-h -V --no-color --help --version help version init add validate plan explain run preview sql inspect diff schema contract state resume replay backfill package doctor status"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        cdf__subcmd__add)
+            opts="-h --dry-run --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi

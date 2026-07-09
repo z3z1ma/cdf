@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: QUALITY.md, .10x/specs/conformance-governance-roadmap.md, .10x/knowledge/datafusion-cratesio-arrow59-tripwire.md
 
@@ -12,7 +12,7 @@ Add the production pipeline: CI workflows, release workflow, changelog, versioni
 
 ## Required outcomes
 
-- CI has fast gates per push and slow gates per `QUALITY.md` cadence.
+- CI has fast gates per push and scheduled/manual slow gates that follow the relevant `QUALITY.md` Deep Loop.
 - Release workflow produces reproducible checksummed binaries for mainstream targets.
 - `CHANGELOG.md` follows a ratified convention.
 - Versioning/LTS policy covers artifact-spec versions, migration fixtures, dependency tuple cadence, support windows, and the crates.io publication constraint caused by the temporary DataFusion git pin.

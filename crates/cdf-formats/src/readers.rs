@@ -22,6 +22,7 @@ use cdf_kernel::{
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
     source_name,
 };
+use flate2::read::GzDecoder;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use parquet::file::reader::ChunkReader;
 use serde_json::Value;
@@ -29,7 +30,9 @@ use sha2::{Digest, Sha256};
 
 use crate::parquet_discovery::RangeChunkReader;
 use crate::schema::schema_hash;
-use crate::{CsvOptions, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions};
+use crate::{
+    CsvOptions, FileCompression, FileFormat, FileSource, FormatRead, JsonOptions, ReadOptions,
+};
 
 pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
     let position = file_source_position(&source.path)?;
@@ -39,21 +42,19 @@ pub fn read_file_source(source: &FileSource) -> Result<FormatRead> {
 
     match &source.format {
         FileFormat::Csv(options) => {
-            let bytes = fs::read(&source.path)
-                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
+            let bytes = read_file_source_bytes(source)?;
             read_csv_bytes_with_scope(&bytes, &source.options, options, scope, Some(position))
         }
         FileFormat::Json(options) => {
-            let bytes = fs::read(&source.path)
-                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
+            let bytes = read_file_source_bytes(source)?;
             read_json_bytes_with_scope(&bytes, &source.options, options, scope, Some(position))
         }
         FileFormat::Ndjson(options) => {
-            let bytes = fs::read(&source.path)
-                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
+            let bytes = read_file_source_bytes(source)?;
             read_ndjson_bytes_with_scope(&bytes, &source.options, options, scope, Some(position))
         }
         FileFormat::Parquet => {
+            reject_byte_stream_compression_for_parquet(source)?;
             read_parquet_file_with_scope(&source.path, &source.options, scope, Some(position))
         }
     }
@@ -70,8 +71,7 @@ pub fn read_file_source_with_declared_schema(
 
     match &source.format {
         FileFormat::Json(options) => {
-            let bytes = fs::read(&source.path)
-                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
+            let bytes = read_file_source_bytes(source)?;
             read_json_bytes_with_declared_schema_and_scope(
                 &bytes,
                 &source.options,
@@ -82,8 +82,7 @@ pub fn read_file_source_with_declared_schema(
             )
         }
         FileFormat::Ndjson(options) => {
-            let bytes = fs::read(&source.path)
-                .map_err(|error| io_data_error(format!("read {}", source.path.display()), error))?;
+            let bytes = read_file_source_bytes(source)?;
             read_ndjson_bytes_with_declared_schema_and_scope(
                 &bytes,
                 &source.options,
@@ -102,6 +101,59 @@ pub fn read_file_source_with_declared_schema(
         ),
         FileFormat::Csv(_) => read_file_source(source),
     }
+}
+
+fn read_file_source_bytes(source: &FileSource) -> Result<Vec<u8>> {
+    match source.compression {
+        FileCompression::None => fs::read(&source.path)
+            .map_err(|error| io_data_error(format!("read {}", source.path.display()), error)),
+        FileCompression::Gzip => read_gzip_file(&source.path),
+        FileCompression::Zstd => read_zstd_file(&source.path),
+    }
+}
+
+fn read_gzip_file(path: &Path) -> Result<Vec<u8>> {
+    let file = open_compressed_file(path, "gzip")?;
+    let decoder = GzDecoder::new(file);
+    read_decoder_to_end(decoder, path, "gzip")
+}
+
+fn read_zstd_file(path: &Path) -> Result<Vec<u8>> {
+    let file = open_compressed_file(path, "zstd")?;
+    let decoder = zstd::stream::read::Decoder::new(file)
+        .map_err(|error| io_data_error(format!("open zstd stream {}", path.display()), error))?;
+    read_decoder_to_end(decoder, path, "zstd")
+}
+
+fn open_compressed_file(path: &Path, compression: &str) -> Result<fs::File> {
+    fs::File::open(path).map_err(|error| {
+        io_data_error(
+            format!("open {compression}-compressed {}", path.display()),
+            error,
+        )
+    })
+}
+
+fn read_decoder_to_end<R: Read>(mut decoder: R, path: &Path, compression: &str) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    decoder.read_to_end(&mut bytes).map_err(|error| {
+        io_data_error(
+            format!("read {compression}-compressed {}", path.display()),
+            error,
+        )
+    })?;
+    Ok(bytes)
+}
+
+fn reject_byte_stream_compression_for_parquet(source: &FileSource) -> Result<()> {
+    if source.compression == FileCompression::None {
+        return Ok(());
+    }
+    Err(CdfError::contract(format!(
+        "byte-stream compression `{}` is not supported for Parquet file source {}; Parquet compression must be handled by the Parquet reader",
+        source.compression.as_str(),
+        source.path.display()
+    )))
 }
 
 pub fn read_arrow_ipc_stream<R: Read>(reader: R, options: &ReadOptions) -> Result<FormatRead> {

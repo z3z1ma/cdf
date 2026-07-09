@@ -30,6 +30,7 @@ complete -c cdf -n "__fish_cdf_needs_command" -s V -l version -d 'Print version'
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "help"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "version"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "init"
+complete -c cdf -n "__fish_cdf_needs_command" -f -a "add"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "validate"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "plan"
 complete -c cdf -n "__fish_cdf_needs_command" -f -a "explain"
@@ -55,6 +56,9 @@ complete -c cdf -n "__fish_cdf_using_subcommand init" -l name -r
 complete -c cdf -n "__fish_cdf_using_subcommand init" -l force
 complete -c cdf -n "__fish_cdf_using_subcommand init" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand add" -l dry-run
+complete -c cdf -n "__fish_cdf_using_subcommand add" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand add" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -l deep
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand validate" -s h -l help -d 'Print help'

@@ -23,7 +23,7 @@ Split executable child tickets before code for vocabulary/parser/JSON Schema, re
 
 ## Evidence expectations
 
-Unit/property tests for parser round-trips and widening composition/no-loss, package/plan evidence for physical provenance, negative plan tests for lossy mappings, jscpd/complexity checks for the new parser/reconciler, and conformance ownership before closure.
+Unit/property tests for parser round-trips and widening composition/no-loss, package/plan evidence for physical provenance, negative plan tests for lossy mappings, the `QUALITY.md` profile selected for parser/reconciler change-set risk, and conformance ownership before closure.
 
 ## Explicit exclusions
 
@@ -39,6 +39,8 @@ This ticket does not implement destination-specific type mapping tables except w
 - 2026-07-09: Split `.10x/tickets/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md` for the first per-format integration: local Parquet declared-schema reconciliation and lossless batch casting.
 - 2026-07-09: B3 closed in `.10x/tickets/done/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md`. Evidence: `.10x/evidence/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation.md`. Review: `.10x/reviews/2026-07-09-p2-ws-b3-parquet-declared-schema-reconciliation-review.md`. Local Parquet declared-schema reads now use the shared reconciler and materialize supported Arrow width casts; policy plumbing, validation-program serialization, and conformance golden paths remain later WS-B/WS-I work.
 - 2026-07-09: B4 closed in `.10x/tickets/done/2026-07-09-p2-ws-b4-widening-property-conformance.md` with shared evidence `.10x/evidence/2026-07-09-p2-e2-g1-b4-batch.md` and review `.10x/reviews/2026-07-09-p2-e2-g1-b4-batch-review.md`. `cdf-conformance` now owns property tests for signed/unsigned integer widening composition, float32-to-float64 preservation, date32-to-timestamp preservation, and `FieldCoercionDecision::Widened` verdict classification. Remaining WS-B scope: validation-program serialization/in-package evidence for coercion plans, additional per-format integration where required, and final S1-S8 conformance closure.
+- 2026-07-09: Split executable child `.10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md` for validation-program/package evidence serialization of schema coercion plans.
+- 2026-07-09: B5 closed as `.10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md` with evidence `.10x/evidence/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md` and review `.10x/reviews/2026-07-09-p2-ws-b5-validation-program-coercion-evidence-review.md`. Validation-program/package evidence now records current schema-coercion plans and physical type provenance. Remaining WS-B scope is additional per-format integration where required and final S1-S8 conformance closure.
 
 ## Blockers
 

@@ -5,12 +5,15 @@ use crate::{
     policy::{
         PromotionPolicy, RedactionDecision, TransformDescription, ValidationDepth, VerdictAction,
     },
+    reconciliation::SchemaCoercionPlan,
     schema::ArrowType,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValidationProgram {
     pub normalizer_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_coercion: Option<SchemaCoercionPlan>,
     pub schema_verdicts: Vec<SchemaVerdictRule>,
     pub column_programs: Vec<ColumnProgram>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

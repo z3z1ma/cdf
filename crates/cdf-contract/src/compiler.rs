@@ -70,6 +70,7 @@ pub fn compile_validation_program(
 
     Ok(ValidationProgram {
         normalizer_version: policy.normalization.identifier.version.clone(),
+        schema_coercion: None,
         schema_verdicts: schema_verdicts(&policy.schema, &policy.normalization.nested),
         column_programs,
         row_rules: row_rule_programs(policy, observed_schema),

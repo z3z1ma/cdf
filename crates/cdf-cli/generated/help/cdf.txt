@@ -6,6 +6,7 @@ Commands:
   help
   version
   init
+  add
   validate
   plan
   explain

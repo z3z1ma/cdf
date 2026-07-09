@@ -98,7 +98,7 @@ fn help_lists_required_command_surface() {
 
     assert_eq!(result.exit_code, 0);
     for command in [
-        "help", "version", "init", "validate", "plan", "explain", "run", "preview", "sql",
+        "help", "version", "init", "add", "validate", "plan", "explain", "run", "preview", "sql",
         "inspect", "diff", "schema", "contract", "state", "resume", "replay", "backfill",
         "package", "doctor", "status",
     ] {
@@ -113,6 +113,14 @@ fn parser_provides_subcommand_help_at_nested_layers() {
     assert_eq!(validate.exit_code, 0);
     assert!(validate.stdout.contains("Usage: cdf validate"));
     assert!(validate.stdout.contains("--deep"));
+
+    let add = run(["cdf", "add", "--help"]);
+
+    assert_eq!(add.exit_code, 0);
+    assert!(add.stdout.contains("Usage: cdf add"));
+    assert!(add.stdout.contains("RESOURCE_ID"));
+    assert!(add.stdout.contains("URL_OR_PATH"));
+    assert!(add.stdout.contains("--dry-run"));
 
     let plan = run(["cdf", "plan", "--help"]);
 
@@ -799,6 +807,206 @@ fn resource_not_compiled_error_names_compiled_ids_origins_and_fix() {
     assert!(message.contains("<source>.<resource>"));
     assert!(!message.contains("cdf run requires"));
     assert_eq!(json["error"]["suggestions"][0], "local.events");
+}
+
+#[test]
+fn add_local_parquet_pins_schema_and_writes_resource_config() {
+    let project = TestProject::new();
+    write_vendor_parquet(&project.root.join("data/yellow.parquet"));
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "tlc.yellow",
+        project.root.join("data/yellow.parquet").to_str().unwrap(),
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(json["command"], "add");
+    assert_eq!(report["resource_id"], "tlc.yellow");
+    assert_eq!(report["config_path"], "resources/tlc.toml");
+    assert_eq!(report["source_root"], "data");
+    assert_eq!(report["glob"], "yellow.parquet");
+    assert_eq!(report["write_disposition"], "append");
+    assert_eq!(report["schema_source"], "discovered");
+    assert_eq!(report["next_command"], "cdf run tlc.yellow");
+    assert_eq!(report["writes"]["resource_config"], true);
+    assert_eq!(report["writes"]["project_config"], true);
+    assert_eq!(report["writes"]["schema_snapshot"], true);
+    assert_eq!(report["writes"]["lockfile"], true);
+    assert_eq!(report["writes"]["package"], false);
+    assert_eq!(report["writes"]["destination"], false);
+    assert_eq!(report["writes"]["checkpoint"], false);
+    assert!(
+        report["schema_snapshot_path"]
+            .as_str()
+            .unwrap()
+            .starts_with(".cdf/schemas/tlc.yellow@sha256:")
+    );
+    assert_eq!(report["fields"][0]["name"], "vendor_id");
+    assert_eq!(report["fields"][0]["source_name"], "VendorID");
+
+    let resource_toml = fs::read_to_string(project.root.join("resources/tlc.toml")).unwrap();
+    assert!(resource_toml.contains("[source.tlc]"));
+    assert!(resource_toml.contains("kind = \"files\""));
+    assert!(resource_toml.contains("root = \"data\""));
+    assert!(resource_toml.contains("[resource.yellow]"));
+    assert!(resource_toml.contains("glob = \"yellow.parquet\""));
+    assert!(resource_toml.contains("format = \"parquet\""));
+    assert!(resource_toml.contains("write_disposition = \"append\""));
+    assert!(!resource_toml.contains("primary_key"));
+    assert!(!resource_toml.contains("merge_key"));
+    assert!(!resource_toml.contains("schema ="));
+
+    let project_toml = fs::read_to_string(project.root.join("cdf.toml")).unwrap();
+    assert!(project_toml.contains("[resources.\"tlc.yellow\"]"));
+    assert!(project_toml.contains("source = \"resources/tlc.toml\""));
+    assert!(
+        project
+            .root
+            .join(report["schema_snapshot_path"].as_str().unwrap())
+            .is_file()
+    );
+
+    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    let locked = lock.resources.get("tlc.yellow").unwrap();
+    assert!(locked.schema_snapshot.is_some());
+    assert_eq!(
+        locked.schema_snapshot.as_ref().unwrap().path,
+        report["schema_snapshot_path"].as_str().unwrap()
+    );
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "tlc.yellow",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+}
+
+#[test]
+fn add_local_parquet_dry_run_writes_nothing() {
+    let project = TestProject::new();
+    write_vendor_parquet(&project.root.join("data/yellow.parquet"));
+
+    let before_project = fs::read_to_string(project.root.join("cdf.toml")).unwrap();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "tlc.yellow",
+        project.root.join("data/yellow.parquet").to_str().unwrap(),
+        "--dry-run",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["writes"]["resource_config"], false);
+    assert_eq!(report["writes"]["project_config"], false);
+    assert_eq!(report["writes"]["schema_snapshot"], false);
+    assert_eq!(report["writes"]["lockfile"], false);
+    assert_eq!(report["writes"]["package"], false);
+    assert_eq!(report["writes"]["destination"], false);
+    assert_eq!(report["writes"]["checkpoint"], false);
+    assert_eq!(report["next_command"], "cdf run tlc.yellow");
+    assert_eq!(
+        fs::read_to_string(project.root.join("cdf.toml")).unwrap(),
+        before_project
+    );
+    assert!(!project.root.join("resources/tlc.toml").exists());
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+}
+
+#[test]
+fn add_http_parquet_pins_schema_with_bounded_fixture_requests() {
+    let project = TestProject::new();
+    write_vendor_parquet(&project.root.join("data/yellow.parquet"));
+    let parquet = fs::read(project.root.join("data/yellow.parquet")).unwrap();
+    let (base_url, requests) = serve_parquet_file(parquet, 8);
+    let url = format!("{base_url}/yellow.parquet");
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "remote.yellow",
+        &url,
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_id"], "remote.yellow");
+    assert_eq!(report["glob"], "yellow.parquet");
+    assert_eq!(report["write_disposition"], "append");
+    assert!(project.root.join("resources/remote.toml").is_file());
+    let resource_toml = fs::read_to_string(project.root.join("resources/remote.toml")).unwrap();
+    assert!(resource_toml.contains("[source.remote]"));
+    assert!(resource_toml.contains("kind = \"files\""));
+    assert!(resource_toml.contains("egress_allowlist = [\"127.0.0.1\"]"));
+    assert!(resource_toml.contains("glob = \"yellow.parquet\""));
+    assert!(!resource_toml.contains("primary_key"));
+    assert!(!resource_toml.contains("merge_key"));
+
+    let requests = requests.lock().unwrap();
+    assert!(
+        requests
+            .iter()
+            .any(|request| request.starts_with("HEAD /yellow.parquet HTTP/1.1")),
+        "expected metadata HEAD request, got {requests:?}"
+    );
+    assert!(
+        requests.iter().any(
+            |request| request.starts_with("GET /yellow.parquet HTTP/1.1")
+                && request.to_ascii_lowercase().contains("range: bytes=")
+        ),
+        "expected bounded range GET request, got {requests:?}"
+    );
+}
+
+#[test]
+fn add_rejects_signed_url_without_leaking_secret_query() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "remote.yellow",
+        "https://data.example.test/yellow.parquet?sig=super-secret-token",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert_secret_absent(&result, "super-secret-token");
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(json["error"]["code"], "CDF-CLI-USAGE");
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("[redacted]")
+    );
+    assert!(!project.root.join("resources/remote.toml").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/schemas").exists());
 }
 
 #[test]
@@ -9281,6 +9489,74 @@ fn serve_json_once_capturing_request(body: &str) -> (String, Arc<Mutex<Option<St
         stream.flush().unwrap();
     });
     (format!("http://{address}"), request_text)
+}
+
+fn serve_parquet_file(bytes: Vec<u8>, max_requests: usize) -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let requests_for_thread = Arc::clone(&requests);
+    thread::spawn(move || {
+        for _ in 0..max_requests {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut request = [0_u8; 8192];
+            let bytes_read = stream.read(&mut request).unwrap_or(0);
+            let request_text = String::from_utf8_lossy(&request[..bytes_read]).into_owned();
+            requests_for_thread
+                .lock()
+                .unwrap()
+                .push(request_text.clone());
+            let method = request_text
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().next())
+                .unwrap_or("GET");
+            let range = request_text.lines().find_map(parse_range_header);
+            let response = match (method, range) {
+                ("HEAD", _) => format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\naccept-ranges: bytes\r\netag: \"yellow-fixture\"\r\nconnection: close\r\n\r\n",
+                    bytes.len()
+                )
+                .into_bytes(),
+                (_, Some((start, end))) => {
+                    let end = end.min(bytes.len().saturating_sub(1));
+                    let body = &bytes[start..=end];
+                    let mut response = format!(
+                        "HTTP/1.1 206 Partial Content\r\ncontent-length: {}\r\ncontent-range: bytes {start}-{end}/{}\r\naccept-ranges: bytes\r\netag: \"yellow-fixture\"\r\nconnection: close\r\n\r\n",
+                        body.len(),
+                        bytes.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(body);
+                    response
+                }
+                _ => {
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\naccept-ranges: bytes\r\netag: \"yellow-fixture\"\r\nconnection: close\r\n\r\n",
+                        bytes.len()
+                    )
+                    .into_bytes();
+                    response.extend_from_slice(&bytes);
+                    response
+                }
+            };
+            stream.write_all(&response).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+    (format!("http://{address}"), requests)
+}
+
+fn parse_range_header(line: &str) -> Option<(usize, usize)> {
+    let (name, value) = line.split_once(':')?;
+    if !name.eq_ignore_ascii_case("range") {
+        return None;
+    }
+    let range = value.trim().strip_prefix("bytes=")?;
+    let (start, end) = range.split_once('-')?;
+    Some((start.parse().ok()?, end.parse().ok()?))
 }
 
 fn sql_resource(connection: &str) -> String {

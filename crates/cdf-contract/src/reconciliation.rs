@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use arrow_schema::{DataType, Field, Schema};
-use cdf_kernel::{CdfError, Result, source_name, with_physical_type, with_source_name};
+use cdf_kernel::{
+    CdfError, Result, physical_type, source_name, with_physical_type, with_source_name,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{policy::TypePolicy, program::RuleOutcome};
@@ -89,6 +91,90 @@ pub fn reconcile_schema(
     type_policy: &TypePolicy,
 ) -> Result<SchemaReconciliation> {
     plan_schema_reconciliation(observed, constraint, type_policy)?.into_result()
+}
+
+pub fn schema_coercion_plan_from_reconciled_schema(schema: &Schema) -> Option<SchemaCoercionPlan> {
+    let has_physical_provenance = schema
+        .fields()
+        .iter()
+        .any(|field| physical_type(field.as_ref()).is_some());
+    if !has_physical_provenance {
+        return None;
+    }
+
+    Some(SchemaCoercionPlan {
+        fields: schema
+            .fields()
+            .iter()
+            .map(|field| field_coercion_from_reconciled_field(field.as_ref()))
+            .collect(),
+    })
+}
+
+fn field_coercion_from_reconciled_field(field: &Field) -> FieldCoercion {
+    let source = field_source_name(field);
+    let observed_type = physical_type(field)
+        .map(str::to_owned)
+        .unwrap_or_else(|| field.data_type().to_string());
+    let constraint_type = field.data_type().to_string();
+    let (decision, outcome, reason) = if observed_type == constraint_type {
+        (
+            FieldCoercionDecision::Preserved,
+            RuleOutcome::Pass,
+            "observed type already satisfies the constraint".to_owned(),
+        )
+    } else if is_lossless_widening_display(&observed_type, &constraint_type) {
+        (
+            FieldCoercionDecision::Widened,
+            RuleOutcome::Coerced,
+            format!("lossless widening from {observed_type} to {constraint_type}"),
+        )
+    } else {
+        (
+            FieldCoercionDecision::CoercedByPolicy,
+            RuleOutcome::Coerced,
+            format!(
+                "reconciled schema metadata records physical type {observed_type} for output type {constraint_type}"
+            ),
+        )
+    };
+
+    FieldCoercion {
+        source_name: source.clone(),
+        observed_name: Some(source),
+        output_name: Some(field.name().clone()),
+        observed_type: Some(observed_type),
+        constraint_type: Some(constraint_type),
+        decision,
+        outcome,
+        reason,
+        operator_fixes: Vec::new(),
+    }
+}
+
+fn is_lossless_widening_display(observed: &str, constraint: &str) -> bool {
+    matches!(
+        (observed, constraint),
+        ("Int8", "Int16" | "Int32" | "Int64")
+            | ("Int16", "Int32" | "Int64")
+            | ("Int32", "Int64")
+            | ("UInt8", "UInt16" | "UInt32" | "UInt64")
+            | ("UInt16", "UInt32" | "UInt64")
+            | ("UInt32", "UInt64")
+            | ("Float32", "Float64")
+    ) || (observed == "Date32" && constraint.starts_with("Timestamp("))
+        || (is_integer_display(observed) && is_decimal_display(constraint))
+}
+
+fn is_integer_display(value: &str) -> bool {
+    matches!(
+        value,
+        "Int8" | "Int16" | "Int32" | "Int64" | "UInt8" | "UInt16" | "UInt32" | "UInt64"
+    )
+}
+
+fn is_decimal_display(value: &str) -> bool {
+    value.starts_with("Decimal128(") || value.starts_with("Decimal256(")
 }
 
 pub fn plan_schema_reconciliation(

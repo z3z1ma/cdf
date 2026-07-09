@@ -2,6 +2,7 @@
 
 use std::ffi::OsString;
 
+mod add_command;
 mod args;
 mod backfill_command;
 #[cfg(feature = "cli-artifacts")]

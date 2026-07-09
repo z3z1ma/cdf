@@ -29,6 +29,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('help', 'help', [CompletionResultType]::ParameterValue, 'help')
             [CompletionResult]::new('version', 'version', [CompletionResultType]::ParameterValue, 'version')
             [CompletionResult]::new('init', 'init', [CompletionResultType]::ParameterValue, 'init')
+            [CompletionResult]::new('add', 'add', [CompletionResultType]::ParameterValue, 'add')
             [CompletionResult]::new('validate', 'validate', [CompletionResultType]::ParameterValue, 'validate')
             [CompletionResult]::new('plan', 'plan', [CompletionResultType]::ParameterValue, 'plan')
             [CompletionResult]::new('explain', 'explain', [CompletionResultType]::ParameterValue, 'explain')
@@ -63,6 +64,13 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
         'cdf;init' {
             [CompletionResult]::new('--name', '--name', [CompletionResultType]::ParameterName, 'name')
             [CompletionResult]::new('--force', '--force', [CompletionResultType]::ParameterName, 'force')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'cdf;add' {
+            [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'dry-run')
             [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')

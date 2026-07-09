@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
 Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/done/2026-07-05-dlt-shim-preview.md, .10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md
 
@@ -22,7 +22,7 @@ Primary write scope is dlt-specific modules in `crates/cdf-python/src/**`, Pytho
 
 ## Evidence expectations
 
-Record dlt integration tests or an explicit gap-list evidence record, mapping snapshots, state view tests, compatibility divergence snapshots, and mandatory scoped quality checks from `QUALITY.md`, including jscpd and complexity reports for touched Rust/Python.
+Record dlt integration tests or an explicit gap-list evidence record, mapping snapshots, state view tests, compatibility divergence snapshots, and the `QUALITY.md` profile selected for touched Rust/Python.
 
 ## Explicit exclusions
 

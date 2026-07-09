@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
 Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/specs/versioning-lts-release-policy.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md
 
@@ -18,7 +18,7 @@ Primary write scope is `.github/workflows/**`, targeted helper scripts if needed
 - Deterministic bridge fixtures produce identical package or fixture hashes across the matrix where the input and resource semantics are deterministic.
 - Free-threaded-unavailable environments report an explicit skipped or allowed-failure state with a revisit trigger, not a silent pass.
 - `python.require_free_threaded = true` remains enforced by doctor and is represented in CI.
-- The workflow does not leak secrets and does not weaken existing `--locked`, cargo audit/deny/vet, CodeQL, jscpd, or complexity quality gates.
+- The workflow does not leak secrets and does not weaken selected `QUALITY.md` verification, including `--locked` Cargo commands, supply-chain gates, or CodeQL when those profiles apply.
 
 ## Evidence expectations
 

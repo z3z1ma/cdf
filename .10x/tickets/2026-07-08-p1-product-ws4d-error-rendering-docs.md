@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
 Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md, .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md, .10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md
 
@@ -22,7 +22,7 @@ Primary write scope is renderer integration points in `crates/cdf-cli/src/**`, g
 
 ## Evidence expectations
 
-Record renderer snapshots, generated-doc freshness output, docs diff proof, redaction adversarial output, and required scoped quality checks from `QUALITY.md`, including jscpd and complexity output for touched source.
+Record renderer snapshots, generated-doc freshness output, docs diff proof, redaction adversarial output, and the `QUALITY.md` profile selected for the touched source.
 
 ## Explicit exclusions
 

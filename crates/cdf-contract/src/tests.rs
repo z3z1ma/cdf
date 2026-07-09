@@ -7,7 +7,7 @@ use arrow_array::{
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     IdentifierRules, TrustLevel, TypeMapping, TypeMappingFidelity, physical_type, source_name,
-    with_semantic, with_source_name,
+    with_physical_type, with_semantic, with_source_name,
 };
 
 #[test]
@@ -36,9 +36,42 @@ fn validation_program_serializes_and_has_total_lattice() {
     }
 
     let json = serde_json::to_string(&program).unwrap();
+    assert!(!json.contains("schema_coercion"));
     assert_eq!(
         program,
         serde_json::from_str::<ValidationProgram>(&json).unwrap()
+    );
+}
+
+#[test]
+fn validation_program_coercion_evidence_is_optional_and_round_trips() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let observed = ObservedSchema::from_arrow(&schema);
+    let mut program =
+        compile_validation_program(&ContractPolicy::for_trust(TrustLevel::Governed), &observed)
+            .unwrap();
+
+    let mut legacy_json = serde_json::to_value(&program).unwrap();
+    legacy_json
+        .as_object_mut()
+        .unwrap()
+        .remove("schema_coercion");
+    let legacy = serde_json::from_value::<ValidationProgram>(legacy_json).unwrap();
+    assert!(legacy.schema_coercion.is_none());
+
+    let reconciliation = reconcile_schema(
+        &Schema::new(vec![Field::new("id", DataType::Int32, false)]),
+        &schema,
+        &ContractPolicy::default().types,
+    )
+    .unwrap();
+    program.schema_coercion = Some(reconciliation.plan.clone());
+
+    let value = serde_json::to_value(&program).unwrap();
+    assert_eq!(value["schema_coercion"]["fields"][0]["decision"], "widened");
+    assert_eq!(
+        program,
+        serde_json::from_value::<ValidationProgram>(value).unwrap()
     );
 }
 
@@ -762,6 +795,31 @@ fn schema_reconciliation_records_lossless_widenings_and_physical_type() {
         ),
         Some("Date32")
     );
+}
+
+#[test]
+fn schema_coercion_plan_from_reconciled_schema_records_widened_and_preserved_fields() {
+    let schema = Schema::new(vec![
+        with_physical_type(
+            with_source_name(Field::new("id", DataType::Int64, false), "id"),
+            "Int32",
+        ),
+        with_source_name(Field::new("name", DataType::Utf8, true), "name"),
+    ]);
+
+    let plan = schema_coercion_plan_from_reconciled_schema(&schema).unwrap();
+
+    let widened = decision_for(&plan, "id");
+    assert_eq!(widened.decision, FieldCoercionDecision::Widened);
+    assert_eq!(widened.observed_type.as_deref(), Some("Int32"));
+    assert_eq!(widened.constraint_type.as_deref(), Some("Int64"));
+    assert_eq!(widened.observed_name.as_deref(), Some("id"));
+    assert_eq!(widened.output_name.as_deref(), Some("id"));
+
+    let preserved = decision_for(&plan, "name");
+    assert_eq!(preserved.decision, FieldCoercionDecision::Preserved);
+    assert_eq!(preserved.observed_type.as_deref(), Some("Utf8"));
+    assert_eq!(preserved.constraint_type.as_deref(), Some("Utf8"));
 }
 
 #[test]

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -8,12 +8,14 @@ use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, ValidationProgram, VerdictSummary,
-    evaluate_package_order_dedup, evaluate_record_batch,
+    ContractEvaluationContext, QuarantineCandidate, SchemaCoercionPlan, ValidationProgram,
+    VerdictSummary, evaluate_package_order_dedup, evaluate_record_batch,
+    schema_coercion_plan_from_reconciled_schema,
 };
 use cdf_kernel::{
-    CdfError, PreContractObservedValue, PreContractQuarantineFact, ResourceStream, Result, RunId,
-    ScopeKey, SegmentId, SourcePosition, WriteDisposition, semantic,
+    CdfError, PHYSICAL_TYPE_METADATA_KEY, PreContractObservedValue, PreContractQuarantineFact,
+    ResourceStream, Result, RunId, SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId, SourcePosition,
+    WriteDisposition, semantic,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -43,6 +45,8 @@ struct SchemaFieldArtifact {
     nullable: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     semantic: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,6 +73,7 @@ struct OutputWriteState<'a> {
     segments: &'a mut Vec<cdf_package::SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     output_schema: &'a mut Option<SchemaArtifact>,
+    schema_coercion: &'a mut Option<SchemaCoercionPlan>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -155,16 +160,17 @@ async fn execute_to_package_inner<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    validate_program(&plan.validation_program)?;
+    let mut validation_program = plan.validation_program.clone();
+    validate_program(&validation_program)?;
 
     let mut builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact("plan/scan.json", &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
-    builder.write_json_artifact("plan/validation-program.json", &plan.validation_program)?;
+    builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
     let package_evaluation_context =
         ContractEvaluationContext::observed_at(current_observed_at_ms()?);
-    if plan.validation_program.requires_observed_at_ms() {
+    if validation_program.requires_observed_at_ms() {
         builder.write_json_artifact(
             "plan/contract-evaluation-context.json",
             &package_evaluation_context,
@@ -180,8 +186,9 @@ where
     let mut quarantine_part_count = 0_usize;
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = None;
-    let apply_merge_dedup = plan.write_disposition == WriteDisposition::Merge
-        && plan.validation_program.has_dedup_rule();
+    let mut schema_coercion = validation_program.schema_coercion.clone();
+    let apply_merge_dedup =
+        plan.write_disposition == WriteDisposition::Merge && validation_program.has_dedup_rule();
     let mut pending_dedup_batches = Vec::new();
 
     for partition in plan.scan.partitions.clone() {
@@ -239,7 +246,7 @@ where
                     accepted,
                     quarantine_records,
                     summary,
-                } = apply_contract_exec(output, &plan.validation_program, &evaluation_context)?;
+                } = apply_contract_exec(output, &validation_program, &evaluation_context)?;
                 merge_verdict_summary(&mut verdict_summary, summary);
                 if !quarantine_records.is_empty() {
                     write_quarantine_part(
@@ -262,7 +269,7 @@ where
                 }
                 write_output_batch(
                     &mut builder,
-                    &plan.validation_program,
+                    &validation_program,
                     output,
                     batch_source_position,
                     &mut OutputWriteState {
@@ -271,6 +278,7 @@ where
                         segments: &mut segments,
                         segment_positions: &mut segment_positions,
                         output_schema: &mut output_schema,
+                        schema_coercion: &mut schema_coercion,
                     },
                 )?;
             }
@@ -283,7 +291,7 @@ where
     if apply_merge_dedup {
         apply_dedup_and_write_pending_batches(
             &mut builder,
-            &plan.validation_program,
+            &validation_program,
             pending_dedup_batches,
             &mut OutputWriteState {
                 profile: &mut profile,
@@ -291,15 +299,23 @@ where
                 segments: &mut segments,
                 segment_positions: &mut segment_positions,
                 output_schema: &mut output_schema,
+                schema_coercion: &mut schema_coercion,
             },
         )?;
     }
 
+    if validation_program.schema_coercion.is_none() {
+        validation_program.schema_coercion = schema_coercion;
+    }
+    builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
+    if let Some(coercion) = &validation_program.schema_coercion {
+        builder.write_json_artifact("schema/coercion-plan.json", coercion)?;
+    }
     builder.write_json_artifact(
         "schema/output.json",
         &output_schema.unwrap_or(SchemaArtifact { fields: Vec::new() }),
     )?;
-    if let Some(evolution) = contract_evolution_artifact(&plan.validation_program) {
+    if let Some(evolution) = contract_evolution_artifact(&validation_program) {
         builder.write_json_artifact("schema/contract-evolution.json", &evolution)?;
     }
     builder.write_stats_artifact(
@@ -502,6 +518,10 @@ fn write_output_batch(
 ) -> Result<()> {
     let output = normalize_batch(output, program)?;
     *state.output_schema = Some(schema_artifact(output.schema().as_ref()));
+    if state.schema_coercion.is_none() {
+        *state.schema_coercion =
+            schema_coercion_plan_from_reconciled_schema(output.schema().as_ref());
+    }
     state.profile.output_rows += output.num_rows() as u64;
     state.profile.output_bytes += output.get_array_memory_size() as u64;
     state.profile.output_batches += 1;
@@ -642,9 +662,26 @@ fn schema_artifact(schema: &Schema) -> SchemaArtifact {
                 data_type: field.data_type().to_string(),
                 nullable: field.is_nullable(),
                 semantic: semantic(field.as_ref()).map(ToOwned::to_owned),
+                metadata: schema_field_metadata(field.as_ref()),
             })
             .collect(),
     }
+}
+
+fn schema_field_metadata(field: &arrow_schema::Field) -> BTreeMap<String, String> {
+    if !field.metadata().contains_key(PHYSICAL_TYPE_METADATA_KEY) {
+        return BTreeMap::new();
+    }
+
+    [SOURCE_NAME_METADATA_KEY, PHYSICAL_TYPE_METADATA_KEY]
+        .into_iter()
+        .filter_map(|key| {
+            field
+                .metadata()
+                .get(key)
+                .map(|value| (key.to_owned(), value.clone()))
+        })
+        .collect()
 }
 
 fn current_observed_at_ms() -> Result<i64> {

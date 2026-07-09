@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
 Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md, .10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md
 
@@ -22,7 +22,7 @@ Primary write scope is `crates/cdf-project/src/runtime/**`, `crates/cdf-cli/src/
 
 ## Evidence expectations
 
-Record command/runtime tests, conformance observation evidence, no-source-contact resume evidence, duplicate replay evidence, failure-path evidence, and scoped `QUALITY.md` checks including jscpd and complexity reports.
+Record command/runtime tests, conformance observation evidence, no-source-contact resume evidence, duplicate replay evidence, failure-path evidence, and the smallest sufficient `QUALITY.md` profile for the touched vectors.
 
 ## Explicit exclusions
 

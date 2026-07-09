@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
+    io::Read,
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::UNIX_EPOCH,
@@ -9,8 +10,8 @@ use std::{
 
 use arrow_schema::SchemaRef;
 use cdf_formats::{
-    CsvOptions, FileFormat, FileSource, JsonOptions, RangeChunkReader, ReadOptions,
-    read_arrow_ipc_file, read_file_source, read_file_source_with_declared_schema,
+    CsvOptions, FileCompression, FileFormat, FileSource, JsonOptions, RangeChunkReader,
+    ReadOptions, read_arrow_ipc_file, read_file_source, read_file_source_with_declared_schema,
     read_parquet_range_source, read_parquet_range_source_with_declared_schema,
 };
 use cdf_http::SecretProvider;
@@ -23,9 +24,9 @@ use futures_util::stream;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ByteRange, CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileIdentityMetadata,
-    FileResourcePlan, FileTransport, FileTransportFacade, FileTransportLocation,
-    FileTransportResource,
+    ByteRange, CompiledResource, CompiledResourcePlan, FileCompressionDeclaration,
+    FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan, FileTransport,
+    FileTransportFacade, FileTransportLocation, FileTransportResource,
 };
 
 #[derive(Clone)]
@@ -227,12 +228,55 @@ pub(crate) struct ResolvedFileMatch {
     etag: Option<String>,
     modified_ms: Option<String>,
     bytes_loaded: Option<u64>,
+    compression: CompressionEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum ResolvedFileOpen {
     LocalPath(PathBuf),
     Transport(FileTransportResource),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CompressionEvidence {
+    mode: FileCompression,
+    extension_signal: CompressionSignal,
+    magic_signal: CompressionSignal,
+}
+
+impl CompressionEvidence {
+    fn none() -> Self {
+        Self {
+            mode: FileCompression::None,
+            extension_signal: CompressionSignal::None,
+            magic_signal: CompressionSignal::None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompressionSignal {
+    None,
+    Gzip,
+    Zstd,
+}
+
+impl CompressionSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Gzip => "gzip",
+            Self::Zstd => "zstd",
+        }
+    }
+
+    fn compression(self) -> Option<FileCompression> {
+        match self {
+            Self::None => None,
+            Self::Gzip => Some(FileCompression::Gzip),
+            Self::Zstd => Some(FileCompression::Zstd),
+        }
+    }
 }
 
 pub(crate) fn file_partitions_for_plan(
@@ -339,6 +383,7 @@ fn read_file_match(
     match &resolved.open {
         ResolvedFileOpen::LocalPath(path) => read_file_path(
             path,
+            resolved.compression.mode,
             declaration,
             options,
             declared_schema,
@@ -357,11 +402,21 @@ fn read_file_match(
 
 fn read_file_path(
     path: &Path,
+    compression: FileCompression,
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     declared_schema: SchemaRef,
     preview_arrow_ipc: bool,
 ) -> Result<cdf_formats::FormatRead> {
+    if compression != FileCompression::None
+        && matches!(declaration, FileFormatDeclaration::ArrowIpc)
+    {
+        return Err(CdfError::contract(format!(
+            "byte-stream compression `{}` is not supported for Arrow IPC file source {}",
+            compression.as_str(),
+            path.display()
+        )));
+    }
     let read = match declaration {
         FileFormatDeclaration::ArrowIpc if preview_arrow_ipc => {
             let file = File::open(path).map_err(|error| {
@@ -371,7 +426,7 @@ fn read_file_path(
         }
         _ => {
             let format = compile_format(declaration)?;
-            read_non_ipc_file_path(path, format, options, declared_schema)
+            read_non_ipc_file_path(path, format, compression, options, declared_schema)
         }
     }?;
     Ok(read)
@@ -380,10 +435,11 @@ fn read_file_path(
 fn read_non_ipc_file_path(
     path: &Path,
     format: FileFormat,
+    compression: FileCompression,
     options: ReadOptions,
     declared_schema: SchemaRef,
 ) -> Result<cdf_formats::FormatRead> {
-    let source = FileSource::new(path, format, options);
+    let source = FileSource::new(path, format, options).with_compression(compression);
     if uses_declared_file_schema(&source.format, &declared_schema) {
         read_file_source_with_declared_schema(&source, declared_schema)
     } else {
@@ -527,7 +583,68 @@ fn validate_partition(
             )));
         }
     }
+    validate_compression_metadata(partition, &resolved, &plan.compression, path)?;
     Ok(resolved)
+}
+
+fn validate_compression_metadata(
+    partition: &PartitionPlan,
+    resolved: &ResolvedFileMatch,
+    declared: &FileCompressionDeclaration,
+    path: &str,
+) -> Result<()> {
+    let expects_metadata = records_compression_metadata(resolved, declared);
+    if expects_metadata {
+        validate_partition_metadata_value(
+            partition,
+            "compression",
+            resolved.compression.mode.as_str(),
+            path,
+        )?;
+        validate_partition_metadata_value(
+            partition,
+            "compression_declared",
+            declared.as_str(),
+            path,
+        )?;
+        validate_partition_metadata_value(
+            partition,
+            "compression_extension",
+            resolved.compression.extension_signal.as_str(),
+            path,
+        )?;
+        validate_partition_metadata_value(
+            partition,
+            "compression_magic",
+            resolved.compression.magic_signal.as_str(),
+            path,
+        )?;
+        return Ok(());
+    }
+
+    if partition.metadata.contains_key("compression") {
+        validate_partition_metadata_value(
+            partition,
+            "compression",
+            resolved.compression.mode.as_str(),
+            path,
+        )?;
+    }
+    Ok(())
+}
+
+fn validate_partition_metadata_value(
+    partition: &PartitionPlan,
+    key: &str,
+    expected: &str,
+    path: &str,
+) -> Result<()> {
+    if partition.metadata.get(key).map(String::as_str) != Some(expected) {
+        return Err(CdfError::data(format!(
+            "declarative file partition `{path}` changed {key} after planning"
+        )));
+    }
+    Ok(())
 }
 
 fn partition_for_file_match(
@@ -553,6 +670,24 @@ fn partition_for_file_match(
     }
     if let Some(bytes_loaded) = file.bytes_loaded {
         metadata.insert("bytes_loaded".to_owned(), bytes_loaded.to_string());
+    }
+    if records_compression_metadata(file, &plan.compression) {
+        metadata.insert(
+            "compression".to_owned(),
+            file.compression.mode.as_str().to_owned(),
+        );
+        metadata.insert(
+            "compression_declared".to_owned(),
+            plan.compression.as_str().to_owned(),
+        );
+        metadata.insert(
+            "compression_extension".to_owned(),
+            file.compression.extension_signal.as_str().to_owned(),
+        );
+        metadata.insert(
+            "compression_magic".to_owned(),
+            file.compression.magic_signal.as_str().to_owned(),
+        );
     }
 
     let partition_id = if total_matches == 1 {
@@ -597,7 +732,7 @@ fn resolve_file_matches(
     let matches = contained_matches(&root, matches)?;
     matches
         .into_iter()
-        .map(|path| resolved_file_match(&root, path))
+        .map(|path| resolved_file_match(&root, path, &plan.compression))
         .collect()
 }
 
@@ -606,6 +741,7 @@ fn resolve_http_file_match(
     plan: &FileResourcePlan,
     transport: &mut dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
+    reject_remote_compression(resource_id, plan)?;
     validate_http_single_file_glob(resource_id, plan)?;
     let url = join_http_root_and_glob(&plan.root, &plan.glob);
     let resource = FileTransportResource {
@@ -821,7 +957,11 @@ fn contained_matches(root: &Path, matches: Vec<PathBuf>) -> Result<Vec<PathBuf>>
         .collect()
 }
 
-fn resolved_file_match(root: &Path, path: PathBuf) -> Result<ResolvedFileMatch> {
+fn resolved_file_match(
+    root: &Path,
+    path: PathBuf,
+    declared_compression: &FileCompressionDeclaration,
+) -> Result<ResolvedFileMatch> {
     let metadata = fs::metadata(&path).map_err(|error| {
         CdfError::data(format!("stat matched file {}: {error}", path.display()))
     })?;
@@ -851,6 +991,7 @@ fn resolved_file_match(root: &Path, path: PathBuf) -> Result<ResolvedFileMatch> 
     })?;
     let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
     let sha256 = file_sha256(&path)?;
+    let compression = resolve_local_compression(&path_text, &path, declared_compression)?;
     Ok(ResolvedFileMatch {
         open: ResolvedFileOpen::LocalPath(path),
         path_text,
@@ -859,6 +1000,7 @@ fn resolved_file_match(root: &Path, path: PathBuf) -> Result<ResolvedFileMatch> 
         etag: None,
         modified_ms,
         bytes_loaded: Some(metadata.len()),
+        compression,
     })
 }
 
@@ -891,7 +1033,162 @@ fn resolved_transport_file_match(
             .and_then(|modified| modified.strip_prefix("unix_ms:"))
             .map(str::to_owned),
         bytes_loaded: Some(size_bytes),
+        compression: CompressionEvidence::none(),
     })
+}
+
+fn resolve_local_compression(
+    path_text: &str,
+    path: &Path,
+    declared: &FileCompressionDeclaration,
+) -> Result<CompressionEvidence> {
+    let extension_signal = compression_extension_signal(path_text);
+    let magic_signal = compression_magic_signal(path)?;
+    let mode = match declared {
+        FileCompressionDeclaration::Auto => {
+            match (extension_signal.compression(), magic_signal.compression()) {
+                (Some(extension), Some(magic)) if extension != magic => {
+                    return Err(compression_signal_error(
+                        path_text,
+                        declared,
+                        extension_signal,
+                        magic_signal,
+                    ));
+                }
+                (_, Some(magic)) => magic,
+                (Some(_), None) => {
+                    return Err(compression_signal_error(
+                        path_text,
+                        declared,
+                        extension_signal,
+                        magic_signal,
+                    ));
+                }
+                (None, None) => FileCompression::None,
+            }
+        }
+        FileCompressionDeclaration::None => {
+            if magic_signal.compression().is_some() {
+                return Err(compression_signal_error(
+                    path_text,
+                    declared,
+                    extension_signal,
+                    magic_signal,
+                ));
+            }
+            FileCompression::None
+        }
+        FileCompressionDeclaration::Gzip => {
+            if magic_signal != CompressionSignal::Gzip {
+                return Err(compression_signal_error(
+                    path_text,
+                    declared,
+                    extension_signal,
+                    magic_signal,
+                ));
+            }
+            FileCompression::Gzip
+        }
+        FileCompressionDeclaration::Zstd => {
+            if magic_signal != CompressionSignal::Zstd {
+                return Err(compression_signal_error(
+                    path_text,
+                    declared,
+                    extension_signal,
+                    magic_signal,
+                ));
+            }
+            FileCompression::Zstd
+        }
+    };
+
+    Ok(CompressionEvidence {
+        mode,
+        extension_signal,
+        magic_signal,
+    })
+}
+
+fn compression_extension_signal(path_text: &str) -> CompressionSignal {
+    let lower = path_text.to_ascii_lowercase();
+    if lower.ends_with(".gz") || lower.ends_with(".gzip") {
+        CompressionSignal::Gzip
+    } else if lower.ends_with(".zst") || lower.ends_with(".zstd") {
+        CompressionSignal::Zstd
+    } else {
+        CompressionSignal::None
+    }
+}
+
+fn compression_magic_signal(path: &Path) -> Result<CompressionSignal> {
+    let mut file = File::open(path).map_err(|error| {
+        CdfError::data(format!(
+            "open matched file {} for compression detection: {error}",
+            path.display()
+        ))
+    })?;
+    let mut magic = [0_u8; 4];
+    let bytes_read = file.read(&mut magic).map_err(|error| {
+        CdfError::data(format!(
+            "read matched file {} for compression detection: {error}",
+            path.display()
+        ))
+    })?;
+    if bytes_read >= 2 && magic[..2] == [0x1f, 0x8b] {
+        return Ok(CompressionSignal::Gzip);
+    }
+    if bytes_read >= 4 && magic == [0x28, 0xb5, 0x2f, 0xfd] {
+        return Ok(CompressionSignal::Zstd);
+    }
+    Ok(CompressionSignal::None)
+}
+
+fn compression_signal_error(
+    path_text: &str,
+    declared: &FileCompressionDeclaration,
+    extension_signal: CompressionSignal,
+    magic_signal: CompressionSignal,
+) -> CdfError {
+    CdfError::data(format!(
+        "file `{path_text}` compression mismatch: declared `{}`, extension signal `{}`, magic bytes signal `{}`",
+        declared.as_str(),
+        extension_signal.as_str(),
+        magic_signal.as_str()
+    ))
+}
+
+fn records_compression_metadata(
+    file: &ResolvedFileMatch,
+    declared: &FileCompressionDeclaration,
+) -> bool {
+    file.compression.mode != FileCompression::None
+        || !matches!(declared, FileCompressionDeclaration::Auto)
+        || file.compression.extension_signal != CompressionSignal::None
+        || file.compression.magic_signal != CompressionSignal::None
+}
+
+fn reject_remote_compression(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
+    if matches!(
+        plan.compression,
+        FileCompressionDeclaration::Auto | FileCompressionDeclaration::None
+    ) {
+        return Ok(());
+    }
+    Err(CdfError::contract(format!(
+        "remote file resource `{resource_id}` does not support explicit compression = `{}` in this local compression foundation",
+        plan.compression.as_str()
+    )))
+}
+
+impl FileCompressionDeclaration {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::None => "none",
+            Self::Gzip => "gzip",
+            Self::Zstd => "zstd",
+        }
+    }
 }
 
 fn transport_range_reader(

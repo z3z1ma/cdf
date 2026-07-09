@@ -19,6 +19,7 @@ use std::sync::Arc;
 fn validation_program(row_dispositions: Vec<RowDispositionRule>) -> ValidationProgram {
     ValidationProgram {
         normalizer_version: "property-fuzz".to_owned(),
+        schema_coercion: None,
         schema_verdicts: Vec::new(),
         column_programs: Vec::new(),
         row_rules: Vec::new(),

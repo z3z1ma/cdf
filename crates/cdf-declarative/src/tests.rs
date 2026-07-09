@@ -2,6 +2,7 @@ use super::*;
 use std::{
     collections::{BTreeMap, VecDeque},
     fs,
+    io::{Cursor, Write},
     path::Path,
     sync::{Arc, Mutex},
 };
@@ -2008,6 +2009,139 @@ fn file_glob_run_and_preview_open_the_requested_partition() {
 }
 
 #[test]
+fn file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        data_dir.join("a.ndjson.gz"),
+        gzip_bytes(
+            br#"{"id":1}
+"#,
+        ),
+    )
+    .unwrap();
+    fs::write(
+        data_dir.join("b.ndjson.zst"),
+        zstd_bytes(
+            br#"{"id":2}
+"#,
+        ),
+    )
+    .unwrap();
+    let resource = compile_local_file_runtime_resource(&root, "*.ndjson.*", None);
+
+    let partitions = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap();
+
+    assert_eq!(
+        partition_file_names(&partitions),
+        vec!["a.ndjson.gz", "b.ndjson.zst"]
+    );
+    assert_eq!(
+        partitions[0]
+            .metadata
+            .get("compression")
+            .map(String::as_str),
+        Some("gzip")
+    );
+    assert_eq!(
+        partitions[0]
+            .metadata
+            .get("compression_declared")
+            .map(String::as_str),
+        Some("auto")
+    );
+    assert_eq!(
+        partitions[1]
+            .metadata
+            .get("compression")
+            .map(String::as_str),
+        Some("zstd")
+    );
+
+    let preview_batches = drain_batches(
+        futures_executor::block_on(resource.open_preview(partitions[0].clone())).unwrap(),
+    );
+    let run_batches =
+        drain_batches(futures_executor::block_on(resource.open(partitions[1].clone())).unwrap());
+
+    assert_eq!(first_i64_value(&preview_batches), 1);
+    assert_eq!(first_i64_value(&run_batches), 2);
+    assert!(!data_dir.join("a.ndjson").exists());
+    assert!(!data_dir.join("b.ndjson").exists());
+}
+
+#[test]
+fn file_runtime_explicit_compression_overrides_extension_inference() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        data_dir.join("events.ndjson.zst"),
+        gzip_bytes(
+            br#"{"id":7}
+"#,
+        ),
+    )
+    .unwrap();
+    let resource = compile_local_file_runtime_resource(&root, "*.zst", Some("gzip"));
+
+    let partition = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap()
+        .remove(0);
+
+    assert_eq!(
+        partition.metadata.get("compression").map(String::as_str),
+        Some("gzip")
+    );
+    assert_eq!(
+        partition
+            .metadata
+            .get("compression_extension")
+            .map(String::as_str),
+        Some("zstd")
+    );
+    assert_eq!(
+        partition
+            .metadata
+            .get("compression_magic")
+            .map(String::as_str),
+        Some("gzip")
+    );
+    let batches = drain_batches(futures_executor::block_on(resource.open(partition)).unwrap());
+    assert_eq!(first_i64_value(&batches), 7);
+}
+
+#[test]
+fn file_runtime_explicit_compression_mismatch_names_file_and_signals() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(
+        data_dir.join("events.ndjson.gz"),
+        zstd_bytes(
+            br#"{"id":1}
+"#,
+        ),
+    )
+    .unwrap();
+    let resource = compile_local_file_runtime_resource(&root, "*.gz", Some("gzip"));
+
+    let error = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("events.ndjson.gz"));
+    assert!(message.contains("declared `gzip`"));
+    assert!(message.contains("extension signal `gzip`"));
+    assert!(message.contains("magic bytes signal `zstd`"));
+}
+
+#[test]
 fn file_glob_zero_matches_still_reports_actionable_data_error() {
     let (_root, resource) = compile_local_glob_runtime_resource(std::iter::empty::<(&str, &str)>());
     let error = resource
@@ -2639,6 +2773,44 @@ schema = { fields = [{ name = "id", type = "int64" }] }
         .unwrap()
         .remove(0);
     (root, resource)
+}
+
+fn compile_local_file_runtime_resource(
+    root: &TempDir,
+    glob: &str,
+    compression: Option<&str>,
+) -> CompiledResource {
+    let compression_line = compression
+        .map(|value| format!(r#"compression = "{value}""#))
+        .unwrap_or_default();
+    let input = format!(
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+format = "ndjson"
+{compression_line}
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [{{ name = "id", type = "int64" }}] }}
+"#
+    );
+    compile_document_with_project_root(&parse_toml(&input).unwrap(), root.path())
+        .unwrap()
+        .remove(0)
+}
+
+fn gzip_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder.write_all(bytes).unwrap();
+    encoder.finish().unwrap()
+}
+
+fn zstd_bytes(bytes: &[u8]) -> Vec<u8> {
+    zstd::stream::encode_all(Cursor::new(bytes), 0).unwrap()
 }
 
 fn scan_request_for(resource: &CompiledResource) -> ScanRequest {

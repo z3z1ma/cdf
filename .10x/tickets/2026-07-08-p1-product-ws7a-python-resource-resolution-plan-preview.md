@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
 Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md, .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md
 
@@ -23,7 +23,7 @@ Primary write scope is `crates/cdf-project/src/**`, `crates/cdf-cli/src/project_
 
 ## Evidence expectations
 
-Record focused `cdf-cli`, `cdf-project`, and `cdf-python` tests as applicable; no-write plan/preview filesystem assertions; interpreter-remediation snapshots; redaction checks; and the mandatory scoped quality checks from `QUALITY.md`, including jscpd and complexity reports for touched source.
+Record focused `cdf-cli`, `cdf-project`, and `cdf-python` tests as applicable; no-write plan/preview filesystem assertions; interpreter-remediation snapshots; redaction checks; and the `QUALITY.md` profile selected for the touched source.
 
 ## Explicit exclusions
 

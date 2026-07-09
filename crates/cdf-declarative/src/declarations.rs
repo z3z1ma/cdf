@@ -85,6 +85,7 @@ pub struct ResourceDeclaration {
     pub table: Option<String>,
     pub glob: Option<String>,
     pub format: Option<FileFormatDeclaration>,
+    pub compression: Option<FileCompressionDeclaration>,
     #[serde(default)]
     pub params: BTreeMap<String, ParamValueDeclaration>,
     pub paginate: Option<PaginationDeclaration>,
@@ -254,6 +255,15 @@ pub enum FileFormatDeclaration {
     Ndjson,
     Parquet,
     ArrowIpc,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FileCompressionDeclaration {
+    Auto,
+    None,
+    Gzip,
+    Zstd,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

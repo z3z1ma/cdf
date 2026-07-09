@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
 Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md, .10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1e-tracing-bridge.md
 
@@ -22,7 +22,7 @@ Primary write scope is tests/evidence records and minimal harness repairs requir
 
 ## Evidence expectations
 
-Record aggregate evidence, adversarial review, conformance output where applicable, and scoped `QUALITY.md` checks. Include jscpd and complexity reports for any touched source.
+Record aggregate evidence, adversarial review, conformance output where applicable, and the `QUALITY.md` profile selected for any touched source.
 
 ## Explicit exclusions
 

@@ -55,6 +55,15 @@ _arguments "${_arguments_options[@]}" : \
 '*::directory:_default' \
 && ret=0
 ;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'--dry-run[]' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::values:_default' \
+&& ret=0
+;;
 (validate)
 _arguments "${_arguments_options[@]}" : \
 '--deep[]' \
@@ -556,6 +565,7 @@ _cdf_commands() {
 'help:' \
 'version:' \
 'init:' \
+'add:' \
 'validate:' \
 'plan:' \
 'explain:' \
@@ -575,6 +585,11 @@ _cdf_commands() {
 'status:' \
     )
     _describe -t commands 'cdf commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__add_commands] )) ||
+_cdf__subcmd__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf add commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__backfill_commands] )) ||
 _cdf__subcmd__backfill_commands() {

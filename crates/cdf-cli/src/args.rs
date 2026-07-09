@@ -10,9 +10,9 @@ use crate::{output::CliError, suggestions};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_COMMANDS: &[&str] = &[
-    "help", "version", "init", "validate", "plan", "explain", "run", "preview", "sql", "inspect",
-    "diff", "schema", "contract", "state", "resume", "replay", "backfill", "package", "doctor",
-    "status",
+    "help", "version", "init", "add", "validate", "plan", "explain", "run", "preview", "sql",
+    "inspect", "diff", "schema", "contract", "state", "resume", "replay", "backfill", "package",
+    "doctor", "status",
 ];
 const INSPECT_NOUNS: &[&str] = &[
     "project",
@@ -45,6 +45,7 @@ pub enum Command {
     Help(String),
     Version,
     Init(InitArgs),
+    Add(AddArgs),
     Validate(ValidateArgs),
     Plan(ScanArgs),
     Explain(ScanArgs),
@@ -69,6 +70,13 @@ pub struct InitArgs {
     pub directory: Option<PathBuf>,
     pub name: Option<String>,
     pub force: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AddArgs {
+    pub resource_id: String,
+    pub location: String,
+    pub dry_run: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -308,6 +316,7 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
             Ok(Command::Version)
         }
         Some(("init", subcommand)) => parse_init(subcommand).map(Command::Init),
+        Some(("add", subcommand)) => parse_add(subcommand).map(Command::Add),
         Some(("validate", subcommand)) => {
             no_extra_values("validate", &values(subcommand, "extra"))?;
             Ok(Command::Validate(ValidateArgs {
@@ -353,6 +362,20 @@ fn parse_init(matches: &ArgMatches) -> Result<InitArgs, CliError> {
         directory,
         name: string_value(matches, "name"),
         force: matches.get_flag("force"),
+    })
+}
+
+fn parse_add(matches: &ArgMatches) -> Result<AddArgs, CliError> {
+    let values = values(matches, "values");
+    if values.len() != 2 {
+        return Err(CliError::usage(
+            "add requires RESOURCE_ID and URL_OR_PATH arguments",
+        ));
+    }
+    Ok(AddArgs {
+        resource_id: values[0].clone(),
+        location: values[1].clone(),
+        dry_run: matches.get_flag("dry_run"),
     })
 }
 
@@ -764,6 +787,11 @@ pub(crate) fn cli_command() -> ClapCommand {
                 .arg(values_arg("directory").value_name("DIR"))
                 .arg(option("name", "name", "NAME"))
                 .arg(flag("force", "force")),
+        )
+        .subcommand(
+            cmd("add")
+                .arg(values_arg("values").value_names(["RESOURCE_ID", "URL_OR_PATH"]))
+                .arg(flag("dry_run", "dry-run")),
         )
         .subcommand(
             cmd("validate")
