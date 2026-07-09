@@ -8,6 +8,7 @@ description = "External data format boundary for cdf."
 
 [dependencies]
 arrow-array = "59.1.0"
+arrow-cast = "59.1.0"
 arrow-csv = "59.1.0"
 arrow-ipc = { version = "59.1.0", features = ["lz4"] }
 arrow-json = "59.1.0"

@@ -6,18 +6,21 @@ use std::{
     sync::Arc,
 };
 
-use arrow_array::RecordBatch;
+use arrow_array::{ArrayRef, RecordBatch};
+use arrow_cast::cast::{can_cast_types, cast};
 use arrow_csv::reader::{Format as ArrowCsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_ipc::reader::{FileReader, StreamReader};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
-use arrow_schema::{ArrowError, DataType, Field, SchemaRef};
+use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use cdf_contract::{
-    ObservedSchema, PiiRedactionPolicy, RedactionDecision, redaction_decision_for_field,
+    ContractPolicy, ObservedSchema, PiiRedactionPolicy, RedactionDecision, reconcile_schema,
+    redaction_decision_for_field,
 };
 use cdf_kernel::{
     Batch, BatchId, CdfError, FileManifest, FilePosition, PreContractObservedValue,
     PreContractQuarantineFact, ResourceDescriptor, ResourceId, Result, SchemaHash,
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
+    source_name,
 };
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use serde_json::Value;
@@ -88,7 +91,14 @@ pub fn read_file_source_with_declared_schema(
                 Some(position),
             )
         }
-        FileFormat::Csv(_) | FileFormat::Parquet => read_file_source(source),
+        FileFormat::Parquet => read_parquet_file_with_declared_schema_and_scope(
+            &source.path,
+            &source.options,
+            declared_schema,
+            scope,
+            Some(position),
+        ),
+        FileFormat::Csv(_) => read_file_source(source),
     }
 }
 
@@ -304,6 +314,101 @@ fn read_parquet_file_with_scope(
         .map_err(|error| parquet_data_error("create Parquet record batch reader", error))?;
     let record_batches = collect_record_batches(&mut reader)?;
     build_output(schema, record_batches, options, scope, position)
+}
+
+fn read_parquet_file_with_declared_schema_and_scope(
+    path: &Path,
+    options: &ReadOptions,
+    declared_schema: SchemaRef,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    let file = fs::File::open(path)
+        .map_err(|error| io_data_error(format!("open {}", path.display()), error))?;
+    let builder = ParquetRecordBatchReaderBuilder::try_new(file)
+        .map_err(|error| parquet_data_error("read Parquet file metadata", error))?
+        .with_batch_size(options.batch_size);
+    let physical_schema = builder.schema().clone();
+    let mut type_policy = ContractPolicy::default().types;
+    type_policy.coerce_types = false;
+    let reconciliation = reconcile_schema(
+        physical_schema.as_ref(),
+        declared_schema.as_ref(),
+        &type_policy,
+    )?;
+    let reconciled_schema = Arc::new(reconciliation.schema);
+    let mut reader = builder
+        .build()
+        .map_err(|error| parquet_data_error("create Parquet record batch reader", error))?;
+    let physical_batches = collect_record_batches(&mut reader)?;
+    let record_batches = reconcile_parquet_record_batches(
+        &physical_schema,
+        reconciled_schema.clone(),
+        physical_batches,
+    )?;
+
+    build_output(reconciled_schema, record_batches, options, scope, position)
+}
+
+fn reconcile_parquet_record_batches(
+    physical_schema: &Schema,
+    reconciled_schema: SchemaRef,
+    record_batches: Vec<RecordBatch>,
+) -> Result<Vec<RecordBatch>> {
+    record_batches
+        .into_iter()
+        .map(|batch| {
+            reconcile_parquet_record_batch(physical_schema, reconciled_schema.clone(), batch)
+        })
+        .collect()
+}
+
+fn reconcile_parquet_record_batch(
+    physical_schema: &Schema,
+    reconciled_schema: SchemaRef,
+    batch: RecordBatch,
+) -> Result<RecordBatch> {
+    let columns = reconciled_schema
+        .fields()
+        .iter()
+        .map(|field| reconciled_parquet_column(physical_schema, &batch, field.as_ref()))
+        .collect::<Result<Vec<_>>>()?;
+    RecordBatch::try_new(reconciled_schema, columns).map_err(CdfError::from)
+}
+
+fn reconciled_parquet_column(
+    physical_schema: &Schema,
+    batch: &RecordBatch,
+    output_field: &Field,
+) -> Result<ArrayRef> {
+    let source = source_name(output_field).unwrap_or_else(|| output_field.name());
+    let physical_index = physical_schema
+        .fields()
+        .iter()
+        .position(|field| field_source_name(field.as_ref()) == source)
+        .ok_or_else(|| {
+            CdfError::internal(format!(
+                "reconciled Parquet field {:?} has no matching physical source field {source:?}",
+                output_field.name()
+            ))
+        })?;
+    let column = batch.column(physical_index);
+    if column.data_type() == output_field.data_type() {
+        return Ok(column.clone());
+    }
+    if !can_cast_types(column.data_type(), output_field.data_type()) {
+        return Err(CdfError::contract(format!(
+            "Parquet schema reconciliation selected unsupported materialized cast for field {:?}: observed type {}; declared type {}",
+            source,
+            column.data_type(),
+            output_field.data_type()
+        )));
+    }
+    cast(column.as_ref(), output_field.data_type()).map_err(CdfError::from)
+}
+
+fn field_source_name(field: &Field) -> &str {
+    source_name(field).unwrap_or_else(|| field.name())
 }
 
 fn build_output(

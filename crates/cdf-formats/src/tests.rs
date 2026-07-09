@@ -8,17 +8,20 @@ use std::{
     sync::Arc,
 };
 
-use arrow_array::{Array, ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{
+    Array, ArrayRef, Float32Array, Float64Array, Int32Array, Int64Array, RecordBatch, StringArray,
+};
 use arrow_ipc::writer::{FileWriter, StreamWriter};
 use arrow_schema::{DataType, Field, Schema, SchemaRef};
 use cdf_conformance::resource::{
     ResourceExecutionConformanceCase, assert_resource_stream_conformance,
     assert_resource_stream_execution_conformance,
 };
-use cdf_contract::{ContractPolicy, NORMALIZER_NAMECASE_V1};
+use cdf_contract::{ArrowType, ContractPolicy, NORMALIZER_NAMECASE_V1};
 use cdf_kernel::{
     ErrorKind, PartitionId, PreContractObservedValue, ResourceId, ResourceStream, ScanRequest,
-    SchemaHash, ScopeKey, SegmentId, SourcePosition, with_semantic, with_source_name,
+    SchemaHash, ScopeKey, SegmentId, SourcePosition, physical_type, source_name, with_semantic,
+    with_source_name,
 };
 
 fn options(resource: &str, partition: &str) -> ReadOptions {
@@ -430,6 +433,241 @@ fn parquet_file_source_produces_descriptor_batches_and_file_manifest() {
     assert_eq!(manifest.files[0].sha256.as_ref().unwrap().len(), 64);
 
     assert_file_resource_conformance(&source, &read.schema_hash, 3);
+}
+
+#[test]
+fn declared_parquet_int32_declared_int64_materializes_lossless_widening() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("events.parquet");
+    let physical_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let physical_batch = RecordBatch::try_new(
+        physical_schema,
+        vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+    )
+    .unwrap();
+    write_parquet_file(&parquet_path, &[physical_batch]);
+    let declared_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+
+    let read = read_file_source_with_declared_schema(
+        &FileSource::new(
+            &parquet_path,
+            FileFormat::Parquet,
+            options("events", "file"),
+        ),
+        declared_schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Int64);
+    assert_eq!(
+        read.observed_schema.fields[0].arrow_type,
+        ArrowType::Int {
+            signed: true,
+            bits: 64
+        }
+    );
+    assert_eq!(source_name(batch.schema().field(0)), Some("id"));
+    assert_eq!(physical_type(batch.schema().field(0)), Some("Int32"));
+    assert_eq!(
+        read.descriptor
+            .schema_source
+            .pinned_snapshot()
+            .map(|snapshot| &snapshot.schema_hash),
+        Some(&read.schema_hash)
+    );
+    assert_eq!(
+        read.batches[0].header.observed_schema_hash,
+        read.schema_hash
+    );
+    let ids = batch
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!([ids.value(0), ids.value(1), ids.value(2)], [1, 2, 3]);
+}
+
+#[test]
+fn declared_parquet_float32_declared_float64_materializes_lossless_widening() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("metrics.parquet");
+    let physical_schema = Arc::new(Schema::new(vec![Field::new(
+        "score",
+        DataType::Float32,
+        false,
+    )]));
+    let physical_batch = RecordBatch::try_new(
+        physical_schema,
+        vec![Arc::new(Float32Array::from(vec![1.5_f32, 2.25_f32]))],
+    )
+    .unwrap();
+    write_parquet_file(&parquet_path, &[physical_batch]);
+    let declared_schema = Arc::new(Schema::new(vec![Field::new(
+        "score",
+        DataType::Float64,
+        false,
+    )]));
+
+    let read = read_file_source_with_declared_schema(
+        &FileSource::new(
+            &parquet_path,
+            FileFormat::Parquet,
+            options("metrics", "file"),
+        ),
+        declared_schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.schema().field(0).data_type(), &DataType::Float64);
+    assert_eq!(physical_type(batch.schema().field(0)), Some("Float32"));
+    let scores = batch
+        .column_by_name("score")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float64Array>()
+        .unwrap();
+    assert_eq!([scores.value(0), scores.value(1)], [1.5, 2.25]);
+}
+
+#[test]
+fn declared_parquet_projection_renames_by_source_name_and_drops_extra_fields() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("vendors.parquet");
+    let physical_schema = Arc::new(Schema::new(vec![
+        Field::new("VendorID", DataType::Int32, false),
+        Field::new("ignored_physical_column", DataType::Utf8, true),
+    ]));
+    let physical_batch = RecordBatch::try_new(
+        physical_schema,
+        vec![
+            Arc::new(Int32Array::from(vec![10, 20])),
+            Arc::new(StringArray::from(vec![Some("drop"), Some("me")])),
+        ],
+    )
+    .unwrap();
+    write_parquet_file(&parquet_path, &[physical_batch]);
+    let declared_schema = Arc::new(Schema::new(vec![with_source_name(
+        with_semantic(Field::new("vendor_id", DataType::Int32, false), "id"),
+        "VendorID",
+    )]));
+
+    let read = read_file_source_with_declared_schema(
+        &FileSource::new(
+            &parquet_path,
+            FileFormat::Parquet,
+            options("vendors", "file"),
+        ),
+        declared_schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.num_columns(), 1);
+    assert!(batch.column_by_name("ignored_physical_column").is_none());
+    let batch_schema = batch.schema();
+    let field = batch_schema.field(0);
+    assert_eq!(field.name(), "vendor_id");
+    assert_eq!(source_name(field), Some("VendorID"));
+    assert_eq!(physical_type(field), Some("Int32"));
+    assert_eq!(field.metadata().get("cdf:semantic"), Some(&"id".to_owned()));
+    assert_eq!(read.observed_schema.fields.len(), 1);
+    assert_eq!(read.observed_schema.fields[0].name, "vendor_id");
+    assert_eq!(read.observed_schema.fields[0].source_name, "VendorID");
+    let ids = batch
+        .column_by_name("vendor_id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    assert_eq!([ids.value(0), ids.value(1)], [10, 20]);
+}
+
+#[test]
+fn declared_parquet_lossy_narrowing_fails_before_batches_are_emitted() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("events.parquet");
+    let physical_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let physical_batch = RecordBatch::try_new(
+        physical_schema,
+        vec![Arc::new(Int64Array::from(vec![1_i64, 2_i64]))],
+    )
+    .unwrap();
+    write_parquet_file(&parquet_path, &[physical_batch]);
+    let declared_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+
+    let error = read_file_source_with_declared_schema(
+        &FileSource::new(
+            &parquet_path,
+            FileFormat::Parquet,
+            options("events", "file"),
+        ),
+        declared_schema,
+    )
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert_eq!(error.kind, ErrorKind::Contract);
+    assert!(message.contains("observed type Int64"));
+    assert!(message.contains("declared type Int32"));
+    assert!(message.contains("enable allow_lossy_mapping"));
+}
+
+#[test]
+fn undeclared_parquet_read_preserves_physical_schema_after_declared_path_added() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("metrics.parquet");
+    let physical_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, false),
+        Field::new("score", DataType::Float32, false),
+    ]));
+    let physical_batch = RecordBatch::try_new(
+        physical_schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])),
+            Arc::new(Float32Array::from(vec![1.5_f32, 2.25_f32])),
+        ],
+    )
+    .unwrap();
+    write_parquet_file(&parquet_path, &[physical_batch]);
+
+    let read = read_file_source(&FileSource::new(
+        &parquet_path,
+        FileFormat::Parquet,
+        options("metrics", "file"),
+    ))
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.schema().as_ref(), physical_schema.as_ref());
+    assert_eq!(read.observed_schema.fields.len(), 2);
+    assert_eq!(
+        read.observed_schema.fields[0].arrow_type,
+        ArrowType::Int {
+            signed: true,
+            bits: 32
+        }
+    );
+    assert_eq!(
+        read.observed_schema.fields[1].arrow_type,
+        ArrowType::Float { bits: 32 }
+    );
+    let ids = batch
+        .column_by_name("id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Int32Array>()
+        .unwrap();
+    let scores = batch
+        .column_by_name("score")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<Float32Array>()
+        .unwrap();
+    assert_eq!([ids.value(0), ids.value(1)], [1, 2]);
+    assert_eq!([scores.value(0), scores.value(1)], [1.5_f32, 2.25_f32]);
 }
 
 #[test]

@@ -85,9 +85,12 @@ fn open_file_resource_inner(
     })
 }
 
-fn uses_declared_json_schema(format: &FileFormat, declared_schema: &SchemaRef) -> bool {
+fn uses_declared_file_schema(format: &FileFormat, declared_schema: &SchemaRef) -> bool {
     !declared_schema.fields().is_empty()
-        && matches!(format, FileFormat::Json(_) | FileFormat::Ndjson(_))
+        && matches!(
+            format,
+            FileFormat::Json(_) | FileFormat::Ndjson(_) | FileFormat::Parquet
+        )
 }
 
 fn read_file_path(
@@ -119,7 +122,7 @@ fn read_non_ipc_file_path(
     declared_schema: SchemaRef,
 ) -> Result<cdf_formats::FormatRead> {
     let source = FileSource::new(path, format, options);
-    if uses_declared_json_schema(&source.format, &declared_schema) {
+    if uses_declared_file_schema(&source.format, &declared_schema) {
         read_file_source_with_declared_schema(&source, declared_schema)
     } else {
         read_file_source(&source)
@@ -534,4 +537,40 @@ fn glob_component_matches(pattern: &str, candidate: &str) -> bool {
     }
 
     table[pattern.len()][candidate.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow_schema::{DataType, Field, Schema};
+
+    use super::*;
+
+    #[test]
+    fn declared_parquet_schema_routes_through_declared_file_reader() {
+        let declared_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let empty_schema = Arc::new(Schema::empty());
+
+        assert!(uses_declared_file_schema(
+            &FileFormat::Parquet,
+            &declared_schema
+        ));
+        assert!(uses_declared_file_schema(
+            &FileFormat::Json(JsonOptions::default()),
+            &declared_schema
+        ));
+        assert!(uses_declared_file_schema(
+            &FileFormat::Ndjson(JsonOptions::default()),
+            &declared_schema
+        ));
+        assert!(!uses_declared_file_schema(
+            &FileFormat::Csv(CsvOptions::default()),
+            &declared_schema
+        ));
+        assert!(!uses_declared_file_schema(
+            &FileFormat::Parquet,
+            &empty_schema
+        ));
+    }
 }
