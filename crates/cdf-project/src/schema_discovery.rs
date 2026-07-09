@@ -19,7 +19,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct PreparedDiscoveredResource {
     pub resource: CompiledResource,
-    pub discovery: Option<LocalParquetSchemaDiscovery>,
+    pub discovery: Option<ResourceSchemaDiscovery>,
 }
 
 #[derive(Clone, Debug)]
@@ -191,6 +191,38 @@ pub fn prepare_local_parquet_discover_resource(
     }
 
     let discovery = discover_local_parquet_resource_schema(resource)?;
+    let discovery = ResourceSchemaDiscovery {
+        normalized_schema: Arc::clone(&discovery.normalized_schema),
+        snapshot: DiscoveredSchemaSnapshot {
+            artifact: discovery.snapshot.artifact,
+            reference: discovery.snapshot.reference,
+            source_identity: discovery.snapshot.source_identity,
+        },
+    };
+    prepare_discovered_schema(project_root, resource, discovery)
+}
+
+pub fn prepare_discover_resource(
+    project_root: impl AsRef<Path>,
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+) -> Result<PreparedDiscoveredResource> {
+    if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+        return Ok(PreparedDiscoveredResource {
+            resource: resource.clone(),
+            discovery: None,
+        });
+    }
+
+    let discovery = discover_resource_schema(resource, secret_provider)?;
+    prepare_discovered_schema(project_root, resource, discovery)
+}
+
+fn prepare_discovered_schema(
+    project_root: impl AsRef<Path>,
+    resource: &CompiledResource,
+    discovery: ResourceSchemaDiscovery,
+) -> Result<PreparedDiscoveredResource> {
     let store = SchemaSnapshotStore::new(project_root);
     store.write(&discovery.snapshot.artifact)?;
     let pinned = resource.with_schema_source_and_schema(

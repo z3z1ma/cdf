@@ -1,10 +1,11 @@
 use std::{
+    collections::BTreeMap,
     env,
     net::TcpListener,
     path::{Path, PathBuf},
     process::Command,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -21,8 +22,8 @@ use cdf_conformance::resource::{
 use cdf_kernel::{
     CheckpointId, ContractRef, CursorOrderingClaim, CursorPosition, CursorSpec, CursorValue,
     PartitionId, PipelineId, PredicateId, QueryableResource, ResourceDescriptor, ResourceId,
-    ResourceStream, ScanPredicate, ScanRequest, SchemaSource, ScopeKey, SegmentId, SortDirection,
-    SourcePosition, TrustLevel,
+    ResourceStream, ScanPredicate, ScanRequest, SchemaSnapshotReference, SchemaSource, ScopeKey,
+    SegmentId, SortDirection, SourcePosition, TrustLevel, with_source_name,
 };
 use cdf_package::{
     PackageBuilder, PackageManifest, PackageReader, QuarantineObservedValue, QuarantineRecord,
@@ -599,6 +600,96 @@ fn live_postgres_table_resource_executes_scan_and_cursor_conformance() {
     };
     assert_eq!(cursor.field, "updated_at");
     assert_eq!(cursor.value, CursorValue::I64(30));
+}
+
+#[test]
+fn live_postgres_table_resource_reads_source_name_physical_columns() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let target = env.target("source_name_orders");
+    let mut client = env.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"VendorID\" BIGINT NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            );
+            INSERT INTO {} (\"VendorID\", \"updated_at\") VALUES (1, 10), (2, 20), (3, 30)",
+            target.sql(),
+            target.sql()
+        ))
+        .unwrap();
+
+    let mut descriptor = postgres_source_descriptor();
+    descriptor.schema_source = SchemaSource::Discovered {
+        snapshot: SchemaSnapshotReference {
+            schema_hash: SchemaHash::new("sha256:postgres-source-name-discovered").unwrap(),
+            path:
+                ".cdf/schemas/warehouse.source_orders@sha256:postgres-source-name-discovered.json"
+                    .to_owned(),
+            metadata: BTreeMap::new(),
+        },
+    };
+    descriptor.primary_key = vec!["vendor_id".to_owned()];
+    descriptor.merge_key = vec!["vendor_id".to_owned()];
+    descriptor.cursor = Some(CursorSpec {
+        field: "vendor_id".to_owned(),
+        ordering: CursorOrderingClaim::Exact,
+        lag_tolerance_ms: 0,
+    });
+    let schema = Arc::new(Schema::new(vec![
+        with_source_name(Field::new("vendor_id", DataType::Int64, false), "VendorID"),
+        Field::new("updated_at", DataType::Int64, false),
+    ]));
+    let resource =
+        PostgresTableResource::new(env.url.clone(), descriptor.clone(), schema, target).unwrap();
+    let request = ScanRequest {
+        resource_id: descriptor.resource_id.clone(),
+        projection: Some(vec!["vendor_id".to_owned(), "updated_at".to_owned()]),
+        filters: vec![ScanPredicate {
+            predicate_id: PredicateId::new("vendor").unwrap(),
+            expression: "vendor_id >= 2".to_owned(),
+        }],
+        limit: None,
+        order_by: vec![cdf_kernel::OrderBy {
+            field: "vendor_id".to_owned(),
+            direction: SortDirection::Desc,
+        }],
+        scope: ScopeKey::Resource,
+    };
+
+    let plan = resource.negotiate(&request).unwrap();
+    let batches = drain_source_batches(
+        futures_executor::block_on(resource.open(plan.partitions[0].clone())).unwrap(),
+    );
+
+    assert_eq!(batches.len(), 1);
+    assert_eq!(
+        batches[0].header.observed_schema_hash,
+        SchemaHash::new("sha256:postgres-source-name-discovered").unwrap()
+    );
+    let batch = batches[0].record_batch().unwrap();
+    assert_eq!(
+        batch
+            .schema()
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["vendor_id", "updated_at"]
+    );
+    let vendor_ids = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(vendor_ids.values(), &[3, 2]);
+    let Some(SourcePosition::Cursor(cursor)) = &batches[0].header.source_position else {
+        panic!("expected source-name cursor source position");
+    };
+    assert_eq!(cursor.field, "vendor_id");
+    assert_eq!(cursor.value, CursorValue::I64(3));
 }
 
 #[test]

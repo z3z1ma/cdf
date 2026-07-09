@@ -15,7 +15,7 @@ use cdf_kernel::{
     IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PlanId,
     PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities,
     ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKind, SortDirection, SourcePosition,
+    SchemaSource, ScopeKind, SortDirection, SourcePosition, source_name,
 };
 use futures_util::stream;
 use postgres::{Client, NoTls, Row, types::ToSql};
@@ -160,7 +160,7 @@ pub fn validate_postgres_table_resource_shape(
     schema: &SchemaRef,
     _target: &PostgresTarget,
 ) -> Result<()> {
-    declared_schema_hash(descriptor)?;
+    execution_schema_hash(descriptor)?;
     if schema.fields().is_empty() {
         return Err(CdfError::data(
             "Postgres table source execution requires a declared schema with at least one field",
@@ -177,6 +177,7 @@ pub fn validate_postgres_table_resource_shape(
         }
         validate_supported_field(field.as_ref())?;
         PostgresIdentifier::user(field.name().as_str())?;
+        source_column_identifier(field.as_ref())?;
     }
     if let Some(cursor) = &descriptor.cursor
         && field_by_name(schema, &cursor.field).is_none()
@@ -313,7 +314,7 @@ fn execute_postgres_table(
         ))?,
         descriptor.resource_id.clone(),
         partition.partition_id,
-        declared_schema_hash(descriptor)?,
+        execution_schema_hash(descriptor)?,
         record_batch,
     )?;
     batch.header.source_position = source_position;
@@ -492,7 +493,7 @@ impl PostgresStoredPredicate {
                 self.field
             ))
         })?;
-        PostgresIdentifier::user(self.field.as_str())?;
+        source_column_identifier(field)?;
         parse_literal_for_field(field, self.operator, &self.literal)
             .ok_or_else(|| CdfError::contract("Postgres predicate metadata is not type-safe"))?;
         Ok(())
@@ -612,7 +613,7 @@ fn build_query(
                 params.push(value.param);
                 Ok(format!(
                     "{} {} ${}::{}",
-                    PostgresIdentifier::user(predicate.field.as_str())?.quoted(),
+                    source_column_identifier(field)?.quoted(),
                     predicate.operator.sql(),
                     params.len(),
                     value.postgres_type
@@ -628,9 +629,15 @@ fn build_query(
             .order_by
             .iter()
             .map(|order| {
+                let field = field_by_name(schema, &order.field).ok_or_else(|| {
+                    CdfError::contract(format!(
+                        "Postgres order field `{}` is not in the declared schema",
+                        order.field
+                    ))
+                })?;
                 Ok(format!(
                     "{} {}",
-                    PostgresIdentifier::user(order.field.as_str())?.quoted(),
+                    source_column_identifier(field)?.quoted(),
                     order.direction.sql()
                 ))
             })
@@ -651,20 +658,20 @@ fn build_query(
 }
 
 fn select_expression(field: &Field) -> Result<String> {
-    let column = PostgresIdentifier::user(field.name().as_str())?;
-    let quoted = column.quoted();
+    let source = source_column_identifier(field)?.quoted();
+    let output = PostgresIdentifier::user(field.name().as_str())?.quoted();
     let expression = match field.data_type() {
-        DataType::Boolean => format!("{quoted}::boolean AS {quoted}"),
-        DataType::Int64 => format!("{quoted}::bigint AS {quoted}"),
-        DataType::UInt64 => format!("{quoted}::text AS {quoted}"),
-        DataType::Float64 => format!("{quoted}::double precision AS {quoted}"),
-        DataType::Utf8 => format!("{quoted}::text AS {quoted}"),
-        DataType::Date32 => format!("({quoted} - DATE '1970-01-01')::integer AS {quoted}"),
+        DataType::Boolean => format!("{source}::boolean AS {output}"),
+        DataType::Int64 => format!("{source}::bigint AS {output}"),
+        DataType::UInt64 => format!("{source}::text AS {output}"),
+        DataType::Float64 => format!("{source}::double precision AS {output}"),
+        DataType::Utf8 => format!("{source}::text AS {output}"),
+        DataType::Date32 => format!("({source} - DATE '1970-01-01')::integer AS {output}"),
         DataType::Timestamp(TimeUnit::Millisecond, _) => {
-            format!("floor(extract(epoch from {quoted}) * 1000)::bigint AS {quoted}")
+            format!("floor(extract(epoch from {source}) * 1000)::bigint AS {output}")
         }
         DataType::Timestamp(TimeUnit::Microsecond, _) => {
-            format!("floor(extract(epoch from {quoted}) * 1000000)::bigint AS {quoted}")
+            format!("floor(extract(epoch from {source}) * 1000000)::bigint AS {output}")
         }
         other => {
             return Err(CdfError::data(format!(
@@ -687,7 +694,7 @@ fn parse_supported_predicate(
     let parsed = parse_simple_predicate(expression)?;
     let field_name = parse_predicate_field(parsed.field)?;
     let field = field_by_name(schema, &field_name)?;
-    PostgresIdentifier::user(field_name.as_str()).ok()?;
+    source_column_identifier(field).ok()?;
     let literal = parse_literal_token(parsed.literal)?;
     if !literal_quoting_is_exact_for_field(field, literal.quoted) {
         return None;
@@ -1221,6 +1228,10 @@ fn validate_supported_field(field: &Field) -> Result<()> {
     }
 }
 
+fn source_column_identifier(field: &Field) -> Result<PostgresIdentifier> {
+    PostgresIdentifier::user(source_name(field).unwrap_or_else(|| field.name().as_str()))
+}
+
 fn field_by_name<'a>(schema: &'a Schema, name: &str) -> Option<&'a Field> {
     schema
         .fields()
@@ -1229,15 +1240,15 @@ fn field_by_name<'a>(schema: &'a Schema, name: &str) -> Option<&'a Field> {
         .map(|field| field.as_ref())
 }
 
-fn declared_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
+fn execution_schema_hash(descriptor: &ResourceDescriptor) -> Result<SchemaHash> {
     match &descriptor.schema_source {
         SchemaSource::Declared { schema_hash, .. } => Ok(schema_hash.clone()),
-        SchemaSource::Discover
-        | SchemaSource::Discovered { .. }
-        | SchemaSource::Hints { .. }
-        | SchemaSource::Contract { .. } => Err(CdfError::data(
-            "Postgres table source execution requires a declared schema hash",
-        )),
+        SchemaSource::Discovered { snapshot } => Ok(snapshot.schema_hash.clone()),
+        SchemaSource::Discover | SchemaSource::Hints { .. } | SchemaSource::Contract { .. } => {
+            Err(CdfError::data(
+                "Postgres table source execution requires a declared schema hash or pinned discovered schema snapshot",
+            ))
+        }
     }
 }
 
@@ -1384,7 +1395,7 @@ mod tests {
     use arrow_schema::Field;
     use cdf_kernel::{
         ContractRef, CursorOrderingClaim, CursorSpec, ResourceId, ScopeKey, TrustLevel,
-        WriteDisposition,
+        WriteDisposition, with_source_name,
     };
 
     #[test]
@@ -1482,6 +1493,86 @@ mod tests {
                 target,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn source_shape_accepts_discovered_snapshot_and_rejects_unpinned_schema_modes() {
+        let target = PostgresTarget::parse("raw.orders").unwrap();
+        let mut discovered = descriptor(None);
+        discovered.schema_source = SchemaSource::Discovered {
+            snapshot: cdf_kernel::SchemaSnapshotReference {
+                schema_hash: SchemaHash::new("sha256:postgres-discovered-test").unwrap(),
+                path: ".cdf/schemas/warehouse.orders@sha256:postgres-discovered-test.json"
+                    .to_owned(),
+                metadata: BTreeMap::new(),
+            },
+        };
+        PostgresTableResource::new(
+            "postgresql://localhost/db",
+            discovered,
+            schema(),
+            target.clone(),
+        )
+        .unwrap();
+
+        for schema_source in [
+            SchemaSource::Discover,
+            SchemaSource::Hints {
+                source: "test:hints".to_owned(),
+                hints_hash: None,
+                snapshot: None,
+            },
+            SchemaSource::Contract {
+                contract: ContractRef::new("orders").unwrap(),
+                schema_hash: None,
+            },
+        ] {
+            let mut descriptor = descriptor(None);
+            descriptor.schema_source = schema_source;
+            let error = PostgresTableResource::new(
+                "postgresql://localhost/db",
+                descriptor,
+                schema(),
+                target.clone(),
+            )
+            .unwrap_err();
+            assert!(
+                error
+                    .to_string()
+                    .contains("declared schema hash or pinned discovered schema snapshot")
+            );
+        }
+    }
+
+    #[test]
+    fn query_builder_uses_source_name_metadata_for_physical_columns() {
+        let schema = Arc::new(Schema::new(vec![with_source_name(
+            Field::new("vendor_id", DataType::Int64, false),
+            "VendorID",
+        )]));
+        let target = PostgresTarget::parse("raw.orders").unwrap();
+        let scan = PostgresTableScan {
+            version: 1,
+            target: target.display_name(),
+            projection: vec!["vendor_id".to_owned()],
+            filters: vec![PostgresStoredPredicate {
+                field: "vendor_id".to_owned(),
+                operator: PostgresPredicateOperator::Gt,
+                literal: "1".to_owned(),
+            }],
+            order_by: vec![PostgresStoredOrder {
+                field: "vendor_id".to_owned(),
+                direction: PostgresStoredDirection::Desc,
+            }],
+            limit: None,
+        };
+
+        let query = build_query(&schema, &target, &scan).unwrap();
+
+        assert_eq!(
+            query.sql,
+            "SELECT \"VendorID\"::bigint AS \"vendor_id\" FROM \"raw\".\"orders\" WHERE \"VendorID\" > $1::bigint ORDER BY \"VendorID\" DESC"
         );
     }
 

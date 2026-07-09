@@ -35,7 +35,9 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("run", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&explicit.resource_id)?;
-    let prepared = cdf_project::prepare_local_parquet_discover_resource(&context.root, resource)?;
+    let secret_provider = context.secret_provider();
+    let prepared =
+        cdf_project::prepare_discover_resource(&context.root, resource, &secret_provider)?;
     let resource = &prepared.resource;
     let run_resource = build_project_run_resource(&context, resource)?;
     let state_store_path = context.state_store_path()?;

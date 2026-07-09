@@ -39,7 +39,9 @@ pub(crate) fn plan_or_explain(
         ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())?;
     let target = scan_target(&args)?;
     let resource = context.resource(&args.resource_id)?;
-    let prepared = cdf_project::prepare_local_parquet_discover_resource(&context.root, resource)?;
+    let secret_provider = context.secret_provider();
+    let prepared =
+        cdf_project::prepare_discover_resource(&context.root, resource, &secret_provider)?;
     let plan = build_engine_plan_for_resource(&prepared.resource, &args)?;
     let report = scan_report(
         &context,
@@ -60,8 +62,11 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
-    let plan = build_engine_plan(&context, &args)?;
-    match preview_one_batch(&context, resource, &plan) {
+    let secret_provider = context.secret_provider();
+    let prepared =
+        cdf_project::prepare_discover_resource(&context.root, resource, &secret_provider)?;
+    let plan = build_engine_plan_for_resource(&prepared.resource, &args)?;
+    match preview_one_batch(&context, &prepared.resource, &plan) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
             "preview",
@@ -71,14 +76,6 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         )),
         Err(error) => Err(error.into()),
     }
-}
-
-pub(crate) fn build_engine_plan(
-    context: &ProjectContext,
-    args: &ScanArgs,
-) -> Result<EnginePlan, CliError> {
-    let resource = context.resource(&args.resource_id)?;
-    build_engine_plan_for_resource(resource, args)
 }
 
 pub(crate) fn build_engine_plan_for_resource(

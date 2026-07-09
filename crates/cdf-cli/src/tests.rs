@@ -1721,6 +1721,157 @@ fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
 }
 
 #[test]
+fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_leaks() {
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("discover_run_orders");
+    let mut client = postgres.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (
+                \"VendorID\" BIGINT NOT NULL,
+                \"updated_at\" BIGINT NOT NULL
+            );
+            INSERT INTO {} (\"VendorID\", \"updated_at\") VALUES (1, 10), (2, 20), (3, 30)",
+            table, table
+        ))
+        .unwrap();
+
+    let project = TestProject::new();
+    let source_dsn = postgres.url.replacen(
+        "postgresql://cdf@",
+        "postgresql://cdf:source-discover-run-secret@",
+        1,
+    );
+    fs::write(project.root.join("sql-dsn"), format!("{source_dsn}\n")).unwrap();
+    write_secret_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        None,
+        Some("secret://file/sql-dsn"),
+    );
+    fs::write(
+        project.root.join("resources/sql.toml"),
+        sql_discover_resource_with_vendor_cursor("secret://file/sql-dsn", &table),
+    )
+    .unwrap();
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "warehouse.orders",
+        "--target",
+        "orders",
+    ]);
+
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    assert_secret_absent(&plan, &source_dsn);
+    assert_secret_absent(&plan, "source-discover-run-secret");
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    let plan_report = &plan_json["result"];
+    assert_eq!(
+        plan_report["resource_schema"]["schema_source"],
+        "discovered"
+    );
+    assert_eq!(
+        plan_report["resource_schema"]["snapshot_metadata"]["probe"],
+        "postgres-catalog"
+    );
+    assert_eq!(
+        plan_report["resource_schema"]["snapshot_metadata"]["table"],
+        table
+    );
+    let snapshot_path = plan_report["resource_schema"]["snapshot_path"]
+        .as_str()
+        .unwrap();
+    let snapshot = read_snapshot_json(&project, snapshot_path);
+    let snapshot_text = snapshot.to_string();
+    assert!(!snapshot_text.contains(&source_dsn));
+    assert!(!snapshot_text.contains("source-discover-run-secret"));
+    assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
+    assert_eq!(
+        snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
+        "VendorID"
+    );
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "warehouse.orders",
+        "--filter",
+        "vendor_id >= 2",
+        "--limit",
+        "1",
+    ]);
+
+    assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
+    assert_secret_absent(&preview, &source_dsn);
+    assert_secret_absent(&preview, "source-discover-run-secret");
+    assert_no_preview_writes(&project);
+    let preview_json = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_json["result"]["resource"], "warehouse.orders");
+    assert_eq!(preview_json["result"]["partition"], "sql");
+    assert_eq!(preview_json["result"]["row_count"], 1);
+
+    let run_result = run_valid_run_resource_target(
+        &project,
+        "warehouse.orders",
+        "pkg-run-postgres-discover",
+        "checkpoint-run-postgres-discover",
+        "orders",
+    );
+
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    assert_secret_absent(&run_result, &source_dsn);
+    assert_secret_absent(&run_result, "source-discover-run-secret");
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    let run_report = &run_json["result"];
+    assert_eq!(run_report["resource_id"], "warehouse.orders");
+    assert_eq!(run_report["target"], "orders");
+    assert_eq!(run_report["schema_hash"], snapshot["schema_hash"]);
+    assert_eq!(run_report["row_count"], 3);
+    assert_eq!(run_report["checkpoint"]["status"], "committed");
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows = conn
+        .prepare("SELECT vendor_id, updated_at FROM orders ORDER BY vendor_id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![(1, 10), (2, 20), (3, 30)]);
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("warehouse.orders").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed Postgres discover run head");
+    assert_eq!(
+        head.delta.schema_hash.as_str(),
+        snapshot["schema_hash"].as_str().unwrap()
+    );
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-run-postgres-discover"
+    );
+}
+
+#[test]
 fn preview_reads_single_ndjson_file_without_creating_runtime_artifacts() {
     let project = TestProject::new();
     let package_root = project.root.join(".cdf/packages");
@@ -8414,6 +8565,23 @@ dialect = "postgres"
 
 [resource.orders]
 table = "{table}"
+write_disposition = "append"
+trust = "governed"
+"#
+    )
+}
+
+fn sql_discover_resource_with_vendor_cursor(connection: &str, table: &str) -> String {
+    format!(
+        r#"
+[source.warehouse]
+kind = "sql"
+connection = "{connection}"
+dialect = "postgres"
+
+[resource.orders]
+table = "{table}"
+cursor = {{ field = "vendor_id", ordering = "exact", lag = "0ms" }}
 write_disposition = "append"
 trust = "governed"
 "#

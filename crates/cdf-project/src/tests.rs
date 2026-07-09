@@ -522,6 +522,41 @@ fn generic_schema_discovery_dispatch_preserves_local_parquet_behavior_without_wr
 }
 
 #[test]
+fn generic_discover_prepare_preserves_local_parquet_autopin_behavior() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+    let secret_provider = EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>());
+
+    let prepared = prepare_discover_resource(temp.path(), &resource, &secret_provider).unwrap();
+    let discovery = prepared.discovery.as_ref().unwrap();
+    let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
+
+    assert!(snapshot_path.is_file());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["probe"],
+        SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected generic auto-pin to set discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+}
+
+#[test]
 fn local_parquet_discover_autopin_leaves_declared_resources_unprobed() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.missing");
