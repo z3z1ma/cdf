@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 Depends-On: .10x/specs/data-onramp-conformance.md, .10x/knowledge/runtime-conformance-throughput-rule.md
 
@@ -42,6 +42,9 @@ This ticket does not implement S1-S8 scenarios or mark any P2 workstream complet
 ## Progress and notes
 
 - 2026-07-08: Opened as the first WS-I executable slice so harness ownership starts with the implementation lanes rather than after them.
+- 2026-07-09: Completed the friction registry in `.10x/evidence/2026-07-08-p2-friction-regression-registry.md`. All eighteen rows are classified; none has complete P2 coverage yet, and partial primitive/negative coverage is explicitly called out. Linked the registry from the P2 parent and WS-I progress notes. No conformance code helper was added.
+- 2026-07-09: Verification passed: `git diff --check`; `gitleaks dir --no-banner --redact` over the new/changed `.10x` records; `jscpd` scoped to `.10x/evidence/2026-07-08-p2-friction-regression-registry.md` with 0 clones. `cargo test -p cdf-conformance --locked` was not run because no `crates/cdf-conformance/**` code changed.
+- 2026-07-09: Parent review recorded in `.10x/reviews/2026-07-09-p2-ws-i1-friction-regression-registry-review.md`; ticket moved to `.10x/tickets/done/`.
 
 ## Blockers
 

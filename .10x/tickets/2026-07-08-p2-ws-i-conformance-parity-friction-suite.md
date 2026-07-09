@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/specs/data-onramp-conformance.md, .10x/knowledge/runtime-conformance-throughput-rule.md
 
@@ -32,7 +32,8 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
-- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-i1-friction-regression-registry.md` to map the eighteen P2 frictions to existing tests or explicit open coverage gaps before implementation lanes start closing.
+- 2026-07-08: Split first executable child `.10x/tickets/done/2026-07-08-p2-ws-i1-friction-regression-registry.md` to map the eighteen P2 frictions to existing tests or explicit open coverage gaps before implementation lanes start closing.
+- 2026-07-09: Friction registry recorded in `.10x/evidence/2026-07-08-p2-friction-regression-registry.md`. It classifies all eighteen directive frictions as open P2 coverage obligations, with partial primitive or negative coverage named where source/tests support it. WS-I closure still requires replacing each open-owner row with an actual regression test/conformance scenario or recorded exclusion.
 
 ## Blockers
 

@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
@@ -92,6 +92,7 @@ P2 does not implement a GUI, a scheduler, distributed execution, resident stream
 
 - 2026-07-08: Opened from the P2 data-onramp directive after pivoting back from CI/P1 follow-on work. This activation is record-only; no implementation work is started by this parent ticket.
 - 2026-07-08: Activation evidence recorded in `.10x/evidence/2026-07-08-p2-data-onramp-program-activation.md`; activation review recorded in `.10x/reviews/2026-07-08-p2-data-onramp-program-activation-review.md`.
+- 2026-07-09: Friction regression registry recorded in `.10x/evidence/2026-07-08-p2-friction-regression-registry.md` and linked from WS-I. Current registry status: all eighteen directive frictions remain open P2 coverage obligations; partial existing primitive/negative coverage is documented but not treated as closure coverage.
 
 ## Blockers
 
