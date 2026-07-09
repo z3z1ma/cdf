@@ -24,6 +24,7 @@ pub(crate) struct RunCliReport {
     package_dir: String,
     package_hash: String,
     package_status: String,
+    schema_hash: String,
     checkpoint_id: String,
     checkpoint: RunCheckpointReport,
     receipt_id: String,
@@ -53,6 +54,7 @@ impl RunCliReport {
             package_dir: report.package_dir.display().to_string(),
             package_hash: report.package_hash.to_string(),
             package_status: report.package_status.as_str().to_owned(),
+            schema_hash: report.checkpoint.delta.schema_hash.to_string(),
             checkpoint_id: report.checkpoint.delta.checkpoint_id.to_string(),
             checkpoint: RunCheckpointReport::from_checkpoint(&report.checkpoint),
             receipt_id: report.receipt.receipt_id.to_string(),
@@ -94,6 +96,7 @@ impl RunCliReport {
                     .row("package", self.package_id.clone())
                     .row("status", self.package_status.clone())
                     .row("hash", self.package_hash.clone())
+                    .row("schema", self.schema_hash.clone())
                     .row("dir", safe_display_value(&self.package_dir)),
             )
             .blank_line()
@@ -711,6 +714,7 @@ mod tests {
             package_dir: ".cdf/packages/pkg-redacted".to_owned(),
             package_hash: "sha256:package".to_owned(),
             package_status: "checkpointed".to_owned(),
+            schema_hash: "sha256:schema".to_owned(),
             checkpoint_id: "checkpoint-redacted".to_owned(),
             checkpoint: RunCheckpointReport {
                 checkpoint_id: "checkpoint-redacted".to_owned(),

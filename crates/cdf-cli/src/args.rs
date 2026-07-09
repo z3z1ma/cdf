@@ -11,7 +11,8 @@ use crate::{output::CliError, suggestions};
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const ROOT_COMMANDS: &[&str] = &[
     "help", "version", "init", "validate", "plan", "explain", "run", "preview", "sql", "inspect",
-    "diff", "contract", "state", "resume", "replay", "backfill", "package", "doctor", "status",
+    "diff", "schema", "contract", "state", "resume", "replay", "backfill", "package", "doctor",
+    "status",
 ];
 const INSPECT_NOUNS: &[&str] = &[
     "project",
@@ -24,6 +25,7 @@ const INSPECT_NOUNS: &[&str] = &[
     "run",
 ];
 const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
+const SCHEMA_SUBCOMMANDS: &[&str] = &["discover"];
 const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
 const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "migrate", "recover"];
 const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
@@ -51,6 +53,7 @@ pub enum Command {
     Sql(SqlArgs),
     Inspect(InspectArgs),
     DiffSchema,
+    Schema(SchemaCommand),
     Contract(ContractCommand),
     State(StateCommand),
     Resume(ResumeArgs),
@@ -110,6 +113,16 @@ pub enum InspectNoun {
     Destinations,
     Package(PathBuf),
     Run(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SchemaCommand {
+    Discover(SchemaDiscoverArgs),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemaDiscoverArgs {
+    pub resource_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -297,6 +310,7 @@ fn command_from_matches(matches: &ArgMatches) -> Result<Command, CliError> {
         Some(("sql", subcommand)) => parse_sql(subcommand).map(Command::Sql),
         Some(("inspect", subcommand)) => parse_inspect(subcommand).map(Command::Inspect),
         Some(("diff", subcommand)) => parse_diff(subcommand),
+        Some(("schema", subcommand)) => parse_schema(subcommand).map(Command::Schema),
         Some(("contract", subcommand)) => parse_contract(subcommand).map(Command::Contract),
         Some(("state", subcommand)) => parse_state(subcommand).map(Command::State),
         Some(("resume", subcommand)) => parse_resume(subcommand).map(Command::Resume),
@@ -462,6 +476,30 @@ fn parse_diff(matches: &ArgMatches) -> Result<Command, CliError> {
             "unknown diff subcommand",
         )),
         None => Err(CliError::usage("diff requires subcommand `schema`")),
+    }
+}
+
+fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
+    let Some((subcommand, matches)) = matches.subcommand() else {
+        return Err(CliError::usage("schema requires subcommand `discover`"));
+    };
+    match subcommand {
+        "discover" => {
+            let resource_id = resource_arg(
+                "schema discover",
+                &values(matches, "resource_arg"),
+                string_value(matches, "resource"),
+                "accepts at most one resource id",
+            )?
+            .ok_or_else(|| CliError::usage("schema discover requires a resource id"))?;
+            Ok(SchemaCommand::Discover(SchemaDiscoverArgs { resource_id }))
+        }
+        other => Err(unknown_subcommand_error(
+            &["schema"],
+            other,
+            SCHEMA_SUBCOMMANDS,
+            "unknown schema subcommand",
+        )),
     }
 }
 
@@ -712,6 +750,7 @@ pub(crate) fn cli_command() -> ClapCommand {
         )
         .subcommand(inspect_command())
         .subcommand(cmd("diff").subcommand(cmd("schema").arg(values_arg("extra").hide(true))))
+        .subcommand(schema_command())
         .subcommand(contract_command())
         .subcommand(state_command())
         .subcommand(resume_command())
@@ -757,6 +796,14 @@ fn run_command() -> ClapCommand {
         .arg(option("package_id", "package-id", "ID"))
         .arg(option("checkpoint_id", "checkpoint-id", "ID"))
         .arg(flag("loop", "loop"))
+}
+
+fn schema_command() -> ClapCommand {
+    cmd("schema").subcommand(
+        cmd("discover")
+            .arg(values_arg("resource_arg").value_name("RESOURCE"))
+            .arg(option("resource", "resource", "RESOURCE")),
+    )
 }
 
 fn inspect_command() -> ClapCommand {

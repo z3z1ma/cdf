@@ -14,7 +14,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use cdf_kernel::{
@@ -98,8 +98,8 @@ fn help_lists_required_command_surface() {
     assert_eq!(result.exit_code, 0);
     for command in [
         "help", "version", "init", "validate", "plan", "explain", "run", "preview", "sql",
-        "inspect", "diff", "contract", "state", "resume", "replay", "backfill", "package",
-        "doctor", "status",
+        "inspect", "diff", "schema", "contract", "state", "resume", "replay", "backfill",
+        "package", "doctor", "status",
     ] {
         assert!(result.stdout.contains(command), "missing {command}");
     }
@@ -114,6 +114,12 @@ fn parser_provides_subcommand_help_at_nested_layers() {
     assert!(plan.stdout.contains("--resource <RESOURCE>"));
     assert!(plan.stdout.contains("--to <DEST>"));
     assert!(plan.stdout.contains("--target <TARGET>"));
+
+    let schema = run(["cdf", "schema", "discover", "--help"]);
+
+    assert_eq!(schema.exit_code, 0);
+    assert!(schema.stdout.contains("Usage: cdf schema discover"));
+    assert!(schema.stdout.contains("--resource <RESOURCE>"));
 
     let rewind = run(["cdf", "state", "rewind", "--help"]);
 
@@ -1504,6 +1510,101 @@ fn plan_unsupported_destination_disposition_fails_closed_without_writes() {
     assert!(
         !project.root.join(".cdf/parquet").exists(),
         "Parquet no-write planning must not create the destination root"
+    );
+}
+
+#[test]
+fn schema_discover_local_parquet_reports_schema_without_project_writes() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_id"], "local.events");
+    assert_eq!(report["writes"]["schema_snapshot"], false);
+    assert_eq!(report["writes"]["lockfile"], false);
+    assert_eq!(report["writes"]["package"], false);
+    assert_eq!(report["writes"]["destination"], false);
+    assert_eq!(report["writes"]["checkpoint"], false);
+    assert!(
+        report["schema_snapshot_path"]
+            .as_str()
+            .unwrap()
+            .starts_with(".cdf/schemas/local.events@sha256:")
+    );
+    assert_eq!(report["snapshot_metadata"]["probe"], "parquet-footer");
+    assert_eq!(report["snapshot_metadata"]["format"], "parquet");
+    assert_eq!(report["snapshot_metadata"]["cdf:normalizer"], "namecase-v1");
+    assert_eq!(report["fields"][0]["name"], "vendor_id");
+    assert_eq!(report["fields"][0]["source_name"], "VendorID");
+    assert_eq!(
+        report["fields"][0]["metadata"]["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(report["source_identity"]["path"], "vendors.parquet");
+    assert!(
+        report["source_identity"]["footer_sha256"]
+            .as_str()
+            .is_some()
+    );
+    assert_eq!(report["next_command"], "cdf plan local.events");
+}
+
+#[test]
+fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert_eq!(report["resource_schema"]["schema_source"], "discovered");
+    let snapshot_path = report["resource_schema"]["snapshot_path"].as_str().unwrap();
+    assert!(snapshot_path.starts_with(".cdf/schemas/local.events@sha256:"));
+    let snapshot = read_snapshot_json(&project, snapshot_path);
+    assert_eq!(
+        report["resource_schema"]["schema_hash"],
+        snapshot["schema_hash"]
+    );
+    assert_eq!(
+        report["resource_schema"]["snapshot_metadata"]["probe"],
+        "parquet-footer"
+    );
+    assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
+    assert_eq!(
+        snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
+        "VendorID"
     );
 }
 
@@ -3831,7 +3932,83 @@ fn run_existing_package_directory_is_refused_before_destination_or_checkpoint_wr
 }
 
 #[test]
-fn run_discovered_schema_resource_fails_before_writes() {
+fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let result = run_valid_run_args(
+        &project,
+        "pkg-run-parquet-discover",
+        "checkpoint-run-parquet-discover",
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    let snapshot_path = single_schema_snapshot_path(&project);
+    let snapshot = read_snapshot_json(&project, &snapshot_path);
+    let snapshot_hash = snapshot["schema_hash"].as_str().unwrap();
+    assert_eq!(report["schema_hash"], snapshot_hash);
+    assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
+    assert_eq!(
+        snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
+        "VendorID"
+    );
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed Parquet discover run head");
+    assert_eq!(head.delta.schema_hash.as_str(), snapshot_hash);
+    assert_eq!(
+        head.delta.checkpoint_id.as_str(),
+        "checkpoint-run-parquet-discover"
+    );
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows = conn
+        .prepare("SELECT vendor_id FROM events ORDER BY vendor_id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, i32>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(rows, vec![1, 2]);
+}
+
+#[test]
+fn run_multi_file_parquet_discover_fails_before_writes() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/a.parquet"));
+    write_vendor_parquet(&project.root.join("data/b.parquet"));
+
+    let result = run_valid_run_args(
+        &project,
+        "pkg-run-parquet-discover-multi",
+        "checkpoint-run-parquet-discover-multi",
+    );
+
+    assert_ne!(result.exit_code, 0);
+    assert_no_run_writes(&project, "pkg-run-parquet-discover-multi");
+    assert!(!project.root.join(".cdf/schemas").exists());
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("multi-file Parquet discovery is unsupported")
+    );
+}
+
+#[test]
+fn run_unsupported_discover_schema_resource_fails_before_writes() {
     let project = TestProject::new();
     write_discovered_schema_resource(&project);
 
@@ -3839,12 +4016,13 @@ fn run_discovered_schema_resource_fails_before_writes() {
 
     assert_eq!(result.exit_code, 3);
     assert_no_run_writes(&project, "pkg-run-discovered");
+    assert!(!project.root.join(".cdf/schemas").exists());
     let json = stderr_or_stdout_json(&result.stderr);
     assert!(
         json["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("pinned schema")
+            .contains("unsupported schema discovery slice")
     );
 }
 
@@ -7594,6 +7772,55 @@ trust = "governed"
     .unwrap();
 }
 
+fn write_parquet_discover_resource(project: &TestProject, glob: &str) {
+    for entry in fs::read_dir(project.root.join("data")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    fs::write(
+        project.root.join("resources/files.toml"),
+        format!(
+            r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn write_vendor_parquet(path: &Path) {
+    let fields = vec![Field::new("VendorID", DataType::Int32, false)];
+    let values: ArrayRef = Arc::new(Int32Array::from_iter_values([1_i32, 2_i32]));
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), vec![values]).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+fn single_schema_snapshot_path(project: &TestProject) -> String {
+    let entries = fs::read_dir(project.root.join(".cdf/schemas"))
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect::<Vec<_>>();
+    assert_eq!(entries.len(), 1);
+    entries[0]
+        .strip_prefix(&project.root)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .replace(std::path::MAIN_SEPARATOR, "/")
+}
+
+fn read_snapshot_json(project: &TestProject, relative_path: &str) -> Value {
+    serde_json::from_str(&fs::read_to_string(project.root.join(relative_path)).unwrap()).unwrap()
+}
+
 fn write_resource_glob(project: &TestProject, glob: &str) {
     fs::write(
         project.root.join("resources/files.toml"),
@@ -7660,35 +7887,16 @@ fn write_format_fixture(project: &TestProject, format: &str) {
 }
 
 fn write_parquet_preview_fixture(project: &TestProject) {
-    let temp = TempDir::new("cdf-cli-preview-parquet-source");
-    let package_dir = build_archive_cli_package(temp.path(), "pkg-preview-parquet-source");
-    cdf_package::persist_package_parquet_archive(&package_dir, false).unwrap();
-    fs::copy(
-        package_dir.join("archive/parquet/data/seg-000001.parquet"),
-        project.root.join("data/events.parquet"),
-    )
-    .unwrap();
+    let batch = preview_fixture_batch();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(project.root.join("data/events.parquet"), bytes).unwrap();
 }
 
 fn write_arrow_ipc_preview_fixture(project: &TestProject) {
     let temp = TempDir::new("cdf-cli-preview-arrow-ipc-source");
     let package_dir = temp.path().join("pkg-preview-arrow-ipc-source");
     let mut builder = PackageBuilder::create(&package_dir, "pkg-preview-arrow-ipc-source").unwrap();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int64, false),
-        Field::new("updated_at", DataType::Int64, false),
-    ]));
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(Int64Array::from(vec![1_i64, 2_i64])),
-            Arc::new(Int64Array::from(vec![
-                1_783_296_000_000_000_i64,
-                1_783_296_060_000_000_i64,
-            ])),
-        ],
-    )
-    .unwrap();
+    let batch = preview_fixture_batch();
     builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
         .unwrap();
@@ -7698,6 +7906,24 @@ fn write_arrow_ipc_preview_fixture(project: &TestProject) {
         project.root.join("data/events.arrow"),
     )
     .unwrap();
+}
+
+fn preview_fixture_batch() -> RecordBatch {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("updated_at", DataType::Int64, false),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2_i64])),
+            Arc::new(Int64Array::from(vec![
+                1_783_296_000_000_000_i64,
+                1_783_296_060_000_000_i64,
+            ])),
+        ],
+    )
+    .unwrap()
 }
 
 fn write_status_resource(project: &TestProject, trust: &str, max_age: &str) {

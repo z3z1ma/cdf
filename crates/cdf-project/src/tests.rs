@@ -1,11 +1,14 @@
 use super::*;
 use crate::internal::*;
+use std::sync::Arc;
+
+use arrow_array::{Int32Array, RecordBatch};
 use arrow_schema::{DataType, Field, Fields, Schema, TimeUnit};
 use cdf_declarative::{AuthDeclaration, CompiledResourcePlan, SourceDeclaration};
 use cdf_kernel::{
     CapabilitySupport, ConcurrencyLimit, DestinationId, DestinationSheet, IdempotencySupport,
-    IdentifierRules, ResourceId, TransactionSupport, TypeMapping, TypeMappingFidelity,
-    WriteDisposition,
+    IdentifierRules, ResourceId, ResourceStream, SchemaSource, TransactionSupport, TypeMapping,
+    TypeMappingFidelity, WriteDisposition, source_name,
 };
 
 const BOOK_PROJECT: &str = r#"
@@ -416,6 +419,182 @@ fn local_parquet_discovery_handoff_builds_deterministic_snapshot() {
     let store = SchemaSnapshotStore::new(temp.path());
     store.write(&handoff.artifact).unwrap();
     assert_eq!(store.read(&handoff.reference).unwrap(), handoff.artifact);
+}
+
+#[test]
+fn local_parquet_discover_autopin_writes_normalized_snapshot_and_pins_clone() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/vendors.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+
+    let prepared = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+    let discovery = prepared.discovery.as_ref().unwrap();
+    let snapshot_path = temp.path().join(&discovery.snapshot.artifact.path);
+
+    assert!(matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Discover
+    ));
+    assert!(snapshot_path.is_file());
+    assert_eq!(
+        discovery.snapshot.artifact.metadata["cdf:normalizer"],
+        NORMALIZER_NAMECASE_V1
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].name,
+        "vendor_id"
+    );
+    assert_eq!(
+        discovery.snapshot.artifact.schema.fields[0].metadata["cdf:source_name"],
+        "VendorID"
+    );
+    let SchemaSource::Discovered { snapshot } = &prepared.resource.descriptor().schema_source
+    else {
+        panic!("expected auto-pinned discovered schema source");
+    };
+    assert_eq!(
+        snapshot.schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+    assert_eq!(snapshot.path, discovery.snapshot.artifact.path);
+    let schema = prepared.resource.schema();
+    let vendor = schema.field_with_name("vendor_id").unwrap();
+    assert_eq!(source_name(vendor), Some("VendorID"));
+
+    let repeated = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+    assert_eq!(
+        repeated
+            .discovery
+            .as_ref()
+            .unwrap()
+            .snapshot
+            .artifact
+            .schema_hash,
+        discovery.snapshot.artifact.schema_hash
+    );
+}
+
+#[test]
+fn local_parquet_discover_autopin_leaves_declared_resources_unprobed() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.missing");
+    let declared = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.missing"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "VendorID", type = "int32", nullable = false },
+] }
+"#;
+    fs::write(temp.path().join("resources/files.toml"), declared).unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let prepared = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+
+    assert!(prepared.discovery.is_none());
+    assert!(matches!(
+        prepared.resource.descriptor().schema_source,
+        SchemaSource::Declared { .. }
+    ));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn local_parquet_discover_autopin_rejects_non_parquet_without_snapshot_write() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "ndjson", "*.ndjson");
+    let resource = compile_single_project_resource(temp.path());
+
+    let error = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("unsupported schema discovery slice"));
+    assert!(message.contains("format"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn local_parquet_discover_autopin_rejects_multi_file_glob_without_snapshot_write() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    write_vendor_parquet(&temp.path().join("data/b.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+
+    let error = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("multi-file Parquet discovery is unsupported"));
+    assert!(message.contains("resolved to 2 files"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+fn write_discover_project(root: &Path, format: &str, glob: &str) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::create_dir_all(root.join("data")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "files"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."local.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        format!(
+            r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+format = "{format}"
+write_disposition = "append"
+trust = "governed"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn compile_single_project_resource(root: &Path) -> cdf_declarative::CompiledResource {
+    let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
+    let resolver = FileResourceSourceResolver::new(root);
+    let mut resources =
+        compile_project_declarative_resources_with_root(&config, &resolver, root).unwrap();
+    assert_eq!(resources.len(), 1);
+    resources.remove(0)
+}
+
+fn write_vendor_parquet(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "VendorID",
+        DataType::Int32,
+        false,
+    )]));
+    let batch =
+        RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1_i32, 2_i32]))]).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
 }
 
 #[test]

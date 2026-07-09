@@ -27,6 +27,7 @@ mod reports;
 mod resume_command;
 mod run_command;
 mod scan_command;
+mod schema_command;
 mod sql_command;
 mod state_command;
 mod status_command;

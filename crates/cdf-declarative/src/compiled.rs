@@ -35,6 +35,12 @@ use crate::sql_runtime::{
 };
 
 #[derive(Clone, Debug)]
+pub struct LocalParquetSchemaProbe {
+    pub schema: SchemaRef,
+    pub source_identity: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
 pub struct CompiledResource {
     descriptor: ResourceDescriptor,
     source_name: String,
@@ -79,6 +85,17 @@ impl CompiledResource {
                 ))
             }),
         }
+    }
+
+    pub fn with_schema_source_and_schema(
+        &self,
+        schema_source: SchemaSource,
+        schema: SchemaRef,
+    ) -> Self {
+        let mut resource = self.clone();
+        resource.descriptor.schema_source = schema_source;
+        resource.schema = schema;
+        resource
     }
 }
 
@@ -166,6 +183,14 @@ fn compile_document_inner(
 
 pub fn validate_document(document: &DeclarativeDocument) -> Result<()> {
     compile_document(document).map(drop)
+}
+
+pub fn discover_local_parquet_schema(path: impl AsRef<Path>) -> Result<LocalParquetSchemaProbe> {
+    let discovery = cdf_formats::discover_local_parquet_schema(path)?;
+    Ok(LocalParquetSchemaProbe {
+        schema: discovery.schema,
+        source_identity: discovery.source_identity.cache_evidence(),
+    })
 }
 
 impl ResourceStream for CompiledResource {

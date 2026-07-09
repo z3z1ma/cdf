@@ -7,8 +7,8 @@ use cdf_declarative::{
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
-    PartitionPlan, PredicateId, ResourceStream, ScanPredicate, ScanRequest, SortDirection,
-    TargetName, TransactionSupport, WriteDisposition,
+    PartitionPlan, PredicateId, ResourceStream, ScanPredicate, ScanRequest, SchemaSource,
+    SortDirection, TargetName, TransactionSupport, WriteDisposition,
 };
 use futures_util::StreamExt;
 use serde::Serialize;
@@ -38,9 +38,12 @@ pub(crate) fn plan_or_explain(
     let context =
         ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())?;
     let target = scan_target(&args)?;
-    let plan = build_engine_plan(&context, &args)?;
+    let resource = context.resource(&args.resource_id)?;
+    let prepared = cdf_project::prepare_local_parquet_discover_resource(&context.root, resource)?;
+    let plan = build_engine_plan_for_resource(&prepared.resource, &args)?;
     let report = scan_report(
         &context,
+        &prepared.resource,
         &plan,
         &target,
         args.destination_uri.as_deref(),
@@ -75,6 +78,13 @@ pub(crate) fn build_engine_plan(
     args: &ScanArgs,
 ) -> Result<EnginePlan, CliError> {
     let resource = context.resource(&args.resource_id)?;
+    build_engine_plan_for_resource(resource, args)
+}
+
+pub(crate) fn build_engine_plan_for_resource(
+    resource: &CompiledResource,
+    args: &ScanArgs,
+) -> Result<EnginePlan, CliError> {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     let validation_program = compile_validation_program(&policy, &observed_schema)?;
@@ -142,12 +152,12 @@ fn parse_order_by(raw: &str) -> Result<OrderBy, CliError> {
 
 fn scan_report(
     context: &ProjectContext,
+    resource: &CompiledResource,
     plan: &EnginePlan,
     target: &TargetName,
     destination_uri: Option<&str>,
     command: &'static str,
 ) -> Result<ScanPlanReport, CliError> {
-    let resource = context.resource(plan.scan.request.resource_id.as_str())?;
     let destination_plan =
         destination_plan_report(context, resource, target, destination_uri, command)?;
     Ok(ScanPlanReport {
@@ -417,6 +427,18 @@ fn scan_report_document(
         .push(
             KeyValuePanel::new("Contract")
                 .row("schema", report.resource_schema.schema_hash.clone())
+                .row(
+                    "schema source",
+                    report.resource_schema.schema_source.clone(),
+                )
+                .row(
+                    "schema snapshot",
+                    report
+                        .resource_schema
+                        .snapshot_path
+                        .clone()
+                        .unwrap_or_else(|| "none".to_owned()),
+                )
                 .row("fields", report.resource_schema.fields.len().to_string())
                 .row("state scope", report.state_advancement.scope.to_string())
                 .row(
@@ -579,6 +601,9 @@ struct ScanPlanReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct ResourceSchemaReport {
     schema_hash: String,
+    schema_source: String,
+    snapshot_path: Option<String>,
+    snapshot_metadata: BTreeMap<String, String>,
     fields: Vec<ResourceSchemaFieldReport>,
 }
 
@@ -741,8 +766,14 @@ fn resource_schema_report(
     resource: &cdf_declarative::CompiledResource,
     schema_hash: &cdf_kernel::SchemaHash,
 ) -> ResourceSchemaReport {
+    let snapshot = resource.descriptor().schema_source.pinned_snapshot();
     ResourceSchemaReport {
         schema_hash: schema_hash.to_string(),
+        schema_source: schema_source_name(&resource.descriptor().schema_source).to_owned(),
+        snapshot_path: snapshot.map(|snapshot| snapshot.path.clone()),
+        snapshot_metadata: snapshot
+            .map(|snapshot| snapshot.metadata.clone())
+            .unwrap_or_default(),
         fields: resource
             .schema()
             .fields()
@@ -753,6 +784,19 @@ fn resource_schema_report(
                 nullable: field.is_nullable(),
             })
             .collect(),
+    }
+}
+
+fn schema_source_name(source: &SchemaSource) -> &'static str {
+    match source {
+        SchemaSource::Declared { .. } => "declared",
+        SchemaSource::Discover => "discover",
+        SchemaSource::Discovered { .. } => "discovered",
+        SchemaSource::Hints {
+            snapshot: Some(_), ..
+        } => "hints_pinned",
+        SchemaSource::Hints { snapshot: None, .. } => "hints",
+        SchemaSource::Contract { .. } => "contract",
     }
 }
 

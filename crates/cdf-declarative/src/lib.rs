@@ -10,8 +10,9 @@ mod sql_runtime;
 mod tests;
 
 pub use compiled::{
-    CompiledResource, CompiledResourcePlan, FileResourcePlan, RestResourcePlan, SqlResourcePlan,
-    compile_document, compile_document_with_project_root, validate_document,
+    CompiledResource, CompiledResourcePlan, FileResourcePlan, LocalParquetSchemaProbe,
+    RestResourcePlan, SqlResourcePlan, compile_document, compile_document_with_project_root,
+    discover_local_parquet_schema, validate_document,
 };
 pub use declarations::*;
 pub use file_transport::*;
