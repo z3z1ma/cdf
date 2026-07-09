@@ -1821,7 +1821,12 @@ fn preview_multi_match_file_glob_reads_first_sorted_match_without_writes() {
     assert_no_preview_writes(&project);
     let json = stderr_or_stdout_json(&result.stdout);
     assert_eq!(json["result"]["resource"], "local.events");
-    assert_eq!(json["result"]["partition"], "files");
+    assert!(
+        json["result"]["partition"]
+            .as_str()
+            .unwrap()
+            .starts_with("file-")
+    );
     assert_eq!(json["result"]["row_count"], 2);
 }
 

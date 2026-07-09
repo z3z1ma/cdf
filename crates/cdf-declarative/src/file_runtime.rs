@@ -1,6 +1,8 @@
 use std::{
+    collections::BTreeMap,
     fs::{self, File},
     path::{Component, Path, PathBuf},
+    time::UNIX_EPOCH,
 };
 
 use arrow_schema::SchemaRef;
@@ -9,12 +11,37 @@ use cdf_formats::{
     read_file_source, read_file_source_with_declared_schema,
 };
 use cdf_kernel::{
-    BatchStream, BoxFuture, CdfError, PartitionPlan, ResourceDescriptor, ResourceId, Result,
-    ScopeKey,
+    BatchStream, BoxFuture, CdfError, PartitionId, PartitionPlan, ResourceDescriptor, ResourceId,
+    Result, ScopeKey,
 };
 use futures_util::stream;
+use sha2::{Digest, Sha256};
 
 use crate::{FileFormatDeclaration, FileResourcePlan};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedFileMatch {
+    path: PathBuf,
+    path_text: String,
+    size_bytes: u64,
+    modified_ms: Option<String>,
+}
+
+pub(crate) fn file_partitions_for_plan(
+    descriptor: &ResourceDescriptor,
+    plan: &FileResourcePlan,
+) -> Result<Vec<PartitionPlan>> {
+    let matches = resolve_file_matches(&descriptor.resource_id, plan)?;
+    if matches.is_empty() {
+        return Err(no_file_matches_error(&descriptor.resource_id, plan));
+    }
+
+    let total_matches = matches.len();
+    matches
+        .iter()
+        .map(|file| partition_for_file_match(descriptor, plan, file, total_matches))
+        .collect()
+}
 
 pub(crate) fn open_file_resource(
     descriptor: &ResourceDescriptor,
@@ -22,14 +49,7 @@ pub(crate) fn open_file_resource(
     plan: &FileResourcePlan,
     partition: PartitionPlan,
 ) -> BoxFuture<'static, Result<BatchStream>> {
-    open_file_resource_inner(
-        descriptor,
-        declared_schema,
-        plan,
-        partition,
-        resolve_single_file,
-        false,
-    )
+    open_file_resource_inner(descriptor, declared_schema, plan, partition, false)
 }
 
 pub(crate) fn open_file_resource_preview(
@@ -38,14 +58,7 @@ pub(crate) fn open_file_resource_preview(
     plan: &FileResourcePlan,
     partition: PartitionPlan,
 ) -> BoxFuture<'static, Result<BatchStream>> {
-    open_file_resource_inner(
-        descriptor,
-        declared_schema,
-        plan,
-        partition,
-        resolve_preview_file,
-        true,
-    )
+    open_file_resource_inner(descriptor, declared_schema, plan, partition, true)
 }
 
 fn open_file_resource_inner(
@@ -53,15 +66,13 @@ fn open_file_resource_inner(
     declared_schema: SchemaRef,
     plan: &FileResourcePlan,
     partition: PartitionPlan,
-    resolve_path: fn(&ResourceId, &FileResourcePlan) -> Result<PathBuf>,
     preview_arrow_ipc: bool,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     let descriptor = descriptor.clone();
     let declared_schema = declared_schema.clone();
     let plan = plan.clone();
     Box::pin(async move {
-        validate_partition(&descriptor, &plan, &partition)?;
-        let path = resolve_path(&descriptor.resource_id, &plan)?;
+        let path = validate_partition(&descriptor, &plan, &partition)?;
         let options = ReadOptions::new(descriptor.resource_id.clone(), partition.partition_id);
         let read = read_file_path(
             &path,
@@ -131,13 +142,7 @@ fn validate_partition(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
     partition: &PartitionPlan,
-) -> Result<()> {
-    if partition.partition_id.as_str() != "files" {
-        return Err(CdfError::contract(format!(
-            "declarative file resource `{}` expected partition `files`, got `{}`",
-            descriptor.resource_id, partition.partition_id
-        )));
-    }
+) -> Result<PathBuf> {
     if partition.metadata.get("kind").map(String::as_str) != Some("files") {
         return Err(CdfError::contract(format!(
             "declarative file resource `{}` expected a file partition plan",
@@ -158,41 +163,81 @@ fn validate_partition(
             plan.glob
         )));
     }
-    let expected_scope = ScopeKey::File {
-        path: plan.glob.clone(),
-    };
+    let path = partition.metadata.get("path").ok_or_else(|| {
+        CdfError::contract(format!(
+            "declarative file resource `{}` expected file partition path metadata",
+            descriptor.resource_id
+        ))
+    })?;
+    let expected_scope = ScopeKey::File { path: path.clone() };
     if partition.scope != expected_scope {
         return Err(CdfError::contract(format!(
-            "declarative file partition scope does not match glob `{}`",
-            plan.glob
+            "declarative file partition scope does not match file path `{path}`",
         )));
     }
-    Ok(())
-}
-
-fn resolve_single_file(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<PathBuf> {
-    let matches = resolve_file_matches(resource_id, plan)?;
-    match matches.as_slice() {
-        [path] => Ok(path.clone()),
-        [] => Err(no_file_matches_error(resource_id, plan)),
-        paths => Err(CdfError::data(format!(
-            "declarative file resource `{resource_id}` matched {} files under `{}` for glob `{}`; narrow the glob to exactly one file because multi-file scan semantics are not supported",
-            paths.len(),
-            plan.root,
-            plan.glob
-        ))),
+    let matches = resolve_file_matches(&descriptor.resource_id, plan)?;
+    let Some(resolved) = matches.iter().find(|file| file.path_text == *path) else {
+        return Err(CdfError::contract(format!(
+            "declarative file partition path `{path}` was not produced by glob `{}` under `{}`",
+            plan.glob, plan.root
+        )));
+    };
+    let expected_partition_id = if matches.len() == 1 {
+        "files".to_owned()
+    } else {
+        file_partition_id(&resolved.path_text)
+    };
+    if partition.partition_id.as_str() != expected_partition_id.as_str() {
+        return Err(CdfError::contract(format!(
+            "declarative file partition id `{}` does not match file path `{path}`",
+            partition.partition_id
+        )));
     }
+    let expected_size = resolved.size_bytes.to_string();
+    if partition.metadata.get("bytes").map(String::as_str) != Some(expected_size.as_str()) {
+        return Err(CdfError::data(format!(
+            "declarative file partition `{path}` changed size after planning"
+        )));
+    }
+    Ok(resolved.path.clone())
 }
 
-fn resolve_preview_file(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<PathBuf> {
-    let matches = resolve_file_matches(resource_id, plan)?;
-    matches
-        .into_iter()
-        .next()
-        .ok_or_else(|| no_file_matches_error(resource_id, plan))
+fn partition_for_file_match(
+    descriptor: &ResourceDescriptor,
+    plan: &FileResourcePlan,
+    file: &ResolvedFileMatch,
+    total_matches: usize,
+) -> Result<PartitionPlan> {
+    let mut metadata = BTreeMap::new();
+    metadata.insert("kind".to_owned(), "files".to_owned());
+    metadata.insert("glob".to_owned(), plan.glob.clone());
+    metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
+    metadata.insert("path".to_owned(), file.path_text.clone());
+    metadata.insert("bytes".to_owned(), file.size_bytes.to_string());
+    if let Some(modified_ms) = &file.modified_ms {
+        metadata.insert("modified_ms".to_owned(), modified_ms.clone());
+    }
+
+    let partition_id = if total_matches == 1 {
+        "files".to_owned()
+    } else {
+        file_partition_id(&file.path_text)
+    };
+
+    Ok(PartitionPlan {
+        partition_id: PartitionId::new(partition_id)?,
+        scope: ScopeKey::File {
+            path: file.path_text.clone(),
+        },
+        start_position: None,
+        metadata,
+    })
 }
 
-fn resolve_file_matches(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<Vec<PathBuf>> {
+fn resolve_file_matches(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+) -> Result<Vec<ResolvedFileMatch>> {
     let root = PathBuf::from(&plan.root);
     if !root.is_absolute() {
         return Err(CdfError::contract(format!(
@@ -208,7 +253,10 @@ fn resolve_file_matches(resource_id: &ResourceId, plan: &FileResourcePlan) -> Re
     matches.dedup();
 
     let matches = contained_matches(&root, matches)?;
-    Ok(matches)
+    matches
+        .into_iter()
+        .map(|path| resolved_file_match(&root, path))
+        .collect()
 }
 
 fn no_file_matches_error(resource_id: &ResourceId, plan: &FileResourcePlan) -> CdfError {
@@ -413,6 +461,50 @@ fn contained_matches(root: &Path, matches: Vec<PathBuf>) -> Result<Vec<PathBuf>>
             Ok(canonical_path)
         })
         .collect()
+}
+
+fn resolved_file_match(root: &Path, path: PathBuf) -> Result<ResolvedFileMatch> {
+    let metadata = fs::metadata(&path).map_err(|error| {
+        CdfError::data(format!("stat matched file {}: {error}", path.display()))
+    })?;
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis().to_string());
+    let canonical_root = fs::canonicalize(root).map_err(|error| {
+        CdfError::data(format!(
+            "canonicalize file source root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let relative_path = path.strip_prefix(&canonical_root).map_err(|error| {
+        CdfError::internal(format!(
+            "matched file {} did not remain relative to canonical root {}: {error}",
+            path.display(),
+            canonical_root.display()
+        ))
+    })?;
+    let path_text = relative_path.to_str().map(str::to_owned).ok_or_else(|| {
+        CdfError::data(format!(
+            "matched file path is not valid UTF-8: {}",
+            relative_path.display()
+        ))
+    })?;
+    let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
+    Ok(ResolvedFileMatch {
+        path,
+        path_text,
+        size_bytes: metadata.len(),
+        modified_ms,
+    })
+}
+
+fn file_partition_id(path: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(path.as_bytes());
+    let digest = hex::encode(hasher.finalize());
+    format!("file-{}", &digest[..16])
 }
 
 fn has_wildcards(pattern: &str) -> bool {

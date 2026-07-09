@@ -24,7 +24,9 @@ use cdf_kernel::{
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
-use crate::file_runtime::{open_file_resource, open_file_resource_preview};
+use crate::file_runtime::{
+    file_partitions_for_plan, open_file_resource, open_file_resource_preview,
+};
 use crate::rest_runtime::{
     CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA, cursor_pushdown_value,
 };
@@ -166,12 +168,7 @@ impl ResourceStream for CompiledResource {
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        Ok(vec![partition_for_plan(
-            &self.descriptor,
-            &self.schema,
-            &self.plan,
-            Some(request),
-        )?])
+        partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
@@ -216,12 +213,12 @@ impl QueryableResource for CompiledResource {
         Ok(ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
             request: request.clone(),
-            partitions: vec![partition_for_plan(
+            partitions: partitions_for_plan(
                 &self.descriptor,
                 &self.schema,
                 &self.plan,
                 Some(request),
-            )?],
+            )?,
             pushed_predicates,
             unsupported_predicates,
             estimated_rows: None,
@@ -735,17 +732,10 @@ fn partition_for_plan(
         CompiledResourcePlan::Sql(sql) => {
             return sql_partition_for_plan(descriptor, schema, sql, request);
         }
-        CompiledResourcePlan::Files(files) => {
-            let mut metadata = BTreeMap::new();
-            metadata.insert("kind".to_owned(), "files".to_owned());
-            metadata.insert("glob".to_owned(), files.glob.clone());
-            (
-                "files".to_owned(),
-                ScopeKey::File {
-                    path: files.glob.clone(),
-                },
-                metadata,
-            )
+        CompiledResourcePlan::Files(_) => {
+            return Err(CdfError::internal(
+                "file resources must plan through the file partition resolver",
+            ));
         }
     };
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
@@ -756,6 +746,20 @@ fn partition_for_plan(
         start_position: None,
         metadata,
     })
+}
+
+fn partitions_for_plan(
+    descriptor: &ResourceDescriptor,
+    schema: &SchemaRef,
+    plan: &CompiledResourcePlan,
+    request: Option<&ScanRequest>,
+) -> Result<Vec<PartitionPlan>> {
+    match plan {
+        CompiledResourcePlan::Files(files) => file_partitions_for_plan(descriptor, files),
+        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
+            Ok(vec![partition_for_plan(descriptor, schema, plan, request)?])
+        }
+    }
 }
 
 fn state_scope(resource: &ResourceDeclaration) -> Result<ScopeKey> {

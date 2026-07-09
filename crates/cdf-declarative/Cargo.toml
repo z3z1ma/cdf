@@ -26,3 +26,4 @@ toml = "1.1.2"
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
 futures-executor = "0.3.32"
+tempfile = "3.27.0"

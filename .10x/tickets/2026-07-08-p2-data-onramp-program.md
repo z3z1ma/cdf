@@ -98,6 +98,7 @@ P2 does not implement a GUI, a scheduler, distributed execution, resident stream
 - 2026-07-09: Third P2 implementation child closed: `.10x/tickets/done/2026-07-08-p2-ws-f1-append-default-merge-key-error.md`. This retires the direct append default, keyless append, explicit merge-key, and local scaffold fake-key gaps while leaving S7 CLI rendering and conformance coverage open.
 - 2026-07-09: Fourth P2 implementation child closed: `.10x/tickets/done/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md`. This establishes the schema-source model split and pinned snapshot artifact/store foundation for WS-A, with unpinned discover/hints still fail-closed until probe/auto-pin children land.
 - 2026-07-09: Fifth P2 implementation child closed: `.10x/tickets/done/2026-07-09-p2-ws-c2-destination-identifier-policy-adapter.md`. This gives WS-C a destination-sheet-to-contract normalizer adapter, while live plan/run integration and package evidence remain later children.
+- 2026-07-09: Sixth P2 implementation child closed: `.10x/tickets/done/2026-07-08-p2-ws-d1-file-glob-partition-planning.md`. This retires the local modest-N multi-file glob runtime rejection and establishes root-relative per-file partition identity for preview/run, while default `FileManifest` incrementality, remote/public Parquet globs, compression, schema variance, no-op reruns, and full S2/S8 conformance remain open.
 
 ## Blockers
 

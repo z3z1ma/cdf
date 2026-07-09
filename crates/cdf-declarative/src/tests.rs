@@ -1,6 +1,8 @@
 use super::*;
 use std::{
     collections::{BTreeMap, VecDeque},
+    fs,
+    path::Path,
     sync::{Arc, Mutex},
 };
 
@@ -24,6 +26,7 @@ use cdf_kernel::{
     WriteDisposition, source_name,
 };
 use futures_util::StreamExt;
+use tempfile::TempDir;
 
 const BOOK_REST_EXAMPLE: &str = r#"
 [source.github]
@@ -1311,6 +1314,15 @@ fn rest_runtime_retries_transient_transport_errors() {
 
 #[test]
 fn yaml_sql_and_file_resources_compile_to_mvp_descriptors() {
+    let root = tempfile::tempdir().unwrap();
+    let events_dir = root.path().join("data/events");
+    fs::create_dir_all(&events_dir).unwrap();
+    fs::write(
+        events_dir.join("one.json"),
+        "{\"event_id\":1,\"payload\":\"ok\"}\n",
+    )
+    .unwrap();
+
     let input = r#"
 source:
   warehouse:
@@ -1344,7 +1356,7 @@ resource:
 "#;
 
     let document = parse_yaml(input).unwrap();
-    let resources = compile_document(&document).unwrap();
+    let resources = compile_document_with_project_root(&document, root.path()).unwrap();
     let ids = resources
         .iter()
         .map(|resource| resource.descriptor().resource_id.as_str())
@@ -1446,10 +1458,15 @@ schema = { fields = [{ name = "id", type = "int64" }] }
 
 #[test]
 fn disposition_merge_with_explicit_merge_key_compiles() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(data_dir.join("events.ndjson"), "{\"id\":1}\n").unwrap();
+
     let input = r#"
 [source.local]
 kind = "files"
-root = "/"
+root = "data"
 
 [resource.events]
 glob = "*.ndjson"
@@ -1460,7 +1477,7 @@ trust = "governed"
 schema = { fields = [{ name = "id", type = "int64" }] }
 "#;
 
-    let resource = compile_document(&parse_toml(input).unwrap())
+    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
         .unwrap()
         .remove(0);
     assert!(resource.descriptor().primary_key.is_empty());
@@ -1709,10 +1726,15 @@ schema = { fields = [{ name = "items", type = "list<not_a_type>" }] }
 
 #[test]
 fn file_runtime_rejects_partition_metadata_that_does_not_match_plan() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    fs::write(data_dir.join("events.ndjson"), "{\"id\":1}\n").unwrap();
+
     let input = r#"
 [source.local]
 kind = "files"
-root = "/"
+root = "data"
 
 [resource.events]
 glob = "*.ndjson"
@@ -1720,7 +1742,7 @@ format = "ndjson"
 write_disposition = "append"
 trust = "governed"
 "#;
-    let resource = compile_document(&parse_toml(input).unwrap())
+    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
         .unwrap()
         .remove(0);
     let request = ScanRequest {
@@ -1746,6 +1768,126 @@ trust = "governed"
             .to_string()
             .contains("declarative file partition glob does not match")
     );
+}
+
+#[test]
+fn file_glob_plans_deterministic_partition_per_match() {
+    let (_root, resource) = compile_local_glob_runtime_resource([
+        ("b.ndjson", "{\"id\":2}\n"),
+        ("a.ndjson", "{\"id\":1}\n"),
+    ]);
+    let request = scan_request_for(&resource);
+
+    let partitions = resource.plan_partitions(&request).unwrap();
+    assert_eq!(partitions.len(), 2);
+    assert_eq!(
+        partition_file_names(&partitions),
+        vec!["a.ndjson", "b.ndjson"]
+    );
+    assert_eq!(resource.negotiate(&request).unwrap().partitions, partitions);
+
+    for partition in &partitions {
+        assert_eq!(
+            partition.metadata.get("kind").map(String::as_str),
+            Some("files")
+        );
+        assert_eq!(
+            partition.metadata.get("glob").map(String::as_str),
+            Some("*.ndjson")
+        );
+        assert_eq!(
+            partition.metadata.get("resource_id").map(String::as_str),
+            Some(resource.descriptor().resource_id.as_str())
+        );
+        assert!(partition.metadata.contains_key("bytes"));
+        assert!(partition.metadata.contains_key("modified_ms"));
+        assert!(partition.partition_id.as_str().starts_with("file-"));
+        assert!(partition.start_position.is_none());
+
+        let path = partition.metadata.get("path").unwrap();
+        assert_eq!(partition.scope, ScopeKey::File { path: path.clone() });
+    }
+}
+
+#[test]
+fn file_glob_run_and_preview_open_the_requested_partition() {
+    let (_root, resource) = compile_local_glob_runtime_resource([
+        ("b.ndjson", "{\"id\":2}\n"),
+        ("a.ndjson", "{\"id\":1}\n"),
+    ]);
+    let partitions = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap();
+
+    let preview_batches = drain_batches(
+        futures_executor::block_on(resource.open_preview(partitions[0].clone())).unwrap(),
+    );
+    let run_batches =
+        drain_batches(futures_executor::block_on(resource.open(partitions[1].clone())).unwrap());
+
+    assert_eq!(first_i64_value(&preview_batches), 1);
+    assert_eq!(first_i64_value(&run_batches), 2);
+}
+
+#[test]
+fn file_glob_zero_matches_still_reports_actionable_data_error() {
+    let (_root, resource) = compile_local_glob_runtime_resource(std::iter::empty::<(&str, &str)>());
+    let error = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("matched no files"));
+    assert!(message.contains("*.ndjson"));
+    assert!(message.contains("data"));
+}
+
+#[test]
+fn file_runtime_rejects_partition_path_not_produced_by_glob_before_read() {
+    let (_root, resource) =
+        compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
+    let mut partition = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap()
+        .remove(0);
+    let unplanned_path = "other.ndjson".to_owned();
+    partition
+        .metadata
+        .insert("path".to_owned(), unplanned_path.clone());
+    partition.scope = ScopeKey::File {
+        path: unplanned_path,
+    };
+
+    let error = match futures_executor::block_on(resource.open(partition)) {
+        Ok(_) => panic!("file runtime accepted an unplanned partition path"),
+        Err(error) => error,
+    };
+
+    assert!(
+        error
+            .to_string()
+            .contains("was not produced by glob `*.ndjson`")
+    );
+}
+
+#[test]
+fn file_runtime_rejects_legacy_partition_id_for_multi_file_glob() {
+    let (_root, resource) = compile_local_glob_runtime_resource([
+        ("a.ndjson", "{\"id\":1}\n"),
+        ("b.ndjson", "{\"id\":2}\n"),
+    ]);
+    let mut partition = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap()
+        .remove(0);
+    partition.partition_id = PartitionId::new("files").unwrap();
+
+    let error = match futures_executor::block_on(resource.open(partition)) {
+        Ok(_) => panic!("file runtime accepted a legacy partition id for a multi-file glob"),
+        Err(error) => error,
+    };
+
+    assert!(error.to_string().contains("does not match file path"));
 }
 
 #[test]
@@ -2290,6 +2432,70 @@ fn drain_batches(mut stream: cdf_kernel::BatchStream) -> Vec<cdf_kernel::Batch> 
         }
         batches
     })
+}
+
+fn compile_local_glob_runtime_resource<I>(files: I) -> (TempDir, CompiledResource)
+where
+    I: IntoIterator<Item = (&'static str, &'static str)>,
+{
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    for (relative, body) in files {
+        fs::write(data_dir.join(relative), body).unwrap();
+    }
+
+    let input = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [{ name = "id", type = "int64" }] }
+"#;
+    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
+        .unwrap()
+        .remove(0);
+    (root, resource)
+}
+
+fn scan_request_for(resource: &CompiledResource) -> ScanRequest {
+    ScanRequest {
+        resource_id: resource.descriptor().resource_id.clone(),
+        projection: None,
+        filters: Vec::new(),
+        limit: None,
+        order_by: Vec::new(),
+        scope: ScopeKey::Resource,
+    }
+}
+
+fn partition_file_names(partitions: &[cdf_kernel::PartitionPlan]) -> Vec<String> {
+    partitions
+        .iter()
+        .map(|partition| {
+            Path::new(partition.metadata.get("path").unwrap())
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_owned()
+        })
+        .collect()
+}
+
+fn first_i64_value(batches: &[cdf_kernel::Batch]) -> i64 {
+    let batch = batches[0].record_batch().unwrap();
+    batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .value(0)
 }
 
 fn expect_open_error(result: cdf_kernel::Result<cdf_kernel::BatchStream>) -> CdfError {

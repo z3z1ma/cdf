@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-postgres-v1",
-  "package_hash": "sha256:b9b8a2858ba30bbc79dc764d2ff24b4a8cecffba566522f2bfce031776ff5392",
+  "package_hash": "sha256:3e03bbd5fe501e9da201285267b66a7c2fb8e7e15214f90c01cf2704d871fe06",
   "checkpoint_id": "checkpoint-live-local-file-postgres-v1",
   "pipeline_id": "pipeline-live-local-file-postgres-v1",
   "resource_id": "local.events",
@@ -21,9 +21,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:b9b8a2858ba30bbc79dc764d2ff24b4a8cecffba566522f2bfce031776ff5392",
+    "package_hash": "sha256:3e03bbd5fe501e9da201285267b66a7c2fb8e7e15214f90c01cf2704d871fe06",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:b9b8a2858ba30bbc79dc764d2ff24b4a8cecffba566522f2bfce031776ff5392",
+    "signature_signing_input": "sha256:3e03bbd5fe501e9da201285267b66a7c2fb8e7e15214f90c01cf2704d871fe06",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -55,13 +55,13 @@
       },
       {
         "path": "plan/explain.json",
-        "byte_count": 973,
-        "sha256": "f0adcc68641b89943c9d28c76737664a1a64e1caaf2c96783924ed9df45d4de8"
+        "byte_count": 1009,
+        "sha256": "245e45e7b29c813d1122d32707233d20d20dda84ffff7a28d93516837082c4ed"
       },
       {
         "path": "plan/scan.json",
-        "byte_count": 514,
-        "sha256": "63be11b44f8bd7712d7817b019d5297c3051040090db41151f3bc068f4df4ec8"
+        "byte_count": 550,
+        "sha256": "5098dffe1e56c71f3cfdc1fb56472f442e2637f8982c3de2d135b373c709c666"
       },
       {
         "path": "plan/validation-program.json",

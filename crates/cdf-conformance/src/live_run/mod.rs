@@ -524,8 +524,10 @@ fn live_engine_plan_json(package_id: &str) -> serde_json::Value {
             "scope": scope,
             "start_position": null,
             "metadata": {
+                "bytes": LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES.to_string(),
                 "kind": "files",
                 "glob": "events.ndjson",
+                "path": "events.ndjson",
                 "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
             },
         }],
@@ -585,8 +587,10 @@ fn live_engine_plan_json(package_id: &str) -> serde_json::Value {
                 "partition_id": "files",
                 "scope_kind": "file",
                 "metadata": {
+                    "bytes": LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES.to_string(),
                     "kind": "files",
                     "glob": "events.ndjson",
+                    "path": "events.ndjson",
                     "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
                 },
             }],

@@ -62,8 +62,10 @@ fn file_engine_plan_json(package_id: &str, disposition: MatrixDisposition) -> se
             "scope": scope,
             "start_position": null,
             "metadata": {
+                "bytes": file_fixture::SOURCE_SIZE_BYTES.to_string(),
                 "kind": "files",
                 "glob": file_fixture::SOURCE_POSITION_PATH,
+                "path": file_fixture::SOURCE_POSITION_PATH,
                 "resource_id": file_fixture::RESOURCE_ID,
             },
         }],
@@ -123,8 +125,10 @@ fn file_engine_plan_json(package_id: &str, disposition: MatrixDisposition) -> se
                 "partition_id": "files",
                 "scope_kind": "file",
                 "metadata": {
+                    "bytes": file_fixture::SOURCE_SIZE_BYTES.to_string(),
                     "kind": "files",
                     "glob": file_fixture::SOURCE_POSITION_PATH,
+                    "path": file_fixture::SOURCE_POSITION_PATH,
                     "resource_id": file_fixture::RESOURCE_ID,
                 },
             }],

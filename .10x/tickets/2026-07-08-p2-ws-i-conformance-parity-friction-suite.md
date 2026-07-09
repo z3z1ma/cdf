@@ -35,6 +35,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-08: Split first executable child `.10x/tickets/done/2026-07-08-p2-ws-i1-friction-regression-registry.md` to map the eighteen P2 frictions to existing tests or explicit open coverage gaps before implementation lanes start closing.
 - 2026-07-09: Friction registry recorded in `.10x/evidence/2026-07-08-p2-friction-regression-registry.md`. Initial capture classified all eighteen directive frictions as open P2 coverage obligations, with partial primitive or negative coverage named where source/tests supported it.
 - 2026-07-09: B1 closed the direct declarative-vocabulary guard for friction 3 through focused `cdf-declarative` tests. WS-I closure still requires replacing the remaining open-owner rows with actual regression tests/conformance scenarios or recorded exclusions.
+- 2026-07-09: D1 added local modest-N primitive coverage for friction rows 8 and 9: deterministic per-file partitions and preview/open path parity inside `cdf-declarative`, plus live local-file golden reruns. WS-I still owes S2/S8 conformance coverage for manifest incrementality, remote/public globs, no-op reruns, and parity across source archetypes.
 
 ## Blockers
 
