@@ -31,6 +31,7 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-09: Split `.10x/tickets/2026-07-09-p2-ws-h1-resource-id-validation-inspection.md` for canonical compiled-id validation and inspection before `cdf add` and ad-hoc mode.
 
 ## Blockers
 
