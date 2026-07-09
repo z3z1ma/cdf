@@ -32,6 +32,7 @@ This ticket does not implement file manifest incrementality, remote transport cr
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md` for the schema-source model and snapshot artifact foundation before per-source probes.
 
 ## Blockers
 

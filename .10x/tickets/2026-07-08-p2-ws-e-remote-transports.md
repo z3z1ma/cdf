@@ -31,6 +31,7 @@ Arbitrary web directory scraping is out of scope. HTTP glob support is limited t
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-e1-file-transport-facade-local-http.md` for the local/HTTP facade and ranged-read foundation.
 
 ## Blockers
 

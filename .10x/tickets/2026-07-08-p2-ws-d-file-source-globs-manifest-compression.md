@@ -32,6 +32,7 @@ Zip archive member semantics and large-N coalescing thresholds are deferred unle
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
+- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-d1-file-glob-partition-planning.md` for modest-N local glob partition planning and preview/run file-resolution parity.
 
 ## Blockers
 
