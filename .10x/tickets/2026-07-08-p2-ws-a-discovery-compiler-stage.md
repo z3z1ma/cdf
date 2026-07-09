@@ -34,6 +34,7 @@ This ticket does not implement file manifest incrementality, remote transport cr
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-08: Split first executable child `.10x/tickets/done/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md` for the schema-source model and snapshot artifact foundation before per-source probes.
 - 2026-07-09: Child A1 closed with evidence `.10x/evidence/2026-07-09-p2-ws-a1-schema-source-model-snapshot-foundation.md` and review `.10x/reviews/2026-07-09-p2-ws-a1-schema-source-model-snapshot-foundation-review.md`.
+- 2026-07-09: Split executable child `.10x/tickets/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md` for the first concrete local Parquet footer/schema probe and schema snapshot handoff. Remote ranged discovery, CLI schema commands, auto-pin, and run/plan integration remain later children.
 
 ## Blockers
 
