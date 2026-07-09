@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-file-source-transport-manifest.md, .10x/specs/data-onramp-file-sources-transports.md
 
@@ -31,7 +31,9 @@ Arbitrary web directory scraping is out of scope. HTTP glob support is limited t
 ## Progress and notes
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
-- 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-e1-file-transport-facade-local-http.md` for the local/HTTP facade and ranged-read foundation.
+- 2026-07-08: Split first executable child `.10x/tickets/done/2026-07-08-p2-ws-e1-file-transport-facade-local-http.md` for the local/HTTP facade and ranged-read foundation.
+- 2026-07-09: WS-E1 closed with local/HTTP(S) facade, deterministic metadata records, bounded HTTP ranged-read tests, explicit HTTP listing rejection, and allowlist/auth API hooks. Remaining WS-E scope still owns production integration, cloud transports, credential resolution, doctor probes, HTTP template enumeration, compression, and full remote conformance.
+- 2026-07-09: Parent verification for WS-E1 added debug redaction for URL-bearing public transport/request metadata surfaces and recorded full quality evidence, including reusable-DB CodeQL. No WS-E1 blocker remains.
 
 ## Blockers
 

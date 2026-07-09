@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
 Depends-On: .10x/decisions/data-onramp-file-source-transport-manifest.md, .10x/specs/data-onramp-file-sources-transports.md
 
@@ -43,7 +43,11 @@ This ticket does not implement S3/GCS/Azure, credential resolution, doctor probe
 ## Progress and notes
 
 - 2026-07-08: Opened after inspection found file sources currently use local `PathBuf` resolution only, while REST has existing HTTP URL validation that is not a file transport facade.
+- 2026-07-09: Activated after WS-D1 closed the local glob partition foundation. Delegated as a facade-plus-tests slice; full runtime integration, cloud transports, credential resolution, doctor probes, compression, and HTTP template enumeration remain explicitly excluded.
+- 2026-07-09: Implemented the local/HTTP(S) file transport facade in `crates/cdf-declarative/src/file_transport.rs` and exported it from `crates/cdf-declarative/src/lib.rs`. The facade models local paths, `file://`, and HTTP(S) URLs behind one `FileTransport` trait, records file identity metadata, supports bounded ranged reads, rejects HTTP(S) arbitrary listing, exposes allowlist/auth hooks, and remains detached from run/package/checkpoint mutation.
+- 2026-07-09: Verification passed: focused `file_transport` tests, full `cdf-declarative` tests, clippy with `-D warnings`, `cargo fmt --check`, `git diff --check`, and scoped `jscpd` on touched Rust files. Evidence: `.10x/evidence/2026-07-09-p2-ws-e1-file-transport-facade-local-http.md`. Review: `.10x/reviews/2026-07-09-p2-ws-e1-file-transport-facade-local-http-review.md`.
+- 2026-07-09: Parent integration review added explicit debug redaction through `cdf_http::Redactor` for URL-bearing public transport/request metadata surfaces, reran the focused/full crate checks, and added quality evidence for complexity, Semgrep, scoped Gitleaks, supply-chain gates, OSV, and reusable-DB CodeQL. CodeQL's remaining current-tree findings are the pre-existing P1 backfill fixture residual owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 ## Blockers
 
-Coordinate with WS-D1 before integration into file runtime; the first child may remain a facade plus tests.
+None for this child. Runtime integration remains explicitly outside WS-E1.
