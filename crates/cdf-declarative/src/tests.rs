@@ -20,7 +20,7 @@ use cdf_http::{
 use cdf_kernel::{
     CdfError, CursorOrderingClaim, CursorValue, DeliveryGuarantee, ErrorKind, IncrementalShape,
     PartitionId, PredicateId, PushdownFidelity, QueryableResource, ResourceStream, ScanPredicate,
-    ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection, SourcePosition,
+    ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection, SourcePosition, source_name,
 };
 use futures_util::StreamExt;
 
@@ -1515,6 +1515,78 @@ resource:
         schema.field_with_name("amount").unwrap().data_type(),
         &DataType::Decimal128(20, 4)
     );
+}
+
+#[test]
+fn declarative_schema_normalizes_field_names_and_records_source_names() {
+    let resource = compile_local_file_schema_resource(
+        "trips",
+        "*.parquet",
+        "parquet",
+        r#"
+  { name = "VendorID", type = "int64", nullable = false },
+  { name = "tpep_pickup_datetime", type = "timestamp_micros" },
+  { name = "vendor_id_explicit", source_name = "VendorIDExplicit", type = "int32" },
+"#,
+    )
+    .unwrap();
+    let schema = resource.schema();
+
+    let vendor = schema.field_with_name("vendor_id").unwrap();
+    assert_eq!(vendor.data_type(), &DataType::Int64);
+    assert_eq!(source_name(vendor), Some("VendorID"));
+    assert!(schema.field_with_name("VendorID").is_err());
+
+    let pickup = schema.field_with_name("tpep_pickup_datetime").unwrap();
+    assert_eq!(source_name(pickup), Some("tpep_pickup_datetime"));
+
+    let explicit = schema.field_with_name("vendor_id_explicit").unwrap();
+    assert_eq!(source_name(explicit), Some("VendorIDExplicit"));
+}
+
+#[test]
+fn declarative_schema_rejects_post_normalization_collisions_with_hint() {
+    let error = compile_local_file_schema_resource(
+        "users",
+        "*.ndjson",
+        "ndjson",
+        r#"
+  { name = "userName", type = "utf8" },
+  { name = "user_name", type = "utf8" },
+"#,
+    )
+    .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("identifier collision after namecase-v1"));
+    assert!(message.contains("userName"));
+    assert!(message.contains("user_name"));
+    assert!(message.contains("add an explicit rename"));
+}
+
+fn compile_local_file_schema_resource(
+    resource_name: &str,
+    glob: &str,
+    format_kind: &str,
+    fields: &str,
+) -> cdf_kernel::Result<CompiledResource> {
+    let input = format!(
+        r#"
+[source.local]
+kind = "files"
+root = "."
+
+[resource.{resource_name}]
+glob = "{glob}"
+format = "{format_kind}"
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+{fields}
+] }}
+"#
+    );
+
+    compile_document(&parse_toml(&input).unwrap()).map(|mut resources| resources.remove(0))
 }
 
 #[test]

@@ -8,6 +8,7 @@ use arrow_schema::{
     DECIMAL128_MAX_PRECISION, DECIMAL128_MAX_SCALE, DECIMAL256_MAX_PRECISION, DECIMAL256_MAX_SCALE,
     DataType, Field, Fields, Schema, SchemaRef, TimeUnit,
 };
+use cdf_contract::{IdentifierPolicy, normalize_arrow_schema};
 use cdf_http::{
     AuthScheme, EgressAllowlist, PaginationConfig, QuotaHeaderPolicy, RateLimitPolicy,
     ResetHeaderSemantics, SecretUri,
@@ -355,15 +356,19 @@ fn compile_schema(resource: &ResourceDeclaration) -> Result<Schema> {
         .map(|field| {
             let data_type = field_type(&field.field_type, field.timezone.clone())?;
             let arrow_field = Field::new(&field.name, data_type, field.nullable.unwrap_or(true));
+            let source_name = field
+                .source_name
+                .clone()
+                .unwrap_or_else(|| field.name.clone());
             Ok(with_cdf_metadata(
                 arrow_field,
-                field.source_name.clone(),
+                Some(source_name),
                 field.semantic.clone(),
                 field.null_origin.clone(),
             ))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(Schema::new(fields))
+    normalize_arrow_schema(&Schema::new(fields), &IdentifierPolicy::default())
 }
 
 fn compile_schema_source(

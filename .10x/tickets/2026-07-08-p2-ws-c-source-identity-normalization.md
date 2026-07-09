@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/types-contracts-normalization.md
 
@@ -33,6 +33,7 @@ This ticket does not change the normalizer algorithm itself unless a bug is foun
 
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-08: Split first executable child `.10x/tickets/2026-07-08-p2-ws-c1-declarative-schema-normalization.md` for source-name defaults and `namecase-v1` normalization in declarative compiled schemas. Destination-specific sheet rules and package normalizer evidence remain later children.
+- 2026-07-09: Closed first executable child `.10x/tickets/done/2026-07-08-p2-ws-c1-declarative-schema-normalization.md`. Direct declarative compiled-schema source-name defaults, `VendorID` normalization, explicit `source_name` preservation, and collision diagnostics are covered. Destination-specific sheet rules, schema/package normalizer evidence, and broader live plan/run coverage remain open WS-C work.
 
 ## Blockers
 

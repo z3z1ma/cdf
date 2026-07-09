@@ -9,6 +9,7 @@ description = "Declarative resource authoring boundary for cdf."
 [dependencies]
 arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
+cdf-contract = { path = "../cdf-contract" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-http = { path = "../cdf-http" }
 cdf-formats = { path = "../cdf-formats" }

@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-c-source-identity-normalization.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md
 
@@ -43,6 +43,8 @@ This ticket does not implement destination-specific sheet charset/length variant
 ## Progress and notes
 
 - 2026-07-08: Opened after source inspection found `cdf-contract::normalize_arrow_schema` already exists, while `cdf-declarative::compile_schema` currently passes through field names and only records `source_name` when manually provided.
+- 2026-07-09: Implemented automatic source-name metadata and `namecase-v1` normalization in `compile_schema` by reusing `cdf-contract::normalize_arrow_schema` and `IdentifierPolicy::default()`. Added focused tests for `VendorID` -> `vendor_id`, omitted `source_name`, explicit `source_name`, and post-normalization collision hints.
+- 2026-07-09: Evidence recorded in `.10x/evidence/2026-07-09-p2-ws-c1-declarative-schema-normalization.md`; review recorded in `.10x/reviews/2026-07-09-p2-ws-c1-declarative-schema-normalization-review.md`.
 
 ## Blockers
 
