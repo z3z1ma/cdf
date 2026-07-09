@@ -1,0 +1,38 @@
+Status: open
+Created: 2026-07-08
+Updated: 2026-07-08
+Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
+Depends-On: .10x/specs/data-onramp-conformance.md, .10x/knowledge/runtime-conformance-throughput-rule.md
+
+# P2 WS-I conformance, parity, and friction regression suite
+
+## Scope
+
+Make the harness catch up as P2 lands: S1-S8 golden paths, preview/run parity law, eighteen-friction regression mapping, deterministic fixtures plus live tier, and widening-lattice property tests.
+
+Split executable child tickets before code for each conformance slice or property target. This workstream accrues throughout P2 and gates every other workstream closure.
+
+## Acceptance criteria
+
+- S1-S8 are represented in conformance, with deterministic fixture coverage for ordinary CI.
+- Preview/run parity is a named law per source archetype.
+- Each of the eighteen P2 frictions maps to a regression test in closure evidence.
+- Widening-lattice property tests prove composition and no value loss for supported Arrow arrays.
+- FileManifest state round-trips remain covered across checkpoint `state_version`.
+- The final P2 evidence includes a recorded S1+S2 terminal session.
+
+## Evidence expectations
+
+Conformance matrix output, golden hashes, property-test output, fixture provenance, live-tier notes where applicable, and adversarial review of any recorded exclusions.
+
+## Explicit exclusions
+
+This ticket does not require cloud credentials in every push CI run; fixture-backed CI is acceptable when live-tier coverage is separately recorded.
+
+## Progress and notes
+
+- 2026-07-08: Opened as P2 workstream owner from the directive.
+
+## Blockers
+
+Depends on implementation slices as they land; no blocker for harness shaping.

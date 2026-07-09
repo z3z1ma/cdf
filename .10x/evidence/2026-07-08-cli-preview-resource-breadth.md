@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md, .10x/decisions/preview-one-batch-sampling-semantics.md, .10x/specs/project-cli-observability-security.md
+Relates-To: .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md, .10x/decisions/superseded/preview-one-batch-sampling-semantics.md, .10x/specs/project-cli-observability-security.md
 
 # CLI preview resource breadth evidence
 
@@ -45,7 +45,7 @@ osv-scanner --lockfile Cargo.lock
 semgrep scan --config p/rust --error --json --metrics off --disable-version-check --output target/quality/preview-breadth/semgrep-rust.json crates/cdf-cli/src/scan_command.rs crates/cdf-declarative/src/file_runtime.rs crates/cdf-formats/src/readers.rs
 tools/codeql-rust-quality.sh
 gitleaks dir --no-banner --redact --log-level error --report-format json --report-path target/quality/preview-breadth/gitleaks-crates.json crates
-gitleaks dir --no-banner --redact --log-level error --report-format json --report-path target/quality/preview-breadth/gitleaks-10x-decision.json .10x/decisions/preview-one-batch-sampling-semantics.md
+gitleaks dir --no-banner --redact --log-level error --report-format json --report-path target/quality/preview-breadth/gitleaks-10x-decision.json .10x/decisions/superseded/preview-one-batch-sampling-semantics.md
 gitleaks dir --no-banner --redact --log-level error --report-format json --report-path target/quality/preview-breadth/gitleaks-10x-spec.json .10x/specs/project-cli-observability-security.md
 gitleaks dir --no-banner --redact --log-level error --report-format json --report-path target/quality/preview-breadth/gitleaks-10x-ticket.json .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md
 gitleaks git --no-banner --redact --log-level error --report-format json --report-path target/quality/preview-breadth/gitleaks-git.json .

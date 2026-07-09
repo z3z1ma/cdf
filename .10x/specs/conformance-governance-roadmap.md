@@ -1,12 +1,14 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-08
 
 # Conformance, governance, and roadmap
 
 ## Purpose and scope
 
 This specification governs what "supported" means, release/version governance, MVP contents, fast-follow, and beyond-MVP scope. It derives from book Chapters 19, 21, 22, 23, 24, and 25 and decisions D-11, D-21, D-22, D-26, D-27, and D-28.
+
+P2 data-onramp golden paths, preview/run parity, and friction regression requirements are further governed by `.10x/specs/data-onramp-conformance.md`.
 
 ## Conformance
 

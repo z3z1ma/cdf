@@ -1,12 +1,14 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-08
 
 # Resources, authoring, planning, and batches
 
 ## Purpose and scope
 
 This specification governs resources, sources, authoring tiers, scan planning, pushdown fidelity, and batch identity/provenance. It derives from book Chapters 7, 8, 9, and 20 and decisions D-1, D-2, D-7, D-8, D-17, D-23, D-25, and D-26.
+
+P2 data-onramp behavior is further governed by `.10x/specs/data-onramp-schema-intelligence.md`, `.10x/specs/data-onramp-file-sources-transports.md`, and `.10x/specs/data-onramp-source-experience-cli.md`.
 
 ## Resource model
 
@@ -58,4 +60,3 @@ Rows MUST NOT be an engine runtime concept. Row-shaped authoring crosses into ba
 ## Explicit exclusions
 
 This spec does not define destination commit protocols, contract policy details, package layout, or checkpoint commit rules.
-

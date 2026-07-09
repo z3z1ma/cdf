@@ -8,7 +8,7 @@ Verdict: pass
 
 ## Target
 
-Review of the `cdf preview` resource breadth slice governed by `.10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md`, `.10x/decisions/preview-one-batch-sampling-semantics.md`, and `.10x/specs/project-cli-observability-security.md`.
+Review of the `cdf preview` resource breadth slice governed at the time by `.10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md`, `.10x/decisions/superseded/preview-one-batch-sampling-semantics.md`, and `.10x/specs/project-cli-observability-security.md`.
 
 ## Findings
 

@@ -1,12 +1,14 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-08
 
 # Types, contracts, and normalization
 
 ## Purpose and scope
 
 This specification governs cdf's type fidelity rules, identifier normalization, nested-data policy, contract compiler, validation chain, trust presets, and bounded transforms. It derives from book Chapters 6 and 10 and decisions D-3, D-6, D-9, D-14, and D-15.
+
+P2 data-onramp schema vocabulary, discovery/reconciliation, and automatic source-boundary normalization are further governed by `.10x/specs/data-onramp-schema-intelligence.md`, `.10x/specs/data-onramp-source-experience-cli.md`, `.10x/decisions/data-onramp-schema-discovery-reconciliation.md`, and `.10x/decisions/data-onramp-source-identity-preview-disposition.md`.
 
 ## Type system
 
@@ -71,4 +73,3 @@ cdf MAY perform only in-flight, per-batch, schema-stable transforms: rename, cas
 ## Explicit exclusions
 
 This spec does not define package hashing, checkpoint commit, destination receipts, or concrete CLI command parsing.
-

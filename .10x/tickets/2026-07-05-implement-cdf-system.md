@@ -59,6 +59,7 @@ Fast-follow and full-system completion:
 
 - `.10x/tickets/done/2026-07-07-p0-structural-debt-program.md`
 - `.10x/tickets/2026-07-08-p1-product-experience-program.md`
+- `.10x/tickets/2026-07-08-p2-data-onramp-program.md`
 - `.10x/tickets/done/2026-07-05-singer-airbyte-and-package-archive.md`
 - `.10x/tickets/done/2026-07-06-native-arrow-parquet-policy.md`
 - `.10x/tickets/done/2026-07-06-package-state-commit-artifact-contract.md`
@@ -172,6 +173,7 @@ A UI is excluded unless a later active decision supersedes the book. SCD2 and sn
 - 2026-07-08: Closed `.10x/tickets/done/2026-07-08-mvp-acceptance-demo-fixture-harness.md`; conformance now has a deterministic GitHub-Issues-shaped MVP acceptance demo foundation covering plan, contract freeze/test, DuckDB load, local SQL queryability, post-receipt crash/resume without source contact, replay to a second DuckDB database, duplicate replay no-op, state history, and drift quarantine. The full conformance parent remains open for broader closure and any live-provider operational smoke.
 - 2026-07-08: Closed `.10x/tickets/done/2026-07-08-historical-gitleaks-findings-triage.md`; the two recurring full-history `generic-api-key` findings are documented false positives on removed Harness SDK-key field declarations, while current tracked-source scans remain clean and hard-gated.
 - 2026-07-08: Opened P1 product experience, instrumentation, and enterprise surface program `.10x/tickets/2026-07-08-p1-product-experience-program.md` with eight workstream owners. It follows the completed P0 structural-debt program and owns live runtime events, CLI grammar/rendering/errors/progress, docs/onboarding, Python front door, and release engineering.
+- 2026-07-08: Opened P2 data onramp program `.10x/tickets/2026-07-08-p2-data-onramp-program.md` with WS-A through WS-I owners. It owns discovery as a compiler stage, schema reconciliation/full Arrow declarative vocabulary, automatic source identity normalization, file/glob/manifest behavior, remote transports, key/disposition ergonomics, source diagnostics, `cdf add`, and conformance for S1-S8.
 
 ## Blockers
 

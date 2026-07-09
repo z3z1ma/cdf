@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-08
 Updated: 2026-07-08
 
 # Preview one-batch sampling semantics
+
+Superseded-By: `.10x/decisions/data-onramp-source-identity-preview-disposition.md`
 
 ## Context
 

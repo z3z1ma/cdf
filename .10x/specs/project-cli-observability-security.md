@@ -35,7 +35,7 @@ The required command surface includes `init`, `validate`, `plan`, `explain`, `ru
 
 `cdf plan` MUST show what will be fetched, pushdown fidelity, DDL preview, delivery guarantee, and state advancement before bytes move.
 
-`cdf preview` MUST inspect one batch without writing. Preview is direct-stream sampling: it opens the first planned partition and reports the first emitted batch rather than claiming to scan or aggregate the whole resource. When a file glob matches multiple files, preview MAY sample the first deterministic path-sorted file; live package/run semantics MUST remain separate and fail closed until multi-file package scan behavior is explicitly implemented. Preview MUST fail closed when requested filters, projection, or limits are not pushed into the resource because applying residual engine operators would require a package-producing execution path.
+`cdf preview` MUST inspect bounded source data without writing package, destination, checkpoint, or run-ledger artifacts. For P2 source-onramp behavior, preview MUST share resource resolution, file listing, decode, discovery, schema reconciliation, and normalization with `cdf run` as governed by `.10x/specs/data-onramp-source-experience-cli.md` and `.10x/decisions/data-onramp-source-identity-preview-disposition.md`. The earlier preview-only first-file exception for multi-file globs is superseded.
 
 `cdf run --loop` MAY exist only for local development and MUST NOT make the kernel a scheduler.
 
