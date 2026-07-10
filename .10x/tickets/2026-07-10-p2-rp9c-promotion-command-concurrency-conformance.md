@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
-Depends-On: .10x/tickets/2026-07-10-p2-rp9a-promotion-artifact-recovery-authority.md, .10x/tickets/2026-07-10-p2-rp9b-atomically-fenced-promotion-settlement.md, .10x/tickets/2026-07-10-parquet-promotion-identifier-policy.md
+Depends-On: .10x/tickets/2026-07-10-p2-rp9a-promotion-artifact-recovery-authority.md, .10x/tickets/2026-07-10-p2-rp9b-atomically-fenced-promotion-settlement.md, .10x/tickets/done/2026-07-10-parquet-promotion-identifier-policy.md
 
 # RP9C promotion command, concurrency, and cross-destination conformance
 
@@ -30,6 +30,7 @@ No new destination strategy, arbitrary update SQL, distributed scheduler, or GC 
 ## Progress and notes
 
 - 2026-07-10: Opened from the coverage/output/concurrency findings in `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-independent-review.md`.
+- 2026-07-10: Completed a read-only implementation/conformance preflight at `.10x/research/2026-07-10-rp9c-conformance-preflight.md`. Active specs imply canonical `(destination_id, target)` ordering, one deterministic schema-contract checkpoint chain, committed-prefix recovery, and exact publication equality. The record defines the DuckDB/Postgres/Parquet command fixtures, later-target/source-deletion and takeover matrices, run/pin/promotion races, legacy v3-to-v4 migration, secret-redaction and P1/JSON assertions, reusable harness seams, and code-smell traps. RP9C remains open and inactive pending RP9A/RP9B.
 
 ## Blockers
 
