@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
+Parent: .10x/tickets/done/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
 Depends-On: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/tickets/done/2026-07-09-p2-ws-b2-schema-reconciliation-core.md
 
 # P2 WS-A10b aggregate schema join core

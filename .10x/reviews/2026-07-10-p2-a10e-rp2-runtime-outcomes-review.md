@@ -47,4 +47,4 @@ Pass. All material correctness, evidence, commit-gate, schema-authority, privacy
 
 ## Residual risk
 
-Preview/run terminal-quarantine parity is intentionally not claimed here and remains owned by `.10x/tickets/2026-07-09-p2-ws-a10f-multifile-discovery-runtime-conformance.md` and `.10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`. Remote transport behavior remains WS-E. Promotion/readback/correction behavior remains RP5-RP10. These are downstream graph owners, not unresolved acceptance criteria for A10e or RP2.
+Preview/run terminal-quarantine parity is intentionally not claimed here and is evidenced by `.10x/tickets/done/2026-07-09-p2-ws-a10f-multifile-discovery-runtime-conformance.md`; remaining remote cells are owned by `.10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`. Remote transport behavior remains WS-E. Promotion/readback/correction behavior remains RP5-RP10. These are downstream graph owners, not unresolved acceptance criteria for A10e or RP2.

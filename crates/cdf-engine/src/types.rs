@@ -348,3 +348,99 @@ pub struct LineageSummary {
     pub input_batches: Vec<BatchId>,
     pub output_segments: Vec<SegmentId>,
 }
+
+pub const PREVIEW_POLICY_BALANCED_STRATIFIED_V1: &str = "preview-balanced-stratified-v1";
+pub const DEFAULT_PREVIEW_MAX_ROWS: u64 = 500;
+pub const DEFAULT_PREVIEW_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const DEFAULT_PREVIEW_MAX_BATCHES: u64 = 64;
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnginePreviewLimits {
+    pub max_rows: u64,
+    pub max_bytes: u64,
+    pub max_batches: u64,
+}
+
+impl Default for EnginePreviewLimits {
+    fn default() -> Self {
+        Self {
+            max_rows: DEFAULT_PREVIEW_MAX_ROWS,
+            max_bytes: DEFAULT_PREVIEW_MAX_BYTES,
+            max_batches: DEFAULT_PREVIEW_MAX_BATCHES,
+        }
+    }
+}
+
+impl EnginePreviewLimits {
+    pub fn new(max_rows: u64, max_bytes: u64, max_batches: u64) -> cdf_kernel::Result<Self> {
+        if max_rows == 0 || max_bytes == 0 || max_batches == 0 {
+            return Err(cdf_kernel::CdfError::contract(
+                "preview row, decoded-byte, and batch limits must be positive",
+            ));
+        }
+        Ok(Self {
+            max_rows,
+            max_bytes,
+            max_batches,
+        })
+    }
+
+    pub fn with_max_rows(mut self, max_rows: u64) -> cdf_kernel::Result<Self> {
+        if max_rows == 0 {
+            return Err(cdf_kernel::CdfError::contract(
+                "preview row limit must be positive",
+            ));
+        }
+        self.max_rows = max_rows;
+        Ok(self)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnginePreviewSelectedPartition {
+    pub partition_id: String,
+    pub canonical_location: String,
+    pub score_sha256: String,
+    pub bounded_identity_sha256: String,
+    pub batch_quota: u64,
+    pub inspected_batches: u64,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnginePreviewSelectionEvidence {
+    pub policy: String,
+    pub selector: String,
+    pub candidate_count: u64,
+    pub selected: Vec<EnginePreviewSelectedPartition>,
+    pub selected_but_uninspected_partition_ids: Vec<String>,
+    pub partially_inspected_partition_ids: Vec<String>,
+    pub payload_uninspected_partition_ids: Vec<String>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnginePreviewOutput {
+    pub resource_id: ResourceId,
+    pub first_partition_id: Option<String>,
+    pub first_batch_id: Option<String>,
+    pub planned_partition_count: u64,
+    pub payload_eligible_partition_count: u64,
+    pub selected_partition_count: u64,
+    pub payload_opened_partition_count: u64,
+    pub attested_partition_count: u64,
+    pub inspected_partition_count: u64,
+    pub partially_inspected_partition_count: u64,
+    pub payload_uninspected_partition_count: u64,
+    pub inspected_batch_count: u64,
+    pub row_count: u64,
+    pub byte_count: u64,
+    pub output_byte_count: u64,
+    pub quarantined_row_count: u64,
+    pub terminal_quarantine_count: u64,
+    pub fields: Vec<String>,
+    pub limits: EnginePreviewLimits,
+    pub selection: EnginePreviewSelectionEvidence,
+    pub truncated: bool,
+}

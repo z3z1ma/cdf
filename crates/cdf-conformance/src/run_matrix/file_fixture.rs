@@ -43,8 +43,36 @@ pub(crate) fn resource(
     fs::write(project_root.join(SOURCE_PATH), SOURCE_CONTENTS)
         .map_err(|error| CdfError::data(format!("write run matrix source file: {error}")))?;
 
+    compile_resource(project_root, disposition, "events.ndjson")
+}
+
+pub(crate) fn multi_resource(
+    project_root: &Path,
+    disposition: MatrixDisposition,
+) -> Result<CompiledResource> {
+    let data_dir = project_root.join("data");
+    fs::create_dir_all(&data_dir)
+        .map_err(|error| CdfError::data(format!("create run matrix data dir: {error}")))?;
+    fs::write(
+        data_dir.join("part-01.ndjson"),
+        "{\"id\":1,\"name\":\"ada\"}\n",
+    )
+    .map_err(|error| CdfError::data(format!("write first run matrix source file: {error}")))?;
+    fs::write(
+        data_dir.join("part-02.ndjson"),
+        "{\"id\":2,\"name\":\"grace\"}\n",
+    )
+    .map_err(|error| CdfError::data(format!("write second run matrix source file: {error}")))?;
+    compile_resource(project_root, disposition, "part-*.ndjson")
+}
+
+fn compile_resource(
+    project_root: &Path,
+    disposition: MatrixDisposition,
+    glob: &str,
+) -> Result<CompiledResource> {
     let config = parse_cdf_toml(CDF_PROJECT_TOML)?;
-    let resource_toml = resource_toml(disposition);
+    let resource_toml = resource_toml(disposition, glob);
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/live.toml", resource_toml);
     let mut resources =
@@ -77,7 +105,7 @@ pub(crate) fn assert_source_position(report: &ProjectRunReport) {
     assert_eq!(file.sha256.as_deref(), Some(SOURCE_SHA256));
 }
 
-fn resource_toml(disposition: MatrixDisposition) -> String {
+fn resource_toml(disposition: MatrixDisposition, glob: &str) -> String {
     format!(
         r#"
 [source.local]
@@ -86,7 +114,7 @@ root = "data"
 
 [resource.events]
 id = "{RESOURCE_ID}"
-glob = "events.ndjson"
+glob = "{glob}"
 format = "ndjson"
 primary_key = ["id"]
 merge_key = ["id"]

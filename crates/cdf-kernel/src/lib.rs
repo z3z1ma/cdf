@@ -16,6 +16,7 @@ mod position_aggregation;
 mod resource;
 mod run_event;
 mod scope;
+mod stratified_selection;
 
 pub use async_types::*;
 pub use batch::*;
@@ -33,6 +34,7 @@ pub use position_aggregation::*;
 pub use resource::*;
 pub use run_event::*;
 pub use scope::*;
+pub use stratified_selection::*;
 
 #[cfg(test)]
 mod tests;

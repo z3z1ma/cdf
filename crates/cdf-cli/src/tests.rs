@@ -2629,8 +2629,16 @@ fn pinned_arrow_ipc_type_drift_run_terminal_quarantines_file() {
         "preview",
         "local.events",
     ]);
-    assert_ne!(preview.exit_code, 0);
-    assert!(preview.stderr.contains("VendorID") || preview.stderr.contains("vendor_id"));
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    let preview_report = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_report["result"]["planned_partition_count"], 1);
+    assert_eq!(
+        preview_report["result"]["payload_opened_partition_count"],
+        0
+    );
+    assert_eq!(preview_report["result"]["attested_partition_count"], 1);
+    assert_eq!(preview_report["result"]["terminal_quarantine_count"], 1);
+    assert_eq!(preview_report["result"]["row_count"], 0);
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
@@ -3829,6 +3837,7 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
         1
     );
 
+    let before_preview = project_tree_snapshot(&project.root);
     let preview = run([
         "cdf",
         "--json",
@@ -3838,10 +3847,36 @@ fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_q
         "local.events",
     ]);
     assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    let preview_report = stderr_or_stdout_json(&preview.stdout);
     assert_eq!(
-        stderr_or_stdout_json(&preview.stdout)["result"]["schema_snapshot"]["discovery"]["coverage"],
+        preview_report["result"]["schema_snapshot"]["discovery"]["coverage"],
         "sampled"
     );
+    assert_eq!(preview_report["result"]["planned_partition_count"], 3);
+    assert_eq!(
+        preview_report["result"]["payload_opened_partition_count"],
+        2
+    );
+    assert_eq!(preview_report["result"]["attested_partition_count"], 1);
+    assert_eq!(preview_report["result"]["inspected_partition_count"], 2);
+    assert_eq!(preview_report["result"]["inspected_batch_count"], 2);
+    assert_eq!(preview_report["result"]["terminal_quarantine_count"], 1);
+    assert_eq!(preview_report["result"]["row_count"], 4);
+    assert_eq!(preview_report["result"]["limits"]["max_rows"], 500);
+    assert_eq!(
+        preview_report["result"]["limits"]["max_bytes"],
+        64 * 1024 * 1024
+    );
+    assert_eq!(preview_report["result"]["limits"]["max_batches"], 64);
+    assert_eq!(
+        preview_report["result"]["selection"]["policy"],
+        "preview-balanced-stratified-v1"
+    );
+    assert_eq!(
+        preview_report["result"]["selection"]["selector"],
+        "stratified-hash-v1"
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before_preview);
 
     let run_result = run_valid_run_args(
         &project,
@@ -4826,7 +4861,7 @@ schema = { fields = [
 }
 
 #[test]
-fn preview_file_filter_fails_closed_without_writes() {
+fn preview_file_filter_runs_through_shared_engine_without_writes() {
     let project = TestProject::new();
 
     let result = run([
@@ -4840,15 +4875,13 @@ fn preview_file_filter_fails_closed_without_writes() {
         "id > 1",
     ]);
 
-    assert_eq!(result.exit_code, 3);
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
     assert_no_preview_writes(&project);
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("cannot apply residual predicates")
-    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 1);
+    assert_eq!(json["result"]["planned_partition_count"], 1);
+    assert_eq!(json["result"]["payload_opened_partition_count"], 1);
+    assert_eq!(json["result"]["inspected_batch_count"], 1);
 }
 
 #[test]
@@ -4929,7 +4962,7 @@ fn preview_missing_intermediate_literal_directory_fails_as_zero_match_without_wr
 }
 
 #[test]
-fn preview_multi_match_file_glob_reads_first_sorted_match_without_writes() {
+fn preview_multi_match_file_glob_reads_every_sorted_match_without_writes() {
     let project = TestProject::new();
     fs::write(
         project.root.join("data/zzz-events.ndjson"),
@@ -4955,7 +4988,10 @@ fn preview_multi_match_file_glob_reads_first_sorted_match_without_writes() {
             .unwrap()
             .starts_with("file-")
     );
-    assert_eq!(json["result"]["row_count"], 2);
+    assert_eq!(json["result"]["planned_partition_count"], 2);
+    assert_eq!(json["result"]["payload_opened_partition_count"], 2);
+    assert_eq!(json["result"]["inspected_partition_count"], 2);
+    assert_eq!(json["result"]["row_count"], 3);
 }
 
 #[test]
@@ -7866,6 +7902,64 @@ fn run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_obse
         snapshot_before
     );
     assert_eq!(single_schema_snapshot_path(&project), snapshot_path);
+
+    let before_preview = project_tree_snapshot(&project.root);
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    let preview_report = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_report["result"]["planned_partition_count"], 3);
+    assert_eq!(
+        preview_report["result"]["payload_opened_partition_count"],
+        3
+    );
+    assert_eq!(preview_report["result"]["attested_partition_count"], 0);
+    assert_eq!(preview_report["result"]["inspected_partition_count"], 3);
+    assert_eq!(preview_report["result"]["inspected_batch_count"], 3);
+    assert_eq!(preview_report["result"]["row_count"], 4);
+    assert_eq!(preview_report["result"]["terminal_quarantine_count"], 0);
+    assert!(
+        preview_report["result"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field == "score")
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before_preview);
+
+    let limited_preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+        "--limit",
+        "1",
+    ]);
+    assert_eq!(limited_preview.exit_code, 0, "{}", limited_preview.stderr);
+    let limited_report = stderr_or_stdout_json(&limited_preview.stdout);
+    assert_eq!(limited_report["result"]["planned_partition_count"], 3);
+    assert_eq!(limited_report["result"]["selected_partition_count"], 3);
+    assert_eq!(
+        limited_report["result"]["payload_opened_partition_count"],
+        1
+    );
+    assert_eq!(limited_report["result"]["inspected_partition_count"], 1);
+    assert_eq!(
+        limited_report["result"]["payload_uninspected_partition_count"],
+        2
+    );
+    assert_eq!(limited_report["result"]["row_count"], 1);
+    assert_eq!(limited_report["result"]["limits"]["max_rows"], 1);
+    assert_eq!(limited_report["result"]["truncated"], true);
+    assert_eq!(project_tree_snapshot(&project.root), before_preview);
 
     let result = run_valid_run_args(
         &project,

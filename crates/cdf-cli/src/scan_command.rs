@@ -4,13 +4,15 @@ use cdf_contract::{
     ContractPolicy, IdentifierPolicy, ObservedSchema, compile_resource_validation_program,
 };
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
-use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
+use cdf_engine::{
+    EnginePlan, EnginePlanInput, EnginePreviewLimits, EnginePreviewSelectionEvidence,
+    PlanBoundedness, Planner,
+};
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, DestinationSheet, IdempotencySupport, OrderBy,
     PartitionPlan, PredicateId, QueryableResource, ResourceStream, ScanPredicate, ScanRequest,
     SchemaSource, SortDirection, TargetName, TransactionSupport, WriteDisposition,
 };
-use futures_util::StreamExt;
 use serde::Serialize;
 
 use crate::{
@@ -97,7 +99,7 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         &args,
         identifier_policy.as_ref(),
     )?;
-    match preview_one_batch(&runtime_resource, &plan, prepared.schema_snapshot) {
+    match preview_resource_report(&runtime_resource, &plan, prepared.schema_snapshot) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
             "preview",
@@ -471,74 +473,62 @@ fn partition_report(partition: &PartitionPlan) -> PartitionReport {
     }
 }
 
-fn preview_one_batch(
+fn preview_resource_report(
     resource: &CliProjectRunSource,
     plan: &EnginePlan,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> cdf_kernel::Result<PreviewReport> {
-    validate_preview_direct_stream_plan(plan)?;
-    let partition = plan
-        .scan
-        .partitions
-        .first()
-        .ok_or_else(|| CdfError::data("preview plan has no partitions"))?
-        .clone();
-    let mut stream = futures_executor::block_on(resource.open_preview(partition))?;
-    let batch = futures_executor::block_on(async { stream.next().await })
-        .ok_or_else(|| CdfError::data("resource produced no preview batch"))??;
-    let normalized = cdf_engine::normalize_record_batch(
-        batch
-            .record_batch()
-            .ok_or_else(|| CdfError::data("resource preview requires an Arrow record batch"))?
-            .clone(),
-        &plan.validation_program,
-    )?;
+    let limits = match plan.scan.request.limit {
+        Some(limit) => EnginePreviewLimits::default().with_max_rows(limit)?,
+        None => EnginePreviewLimits::default(),
+    };
+    let preview = futures_executor::block_on(cdf_engine::preview_resource(
+        plan,
+        resource.as_project_resource().stream(),
+        limits,
+    ))?;
+    let partition = preview
+        .first_partition_id
+        .clone()
+        .or_else(|| {
+            plan.scan
+                .partitions
+                .first()
+                .map(|partition| partition.partition_id.to_string())
+        })
+        .unwrap_or_default();
+    let batch = preview.first_batch_id.clone().unwrap_or_default();
     let writes = WriteEffects::default();
     Ok(PreviewReport {
-        resource: batch.header.resource_id.to_string(),
-        partition: batch.header.partition_id.to_string(),
-        batch: batch.header.batch_id.to_string(),
-        resource_id: batch.header.resource_id.to_string(),
-        batch_id: batch.header.batch_id.to_string(),
-        partition_id: batch.header.partition_id.to_string(),
-        row_count: batch.header.row_count,
-        byte_count: batch.header.byte_count,
-        fields: normalized
-            .schema()
-            .fields()
-            .iter()
-            .map(|field| field.name().clone())
-            .collect(),
+        resource: preview.resource_id.to_string(),
+        partition: partition.clone(),
+        batch: batch.clone(),
+        resource_id: preview.resource_id.to_string(),
+        batch_id: batch,
+        partition_id: partition,
+        planned_partition_count: preview.planned_partition_count,
+        payload_eligible_partition_count: preview.payload_eligible_partition_count,
+        selected_partition_count: preview.selected_partition_count,
+        payload_opened_partition_count: preview.payload_opened_partition_count,
+        attested_partition_count: preview.attested_partition_count,
+        inspected_partition_count: preview.inspected_partition_count,
+        partially_inspected_partition_count: preview.partially_inspected_partition_count,
+        payload_uninspected_partition_count: preview.payload_uninspected_partition_count,
+        inspected_batch_count: preview.inspected_batch_count,
+        row_count: preview.row_count,
+        byte_count: preview.byte_count,
+        output_byte_count: preview.output_byte_count,
+        quarantined_row_count: preview.quarantined_row_count,
+        terminal_quarantine_count: preview.terminal_quarantine_count,
+        fields: preview.fields,
+        limits: preview.limits,
+        selection: preview.selection,
+        truncated: preview.truncated,
         normalization: plan.validation_program.identifier_policy.clone(),
         schema_snapshot,
         write_effects: writes.clone(),
         writes,
     })
-}
-
-fn validate_preview_direct_stream_plan(plan: &EnginePlan) -> cdf_kernel::Result<()> {
-    if !plan.residual_predicates.is_empty() {
-        let expressions = plan
-            .residual_predicates
-            .iter()
-            .map(|predicate| predicate.expression.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        return Err(CdfError::contract(format!(
-            "cdf preview cannot apply residual predicates without creating a package; remove unsupported or inexact filters, or use a resource that pushes them exactly: {expressions}"
-        )));
-    }
-    if plan.final_projection.is_some() && !plan.explain.projection_pushed {
-        return Err(CdfError::contract(
-            "cdf preview cannot apply projection without creating a package; use a resource with projection pushdown or omit --projection",
-        ));
-    }
-    if plan.scan.request.limit.is_some() && !plan.explain.limit_pushed {
-        return Err(CdfError::contract(
-            "cdf preview cannot apply limit without creating a package; use a resource with limit pushdown or omit --limit",
-        ));
-    }
-    Ok(())
 }
 
 fn lower_runtime_missing(error: &CdfError) -> bool {
@@ -744,8 +734,56 @@ fn preview_document(report: &PreviewReport) -> RenderDocument {
                 .row("resource", report.resource.clone())
                 .row("partition", report.partition.clone())
                 .row("batch", report.batch.clone())
+                .row(
+                    "partitions planned",
+                    report.planned_partition_count.to_string(),
+                )
+                .row(
+                    "payload eligible",
+                    report.payload_eligible_partition_count.to_string(),
+                )
+                .row(
+                    "payload selected",
+                    report.selected_partition_count.to_string(),
+                )
+                .row(
+                    "payload partitions opened",
+                    report.payload_opened_partition_count.to_string(),
+                )
+                .row(
+                    "partitions attested",
+                    report.attested_partition_count.to_string(),
+                )
+                .row(
+                    "partitions inspected",
+                    report.inspected_partition_count.to_string(),
+                )
+                .row(
+                    "partitions partial",
+                    report.partially_inspected_partition_count.to_string(),
+                )
+                .row(
+                    "payload uninspected",
+                    report.payload_uninspected_partition_count.to_string(),
+                )
+                .row(
+                    "batches inspected",
+                    report.inspected_batch_count.to_string(),
+                )
                 .row("rows", humanize_rows(report.row_count))
-                .row("bytes", humanize_bytes(report.byte_count))
+                .row("decoded bytes inspected", humanize_bytes(report.byte_count))
+                .row("rendered bytes", humanize_bytes(report.output_byte_count))
+                .row("row limit", humanize_rows(report.limits.max_rows))
+                .row("byte limit", humanize_bytes(report.limits.max_bytes))
+                .row("global batch limit", report.limits.max_batches.to_string())
+                .row("policy", report.selection.policy.clone())
+                .row("selector", report.selection.selector.clone())
+                .row("truncated", yes_no(report.truncated))
+                .row("rows quarantined", report.quarantined_row_count.to_string())
+                .row(
+                    "files quarantined",
+                    report.terminal_quarantine_count.to_string(),
+                )
                 .row("normalizer", report.normalization.version.clone())
                 .row("fields", report.fields.join(", ")),
         );
@@ -938,9 +976,24 @@ struct PreviewReport {
     resource_id: String,
     batch_id: String,
     partition_id: String,
+    planned_partition_count: u64,
+    payload_eligible_partition_count: u64,
+    selected_partition_count: u64,
+    payload_opened_partition_count: u64,
+    attested_partition_count: u64,
+    inspected_partition_count: u64,
+    partially_inspected_partition_count: u64,
+    payload_uninspected_partition_count: u64,
+    inspected_batch_count: u64,
     row_count: u64,
     byte_count: u64,
+    output_byte_count: u64,
+    quarantined_row_count: u64,
+    terminal_quarantine_count: u64,
     fields: Vec<String>,
+    limits: EnginePreviewLimits,
+    selection: EnginePreviewSelectionEvidence,
+    truncated: bool,
     normalization: IdentifierPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,

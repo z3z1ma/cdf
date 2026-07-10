@@ -9,6 +9,7 @@ use std::{
 
 use cdf_kernel::{
     CdfError, DiscoveryManifestHash, DiscoveryManifestReference, ResourceId, Result, SchemaHash,
+    StratifiedHashCandidate, plan_stratified_hash_v1,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,7 +19,11 @@ pub const DISCOVERY_MANIFEST_SUFFIX: &str = ".discovery.json";
 pub const DEFAULT_DISCOVERY_MAX_METADATA_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_DISCOVERY_MAX_TOTAL_IN_FLIGHT_BYTES: u64 = 128 * 1024 * 1024;
 pub const DEFAULT_DISCOVERY_MAX_CONCURRENT_PROBES: u32 = 8;
-pub const STRATIFIED_HASH_SELECTOR_V1: &str = "stratified-hash-v1";
+pub use cdf_kernel::STRATIFIED_HASH_SELECTOR_V1;
+pub use cdf_kernel::{
+    StratifiedHashBoundedIdentity as DiscoveryBoundedIdentity,
+    StratifiedHashIdentityStrength as DiscoveryIdentityStrength,
+};
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -138,25 +143,6 @@ pub enum DiscoveryCoverageMode {
 pub enum DiscoveryParticipation {
     Probed,
     Unprobed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DiscoveryIdentityStrength {
-    StrongChecksum,
-    StableEtag,
-    WeakEtag,
-    MultipartEtag,
-    BoundedObservation,
-    Unavailable,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct DiscoveryBoundedIdentity {
-    pub size_bytes: Option<u64>,
-    pub modified_at_ms: Option<i64>,
-    pub value: Option<String>,
-    pub strength: DiscoveryIdentityStrength,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -290,63 +276,53 @@ pub(crate) fn plan_discovery_selection(
         return Ok(exhaustive_selection(candidates));
     }
 
-    let selected_count = usize::try_from(sample_files)
-        .map_err(|_| CdfError::contract("sample_files exceeds executor address space"))?;
-    let mut selected_indexes = Vec::with_capacity(selected_count);
-    let mut interior_strata = Vec::new();
-    match selected_count {
-        1 => selected_indexes.push(lowest_score_index(
-            resource_id,
-            &candidates,
-            0,
-            candidates.len(),
-        )?),
-        2 => {
-            selected_indexes.push(0);
-            selected_indexes.push(candidates.len() - 1);
-        }
-        _ => {
-            selected_indexes.push(0);
-            let stratum_count = selected_count - 2;
-            let interior_count = candidates.len() - 2;
-            let base_size = interior_count / stratum_count;
-            let remainder = interior_count % stratum_count;
-            let mut start = 1_usize;
-            for stratum_index in 0..stratum_count {
-                let size = base_size + usize::from(stratum_index < remainder);
-                let end = start + size;
-                let selected = lowest_score_index(resource_id, &candidates, start, end)?;
-                interior_strata.push(DiscoverySelectorStratum {
-                    start_index_inclusive: u64::try_from(start)
-                        .map_err(|_| CdfError::contract("selector stratum index exceeds u64"))?,
-                    end_index_exclusive: u64::try_from(end)
-                        .map_err(|_| CdfError::contract("selector stratum index exceeds u64"))?,
-                    selected_location: candidates[selected].canonical_location.clone(),
-                });
-                selected_indexes.push(selected);
-                start = end;
-            }
-            selected_indexes.push(candidates.len() - 1);
-        }
-    }
-    selected_indexes.sort_unstable();
-    selected_indexes.dedup();
-    if selected_indexes.len() != selected_count {
-        return Err(CdfError::internal(
-            "stratified discovery selector produced duplicate membership",
-        ));
-    }
-    let selected = selected_indexes
+    let kernel_candidates = candidates
         .iter()
-        .map(|index| {
-            let candidate = &candidates[*index];
+        .map(|candidate| {
+            Ok((
+                StratifiedHashCandidate::from_bounded_identity(
+                    candidate.canonical_location.clone(),
+                    &candidate.identity,
+                )?,
+                &candidate.identity,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let selection = plan_stratified_hash_v1(
+        resource_id,
+        sample_files,
+        &kernel_candidates
+            .iter()
+            .map(|(candidate, _)| candidate.clone())
+            .collect::<Vec<_>>(),
+    )?;
+    let selected = selection
+        .selected
+        .iter()
+        .map(|selected| {
+            let identity = kernel_candidates
+                .iter()
+                .find(|(candidate, _)| {
+                    candidate.canonical_location() == selected.canonical_location
+                })
+                .map(|(_, identity)| (*identity).clone())
+                .ok_or_else(|| CdfError::internal("selector lost candidate identity"))?;
             Ok(DiscoverySelectorSelection {
-                canonical_location: candidate.canonical_location.clone(),
-                score_sha256: selector_score(resource_id, candidate)?,
-                candidate_identity: candidate.identity.clone(),
+                canonical_location: selected.canonical_location.clone(),
+                score_sha256: selected.score_sha256.clone(),
+                candidate_identity: identity,
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let interior_strata = selection
+        .interior_strata
+        .into_iter()
+        .map(|stratum| DiscoverySelectorStratum {
+            start_index_inclusive: stratum.start_index_inclusive,
+            end_index_exclusive: stratum.end_index_exclusive,
+            selected_location: stratum.selected_location,
+        })
+        .collect();
     let selected_locations = selected
         .iter()
         .map(|selection| selection.canonical_location.clone())
@@ -375,48 +351,18 @@ fn exhaustive_selection(candidates: Vec<DiscoverySelectorCandidate>) -> PlannedD
     }
 }
 
-fn lowest_score_index(
-    resource_id: &ResourceId,
-    candidates: &[DiscoverySelectorCandidate],
-    start: usize,
-    end: usize,
-) -> Result<usize> {
-    let mut scored = (start..end)
-        .map(|index| {
-            let identity_bytes = canonical_selector_identity_bytes(&candidates[index].identity)?;
-            Ok((
-                selector_score(resource_id, &candidates[index])?,
-                candidates[index].canonical_location.as_str(),
-                identity_bytes,
-                index,
-            ))
-        })
-        .collect::<Result<Vec<_>>>()?;
-    scored.sort();
-    scored
-        .first()
-        .map(|(_, _, _, index)| *index)
-        .ok_or_else(|| CdfError::internal("discovery selector received an empty stratum"))
-}
-
+#[cfg(test)]
 fn selector_score(
     resource_id: &ResourceId,
     candidate: &DiscoverySelectorCandidate,
 ) -> Result<String> {
-    let identity = canonical_selector_identity_bytes(&candidate.identity)?;
-    let mut hasher = Sha256::new();
-    for component in [
-        b"cdf-sample:stratified-hash-v1".as_slice(),
-        resource_id.as_str().as_bytes(),
-        candidate.canonical_location.as_bytes(),
-        identity.as_slice(),
-    ] {
-        let length = u64::try_from(component.len())
-            .map_err(|_| CdfError::contract("selector score component exceeds u64"))?;
-        hasher.update(length.to_be_bytes());
-        hasher.update(component);
-    }
-    Ok(hex::encode(hasher.finalize()))
+    cdf_kernel::stratified_hash_v1_score(
+        resource_id,
+        &StratifiedHashCandidate::from_bounded_identity(
+            candidate.canonical_location.clone(),
+            &candidate.identity,
+        )?,
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1030,11 +976,6 @@ fn canonical_json_value(value: &impl Serialize) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-fn canonical_selector_identity_bytes(identity: &DiscoveryBoundedIdentity) -> Result<Vec<u8>> {
-    let value = canonical_json_value(identity)?;
-    serde_json::to_vec(&value).map_err(|error| CdfError::internal(error.to_string()))
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AtomicInstallOutcome {
     Installed,
@@ -1257,6 +1198,100 @@ mod tests {
         assert_eq!(
             selector_score(&resource_id, &candidate).unwrap(),
             "1caaf43016737e252f12a8b0568d67951ecfd702010906cc8a7eaddb7b1caa27"
+        );
+    }
+
+    #[test]
+    fn discovery_and_preview_adapters_share_canonical_identity_score_and_membership() {
+        let resource_id = ResourceId::new("events.raw").unwrap();
+        let locations = [
+            "s3://acme/events/2026/01.parquet",
+            "s3://acme/events/2026/02.parquet",
+            "s3://acme/events/2026/03.parquet",
+        ];
+        let discovery_candidates = locations
+            .iter()
+            .enumerate()
+            .map(|(index, location)| DiscoverySelectorCandidate {
+                canonical_location: (*location).to_owned(),
+                identity: DiscoveryBoundedIdentity {
+                    size_bytes: Some(42 + index as u64),
+                    modified_at_ms: None,
+                    value: Some(if index == 0 {
+                        "etag-value".to_owned()
+                    } else {
+                        format!("etagvalue{index}")
+                    }),
+                    strength: DiscoveryIdentityStrength::StableEtag,
+                },
+            })
+            .collect::<Vec<_>>();
+        let preview_candidates = locations
+            .iter()
+            .enumerate()
+            .map(|(index, location)| {
+                let partition_id = cdf_kernel::PartitionId::new(format!("part-{index}")).unwrap();
+                let partition = cdf_kernel::PartitionPlan {
+                    partition_id: partition_id.clone(),
+                    scope: cdf_kernel::ScopeKey::Partition { partition_id },
+                    start_position: None,
+                    metadata: BTreeMap::from([
+                        ("kind".to_owned(), "files".to_owned()),
+                        ("path".to_owned(), (*location).to_owned()),
+                        ("bytes".to_owned(), (42 + index as u64).to_string()),
+                        (
+                            "etag".to_owned(),
+                            if index == 0 {
+                                "etag-value".to_owned()
+                            } else {
+                                format!("etagvalue{index}")
+                            },
+                        ),
+                    ]),
+                };
+                cdf_engine::preview_partition_selector_candidate(&partition).unwrap()
+            })
+            .collect::<Vec<_>>();
+
+        let expected_identity_bytes = br#"{"modified_at_ms":null,"size_bytes":42,"strength":"stable_etag","value":"etag-value"}"#;
+        assert_eq!(
+            discovery_candidates[0].identity.canonical_bytes().unwrap(),
+            expected_identity_bytes
+        );
+        assert_eq!(
+            preview_candidates[0].bounded_identity(),
+            expected_identity_bytes
+        );
+        assert_eq!(
+            cdf_kernel::stratified_hash_v1_score(&resource_id, &preview_candidates[0]).unwrap(),
+            "1caaf43016737e252f12a8b0568d67951ecfd702010906cc8a7eaddb7b1caa27"
+        );
+
+        let discovery = plan_discovery_selection(&resource_id, Some(2), &discovery_candidates)
+            .unwrap()
+            .selector
+            .unwrap();
+        let preview =
+            cdf_kernel::plan_stratified_hash_v1(&resource_id, 2, &preview_candidates).unwrap();
+        assert_eq!(
+            discovery
+                .selected
+                .iter()
+                .map(|selected| (&selected.canonical_location, &selected.score_sha256))
+                .collect::<Vec<_>>(),
+            preview
+                .selected
+                .iter()
+                .map(|selected| (&selected.canonical_location, &selected.score_sha256))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            preview
+                .selected
+                .iter()
+                .map(|selected| selected.canonical_location.as_str())
+                .collect::<Vec<_>>(),
+            vec![locations[0], locations[2]]
         );
     }
 

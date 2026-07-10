@@ -30,7 +30,7 @@ use cdf_kernel::{
     PartitionId, PartitionPlan, PartitioningCapabilities, PreContractObservedValue,
     PreContractQuarantineFact, PreContractResidualCandidate, PredicateId, PushdownFidelity,
     QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
-    Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    Result, RunId, STRATIFIED_HASH_SELECTOR_V1, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
     SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSnapshotReference,
     SchemaSource, ScopeKey, SourcePosition, TerminalSchemaObservationQuarantine, TrustLevel,
     WriteDisposition, source_name, with_semantic,
@@ -101,6 +101,248 @@ fn residual_limit_is_consumed_across_partitions() {
     assert_eq!(output.profile.output_rows, 1);
     assert_eq!(output.profile.output_batches, 1);
     assert_eq!(output.segments.len(), 1);
+}
+
+#[test]
+fn preview_traverses_every_planned_partition_through_the_engine_front_end() {
+    let resource = MockResource::tier_b(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let limits = EnginePreviewLimits::default();
+
+    let preview = block_on(preview_resource(&plan, &resource, limits.clone())).unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 2);
+    assert_eq!(preview.planned_partition_count, 2);
+    assert_eq!(preview.payload_opened_partition_count, 2);
+    assert_eq!(preview.attested_partition_count, 0);
+    assert_eq!(preview.inspected_partition_count, 2);
+    assert_eq!(preview.inspected_batch_count, 2);
+    assert_eq!(preview.selected_partition_count, 2);
+    assert_eq!(
+        preview.selection.policy,
+        PREVIEW_POLICY_BALANCED_STRATIFIED_V1
+    );
+    assert_eq!(preview.selection.selector, STRATIFIED_HASH_SELECTOR_V1);
+    assert_eq!(preview.selection.selected.len(), 2);
+    assert_eq!(preview.selection.selected[0].batch_quota, 32);
+    assert_eq!(preview.selection.selected[1].batch_quota, 32);
+    assert_eq!(preview.row_count, 6);
+    assert_eq!(preview.fields, vec!["id", "name", "active", "_cdf_variant"]);
+    assert_eq!(preview.limits, limits);
+    assert!(!preview.truncated);
+}
+
+#[test]
+fn preview_applies_explicit_row_limit_globally_without_opening_later_payloads() {
+    let resource = MockResource::tier_b(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, Some(2), PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let limits = EnginePreviewLimits::default().with_max_rows(2).unwrap();
+
+    let preview = block_on(preview_resource(&plan, &resource, limits)).unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 1);
+    assert_eq!(preview.payload_opened_partition_count, 1);
+    assert_eq!(preview.attested_partition_count, 0);
+    assert_eq!(preview.inspected_partition_count, 1);
+    assert_eq!(preview.inspected_batch_count, 1);
+    assert_eq!(preview.row_count, 2);
+    assert_eq!(
+        preview
+            .selection
+            .selected_but_uninspected_partition_ids
+            .len(),
+        1
+    );
+    assert_eq!(preview.payload_uninspected_partition_count, 1);
+    assert!(preview.truncated);
+}
+
+#[test]
+fn preview_configured_byte_limit_accounts_decoded_input_separately_from_output() {
+    let baseline_resource = MockResource::tier_b(sample_batches());
+    let baseline_plan = Planner::new()
+        .plan_tier_b(
+            &baseline_resource,
+            plan_input(Vec::new(), None, Some(1), PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let one_row = block_on(preview_resource(
+        &baseline_plan,
+        &baseline_resource,
+        EnginePreviewLimits::default().with_max_rows(1).unwrap(),
+    ))
+    .unwrap();
+
+    let resource = MockResource::tier_b(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let preview = block_on(preview_resource(
+        &plan,
+        &resource,
+        EnginePreviewLimits::new(500, one_row.byte_count, 64).unwrap(),
+    ))
+    .unwrap();
+
+    assert_eq!(preview.byte_count, one_row.byte_count);
+    assert!(preview.output_byte_count > 0);
+    assert_eq!(preview.inspected_batch_count, 1);
+    assert_eq!(preview.payload_opened_partition_count, 1);
+    assert_eq!(preview.payload_uninspected_partition_count, 1);
+    assert!(preview.truncated);
+}
+
+#[test]
+fn preview_rejects_an_oversized_batch_atomically() {
+    let baseline_resource = MockResource::tier_b(sample_batches());
+    let baseline_plan = Planner::new()
+        .plan_tier_b(
+            &baseline_resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let baseline = block_on(preview_resource(
+        &baseline_plan,
+        &baseline_resource,
+        EnginePreviewLimits::default().with_max_rows(1).unwrap(),
+    ))
+    .unwrap();
+    let resource = MockResource::tier_b(sample_batches());
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+
+    let preview = block_on(preview_resource(
+        &plan,
+        &resource,
+        EnginePreviewLimits::new(500, baseline.byte_count - 1, 64).unwrap(),
+    ))
+    .unwrap();
+
+    assert_eq!(preview.payload_opened_partition_count, 2);
+    assert_eq!(preview.inspected_partition_count, 0);
+    assert_eq!(preview.inspected_batch_count, 0);
+    assert_eq!(preview.row_count, 0);
+    assert_eq!(preview.byte_count, 0);
+    assert_eq!(preview.output_byte_count, 0);
+    assert_eq!(preview.payload_uninspected_partition_count, 2);
+    assert!(preview.truncated);
+}
+
+#[test]
+fn preview_fair_batch_quotas_are_fixed_before_payload_io() {
+    let resource = MockResource::tier_b(sample_batches()).with_partition_count(3);
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+
+    let preview = block_on(preview_resource(
+        &plan,
+        &resource,
+        EnginePreviewLimits::new(500, DEFAULT_PREVIEW_MAX_BYTES, 8).unwrap(),
+    ))
+    .unwrap();
+
+    assert_eq!(preview.selected_partition_count, 3);
+    assert_eq!(
+        preview
+            .selection
+            .selected
+            .iter()
+            .map(|partition| partition.batch_quota)
+            .collect::<Vec<_>>(),
+        vec![3, 3, 2]
+    );
+}
+
+#[test]
+fn preview_large_plan_selects_and_opens_at_most_the_global_batch_budget() {
+    let resource = MockResource::tier_b(Vec::new()).with_partition_count(10_000);
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+
+    let preview = block_on(preview_resource(
+        &plan,
+        &resource,
+        EnginePreviewLimits::default(),
+    ))
+    .unwrap();
+
+    assert_eq!(preview.planned_partition_count, 10_000);
+    assert_eq!(preview.payload_eligible_partition_count, 10_000);
+    assert_eq!(preview.selected_partition_count, 64);
+    assert_eq!(preview.payload_opened_partition_count, 64);
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 64);
+    assert_eq!(preview.selection.selected.len(), 64);
+    assert!(
+        preview
+            .selection
+            .selected
+            .iter()
+            .all(|partition| partition.batch_quota == 1)
+    );
+    assert_eq!(preview.inspected_partition_count, 64);
+    assert_eq!(preview.payload_uninspected_partition_count, 9_936);
+    assert!(preview.truncated);
+}
+
+#[test]
+fn preview_terminal_quarantine_uses_run_attestation_without_opening_payloads() {
+    let effective_schema = sample_schema();
+    let physical_schema = sample_schema();
+    let physical_hash =
+        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash.clone());
+    let resource = MockResource::tier_b(sample_batches())
+        .with_effective_schema_runtime(effective_schema, runtime)
+        .with_attestation(PartitionAttestation::new(
+            terminal_file_position(),
+            Some(physical_hash),
+        ));
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+
+    let preview = block_on(preview_resource(
+        &plan,
+        &resource,
+        EnginePreviewLimits::default(),
+    ))
+    .unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    assert_eq!(preview.planned_partition_count, 2);
+    assert_eq!(preview.payload_opened_partition_count, 0);
+    assert_eq!(preview.attested_partition_count, 2);
+    assert_eq!(preview.terminal_quarantine_count, 1);
+    assert_eq!(preview.row_count, 0);
 }
 
 #[test]
@@ -2305,7 +2547,7 @@ struct MockResource {
     descriptor: ResourceDescriptor,
     schema: SchemaRef,
     batches: Vec<Batch>,
-    tier_b: bool,
+    partition_count: usize,
     negotiate_count: Arc<AtomicUsize>,
     open_count: Arc<AtomicUsize>,
     attest_count: Arc<AtomicUsize>,
@@ -2467,7 +2709,7 @@ impl MockResource {
             descriptor: descriptor(),
             schema,
             batches,
-            tier_b,
+            partition_count: if tier_b { 2 } else { 1 },
             negotiate_count: Arc::new(AtomicUsize::new(0)),
             open_count: Arc::new(AtomicUsize::new(0)),
             attest_count: Arc::new(AtomicUsize::new(0)),
@@ -2479,6 +2721,11 @@ impl MockResource {
 
     fn with_write_disposition(mut self, write_disposition: WriteDisposition) -> Self {
         self.descriptor.write_disposition = write_disposition;
+        self
+    }
+
+    fn with_partition_count(mut self, partition_count: usize) -> Self {
+        self.partition_count = partition_count;
         self
     }
 
@@ -2518,8 +2765,7 @@ impl ResourceStream for MockResource {
     }
 
     fn plan_partitions(&self, _request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        let count = if self.tier_b { 2 } else { 1 };
-        (0..count)
+        (0..self.partition_count)
             .map(|index| {
                 let mut metadata = BTreeMap::from([("ordinal".to_owned(), index.to_string())]);
                 if let Some(runtime) = &self.effective_schema_runtime {

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Target: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/data-onramp-file-sources-transports.md, .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
+Target: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/specs/data-onramp-schema-intelligence.md, .10x/specs/data-onramp-file-sources-transports.md, .10x/tickets/done/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
 Verdict: pass
 
 # P2 A10 ratification and decomposition review

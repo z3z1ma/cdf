@@ -3,7 +3,7 @@ use cdf_declarative::{
     FileTransportFacade, RestResource, RestRuntimeDependencies, SqlResource,
     SqlRuntimeDependencies,
 };
-use cdf_kernel::{BatchStream, BoxFuture, PartitionPlan, QueryableResource, ResourceStream};
+use cdf_kernel::QueryableResource;
 use cdf_project::ProjectRunSource;
 
 use crate::{context::ProjectContext, http_transport::ReqwestHttpTransport, output::CliError};
@@ -28,17 +28,6 @@ impl CliProjectRunSource {
             Self::File(resource) => resource.as_ref(),
             Self::Rest(resource) => resource.as_ref(),
             Self::Sql(resource) => resource.as_ref(),
-        }
-    }
-
-    pub(crate) fn open_preview(
-        &self,
-        partition: PartitionPlan,
-    ) -> BoxFuture<'_, cdf_kernel::Result<BatchStream>> {
-        match self {
-            Self::File(resource) => resource.open_preview(partition),
-            Self::Rest(resource) => resource.open(partition),
-            Self::Sql(resource) => resource.open(partition),
         }
     }
 }

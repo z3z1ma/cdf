@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
+Parent: .10x/tickets/done/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
 Depends-On: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/specs/sampled-schema-discovery-coverage.md, .10x/tickets/done/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
 
 # P2 WS-A10a discovery manifest artifact and executor budget

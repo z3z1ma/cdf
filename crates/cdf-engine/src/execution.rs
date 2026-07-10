@@ -5,9 +5,12 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, StringArray, UInt64Array};
+use arrow_array::{
+    Array, ArrayRef, BooleanArray, RecordBatch, StringArray, UInt32Array, UInt64Array,
+};
 use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
+use arrow_select::take::take_record_batch;
 use cdf_contract::{
     ContractEvaluationContext, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
     RedactionDecision, ResidualCandidateVerdict, ResidualFieldRef, ResidualFieldWithRedaction,
@@ -20,8 +23,9 @@ use cdf_kernel::{
     PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
     PreContractObservedValue, PreContractQuarantineFact, PreContractResidualCandidate,
     ProcessedObservationOutcome, ProcessedObservationPosition, ResourceStream, Result, RunId,
-    SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId, SourcePosition,
-    TerminalSchemaObservationQuarantine, WriteDisposition, semantic, source_name,
+    SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId, SourcePosition, StratifiedHashBoundedIdentity,
+    StratifiedHashCandidate, StratifiedHashIdentityStrength, TerminalSchemaObservationQuarantine,
+    WriteDisposition, semantic, source_name,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -31,8 +35,8 @@ use tracing::{Instrument, Span, info_span};
 
 use crate::{
     EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineExecutionEvidence,
-    EnginePackageDraft, EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions,
-    EngineSegmentPosition, ExecutionProfile, LineageSummary,
+    EnginePackageDraft, EnginePlan, EnginePreviewLimits, EnginePreviewOutput, EngineRunOutput,
+    EngineRunOutputWithSegmentPositions, EngineSegmentPosition, ExecutionProfile, LineageSummary,
     output_schema::canonicalize_effective_output_schema,
     planning::validate_program,
     predicates::apply_residual_filters,
@@ -50,6 +54,572 @@ pub fn normalize_record_batch(
     program: &ValidationProgram,
 ) -> Result<RecordBatch> {
     normalize_batch(batch, program)
+}
+
+pub async fn preview_resource<R>(
+    plan: &EnginePlan,
+    resource: &R,
+    limits: EnginePreviewLimits,
+) -> Result<EnginePreviewOutput>
+where
+    R: ResourceStream + ?Sized,
+{
+    validate_program(&plan.validation_program)?;
+    let schema_authority = plan.schema_authority()?;
+    if schema_authority.version != 1 {
+        return Err(CdfError::data(format!(
+            "unsupported engine schema-authority version {}",
+            schema_authority.version
+        )));
+    }
+    EnginePreviewLimits::new(limits.max_rows, limits.max_bytes, limits.max_batches)?;
+    let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
+    crate::planning::validate_plan_schema_authority(resource, plan)?;
+    let runtime_output_schema = plan.output_arrow_schema()?;
+    let evaluation_context = ContractEvaluationContext::observed_at(current_observed_at_ms()?);
+    let mut remaining_rows = limits.max_rows;
+    let mut remaining_bytes = limits.max_bytes;
+    let mut remaining_batches = limits.max_batches;
+    let mut first_partition_id = None;
+    let mut first_batch_id = None;
+    let mut payload_opened_partition_count = 0_u64;
+    let mut attested_partition_count = 0_u64;
+    let mut inspected_partition_count = 0_u64;
+    let mut inspected_batch_count = 0_u64;
+    let mut row_count = 0_u64;
+    let mut byte_count = 0_u64;
+    let mut output_byte_count = 0_u64;
+    let mut quarantined_row_count = 0_u64;
+    let mut terminal_quarantines = BTreeSet::new();
+    let mut observation_attestations = BTreeMap::<String, PartitionAttestation>::new();
+    let mut fields = runtime_output_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect::<Vec<_>>();
+    let mut truncated = false;
+    let mut terminal = Vec::new();
+    let mut payload_candidates = Vec::new();
+    let mut location_counts = BTreeMap::<String, usize>::new();
+    for partition in &plan.scan.partitions {
+        let disposition = effective_schema_evidence
+            .map(|evidence| partition_schema_disposition(partition, evidence))
+            .transpose()?;
+        match disposition {
+            Some(PartitionSchemaDisposition::Quarantined(quarantine)) => {
+                terminal.push((partition.clone(), quarantine));
+            }
+            disposition => {
+                let expected = disposition.and_then(|item| match item {
+                    PartitionSchemaDisposition::Admitted(evidence) => Some(evidence),
+                    PartitionSchemaDisposition::Quarantined(_) => None,
+                });
+                let (location, bounded_identity) = preview_partition_identity(partition)?;
+                *location_counts.entry(location.clone()).or_default() += 1;
+                payload_candidates.push(PreviewPayloadCandidate {
+                    partition: partition.clone(),
+                    expected,
+                    location,
+                    bounded_identity,
+                });
+            }
+        }
+    }
+    for candidate in &mut payload_candidates {
+        if location_counts
+            .get(&candidate.location)
+            .copied()
+            .unwrap_or(0)
+            > 1
+        {
+            candidate.location = serde_json::to_string(&(
+                candidate.location.as_str(),
+                candidate.partition.partition_id.as_str(),
+            ))
+            .map_err(|error| CdfError::internal(error.to_string()))?;
+        }
+    }
+
+    for (partition, quarantine) in terminal {
+        let attestation = required_preview_attestation(
+            resource,
+            &partition,
+            quarantine.observation_id(),
+            quarantine.physical_schema_hash(),
+            &mut observation_attestations,
+        )
+        .await?;
+        let _ = attestation;
+        attested_partition_count += 1;
+        terminal_quarantines.insert(quarantine.observation_id().to_owned());
+    }
+
+    let selection_plan = if payload_candidates.is_empty() {
+        None
+    } else {
+        Some(cdf_kernel::plan_stratified_hash_v1(
+            &plan.scan.request.resource_id,
+            limits.max_batches,
+            &payload_candidates
+                .iter()
+                .map(|candidate| {
+                    StratifiedHashCandidate::from_bounded_identity(
+                        candidate.location.clone(),
+                        &candidate.bounded_identity,
+                    )
+                })
+                .collect::<Result<Vec<_>>>()?,
+        )?)
+    };
+    let selected_locations = selection_plan
+        .as_ref()
+        .map(|selection| {
+            selection
+                .selected
+                .iter()
+                .map(|selected| selected.canonical_location.clone())
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let selected_count = u64::try_from(selected_locations.len())
+        .map_err(|error| CdfError::internal(error.to_string()))?;
+    let base_quota = limits.max_batches.checked_div(selected_count).unwrap_or(0);
+    let quota_remainder = limits.max_batches.checked_rem(selected_count).unwrap_or(0);
+    let mut selected_evidence = Vec::new();
+    let mut selected_but_uninspected = Vec::new();
+    let mut partially_inspected = Vec::new();
+    let mut payload_uninspected = Vec::new();
+
+    if let Some(selection) = &selection_plan {
+        for (selected_index, selected) in selection.selected.iter().enumerate() {
+            let candidate = payload_candidates
+                .iter()
+                .find(|candidate| candidate.location == selected.canonical_location)
+                .ok_or_else(|| CdfError::internal("preview selector lost a partition"))?;
+            let quota = base_quota + u64::from((selected_index as u64) < quota_remainder);
+            let mut admitted = 0_u64;
+            let mut complete = false;
+            if remaining_rows > 0 && remaining_bytes > 0 && remaining_batches > 0 {
+                let mut stream = resource.open(candidate.partition.clone()).await?;
+                payload_opened_partition_count += 1;
+                while admitted < quota
+                    && remaining_rows > 0
+                    && remaining_bytes > 0
+                    && remaining_batches > 0
+                {
+                    let Some(batch) = stream.next().await else {
+                        complete = true;
+                        break;
+                    };
+                    let mut batch = batch?;
+                    let record_batch = batch.record_batch().cloned().ok_or_else(|| {
+                        CdfError::data("resource preview requires in-memory Arrow record batches")
+                    })?;
+                    let decoded_bytes = u64::try_from(record_batch.get_array_memory_size())
+                        .map_err(|error| CdfError::internal(error.to_string()))?;
+                    if decoded_bytes > remaining_bytes {
+                        truncated = true;
+                        break;
+                    }
+                    validate_batch_schema_evidence(
+                        &batch,
+                        &record_batch,
+                        candidate.expected.as_ref(),
+                        resource.schema().as_ref(),
+                    )?;
+                    let pre_contract_quarantined_rows =
+                        pre_contract_quarantine_summary(&batch.header.pre_contract_quarantine)
+                            .quarantined_rows;
+                    let residual_candidates = batch.header.take_residual_candidates();
+                    let cdc_operation_field = batch
+                        .header
+                        .cdc
+                        .as_ref()
+                        .map(|metadata| metadata.operation_field.clone());
+                    let mut no_row_limit = None;
+                    let ExecutedBatch {
+                        batch: output,
+                        source_rows,
+                    } = execute_batch(
+                        &record_batch,
+                        plan,
+                        &mut no_row_limit,
+                        !residual_candidates.is_empty(),
+                    )?;
+                    let contract = apply_contract_exec(
+                        output,
+                        &plan.validation_program,
+                        residual_candidates,
+                        &ResidualBatchContext {
+                            evaluation: &evaluation_context,
+                            source_rows: source_rows.as_deref(),
+                            cdc_operation_field: cdc_operation_field.as_deref(),
+                            batch_id: &batch.header.batch_id,
+                            observation_id: candidate
+                                .expected
+                                .as_ref()
+                                .map(|evidence| evidence.observation_id.as_str()),
+                        },
+                    )?;
+                    let normalized = append_residual_variant(
+                        contract.accepted,
+                        &plan.validation_program,
+                        contract.variant_values,
+                    )?;
+                    let normalized = normalize_record_batch(normalized, &plan.validation_program)?;
+                    let normalized = if effective_schema_evidence.is_some() {
+                        canonicalize_effective_output_schema(normalized)?
+                    } else {
+                        normalized
+                    };
+                    let normalized = conform_to_compiled_output_schema(
+                        normalized,
+                        runtime_output_schema.as_ref(),
+                    )?;
+                    let render_rows = normalized
+                        .num_rows()
+                        .min(usize::try_from(remaining_rows).unwrap_or(usize::MAX));
+                    let rendered = compact_record_batch_prefix(&normalized, render_rows)?;
+                    let rendered_bytes = u64::try_from(rendered.get_array_memory_size())
+                        .map_err(|error| CdfError::internal(error.to_string()))?;
+                    if first_partition_id.is_none() {
+                        first_partition_id = Some(batch.header.partition_id.to_string());
+                        first_batch_id = Some(batch.header.batch_id.to_string());
+                    }
+                    fields = rendered
+                        .schema()
+                        .fields()
+                        .iter()
+                        .map(|field| field.name().clone())
+                        .collect();
+                    admitted += 1;
+                    inspected_batch_count += 1;
+                    remaining_batches -= 1;
+                    remaining_bytes -= decoded_bytes;
+                    remaining_rows -= u64::try_from(render_rows)
+                        .map_err(|error| CdfError::internal(error.to_string()))?;
+                    row_count += u64::try_from(render_rows)
+                        .map_err(|error| CdfError::internal(error.to_string()))?;
+                    byte_count += decoded_bytes;
+                    output_byte_count += rendered_bytes;
+                    quarantined_row_count +=
+                        contract.summary.quarantined_rows + pre_contract_quarantined_rows;
+                }
+            }
+            if admitted == 0 && !complete {
+                selected_but_uninspected.push(candidate.partition.partition_id.to_string());
+                payload_uninspected.push(candidate.partition.partition_id.to_string());
+            } else {
+                inspected_partition_count += 1;
+                if !complete {
+                    partially_inspected.push(candidate.partition.partition_id.to_string());
+                }
+            }
+            selected_evidence.push(crate::EnginePreviewSelectedPartition {
+                partition_id: candidate.partition.partition_id.to_string(),
+                canonical_location: selected.canonical_location.clone(),
+                score_sha256: selected.score_sha256.clone(),
+                bounded_identity_sha256: selected.bounded_identity_sha256.clone(),
+                batch_quota: quota,
+                inspected_batches: admitted,
+            });
+        }
+    }
+
+    for candidate in &payload_candidates {
+        if selected_locations.contains(&candidate.location) {
+            continue;
+        }
+        payload_uninspected.push(candidate.partition.partition_id.to_string());
+    }
+    payload_uninspected.sort();
+    payload_uninspected.dedup();
+    selected_but_uninspected.sort();
+    partially_inspected.sort();
+    let uninspected_ids = payload_uninspected.iter().cloned().collect::<BTreeSet<_>>();
+    for candidate in &payload_candidates {
+        if !uninspected_ids.contains(candidate.partition.partition_id.as_str()) {
+            continue;
+        }
+        if optional_preview_attestation(
+            resource,
+            &candidate.partition,
+            candidate.expected.as_ref(),
+            &mut observation_attestations,
+        )
+        .await?
+        {
+            attested_partition_count += 1;
+        }
+    }
+
+    let planned_partition_count = u64::try_from(plan.scan.partitions.len())
+        .map_err(|error| CdfError::internal(error.to_string()))?;
+    let payload_eligible_partition_count = u64::try_from(payload_candidates.len())
+        .map_err(|error| CdfError::internal(error.to_string()))?;
+    let partially_inspected_partition_count = u64::try_from(partially_inspected.len())
+        .map_err(|error| CdfError::internal(error.to_string()))?;
+    let payload_uninspected_partition_count = u64::try_from(payload_uninspected.len())
+        .map_err(|error| CdfError::internal(error.to_string()))?;
+    if remaining_rows == 0
+        || remaining_bytes == 0
+        || remaining_batches == 0
+        || partially_inspected_partition_count > 0
+        || payload_uninspected_partition_count > 0
+    {
+        truncated = true;
+    }
+    Ok(EnginePreviewOutput {
+        resource_id: plan.scan.request.resource_id.clone(),
+        first_partition_id,
+        first_batch_id,
+        planned_partition_count,
+        payload_eligible_partition_count,
+        selected_partition_count: selected_count,
+        payload_opened_partition_count,
+        attested_partition_count,
+        inspected_partition_count,
+        partially_inspected_partition_count,
+        payload_uninspected_partition_count,
+        inspected_batch_count,
+        row_count,
+        byte_count,
+        output_byte_count,
+        quarantined_row_count,
+        terminal_quarantine_count: u64::try_from(terminal_quarantines.len())
+            .map_err(|error| CdfError::internal(error.to_string()))?,
+        fields,
+        limits,
+        selection: crate::EnginePreviewSelectionEvidence {
+            policy: crate::PREVIEW_POLICY_BALANCED_STRATIFIED_V1.to_owned(),
+            selector: cdf_kernel::STRATIFIED_HASH_SELECTOR_V1.to_owned(),
+            candidate_count: payload_eligible_partition_count,
+            selected: selected_evidence,
+            selected_but_uninspected_partition_ids: selected_but_uninspected,
+            partially_inspected_partition_ids: partially_inspected,
+            payload_uninspected_partition_ids: payload_uninspected,
+        },
+        truncated,
+    })
+}
+
+#[derive(Clone, Debug)]
+struct PreviewPayloadCandidate {
+    partition: cdf_kernel::PartitionPlan,
+    expected: Option<EffectiveSchemaObservationCoercion>,
+    location: String,
+    bounded_identity: StratifiedHashBoundedIdentity,
+}
+
+fn preview_partition_identity(
+    partition: &cdf_kernel::PartitionPlan,
+) -> Result<(String, StratifiedHashBoundedIdentity)> {
+    let location = partition
+        .metadata
+        .get("path")
+        .or_else(|| partition.metadata.get(PLAN_SCHEMA_OBSERVATION_ID_KEY))
+        .cloned()
+        .unwrap_or_else(|| partition.partition_id.to_string());
+    let is_file = partition.metadata.get("kind").map(String::as_str) == Some("files");
+    let size_bytes = partition
+        .metadata
+        .get("bytes")
+        .map(|value| {
+            value.parse::<u64>().map_err(|error| {
+                CdfError::data(format!(
+                    "preview partition {} has invalid byte-size identity {value:?}: {error}",
+                    partition.partition_id
+                ))
+            })
+        })
+        .transpose()?;
+    let modified_at_ms = partition
+        .metadata
+        .get("modified_ms")
+        .map(|value| {
+            value.parse::<i64>().map_err(|error| {
+                CdfError::data(format!(
+                    "preview partition {} has invalid modification-time identity {value:?}: {error}",
+                    partition.partition_id
+                ))
+            })
+        })
+        .transpose()?;
+    let (value, strength) = if is_file {
+        if let Some(sha256) = partition.metadata.get("sha256") {
+            (
+                Some(sha256.clone()),
+                StratifiedHashIdentityStrength::StrongChecksum,
+            )
+        } else if let Some(etag) = partition.metadata.get("etag") {
+            let strength = if etag.trim_start().starts_with("W/") {
+                StratifiedHashIdentityStrength::WeakEtag
+            } else if etag
+                .trim_matches('"')
+                .rsplit_once('-')
+                .is_some_and(|(_, part_count)| {
+                    !part_count.is_empty() && part_count.bytes().all(|byte| byte.is_ascii_digit())
+                })
+            {
+                StratifiedHashIdentityStrength::MultipartEtag
+            } else {
+                StratifiedHashIdentityStrength::StableEtag
+            };
+            (Some(etag.clone()), strength)
+        } else {
+            (None, StratifiedHashIdentityStrength::Unavailable)
+        }
+    } else if let Some(binding) = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY) {
+        (
+            Some(binding.clone()),
+            StratifiedHashIdentityStrength::BoundedObservation,
+        )
+    } else {
+        let bytes = serde_json::to_vec(&(
+            &partition.partition_id,
+            &partition.scope,
+            &partition.start_position,
+            &partition.metadata,
+        ))
+        .map_err(|error| CdfError::internal(error.to_string()))?;
+        (
+            Some(format!("sha256:{:x}", Sha256::digest(bytes))),
+            StratifiedHashIdentityStrength::BoundedObservation,
+        )
+    };
+    let identity = StratifiedHashBoundedIdentity {
+        size_bytes,
+        modified_at_ms,
+        value,
+        strength,
+    };
+    Ok((location, identity))
+}
+
+pub fn preview_partition_selector_candidate(
+    partition: &cdf_kernel::PartitionPlan,
+) -> Result<StratifiedHashCandidate> {
+    let (location, identity) = preview_partition_identity(partition)?;
+    StratifiedHashCandidate::from_bounded_identity(location, &identity)
+}
+
+async fn required_preview_attestation<R>(
+    resource: &R,
+    partition: &cdf_kernel::PartitionPlan,
+    observation_id: &str,
+    expected_schema_hash: &cdf_kernel::SchemaHash,
+    cache: &mut BTreeMap<String, PartitionAttestation>,
+) -> Result<PartitionAttestation>
+where
+    R: ResourceStream + ?Sized,
+{
+    let attestation = match cache.get(observation_id) {
+        Some(attestation) => attestation.clone(),
+        None => {
+            let attestation = resource.attest_partition(partition).await?.ok_or_else(|| {
+                CdfError::data(format!(
+                    "terminal schema observation {observation_id:?} has no execution-time attestation"
+                ))
+            })?;
+            cache.insert(observation_id.to_owned(), attestation.clone());
+            attestation
+        }
+    };
+    if attestation.physical_schema_hash() != Some(expected_schema_hash) {
+        return Err(CdfError::data(format!(
+            "terminal schema observation {observation_id:?} changed physical schema between planning and preview; expected {expected_schema_hash}, attested {:?}; re-plan before retrying",
+            attestation.physical_schema_hash()
+        )));
+    }
+    Ok(attestation)
+}
+
+async fn optional_preview_attestation<R>(
+    resource: &R,
+    partition: &cdf_kernel::PartitionPlan,
+    expected: Option<&EffectiveSchemaObservationCoercion>,
+    cache: &mut BTreeMap<String, PartitionAttestation>,
+) -> Result<bool>
+where
+    R: ResourceStream + ?Sized,
+{
+    let observation_id = partition.metadata.get(PLAN_SCHEMA_OBSERVATION_ID_KEY);
+    let cached = observation_id.and_then(|id| cache.get(id)).cloned();
+    let attestation = match cached {
+        Some(attestation) => Some(attestation),
+        None => resource.attest_partition(partition).await?,
+    };
+    let Some(attestation) = attestation else {
+        return Ok(false);
+    };
+    if let Some(observation_id) = observation_id {
+        cache.insert(observation_id.clone(), attestation.clone());
+    }
+    if let Some(expected) = expected
+        && attestation.physical_schema_hash() != Some(&expected.physical_schema_hash)
+    {
+        return Err(CdfError::data(format!(
+            "schema observation {:?} changed physical schema between planning and preview; expected {}, attested {:?}; re-plan before retrying",
+            expected.observation_id,
+            expected.physical_schema_hash,
+            attestation.physical_schema_hash()
+        )));
+    }
+    Ok(true)
+}
+
+fn validate_batch_schema_evidence(
+    batch: &cdf_kernel::Batch,
+    record_batch: &RecordBatch,
+    expected: Option<&EffectiveSchemaObservationCoercion>,
+    effective_schema: &Schema,
+) -> Result<Option<cdf_contract::SchemaCoercionPlan>> {
+    let batch_coercion = match batch.header.schema_coercion_plan.as_deref() {
+        Some(serialized) => Some(schema_coercion_plan_from_trusted_json(
+            record_batch.schema().as_ref(),
+            serialized,
+        )?),
+        None => {
+            reject_untrusted_schema_coercion_metadata(record_batch.schema().as_ref())?;
+            None
+        }
+    };
+    match (expected, &batch_coercion) {
+        (Some(expected), Some(batch_coercion)) => {
+            if batch.header.observed_schema_hash != expected.physical_schema_hash {
+                return Err(CdfError::data(format!(
+                    "schema observation {:?} produced physical schema hash {} but verified discovery evidence requires {}",
+                    expected.observation_id,
+                    batch.header.observed_schema_hash,
+                    expected.physical_schema_hash
+                )));
+            }
+            validate_effective_batch_schema(record_batch.schema().as_ref(), effective_schema)?;
+            if batch_coercion != &expected.coercion_plan {
+                return Err(CdfError::data(format!(
+                    "schema observation {:?} produced coercion evidence that does not match the typed engine plan",
+                    expected.observation_id
+                )));
+            }
+        }
+        (Some(_), None) => {
+            return Err(CdfError::data(
+                "effective-schema execution requires trusted per-observation coercion evidence on every observed batch",
+            ));
+        }
+        (None, _) => {}
+    }
+    Ok(batch_coercion)
+}
+
+fn compact_record_batch_prefix(batch: &RecordBatch, rows: usize) -> Result<RecordBatch> {
+    let rows = rows.min(batch.num_rows()).min(u32::MAX as usize);
+    if rows == batch.num_rows() {
+        return Ok(batch.clone());
+    }
+    let rows = u32::try_from(rows).map_err(|error| CdfError::internal(error.to_string()))?;
+    let indices = UInt32Array::from_iter_values(0..rows);
+    take_record_batch(batch, &indices).map_err(CdfError::from)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,36 +937,14 @@ where
                         "package execution requires in-memory Arrow record batches at MVP",
                     ));
                 };
-                let batch_coercion = match batch.header.schema_coercion_plan.as_deref() {
-                    Some(serialized) => Some(schema_coercion_plan_from_trusted_json(
-                        record_batch.schema().as_ref(),
-                        serialized,
-                    )?),
-                    None => {
-                        reject_untrusted_schema_coercion_metadata(record_batch.schema().as_ref())?;
-                        None
-                    }
-                };
+                let batch_coercion = validate_batch_schema_evidence(
+                    &batch,
+                    record_batch,
+                    partition_schema_evidence,
+                    resource.schema().as_ref(),
+                )?;
                 if let Some(batch_coercion) = batch_coercion {
                     if let Some(expected) = &partition_schema_evidence {
-                        if batch.header.observed_schema_hash != expected.physical_schema_hash {
-                            return Err(CdfError::data(format!(
-                                "schema observation {:?} produced physical schema hash {} but verified discovery evidence requires {}",
-                                expected.observation_id,
-                                batch.header.observed_schema_hash,
-                                expected.physical_schema_hash
-                            )));
-                        }
-                        validate_effective_batch_schema(
-                            record_batch.schema().as_ref(),
-                            resource.schema().as_ref(),
-                        )?;
-                        if batch_coercion != expected.coercion_plan {
-                            return Err(CdfError::data(format!(
-                                "schema observation {:?} produced coercion evidence that does not match the typed engine plan",
-                                expected.observation_id
-                            )));
-                        }
                         let artifact = PerObservationSchemaCoercionArtifact {
                             observation_id: expected.observation_id.clone(),
                             physical_schema_hash: expected.physical_schema_hash.to_string(),

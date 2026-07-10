@@ -8,7 +8,7 @@ Updated: 2026-07-09
 
 What exact resource-level contract lets CDF discover, pin, reconcile, execute, and evidence multi-file Parquet and Arrow IPC without a single-file product path, silent sampling, perpetual pin mutation, or weakened runtime `FileManifest` identity?
 
-This research supports `.10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md`. It separates record-backed invariants from semantics that still require user ratification.
+This research supports `.10x/tickets/done/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md`. It separates record-backed invariants from semantics that still require user ratification.
 
 ## Sources and methods
 

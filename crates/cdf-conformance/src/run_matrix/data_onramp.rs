@@ -1,11 +1,10 @@
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_kernel::{
-    Batch, BatchStream, CheckpointStore, CursorValue, PipelineId, ResourceId, ResourceStream,
-    Result, ScopeKey, SourcePosition, WriteDisposition, source_name,
+    CheckpointStore, CursorValue, PipelineId, ResourceId, ResourceStream, Result, ScopeKey,
+    SourcePosition, WriteDisposition, source_name,
 };
 use cdf_package::PackageReader;
 use cdf_state_sqlite::SqliteCheckpointStore;
-use futures_util::StreamExt;
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -85,10 +84,14 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         id: "S2",
         title: "Public HTTPS Parquet monthly glob with default FileManifest incrementality and no-change no-op rerun",
         status: CoverageStatus::Pending,
-        rationale: "local manifest incrementality and no-op reruns are covered; HTTP template/glob enumeration and public monthly-file conformance remain pending",
+        rationale: "local deterministic fixtures cover partition-per-file planning, exact manifest incrementality, changed-only and no-op reruns, and multi-file preview/run traversal; HTTP template enumeration and the public monthly-file cell remain pending",
         tests: &[
             "crates/cdf-declarative/src/tests.rs::file_glob_plans_deterministic_partition_per_match",
             "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
+            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
+            "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
+            "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
+            "crates/cdf-project/src/tests.rs::exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_artifacts",
         ],
         tickets: &[WS_D, WS_E, WS_I],
     },
@@ -128,10 +131,13 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         id: "S6",
         title: "Drift quarantines with accepted stream unblocked and file/column remediation rendered",
         status: CoverageStatus::Pending,
-        rationale: "accepted-stream quarantine and deep-validate foundations exist; incompatible per-file schema verdicts plus file/column remediation rendering remain pending",
+        rationale: "local deterministic fixtures prove incompatible per-file terminal quarantine, accepted-stream continuation, exact processed-manifest advancement, and preview attestation parity; final rendered remediation wording remains pending",
         tests: &[
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_postgres_conformance_asserts_supported_mirror",
+            "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
+            "crates/cdf-cli/src/tests.rs::financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manifest",
+            "crates/cdf-cli/src/tests.rs::governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence",
         ],
         tickets: &[WS_D, WS_G, WS_I],
     },
@@ -149,9 +155,14 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         id: "S8",
         title: "Preview/run parity per source archetype",
         status: CoverageStatus::Pending,
-        rationale: "local file, REST fixture, and Postgres table row/schema fingerprints are partial evidence only; every required archetype must still share resolution, decode, discovery, reconciliation, normalization, and the full compiler front end",
+        rationale: "the shared engine preview front end now covers local multi-file plus REST and Postgres fixtures with the ratified global payload bound/selector, compatible evolution, and terminal file quarantine; HTTP-template/cloud cells remain pending",
         tests: &[
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
+            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
+            "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
+            "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
+            "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
+            "crates/cdf-project/src/tests.rs::sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate",
         ],
         tickets: &[WS_A, WS_B, WS_C, WS_D, WS_E, WS_I],
     },
@@ -249,6 +260,9 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
         closed_tests: &[
             "crates/cdf-declarative/src/tests.rs::file_glob_run_and_preview_open_the_requested_partition",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
+            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
+            "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
+            "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
         ],
         open_tickets: &[WS_E, WS_I],
     },
@@ -740,6 +754,61 @@ fn p2_preview_run_parity_law_covers_supported_archetypes() {
     }
 }
 
+#[test]
+fn p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run() {
+    let temp = tempfile::tempdir().unwrap();
+    let resource = file_fixture::multi_resource(temp.path(), MatrixDisposition::Append).unwrap();
+    let plan = plan_json::file_engine_plan(
+        &resource,
+        "p2-s8-multifile-preview-run",
+        MatrixDisposition::Append,
+        None,
+    )
+    .unwrap();
+    assert_eq!(plan.scan.partitions.len(), 2);
+    assert!(plan.scan.partitions[0].metadata["path"] < plan.scan.partitions[1].metadata["path"]);
+    let before_preview = project_tree_snapshot(temp.path());
+
+    let preview = futures_executor::block_on(cdf_engine::preview_resource(
+        &plan,
+        &resource,
+        cdf_engine::EnginePreviewLimits::default(),
+    ))
+    .unwrap();
+
+    assert_eq!(project_tree_snapshot(temp.path()), before_preview);
+    assert_eq!(preview.planned_partition_count, 2);
+    assert_eq!(preview.payload_eligible_partition_count, 2);
+    assert_eq!(preview.selected_partition_count, 2);
+    assert_eq!(preview.payload_opened_partition_count, 2);
+    assert_eq!(preview.attested_partition_count, 0);
+    assert_eq!(preview.inspected_partition_count, 2);
+    assert_eq!(preview.inspected_batch_count, 2);
+    assert_eq!(preview.partially_inspected_partition_count, 0);
+    assert_eq!(preview.payload_uninspected_partition_count, 0);
+    assert_eq!(preview.row_count, 2);
+    assert_eq!(
+        preview.selection.policy,
+        cdf_engine::PREVIEW_POLICY_BALANCED_STRATIFIED_V1
+    );
+    assert_eq!(
+        preview.selection.selector,
+        cdf_kernel::STRATIFIED_HASH_SELECTOR_V1
+    );
+    assert!(preview.fields.iter().any(|field| field == "id"));
+
+    let package = temp.path().join("package");
+    let run =
+        futures_executor::block_on(cdf_engine::execute_to_package(&plan, &resource, &package))
+            .unwrap();
+    assert_eq!(run.profile.output_rows, preview.row_count);
+    assert_eq!(run.profile.output_batches, preview.inspected_batch_count);
+    cdf_package::PackageReader::open(package)
+        .unwrap()
+        .verify()
+        .unwrap();
+}
+
 fn scenario(id: &str) -> &'static P2Scenario {
     P2_SCENARIOS
         .iter()
@@ -821,49 +890,49 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
         cell.disposition.as_str()
     );
 
-    let (batches, partition_count) = match cell.source_archetype {
+    let (preview, partition_count) = match cell.source_archetype {
         SourceArchetype::File => {
             let resource = file_fixture::resource(temp.path(), cell.disposition)?;
             let plan = plan_json::file_engine_plan(&resource, &package_id, cell.disposition, None)?;
             let partitions = resource.plan_partitions(&plan.scan.request)?;
             assert_file_partitions_match_plan_identity(&partitions, &plan.scan.partitions);
-            let stream = futures_executor::block_on(resource.open_preview(partitions[0].clone()))?;
-            (drain_batches(stream)?, partitions.len())
+            let preview = futures_executor::block_on(cdf_engine::preview_resource(
+                &plan,
+                &resource,
+                cdf_engine::EnginePreviewLimits::default(),
+            ))?;
+            (preview, partitions.len())
         }
         SourceArchetype::Rest => {
             let (resource, _) = rest_fixture::resource(cell.disposition)?;
             let plan = plan_json::planned_engine_plan(&resource, &package_id, None)?;
             let partitions = resource.plan_partitions(&plan.scan.request)?;
             assert_eq!(partitions, plan.scan.partitions);
-            let stream = futures_executor::block_on(resource.open(partitions[0].clone()))?;
-            (drain_batches(stream)?, partitions.len())
+            let preview = futures_executor::block_on(cdf_engine::preview_resource(
+                &plan,
+                &resource,
+                cdf_engine::EnginePreviewLimits::default(),
+            ))?;
+            (preview, partitions.len())
         }
         SourceArchetype::Sql => {
             let resource = sql_fixture::resource(cell, postgres)?;
             let plan = plan_json::planned_engine_plan(&resource, &package_id, None)?;
             let partitions = resource.plan_partitions(&plan.scan.request)?;
             assert_eq!(partitions, plan.scan.partitions);
-            let stream = futures_executor::block_on(resource.open(partitions[0].clone()))?;
-            (drain_batches(stream)?, partitions.len())
+            let preview = futures_executor::block_on(cdf_engine::preview_resource(
+                &plan,
+                &resource,
+                cdf_engine::EnginePreviewLimits::default(),
+            ))?;
+            (preview, partitions.len())
         }
     };
 
     Ok(PreviewFingerprint {
         source: cell.source_archetype,
-        row_count: batches.iter().map(|batch| batch.header.row_count).sum(),
-        field_names: batches
-            .first()
-            .and_then(|batch| {
-                batch.record_batch().map(|record_batch| {
-                    record_batch
-                        .schema()
-                        .fields()
-                        .iter()
-                        .map(|field| field.name().clone())
-                        .collect()
-                })
-            })
-            .unwrap_or_default(),
+        row_count: preview.row_count,
+        field_names: preview.fields,
         partition_count,
     })
 }
@@ -884,17 +953,6 @@ fn assert_file_partitions_match_plan_identity(
             );
         }
     }
-}
-
-fn drain_batches(stream: BatchStream) -> Result<Vec<Batch>> {
-    futures_executor::block_on(async {
-        futures_util::pin_mut!(stream);
-        let mut batches = Vec::new();
-        while let Some(batch) = stream.next().await {
-            batches.push(batch?);
-        }
-        Ok(batches)
-    })
 }
 
 fn write_s5_project(root: &Path, base_url: &str, secret: &str) {

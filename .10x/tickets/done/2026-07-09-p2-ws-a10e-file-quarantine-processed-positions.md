@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
+Parent: .10x/tickets/done/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
 Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a10d-effective-schema-runtime-evidence.md, .10x/decisions/data-onramp-file-source-transport-manifest.md
 
 # P2 WS-A10e file quarantine and processed positions
