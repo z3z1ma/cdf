@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -30,7 +30,8 @@ No generic promotion orchestrator, DuckDB/Parquet behavior, lock publication, or
 ## Progress and notes
 
 - 2026-07-10: Opened around the existing Postgres provenance columns and transactional reference role.
+- 2026-07-10: Activated after RP2/RP3 closure and assigned to `/root/impl_i5`. Generic correction request/plan/receipt semantics remain kernel-owned; Postgres-specific DDL/DML and transaction code stay inside the adapter.
 
 ## Blockers
 
-Depends on RP2/RP3.
+None.

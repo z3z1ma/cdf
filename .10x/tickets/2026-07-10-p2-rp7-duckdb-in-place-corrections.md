@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -30,7 +30,8 @@ No generic orchestrator, Postgres/Parquet behavior, lock publication, or destina
 ## Progress and notes
 
 - 2026-07-10: Opened because DuckDB currently lacks target-row provenance even though it is the canonical local happy-path destination.
+- 2026-07-10: Activated after RP2/RP3 closure and assigned to `/root/impl_d5`. Generic correction request/plan/receipt semantics remain kernel-owned; DuckDB-specific row persistence and transactions stay inside the adapter.
 
 ## Blockers
 
-Depends on RP2/RP3.
+None.

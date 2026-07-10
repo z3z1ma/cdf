@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
@@ -33,7 +33,8 @@ No adaptive/statistical sampling, confidence estimates, row sampling inside text
 
 - 2026-07-10: Opened after exact selector ratification. This child follows the exhaustive orchestrator so both coverage modes share one candidate/probe/aggregate model.
 - 2026-07-10: Dependency audit after A10c closure found the acceptance criterion for unseen runtime drift cannot be proven by selector/pin code alone. A10g now explicitly waits for A10d effective-schema runtime evidence plus A10e file quarantine and RP2 residual verdict routing; sampling may weaken plan-time observation only after both total runtime outcomes exist. This repairs sequencing and does not change the ratified selector or coverage semantics.
+- 2026-07-10: Activated after A10e and RP2 closed with parent-observed 883/883 workspace verification. Assigned to `/root/impl_a10`; implementation must remain selector/orchestrator-neutral and prove unseen files enter the same runtime reconciliation, residual, quarantine, package, receipt, and checkpoint path.
 
 ## Blockers
 
-Depends on A10e and RP2; A10a/A10b/A10c/A10d are complete.
+None.
