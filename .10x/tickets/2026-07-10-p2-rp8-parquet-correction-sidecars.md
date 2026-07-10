@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -30,7 +30,8 @@ No table-format merge engine, arbitrary object overwrite, Iceberg/Delta implemen
 ## Progress and notes
 
 - 2026-07-10: Opened as Parquet's honest append-only correction strategy.
+- 2026-07-10: Activated after RP2/RP3 closure and assigned to `/root/impl_d5`. Generic correction request/plan/receipt/sidecar evidence stays kernel/protocol-owned; object layout and atomic manifest mechanics stay inside the Parquet adapter. The sheet must not claim in-place mutation or atomic rematerialization it cannot prove.
 
 ## Blockers
 
-Depends on RP2/RP3.
+None.

@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-09
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
@@ -32,7 +32,8 @@ No S3/GCS/Azure implementation, HTTP template enumeration, text inference, zip, 
 ## Progress and notes
 
 - 2026-07-09: Opened as the A10 closure gate; final public/cloud scenarios remain owned by WS-E/WS-I.
+- 2026-07-10: Activated after A10e/A10g closure and assigned to `/root/impl_a10`. This child must close the known first-partition preview gap through the same resource front end and may promote only the exact local/fixture S2/S6/S8 cells it proves; remote HTTP template/cloud cells remain pending.
 
 ## Blockers
 
-Depends on A10e and A10g.
+None.

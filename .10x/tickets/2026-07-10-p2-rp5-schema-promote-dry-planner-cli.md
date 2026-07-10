@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -30,7 +30,8 @@ No `--execute`, correction writes, lease acquisition, lockfile mutation, or GC c
 ## Progress and notes
 
 - 2026-07-10: Opened after CLI and dry-plan semantics were confirmed.
+- 2026-07-10: Activated after A10g closure and assigned to `/root/impl_i5`. Planning must consume verified residual/readback and destination protocol capabilities without concrete destination-name branches; the default command remains strictly no-write.
 
 ## Blockers
 
-Depends on RP1/RP3/RP4 and A10g.
+None.
