@@ -374,6 +374,36 @@ fn destination_correction_vocabulary_is_backward_compatible_and_semver_stable() 
     assert_eq!(decoded.sheet, legacy_sheet);
     assert_eq!(serde_json::to_string(&decoded).unwrap(), legacy_json);
 
+    let object_capabilities = DestinationProtocolCapabilities::default()
+        .with_object_key_rules(ObjectKeyRules::component_v1());
+    let encoded = serde_json::to_value(
+        DestinationSheetArtifact::new(legacy_sheet.clone(), object_capabilities.clone()).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        encoded["protocol_capabilities"]["object_key_rules"],
+        serde_json::json!({
+            "version": 1,
+            "policy": "object-key-component-v1"
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<DestinationSheetArtifact>(encoded).unwrap(),
+        DestinationSheetArtifact::new(legacy_sheet.clone(), object_capabilities).unwrap()
+    );
+
+    let invalid =
+        DestinationProtocolCapabilities::default().with_object_key_rules(ObjectKeyRules {
+            version: OBJECT_KEY_RULES_VERSION + 1,
+            policy: ObjectKeyPolicy::ComponentV1,
+        });
+    assert!(
+        DestinationSheetArtifact::new(legacy_sheet, invalid)
+            .unwrap_err()
+            .message
+            .contains("unsupported object-key rules version")
+    );
+
     assert_eq!(
         serde_json::to_string(&[
             CorrectionStrategy::InPlaceUpdate,

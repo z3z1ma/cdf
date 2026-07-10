@@ -2,9 +2,8 @@ use crate::internal::*;
 use crate::*;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_kernel::{
-    DestinationCommitRequest, DestinationProtocol, DestinationProtocolCapabilities,
-    DestinationSheetArtifact, IdempotencyToken, PackageHash, ResourceStream,
-    SchemaSnapshotReference, StateSegment, TargetName, WriteDisposition,
+    DestinationProtocol, DestinationProtocolCapabilities, DestinationSheetArtifact, ResourceStream,
+    SchemaSnapshotReference,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -719,18 +718,9 @@ fn destination_sheet_artifacts_for_uri(uri: &str) -> Result<Vec<DestinationSheet
         ]);
     }
     if uri.strip_prefix("parquet://").is_some() {
-        let request = DestinationCommitRequest {
-            package_hash: PackageHash::new("contract-freeze-snapshot")?,
-            target: TargetName::new("contract_freeze_snapshot")?,
-            disposition: WriteDisposition::Append,
-            segments: Vec::<StateSegment>::new(),
-            idempotency_token: IdempotencyToken::new("contract-freeze-snapshot")?,
-        };
-        let (sheet, _) = cdf_dest_parquet::ParquetDestination::dry_plan_commit(&request)?;
-        return Ok(vec![DestinationSheetArtifact::new(
-            sheet,
-            DestinationProtocolCapabilities::default(),
-        )?]);
+        return Ok(vec![
+            cdf_dest_parquet::ParquetDestination::destination_sheet_artifact()?,
+        ]);
     }
     if uri.starts_with("postgres://") {
         return Ok(vec![

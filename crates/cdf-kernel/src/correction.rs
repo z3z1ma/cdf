@@ -225,6 +225,8 @@ impl DestinationCorrectionCapabilities {
 pub struct DestinationProtocolCapabilities {
     pub version: u16,
     pub corrections: DestinationCorrectionCapabilities,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object_key_rules: Option<ObjectKeyRules>,
 }
 
 impl Default for DestinationProtocolCapabilities {
@@ -232,6 +234,7 @@ impl Default for DestinationProtocolCapabilities {
         Self {
             version: DESTINATION_PROTOCOL_CAPABILITIES_VERSION,
             corrections: DestinationCorrectionCapabilities::default(),
+            object_key_rules: None,
         }
     }
 }
@@ -246,6 +249,15 @@ impl DestinationProtocolCapabilities {
         self
     }
 
+    pub fn with_object_key_rules(mut self, rules: ObjectKeyRules) -> Self {
+        self.object_key_rules = Some(rules);
+        self
+    }
+
+    pub fn object_key_rules(&self) -> Option<&ObjectKeyRules> {
+        self.object_key_rules.as_ref()
+    }
+
     pub fn validate(&self, sheet: &DestinationSheet) -> Result<()> {
         if self.version != DESTINATION_PROTOCOL_CAPABILITIES_VERSION {
             return Err(CdfError::contract(format!(
@@ -254,8 +266,46 @@ impl DestinationProtocolCapabilities {
             )));
         }
         self.corrections
-            .validate(&sheet.transactions, &sheet.idempotency)
+            .validate(&sheet.transactions, &sheet.idempotency)?;
+        if let Some(rules) = &self.object_key_rules {
+            rules.validate()?;
+        }
+        Ok(())
     }
+}
+
+pub const OBJECT_KEY_RULES_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ObjectKeyRules {
+    pub version: u16,
+    pub policy: ObjectKeyPolicy,
+}
+
+impl ObjectKeyRules {
+    pub fn component_v1() -> Self {
+        Self {
+            version: OBJECT_KEY_RULES_VERSION,
+            policy: ObjectKeyPolicy::ComponentV1,
+        }
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != OBJECT_KEY_RULES_VERSION {
+            return Err(CdfError::contract(format!(
+                "unsupported object-key rules version {}; expected {OBJECT_KEY_RULES_VERSION}",
+                self.version
+            )));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ObjectKeyPolicy {
+    #[serde(rename = "object-key-component-v1")]
+    ComponentV1,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

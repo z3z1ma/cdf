@@ -326,17 +326,25 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     let postgres_artifact = cdf_dest_postgres::PostgresDestination::new()
         .sheet_artifact()
         .unwrap();
+    let parquet_temp = tempfile::tempdir().unwrap();
+    let parquet_artifact =
+        cdf_dest_parquet::ParquetDestination::new_filesystem(parquet_temp.path())
+            .unwrap()
+            .sheet_artifact()
+            .unwrap();
     let typed_lock = generate_lockfile_with_destination_artifacts(
         &config,
         &resources,
         dependency_tuple,
-        std::slice::from_ref(&postgres_artifact),
+        &[postgres_artifact.clone(), parquet_artifact.clone()],
         BTreeMap::new(),
     )
     .unwrap();
     let typed_encoded = lock_to_toml(&typed_lock).unwrap();
     assert!(typed_encoded.contains("protocol_capabilities"));
     assert!(typed_encoded.contains("corrections"));
+    assert!(typed_encoded.contains("object_key_rules"));
+    assert!(typed_encoded.contains("object-key-component-v1"));
     let typed_decoded = parse_lock(&typed_encoded).unwrap();
     assert_eq!(typed_decoded, typed_lock);
     assert_eq!(lock_to_toml(&typed_decoded).unwrap(), typed_encoded);
@@ -345,6 +353,12 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
             .sheet_artifact()
             .unwrap(),
         postgres_artifact
+    );
+    assert_eq!(
+        typed_lock.destinations["parquet_object_store"]
+            .sheet_artifact()
+            .unwrap(),
+        parquet_artifact
     );
 }
 

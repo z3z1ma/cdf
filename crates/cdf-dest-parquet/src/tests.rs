@@ -8,7 +8,8 @@ use crate::{
         ParquetCorrectionSidecar, ParquetCorrectionSidecarManifest, ParquetObjectManifest,
         ReplacePointer, canonical_json_bytes, sha256_hex,
     },
-    sheet::parquet_correction_capabilities,
+    sheet::{parquet_correction_capabilities, parquet_protocol_capabilities, parquet_sheet},
+    store::{ObjectKeyEncoder, package_manifest_key},
 };
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Int64Array, StringArray};
@@ -216,6 +217,20 @@ fn parquet_rows(bytes: &[u8]) -> usize {
         .sum()
 }
 
+fn parquet_field_names(bytes: &[u8]) -> Vec<String> {
+    let mut temp = tempfile::NamedTempFile::new().unwrap();
+    temp.write_all(bytes).unwrap();
+    temp.flush().unwrap();
+    let file = fs::File::open(temp.path()).unwrap();
+    ParquetRecordBatchReaderBuilder::try_new(file)
+        .unwrap()
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| field.name().clone())
+        .collect()
+}
+
 fn manifest_key(receipt: &Receipt) -> &str {
     receipt
         .verify
@@ -402,6 +417,16 @@ fn sheet_declares_append_replace_and_unsupported_semantics_honestly() {
     assert_eq!(sheet.idempotency, IdempotencySupport::PackageToken);
     assert_eq!(sheet.migration_support, CapabilitySupport::Unsupported);
     assert_eq!(sheet.quarantine_tables, CapabilitySupport::Unsupported);
+    assert_eq!(sheet.identifier_rules.normalizer, "namecase-v1");
+    assert_eq!(sheet.identifier_rules.max_length, None);
+    assert_eq!(
+        sheet.identifier_rules.allowed_pattern.as_deref(),
+        Some("^[a-z_][a-z0-9_]*$")
+    );
+    assert_eq!(
+        dest.protocol_capabilities().object_key_rules(),
+        Some(&ObjectKeyRules::component_v1())
+    );
     assert!(
         sheet
             .supported_dispositions
@@ -607,11 +632,123 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
 }
 
 #[test]
+fn ordinary_objects_and_correction_sidecars_share_column_policy_without_changing_object_keys() {
+    let temp = tempfile::tempdir().unwrap();
+    let dest = ParquetDestination::new_filesystem(temp.path().join("lake")).unwrap();
+    let policy =
+        cdf_contract::identifier_policy_from_destination_rules(&dest.sheet().identifier_rules)
+            .unwrap();
+    let normalized = cdf_contract::normalize_identifier("VendorID", &policy).unwrap();
+    assert_eq!(normalized, "vendor_id");
+
+    let schema = Arc::new(Schema::new(vec![cdf_kernel::with_source_name(
+        Field::new(&normalized, DataType::Int64, false),
+        "VendorID",
+    )]));
+    let batch =
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1_i64, 2_i64]))]).unwrap();
+    let package_dir = temp.path().join("pkg-normalized-columns");
+    let built = build_package(
+        &package_dir,
+        "pkg-normalized-columns",
+        vec![("seg-000001", vec![batch])],
+    );
+    let base = dest
+        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
+        .unwrap();
+    let base_bytes = dest
+        .store()
+        .get_required(dest.runtime(), &base.object_manifest.objects[0].key)
+        .unwrap();
+    assert_eq!(
+        parquet_field_names(&base_bytes),
+        std::slice::from_ref(&normalized)
+    );
+
+    let mut correction = correction_request(&built.hash);
+    let promoted = CanonicalArrowField::from_arrow(&cdf_kernel::with_source_name(
+        Field::new(&normalized, DataType::Int64, true),
+        "VendorID",
+    ))
+    .unwrap();
+    for operation in &mut correction.corrections {
+        operation.output_field = promoted.clone();
+    }
+    correction = DestinationCorrectionCommitRequest::new(
+        correction.correction_package_hash.clone(),
+        correction.idempotency_token.clone(),
+        correction.target.clone(),
+        correction.resource_disposition.clone(),
+        correction.segments.clone(),
+        correction.corrections,
+    )
+    .unwrap();
+    let receipt = finalize_correction(&dest, &correction);
+    let evidence = DestinationCorrectionSidecarReceiptEvidence::from_receipt(&receipt).unwrap();
+    let manifest: ParquetCorrectionSidecarManifest = serde_json::from_slice(
+        &dest
+            .store()
+            .get_required(dest.runtime(), &evidence.manifest_key)
+            .unwrap(),
+    )
+    .unwrap();
+    let sidecar: ParquetCorrectionSidecar = serde_json::from_slice(
+        &dest
+            .store()
+            .get_required(dest.runtime(), &manifest.objects[0].key)
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(
+        sidecar
+            .operations
+            .iter()
+            .all(|operation| operation.output_field.name == normalized)
+    );
+
+    let encoded_token = built.hash.as_str().replace(':', "~3a");
+    assert_eq!(
+        base.plan.manifest_key,
+        format!("targets/orders/packages/{encoded_token}/manifest.json")
+    );
+    assert!(
+        evidence
+            .manifest_key
+            .starts_with("targets/orders/corrections/manifests/")
+    );
+    assert_eq!(
+        dest.protocol_capabilities().object_key_rules(),
+        Some(&ObjectKeyRules::component_v1())
+    );
+}
+
+#[test]
+fn object_key_construction_requires_declared_policy_and_preserves_component_v1_bytes() {
+    let error = ObjectKeyEncoder::from_capabilities(
+        &cdf_kernel::DestinationProtocolCapabilities::default(),
+    )
+    .unwrap_err();
+    assert!(error.message.contains("requires typed object-key rules"));
+
+    let capabilities = parquet_protocol_capabilities();
+    capabilities.validate(&parquet_sheet().unwrap()).unwrap();
+    let encoder = ObjectKeyEncoder::from_capabilities(&capabilities).unwrap();
+    assert_eq!(
+        package_manifest_key(
+            encoder,
+            &TargetName::new("orders/by region").unwrap(),
+            &IdempotencyToken::new("sha256:abc/def").unwrap(),
+        ),
+        "targets/orders~2fby~20region/packages/sha256~3aabc~2fdef/manifest.json"
+    );
+}
+
+#[test]
 fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_once() {
     let store = Arc::new(InMemory::default());
     let dest = ParquetDestination::new_object_store(store, "").unwrap();
     let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
-    let context = build_correction_context(&correction).unwrap();
+    let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let object = context.manifest.objects[0].clone();
     dest.store()
         .put_create_or_verify(dest.runtime(), &object.key, context.sidecar_bytes.clone())
@@ -681,7 +818,7 @@ fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_o
 fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
     let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
     let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
-    let context = build_correction_context(&correction).unwrap();
+    let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let plan = dest.plan_correction(&correction).unwrap();
     let mut session = dest.begin_correction(correction.clone(), plan).unwrap();
     session.apply_migrations().unwrap();

@@ -1,6 +1,6 @@
 {
   "package_id": "live-local-file-parquet-v1",
-  "package_hash": "sha256:1f921b9243e2fec50114cd4c12a55d88b525b792e7e1f57a0557a39df89df9a0",
+  "package_hash": "sha256:8ec1eccfd9445172f5a3627a494584199684cd7b54606a0879c26fb691a77a05",
   "checkpoint_id": "checkpoint-live-local-file-parquet-v1",
   "pipeline_id": "pipeline-live-local-file-parquet-v1",
   "resource_id": "local.events",
@@ -20,9 +20,9 @@
   "mirror_state_rows": 1,
   "package": {
     "manifest_version": 1,
-    "package_hash": "sha256:1f921b9243e2fec50114cd4c12a55d88b525b792e7e1f57a0557a39df89df9a0",
+    "package_hash": "sha256:8ec1eccfd9445172f5a3627a494584199684cd7b54606a0879c26fb691a77a05",
     "package_status": "checkpointed",
-    "signature_signing_input": "sha256:1f921b9243e2fec50114cd4c12a55d88b525b792e7e1f57a0557a39df89df9a0",
+    "signature_signing_input": "sha256:8ec1eccfd9445172f5a3627a494584199684cd7b54606a0879c26fb691a77a05",
     "signature_value": null,
     "identity_manifest_version": 1,
     "identity_layout": [
@@ -64,8 +64,8 @@
       },
       {
         "path": "plan/validation-program.json",
-        "byte_count": 2358,
-        "sha256": "7b1d6ffbb1439752ceb9c2b078d332a6ee2d7f0911bc83e34f224811c2796aff"
+        "byte_count": 2399,
+        "sha256": "21b2333480d834be1f7c4703ad4fd1f25a8aa270f7650cae1b7a719225ac51ec"
       },
       {
         "path": "schema/coercion-plan.json",

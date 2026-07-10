@@ -1688,9 +1688,12 @@ fn destination_planning_facade_rejects_parquet_merge_without_writes() {
     )
     .unwrap();
 
-    assert_eq!(destination.column_identifier_policy().unwrap(), None);
-
-    let engine_plan = live_plan(&resource, "pkg-plan-preview-parquet");
+    let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
+    assert_eq!(identifier_policy.version, "namecase-v1");
+    assert_eq!(identifier_policy.max_length, None);
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = identifier_policy;
+    let engine_plan = live_plan_with_exact_policy(&resource, "pkg-plan-preview-parquet", &policy);
     let error = destination
         .plan_resource_commit(&resource, &engine_plan)
         .unwrap_err();
@@ -1803,19 +1806,23 @@ fn parquet_project_run_request<'a>(
     state_path: &Path,
     run_id: &str,
 ) -> ProjectRunRequest<'a> {
+    let destination = ResolvedProjectDestination::parquet_filesystem(
+        parquet_root,
+        TargetName::new("events").unwrap(),
+    )
+    .unwrap();
+    let identifier_policy = destination.column_identifier_policy().unwrap().unwrap();
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    policy.normalization.identifier = identifier_policy;
     ProjectRunRequest {
         resource: ProjectRunSource::local_file(resource),
-        plan: default_live_plan(resource, package_id),
+        plan: live_plan_with_exact_policy(resource, package_id, &policy),
         package_root: package_root.to_path_buf(),
         state_store_path: state_path.to_path_buf(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
-        destination: ResolvedProjectDestination::parquet_filesystem(
-            parquet_root,
-            TargetName::new("events").unwrap(),
-        )
-        .unwrap(),
+        destination,
         run_id: Some(RunId::new(run_id).unwrap()),
         event_sink: None,
         after_receipt_verified: None,

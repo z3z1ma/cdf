@@ -108,6 +108,10 @@ impl ProjectDestinationRuntime for FilesystemParquetProjectDestinationRuntime {
         }
     }
 
+    fn destination_sheet(&self) -> Result<DestinationSheet> {
+        ParquetDestination::destination_sheet()
+    }
+
     fn supported_dispositions(&self) -> &[WriteDisposition] {
         static SUPPORTED: [WriteDisposition; 2] =
             [WriteDisposition::Append, WriteDisposition::Replace];

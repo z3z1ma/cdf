@@ -10,14 +10,18 @@ use crate::{
         validate_requested_segments, write_parquet_segment,
     },
     receipts::{build_receipt, record_package_receipt_once, verify_receipt},
-    sheet::{parquet_correction_capabilities, parquet_sheet},
-    store::{StoreClient, now_ms, package_manifest_key, replace_pointer_key, segment_object_key},
+    sheet::{parquet_protocol_capabilities, parquet_sheet},
+    store::{
+        ObjectKeyEncoder, StoreClient, now_ms, package_manifest_key, replace_pointer_key,
+        segment_object_key,
+    },
 };
 
 pub struct ParquetDestination {
     store: StoreClient,
     runtime: Runtime,
     sheet: DestinationSheet,
+    object_key_encoder: ObjectKeyEncoder,
     pending_sessions: Mutex<BTreeMap<PlanId, ParquetSessionContext>>,
     pub(crate) pending_corrections: Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>,
 }
@@ -66,6 +70,14 @@ pub struct ParquetCommitOutcome {
 pub type ReceiptVerification = cdf_kernel::ReceiptVerification;
 
 impl ParquetDestination {
+    pub fn destination_sheet() -> Result<DestinationSheet> {
+        parquet_sheet()
+    }
+
+    pub fn destination_sheet_artifact() -> Result<cdf_kernel::DestinationSheetArtifact> {
+        cdf_kernel::DestinationSheetArtifact::new(parquet_sheet()?, parquet_protocol_capabilities())
+    }
+
     pub fn new_filesystem(root: impl AsRef<Path>) -> Result<Self> {
         Self::from_store(StoreClient::new_filesystem(root.as_ref())?)
     }
@@ -82,10 +94,15 @@ impl ParquetDestination {
             .enable_all()
             .build()
             .map_err(|error| CdfError::internal(format!("create Parquet runtime: {error}")))?;
+        let artifact = Self::destination_sheet_artifact()?;
+        let sheet = artifact.sheet;
+        let protocol_capabilities = artifact.protocol_capabilities;
+        let object_key_encoder = ObjectKeyEncoder::from_capabilities(&protocol_capabilities)?;
         Ok(Self {
             store,
             runtime,
-            sheet: parquet_sheet()?,
+            sheet,
+            object_key_encoder,
             pending_sessions: Mutex::new(BTreeMap::new()),
             pending_corrections: Mutex::new(BTreeMap::new()),
         })
@@ -165,6 +182,7 @@ impl ParquetDestination {
                 .map(|segment| (segment.row_count, segment.byte_count))
                 .unwrap_or((segment.row_count, segment.entry.byte_count));
             let key = segment_object_key(
+                self.object_key_encoder(),
                 &request.commit.target,
                 &request.commit.idempotency_token,
                 &segment.entry.segment_id,
@@ -267,6 +285,10 @@ impl ParquetDestination {
         &self.runtime
     }
 
+    pub(crate) fn object_key_encoder(&self) -> ObjectKeyEncoder {
+        self.object_key_encoder
+    }
+
     fn plan_loaded_package(
         &self,
         request: &ParquetCommitRequest,
@@ -283,11 +305,17 @@ impl ParquetDestination {
             )));
         }
 
-        let manifest_key =
-            package_manifest_key(&request.commit.target, &request.commit.idempotency_token);
+        let manifest_key = package_manifest_key(
+            self.object_key_encoder(),
+            &request.commit.target,
+            &request.commit.idempotency_token,
+        );
         let replace_pointer_key = match request.commit.disposition {
             _ if request.commit.is_data_noop() => None,
-            WriteDisposition::Replace => Some(replace_pointer_key(&request.commit.target)),
+            WriteDisposition::Replace => Some(replace_pointer_key(
+                self.object_key_encoder(),
+                &request.commit.target,
+            )),
             WriteDisposition::Append => None,
             WriteDisposition::Merge | WriteDisposition::CdcApply => {
                 return Err(CdfError::contract(
@@ -300,6 +328,7 @@ impl ParquetDestination {
             .iter()
             .map(|segment| {
                 segment_object_key(
+                    self.object_key_encoder(),
                     &request.commit.target,
                     &request.commit.idempotency_token,
                     &segment.entry.segment_id,
@@ -480,7 +509,8 @@ struct ExpectedSegment {
 
 impl<'a> ParquetCommitSession<'a> {
     fn new(destination: &'a ParquetDestination, context: ParquetSessionContext) -> Result<Self> {
-        let (expected_segments, expected_order) = expected_segments_for_context(&context)?;
+        let (expected_segments, expected_order) =
+            expected_segments_for_context(destination.object_key_encoder(), &context)?;
         Ok(Self {
             destination,
             request: context.request,
@@ -589,8 +619,7 @@ impl DestinationProtocol for ParquetDestination {
     }
 
     fn protocol_capabilities(&self) -> cdf_kernel::DestinationProtocolCapabilities {
-        cdf_kernel::DestinationProtocolCapabilities::default()
-            .with_corrections(parquet_correction_capabilities())
+        parquet_protocol_capabilities()
     }
 
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
@@ -669,6 +698,7 @@ fn plan_kernel_commit(
 }
 
 fn expected_segments_for_context(
+    object_key_encoder: ObjectKeyEncoder,
     context: &ParquetSessionContext,
 ) -> Result<(BTreeMap<SegmentId, ExpectedSegment>, Vec<SegmentId>)> {
     let reader = PackageReader::open(&context.request.package_dir)?;
@@ -703,6 +733,7 @@ fn expected_segments_for_context(
         .iter()
         .map(|segment_id| {
             segment_object_key(
+                object_key_encoder,
                 &context.request.commit.target,
                 &context.request.commit.idempotency_token,
                 segment_id,

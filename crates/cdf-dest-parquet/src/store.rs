@@ -17,6 +17,32 @@ pub(crate) struct StoreClient {
     root_prefix: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ObjectKeyEncoder {
+    policy: ObjectKeyPolicy,
+}
+
+impl ObjectKeyEncoder {
+    pub(crate) fn from_capabilities(
+        capabilities: &cdf_kernel::DestinationProtocolCapabilities,
+    ) -> Result<Self> {
+        let rules = capabilities.object_key_rules().ok_or_else(|| {
+            CdfError::contract("Parquet object-key construction requires typed object-key rules")
+        })?;
+        rules.validate()?;
+        let policy = match rules.policy {
+            ObjectKeyPolicy::ComponentV1 => ObjectKeyPolicy::ComponentV1,
+        };
+        Ok(Self { policy })
+    }
+
+    fn encode(self, value: &str) -> String {
+        match self.policy {
+            ObjectKeyPolicy::ComponentV1 => encode_component_v1(value),
+        }
+    }
+}
+
 impl StoreClient {
     pub(crate) fn new_filesystem(root: &Path) -> Result<Self> {
         fs::create_dir_all(root).map_err(|error| {
@@ -152,65 +178,80 @@ impl StoreClient {
 }
 
 pub(crate) fn package_manifest_key(
+    encoder: ObjectKeyEncoder,
     target: &TargetName,
     token: &cdf_kernel::IdempotencyToken,
 ) -> String {
     format!(
         "targets/{}/packages/{}/manifest.json",
-        encode_component(target.as_str()),
-        encode_component(token.as_str())
+        encoder.encode(target.as_str()),
+        encoder.encode(token.as_str())
     )
 }
 
 pub(crate) fn segment_object_key(
+    encoder: ObjectKeyEncoder,
     target: &TargetName,
     token: &cdf_kernel::IdempotencyToken,
     segment_id: &cdf_kernel::SegmentId,
 ) -> String {
     format!(
         "targets/{}/packages/{}/data/{}.parquet",
-        encode_component(target.as_str()),
-        encode_component(token.as_str()),
-        encode_component(segment_id.as_str())
+        encoder.encode(target.as_str()),
+        encoder.encode(token.as_str()),
+        encoder.encode(segment_id.as_str())
     )
 }
 
-pub(crate) fn replace_pointer_key(target: &TargetName) -> String {
-    format!("targets/{}/current.json", encode_component(target.as_str()))
+pub(crate) fn replace_pointer_key(encoder: ObjectKeyEncoder, target: &TargetName) -> String {
+    format!("targets/{}/current.json", encoder.encode(target.as_str()))
 }
 
-pub(crate) fn correction_sidecar_object_key(target: &TargetName, sha256: &str) -> String {
+pub(crate) fn correction_sidecar_object_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    sha256: &str,
+) -> String {
     format!(
         "targets/{}/corrections/objects/{}.json",
-        encode_component(target.as_str()),
-        encode_component(sha256)
+        encoder.encode(target.as_str()),
+        encoder.encode(sha256)
     )
 }
 
-pub(crate) fn correction_sidecar_manifest_key(target: &TargetName, sha256: &str) -> String {
+pub(crate) fn correction_sidecar_manifest_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    sha256: &str,
+) -> String {
     format!(
         "targets/{}/corrections/manifests/{}.json",
-        encode_component(target.as_str()),
-        encode_component(sha256)
+        encoder.encode(target.as_str()),
+        encoder.encode(sha256)
     )
 }
 
 pub(crate) fn correction_receipt_key(
+    encoder: ObjectKeyEncoder,
     target: &TargetName,
     token: &cdf_kernel::IdempotencyToken,
 ) -> String {
     format!(
         "targets/{}/corrections/receipts/{}.json",
-        encode_component(target.as_str()),
-        encode_component(token.as_str())
+        encoder.encode(target.as_str()),
+        encoder.encode(token.as_str())
     )
 }
 
-pub(crate) fn version_manifest_key(target: &TargetName, target_version: &str) -> String {
+pub(crate) fn version_manifest_key(
+    encoder: ObjectKeyEncoder,
+    target: &TargetName,
+    target_version: &str,
+) -> String {
     format!(
         "targets/{}/versions/{}/manifest.json",
-        encode_component(target.as_str()),
-        encode_component(target_version)
+        encoder.encode(target.as_str()),
+        encoder.encode(target_version)
     )
 }
 
@@ -224,7 +265,7 @@ fn normalize_prefix(prefix: String) -> Result<String> {
     Ok(trimmed)
 }
 
-fn encode_component(value: &str) -> String {
+fn encode_component_v1(value: &str) -> String {
     let mut output = String::new();
     for byte in value.bytes() {
         match byte {

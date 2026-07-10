@@ -324,6 +324,10 @@ impl ProjectDestinationRegistry {
 pub trait ProjectDestinationRuntime {
     fn protocol(&self) -> &dyn DestinationProtocol;
 
+    fn destination_sheet(&self) -> Result<DestinationSheet> {
+        Ok(self.protocol().sheet().clone())
+    }
+
     fn describe(&self) -> ProjectDestinationDescription;
 
     fn supported_dispositions(&self) -> &[WriteDisposition] {
@@ -439,19 +443,8 @@ impl ResolvedProjectDestination {
     }
 
     pub fn column_identifier_policy(&self) -> Result<Option<IdentifierPolicy>> {
-        if !matches!(
-            self.describe().schemes.first(),
-            Some(&("duckdb" | "postgres"))
-        ) {
-            return Ok(None);
-        }
-        let rules = &self.runtime.protocol().sheet().identifier_rules;
-        match rules.normalizer.as_str() {
-            "namecase-v1" | "namecase-v1/postgres-quoted-v1" => {
-                identifier_policy_from_destination_rules(rules).map(Some)
-            }
-            _ => Ok(None),
-        }
+        let sheet = self.runtime.destination_sheet()?;
+        identifier_policy_from_destination_rules(&sheet.identifier_rules).map(Some)
     }
 
     pub fn output_schema(&self, plan: &EnginePlan) -> Result<DestinationOutputSchema> {

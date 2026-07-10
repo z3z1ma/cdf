@@ -45,9 +45,9 @@ pub(crate) fn parquet_sheet() -> Result<DestinationSheet> {
             mapping("Union", "union", TypeMappingFidelity::Unsupported),
         ],
         identifier_rules: IdentifierRules {
-            normalizer: "object-key-component-v1".to_owned(),
+            normalizer: "namecase-v1".to_owned(),
             max_length: None,
-            allowed_pattern: None,
+            allowed_pattern: Some("^[a-z_][a-z0-9_]*$".to_owned()),
         },
         migration_support: CapabilitySupport::Unsupported,
         quarantine_tables: CapabilitySupport::Unsupported,
@@ -65,6 +65,12 @@ pub(crate) fn parquet_correction_capabilities() -> cdf_kernel::DestinationCorrec
             IdempotencySupport::PackageToken,
         ),
     )
+}
+
+pub(crate) fn parquet_protocol_capabilities() -> cdf_kernel::DestinationProtocolCapabilities {
+    cdf_kernel::DestinationProtocolCapabilities::default()
+        .with_corrections(parquet_correction_capabilities())
+        .with_object_key_rules(ObjectKeyRules::component_v1())
 }
 
 fn mapping(

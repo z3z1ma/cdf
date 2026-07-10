@@ -19,9 +19,9 @@ use cdf_kernel::{
     DestinationCorrectionOperation, DestinationCorrectionReceiptEvidence,
     DestinationCorrectionSidecarObjectEvidence, DestinationCorrectionSidecarReceiptEvidence,
     DestinationId, DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules,
-    PackageHash, PlanId, PromotionId, Receipt, ReceiptId, Result, SchemaHash, SegmentAck,
-    SegmentId, StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, VerifyClause, WriteDisposition,
+    ObjectKeyPolicy, ObjectKeyRules, PackageHash, PlanId, PromotionId, Receipt, ReceiptId, Result,
+    SchemaHash, SegmentAck, SegmentId, StateSegment, TargetName, TransactionMetadata,
+    TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
 use cdf_package::{PackageReader, SegmentEntry};
 use object_store::{

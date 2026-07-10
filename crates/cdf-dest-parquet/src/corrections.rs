@@ -1,3 +1,4 @@
+use crate::store::ObjectKeyEncoder;
 use crate::*;
 use crate::{
     manifest::{
@@ -101,8 +102,12 @@ impl ParquetDestination {
         }
         Ok(ParquetVersionedRematerializationPlan {
             promotion_id: request.promotion_id,
-            target_manifest_key: version_manifest_key(&request.target, &request.target_version),
-            target_pointer_key: replace_pointer_key(&request.target),
+            target_manifest_key: version_manifest_key(
+                self.object_key_encoder(),
+                &request.target,
+                &request.target_version,
+            ),
+            target_pointer_key: replace_pointer_key(self.object_key_encoder(), &request.target),
             target: request.target,
             correction_package_hash: request.correction_package_hash,
             required_source_packages: request.required_source_packages,
@@ -130,7 +135,7 @@ pub(crate) fn plan_correction_request(
             "Parquet correction execution supports only correction_sidecar; in-place update and versioned rematerialization are not executable",
         ));
     }
-    let mut context = build_correction_context(request)?;
+    let mut context = build_correction_context(destination.object_key_encoder(), request)?;
     if let Some(receipt) = load_correction_receipt(destination, &context.receipt_key)? {
         context.plan.validate_receipt(request, &receipt)?;
         verify_sidecar_receipt(destination, &receipt)?;
@@ -234,6 +239,7 @@ impl CorrectionCommitSession for ParquetCorrectionSession<'_> {
 }
 
 pub(crate) fn build_correction_context(
+    object_key_encoder: ObjectKeyEncoder,
     request: &DestinationCorrectionCommitRequest,
 ) -> Result<ParquetCorrectionContext> {
     let mut operations = request.corrections.clone();
@@ -259,7 +265,8 @@ pub(crate) fn build_correction_context(
     };
     let sidecar_bytes = canonical_json_bytes(&sidecar)?;
     let sidecar_sha256 = content_sha256(&sidecar_bytes);
-    let sidecar_key = correction_sidecar_object_key(&request.target, &sidecar_sha256);
+    let sidecar_key =
+        correction_sidecar_object_key(object_key_encoder, &request.target, &sidecar_sha256);
     let sidecar_object = ParquetCorrectionSidecarObject {
         key: sidecar_key,
         sha256: sidecar_sha256,
@@ -285,8 +292,13 @@ pub(crate) fn build_correction_context(
     };
     let manifest_bytes = canonical_json_bytes(&manifest)?;
     let manifest_sha256 = content_sha256(&manifest_bytes);
-    let manifest_key = correction_sidecar_manifest_key(&request.target, &manifest_sha256);
-    let receipt_key = correction_receipt_key(&request.target, &request.idempotency_token);
+    let manifest_key =
+        correction_sidecar_manifest_key(object_key_encoder, &request.target, &manifest_sha256);
+    let receipt_key = correction_receipt_key(
+        object_key_encoder,
+        &request.target,
+        &request.idempotency_token,
+    );
     let plan = DestinationCorrectionCommitPlan {
         kernel: CommitPlan {
             plan_id: PlanId::new(format!(
@@ -511,8 +523,17 @@ fn verify_sidecar_receipt(destination: &ParquetDestination, receipt: &Receipt) -
             CdfError::destination("Parquet correction receipt is missing receipt_key")
         })?;
     if evidence.manifest_key
-        != correction_sidecar_manifest_key(&receipt.target, &evidence.manifest_sha256)
-        || *receipt_key != correction_receipt_key(&receipt.target, &receipt.idempotency_token)
+        != correction_sidecar_manifest_key(
+            destination.object_key_encoder(),
+            &receipt.target,
+            &evidence.manifest_sha256,
+        )
+        || *receipt_key
+            != correction_receipt_key(
+                destination.object_key_encoder(),
+                &receipt.target,
+                &receipt.idempotency_token,
+            )
     {
         return Err(CdfError::destination(
             "Parquet correction receipt keys are not derived from their content/package identities",
@@ -563,7 +584,13 @@ fn verify_sidecar_receipt(destination: &ParquetDestination, receipt: &Receipt) -
         })?;
     validate_manifest_receipt(&manifest, receipt, &correction, &evidence)?;
     for (object, object_evidence) in manifest.objects.iter().zip(&evidence.objects) {
-        if object.key != correction_sidecar_object_key(&receipt.target, &object.sha256) {
+        if object.key
+            != correction_sidecar_object_key(
+                destination.object_key_encoder(),
+                &receipt.target,
+                &object.sha256,
+            )
+        {
             return Err(CdfError::destination(format!(
                 "Parquet correction sidecar object {} is not content-addressed by its hash",
                 object.key
