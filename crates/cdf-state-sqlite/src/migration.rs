@@ -5,6 +5,7 @@ use rusqlite::{Connection, OpenFlags};
 use serde::Serialize;
 
 use crate::{
+    lease::{SCOPE_LEASE_COMPONENT, SCOPE_LEASE_SCHEMA_VERSION, SqliteScopeLeaseStore},
     run_ledger::{RUN_LEDGER_COMPONENT, RUN_LEDGER_SCHEMA_VERSION, SqliteRunLedger},
     sqlite::{CHECKPOINT_STORE_COMPONENT, CHECKPOINT_STORE_SCHEMA_VERSION, SqliteCheckpointStore},
     support::{read_component_schema_version, sqlite_error},
@@ -46,6 +47,7 @@ pub fn migrate_sqlite_state(path: impl AsRef<Path>) -> Result<SqliteStateMigrati
     let path = path.as_ref();
     let before = read_state_versions(path)?;
     SqliteCheckpointStore::open(path)?;
+    SqliteScopeLeaseStore::open(path)?;
     SqliteRunLedger::open(path)?;
     let after = read_state_versions(path)?;
 
@@ -63,6 +65,12 @@ pub fn migrate_sqlite_state(path: impl AsRef<Path>) -> Result<SqliteStateMigrati
                 after.run_ledger,
                 RUN_LEDGER_SCHEMA_VERSION,
             )?,
+            component_report(
+                SCOPE_LEASE_COMPONENT,
+                before.scope_lease_store,
+                after.scope_lease_store,
+                SCOPE_LEASE_SCHEMA_VERSION,
+            )?,
         ],
     })
 }
@@ -71,6 +79,7 @@ pub fn migrate_sqlite_state(path: impl AsRef<Path>) -> Result<SqliteStateMigrati
 struct StateVersions {
     checkpoint_store: Option<i64>,
     run_ledger: Option<i64>,
+    scope_lease_store: Option<i64>,
 }
 
 fn read_state_versions(path: &Path) -> Result<StateVersions> {
@@ -78,6 +87,7 @@ fn read_state_versions(path: &Path) -> Result<StateVersions> {
         return Ok(StateVersions {
             checkpoint_store: None,
             run_ledger: None,
+            scope_lease_store: None,
         });
     }
     let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
@@ -85,6 +95,7 @@ fn read_state_versions(path: &Path) -> Result<StateVersions> {
     Ok(StateVersions {
         checkpoint_store: read_component_schema_version(&conn, CHECKPOINT_STORE_COMPONENT)?,
         run_ledger: read_component_schema_version(&conn, RUN_LEDGER_COMPONENT)?,
+        scope_lease_store: read_component_schema_version(&conn, SCOPE_LEASE_COMPONENT)?,
     })
 }
 

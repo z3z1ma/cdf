@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
-Depends-On: .10x/specs/sampled-schema-discovery-coverage.md, .10x/tickets/done/2026-07-09-p2-ws-a10a-discovery-manifest-artifact-budget.md, .10x/tickets/done/2026-07-09-p2-ws-a10b-aggregate-schema-join-core.md, .10x/tickets/2026-07-09-p2-ws-a10c-exhaustive-local-binary-discovery.md
+Depends-On: .10x/specs/sampled-schema-discovery-coverage.md, .10x/tickets/done/2026-07-09-p2-ws-a10a-discovery-manifest-artifact-budget.md, .10x/tickets/done/2026-07-09-p2-ws-a10b-aggregate-schema-join-core.md, .10x/tickets/done/2026-07-09-p2-ws-a10c-exhaustive-local-binary-discovery.md
 
 # P2 WS-A10g explicit sampled binary discovery
 

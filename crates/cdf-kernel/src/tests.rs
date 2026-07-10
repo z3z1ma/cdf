@@ -362,6 +362,209 @@ fn metadata_helpers_round_trip_cdf_annotations() {
 }
 
 #[test]
+fn destination_correction_vocabulary_is_backward_compatible_and_semver_stable() {
+    let legacy_sheet = sample_destination_sheet();
+    let legacy_json = serde_json::to_string(&legacy_sheet).unwrap();
+    assert!(!legacy_json.contains("corrections"));
+    let decoded: DestinationSheetArtifact = serde_json::from_str(&legacy_json).unwrap();
+    assert_eq!(
+        decoded.protocol_capabilities,
+        DestinationProtocolCapabilities::default()
+    );
+    assert_eq!(decoded.sheet, legacy_sheet);
+    assert_eq!(serde_json::to_string(&decoded).unwrap(), legacy_json);
+
+    assert_eq!(
+        serde_json::to_string(&[
+            CorrectionStrategy::InPlaceUpdate,
+            CorrectionStrategy::CorrectionSidecar,
+            CorrectionStrategy::VersionedRematerialization,
+        ])
+        .unwrap(),
+        r#"["in_place_update","correction_sidecar","versioned_rematerialization"]"#
+    );
+    assert!(serde_json::from_str::<CorrectionStrategy>(r#""unsafe_update""#).is_err());
+
+    let sidecar = DestinationCorrectionCapabilities {
+        strategies: vec![CorrectionStrategyCapability {
+            strategy: CorrectionStrategy::CorrectionSidecar,
+            transaction_guarantee: TransactionSupport::AtomicPackage,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        }],
+        ..DestinationCorrectionCapabilities::default()
+    };
+    sidecar
+        .validate(
+            &TransactionSupport::AtomicPackage,
+            &IdempotencySupport::PackageToken,
+        )
+        .unwrap();
+    let rematerialization = DestinationCorrectionCapabilities {
+        strategies: vec![CorrectionStrategyCapability {
+            strategy: CorrectionStrategy::VersionedRematerialization,
+            transaction_guarantee: TransactionSupport::AtomicTarget,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        }],
+        ..DestinationCorrectionCapabilities::default()
+    };
+    rematerialization
+        .validate(
+            &TransactionSupport::AtomicTarget,
+            &IdempotencySupport::PackageToken,
+        )
+        .unwrap();
+
+    let mut unsupported_version = DestinationCorrectionCapabilities::default();
+    unsupported_version.version += 1;
+    assert!(
+        unsupported_version
+            .validate(
+                &TransactionSupport::AtomicPackage,
+                &IdempotencySupport::PackageToken,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported destination correction capabilities version")
+    );
+}
+
+#[test]
+fn row_provenance_and_correction_plan_round_trip_without_destination_types() {
+    let original_row = RowProvenanceAddress::new(
+        PackageHash::new("sha256:original-package").unwrap(),
+        SegmentId::new("seg-000001").unwrap(),
+        0,
+    );
+    let request = DestinationCorrectionRequest {
+        promotion_id: PromotionId::new("promotion-001").unwrap(),
+        original_row: original_row.clone(),
+        old_schema_hash: SchemaHash::new("sha256:old-schema").unwrap(),
+        new_schema_hash: SchemaHash::new("sha256:new-schema").unwrap(),
+        promoted_path: "/payload/customer_id".to_owned(),
+        promoted_value_json: r#"{"arrow_type":"int64","value":"42"}"#.to_owned(),
+        residual_operation: ResidualCorrectionOperation::RemovePromotedPath,
+        selected_strategy: CorrectionStrategy::InPlaceUpdate,
+    };
+    let plan = DestinationCorrectionPlan {
+        request,
+        transaction_guarantee: TransactionSupport::AtomicPackage,
+        idempotency_guarantee: IdempotencySupport::PackageToken,
+    };
+    let capabilities = DestinationCorrectionCapabilities {
+        version: DESTINATION_CORRECTION_CAPABILITIES_VERSION,
+        row_provenance: RowProvenanceCapabilities {
+            persistence: CapabilitySupport::Supported,
+            targetability: CapabilitySupport::Supported,
+        },
+        residual_readback: CapabilitySupport::Supported,
+        strategies: vec![CorrectionStrategyCapability {
+            strategy: CorrectionStrategy::InPlaceUpdate,
+            transaction_guarantee: TransactionSupport::AtomicPackage,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        }],
+    };
+
+    plan.validate_for(
+        &capabilities,
+        &TransactionSupport::AtomicPackage,
+        &IdempotencySupport::PackageToken,
+    )
+    .unwrap();
+    let encoded = serde_json::to_string(&plan).unwrap();
+    assert!(encoded.contains(r#""original_row_ordinal":0"#));
+    assert!(encoded.contains(r#""selected_strategy":"in_place_update""#));
+    assert!(encoded.contains(r#""residual_operation":"remove_promoted_path""#));
+    assert!(!encoded.contains("merge_key"));
+    let decoded: DestinationCorrectionPlan = serde_json::from_str(&encoded).unwrap();
+    assert_eq!(decoded, plan);
+    assert_eq!(decoded.request.original_row, original_row);
+}
+
+#[test]
+fn correction_capability_validation_rejects_impossible_claims_and_plans() {
+    let mut targetable_without_persistence = DestinationCorrectionCapabilities::default();
+    targetable_without_persistence.row_provenance.targetability = CapabilitySupport::Supported;
+    assert!(
+        targetable_without_persistence
+            .validate(
+                &TransactionSupport::AtomicPackage,
+                &IdempotencySupport::PackageToken,
+            )
+            .is_err()
+    );
+
+    let mut in_place_without_targetability = DestinationCorrectionCapabilities::default();
+    in_place_without_targetability.row_provenance.persistence = CapabilitySupport::Supported;
+    in_place_without_targetability.strategies = vec![CorrectionStrategyCapability {
+        strategy: CorrectionStrategy::InPlaceUpdate,
+        transaction_guarantee: TransactionSupport::AtomicPackage,
+        idempotency_guarantee: IdempotencySupport::PackageToken,
+    }];
+    assert!(
+        in_place_without_targetability
+            .validate(
+                &TransactionSupport::AtomicPackage,
+                &IdempotencySupport::PackageToken,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("targetable persisted row provenance")
+    );
+
+    let mut duplicate_strategy = DestinationCorrectionCapabilities {
+        row_provenance: RowProvenanceCapabilities {
+            persistence: CapabilitySupport::Supported,
+            targetability: CapabilitySupport::Supported,
+        },
+        ..DestinationCorrectionCapabilities::default()
+    };
+    let strategy = CorrectionStrategyCapability {
+        strategy: CorrectionStrategy::InPlaceUpdate,
+        transaction_guarantee: TransactionSupport::AtomicPackage,
+        idempotency_guarantee: IdempotencySupport::PackageToken,
+    };
+    duplicate_strategy.strategies = vec![strategy.clone(), strategy];
+    assert!(
+        duplicate_strategy
+            .validate(
+                &TransactionSupport::AtomicPackage,
+                &IdempotencySupport::PackageToken,
+            )
+            .is_err()
+    );
+
+    let unsupported_plan = DestinationCorrectionPlan {
+        request: DestinationCorrectionRequest {
+            promotion_id: PromotionId::new("promotion-unsupported").unwrap(),
+            original_row: RowProvenanceAddress::new(
+                PackageHash::new("sha256:original-package").unwrap(),
+                SegmentId::new("seg-000001").unwrap(),
+                7,
+            ),
+            old_schema_hash: SchemaHash::new("sha256:old-schema").unwrap(),
+            new_schema_hash: SchemaHash::new("sha256:new-schema").unwrap(),
+            promoted_path: "/payload/customer_id".to_owned(),
+            promoted_value_json: "42".to_owned(),
+            residual_operation: ResidualCorrectionOperation::RemovePromotedPath,
+            selected_strategy: CorrectionStrategy::CorrectionSidecar,
+        },
+        transaction_guarantee: TransactionSupport::AtomicPackage,
+        idempotency_guarantee: IdempotencySupport::PackageToken,
+    };
+    assert!(
+        unsupported_plan
+            .validate_for(
+                &DestinationCorrectionCapabilities::default(),
+                &TransactionSupport::AtomicPackage,
+                &IdempotencySupport::PackageToken,
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("does not support correction strategy")
+    );
+}
+
+#[test]
 fn batch_wraps_arrow_record_batch_and_reports_counts() {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
     let column: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));

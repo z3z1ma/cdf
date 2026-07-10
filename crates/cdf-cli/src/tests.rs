@@ -2368,7 +2368,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
 }
 
 #[test]
-fn local_arrow_ipc_discovery_rejects_malformed_multi_file_and_remote_without_writes() {
+fn local_arrow_ipc_discovery_rejects_malformed_and_remote_without_writes() {
     let malformed = TestProject::new();
     write_arrow_ipc_discover_resource(&malformed, "events.arrow");
     fs::write(malformed.root.join("data/events.arrow"), b"not-arrow-ipc").unwrap();
@@ -2509,13 +2509,43 @@ fn local_arrow_ipc_discovery_rejects_malformed_multi_file_and_remote_without_wri
         "discover",
         "local.events",
     ]);
-    assert_ne!(multi_result.exit_code, 0);
-    assert!(
-        multi_result
-            .stderr
-            .contains("multi-file Arrow IPC discovery")
-    );
+    assert_eq!(multi_result.exit_code, 0, "{}", multi_result.stderr);
+    let multi_json = stderr_or_stdout_json(&multi_result.stdout);
+    let multi_report = &multi_json["result"];
+    assert_eq!(multi_report["source_identity"]["coverage"], "exhaustive");
+    assert_eq!(multi_report["source_identity"]["matched_files"], "2");
+    assert_eq!(multi_report["source_identity"]["probed_files"], "2");
     assert_no_schema_discovery_writes(&multi);
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        multi.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    let schema_entries = fs::read_dir(multi.root.join(".cdf/schemas"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(schema_entries.len(), 2);
+    assert!(
+        schema_entries
+            .iter()
+            .any(|path| path.ends_with(".discovery.json"))
+    );
+    let diff = run([
+        "cdf",
+        "--json",
+        "--project",
+        multi.root_str(),
+        "schema",
+        "diff",
+        "local.events",
+    ]);
+    assert_eq!(diff.exit_code, 0, "{}", diff.stderr);
 
     let remote = TestProject::new();
     fs::write(
@@ -3415,6 +3445,87 @@ fn merge_without_key_fails_all_entry_commands_before_contact_or_writes() {
     );
     assert_eq!(requests.lock().unwrap().len(), 0);
     assert_eq!(project_tree_snapshot(&project.root), before);
+}
+
+#[test]
+fn multi_file_parquet_no_pin_and_autopin_are_exhaustive_and_byte_stable() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    write_vendor_parquet(&project.root.join("data/a.parquet"));
+    write_vendor_parquet(&project.root.join("data/b.parquet"));
+
+    let inspection = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--no-pin",
+    ]);
+    assert_eq!(inspection.exit_code, 0, "{}", inspection.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&inspection.stdout)["result"]["schema_snapshot"]["outcome"],
+        "inspection_only"
+    );
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+
+    let first = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(first.exit_code, 0, "{}", first.stderr);
+    let first_report = stderr_or_stdout_json(&first.stdout);
+    assert_eq!(
+        first_report["result"]["schema_snapshot"]["outcome"],
+        "added"
+    );
+    let snapshot_path = first_report["result"]["schema_snapshot"]["path"]
+        .as_str()
+        .unwrap();
+    let snapshot_before = fs::read(project.root.join(snapshot_path)).unwrap();
+    let snapshot_json: serde_json::Value = serde_json::from_slice(&snapshot_before).unwrap();
+    let manifest_path = snapshot_json["metadata"]["cdf:discovery_manifest_path"]
+        .as_str()
+        .unwrap();
+    let manifest_before = fs::read(project.root.join(manifest_path)).unwrap();
+    let manifest_json: serde_json::Value = serde_json::from_slice(&manifest_before).unwrap();
+    assert_eq!(manifest_json["coverage"], "exhaustive");
+    assert_eq!(manifest_json["candidates"].as_array().unwrap().len(), 2);
+    assert!(
+        manifest_json["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["participation"] == "probed")
+    );
+
+    let second = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(second.exit_code, 0, "{}", second.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&second.stdout)["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+    assert_eq!(
+        fs::read(project.root.join(snapshot_path)).unwrap(),
+        snapshot_before
+    );
+    assert_eq!(
+        fs::read(project.root.join(manifest_path)).unwrap(),
+        manifest_before
+    );
 }
 
 #[test]
@@ -7292,7 +7403,7 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
 }
 
 #[test]
-fn run_multi_file_parquet_discover_fails_before_writes() {
+fn run_multi_file_parquet_discover_autopins_and_preserves_runtime_exact_manifest() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/a.parquet"));
@@ -7304,16 +7415,50 @@ fn run_multi_file_parquet_discover_fails_before_writes() {
         "checkpoint-run-parquet-discover-multi",
     );
 
-    assert_ne!(result.exit_code, 0);
-    assert_no_run_writes(&project, "pkg-run-parquet-discover-multi");
-    assert!(!project.root.join(".cdf/schemas").exists());
-    let json = stderr_or_stdout_json(&result.stderr);
-    assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("multi-file Parquet discovery is unsupported")
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    let snapshot_path = single_schema_snapshot_path(&project);
+    let snapshot = read_snapshot_json(&project, &snapshot_path);
+    let manifest_path = snapshot["metadata"]["cdf:discovery_manifest_path"]
+        .as_str()
+        .unwrap();
+    let discovery_manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(project.root.join(manifest_path)).unwrap()).unwrap();
+    assert_eq!(
+        discovery_manifest["candidates"].as_array().unwrap().len(),
+        2
     );
+    assert!(
+        discovery_manifest["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|candidate| candidate["identity"]["strength"] == "bounded_observation")
+    );
+
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .expect("committed multi-file Parquet head");
+    let SourcePosition::FileManifest(runtime_manifest) = &head.delta.output_position else {
+        panic!("multi-file run must commit exact FileManifest identity");
+    };
+    assert_eq!(runtime_manifest.files.len(), 2);
+    assert!(
+        runtime_manifest
+            .files
+            .iter()
+            .all(|file| file.sha256.is_some())
+    );
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 4);
 }
 
 #[test]
@@ -9886,7 +10031,7 @@ fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
     let first_json = stderr_or_stdout_json(&first.stdout);
     assert_eq!(first_json["command"], "state migrate");
-    assert_eq!(first_json["result"]["applied_count"], 2);
+    assert_eq!(first_json["result"]["applied_count"], 3);
     assert!(
         first_json["result"]["state_store_path"]
             .as_str()
@@ -9906,6 +10051,12 @@ fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
     assert_eq!(first_components[1]["target_version"], 3);
     assert_eq!(first_components[1]["applied"], true);
     assert_eq!(first_components[1]["action"], "initialized");
+    assert_eq!(first_components[2]["component"], "scope_lease_store");
+    assert_eq!(first_components[2]["before_version"], Value::Null);
+    assert_eq!(first_components[2]["after_version"], 1);
+    assert_eq!(first_components[2]["target_version"], 1);
+    assert_eq!(first_components[2]["applied"], true);
+    assert_eq!(first_components[2]["action"], "initialized");
 
     let second = run([
         "cdf",
@@ -9924,16 +10075,19 @@ fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
     assert_eq!(second_components[0]["applied"], false);
     assert_eq!(second_components[1]["action"], "current");
     assert_eq!(second_components[1]["applied"], false);
+    assert_eq!(second_components[2]["action"], "current");
+    assert_eq!(second_components[2]["applied"], false);
 
     let human = run(["cdf", "--project", project.root_str(), "state", "migrate"]);
     assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
     for expected in [
-        "OK state migration checked 2 component(s)",
+        "OK state migration checked 3 component(s)",
         "State store",
         "mutation performed  none; all SQLite state components were current",
         "| component",
         "checkpoint_store",
         "run_ledger",
+        "scope_lease_store",
     ] {
         assert!(
             human.stdout.contains(expected),
@@ -11316,6 +11470,7 @@ fn schema_snapshot_paths(project: &TestProject) -> Vec<String> {
                 .replace(std::path::MAIN_SEPARATOR, "/")
         })
         .collect::<Vec<_>>();
+    entries.retain(|path| !path.ends_with(".discovery.json"));
     entries.sort();
     entries
 }

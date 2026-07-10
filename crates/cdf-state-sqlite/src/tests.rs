@@ -1,15 +1,22 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Barrier},
+    thread,
+};
 
 use cdf_conformance::checkpoint_store::{
     assert_checkpoint_store_conformance, assert_checkpoint_store_send_sync,
 };
+use cdf_conformance::scope_lease::{
+    ManualScopeLeaseClock, assert_scope_lease_store_conformance, assert_scope_lease_store_send_sync,
+};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
-    FileManifest, FilePosition, ForeignState, IdempotencyToken, LogPosition, MigrationRecord,
-    PackageHash, PageToken, PartitionId, PipelineId, PlanId, Receipt, ReceiptId, ResourceId,
-    RewindRequest, RunId, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta,
-    StateSegment, TargetName, VerifyClause, WriteDisposition,
+    FileManifest, FilePosition, ForeignState, IdempotencyToken, LeaseOwnerId, LogPosition,
+    MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId, Receipt, ReceiptId,
+    ResourceId, RewindRequest, RunId, SchemaHash, ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId,
+    SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause, WriteDisposition,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -717,8 +724,8 @@ fn sqlite_state_migration_initializes_missing_database_and_is_idempotent() {
     let db_path = dir.path().join("state.db");
 
     let first = migrate_sqlite_state(&db_path).unwrap();
-    assert_eq!(first.applied_count(), 2);
-    assert_eq!(first.components.len(), 2);
+    assert_eq!(first.applied_count(), 3);
+    assert_eq!(first.components.len(), 3);
     assert_eq!(first.components[0].component, "checkpoint_store");
     assert_eq!(first.components[0].before_version, None);
     assert_eq!(first.components[0].after_version, 1);
@@ -735,6 +742,14 @@ fn sqlite_state_migration_initializes_missing_database_and_is_idempotent() {
         first.components[1].action,
         SqliteStateMigrationAction::Initialized
     );
+    assert_eq!(first.components[2].component, "scope_lease_store");
+    assert_eq!(first.components[2].before_version, None);
+    assert_eq!(first.components[2].after_version, 1);
+    assert_eq!(first.components[2].target_version, 1);
+    assert_eq!(
+        first.components[2].action,
+        SqliteStateMigrationAction::Initialized
+    );
 
     let second = migrate_sqlite_state(&db_path).unwrap();
     assert_eq!(second.applied_count(), 0);
@@ -745,6 +760,7 @@ fn sqlite_state_migration_initializes_missing_database_and_is_idempotent() {
             .map(|component| component.action)
             .collect::<Vec<_>>(),
         vec![
+            SqliteStateMigrationAction::Current,
             SqliteStateMigrationAction::Current,
             SqliteStateMigrationAction::Current
         ]
@@ -784,6 +800,141 @@ fn sqlite_state_migration_upgrades_committed_run_ledger_v1_fixture() {
             RunEventAppend::new(RunEventKind::ValidationDepthTransitionRecorded),
         )
         .unwrap();
+}
+
+#[test]
+fn scope_lease_stores_pass_shared_conformance() {
+    assert_scope_lease_store_send_sync::<InMemoryScopeLeaseStore>();
+    assert_scope_lease_store_send_sync::<SqliteScopeLeaseStore>();
+    assert_scope_lease_store_conformance(|clock| InMemoryScopeLeaseStore::with_clock(clock));
+    assert_scope_lease_store_conformance(|clock| {
+        SqliteScopeLeaseStore::open_in_memory_with_clock(clock).unwrap()
+    });
+}
+
+#[test]
+fn scope_lease_acquire_is_exclusive_under_concurrent_contention() {
+    let clock = Arc::new(ManualScopeLeaseClock::new(10_000));
+    assert_concurrent_lease_contention(Arc::new(InMemoryScopeLeaseStore::with_clock(clock)));
+
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("leases.db");
+    let clock = Arc::new(ManualScopeLeaseClock::new(10_000));
+    let first = Arc::new(SqliteScopeLeaseStore::open_with_clock(&path, clock.clone()).unwrap());
+    let second = Arc::new(SqliteScopeLeaseStore::open_with_clock(&path, clock).unwrap());
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = [first, second].map(|store| {
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.acquire(
+                ScopeKey::SchemaContract {
+                    contract: ContractRef::new("concurrent-sqlite").unwrap(),
+                },
+                LeaseOwnerId::new(format!("owner-{:?}", thread::current().id())).unwrap(),
+                1_000,
+            )
+        })
+    });
+    let successes = handles
+        .into_iter()
+        .map(|handle| usize::from(handle.join().unwrap().is_ok()))
+        .sum::<usize>();
+    assert_eq!(successes, 1);
+}
+
+#[test]
+fn sqlite_scope_lease_persists_fence_across_reopen() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("leases.db");
+    let scope = ScopeKey::SchemaContract {
+        contract: ContractRef::new("persistent-lease").unwrap(),
+    };
+    let clock = Arc::new(ManualScopeLeaseClock::new(20_000));
+    let first = SqliteScopeLeaseStore::open_with_clock(&path, clock.clone()).unwrap();
+    let lease = first
+        .acquire(scope.clone(), LeaseOwnerId::new("owner-a").unwrap(), 100)
+        .unwrap();
+    drop(first);
+
+    let reopened = SqliteScopeLeaseStore::open_with_clock(&path, clock.clone()).unwrap();
+    clock.set(20_099);
+    assert!(
+        reopened
+            .acquire(scope.clone(), LeaseOwnerId::new("owner-b").unwrap(), 100,)
+            .is_err()
+    );
+    clock.set(20_100);
+    let successor = reopened
+        .acquire(scope, LeaseOwnerId::new("owner-b").unwrap(), 100)
+        .unwrap();
+    assert_eq!(successor.fencing_token.get(), lease.fencing_token.get() + 1);
+    clock.set(20_101);
+    assert!(reopened.assert_current(&lease).is_err());
+}
+
+fn assert_concurrent_lease_contention<S>(store: Arc<S>)
+where
+    S: ScopeLeaseStore + 'static,
+{
+    let barrier = Arc::new(Barrier::new(2));
+    let handles = ["owner-a", "owner-b"].map(|owner| {
+        let store = Arc::clone(&store);
+        let barrier = Arc::clone(&barrier);
+        thread::spawn(move || {
+            barrier.wait();
+            store.acquire(
+                ScopeKey::SchemaContract {
+                    contract: ContractRef::new("concurrent-memory").unwrap(),
+                },
+                LeaseOwnerId::new(owner).unwrap(),
+                1_000,
+            )
+        })
+    });
+    let successes = handles
+        .into_iter()
+        .map(|handle| usize::from(handle.join().unwrap().is_ok()))
+        .sum::<usize>();
+    assert_eq!(successes, 1);
+}
+
+#[test]
+fn lease_migration_preserves_existing_checkpoint_history_and_commit_gate() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("checkpoint-v1.db");
+    let checkpoint_store = SqliteCheckpointStore::open(&path).unwrap();
+    let committed = commit_delta(
+        &checkpoint_store,
+        delta(
+            "checkpoint-before-lease-migration",
+            None,
+            partition_scope(),
+            cursor_position(7),
+            "package-before-lease-migration",
+        ),
+    );
+    drop(checkpoint_store);
+
+    let report = migrate_sqlite_state(&path).unwrap();
+    let lease = report
+        .components
+        .iter()
+        .find(|component| component.component == "scope_lease_store")
+        .unwrap();
+    assert_eq!(lease.action, SqliteStateMigrationAction::Initialized);
+
+    let reopened = SqliteCheckpointStore::open(&path).unwrap();
+    let head = reopened
+        .head(
+            &committed.delta.pipeline_id,
+            &committed.delta.resource_id,
+            &committed.delta.scope,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.delta.checkpoint_id, committed.delta.checkpoint_id);
+    assert_eq!(head.receipt, committed.receipt);
 }
 
 #[test]

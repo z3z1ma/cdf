@@ -196,6 +196,37 @@ fn arrow_ipc_file_discovery_reads_schema_block_without_decoding_record_batches()
 }
 
 #[test]
+fn bounded_local_arrow_ipc_discovery_enforces_total_metadata_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.arrow");
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "payload",
+        DataType::Utf8,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec!["x".repeat(1_000_000)]))],
+    )
+    .unwrap();
+    let mut file = fs::File::create(&path).unwrap();
+    let mut writer = FileWriter::try_new(&mut file, schema.as_ref()).unwrap();
+    writer.write(&batch).unwrap();
+    writer.finish().unwrap();
+    drop(writer);
+    let size = fs::metadata(&path).unwrap().len();
+
+    let discovery = discover_local_arrow_ipc_schema_bounded(&path, 8, size / 2).unwrap();
+    assert_eq!(discovery.schema.as_ref(), schema.as_ref());
+    assert!(discovery.probe_bytes_read < size / 2);
+    let error = discover_local_arrow_ipc_schema_bounded(&path, 8, 8)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("metadata budget exceeded"));
+    assert!(error.contains("allowed 8"));
+}
+
+#[test]
 fn arrow_ipc_file_discovery_rejects_stream_framing_explicitly() {
     let input = sample_batch();
     let mut bytes = Vec::new();
@@ -1269,6 +1300,31 @@ fn local_parquet_schema_discovery_reads_footer_without_batches() {
             .starts_with("sha256:")
     );
     assert_eq!(discovery.source_identity.footer_sha256.len(), 71);
+}
+
+#[test]
+fn bounded_local_parquet_discovery_reads_only_metadata_and_enforces_budget() {
+    let temp = tempfile::tempdir().unwrap();
+    let parquet_path = temp.path().join("large.parquet");
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "payload",
+        DataType::Utf8,
+        false,
+    )]));
+    let values = (0_u64..10_000)
+        .map(|value| format!("event-{value:016x}-{}", value.wrapping_mul(1_000_003)))
+        .collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values))]).unwrap();
+    write_parquet_file(&parquet_path, &[batch]);
+    let size = fs::metadata(&parquet_path).unwrap().len();
+
+    let discovery = discover_local_parquet_schema_bounded(&parquet_path, 8, size / 2).unwrap();
+    assert!(discovery.probe_bytes_read < size / 2);
+    let error = discover_local_parquet_schema_bounded(&parquet_path, 8, 8)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("metadata budget exceeded"));
+    assert!(error.contains("allowed 8"));
 }
 
 #[test]

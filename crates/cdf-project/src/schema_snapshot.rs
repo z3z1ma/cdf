@@ -863,6 +863,21 @@ impl SchemaSnapshotStore {
         Ok(artifact)
     }
 
+    /// Hydrates a snapshot, validates its content-addressed reference and linked
+    /// discovery manifest, and returns the authority token accepted by schema
+    /// discovery refresh options.
+    pub fn read_with_verified_baseline(
+        &self,
+        reference: &SchemaSnapshotReference,
+    ) -> Result<(SchemaSnapshotArtifact, crate::VerifiedSchemaBaseline)> {
+        let artifact = self.read(reference)?;
+        let baseline = crate::VerifiedSchemaBaseline::from_hydrated_snapshot(
+            ResourceId::new(artifact.resource_id.clone())?,
+            artifact.schema_hash.clone(),
+        );
+        Ok((artifact, baseline))
+    }
+
     fn validate_discovery_manifest(&self, artifact: &SchemaSnapshotArtifact) -> Result<()> {
         let Some(reference) = artifact.discovery_manifest_reference()? else {
             return Ok(());

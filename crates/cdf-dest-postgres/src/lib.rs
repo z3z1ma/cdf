@@ -7,12 +7,13 @@ use std::{
 
 use cdf_kernel::{
     CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
-    DestinationProtocol, DestinationSheet, IdempotencySupport, IdempotencyToken, IdentifierRules,
-    MigrationRecord, PackageHash, PlanId, Receipt, ReceiptId, ReceiptVerification, ResourceId,
-    Result, SchemaHash, SegmentAck, SegmentId, StateDelta, StateSegment, TargetName,
-    TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
-    WriteDisposition,
+    ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest,
+    DestinationCorrectionCapabilities, DestinationId, DestinationProtocol,
+    DestinationProtocolCapabilities, DestinationSheet, IdempotencySupport, IdempotencyToken,
+    IdentifierRules, MigrationRecord, PackageHash, PlanId, Receipt, ReceiptId, ReceiptVerification,
+    ResourceId, Result, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId, StateDelta,
+    StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
+    TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
 use serde::{Deserialize, Serialize};
 

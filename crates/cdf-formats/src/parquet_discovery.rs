@@ -1,9 +1,12 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::{self, Read},
+    io::{self, Read, Seek, SeekFrom},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::UNIX_EPOCH,
 };
 
@@ -24,6 +27,13 @@ use crate::schema::schema_hash;
 pub struct LocalParquetSchemaDiscovery {
     pub schema: SchemaRef,
     pub source_identity: LocalParquetSourceIdentity,
+}
+
+#[derive(Clone, Debug)]
+pub struct BoundedLocalParquetSchemaDiscovery {
+    pub schema: SchemaRef,
+    pub source_identity: LocalParquetSourceIdentity,
+    pub probe_bytes_read: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +94,69 @@ pub fn discover_local_parquet_schema(
     Ok(LocalParquetSchemaDiscovery {
         schema: reader_metadata.schema().clone(),
         source_identity: identity,
+    })
+}
+
+pub fn discover_local_parquet_schema_bounded(
+    path: impl AsRef<Path>,
+    initial_bytes_read: u64,
+    max_metadata_bytes: u64,
+) -> Result<BoundedLocalParquetSchemaDiscovery> {
+    let path = path.as_ref();
+    if initial_bytes_read > max_metadata_bytes {
+        return Err(metadata_budget_error(
+            path,
+            initial_bytes_read,
+            max_metadata_bytes,
+        ));
+    }
+    let metadata = fs::metadata(path)
+        .map_err(|error| io_data_error(format!("inspect {}", path.display()), error))?;
+    let modified_unix_millis = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+        .and_then(|duration| u64::try_from(duration.as_millis()).ok());
+    let file = fs::File::open(path)
+        .map_err(|error| io_data_error(format!("open {}", path.display()), error))?;
+    let file = Arc::new(Mutex::new(file));
+    let bytes_read = Arc::new(AtomicU64::new(initial_bytes_read));
+    let path_display = path.display().to_string();
+    let range_reader = RangeChunkReader::new(metadata.len(), {
+        let file = Arc::clone(&file);
+        let bytes_read = Arc::clone(&bytes_read);
+        move |start, length| {
+            reserve_metadata_bytes(
+                &bytes_read,
+                u64::try_from(length).map_err(|error| CdfError::data(error.to_string()))?,
+                max_metadata_bytes,
+                &path_display,
+            )?;
+            let mut bytes = vec![0; length];
+            let mut file = file
+                .lock()
+                .map_err(|_| CdfError::internal("Parquet discovery file mutex was poisoned"))?;
+            file.seek(SeekFrom::Start(start)).map_err(|error| {
+                CdfError::data(format!("seek {path_display} to {start}: {error}"))
+            })?;
+            file.read_exact(&mut bytes).map_err(|error| {
+                CdfError::data(format!(
+                    "read {} bytes from {path_display} at {start}: {error}",
+                    length
+                ))
+            })?;
+            Ok(bytes)
+        }
+    });
+    let discovery = discover_parquet_schema_from_chunk_reader(
+        &range_reader,
+        metadata.len(),
+        modified_unix_millis,
+    )?;
+    Ok(BoundedLocalParquetSchemaDiscovery {
+        schema: discovery.schema,
+        source_identity: discovery.source_identity,
+        probe_bytes_read: bytes_read.load(Ordering::Relaxed),
     })
 }
 
@@ -282,4 +355,32 @@ fn parquet_discovery_error(error: impl std::fmt::Display) -> CdfError {
 
 fn cdf_to_parquet_error(error: CdfError) -> ParquetError {
     ParquetError::General(error.to_string())
+}
+
+fn reserve_metadata_bytes(
+    bytes_read: &AtomicU64,
+    requested: u64,
+    allowed: u64,
+    path: &str,
+) -> Result<()> {
+    bytes_read
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |measured| {
+            measured
+                .checked_add(requested)
+                .filter(|next| *next <= allowed)
+        })
+        .map(|_| ())
+        .map_err(|measured| {
+            CdfError::data(format!(
+                "discovery metadata budget exceeded for `{path}`: measured at least {} bytes, allowed {allowed}; increase the per-file discovery metadata budget and retry",
+                measured.saturating_add(requested)
+            ))
+        })
+}
+
+fn metadata_budget_error(path: &Path, measured: u64, allowed: u64) -> CdfError {
+    CdfError::data(format!(
+        "discovery metadata budget exceeded for `{}`: measured {measured} bytes, allowed {allowed}; increase the per-file discovery metadata budget and retry",
+        path.display()
+    ))
 }

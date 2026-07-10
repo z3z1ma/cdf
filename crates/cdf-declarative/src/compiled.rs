@@ -43,6 +43,13 @@ pub struct LocalParquetSchemaProbe {
 }
 
 #[derive(Clone, Debug)]
+pub struct BoundedLocalParquetSchemaProbe {
+    pub schema: SchemaRef,
+    pub source_identity: BTreeMap<String, String>,
+    pub probe_bytes_read: u64,
+}
+
+#[derive(Clone, Debug)]
 pub struct CompiledResource {
     descriptor: ResourceDescriptor,
     source_name: String,
@@ -199,6 +206,23 @@ pub fn discover_local_parquet_schema(path: impl AsRef<Path>) -> Result<LocalParq
     })
 }
 
+pub fn discover_local_parquet_schema_bounded(
+    path: impl AsRef<Path>,
+    initial_bytes_read: u64,
+    max_metadata_bytes: u64,
+) -> Result<BoundedLocalParquetSchemaProbe> {
+    let discovery = cdf_formats::discover_local_parquet_schema_bounded(
+        path,
+        initial_bytes_read,
+        max_metadata_bytes,
+    )?;
+    Ok(BoundedLocalParquetSchemaProbe {
+        schema: discovery.schema,
+        source_identity: discovery.source_identity.cache_evidence(),
+        probe_bytes_read: discovery.probe_bytes_read,
+    })
+}
+
 #[derive(Clone, Debug)]
 pub struct LocalArrowIpcSchemaProbe {
     pub schema: SchemaRef,
@@ -213,6 +237,27 @@ pub fn discover_local_arrow_ipc_schema(path: impl AsRef<Path>) -> Result<LocalAr
         source_identity: discovery.source_identity.cache_evidence(),
         probe_bytes_read: discovery.probe_bytes_read,
     })
+}
+
+pub fn discover_local_arrow_ipc_schema_bounded(
+    path: impl AsRef<Path>,
+    initial_bytes_read: u64,
+    max_metadata_bytes: u64,
+) -> Result<LocalArrowIpcSchemaProbe> {
+    let discovery = cdf_formats::discover_local_arrow_ipc_schema_bounded(
+        path,
+        initial_bytes_read,
+        max_metadata_bytes,
+    )?;
+    Ok(LocalArrowIpcSchemaProbe {
+        schema: discovery.schema,
+        source_identity: discovery.source_identity.cache_evidence(),
+        probe_bytes_read: discovery.probe_bytes_read,
+    })
+}
+
+pub fn physical_arrow_schema_hash(schema: &Schema) -> Result<SchemaHash> {
+    cdf_formats::schema_hash(schema)
 }
 
 pub fn discover_transport_parquet_schema(

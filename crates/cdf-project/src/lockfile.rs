@@ -2,7 +2,8 @@ use crate::internal::*;
 use crate::*;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
 use cdf_kernel::{
-    DestinationCommitRequest, IdempotencyToken, PackageHash, ResourceStream,
+    DestinationCommitRequest, DestinationProtocol, DestinationProtocolCapabilities,
+    DestinationSheetArtifact, IdempotencyToken, PackageHash, ResourceStream,
     SchemaSnapshotReference, StateSegment, TargetName, WriteDisposition,
 };
 
@@ -139,9 +140,30 @@ pub struct ContractSnapshotDrift {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct LockedDestination {
     pub sheet_hash: String,
     pub sheet: DestinationSheet,
+    #[serde(
+        default,
+        skip_serializing_if = "DestinationProtocolCapabilities::is_default"
+    )]
+    pub protocol_capabilities: DestinationProtocolCapabilities,
+}
+
+impl LockedDestination {
+    pub fn new(artifact: DestinationSheetArtifact) -> Result<Self> {
+        let sheet_hash = semantic_hash(&artifact)?;
+        Ok(Self {
+            sheet_hash,
+            sheet: artifact.sheet,
+            protocol_capabilities: artifact.protocol_capabilities,
+        })
+    }
+
+    pub fn sheet_artifact(&self) -> Result<DestinationSheetArtifact> {
+        DestinationSheetArtifact::new(self.sheet.clone(), self.protocol_capabilities.clone())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -371,6 +393,29 @@ pub fn generate_lockfile(
     destination_sheets: &[DestinationSheet],
     contract_snapshots: BTreeMap<String, ContractSnapshot>,
 ) -> Result<CdfLock> {
+    let destination_artifacts = destination_sheets
+        .iter()
+        .cloned()
+        .map(|sheet| {
+            DestinationSheetArtifact::new(sheet, DestinationProtocolCapabilities::default())
+        })
+        .collect::<Result<Vec<_>>>()?;
+    generate_lockfile_with_destination_artifacts(
+        config,
+        resources,
+        dependency_tuple,
+        &destination_artifacts,
+        contract_snapshots,
+    )
+}
+
+pub fn generate_lockfile_with_destination_artifacts(
+    config: &ProjectConfig,
+    resources: &[CompiledResource],
+    dependency_tuple: DependencyTuple,
+    destination_artifacts: &[DestinationSheetArtifact],
+    contract_snapshots: BTreeMap<String, ContractSnapshot>,
+) -> Result<CdfLock> {
     validate_project_shape(config)?;
     let mut locked_resources = BTreeMap::new();
     for resource in resources {
@@ -396,14 +441,9 @@ pub fn generate_lockfile(
     }
 
     let mut destinations = BTreeMap::new();
-    for sheet in destination_sheets {
-        destinations.insert(
-            sheet.destination.to_string(),
-            LockedDestination {
-                sheet_hash: semantic_hash(sheet)?,
-                sheet: sheet.clone(),
-            },
-        );
+    for artifact in destination_artifacts {
+        let destination = artifact.sheet.destination.to_string();
+        destinations.insert(destination, LockedDestination::new(artifact.clone())?);
     }
 
     Ok(CdfLock {
@@ -457,11 +497,11 @@ pub fn freeze_contract_snapshots(
     let snapshots = contract_snapshots_for_resources(resources, selector)?;
     let mut lock = match existing_lock {
         Some(lock) => lock.clone(),
-        None => generate_lockfile(
+        None => generate_lockfile_with_destination_artifacts(
             config,
             resources,
             current_dependency_tuple(),
-            &destination_sheets_for_uri(destination_uri)?,
+            &destination_sheet_artifacts_for_uri(destination_uri)?,
             snapshots.clone(),
         )?,
     };
@@ -538,11 +578,11 @@ pub fn pin_schema_snapshot_in_project_lockfile(
             "cannot pin schema snapshot for resource `{selected_id}` because it is not compiled in the project"
         )));
     }
-    generate_lockfile(
+    generate_lockfile_with_destination_artifacts(
         config,
         &resources,
         current_dependency_tuple(),
-        &destination_sheets_for_uri(destination_uri)?,
+        &destination_sheet_artifacts_for_uri(destination_uri)?,
         BTreeMap::new(),
     )
 }
@@ -666,7 +706,7 @@ fn locked_resource_from_current(
     })
 }
 
-fn destination_sheets_for_uri(uri: &str) -> Result<Vec<DestinationSheet>> {
+fn destination_sheet_artifacts_for_uri(uri: &str) -> Result<Vec<DestinationSheetArtifact>> {
     if let Some(path) = uri.strip_prefix("duckdb://") {
         if path.trim().is_empty() {
             return Err(CdfError::contract(
@@ -674,9 +714,7 @@ fn destination_sheets_for_uri(uri: &str) -> Result<Vec<DestinationSheet>> {
             ));
         }
         return Ok(vec![
-            cdf_dest_duckdb::DuckDbDestination::new(path)?
-                .capabilities()
-                .sheet,
+            cdf_dest_duckdb::DuckDbDestination::new(path)?.sheet_artifact()?,
         ]);
     }
     if uri.strip_prefix("parquet://").is_some() {
@@ -688,14 +726,14 @@ fn destination_sheets_for_uri(uri: &str) -> Result<Vec<DestinationSheet>> {
             idempotency_token: IdempotencyToken::new("contract-freeze-snapshot")?,
         };
         let (sheet, _) = cdf_dest_parquet::ParquetDestination::dry_plan_commit(&request)?;
-        return Ok(vec![sheet]);
+        return Ok(vec![DestinationSheetArtifact::new(
+            sheet,
+            DestinationProtocolCapabilities::default(),
+        )?]);
     }
     if uri.starts_with("postgres://") {
         return Ok(vec![
-            cdf_dest_postgres::PostgresDestination::new()
-                .postgres_sheet()
-                .kernel
-                .clone(),
+            cdf_dest_postgres::PostgresDestination::new().sheet_artifact()?,
         ]);
     }
     Err(CdfError::contract(

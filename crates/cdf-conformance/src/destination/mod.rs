@@ -1,9 +1,63 @@
 use cdf_kernel::{
-    CapabilitySupport, CommitPlan, CursorPosition, CursorValue, DeliveryGuarantee,
-    DestinationCommitRequest, DestinationProtocol, DestinationSheet, IdempotencySupport,
-    IdempotencyToken, MigrationRecord, PackageHash, PartitionId, ScopeKey, SegmentId,
-    SourcePosition, StateSegment, TargetName, TypeMappingFidelity, WriteDisposition,
+    CapabilitySupport, CommitPlan, CorrectionStrategyCapability, CursorPosition, CursorValue,
+    DeliveryGuarantee, DestinationCommitRequest, DestinationProtocol, DestinationSheet,
+    IdempotencySupport, IdempotencyToken, MigrationRecord, PackageHash, PartitionId, ScopeKey,
+    SegmentId, SourcePosition, StateSegment, TargetName, TypeMappingFidelity, WriteDisposition,
 };
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DestinationCorrectionConformanceEvidence {
+    pub row_provenance_persistence: CapabilitySupport,
+    pub row_provenance_targetability: CapabilitySupport,
+    pub residual_readback: CapabilitySupport,
+    pub strategies: Vec<CorrectionStrategyCapability>,
+}
+
+impl DestinationCorrectionConformanceEvidence {
+    pub fn unsupported() -> Self {
+        Self {
+            row_provenance_persistence: CapabilitySupport::Unsupported,
+            row_provenance_targetability: CapabilitySupport::Unsupported,
+            residual_readback: CapabilitySupport::Unsupported,
+            strategies: Vec::new(),
+        }
+    }
+}
+
+pub fn assert_destination_correction_conformance(
+    destination: &dyn DestinationProtocol,
+    evidence: &DestinationCorrectionConformanceEvidence,
+) {
+    let artifact = destination
+        .sheet_artifact()
+        .unwrap_or_else(|error| panic!("invalid destination correction capabilities: {error}"));
+    assert_eq!(
+        artifact
+            .protocol_capabilities
+            .corrections
+            .row_provenance
+            .persistence,
+        evidence.row_provenance_persistence,
+        "row-provenance persistence claim must match conformance evidence"
+    );
+    assert_eq!(
+        artifact
+            .protocol_capabilities
+            .corrections
+            .row_provenance
+            .targetability,
+        evidence.row_provenance_targetability,
+        "row-provenance targetability claim must match conformance evidence"
+    );
+    assert_eq!(
+        artifact.protocol_capabilities.corrections.residual_readback, evidence.residual_readback,
+        "residual-readback claim must match conformance evidence"
+    );
+    assert_eq!(
+        artifact.protocol_capabilities.corrections.strategies, evidence.strategies,
+        "correction-strategy claims must match conformance evidence"
+    );
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DestinationConformanceCase {
@@ -34,6 +88,9 @@ where
     assert!(!cases.is_empty(), "destination conformance needs cases");
 
     let sheet = destination.sheet();
+    destination
+        .sheet_artifact()
+        .unwrap_or_else(|error| panic!("invalid destination correction capabilities: {error}"));
     assert_sheet_has_required_evidence(sheet);
 
     let mut cases_by_disposition = Vec::new();
@@ -271,6 +328,7 @@ mod tests {
             Fault::MissingTypeMappings,
             Fault::UnsupportedDispositionAccepted,
             Fault::UnsupportedMigrationPlanned,
+            Fault::InPlaceWithoutTargetableProvenance,
         ] {
             assert_harness_panics(FaultyDestination::with_fault(fault));
         }
@@ -310,6 +368,7 @@ mod tests {
     #[derive(Clone, Debug)]
     struct FaultyDestination {
         sheet: DestinationSheet,
+        protocol_capabilities: cdf_kernel::DestinationProtocolCapabilities,
         fault: Option<Fault>,
     }
 
@@ -324,12 +383,14 @@ mod tests {
         MissingTypeMappings,
         UnsupportedDispositionAccepted,
         UnsupportedMigrationPlanned,
+        InPlaceWithoutTargetableProvenance,
     }
 
     impl FaultyDestination {
         fn sound() -> Self {
             Self {
                 sheet: sound_sheet(),
+                protocol_capabilities: cdf_kernel::DestinationProtocolCapabilities::default(),
                 fault: None,
             }
         }
@@ -342,16 +403,42 @@ mod tests {
             if matches!(fault, Fault::UnsupportedMigrationPlanned) {
                 sheet.migration_support = CapabilitySupport::Unsupported;
             }
+            let mut protocol_capabilities = cdf_kernel::DestinationProtocolCapabilities::default();
+            if matches!(fault, Fault::InPlaceWithoutTargetableProvenance) {
+                protocol_capabilities.corrections.strategies =
+                    vec![CorrectionStrategyCapability::new(
+                        cdf_kernel::CorrectionStrategy::InPlaceUpdate,
+                        TransactionSupport::AtomicPackage,
+                        IdempotencySupport::PackageToken,
+                    )];
+            }
             Self {
                 sheet,
+                protocol_capabilities,
                 fault: Some(fault),
             }
         }
     }
 
+    #[test]
+    fn correction_conformance_rejects_claims_without_matching_evidence() {
+        let evidence = DestinationCorrectionConformanceEvidence {
+            row_provenance_persistence: CapabilitySupport::Supported,
+            ..DestinationCorrectionConformanceEvidence::unsupported()
+        };
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            assert_destination_correction_conformance(&FaultyDestination::sound(), &evidence);
+        }));
+        assert!(result.is_err());
+    }
+
     impl DestinationProtocol for FaultyDestination {
         fn sheet(&self) -> &DestinationSheet {
             &self.sheet
+        }
+
+        fn protocol_capabilities(&self) -> cdf_kernel::DestinationProtocolCapabilities {
+            self.protocol_capabilities.clone()
         }
 
         fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {

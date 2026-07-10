@@ -1,7 +1,10 @@
 use super::*;
+use crate::ddl::target_migrations;
 use arrow_schema::{DataType, TimeUnit};
 use cdf_conformance::destination::{
-    DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
+    DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
+    assert_destination_conformance, assert_destination_correction_conformance,
+    representative_commit_request,
 };
 use cdf_kernel::{
     CheckpointId, CursorPosition, CursorValue, PartitionId, PipelineId, ResourceId, ScopeKey,
@@ -190,6 +193,49 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
             .supported_dispositions
             .contains(&WriteDisposition::Merge)
     );
+    let corrections = destination.protocol_capabilities().corrections;
+    assert_eq!(
+        corrections.row_provenance.persistence,
+        CapabilitySupport::Supported
+    );
+    assert_eq!(
+        corrections.row_provenance.targetability,
+        CapabilitySupport::Unsupported
+    );
+    assert_eq!(
+        corrections.residual_readback,
+        CapabilitySupport::Unsupported
+    );
+    assert!(corrections.strategies.is_empty());
+    let artifact = destination.sheet_artifact().unwrap();
+    assert_eq!(artifact.protocol_capabilities.corrections, corrections);
+    assert!(
+        serde_json::to_string(&artifact)
+            .unwrap()
+            .contains("\"corrections\"")
+    );
+
+    let append_input = input(WriteDisposition::Append, MergeDedupPolicy::Last);
+    let create_target = target_migrations(&append_input)
+        .unwrap()
+        .into_iter()
+        .find(|statement| statement.name == "create_target")
+        .unwrap();
+    for provenance_column in [CDF_LOAD_COLUMN, CDF_SEGMENT_COLUMN, CDF_ROW_COLUMN] {
+        assert!(create_target.sql.contains(provenance_column));
+    }
+    assert!(
+        !create_target
+            .sql
+            .contains("UNIQUE (\"_cdf_load\", \"_cdf_segment\", \"_cdf_row\")")
+    );
+    let staged = crate::rows::PostgresStageRow {
+        values: vec![Some("1".to_owned())],
+        segment_id: "seg-000001".to_owned(),
+        row_index: 0,
+    };
+    let staged_csv = staged.csv_line("sha256:original-package", 1_700_000_000_000);
+    assert!(staged_csv.contains("sha256:original-package,seg-000001,0,"));
 
     let decimal = sheet
         .type_mappings
@@ -227,6 +273,15 @@ fn reusable_destination_conformance_suite_accepts_postgres_sheet_and_plans() {
             conformance_case(&destination, WriteDisposition::Replace),
             conformance_case(&destination, WriteDisposition::Merge),
         ],
+    );
+    assert_destination_correction_conformance(
+        &destination,
+        &DestinationCorrectionConformanceEvidence {
+            row_provenance_persistence: CapabilitySupport::Supported,
+            row_provenance_targetability: CapabilitySupport::Unsupported,
+            residual_readback: CapabilitySupport::Unsupported,
+            strategies: Vec::new(),
+        },
     );
 }
 

@@ -45,6 +45,11 @@ impl DestinationProtocol for PostgresDestination {
         &self.sheet.kernel
     }
 
+    fn protocol_capabilities(&self) -> DestinationProtocolCapabilities {
+        DestinationProtocolCapabilities::default()
+            .with_corrections(postgres_correction_capabilities())
+    }
+
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
         ensure_supported_disposition(&request.disposition)?;
         Ok(CommitPlan {
@@ -138,6 +143,15 @@ pub fn postgres_destination_sheet() -> PostgresDestinationSheet {
             "transactional_truncate_insert_replace".to_owned(),
         ],
     }
+}
+
+pub fn postgres_correction_capabilities() -> DestinationCorrectionCapabilities {
+    DestinationCorrectionCapabilities::default().with_row_provenance(
+        RowProvenanceCapabilities::new(
+            CapabilitySupport::Supported,
+            CapabilitySupport::Unsupported,
+        ),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

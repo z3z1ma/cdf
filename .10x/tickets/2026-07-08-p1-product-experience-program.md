@@ -20,6 +20,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/specs/resource-authoring-planning-batches.md`.
 - `.10x/specs/conformance-governance-roadmap.md`.
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`.
+- `.10x/knowledge/source-destination-extension-invariant.md`.
 - P1 directive attachment `/Users/alexanderbut/.codex/attachments/d7a887db-710d-44db-a630-90428560d519/pasted-text.txt`, mirrored by the active Codex goal objective file read on 2026-07-08.
 
 ## Hard guardrails
@@ -29,6 +30,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - Headless mode degrades cleanly: no TTY means no ANSI or spinners, `NO_COLOR` and `--no-color` are honored, and piped stdout remains readable.
 - Rendering and wall-clock display MUST NOT affect deterministic package artifacts, hashes, receipts, checkpoints, or goldens.
 - Once the rendering system merges, no new command may land on the old raw human-output path.
+- Product-surface work MUST NOT encode source/destination-specific orchestration shortcuts. Source and destination additions extend adapters, traits, capability sheets, registries, and conformance rather than proliferating command/runtime branches.
 
 ## Workstreams
 
@@ -60,6 +62,7 @@ Existing non-CLI program lanes may continue, but any CLI-adjacent ticket opened 
 - The docs quickstart is executable by a stranger.
 - The release pipeline has cut a checksummed pre-release with completions and man pages.
 - The Chapter 23 demonstration has a recorded terminal session through the new experience.
+- Final review finds no P1 ticket-driven source/destination abstraction leaks; every repeated extension touch point has been removed or assigned a bounded P0 owner.
 
 ## Evidence expectations
 
@@ -79,6 +82,7 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
 - 2026-07-08: WS1 remaining event-spine shaping added `.10x/specs/runtime-event-spine.md` and child tickets WS1B-WS1F, with evidence/review under `.10x/evidence/2026-07-08-p1-product-ws1-remaining-event-spine-shaping.md` and `.10x/reviews/2026-07-08-p1-product-ws1-remaining-event-spine-shaping-review.md`.
 - 2026-07-08: User reiterated that the current human CLI output is the weakest product surface and that hand-authored docs should not continue to outrun the renderer/live-progress/error experience. After the already-scoped WS6D init README scaffold, prioritize WS3 renderer foundation and WS5 prerequisites over additional prose-only docs work; generated docs remain tied to WS2/WS4 freshness.
 - 2026-07-08: WS1B, WS1C, and WS1E closed, giving the runtime event spine durable fanout, lifecycle/payload breadth, and tracing bridge coverage. WS2B, WS2C, and WS2D closed, giving the clap parser foundation, product grammar semantics, and generated completion/man/help artifacts. WS3B, WS3C, WS3D, and WS3E closed, migrating command output to the renderer and adding the raw-output migration gate. WS8B closed, adding the reproducible release artifact workflow.
+- 2026-07-10: The user elevated source/destination extension architecture to a P0 closure invariant. Remaining P1 integration and parent closure reviews use `.10x/knowledge/source-destination-extension-invariant.md`; product convenience cannot bypass the generic registry/trait/capability/conformance boundaries.
 
 ## Blockers
 

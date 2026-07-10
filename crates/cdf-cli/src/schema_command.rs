@@ -1,11 +1,12 @@
 use std::{collections::BTreeMap, fs, sync::Arc};
 
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
-use cdf_kernel::{CdfError, ResourceStream, SchemaSnapshotReference, SchemaSource};
+use cdf_kernel::{CdfError, SchemaSnapshotReference, SchemaSource};
 use cdf_project::{
-    LOCK_FILE_NAME, SchemaSnapshotArtifact, SchemaSnapshotDataType, SchemaSnapshotField,
-    SchemaSnapshotStore, discover_resource_schema, lock_to_toml,
-    pin_schema_snapshot_in_project_lockfile,
+    DiscoveryManifestStore, LOCK_FILE_NAME, ResourceSchemaDiscoveryArtifacts,
+    SchemaDiscoveryExecutionOptions, SchemaSnapshotArtifact, SchemaSnapshotDataType,
+    SchemaSnapshotField, SchemaSnapshotStore, lock_to_toml,
+    pin_schema_snapshot_in_project_lockfile, write_schema_discovery_artifacts,
 };
 use serde::Serialize;
 
@@ -47,20 +48,46 @@ fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema pin")?;
     let resource = context.resource(&args.resource_id)?;
     let previous = pinned_snapshot_reference(&context, resource).cloned();
-    let discovery = discover_for_cli(&context, resource)?;
-    let store = SchemaSnapshotStore::new(&context.root);
-    let snapshot_written = store.write_if_changed(&discovery.snapshot.artifact)?;
+    let previous_artifact = previous
+        .as_ref()
+        .map(|reference| SchemaSnapshotStore::new(&context.root).read(reference))
+        .transpose()?;
+    let artifacts = discover_artifacts_for_cli(&context, resource)?;
+    let unchanged = previous_artifact
+        .as_ref()
+        .zip(artifacts.discovery_manifest.as_ref())
+        .map(|(previous_snapshot, fresh_manifest)| {
+            has_same_discovery_observation(&context, previous_snapshot, fresh_manifest)
+        })
+        .transpose()?
+        .unwrap_or(false);
+    let (snapshot, normalized_schema, snapshot_written) = if unchanged {
+        let previous_snapshot = previous_artifact.as_ref().ok_or_else(|| {
+            CdfError::internal("unchanged schema pin lost its verified previous snapshot")
+        })?;
+        (
+            previous_snapshot,
+            Arc::new(previous_snapshot.schema.to_arrow()?),
+            false,
+        )
+    } else {
+        let writes = write_schema_discovery_artifacts(&context.root, &artifacts)?;
+        (
+            &artifacts.discovery.snapshot.artifact,
+            Arc::clone(&artifacts.discovery.normalized_schema),
+            writes.snapshot_written,
+        )
+    };
     let pinned_resource = resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
-            snapshot: discovery.snapshot.reference.clone(),
+            snapshot: snapshot.reference(),
         },
-        Arc::clone(&discovery.normalized_schema),
+        normalized_schema,
     );
     let lockfile = update_lockfile(&context, &pinned_resource)?;
     let status = match previous {
-        Some(previous) if previous.schema_hash == discovery.snapshot.artifact.schema_hash => {
-            "unchanged"
-        }
+        Some(_) if unchanged => "unchanged",
+        Some(previous) if previous.schema_hash == snapshot.schema_hash => "unchanged",
         Some(_) => "refreshed",
         None => "added",
     };
@@ -68,8 +95,8 @@ fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
         &context,
         &args.resource_id,
         status,
-        &discovery.snapshot.artifact,
-        &discovery.snapshot.source_identity,
+        snapshot,
+        &artifacts.discovery.snapshot.source_identity,
         snapshot_written,
         lockfile,
     );
@@ -92,14 +119,34 @@ fn diff(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> 
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
     let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
-    let fresh = discover_for_cli(&context, resource)?;
-    let report = SchemaDiffReport::from_snapshots(
-        &context,
-        &args.resource_id,
-        &pinned,
-        &fresh.snapshot.artifact,
-    );
+    let artifacts = discover_artifacts_for_cli(&context, resource)?;
+    let unchanged = artifacts
+        .discovery_manifest
+        .as_ref()
+        .map(|fresh_manifest| has_same_discovery_observation(&context, &pinned, fresh_manifest))
+        .transpose()?
+        .unwrap_or(false);
+    let fresh = if unchanged {
+        &pinned
+    } else {
+        &artifacts.discovery.snapshot.artifact
+    };
+    let report = SchemaDiffReport::from_snapshots(&context, &args.resource_id, &pinned, fresh);
     CommandOutput::rendered("schema diff", schema_diff_document(&report), report)
+}
+
+fn has_same_discovery_observation(
+    context: &ProjectContext,
+    previous_snapshot: &SchemaSnapshotArtifact,
+    fresh_manifest: &cdf_project::DiscoveryManifestArtifact,
+) -> Result<bool, CliError> {
+    let previous_manifest = previous_snapshot
+        .discovery_manifest_reference()?
+        .map(|reference| DiscoveryManifestStore::new(&context.root).read(&reference))
+        .transpose()?;
+    Ok(previous_manifest
+        .as_ref()
+        .is_some_and(|manifest| manifest.has_same_observation(fresh_manifest)))
 }
 
 fn load_context(cli: &Cli, command: &str) -> Result<ProjectContext, CliError> {
@@ -110,35 +157,48 @@ fn discover_for_cli(
     context: &ProjectContext,
     resource: &CompiledResource,
 ) -> Result<cdf_project::ResourceSchemaDiscovery, CliError> {
-    if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
-        return discover_for_cli_resource(context, resource);
-    }
-    if resource
-        .descriptor()
-        .schema_source
-        .pinned_snapshot()
-        .is_some()
-    {
-        let probe_resource =
-            resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema());
-        return discover_for_cli_resource(context, &probe_resource);
-    }
-    discover_for_cli_resource(context, resource)
+    Ok(discover_artifacts_for_cli(context, resource)?.discovery)
 }
 
-fn discover_for_cli_resource(
+fn discover_artifacts_for_cli(
     context: &ProjectContext,
     resource: &CompiledResource,
-) -> Result<cdf_project::ResourceSchemaDiscovery, CliError> {
+) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
+    let pinned = pinned_snapshot_reference(context, resource).cloned();
+    if let Some(snapshot) = pinned {
+        let (baseline, verified_baseline) =
+            SchemaSnapshotStore::new(&context.root).read_with_verified_baseline(&snapshot)?;
+        let probe_resource = resource.with_schema_source_and_schema(
+            SchemaSource::Discover,
+            Arc::new(baseline.schema.to_arrow()?),
+        );
+        return discover_artifacts_for_cli_resource(
+            context,
+            &probe_resource,
+            SchemaDiscoveryExecutionOptions::new().with_verified_baseline(verified_baseline),
+        );
+    }
+    if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+        return discover_artifacts_for_cli_resource(context, resource, Default::default());
+    }
+    discover_artifacts_for_cli_resource(context, resource, Default::default())
+}
+
+fn discover_artifacts_for_cli_resource(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    options: SchemaDiscoveryExecutionOptions,
+) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let secret_provider = context.secret_provider();
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
         && matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
     {
         return Ok(
-            cdf_project::discover_resource_schema_with_file_dependencies(
+            cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                 resource,
                 &secret_provider,
                 file_runtime_dependencies(context)?,
+                options,
             )?,
         );
     }
@@ -146,13 +206,20 @@ fn discover_for_cli_resource(
         && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
     {
         let mut transport = ReqwestHttpTransport::new()?;
-        Ok(cdf_project::discover_resource_schema_with_rest_transport(
+        Ok(ResourceSchemaDiscoveryArtifacts {
+            discovery: cdf_project::discover_resource_schema_with_rest_transport(
+                resource,
+                &secret_provider,
+                &mut transport,
+            )?,
+            discovery_manifest: None,
+        })
+    } else {
+        Ok(cdf_project::discover_resource_schema_artifacts(
             resource,
             &secret_provider,
-            &mut transport,
+            options,
         )?)
-    } else {
-        Ok(discover_resource_schema(resource, &secret_provider)?)
     }
 }
 
@@ -175,9 +242,7 @@ fn update_lockfile(
     let path = context.root.join(LOCK_FILE_NAME);
     let written = fs::read_to_string(&path).ok().as_deref() != Some(&encoded);
     if written {
-        fs::write(&path, encoded).map_err(|error| {
-            CliError::from(CdfError::data(format!("write {}: {error}", path.display())))
-        })?;
+        cdf_project::write_lock_file_guarded(&path, context.lock_authority.as_ref(), encoded)?;
     }
     Ok(SchemaLockfileWrite {
         written,

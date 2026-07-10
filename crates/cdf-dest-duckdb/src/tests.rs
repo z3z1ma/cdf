@@ -4,7 +4,9 @@ use std::sync::Arc;
 use arrow_array::{ArrayRef, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
 use cdf_conformance::destination::{
-    DestinationConformanceCase, assert_destination_conformance, representative_commit_request,
+    DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
+    assert_destination_conformance, assert_destination_correction_conformance,
+    representative_commit_request,
 };
 use cdf_kernel::{
     CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentAck,
@@ -203,6 +205,10 @@ fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
             )),
             DestinationConformanceCase::new(representative_commit_request(WriteDisposition::Merge)),
         ],
+    );
+    assert_destination_correction_conformance(
+        &dest,
+        &DestinationCorrectionConformanceEvidence::unsupported(),
     );
 }
 

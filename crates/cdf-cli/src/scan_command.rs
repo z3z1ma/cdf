@@ -145,23 +145,37 @@ pub(crate) fn prepare_discover_resource_for_cli(
         });
     }
     let secret_provider = context.secret_provider();
-    let discovery = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
+    let options = match resource.descriptor().schema_source.pinned_snapshot() {
+        Some(snapshot) => {
+            let (_, verified_baseline) = cdf_project::SchemaSnapshotStore::new(&context.root)
+                .read_with_verified_baseline(snapshot)?;
+            cdf_project::SchemaDiscoveryExecutionOptions::new()
+                .with_verified_baseline(verified_baseline)
+        }
+        None => cdf_project::SchemaDiscoveryExecutionOptions::new(),
+    };
+    let artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
     {
-        cdf_project::discover_resource_schema_with_file_dependencies(
+        cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
             &probe_resource,
             &secret_provider,
             file_runtime_dependencies(context)?,
+            options,
         )?
     } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
         let mut transport = ReqwestHttpTransport::new()?;
-        cdf_project::discover_resource_schema_with_rest_transport(
-            &probe_resource,
-            &secret_provider,
-            &mut transport,
-        )?
+        cdf_project::ResourceSchemaDiscoveryArtifacts {
+            discovery: cdf_project::discover_resource_schema_with_rest_transport(
+                &probe_resource,
+                &secret_provider,
+                &mut transport,
+            )?,
+            discovery_manifest: None,
+        }
     } else {
-        cdf_project::discover_resource_schema(&probe_resource, &secret_provider)?
+        cdf_project::discover_resource_schema_artifacts(&probe_resource, &secret_provider, options)?
     };
+    let discovery = artifacts.discovery.clone();
     let artifact = discovery.snapshot.artifact.clone();
     let outcome = if no_pin { "inspection_only" } else { "added" };
     let prepared = cdf_project::apply_discovered_schema(&probe_resource, discovery);
@@ -177,13 +191,16 @@ pub(crate) fn prepare_discover_resource_for_cli(
         )?;
         let encoded = cdf_project::lock_to_toml(&updated_lock)?;
         let snapshot_written =
-            cdf_project::SchemaSnapshotStore::new(&context.root).write_if_changed(&artifact)?;
+            cdf_project::write_schema_discovery_artifacts(&context.root, &artifacts)?
+                .snapshot_written;
         let lock_path = context.root.join(cdf_project::LOCK_FILE_NAME);
         let lockfile_written = fs::read_to_string(&lock_path).ok().as_deref() != Some(&encoded);
         if lockfile_written {
-            fs::write(&lock_path, encoded).map_err(|error| {
-                CdfError::data(format!("write {}: {error}", lock_path.display()))
-            })?;
+            cdf_project::write_lock_file_guarded(
+                &lock_path,
+                context.lock_authority.as_ref(),
+                encoded,
+            )?;
         }
         (snapshot_written, lockfile_written)
     };

@@ -1,10 +1,8 @@
-use std::fs;
-
 use cdf_contract::ContractPolicy;
 use cdf_kernel::CdfError;
 use cdf_project::{
     ContractFreezeReport, ContractTestReport, LOCK_FILE_NAME, freeze_contract_snapshots,
-    lock_to_toml, test_contract_snapshots,
+    lock_to_toml, test_contract_snapshots, write_lock_file_guarded,
 };
 use serde::Serialize;
 
@@ -59,12 +57,8 @@ fn freeze(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError
     )?;
     let encoded = lock_to_toml(&lock)?;
     let lock_path = context.root.join(LOCK_FILE_NAME);
-    fs::write(&lock_path, encoded).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("write {}: {error}", lock_path.display())),
-            error_catalog::CONTRACT_LOCKFILE,
-        )
-    })?;
+    write_lock_file_guarded(&lock_path, context.lock_authority.as_ref(), encoded)
+        .map_err(|error| CliError::mapped(error, error_catalog::CONTRACT_LOCKFILE))?;
     CommandOutput::rendered("contract freeze", contract_freeze_document(&report), report)
 }
 

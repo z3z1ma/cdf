@@ -32,6 +32,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/specs/project-cli-observability-security.md`.
 - `.10x/specs/conformance-governance-roadmap.md`.
 - `.10x/knowledge/runtime-conformance-throughput-rule.md`.
+- `.10x/knowledge/source-destination-extension-invariant.md`.
 
 ## Hard guardrails
 
@@ -41,6 +42,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - Commit gate, package determinism, replay identity, redaction, secret references, egress policy, and destination receipt verification are untouched.
 - P1 rendering and error-catalog paths apply to every new CLI surface. JSON output changes are additive only.
 - No P2 workstream closes until conformance owns its changed runtime behavior.
+- No ticket may close by adding source/destination-specific control flow to generic orchestration when the behavior belongs behind a kernel/compiler/runtime trait, capability sheet, or adapter. Integration review MUST evaluate the cost and touched surfaces of adding one equivalent source and one equivalent destination.
 
 ## Golden paths
 
@@ -86,6 +88,7 @@ Where performance tickets intersect file partitioning, remote reads, compression
 - Coverage matrix rows for Chapter 7.5, 8.2, 8.6, 9.2, and 13.3 are updated as work closes.
 - Explicit sampled discovery is truthful and deterministic; unseen compatible data is validated, and safe nonconforming paths can survive in exact `_cdf_variant` residuals.
 - `cdf schema promote` can dry-plan and, where destination capabilities permit, correct or rematerialize retained residuals through packages, receipts, checkpoints, and atomic pin publication without making append require a key.
+- Parent review finds no ticket-driven source/destination abstraction leaks; every repeated extension touch point has either been removed or has a bounded P0 owner before program closure.
 
 ## Evidence expectations
 
@@ -137,6 +140,8 @@ P2 does not implement a GUI, a scheduler, distributed execution, resident stream
 - 2026-07-09: Multi-file discovery research is consolidated in `.10x/research/2026-07-09-multi-file-discovery-aggregation-contract.md`. It rejects sampled binary pins and recommends one exhaustive resource-level aggregator with distinct baseline/effective/manifest identities and per-file gate-bearing verdicts. A10 was blocked at this checkpoint until the following ratification entry.
 - 2026-07-09: The user ratified A10 and the production-scale portability invariant. `.10x/decisions/multi-file-discovery-aggregation-and-budget.md` makes discovery exhaustive and executor-neutral; 64 MiB/file, 128 MiB in flight, and 8 probes are configurable plan-recorded per-executor defaults rather than global ceilings. A10a/A10b are executable in parallel, followed by A10c-f.
 - 2026-07-10: The user confirmed explicit `stratified-hash-v1` sampled discovery, exact field/path residual capture, and fenced plan-first schema promotion with framework row provenance and capability-dependent correction/rematerialization. Active focused specs now govern each surface. A10g owns sampled binary discovery; `.10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md` owns the separately decomposed residual/correction/lease/promotion/conformance graph. This turn is governing-record activation only; implementation begins from executable children afterward.
+- 2026-07-10: The user elevated source/destination extension architecture to a P0 closure invariant. `.10x/knowledge/source-destination-extension-invariant.md` now governs every remaining tranche review and final P2 closure; ticket-local helpers or concrete-driver branches may not substitute for shared traits, capability sheets, and conformance laws.
+- 2026-07-10: Closed A10c/RP3/RP4 with evidence `.10x/evidence/2026-07-10-p2-a10c-rp3-rp4-integration.md` and review `.10x/reviews/2026-07-10-p2-a10c-rp3-rp4-integration-review.md`. Exhaustive local multi-file Parquet/Arrow IPC discovery now uses one bounded resource-set compiler path; promotion foundations now have defaulted destination protocol capabilities, stable row provenance, store-authoritative fenced leases, and crash-safe guarded lock publication. The P0 extension-cost review repaired source option, destination sheet, lease-time, and lock-writer abstraction leaks before closure.
 
 ## Blockers
 

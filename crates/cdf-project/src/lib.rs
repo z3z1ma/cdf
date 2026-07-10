@@ -26,6 +26,7 @@ pub const LOCKFILE_VERSION: u16 = 1;
 mod backfill;
 mod discovery_manifest;
 mod internal;
+mod lock_cas;
 mod lockfile;
 mod models;
 mod runtime;
@@ -41,6 +42,7 @@ mod tests;
 
 pub use backfill::*;
 pub use discovery_manifest::*;
+pub use lock_cas::*;
 pub use lockfile::*;
 pub use models::*;
 pub use runtime::*;

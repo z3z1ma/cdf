@@ -5,14 +5,14 @@ use std::{
 };
 
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, FileFormatDeclaration,
-    compile_document_with_project_root, parse_toml as parse_declarative_toml,
+    CompiledResource, CompiledResourcePlan, compile_document_with_project_root,
+    parse_toml as parse_declarative_toml,
 };
 use cdf_kernel::{CdfError, SchemaSource};
 use cdf_project::{
-    LOCK_FILE_NAME, PROJECT_FILE_NAME, SchemaSnapshotArtifact, SchemaSnapshotDataType,
-    SchemaSnapshotField, SchemaSnapshotStore, freeze_contract_snapshots, lock_to_toml,
-    parse_cdf_toml,
+    LOCK_FILE_NAME, PROJECT_FILE_NAME, ResourceSchemaDiscoveryArtifacts, SchemaSnapshotArtifact,
+    SchemaSnapshotDataType, SchemaSnapshotField, freeze_contract_snapshots, lock_to_toml,
+    parse_cdf_toml, write_schema_discovery_artifacts,
 };
 use serde::Serialize;
 
@@ -35,7 +35,8 @@ pub(crate) fn add(cli: &Cli, args: AddArgs) -> Result<CommandOutput, CliError> {
     let proposed = build_proposed_resource(&context, &request)?;
     ensure_add_is_available(&context, &request, &proposed)?;
 
-    let discovery = discover_for_add(&context, &proposed.resource)?;
+    let artifacts = discover_for_add(&context, &proposed.resource)?;
+    let discovery = &artifacts.discovery;
     let pinned_resource = proposed.resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
             snapshot: discovery.snapshot.reference.clone(),
@@ -45,7 +46,7 @@ pub(crate) fn add(cli: &Cli, args: AddArgs) -> Result<CommandOutput, CliError> {
     let report = AddReport::from_parts(&context, &request, &proposed, &discovery.snapshot.artifact);
 
     if !args.dry_run {
-        write_add_artifacts(&context, &request, &proposed, &pinned_resource, &discovery)?;
+        write_add_artifacts(&context, &request, &proposed, &pinned_resource, &artifacts)?;
     }
 
     CommandOutput::rendered("add", add_document(&report), report)
@@ -128,31 +129,25 @@ fn ensure_add_is_available(
 fn discover_for_add(
     context: &ProjectContext,
     resource: &CompiledResource,
-) -> Result<cdf_project::ResourceSchemaDiscovery, CliError> {
+) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     match resource.plan() {
         CompiledResourcePlan::Files(plan)
-            if plan.format == FileFormatDeclaration::Parquet
-                && (plan.root.starts_with("http://") || plan.root.starts_with("https://")) =>
+            if plan.root.starts_with("http://") || plan.root.starts_with("https://") =>
         {
             Ok(
-                cdf_project::discover_resource_schema_with_file_dependencies(
+                cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                     resource,
                     &context.secret_provider(),
                     file_runtime_dependencies(context)?,
+                    Default::default(),
                 )?,
             )
         }
-        CompiledResourcePlan::Files(plan) if plan.format == FileFormatDeclaration::Parquet => Ok(
-            cdf_project::discover_resource_schema(resource, &context.secret_provider())?,
-        ),
-        CompiledResourcePlan::Files(plan) => Err(CliError::not_supported(
-            "cdf add",
-            format!(
-                "only single-file Parquet is supported in this slice; generated format is {:?}",
-                plan.format
-            ),
-            ".10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md",
-        )),
+        CompiledResourcePlan::Files(_) => Ok(cdf_project::discover_resource_schema_artifacts(
+            resource,
+            &context.secret_provider(),
+            Default::default(),
+        )?),
         CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
             Err(CliError::not_supported(
                 "cdf add",
@@ -168,7 +163,7 @@ fn write_add_artifacts(
     request: &AddResourceRequest,
     proposed: &ProposedResource,
     pinned_resource: &CompiledResource,
-    discovery: &cdf_project::ResourceSchemaDiscovery,
+    artifacts: &ResourceSchemaDiscoveryArtifacts,
 ) -> Result<(), CliError> {
     let mut resources = context.resources.clone();
     resources.push(pinned_resource.clone());
@@ -182,7 +177,7 @@ fn write_add_artifacts(
     )?;
     let lock_toml = lock_to_toml(&lock)?;
 
-    SchemaSnapshotStore::new(&context.root).write(&discovery.snapshot.artifact)?;
+    write_schema_discovery_artifacts(&context.root, artifacts)?;
     fs::create_dir_all(request.config_path_abs.parent().ok_or_else(|| {
         CliError::mapped(
             CdfError::internal("generated resource config path has no parent"),
@@ -214,12 +209,12 @@ fn write_add_artifacts(
             error_catalog::PROJECT_IO,
         )
     })?;
-    fs::write(context.root.join(LOCK_FILE_NAME), lock_toml).map_err(|error| {
-        CliError::mapped(
-            CdfError::contract(format!("write {}: {error}", LOCK_FILE_NAME)),
-            error_catalog::PROJECT_IO,
-        )
-    })?;
+    cdf_project::write_lock_file_guarded(
+        context.root.join(LOCK_FILE_NAME),
+        context.lock_authority.as_ref(),
+        lock_toml,
+    )
+    .map_err(|error| CliError::mapped(error, error_catalog::PROJECT_IO))?;
     Ok(())
 }
 

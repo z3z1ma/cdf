@@ -325,6 +325,24 @@ impl DiscoveryManifestArtifact {
         }
     }
 
+    /// Returns whether two manifests record the same discovery observation.
+    ///
+    /// The baseline is deliberately excluded: it identifies the verified pinned
+    /// snapshot against which a refresh ran, not a property of the observed file
+    /// set. This lets an unchanged refresh retain the existing content-addressed
+    /// snapshot instead of creating an identity chain whose only difference is
+    /// the new baseline reference.
+    pub fn has_same_observation(&self, other: &Self) -> bool {
+        self.resource_id == other.resource_id
+            && self.effective_schema_hash == other.effective_schema_hash
+            && self.coverage == other.coverage
+            && self.selector == other.selector
+            && self.budget == other.budget
+            && self.normalizer_version == other.normalizer_version
+            && self.policy_version == other.policy_version
+            && self.candidates == other.candidates
+    }
+
     pub fn validate(&self) -> Result<()> {
         if self.version != DISCOVERY_MANIFEST_ARTIFACT_VERSION {
             return Err(CdfError::data(format!(

@@ -11,11 +11,12 @@ mod types;
 
 pub use arrow_ipc_discovery::{
     LocalArrowIpcSchemaDiscovery, LocalArrowIpcSourceIdentity, discover_arrow_ipc_file_schema,
-    discover_local_arrow_ipc_schema,
+    discover_local_arrow_ipc_schema, discover_local_arrow_ipc_schema_bounded,
 };
 pub use parquet_discovery::{
-    LocalParquetSchemaDiscovery, LocalParquetSourceIdentity, RangeChunkReader,
-    discover_local_parquet_schema, discover_parquet_schema_from_chunk_reader,
+    BoundedLocalParquetSchemaDiscovery, LocalParquetSchemaDiscovery, LocalParquetSourceIdentity,
+    RangeChunkReader, discover_local_parquet_schema, discover_local_parquet_schema_bounded,
+    discover_parquet_schema_from_chunk_reader,
 };
 pub use readers::{
     infer_ndjson_observed_schema, read_arrow_ipc_file, read_arrow_ipc_file_path,

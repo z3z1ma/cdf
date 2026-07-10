@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     checkpoint::{Receipt, StateSegment},
+    correction::{DestinationProtocolCapabilities, DestinationSheetArtifact},
     error::Result,
     ids::{DestinationId, IdempotencyToken, PackageHash, PlanId, ReceiptId, SegmentId, TargetName},
     resource::{CapabilitySupport, WriteDisposition},
@@ -145,6 +146,14 @@ pub trait CommitSession {
 
 pub trait DestinationProtocol {
     fn sheet(&self) -> &DestinationSheet;
+
+    fn protocol_capabilities(&self) -> DestinationProtocolCapabilities {
+        DestinationProtocolCapabilities::default()
+    }
+
+    fn sheet_artifact(&self) -> Result<DestinationSheetArtifact> {
+        DestinationSheetArtifact::new(self.sheet().clone(), self.protocol_capabilities())
+    }
 
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan>;
 

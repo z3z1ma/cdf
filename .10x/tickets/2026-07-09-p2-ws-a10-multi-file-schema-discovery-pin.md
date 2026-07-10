@@ -80,6 +80,7 @@ This ticket does not add Arrow IPC stream framing, Parquet/IPC row decoding chan
 - 2026-07-09: The user ratified the recommendations. `.10x/decisions/explicit-sampled-discovery-and-residual-promotion.md` now authorizes explicit sampled coverage, safe field/path residual capture, framework-managed correction identity, capability-dependent correction/rematerialization, and a distinct plan-first promotion surface. Implementation remains paused for one exact semantic checkpoint: deterministic sample selection and promotion transaction/recovery ordering.
 - 2026-07-10: The user confirmed all three exact contracts. `.10x/specs/sampled-schema-discovery-coverage.md` fixes `stratified-hash-v1`; `.10x/specs/residual-variant-capture.md` fixes field/path residual safety and encoding; `.10x/specs/schema-promotion-corrections.md` fixes provenance, leases, correction strategies, crash recovery, and retention. A10a is executable again; A10g owns explicit sampled discovery after the exhaustive orchestrator.
 - 2026-07-10: A10a and A10b closed with integrated evidence and review. The content-addressed discovery-manifest/budget artifact and pure aggregate join are now foundations; A10c is unblocked.
+- 2026-07-10: A10c closed with exhaustive local multi-file Parquet/Arrow IPC discovery, exact verified baseline authority, manifest-linked pin lifecycle, bounded metadata evidence, and a P0 extension-cost review. A10d and A10g are unblocked.
 
 ## Blockers
 

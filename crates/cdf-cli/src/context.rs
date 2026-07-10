@@ -9,8 +9,9 @@ use cdf_declarative::CompiledResource;
 use cdf_kernel::{CdfError, Result as CdfResult, SchemaSource};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
-    FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, PROJECT_FILE_NAME,
-    ProjectConfig, ProjectResourceOrigin, SchemaSnapshotStore, parse_cdf_toml, parse_lock,
+    FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority,
+    PROJECT_FILE_NAME, ProjectConfig, ProjectResourceOrigin, SchemaSnapshotStore, parse_cdf_toml,
+    parse_lock, read_lock_file_authority,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
@@ -25,6 +26,7 @@ pub struct ProjectContext {
     pub resources: Vec<CompiledResource>,
     pub resource_origins: Vec<ProjectResourceOrigin>,
     pub lock: Option<CdfLock>,
+    pub lock_authority: Option<LockFileAuthority>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -119,7 +121,7 @@ impl ProjectContext {
             .into_iter()
             .map(|entry| (entry.resource, entry.origin))
             .unzip();
-        let lock = load_lock(&root)?;
+        let (lock, lock_authority) = load_lock(&root)?;
 
         Ok(Self {
             root,
@@ -128,6 +130,7 @@ impl ProjectContext {
             resources,
             resource_origins,
             lock,
+            lock_authority,
         })
     }
 
@@ -302,14 +305,16 @@ pub fn project_location(project_arg: Option<&PathBuf>) -> CdfResult<(PathBuf, Pa
     Ok((root, path))
 }
 
-fn load_lock(root: &Path) -> CdfResult<Option<CdfLock>> {
+fn load_lock(root: &Path) -> CdfResult<(Option<CdfLock>, Option<LockFileAuthority>)> {
     let path = root.join(LOCK_FILE_NAME);
     if !path.exists() {
-        return Ok(None);
+        return Ok((None, None));
     }
-    fs::read_to_string(&path)
-        .map_err(|error| CdfError::contract(format!("read {}: {error}", path.display())))
-        .and_then(|text| parse_lock(&text).map(Some))
+    let authority = read_lock_file_authority(&path)?;
+    let text = std::str::from_utf8(&authority.bytes).map_err(|error| {
+        CdfError::contract(format!("read {} as UTF-8: {error}", path.display()))
+    })?;
+    Ok((Some(parse_lock(text)?), Some(authority)))
 }
 
 fn destination_runtime(root: &Path, uri: &str) -> DestinationRuntime {

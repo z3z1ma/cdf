@@ -52,7 +52,21 @@ pub fn discover_arrow_ipc_file_schema<R: Read + Seek>(reader: R) -> Result<Schem
 pub fn discover_local_arrow_ipc_schema(
     path: impl AsRef<Path>,
 ) -> Result<LocalArrowIpcSchemaDiscovery> {
+    discover_local_arrow_ipc_schema_bounded(path, 0, u64::MAX)
+}
+
+pub fn discover_local_arrow_ipc_schema_bounded(
+    path: impl AsRef<Path>,
+    initial_bytes_read: u64,
+    max_metadata_bytes: u64,
+) -> Result<LocalArrowIpcSchemaDiscovery> {
     let path = path.as_ref();
+    if initial_bytes_read > max_metadata_bytes {
+        return Err(CdfError::data(format!(
+            "discovery metadata budget exceeded for `{}`: measured {initial_bytes_read} bytes, allowed {max_metadata_bytes}; increase the per-file discovery metadata budget and retry",
+            path.display()
+        )));
+    }
     let metadata = fs::metadata(path).map_err(|error| {
         CdfError::data(format!(
             "inspect Arrow IPC file {} for schema discovery: {error}",
@@ -65,10 +79,12 @@ pub fn discover_local_arrow_ipc_schema(
             path.display()
         ))
     })?;
-    let bytes_read = Arc::new(AtomicU64::new(0));
+    let bytes_read = Arc::new(AtomicU64::new(initial_bytes_read));
     let schema = discover_arrow_ipc_file_schema(CountingReader {
         inner: file,
         bytes_read: Arc::clone(&bytes_read),
+        max_bytes: max_metadata_bytes,
+        path: path.display().to_string(),
     })?;
     let identity = LocalArrowIpcSourceIdentity {
         size_bytes: metadata.len(),
@@ -89,11 +105,26 @@ pub fn discover_local_arrow_ipc_schema(
 struct CountingReader<R> {
     inner: R,
     bytes_read: Arc<AtomicU64>,
+    max_bytes: u64,
+    path: String,
 }
 
 impl<R: Read> Read for CountingReader<R> {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
-        let count = self.inner.read(buffer)?;
+        let measured = self.bytes_read.load(Ordering::Relaxed);
+        let remaining = self.max_bytes.saturating_sub(measured);
+        if remaining == 0 && !buffer.is_empty() {
+            return Err(std::io::Error::other(format!(
+                "discovery metadata budget exceeded for `{}`: measured at least {} bytes, allowed {}; increase the per-file discovery metadata budget and retry",
+                self.path,
+                measured.saturating_add(1),
+                self.max_bytes
+            )));
+        }
+        let allowed = buffer
+            .len()
+            .min(usize::try_from(remaining).unwrap_or(usize::MAX));
+        let count = self.inner.read(&mut buffer[..allowed])?;
         self.bytes_read.fetch_add(count as u64, Ordering::Relaxed);
         Ok(count)
     }

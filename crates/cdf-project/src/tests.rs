@@ -1,11 +1,17 @@
 use super::*;
 use crate::internal::*;
 use std::{
-    collections::{BTreeMap, VecDeque},
-    sync::{Arc, Mutex},
+    collections::{BTreeMap, HashMap, VecDeque},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+        mpsc,
+    },
+    thread,
+    time::Duration,
 };
 
-use arrow_array::{Int32Array, RecordBatch};
+use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
 use arrow_schema::{
     DataType, Field, Fields, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode,
 };
@@ -19,12 +25,14 @@ use cdf_http::{
     HttpMethod, HttpRequest, HttpResponse, HttpTransport, SecretProvider, SecretUri, SecretValue,
 };
 use cdf_kernel::{
-    CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, DestinationId, DestinationSheet,
-    DiscoveryManifestHash, DiscoveryManifestReference, IdempotencySupport, IdentifierRules,
-    PipelineId, QueryableResource, ResourceId, ResourceStream, RunId, ScanRequest, SchemaHash,
-    SchemaSource, SourcePosition, TargetName, TransactionSupport, TypeMapping, TypeMappingFidelity,
-    WriteDisposition, source_name,
+    CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, ContractRef, DestinationId,
+    DestinationProtocol, DestinationSheet, DiscoveryManifestHash, DiscoveryManifestReference,
+    IdempotencySupport, IdentifierRules, LeaseOwnerId, PipelineId, QueryableResource, ResourceId,
+    ResourceStream, RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeLease,
+    ScopeLeaseClock, ScopeLeaseStore, SourcePosition, TargetName, TransactionSupport, TypeMapping,
+    TypeMappingFidelity, WriteDisposition, source_name,
 };
+use cdf_state_sqlite::InMemoryScopeLeaseStore;
 
 const BOOK_PROJECT: &str = r#"
 [project]
@@ -257,8 +265,10 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
     )
     .unwrap();
     let encoded = lock_to_toml(&lock).unwrap();
+    assert!(!encoded.contains("corrections"));
     let decoded = parse_lock(&encoded).unwrap();
     assert_eq!(decoded, lock);
+    assert_eq!(lock_to_toml(&decoded).unwrap(), encoded);
     assert_eq!(lock.normalizer, NORMALIZER_NAMECASE_V1);
     let resource = lock.resources.get("github.issues").unwrap();
     assert!(resource.capability_sheet_hash.starts_with("sha256:"));
@@ -288,11 +298,15 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         lock.destinations["duckdb"].sheet.type_mappings[0].fidelity,
         TypeMappingFidelity::Lossless
     );
+    assert_eq!(
+        lock.destinations["duckdb"].sheet_hash,
+        semantic_hash(&sheet).unwrap()
+    );
 
     let changed = generate_lockfile(
         &config,
         &resources,
-        dependency_tuple,
+        dependency_tuple.clone(),
         &[destination_sheet(
             "duckdb",
             TypeMappingFidelity::LossyRequiresContractAllowance,
@@ -307,6 +321,288 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         diff.path
             .contains("destinations.duckdb.sheet.type_mappings")
     }));
+
+    let postgres_artifact = cdf_dest_postgres::PostgresDestination::new()
+        .sheet_artifact()
+        .unwrap();
+    let typed_lock = generate_lockfile_with_destination_artifacts(
+        &config,
+        &resources,
+        dependency_tuple,
+        std::slice::from_ref(&postgres_artifact),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let typed_encoded = lock_to_toml(&typed_lock).unwrap();
+    assert!(typed_encoded.contains("protocol_capabilities"));
+    assert!(typed_encoded.contains("corrections"));
+    let typed_decoded = parse_lock(&typed_encoded).unwrap();
+    assert_eq!(typed_decoded, typed_lock);
+    assert_eq!(lock_to_toml(&typed_decoded).unwrap(), typed_encoded);
+    assert_eq!(
+        typed_lock.destinations["postgres"]
+            .sheet_artifact()
+            .unwrap(),
+        postgres_artifact
+    );
+}
+
+fn schema_lease(store: &InMemoryScopeLeaseStore) -> ScopeLease {
+    store
+        .acquire(
+            ScopeKey::SchemaContract {
+                contract: ContractRef::new("orders").unwrap(),
+            },
+            LeaseOwnerId::new("promotion-executor").unwrap(),
+            1_000,
+        )
+        .unwrap()
+}
+
+#[test]
+fn lock_file_cas_requires_exact_prior_bytes_hash_and_current_fence() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(LOCK_FILE_NAME);
+    fs::write(&path, b"version = 1\n").unwrap();
+    let expected = read_lock_file_authority(&path).unwrap();
+    let store = InMemoryScopeLeaseStore::new();
+    let lease = schema_lease(&store);
+
+    let report =
+        compare_and_swap_lock_file(&path, &expected, b"version = 2\n", &store, &lease).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"version = 2\n");
+    assert_eq!(report.installed, read_lock_file_authority(&path).unwrap());
+    #[cfg(unix)]
+    assert!(report.parent_directory_synced);
+
+    let error =
+        compare_and_swap_lock_file(&path, &expected, b"version = 3\n", &store, &lease).unwrap_err();
+    assert!(error.message.contains("prior authority changed"));
+    assert_eq!(fs::read(&path).unwrap(), b"version = 2\n");
+
+    let mut inconsistent = read_lock_file_authority(&path).unwrap();
+    inconsistent.sha256.push_str("tampered");
+    let error = compare_and_swap_lock_file(&path, &inconsistent, b"version = 3\n", &store, &lease)
+        .unwrap_err();
+    assert!(error.message.contains("supplied bytes hash"));
+}
+
+#[test]
+fn lock_file_cas_failpoints_model_each_crash_boundary() {
+    for (failpoint, expected_bytes) in [
+        (LockFileCasFailpoint::BeforeTempSync, b"old\n".as_slice()),
+        (LockFileCasFailpoint::BeforeRename, b"old\n".as_slice()),
+        (LockFileCasFailpoint::AfterRename, b"new\n".as_slice()),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join(LOCK_FILE_NAME);
+        fs::write(&path, b"old\n").unwrap();
+        let expected = read_lock_file_authority(&path).unwrap();
+        let store = InMemoryScopeLeaseStore::new();
+        let lease = schema_lease(&store);
+        let error = compare_and_swap_lock_file_with_failpoint(
+            &path,
+            &expected,
+            b"new\n",
+            &store,
+            &lease,
+            Some(failpoint),
+        )
+        .unwrap_err();
+        assert!(
+            error
+                .message
+                .contains("injected cdf.lock publication crash")
+        );
+        assert_eq!(fs::read(&path).unwrap(), expected_bytes);
+    }
+}
+
+#[test]
+fn guarded_lock_writer_atomically_creates_replaces_and_rejects_stale_authority() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(LOCK_FILE_NAME);
+    write_lock_file_guarded(&path, None, b"created\n").unwrap();
+    let created = read_lock_file_authority(&path).unwrap();
+    assert_eq!(created.bytes, b"created\n");
+
+    write_lock_file_guarded(&path, Some(&created), b"replaced\n").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"replaced\n");
+    let error = write_lock_file_guarded(&path, Some(&created), b"stale\n").unwrap_err();
+    assert!(error.message.contains("prior authority changed"));
+    assert_eq!(fs::read(&path).unwrap(), b"replaced\n");
+
+    let temporary_files = fs::read_dir(temp.path())
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(".cas.tmp"))
+        .count();
+    assert_eq!(temporary_files, 0);
+    assert!(
+        temp.path()
+            .join(".cdf/locks/cdf.lock.mutation.lock")
+            .is_file()
+    );
+}
+
+#[test]
+fn guarded_cdf_writer_cannot_enter_cas_final_check_rename_window() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(LOCK_FILE_NAME);
+    fs::write(&path, b"old\n").unwrap();
+    let expected = read_lock_file_authority(&path).unwrap();
+    let writer_expected = expected.clone();
+    let store = InMemoryScopeLeaseStore::new();
+    let lease = schema_lease(&store);
+    let (at_publication_tx, at_publication_rx) = mpsc::channel();
+    let (continue_tx, continue_rx) = mpsc::channel();
+    let cas_path = path.clone();
+    let cas = thread::spawn(move || {
+        compare_and_swap_lock_file_with_publication_hook(
+            &cas_path,
+            &expected,
+            b"cas\n",
+            &store,
+            &lease,
+            || {
+                at_publication_tx.send(()).unwrap();
+                continue_rx.recv().unwrap();
+                Ok(())
+            },
+        )
+    });
+    at_publication_rx.recv().unwrap();
+
+    let writer_path = path.clone();
+    let (attempting_tx, attempting_rx) = mpsc::channel();
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = thread::spawn(move || {
+        attempting_tx.send(()).unwrap();
+        let result =
+            write_lock_file_guarded(&writer_path, Some(&writer_expected), b"ordinary-writer\n");
+        done_tx.send(result).unwrap();
+    });
+    attempting_rx.recv().unwrap();
+    assert!(
+        done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+        "ordinary CDF writer must block while CAS holds the project mutation guard"
+    );
+
+    continue_tx.send(()).unwrap();
+    assert_eq!(cas.join().unwrap().unwrap().installed.bytes, b"cas\n");
+    let writer_error = done_rx
+        .recv_timeout(Duration::from_secs(2))
+        .unwrap()
+        .unwrap_err();
+    assert!(writer_error.message.contains("prior authority changed"));
+    writer.join().unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"cas\n");
+}
+
+struct StaleAtPublicationStore {
+    checks: AtomicUsize,
+}
+
+impl ScopeLeaseStore for StaleAtPublicationStore {
+    fn acquire(
+        &self,
+        _scope: ScopeKey,
+        _owner: LeaseOwnerId,
+        _lease_duration_ms: u64,
+    ) -> cdf_kernel::Result<ScopeLease> {
+        unreachable!()
+    }
+
+    fn renew(
+        &self,
+        _lease: &ScopeLease,
+        _lease_duration_ms: u64,
+    ) -> cdf_kernel::Result<ScopeLease> {
+        unreachable!()
+    }
+
+    fn release(&self, _lease: &ScopeLease) -> cdf_kernel::Result<()> {
+        unreachable!()
+    }
+
+    fn assert_current(&self, _lease: &ScopeLease) -> cdf_kernel::Result<()> {
+        if self.checks.fetch_add(1, Ordering::SeqCst) == 0 {
+            Ok(())
+        } else {
+            Err(CdfError::contract("lease superseded before publication"))
+        }
+    }
+}
+
+#[test]
+fn stale_fencing_token_cannot_publish_after_temp_file_sync() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(LOCK_FILE_NAME);
+    fs::write(&path, b"old\n").unwrap();
+    let expected = read_lock_file_authority(&path).unwrap();
+    let real_store = InMemoryScopeLeaseStore::new();
+    let lease = schema_lease(&real_store);
+    let store = StaleAtPublicationStore {
+        checks: AtomicUsize::new(0),
+    };
+
+    let error = compare_and_swap_lock_file(&path, &expected, b"new\n", &store, &lease).unwrap_err();
+    assert!(error.message.contains("superseded before publication"));
+    assert_eq!(fs::read(&path).unwrap(), b"old\n");
+}
+
+#[test]
+fn lease_expiring_during_temp_write_cannot_publish() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join(LOCK_FILE_NAME);
+    fs::write(&path, b"old\n").unwrap();
+    let expected = read_lock_file_authority(&path).unwrap();
+    struct ExpiringClock(AtomicUsize);
+
+    impl ScopeLeaseClock for ExpiringClock {
+        fn now_ms(&self) -> cdf_kernel::Result<i64> {
+            Ok(match self.0.fetch_add(1, Ordering::SeqCst) {
+                0 => 1_000,
+                1 => 1_099,
+                _ => 1_100,
+            })
+        }
+    }
+
+    let store = InMemoryScopeLeaseStore::with_clock(Arc::new(ExpiringClock(AtomicUsize::new(0))));
+    let lease = store
+        .acquire(
+            ScopeKey::SchemaContract {
+                contract: ContractRef::new("expiring").unwrap(),
+            },
+            LeaseOwnerId::new("promotion-executor").unwrap(),
+            100,
+        )
+        .unwrap();
+
+    let error = compare_and_swap_lock_file(&path, &expected, b"new\n", &store, &lease).unwrap_err();
+    assert!(error.message.contains("expired, released, or superseded"));
+    assert_eq!(fs::read(&path).unwrap(), b"old\n");
+}
+
+#[test]
+fn lock_file_atomicity_capabilities_state_platform_limits() {
+    let capabilities = lock_file_atomicity_capabilities();
+    assert!(!capabilities.limitation.is_empty());
+    assert!(capabilities.cooperating_cdf_writers_serialized);
+    assert!(capabilities.limitation.contains("non-cooperating"));
+    #[cfg(unix)]
+    {
+        assert!(capabilities.atomic_rename_over_existing);
+        assert!(capabilities.parent_directory_fsync);
+        assert!(capabilities.limitation.contains("same Unix filesystem"));
+        assert!(capabilities.limitation.contains("POSIX rename"));
+    }
+    #[cfg(not(unix))]
+    {
+        assert!(!capabilities.atomic_rename_over_existing);
+        assert!(!capabilities.parent_directory_fsync);
+    }
 }
 
 #[test]
@@ -381,6 +677,9 @@ fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
     assert_eq!(budget.max_metadata_bytes_per_file(), 64 * 1024 * 1024);
     assert_eq!(budget.max_total_in_flight_bytes(), 128 * 1024 * 1024);
     assert_eq!(budget.max_concurrent_probes(), 8);
+    let options = SchemaDiscoveryExecutionOptions::new();
+    assert_eq!(options.budget(), &budget);
+    assert!(options.verified_baseline().is_none());
 
     for (per_file, total, probes, expected) in [
         (0, 1, 1, "max_metadata_bytes_per_file"),
@@ -429,6 +728,23 @@ fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
     let repeated = DiscoveryManifestArtifact::new(input).unwrap();
 
     assert_eq!(artifact, repeated);
+    let same_observation_new_baseline = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
+        resource_id: artifact.resource_id.clone(),
+        baseline_schema_hash: Some(SchemaHash::new("sha256:next-baseline").unwrap()),
+        effective_schema_hash: artifact.effective_schema_hash.clone(),
+        coverage: artifact.coverage.clone(),
+        selector: artifact.selector.clone(),
+        budget: artifact.budget.clone(),
+        normalizer_version: artifact.normalizer_version.clone(),
+        policy_version: artifact.policy_version.clone(),
+        candidates: artifact.candidates.clone(),
+    })
+    .unwrap();
+    assert_ne!(
+        artifact.manifest_hash,
+        same_observation_new_baseline.manifest_hash
+    );
+    assert!(artifact.has_same_observation(&same_observation_new_baseline));
     assert_eq!(
         artifact
             .candidates
@@ -1205,23 +1521,356 @@ fn local_parquet_discover_autopin_rejects_non_parquet_without_snapshot_write() {
 
     let message = error.to_string();
     assert!(message.contains("unsupported schema discovery slice"));
-    assert!(message.contains("format"));
+    assert!(message.contains("local exhaustive binary discovery does not support Ndjson"));
     assert!(!temp.path().join(".cdf/schemas").exists());
 }
 
 #[test]
-fn local_parquet_discover_autopin_rejects_multi_file_glob_without_snapshot_write() {
+fn local_parquet_discover_autopin_persists_exhaustive_multi_file_manifest() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "parquet", "*.parquet");
     write_vendor_parquet(&temp.path().join("data/a.parquet"));
     write_vendor_parquet(&temp.path().join("data/b.parquet"));
     let resource = compile_single_project_resource(temp.path());
 
-    let error = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap_err();
+    let prepared = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap();
+    let discovery = prepared.discovery.unwrap();
+    assert_eq!(discovery.snapshot.source_identity["coverage"], "exhaustive");
+    assert_eq!(discovery.snapshot.source_identity["matched_files"], "2");
+    assert_eq!(discovery.snapshot.source_identity["probed_files"], "2");
+    let reference = discovery
+        .snapshot
+        .reference
+        .discovery_manifest()
+        .unwrap()
+        .unwrap();
+    let manifest = DiscoveryManifestStore::new(temp.path())
+        .read(&reference)
+        .unwrap();
+    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Exhaustive);
+    assert!(manifest.selector.is_none());
+    assert_eq!(manifest.budget.max_concurrent_probes(), 8);
+    assert_eq!(
+        manifest.budget.max_metadata_bytes_per_file(),
+        64 * 1024 * 1024
+    );
+    assert_eq!(
+        manifest.budget.max_total_in_flight_bytes(),
+        128 * 1024 * 1024
+    );
+    assert_eq!(manifest.candidates.len(), 2);
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Probed
+            && candidate.physical_schema_hash.is_some()
+            && candidate.probe_bytes.is_some()
+            && candidate.schema_verdict.is_some()
+    }));
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .map(|candidate| candidate.canonical_location.as_str())
+            .collect::<Vec<_>>(),
+        vec!["a.parquet", "b.parquet"]
+    );
+    assert!(temp.path().join(discovery.snapshot.artifact.path).is_file());
+}
 
-    let message = error.to_string();
-    assert!(message.contains("multi-file Parquet discovery is unsupported"));
-    assert!(message.contains("resolved to 2 files"));
+#[test]
+fn exhaustive_discovery_uses_exact_verified_baseline_and_schema_only_effective_hash() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+    let authority_temp = tempfile::tempdir().unwrap();
+    let baseline_artifact = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        resource.schema().as_ref(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let baseline_store = SchemaSnapshotStore::new(authority_temp.path());
+    baseline_store.write(&baseline_artifact).unwrap();
+    let (_, verified_baseline) = baseline_store
+        .read_with_verified_baseline(&baseline_artifact.reference())
+        .unwrap();
+    assert_eq!(
+        verified_baseline.resource_id(),
+        &resource.descriptor().resource_id
+    );
+    let verified_baseline_hash = verified_baseline.schema_hash().clone();
+
+    let artifacts = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new().with_verified_baseline(verified_baseline),
+    )
+    .unwrap();
+    let manifest = artifacts.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.baseline_schema_hash, Some(verified_baseline_hash));
+
+    let schema_only = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        artifacts.discovery.normalized_schema.as_ref(),
+        BTreeMap::from([
+            ("cdf:normalizer".to_owned(), "namecase-v1".to_owned()),
+            (
+                "format".to_owned(),
+                SCHEMA_DISCOVERY_FORMAT_PARQUET.to_owned(),
+            ),
+            (
+                "probe".to_owned(),
+                SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER.to_owned(),
+            ),
+            ("source_kind".to_owned(), "files".to_owned()),
+        ]),
+    )
+    .unwrap();
+    assert_eq!(
+        manifest.effective_schema_hash.as_ref(),
+        Some(&schema_only.schema_hash)
+    );
+    assert_ne!(
+        manifest.effective_schema_hash.as_ref(),
+        Some(&artifacts.discovery.snapshot.artifact.schema_hash)
+    );
+
+    let other_resource_id = ResourceId::new("other.resource").unwrap();
+    let other_artifact = SchemaSnapshotArtifact::new(
+        &other_resource_id,
+        resource.schema().as_ref(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    baseline_store.write(&other_artifact).unwrap();
+    let (_, wrong_baseline) = baseline_store
+        .read_with_verified_baseline(&other_artifact.reference())
+        .unwrap();
+    let wrong_resource = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new().with_verified_baseline(wrong_baseline),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(wrong_resource.contains("belongs to resource `other.resource`"));
+    assert!(wrong_resource.contains("discovery is for `local.events`"));
+}
+
+#[test]
+#[allow(deprecated)]
+fn legacy_local_parquet_helper_refuses_multi_file_partial_evidence() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    write_vendor_parquet(&temp.path().join("data/b.parquet"));
+    let resource = compile_single_project_resource(temp.path());
+
+    let error = discover_local_parquet_resource_schema(&resource)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot represent 2 matched candidates"));
+    assert!(error.contains("without partial evidence"));
+    assert!(error.contains("discover_resource_schema_artifacts"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn exhaustive_local_parquet_discovery_aggregates_widening_missing_metadata_and_set_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![
+            Field::new("VendorID", DataType::Int32, false)
+                .with_metadata(HashMap::from([("source-tag".to_owned(), "a".to_owned())])),
+        ],
+        vec![Arc::new(Int32Array::from(vec![1_i32, 2_i32]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/b.parquet"),
+        vec![
+            Field::new("VendorID", DataType::Int64, false)
+                .with_metadata(HashMap::from([("source-tag".to_owned(), "b".to_owned())])),
+            Field::new("Note", DataType::Utf8, false),
+        ],
+        vec![
+            Arc::new(Int64Array::from(vec![3_i64, 4_i64])),
+            Arc::new(StringArray::from(vec!["x", "y"])),
+        ],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let options = SchemaDiscoveryExecutionOptions::new();
+    let first = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert!(!temp.path().join(".cdf/schemas").exists());
+    assert_eq!(
+        first.discovery.normalized_schema.field(0).data_type(),
+        &DataType::Int64
+    );
+    assert_eq!(first.discovery.normalized_schema.field(1).name(), "note");
+    assert!(first.discovery.normalized_schema.field(1).is_nullable());
+    let first_manifest = first.discovery_manifest.as_ref().unwrap();
+    assert_eq!(first_manifest.candidates.len(), 2);
+    assert!(
+        first_manifest.candidates[0]
+            .metadata_variance
+            .iter()
+            .any(|variance| variance.key == "source-tag")
+    );
+    assert!(
+        first_manifest.candidates[0]
+            .schema_verdict
+            .as_ref()
+            .unwrap()
+            .details["field_verdicts"]
+            .contains("widened")
+    );
+    assert!(
+        first_manifest.candidates[0]
+            .schema_verdict
+            .as_ref()
+            .unwrap()
+            .details["field_verdicts"]
+            .contains("missing_null")
+    );
+    let repeated = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert_eq!(
+        repeated.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+
+    write_parquet_fixture(
+        &temp.path().join("data/c.parquet"),
+        vec![Field::new("VendorID", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![5_i64]))],
+    );
+    let added = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert_ne!(
+        added.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+    fs::remove_file(temp.path().join("data/c.parquet")).unwrap();
+    fs::remove_file(temp.path().join("data/a.parquet")).unwrap();
+    let removed = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options.clone(),
+    )
+    .unwrap();
+    assert_ne!(
+        removed.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("VendorID", DataType::Int32, false)],
+        vec![Arc::new(Int32Array::from(vec![1_i32, 2_i32, 3_i32]))],
+    );
+    let changed = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        options,
+    )
+    .unwrap();
+    assert_ne!(
+        changed.discovery_manifest.as_ref().unwrap().manifest_hash,
+        first_manifest.manifest_hash
+    );
+}
+
+#[test]
+fn exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    write_parquet_fixture(
+        &temp.path().join("data/b.parquet"),
+        vec![Field::new("VendorID", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["one", "two"]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let incompatible = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(incompatible.contains("candidate verdicts"));
+    assert!(incompatible.contains("a.parquet"));
+    assert!(incompatible.contains("b.parquet"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+
+    write_vendor_parquet(&temp.path().join("data/b.parquet"));
+    let corrupt_path = temp.path().join("data/b.parquet");
+    let mut corrupt = fs::read(&corrupt_path).unwrap();
+    let footer_length = corrupt.len() - 8;
+    corrupt[footer_length..footer_length + 4].fill(0xff);
+    fs::write(&corrupt_path, corrupt).unwrap();
+    let malformed = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(malformed.contains("a.parquet: probed"));
+    assert!(malformed.contains("b.parquet: failed"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+
+    fs::remove_file(temp.path().join("data/b.parquet")).unwrap();
+    let budget_error = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new()
+            .with_budget(DiscoveryExecutorBudget::new(8, 8, 1).unwrap()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(budget_error.contains("metadata budget exceeded"));
+    assert!(budget_error.contains("allowed 8"));
+    assert!(budget_error.contains("increase the per-file"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn exhaustive_local_binary_discovery_detects_normalizer_collision_before_artifacts() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("VendorID", DataType::Int32, false)],
+        vec![Arc::new(Int32Array::from(vec![1_i32]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/b.parquet"),
+        vec![Field::new("vendor_id", DataType::Int32, false)],
+        vec![Arc::new(Int32Array::from(vec![2_i32]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let error = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("collision"));
     assert!(!temp.path().join(".cdf/schemas").exists());
 }
 
@@ -1838,6 +2487,12 @@ fn write_vendor_parquet(path: &Path) {
     )]));
     let batch =
         RecordBatch::try_new(schema, vec![Arc::new(Int32Array::from(vec![1_i32, 2_i32]))]).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+fn write_parquet_fixture(path: &Path, fields: Vec<Field>, columns: Vec<ArrayRef>) {
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
     let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
     fs::write(path, bytes).unwrap();
 }

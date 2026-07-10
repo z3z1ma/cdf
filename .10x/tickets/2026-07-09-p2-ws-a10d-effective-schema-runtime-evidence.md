@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
-Depends-On: .10x/tickets/2026-07-09-p2-ws-a10c-exhaustive-local-binary-discovery.md, .10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md
+Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a10c-exhaustive-local-binary-discovery.md, .10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md
 
 # P2 WS-A10d effective schema runtime and per-file evidence
 

@@ -4,8 +4,9 @@ use std::{collections::BTreeMap, env};
 
 use cdf_kernel::CdfError;
 use cdf_project::{
-    FileResourceSourceResolver, LockDiff, ProjectScaffoldOptions, ProjectScaffoldReport,
-    ProjectValidationReport, generate_lockfile, validate_project, write_local_project_scaffold,
+    FileResourceSourceResolver, LockDiff, LockedDestination, ProjectScaffoldOptions,
+    ProjectScaffoldReport, ProjectValidationReport, generate_lockfile_with_destination_artifacts,
+    validate_project, write_local_project_scaffold,
 };
 use serde::Serialize;
 
@@ -70,16 +71,16 @@ pub(crate) fn validate(cli: &Cli, args: ValidateArgs) -> Result<CommandOutput, C
 pub(crate) fn diff_schema(cli: &Cli) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let lock = require_lock(&context)?;
-    let destination_sheets = lock
+    let destination_artifacts = lock
         .destinations
         .values()
-        .map(|destination| destination.sheet.clone())
-        .collect::<Vec<_>>();
-    let regenerated = generate_lockfile(
+        .map(LockedDestination::sheet_artifact)
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    let regenerated = generate_lockfile_with_destination_artifacts(
         &context.config,
         &context.resources,
         lock.dependency_tuple.clone(),
-        &destination_sheets,
+        &destination_artifacts,
         BTreeMap::new(),
     )?;
     let diffs = cdf_project::diff_lockfiles(lock, &regenerated)?;
