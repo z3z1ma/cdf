@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
@@ -33,7 +33,8 @@ No candidate enumeration, schema joining, format probing, CLI reporting, package
 ## Progress and notes
 
 - 2026-07-09: Opened after the user ratified `.10x/decisions/multi-file-discovery-aggregation-and-budget.md`.
+- 2026-07-09: Paused before implementation. The user proposed explicit sampled discovery with runtime residual capture and later promotion. The manifest must be able to represent an unprobed candidate without inventing a physical-schema hash or discovery verdict, and must distinguish sampled baseline coverage from exhaustive coverage. See `.10x/research/2026-07-09-sampled-discovery-variant-promotion.md`.
 
 ## Blockers
 
-None.
+The sampled discovery manifest contract is unratified. In particular, participation states, optional probe/schema fields, selection evidence, and relationships among sampled baseline, effective schema, runtime observations, retention, and promotion must be settled before this durable artifact is implemented.

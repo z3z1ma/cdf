@@ -1,4 +1,4 @@
-Status: open
+Status: blocked
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
@@ -76,7 +76,8 @@ This ticket does not add Arrow IPC stream framing, Parquet/IPC row decoding chan
 - 2026-07-09: Consolidated the architecture audit, active VISION/decision/spec authority, and mandatory dlt comparison into `.10x/research/2026-07-09-multi-file-discovery-aggregation-contract.md`. The research rejects sampled binary auto-pins, separates baseline/effective/manifest identities, specifies the existing-lattice aggregate join and metadata handling, and recommends gate-preserving quarantine advancement. It supersedes the earlier 4,096-file sampling proposal; no product code changed.
 - 2026-07-09: The user ratified the full contract and clarified that CDF must remain suitable for massive standalone/container execution, Azure/custom parser paths, and eventual Spark/Flink-style embedding. `.10x/decisions/multi-file-discovery-aggregation-and-budget.md` records 64 MiB/file, 128 MiB in flight, and 8 probes as configurable plan-recorded per-executor defaults, not global ceilings.
 - 2026-07-09: Split executable children A10a through A10f. A10a (artifact/budget) and A10b (pure aggregate join) are independent first lanes; A10c-f sequence the I/O, runtime evidence, quarantine/checkpoint, and conformance integration.
+- 2026-07-09: Implementation paused at the user's request to shape explicit sampled discovery plus residual `_cdf_variant` capture and governed promotion. Research in `.10x/research/2026-07-09-sampled-discovery-variant-promotion.md` confirms sampling itself is not forbidden: silent or falsely exhaustive sampling is. The active exhaustive-default decision remains valid, but A10a's manifest shape cannot be finalized until sampled candidates, absent physical-schema hashes/verdicts, and promotion-oriented retention/row identity have an explicit contract.
 
 ## Blockers
 
-None. The ratified children own the remaining implementation dependencies explicitly.
+Explicit sampled-discovery evidence, residual capture scope, keyless destination correction identity, promotion command semantics, and retention behavior remain unratified. No A10 child may enter implementation until this shaping checkpoint is resolved; A10a is directly blocked because it owns the durable manifest shape.
