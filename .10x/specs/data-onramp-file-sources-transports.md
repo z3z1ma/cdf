@@ -26,6 +26,10 @@ Per-file schema variance MUST produce contract verdicts. In `evolve`, compatible
 
 Multi-file file resources MUST be discoverable and pinnable as one resource. Discovery MUST retain deterministic per-file content/schema provenance and MUST NOT reject a resource merely because more than one file matched. A single-file fast path MAY optimize the one-entry case only if it is the same aggregation abstraction and produces equivalent evidence.
 
+File discovery budgets are per executor. The default executor permits 64 MiB of metadata for one file, 128 MiB total in-flight metadata, and 8 concurrent probes. An embedding runtime MAY override those values explicitly; the resolved budget MUST be plan/package evidence and MUST affect only resource scheduling or explicit limit failure, never file eligibility, schema semantics, or sampling.
+
+The candidate, probe, manifest, and verdict model MUST be transport- and executor-neutral. Local, Azure/object-store, HTTP, Python, WASM, and future distributed integrations adapt into the same facts. No correctness rule may depend on the CLI process or one transport implementation.
+
 ## Acceptance criteria
 
 - A six-month public HTTPS Parquet glob plans one partition per month and records manifest state after run.

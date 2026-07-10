@@ -91,14 +91,9 @@ A terminal file-level quarantine verdict marks that exact runtime file identity 
 7. Quarantined file identities advance only through the receipt/checkpoint gate; changed identities retry; removal never deletes destination data.
 8. Discovery identities are strength-labeled bounded observations; runtime `FileManifest` identity remains incrementality authority.
 
-## Unratified decisions
+## Ratification
 
-The eight points above change execution semantics and require user confirmation or correction. Two mechanical limits also need concrete values or a named configuration authority:
-
-- maximum schema/footer metadata bytes per file before explicit failure;
-- maximum discovery concurrency and total in-flight metadata bytes.
-
-Exceeding either limit must fail with remediation, never fall back to sampling.
+The user ratified all eight points on 2026-07-09. The user questioned whether 128 MiB was sufficient for production scale; the resulting decision makes 64 MiB per file, 128 MiB total in flight, and 8 probes configurable, plan-recorded per-executor defaults rather than universal or cluster-wide limits. Exceeding a resolved limit fails with remediation and never falls back to sampling. Authority: `.10x/decisions/multi-file-discovery-aggregation-and-budget.md`.
 
 ## Conclusion
 

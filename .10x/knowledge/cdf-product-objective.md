@@ -10,6 +10,8 @@ The intended system is optimized for AI agents to manage. That means final desig
 
 When prioritizing work, MVP acceptance demo slices remain valuable only when they harden reusable production mechanisms. Do not accept demo-only shortcuts as final behavior. Post-MVP book surfaces such as WASM distribution, CDC/streaming, distributed execution, lakehouse/warehouse integration, vault-class secrets, package signing, remote state, and native dependency-policy decisions remain part of full-system completion unless an active superseding record explicitly removes them.
 
+Source/onramp mechanisms must be embeddable infrastructure, not CLI-shaped implementations. Candidate enumeration, discovery, schema reconciliation, parser tiers, and evidence artifacts must remain usable in a standalone container, under remote object stores such as Azure, behind interpreted Python or sandboxed WASM parsing, and eventually inside Spark/Flink-style worker execution. Scaling changes executor topology and budgets; it does not create a second semantic path.
+
 ## 1.0 Finish Line
 
 CDF 1.0 is done when the full `VISION.md` system is provable from artifacts rather than asserted:

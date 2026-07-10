@@ -1,23 +1,23 @@
-Status: blocked
+Status: open
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
-Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
+Depends-On: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/tickets/done/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
 
 # P2 WS-A10 multi-file schema discovery and pinned manifest identity
 
 ## Scope
 
-Replace single-file discovery slices with a format-neutral resource-level file discovery compiler stage. It lists deterministic candidates, dispatches each candidate to its bounded format probe, reconciles compatible physical schemas across the set, emits per-file contract verdicts for incompatible variance, and pins both the aggregate Arrow schema and a discovery manifest identity. Parquet footer probes and Arrow IPC file schema-block probes MUST both use this aggregation abstraction; later text samplers plug into the same interface after their bounds are ratified. The design must work for local and facade-backed remote partitions without a separate single-file product contract. Runtime partition planning and exact `FileManifest` evidence remain unchanged and compose with the discovery result.
+Parent plan: replace single-file discovery slices with a format-neutral resource-level compiler stage and integrate its aggregate schema, manifest, effective-schema, per-file verdict, quarantine, and checkpoint evidence through the ordinary pipeline. A10a/A10b establish parallel artifact and pure-join foundations; A10c integrates exhaustive local binary discovery; A10d adds compatible runtime evidence; A10e adds gate-backed file quarantine; A10f owns conformance closure.
 
 ## Acceptance criteria
 
 - `cdf schema discover|pin`, `plan --no-pin`, and first-use auto-pin accept multi-file Parquet and Arrow IPC file resources and never require narrowing a glob to one file.
-- Discovery probes footer/schema metadata without reading data pages or computing runtime full-file hashes; the I/O bound and any deterministic large-N sampling are explicit evidence, never silent.
+- Discovery probes every footer/schema block without reading data pages or computing runtime full-file hashes; resolved per-executor budgets are explicit evidence and exhaustion fails rather than sampling.
 - Default `evolve` produces one deterministic union schema using only ratified lossless widenings; missing fields, new fields, incompatible physical types, and metadata variance have explicit recorded semantics.
-- `freeze` has a deterministic first-pin baseline and later uses the existing pin as authority; nonconforming files receive named file-level verdicts rather than an internal error.
+- First pin requires the exhaustive compatible aggregate. Existing baseline pins stay immutable; `evolve` derives a recorded effective schema and `freeze` quarantines deviations.
 - The pinned artifact identity includes aggregate schema, normalizer/policy versions, and a sorted discovery manifest with content identity, physical-schema hash, probe participation, and verdict for every matched file.
-- Adding, removing, or changing a file changes the fresh discovery candidate identity even when the aggregate Arrow schema remains unchanged; ordinary commands continue using the existing pin until explicit refresh.
+- Adding/removing a file or changing its bounded observation identity changes the fresh discovery manifest even when the aggregate Arrow schema is unchanged; runtime exact identity remains authoritative for data-only changes outside bounded discovery evidence. Ordinary commands never refresh the baseline pin implicitly.
 - Plan/preview/run share the pinned aggregate schema and per-file reconciliation front end. Runtime exact `FileManifest` SHA/ETag evidence and append incrementality remain intact.
 - Deterministic local multi-file Parquet/Arrow IPC and transport-fixture tests cover compatible union/widening, missing fields, incompatible quarantine, no-change identity, changed-set diff, bounded large-N behavior, and no-write failures.
 
@@ -74,9 +74,9 @@ This ticket does not add Arrow IPC stream framing, Parquet/IPC row decoding chan
   - Per-file physical provenance and coercion cannot fit the current singular `cdf:physical_type` field metadata and singular `ValidationProgram.schema_coercion`. The contract must authorize a canonical per-file evidence model while keeping the aggregate field's output type authoritative.
   - Removal semantics need confirmation: a fresh pin omitting a formerly matched file changes discovery identity, but runtime append state normally retains prior manifest entries. State whether schema refresh/removal affects only future schema authority or also requests data deletion/replacement; the safe recommendation is schema authority only, with no destination deletion.
 - 2026-07-09: Consolidated the architecture audit, active VISION/decision/spec authority, and mandatory dlt comparison into `.10x/research/2026-07-09-multi-file-discovery-aggregation-contract.md`. The research rejects sampled binary auto-pins, separates baseline/effective/manifest identities, specifies the existing-lattice aggregate join and metadata handling, and recommends gate-preserving quarantine advancement. It supersedes the earlier 4,096-file sampling proposal; no product code changed.
+- 2026-07-09: The user ratified the full contract and clarified that CDF must remain suitable for massive standalone/container execution, Azure/custom parser paths, and eventual Spark/Flink-style embedding. `.10x/decisions/multi-file-discovery-aggregation-and-budget.md` records 64 MiB/file, 128 MiB in flight, and 8 probes as configurable plan-recorded per-executor defaults, not global ceilings.
+- 2026-07-09: Split executable children A10a through A10f. A10a (artifact/budget) and A10b (pure aggregate join) are independent first lanes; A10c-f sequence the I/O, runtime evidence, quarantine/checkpoint, and conformance integration.
 
 ## Blockers
 
-Blocked on user confirmation or correction of the eight-point recommended contract in `.10x/research/2026-07-09-multi-file-discovery-aggregation-contract.md`, plus concrete authority for per-file metadata-byte and in-flight discovery limits. No implementation may encode those defaults until confirmed.
-
-The audit makes the confirmation boundary concrete: it must also settle bounded discovery identity versus exact content hashing; whether unprobed files are allowed; the complete aggregate type/nullability/metadata join; policy authority; file-quarantine manifest advancement and retry semantics; per-file coercion/package evidence; snapshot v1 migration and package stamping; and the remote candidate/listing contract. These are upstream behavior choices, not mechanical implementation details.
+None. The ratified children own the remaining implementation dependencies explicitly.

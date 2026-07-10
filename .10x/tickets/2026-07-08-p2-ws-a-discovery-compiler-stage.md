@@ -50,7 +50,8 @@ This ticket does not implement file manifest incrementality, remote transport cr
 - 2026-07-09: Split executable child, now terminal at `.10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md`, for first-use lockfile durability and no-write plan/explain discovery inspection. Hints remains blocked on its declarative syntax/constraint checkpoint and is not bundled into A8.
 - 2026-07-09: A9 closed as `.10x/tickets/done/2026-07-09-p2-ws-a9-local-arrow-ipc-discover-run.md` with evidence `.10x/evidence/2026-07-09-p2-h3-a9-integration.md` and review `.10x/reviews/2026-07-09-p2-h3-a9-integration-review.md`. Local single-file Arrow IPC now supports bounded schema-block discovery, pin lifecycle, preview/run parity, strict reconciliation, and ordinary package/receipt/checkpoint execution. Remote/stream/compressed/multi-file IPC and text sampling remain open or excluded; A10 owns the separately discovered local Parquet bounded-dispatch regression.
 - 2026-07-09: A8 closed as `.10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md` with `.10x/evidence/2026-07-09-p2-a8-b6-i3-integration.md` and `.10x/reviews/2026-07-09-p2-a8-b6-i3-integration-review.md`. First-use discovery now pins durably, existing pins are authoritative for ordinary commands, and `--no-pin` is write-free inspection. Hints and remaining source-archetype discovery stay open.
+- 2026-07-09: A10 semantics are ratified by `.10x/decisions/multi-file-discovery-aggregation-and-budget.md`; the parent is open with executable A10a/A10b foundation lanes and dependent A10c-f integration/conformance children.
 
 ## Blockers
 
-A10 multi-file aggregation is blocked on the ratification checkpoint in `.10x/research/2026-07-09-multi-file-discovery-aggregation-contract.md`. Other executable children may need dependencies on WS-D/E for remote ranged reads.
+None for A10a/A10b. Later remote children retain explicit WS-D/E dependencies.

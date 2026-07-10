@@ -22,7 +22,13 @@ Discovery probes MUST be bounded and source-specific:
 - SQL: catalogs such as `information_schema`.
 - REST: one recorded sample page plus declared cursor policy.
 
-File discovery MUST be resource-level rather than single-file-only. A Parquet or Arrow IPC file resource whose glob or remote enumeration resolves multiple files MUST support discovery and pinning without requiring the operator to narrow the source. Per-format footer/schema-block/sampling probes MUST feed one discovery-set aggregation abstraction so later file formats do not reinvent aggregation semantics. The pinned result MUST represent the aggregate resource schema and durable provenance for the matched discovery set; incompatible per-file schemas MUST become named contract verdicts rather than an ambiguity rejection or unclassified crash. Exact aggregation, large-N sampling, metadata-conflict, and first-pin `freeze` semantics require an explicit ratified contract before implementation.
+File discovery MUST be resource-level rather than single-file-only. A Parquet or Arrow IPC file resource whose glob or remote enumeration resolves multiple files MUST support discovery and pinning without requiring the operator to narrow the source. Per-format footer/schema-block/sampling probes MUST feed one discovery-set aggregation abstraction so later file formats do not reinvent aggregation semantics. The pinned result MUST represent the aggregate resource schema and durable provenance for the matched discovery set; incompatible per-file schemas MUST become named contract verdicts rather than an ambiguity rejection or unclassified crash. `.10x/decisions/multi-file-discovery-aggregation-and-budget.md` governs exhaustive binary aggregation, metadata conflicts, pin/effective/manifest authority, quarantine advancement, and executor budgets.
+
+For Parquet and Arrow IPC, discovery MUST probe every matched footer/schema block and MUST NOT sample. Aggregation MUST use equality or the ratified lossless widening lattice recursively; missing compatible fields become nullable and materialize typed nulls. Initial pinning MUST fail with a complete per-file report when the exhaustive set is incompatible. Reserved CDF metadata is regenerated; identical non-reserved metadata is retained; conflicts are recorded per file.
+
+Discovery evidence MUST distinguish the immutable baseline snapshot hash, the current verdict-bearing effective schema hash, and the content-addressed discovery-manifest hash. Ordinary commands MUST verify and hydrate the baseline before any file-source observation. Existing pins remain immutable until explicit `cdf schema pin`; `evolve` MAY derive a recorded effective output schema against that baseline, while `freeze` MUST keep the baseline effective and quarantine deviations. File listing/probing for execution MUST NOT be reported or persisted as a pin refresh.
+
+Binary discovery defaults to 64 MiB metadata per file, 128 MiB total in-flight metadata, and 8 concurrent probes per executor. These values MUST be configurable through executor options and serialized into discovery evidence. Exceeding a resolved budget MUST fail explicitly and MUST NOT sample or omit candidates.
 
 Discovery MUST NOT silently mutate a pinned schema during run. Drift against a pinned snapshot is a contract event that admits, widens, variant-captures, quarantines, or rejects according to policy.
 
@@ -52,6 +58,7 @@ Declarative field types MUST cover Arrow's closed vocabulary from `VISION.md` Ch
 - Decimal and nested declarative types round-trip through TOML/YAML parsing, JSON Schema generation, plan evidence, and package schema evidence.
 - Physical type provenance is preserved in field metadata after reconciliation.
 - Multi-file Parquet and Arrow IPC file discovery pin deterministic aggregate schemas and discovery-set identities without reading row data or narrowing the glob to one file.
+- Discovery behavior and artifacts remain executor-neutral and can be reused by standalone, container, or distributed workers without CLI/local-filesystem semantics becoming correctness dependencies.
 
 ## Explicit exclusions
 
