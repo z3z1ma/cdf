@@ -34,7 +34,8 @@ No candidate enumeration, schema joining, format probing, CLI reporting, package
 
 - 2026-07-09: Opened after the user ratified `.10x/decisions/multi-file-discovery-aggregation-and-budget.md`.
 - 2026-07-09: Paused before implementation. The user proposed explicit sampled discovery with runtime residual capture and later promotion. The manifest must be able to represent an unprobed candidate without inventing a physical-schema hash or discovery verdict, and must distinguish sampled baseline coverage from exhaustive coverage. See `.10x/research/2026-07-09-sampled-discovery-variant-promotion.md`.
+- 2026-07-09: The user ratified the architectural recommendation in `.10x/decisions/explicit-sampled-discovery-and-residual-promotion.md`. Exact selector evidence remains a blocker because it determines the durable manifest fields and validation invariants.
 
 ## Blockers
 
-The sampled discovery manifest contract is unratified. In particular, participation states, optional probe/schema fields, selection evidence, and relationships among sampled baseline, effective schema, runtime observations, retention, and promotion must be settled before this durable artifact is implemented.
+Coverage and participation semantics are ratified. The exact deterministic selector/version/parameters and validation rules for its evidence remain blocked pending the focused sampled-discovery specification.

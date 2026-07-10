@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-09
 Updated: 2026-07-09
 
@@ -98,4 +98,4 @@ Field/path residual capture is appropriate when the accepted projection remains 
 
 ## Limits and next step
 
-No sampling selector, residual envelope, row address, promotion command, retention promise, or destination repair behavior is ratified by this research record. A focused decision and specification update are required before A10a fixes the discovery-manifest schema or any implementation ticket encodes these semantics.
+The user ratified the candidate architectural contract on 2026-07-09. `.10x/decisions/explicit-sampled-discovery-and-residual-promotion.md` is now authoritative for explicit sampling, residual capture, and governed promotion. The exact sampling selector, residual envelope, row-address encoding, promotion transaction ordering, and retention mechanics remain specification blockers rather than research questions; no implementation is authorized to invent them.
