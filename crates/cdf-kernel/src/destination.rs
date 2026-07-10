@@ -124,6 +124,14 @@ pub struct DestinationCommitRequest {
     pub idempotency_token: IdempotencyToken,
 }
 
+impl DestinationCommitRequest {
+    /// A commit with no state segments still binds a package receipt, but MUST
+    /// NOT mutate destination data or target replacement pointers.
+    pub fn is_data_noop(&self) -> bool {
+        self.segments.is_empty()
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommitPlan {
     pub plan_id: PlanId,

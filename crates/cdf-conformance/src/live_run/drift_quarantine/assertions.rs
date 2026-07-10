@@ -107,19 +107,18 @@ pub(super) fn assert_drift_quarantine_package_evidence(report: &ProjectRunReport
     assert_eq!(quarantine[0].source_row_ordinal, 2);
     assert_eq!(
         quarantine[0].rule_id,
-        "source-decode:event_type:type-mismatch"
+        "residual:event_type:control-critical"
     );
-    assert_eq!(quarantine[0].error_code, "source_type_mismatch");
+    assert_eq!(quarantine[0].error_code, "cdf.residual_control_critical");
     assert!(matches!(
         quarantine[0].source_position,
         Some(SourcePosition::FileManifest(_))
     ));
-    assert_eq!(
-        quarantine[0].observed_value_redacted,
-        QuarantineObservedValue::Preserved {
-            value: DRIFTED_EVENT_TYPE_OBSERVED.to_owned()
-        }
-    );
+    let QuarantineObservedValue::Preserved { value } = &quarantine[0].observed_value_redacted
+    else {
+        panic!("non-PII drift evidence should be preserved in its typed residual envelope");
+    };
+    assert!(value.contains(DRIFTED_EVENT_TYPE_OBSERVED));
 
     let dedup = reader.read_dedup_summary_json().unwrap().unwrap();
     assert_eq!(dedup["rule_id"], "row-rule-0001-dedup");
@@ -258,9 +257,9 @@ pub(super) fn assert_postgres_quarantine_mirror(
     assert_eq!(row.get::<_, i64>(0), 2);
     assert_eq!(
         row.get::<_, String>(1),
-        "source-decode:event_type:type-mismatch"
+        "residual:event_type:control-critical"
     );
-    assert_eq!(row.get::<_, String>(2), "source_type_mismatch");
+    assert_eq!(row.get::<_, String>(2), "cdf.residual_control_critical");
     let observed = row.get::<_, String>(3);
     assert!(observed.contains(DRIFTED_EVENT_TYPE_OBSERVED));
 }

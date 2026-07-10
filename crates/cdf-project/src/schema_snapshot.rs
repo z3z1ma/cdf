@@ -872,10 +872,20 @@ impl SchemaSnapshotStore {
         reference: &SchemaSnapshotReference,
     ) -> Result<(SchemaSnapshotArtifact, crate::VerifiedSchemaBaseline)> {
         let artifact = self.read(reference)?;
+        let baseline_observation_schema_hashes = match reference.discovery_manifest()? {
+            Some(manifest) => crate::DiscoveryManifestStore::new(&self.project_root)
+                .read(&manifest)?
+                .candidates
+                .into_iter()
+                .filter_map(|candidate| candidate.physical_schema_hash)
+                .collect(),
+            None => std::collections::BTreeSet::new(),
+        };
         let baseline = crate::VerifiedSchemaBaseline::from_hydrated_snapshot(
             ResourceId::new(artifact.resource_id.clone())?,
             reference.clone(),
             Arc::new(artifact.schema.to_arrow()?),
+            baseline_observation_schema_hashes,
         );
         Ok((artifact, baseline))
     }

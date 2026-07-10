@@ -1,11 +1,15 @@
 use std::collections::BTreeSet;
 
 use arrow_schema::Field;
-use cdf_kernel::{CdfError, Result, TypeMapping, TypeMappingFidelity, semantic};
+use cdf_kernel::{
+    CdfError, ResourceDescriptor, Result, TypeMapping, TypeMappingFidelity, semantic,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    normalization::{normalize_identifier, normalize_schema, validate_normalizer},
+    normalization::{
+        NormalizedSchema, normalize_identifier, normalize_schema, validate_normalizer,
+    },
     policy::*,
     program::*,
     schema::*,
@@ -68,19 +72,164 @@ pub fn compile_validation_program(
         });
     }
 
+    let row_rules = row_rule_programs(policy, observed_schema);
     Ok(ValidationProgram {
         normalizer_version: policy.normalization.identifier.version.clone(),
         identifier_policy: policy.normalization.identifier.clone(),
         schema_coercion: None,
+        residual: Some(residual_program(
+            policy,
+            observed_schema,
+            &normalized_schema,
+            &row_rules,
+            None,
+        )),
         schema_verdicts: schema_verdicts(&policy.schema, &policy.normalization.nested),
         column_programs,
-        row_rules: row_rule_programs(policy, observed_schema),
+        row_rules,
         explicit_anomalies: Vec::new(),
         row_dispositions: row_dispositions(policy),
         transforms: policy.transforms.clone(),
         promotion: policy.promotion.clone(),
         warnings: Vec::new(),
     })
+}
+
+pub fn compile_resource_validation_program(
+    policy: &ContractPolicy,
+    observed_schema: &ObservedSchema,
+    descriptor: &ResourceDescriptor,
+) -> Result<ValidationProgram> {
+    let program = compile_validation_program(policy, observed_schema)?;
+    bind_validation_program_to_resource(program, descriptor)
+}
+
+pub fn bind_validation_program_to_resource(
+    mut program: ValidationProgram,
+    descriptor: &ResourceDescriptor,
+) -> Result<ValidationProgram> {
+    let controls = descriptor
+        .primary_key
+        .iter()
+        .chain(&descriptor.merge_key)
+        .chain(descriptor.cursor.iter().map(|cursor| &cursor.field))
+        .collect::<BTreeSet<_>>();
+    if let Some(residual) = &mut program.residual {
+        for control in controls {
+            let field = residual
+                .fields
+                .iter_mut()
+                .find(|field| field.source_name == *control || field.output_name == *control)
+                .ok_or_else(|| {
+                    CdfError::contract(format!(
+                        "resource control field {control:?} is not covered by the validation program"
+                    ))
+                })?;
+            field.control_critical = true;
+        }
+    } else if !controls.is_empty() {
+        return Err(CdfError::contract(
+            "resource control fields require a compiled residual verdict program",
+        ));
+    }
+    Ok(program)
+}
+
+fn residual_program(
+    policy: &ContractPolicy,
+    observed_schema: &ObservedSchema,
+    normalized_schema: &NormalizedSchema,
+    row_rules: &[RowRuleProgram],
+    descriptor: Option<&ResourceDescriptor>,
+) -> ResidualProgram {
+    let explicit_capture = matches!(
+        policy.normalization.nested,
+        NestedDataPolicy::VariantCapture(_)
+    );
+    let capture_allowed = policy.schema.mode == SchemaEvolutionMode::Evolve || explicit_capture;
+    let default_verdict = if capture_allowed {
+        ResidualCandidateVerdict::Capture
+    } else {
+        ResidualCandidateVerdict::Quarantine
+    };
+    let capture = if capture_allowed {
+        let (variant_column, semantic) = match &policy.normalization.nested {
+            NestedDataPolicy::VariantCapture(spec) => {
+                (spec.column_name.clone(), spec.semantic.clone())
+            }
+            _ => (
+                VARIANT_COLUMN_NAME.to_owned(),
+                VARIANT_SEMANTIC_TAG.to_owned(),
+            ),
+        };
+        Some(ResidualCaptureOutput {
+            variant_column,
+            semantic,
+            encoding: crate::RESIDUAL_ENCODING_NAME.to_owned(),
+        })
+    } else {
+        None
+    };
+    let controls = descriptor
+        .map(|descriptor| {
+            descriptor
+                .primary_key
+                .iter()
+                .chain(&descriptor.merge_key)
+                .chain(descriptor.cursor.iter().map(|cursor| &cursor.field))
+                .cloned()
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let required = row_rules
+        .iter()
+        .filter_map(|rule| match &rule.predicate {
+            RowRulePredicate::Nullability { column } => Some(column.as_str()),
+            _ => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let rule_controls = row_rules
+        .iter()
+        .flat_map(|rule| match &rule.predicate {
+            RowRulePredicate::Nullability { column }
+            | RowRulePredicate::Domain { column, .. }
+            | RowRulePredicate::Range { column, .. }
+            | RowRulePredicate::Regex { column, .. }
+            | RowRulePredicate::Freshness { column, .. } => vec![column.as_str()],
+            RowRulePredicate::Dedup { keys, .. } => keys.iter().map(String::as_str).collect(),
+        })
+        .collect::<BTreeSet<_>>();
+    ResidualProgram {
+        default_verdict,
+        pii_redaction: policy.quarantine.pii_redaction.clone(),
+        capture,
+        fields: observed_schema
+            .fields
+            .iter()
+            .zip(&normalized_schema.fields)
+            .map(|(field, normalized)| {
+                let required = required.contains(field.source_name.as_str())
+                    || required.contains(normalized.output_name.as_str());
+                let control_critical = controls.contains(&field.source_name)
+                    || controls.contains(&normalized.output_name)
+                    || rule_controls.contains(field.source_name.as_str())
+                    || rule_controls.contains(normalized.output_name.as_str());
+                ResidualFieldProgram {
+                    source_name: field.source_name.clone(),
+                    output_name: normalized.output_name.clone(),
+                    required,
+                    control_critical,
+                    redaction: redaction_decision_for_semantic(
+                        field
+                            .metadata
+                            .get(cdf_kernel::SEMANTIC_METADATA_KEY)
+                            .map(String::as_str),
+                        &policy.quarantine.pii_redaction,
+                    ),
+                }
+            })
+            .collect(),
+    }
 }
 pub fn redaction_decision_for_field(
     field: &Field,

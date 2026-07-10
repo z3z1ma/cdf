@@ -27,9 +27,8 @@ use cdf_contract::{
     schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
-    ErrorKind, PartitionId, PreContractObservedValue, ResourceId, ResourceStream, ScanRequest,
-    SchemaHash, ScopeKey, SegmentId, SourcePosition, physical_type, source_name, with_semantic,
-    with_source_name,
+    ErrorKind, PartitionId, ResourceId, ResourceStream, ScanRequest, SchemaHash, ScopeKey,
+    SegmentId, SourcePosition, physical_type, source_name, with_semantic, with_source_name,
 };
 
 fn options(resource: &str, partition: &str) -> ReadOptions {
@@ -360,7 +359,7 @@ fn ndjson_inference_feeds_contract_observed_schema() {
 }
 
 #[test]
-fn declared_ndjson_scalar_type_mismatch_quarantines_row_and_preserves_accepted_order() {
+fn declared_ndjson_scalar_type_mismatch_preserves_neutral_residual_candidate() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new("event_type", DataType::Utf8, false),
@@ -380,7 +379,7 @@ fn declared_ndjson_scalar_type_mismatch_quarantines_row_and_preserves_accepted_o
 
     assert_eq!(read.batches.len(), 1);
     let batch = read.batches[0].record_batch().unwrap();
-    assert_eq!(batch.num_rows(), 2);
+    assert_eq!(batch.num_rows(), 3);
     let ids = batch
         .column_by_name("id")
         .unwrap()
@@ -393,9 +392,10 @@ fn declared_ndjson_scalar_type_mismatch_quarantines_row_and_preserves_accepted_o
         .as_any()
         .downcast_ref::<StringArray>()
         .unwrap();
-    assert_eq!([ids.value(0), ids.value(1)], [1, 3]);
+    assert_eq!([ids.value(0), ids.value(1), ids.value(2)], [1, 2, 3]);
     assert_eq!(event_types.value(0), "order.created");
-    assert_eq!(event_types.value(1), "order.shipped");
+    assert!(event_types.is_null(1));
+    assert_eq!(event_types.value(2), "order.shipped");
     assert_eq!(physical_type(batch.schema().field(1)), Some("Utf8"));
     let coercion = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
         .unwrap()
@@ -405,21 +405,15 @@ fn declared_ndjson_scalar_type_mismatch_quarantines_row_and_preserves_accepted_o
         FieldCoercionDecision::Preserved
     );
 
-    let facts = &read.batches[0].header.pre_contract_quarantine;
-    assert_eq!(facts.len(), 1);
-    assert_eq!(facts[0].source_row_ordinal, 1);
-    assert_eq!(facts[0].rule_id, "source-decode:event_type:type-mismatch");
-    assert_eq!(facts[0].error_code, "source_type_mismatch");
-    assert_eq!(
-        facts[0].observed_value_redacted,
-        PreContractObservedValue::Preserved {
-            value: "42".to_owned()
-        }
-    );
+    assert!(read.batches[0].header.pre_contract_quarantine.is_empty());
+    let candidates = read.batches[0].header.residual_candidates();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].source_row_ordinal(), 1);
+    assert_eq!(candidates[0].source_path(), &["event_type".to_owned()]);
 }
 
 #[test]
-fn declared_ndjson_source_name_override_scopes_localized_quarantine_to_source_field() {
+fn declared_ndjson_source_name_override_scopes_residual_to_source_field() {
     let schema = Arc::new(Schema::new(vec![with_source_name(
         Field::new("event_type", DataType::Utf8, false),
         "Event Type",
@@ -440,13 +434,51 @@ fn declared_ndjson_source_name_override_scopes_localized_quarantine_to_source_fi
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(event_types.value(0), "created");
-    assert_eq!(event_types.value(1), "shipped");
+    assert!(event_types.is_null(1));
+    assert_eq!(event_types.value(2), "shipped");
     assert_eq!(source_name(batch.schema().field(0)), Some("Event Type"));
 
-    let facts = &read.batches[0].header.pre_contract_quarantine;
-    assert_eq!(facts.len(), 1);
-    assert_eq!(facts[0].source_row_ordinal, 1);
-    assert_eq!(facts[0].rule_id, "source-decode:Event Type:type-mismatch");
+    let candidates = read.batches[0].header.residual_candidates();
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].source_row_ordinal(), 1);
+    assert_eq!(candidates[0].source_path(), &["Event Type".to_owned()]);
+}
+
+#[test]
+fn declared_ndjson_all_rows_mismatch_and_unknown_variance_decode_to_residual_candidates() {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "amount",
+        DataType::Int64,
+        true,
+    )]));
+    let read = read_ndjson_bytes_with_declared_schema(
+        br#"{"amount":"unknown","extra":1}
+{"amount":"still-unknown","extra":{"nested":true}}
+{"amount":"again","extra":null}
+"#,
+        &options("events", "p0"),
+        &JsonOptions::default(),
+        schema,
+    )
+    .unwrap();
+
+    let batch = read.batches[0].record_batch().unwrap();
+    assert_eq!(batch.num_rows(), 3);
+    let amounts = batch
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap();
+    assert_eq!(amounts.null_count(), 3);
+    let candidates = read.batches[0].header.residual_candidates();
+    assert_eq!(candidates.len(), 6);
+    assert_eq!(
+        candidates
+            .iter()
+            .filter(|candidate| candidate.source_path() == ["extra".to_owned()])
+            .count(),
+        3
+    );
 }
 
 #[test]
@@ -470,7 +502,7 @@ fn declared_ndjson_malformed_json_still_fails_closed() {
 }
 
 #[test]
-fn declared_ndjson_type_mismatch_hashes_pii_observed_value() {
+fn declared_ndjson_type_mismatch_defers_pii_value_without_debug_leak() {
     let schema = Arc::new(Schema::new(vec![with_semantic(
         Field::new("email", DataType::Int64, false),
         "pii:email",
@@ -485,16 +517,9 @@ fn declared_ndjson_type_mismatch_hashes_pii_observed_value() {
     )
     .unwrap();
 
-    let facts = &read.batches[0].header.pre_contract_quarantine;
-    assert_eq!(facts.len(), 1);
-    assert_eq!(
-        facts[0].observed_value_redacted,
-        PreContractObservedValue::Hashed {
-            algorithm: "sha256".to_owned(),
-            value: "sha256:ff8d9819fc0e12bf0d24892e45987e249a28dce836a85cad60e28eaaa8c6d976"
-                .to_owned()
-        }
-    );
+    let candidates = read.batches[0].header.residual_candidates();
+    assert_eq!(candidates.len(), 1);
+    assert!(!format!("{candidates:?}").contains("alice@example.com"));
 }
 
 #[test]
@@ -567,11 +592,10 @@ fn declared_ndjson_projects_by_source_name_and_records_extra_observed_fields() {
     let plan = schema_coercion_plan_from_reconciled_schema(batch.schema().as_ref())
         .unwrap()
         .unwrap();
-    assert_eq!(plan.fields.len(), 2);
+    assert_eq!(plan.fields.len(), 1);
     assert_eq!(plan.fields[0].source_name, "VendorID");
     assert_eq!(plan.fields[0].decision, FieldCoercionDecision::Preserved);
-    assert_eq!(plan.fields[1].source_name, "ignored");
-    assert_eq!(plan.fields[1].decision, FieldCoercionDecision::Extra);
+    assert_eq!(read.batches[0].header.residual_candidates().len(), 2);
 }
 
 #[test]
@@ -716,7 +740,7 @@ fn declared_ndjson_string_decimal_parse_is_policy_enabled_and_materialized() {
 }
 
 #[test]
-fn declared_ndjson_string_decimal_without_policy_is_localized_quarantine() {
+fn declared_ndjson_string_decimal_without_policy_is_residual_candidate() {
     let schema = Arc::new(Schema::new(vec![Field::new(
         "amount",
         DataType::Decimal128(10, 2),
@@ -732,22 +756,13 @@ fn declared_ndjson_string_decimal_without_policy_is_localized_quarantine() {
     .unwrap();
 
     let batch = read.batches[0].record_batch().unwrap();
-    assert_eq!(batch.num_rows(), 0);
-    let facts = &read.batches[0].header.pre_contract_quarantine;
-    assert_eq!(facts.len(), 1);
-    assert_eq!(facts[0].source_row_ordinal, 0);
-    assert_eq!(facts[0].rule_id, "source-decode:amount:type-mismatch");
-    assert_eq!(facts[0].error_code, "source_type_mismatch");
-    assert_eq!(
-        facts[0].observed_value_redacted,
-        PreContractObservedValue::Preserved {
-            value: "12.34".to_owned()
-        }
-    );
+    assert_eq!(batch.num_rows(), 1);
+    assert!(batch.column(0).is_null(0));
+    assert_eq!(read.batches[0].header.residual_candidates().len(), 1);
 }
 
 #[test]
-fn declared_ndjson_fractional_drift_in_integer_field_is_localized_quarantine() {
+fn declared_ndjson_fractional_drift_in_integer_field_is_residual_candidate() {
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
 
     let read = read_ndjson_bytes_with_declared_schema(
@@ -764,12 +779,11 @@ fn declared_ndjson_fractional_drift_in_integer_field_is_localized_quarantine() {
         .as_any()
         .downcast_ref::<Int64Array>()
         .unwrap();
-    assert_eq!(ids.values(), &[1, 3]);
-    let facts = &read.batches[0].header.pre_contract_quarantine;
-    assert_eq!(facts.len(), 1);
-    assert_eq!(facts[0].source_row_ordinal, 1);
-    assert_eq!(facts[0].rule_id, "source-decode:id:type-mismatch");
-    assert_eq!(facts[0].error_code, "source_type_mismatch");
+    assert_eq!(ids.len(), 3);
+    assert_eq!(ids.value(0), 1);
+    assert!(ids.is_null(1));
+    assert_eq!(ids.value(2), 3);
+    assert_eq!(read.batches[0].header.residual_candidates().len(), 1);
 }
 
 #[test]
@@ -888,18 +902,8 @@ fn declared_json_document_and_ndjson_share_observation_reconciliation_front_end(
         json.batches[0].header.schema_coercion_plan,
         ndjson.batches[0].header.schema_coercion_plan
     );
-    let evidence = schema_coercion_plan_from_reconciled_schema(json_batch.schema().as_ref())
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        evidence
-            .fields
-            .iter()
-            .find(|field| field.source_name == "ignored")
-            .unwrap()
-            .decision,
-        FieldCoercionDecision::Extra
-    );
+    assert_eq!(json.batches[0].header.residual_candidates().len(), 2);
+    assert_eq!(ndjson.batches[0].header.residual_candidates().len(), 2);
 }
 
 #[test]

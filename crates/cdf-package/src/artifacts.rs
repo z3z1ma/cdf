@@ -2,8 +2,10 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-    DestinationCommitRequest, IdempotencyToken, PackageHash, PipelineId, ResourceId, Result,
-    SchemaHash, ScopeKey, SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
+    DestinationCommitRequest, IdempotencyToken, PackageHash, PipelineId,
+    ProcessedObservationPosition, ResourceId, Result, SchemaHash, ScopeKey, SourcePosition,
+    StateDelta, StateSegment, TargetName, WriteDisposition,
+    aggregate_processed_observation_positions,
 };
 use serde::{Deserialize, Serialize};
 
@@ -17,6 +19,66 @@ pub const STATE_INPUT_CHECKPOINT_FILE: &str = "state/input_checkpoint.json";
 pub const STATE_PROPOSED_DELTA_FILE: &str = "state/proposed_delta.json";
 pub const DESTINATION_COMMIT_PLAN_FILE: &str = "destination/commit_plan.json";
 pub const DEDUP_SUMMARY_FILE: &str = "stats/dedup-summary.json";
+pub const PROCESSED_OBSERVATIONS_FILE: &str = "state/processed-observations.json";
+pub const PROCESSED_OBSERVATIONS_VERSION: u16 = 1;
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessedObservationEvidenceArtifact {
+    pub version: u16,
+    pub input_position: Option<SourcePosition>,
+    pub disposition: WriteDisposition,
+    pub observations: Vec<ProcessedObservationPosition>,
+    pub output_position: SourcePosition,
+}
+
+impl ProcessedObservationEvidenceArtifact {
+    pub fn new(
+        input_position: Option<SourcePosition>,
+        disposition: WriteDisposition,
+        mut observations: Vec<ProcessedObservationPosition>,
+        output_position: SourcePosition,
+    ) -> Result<Self> {
+        observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+        let artifact = Self {
+            version: PROCESSED_OBSERVATIONS_VERSION,
+            input_position,
+            disposition,
+            observations,
+            output_position,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != PROCESSED_OBSERVATIONS_VERSION || self.observations.is_empty() {
+            return Err(CdfError::data(
+                "processed-observation evidence requires the current version and at least one observation",
+            ));
+        }
+        if self
+            .observations
+            .windows(2)
+            .any(|pair| pair[0].observation_id >= pair[1].observation_id)
+        {
+            return Err(CdfError::data(
+                "processed-observation evidence is not in unique identity order",
+            ));
+        }
+        let computed = aggregate_processed_observation_positions(
+            self.input_position.as_ref(),
+            &self.observations,
+            &self.disposition,
+        )?;
+        if computed != self.output_position {
+            return Err(CdfError::data(
+                "processed-observation evidence does not aggregate to its output position",
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StateDeltaPreimage {
@@ -114,6 +176,24 @@ impl PackageReplayInputs {
         commit_plan: DestinationCommitPlanPreimage,
         package_segments: &[SegmentEntry],
     ) -> Result<Self> {
+        Self::from_preimages_with_processed(
+            package_hash,
+            input_checkpoint,
+            state_delta,
+            commit_plan,
+            package_segments,
+            None,
+        )
+    }
+
+    pub fn from_preimages_with_processed(
+        package_hash: PackageHash,
+        input_checkpoint: Option<Checkpoint>,
+        state_delta: StateDeltaPreimage,
+        commit_plan: DestinationCommitPlanPreimage,
+        package_segments: &[SegmentEntry],
+        processed: Option<ProcessedObservationEvidenceArtifact>,
+    ) -> Result<Self> {
         validate_input_checkpoint(&input_checkpoint, &state_delta)?;
         if commit_plan.schema_hash != state_delta.schema_hash {
             return Err(CdfError::data(format!(
@@ -126,7 +206,22 @@ impl PackageReplayInputs {
                 "destination commit plan segments do not match state delta segments",
             ));
         }
-        validate_package_segments(package_segments, &state_delta.segments)?;
+        validate_package_segments(package_segments, &state_delta.segments, processed.as_ref())?;
+        if let Some(processed) = &processed {
+            processed.validate()?;
+            if processed.disposition != commit_plan.disposition {
+                return Err(CdfError::data(
+                    "processed-observation evidence disposition does not match the destination commit plan",
+                ));
+            }
+            if processed.input_position != state_delta.input_position
+                || processed.output_position != state_delta.output_position
+            {
+                return Err(CdfError::data(
+                    "processed-observation evidence does not match the state delta positions",
+                ));
+            }
+        }
 
         let schema_hash = state_delta.schema_hash.clone();
         let merge_keys = commit_plan.merge_keys.clone();
@@ -214,11 +309,15 @@ fn validate_input_checkpoint(
 fn validate_package_segments(
     package_segments: &[SegmentEntry],
     state_segments: &[StateSegment],
+    processed: Option<&ProcessedObservationEvidenceArtifact>,
 ) -> Result<()> {
     if state_segments.is_empty() {
-        return Err(CdfError::data(
-            "state delta preimage must include at least one state segment",
-        ));
+        if !package_segments.is_empty() || processed.is_none() {
+            return Err(CdfError::data(
+                "zero-segment state advancement requires a zero-segment package and typed processed-observation evidence",
+            ));
+        }
+        return Ok(());
     }
     if package_segments.len() != state_segments.len() {
         return Err(CdfError::data(format!(

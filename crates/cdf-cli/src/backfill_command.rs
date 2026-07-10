@@ -1,4 +1,4 @@
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_kernel::{CdfError, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
     BackfillPlan, BackfillPlanRequest, BackfillSlice, ProjectRunRequest, ProjectRunSource,
@@ -98,9 +98,10 @@ fn execute_slice(
     if let Some(identifier_policy) = identifier_policy {
         let mut policy = ContractPolicy::for_trust(source.descriptor().trust_level.clone());
         policy.normalization.identifier = identifier_policy;
-        engine_plan.validation_program = compile_validation_program(
+        engine_plan.validation_program = compile_resource_validation_program(
             &policy,
             &ObservedSchema::from_arrow(source.queryable().schema().as_ref()),
+            source.descriptor(),
         )?;
     }
     let run = futures_executor::block_on(run_project(ProjectRunRequest {

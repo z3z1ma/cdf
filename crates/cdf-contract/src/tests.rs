@@ -701,6 +701,61 @@ fn nested_variant_policy_compiles_variant_capture_action() {
 }
 
 #[test]
+fn framework_variant_field_classifier_requires_the_exact_contract() {
+    let exact = with_semantic(
+        Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
+        VARIANT_SEMANTIC_TAG,
+    );
+    let mut exact_metadata = exact.metadata().clone();
+    exact_metadata.insert(
+        RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+        RESIDUAL_ENCODING_NAME.to_owned(),
+    );
+    let exact = exact.with_metadata(exact_metadata.clone());
+    assert!(is_framework_variant_field(&exact));
+
+    let impostors = [
+        Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
+        with_semantic(
+            Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
+            "wrong",
+        ),
+        with_semantic(
+            Field::new(VARIANT_COLUMN_NAME, DataType::Int64, true),
+            VARIANT_SEMANTIC_TAG,
+        )
+        .with_metadata(exact_metadata.clone()),
+        with_semantic(
+            Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, false),
+            VARIANT_SEMANTIC_TAG,
+        )
+        .with_metadata(exact_metadata.clone()),
+        with_semantic(
+            Field::new("variant", DataType::Utf8, true),
+            VARIANT_SEMANTIC_TAG,
+        )
+        .with_metadata(exact_metadata.clone()),
+        with_semantic(
+            Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
+            VARIANT_SEMANTIC_TAG,
+        )
+        .with_metadata(std::collections::HashMap::from([
+            (
+                cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+                VARIANT_SEMANTIC_TAG.to_owned(),
+            ),
+            (
+                RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+                "wrong".to_owned(),
+            ),
+        ])),
+    ];
+    for impostor in impostors {
+        assert!(!is_framework_variant_field(&impostor));
+    }
+}
+
+#[test]
 fn pii_redaction_decision_is_available_from_semantic_metadata() {
     let field = with_semantic(Field::new("email", DataType::Utf8, false), "pii:email");
     let decision = redaction_decision_for_field(&field, &PiiRedactionPolicy::default());

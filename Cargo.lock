@@ -860,6 +860,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
  "cdf-conformance",
+ "cdf-contract",
  "cdf-kernel",
  "cdf-package",
  "futures-executor",
@@ -885,6 +886,7 @@ dependencies = [
  "futures-util",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
  "tracing",
 ]

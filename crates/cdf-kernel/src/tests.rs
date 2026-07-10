@@ -587,20 +587,14 @@ fn batch_wraps_arrow_record_batch_and_reports_counts() {
 
 #[test]
 fn batch_header_serde_defaults_missing_optional_evidence_fields() {
-    let header = BatchHeader {
-        batch_id: BatchId::new("batch-legacy").unwrap(),
-        resource_id: ResourceId::new("orders").unwrap(),
-        partition_id: PartitionId::new("p0").unwrap(),
-        observed_schema_hash: SchemaHash::new("schema-sha256").unwrap(),
-        row_count: 1,
-        byte_count: 8,
-        source_position: None,
-        pre_contract_quarantine: Vec::new(),
-        schema_coercion_plan: None,
-        watermarks: Vec::new(),
-        stats: BatchStats::default(),
-        cdc: None,
-    };
+    let header = BatchHeader::new(
+        BatchId::new("batch-legacy").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("p0").unwrap(),
+        SchemaHash::new("schema-sha256").unwrap(),
+        1,
+        8,
+    );
 
     let mut json = serde_json::to_value(&header).unwrap();
     assert!(json.get("pre_contract_quarantine").is_none());
@@ -932,6 +926,65 @@ fn source_position_version_returns_embedded_variant_version() {
     for (position, expected_version) in positions {
         assert_eq!(position.version(), expected_version);
     }
+}
+
+#[test]
+fn segment_and_processed_observation_paths_share_file_manifest_aggregation_authority() {
+    let descriptor = ResourceDescriptor {
+        resource_id: ResourceId::new("files.events").unwrap(),
+        schema_source: SchemaSource::Declared {
+            schema_hash: SchemaHash::new("schema-v1").unwrap(),
+            source: "fixture".to_owned(),
+        },
+        primary_key: Vec::new(),
+        merge_key: Vec::new(),
+        cursor: None,
+        write_disposition: WriteDisposition::Append,
+        contract: None,
+        state_scope: ScopeKey::Resource,
+        freshness: None,
+        trust_level: TrustLevel::Governed,
+    };
+    let input = SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "old.parquet".to_owned(),
+            size_bytes: 10,
+            etag: Some("old".to_owned()),
+            sha256: None,
+        }],
+    });
+    let current = SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "new.parquet".to_owned(),
+            size_bytes: 20,
+            etag: Some("new".to_owned()),
+            sha256: None,
+        }],
+    });
+    let observation = ProcessedObservationPosition::new(
+        "new.parquet",
+        ProcessedObservationOutcome::Quarantined,
+        current.clone(),
+    )
+    .unwrap();
+
+    let segment_path = aggregate_resource_output_position(
+        &descriptor,
+        &Schema::empty(),
+        Some(&input),
+        std::slice::from_ref(&current),
+    )
+    .unwrap();
+    let processed_path = aggregate_processed_observation_positions(
+        Some(&input),
+        &[observation],
+        &WriteDisposition::Append,
+    )
+    .unwrap();
+
+    assert_eq!(segment_path, processed_path);
 }
 
 #[test]

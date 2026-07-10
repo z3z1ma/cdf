@@ -12,9 +12,11 @@ use arrow_array::{ArrayRef, Int64Array, RecordBatch, StringArray, Time32SecondAr
 use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CommitCounts,
-    CursorPosition, CursorValue, DestinationId, IdempotencyToken, PackageHash, PartitionId,
-    PipelineId, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck, SegmentId,
-    SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause, WriteDisposition,
+    CursorPosition, CursorValue, DestinationId, FileManifest, FilePosition, IdempotencyToken,
+    PackageHash, PartitionId, PipelineId, ProcessedObservationOutcome,
+    ProcessedObservationPosition, Receipt, ReceiptId, ResourceId, SchemaHash, ScopeKey, SegmentAck,
+    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
+    WriteDisposition, aggregate_processed_observation_positions,
 };
 
 fn sample_batch() -> RecordBatch {
@@ -29,6 +31,47 @@ fn sample_batch_values(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let id: ArrayRef = Arc::new(Int64Array::from(ids));
     let name: ArrayRef = Arc::new(StringArray::from(names));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+#[test]
+fn verification_rejects_unknown_contract_evolution_versions() {
+    for (name, artifact) in [
+        (
+            "top-level",
+            serde_json::json!({
+                "version": 2,
+                "residual_capture": null,
+                "residual_decisions": []
+            }),
+        ),
+        (
+            "capture",
+            serde_json::json!({
+                "version": 1,
+                "residual_capture": {"version": 2},
+                "residual_decisions": []
+            }),
+        ),
+        (
+            "decision",
+            serde_json::json!({
+                "version": 1,
+                "residual_capture": null,
+                "residual_decisions": [{"version": 2}]
+            }),
+        ),
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let builder = PackageBuilder::create(temp.path(), format!("pkg-{name}")).unwrap();
+        builder.update_status(PackageStatus::Extracting).unwrap();
+        builder
+            .write_json_artifact("schema/contract-evolution.json", &artifact)
+            .unwrap();
+        builder.update_status(PackageStatus::Validated).unwrap();
+        builder.finish().unwrap();
+        let error = verify_package(temp.path()).unwrap_err();
+        assert!(error.to_string().contains("unsupported"));
+    }
 }
 
 fn build_fixture(package_dir: &Path) -> PackageManifest {
@@ -878,7 +921,7 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
     assert!(
         error
             .to_string()
-            .contains("state delta preimage must include at least one state segment"),
+            .contains("zero-segment state advancement requires a zero-segment package and typed processed-observation evidence"),
         "{error}"
     );
 
@@ -935,6 +978,194 @@ fn replay_inputs_rejects_invalid_state_preimage_semantics() {
             .to_string()
             .contains("unsupported state delta preimage version"),
         "{error}"
+    );
+}
+
+#[test]
+fn zero_segment_replay_requires_exact_typed_processed_observation_evidence() {
+    let package_hash =
+        PackageHash::new("sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+            .unwrap();
+    let processed_position = SourcePosition::FileManifest(FileManifest {
+        version: CHECKPOINT_STATE_VERSION,
+        files: vec![FilePosition {
+            path: "month-07.parquet".to_owned(),
+            size_bytes: 41,
+            etag: Some("etag-07".to_owned()),
+            sha256: Some("sha256-07".to_owned()),
+        }],
+    });
+    let observation = ProcessedObservationPosition::new(
+        "month-07.parquet",
+        ProcessedObservationOutcome::Quarantined,
+        processed_position.clone(),
+    )
+    .unwrap();
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-zero").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-1").unwrap(),
+        resource_id: ResourceId::new("orders").unwrap(),
+        scope: ScopeKey::Resource,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: processed_position.clone(),
+        schema_hash: SchemaHash::new("schema-fixture").unwrap(),
+        segments: Vec::new(),
+    };
+    let commit_plan = DestinationCommitPlanPreimage::package_hash_token(
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        Vec::new(),
+        state_delta.schema_hash.clone(),
+        Vec::new(),
+    );
+
+    let missing = PackageReplayInputs::from_preimages_with_processed(
+        package_hash.clone(),
+        None,
+        state_delta.clone(),
+        commit_plan.clone(),
+        &[],
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        missing
+            .to_string()
+            .contains("typed processed-observation evidence")
+    );
+
+    let processed = ProcessedObservationEvidenceArtifact::new(
+        None,
+        WriteDisposition::Append,
+        vec![observation],
+        processed_position,
+    )
+    .unwrap();
+    let replay = PackageReplayInputs::from_preimages_with_processed(
+        package_hash,
+        None,
+        state_delta.clone(),
+        commit_plan,
+        &[],
+        Some(processed.clone()),
+    )
+    .unwrap();
+    assert!(replay.state_delta.segments.is_empty());
+
+    let mut mismatched = processed;
+    mismatched.output_position = SourcePosition::FileManifest(FileManifest {
+        version: CHECKPOINT_STATE_VERSION,
+        files: Vec::new(),
+    });
+    let error = PackageReplayInputs::from_preimages_with_processed(
+        PackageHash::new("sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+            .unwrap(),
+        None,
+        state_delta,
+        DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("orders").unwrap(),
+            WriteDisposition::Append,
+            Vec::new(),
+            SchemaHash::new("schema-fixture").unwrap(),
+            Vec::new(),
+        ),
+        &[],
+        Some(mismatched),
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("does not aggregate"), "{error}");
+}
+
+#[test]
+fn processed_observation_aggregation_respects_append_and_replace_dispositions() {
+    let old = SourcePosition::FileManifest(FileManifest {
+        version: CHECKPOINT_STATE_VERSION,
+        files: vec![FilePosition {
+            path: "old.parquet".to_owned(),
+            size_bytes: 10,
+            etag: Some("old".to_owned()),
+            sha256: None,
+        }],
+    });
+    let new = SourcePosition::FileManifest(FileManifest {
+        version: CHECKPOINT_STATE_VERSION,
+        files: vec![FilePosition {
+            path: "new.parquet".to_owned(),
+            size_bytes: 20,
+            etag: Some("new".to_owned()),
+            sha256: None,
+        }],
+    });
+    let observation = ProcessedObservationPosition::new(
+        "new.parquet",
+        ProcessedObservationOutcome::Admitted,
+        new.clone(),
+    )
+    .unwrap();
+
+    let append_output = aggregate_processed_observation_positions(
+        Some(&old),
+        std::slice::from_ref(&observation),
+        &WriteDisposition::Append,
+    )
+    .unwrap();
+    let append = ProcessedObservationEvidenceArtifact::new(
+        Some(old.clone()),
+        WriteDisposition::Append,
+        vec![observation.clone()],
+        append_output,
+    )
+    .unwrap();
+    assert_eq!(
+        match append.output_position {
+            SourcePosition::FileManifest(manifest) => manifest.files.len(),
+            _ => 0,
+        },
+        2
+    );
+
+    let replace = ProcessedObservationEvidenceArtifact::new(
+        Some(old),
+        WriteDisposition::Replace,
+        vec![observation],
+        new,
+    )
+    .unwrap();
+    assert_eq!(
+        match replace.output_position {
+            SourcePosition::FileManifest(manifest) => manifest.files.len(),
+            _ => 0,
+        },
+        1
+    );
+}
+
+#[test]
+fn runtime_arrow_schema_round_trips_as_verified_package_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let builder = PackageBuilder::create(temp.path(), "pkg-runtime-schema").unwrap();
+    let schema = sample_batch().schema();
+    builder.write_runtime_arrow_schema(schema.as_ref()).unwrap();
+    builder.finish().unwrap();
+
+    let reader = PackageReader::open(temp.path()).unwrap();
+    assert_eq!(reader.runtime_arrow_schema().unwrap(), schema);
+
+    OpenOptions::new()
+        .write(true)
+        .truncate(true)
+        .open(temp.path().join(RUNTIME_ARROW_SCHEMA_FILE))
+        .unwrap()
+        .write_all(b"tampered")
+        .unwrap();
+    assert!(
+        reader
+            .runtime_arrow_schema()
+            .unwrap_err()
+            .to_string()
+            .contains("sha256")
     );
 }
 

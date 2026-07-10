@@ -8,29 +8,19 @@ use arrow_array::{
 use arrow_cast::cast::cast;
 use arrow_schema::{DataType, Field, Schema};
 use cdf_contract::{
-    ContractEvaluationContext, ContractPolicy, FieldCoercionDecision, IdentifierPolicy,
-    NestedAction, ObservedSchema, PromotionPolicy, RowDispositionKind, RowDispositionRule, RowRule,
-    RuleOutcome, VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, ValidationProgram,
-    assert_verdict_lattice_total, compile_validation_program, evaluate_record_batch,
-    reconcile_schema,
+    ContractEvaluationContext, ContractPolicy, FieldCoercionDecision, NestedAction, ObservedSchema,
+    RowDispositionKind, RowDispositionRule, RowRule, RuleOutcome, VARIANT_COLUMN_NAME,
+    VARIANT_SEMANTIC_TAG, ValidationProgram, assert_verdict_lattice_total,
+    compile_validation_program, evaluate_record_batch, reconcile_schema,
 };
 use proptest::prelude::*;
 use std::sync::Arc;
 
 fn validation_program(row_dispositions: Vec<RowDispositionRule>) -> ValidationProgram {
-    ValidationProgram {
-        normalizer_version: "property-fuzz".to_owned(),
-        identifier_policy: IdentifierPolicy::default(),
-        schema_coercion: None,
-        schema_verdicts: Vec::new(),
-        column_programs: Vec::new(),
-        row_rules: Vec::new(),
-        explicit_anomalies: Vec::new(),
-        row_dispositions,
-        transforms: Vec::new(),
-        promotion: PromotionPolicy::default(),
-        warnings: Vec::new(),
-    }
+    let observed = ObservedSchema::from_arrow(&Schema::empty());
+    let mut program = compile_validation_program(&ContractPolicy::default(), &observed).unwrap();
+    program.row_dispositions = row_dispositions;
+    program
 }
 
 fn outcome_strategy() -> impl Strategy<Value = RuleOutcome> {

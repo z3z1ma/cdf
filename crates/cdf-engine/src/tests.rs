@@ -10,26 +10,30 @@ use std::{
 use arrow_array::{
     Array, ArrayRef, BooleanArray, Int32Array, Int64Array, ListArray, RecordBatch, StringArray,
     StructArray, TimestampMillisecondArray,
-    builder::{Int32Builder, MapBuilder, StringBuilder},
+    builder::{Int32Builder, MapBuilder, StringBuilder, StringDictionaryBuilder},
     types::Int32Type,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
     ContractPolicy, DedupKeep, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
-    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, VARIANT_COLUMN_NAME,
-    VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program, reconcile_schema,
+    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, SchemaEvolutionMode,
+    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program,
+    reconcile_schema,
 };
 use cdf_kernel::{
-    BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
-    ContractRef, DeliveryGuarantee, DiscoveryManifestHash, DiscoveryManifestReference,
-    EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
-    EffectiveSchemaRuntime, EstimateSupport, FileManifest, FilePosition, FilterCapabilities,
-    FreshnessSpec, IncrementalShape, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact, PredicateId,
-    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
-    SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
-    source_name, with_semantic,
+    BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport, ContractRef,
+    DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash,
+    DiscoveryManifestReference, EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence,
+    EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime, EstimateSupport, FileManifest,
+    FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
+    PartitionId, PartitionPlan, PartitioningCapabilities, PreContractObservedValue,
+    PreContractQuarantineFact, PreContractResidualCandidate, PredicateId, PushdownFidelity,
+    QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream,
+    Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
+    SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSnapshotReference,
+    SchemaSource, ScopeKey, SourcePosition, TerminalSchemaObservationQuarantine, TrustLevel,
+    WriteDisposition, source_name, with_semantic,
 };
 use cdf_package::PackageStatus;
 use datafusion::{
@@ -207,11 +211,21 @@ fn engine_plan_deserialization_defaults_legacy_missing_write_disposition_to_appe
         .as_object_mut()
         .unwrap()
         .remove("effective_schema_evidence");
+    plan_json
+        .as_object_mut()
+        .unwrap()
+        .remove("schema_authority");
+    plan_json.as_object_mut().unwrap().remove("output_schema");
 
     let decoded: EnginePlan = serde_json::from_value(plan_json).unwrap();
 
     assert_eq!(decoded.write_disposition, WriteDisposition::Append);
     assert!(decoded.effective_schema_evidence().is_none());
+    assert!(decoded.schema_authority().is_err());
+    assert!(decoded.output_arrow_schema().is_err());
+    let temp = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(&decoded, &resource, temp.path())).unwrap_err();
+    assert!(error.to_string().contains("verified schema authority"));
 }
 
 #[test]
@@ -249,6 +263,7 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
     for batch in &mut batches {
         batch.header.observed_schema_hash = physical_hash.clone();
         batch.header.schema_coercion_plan = Some(serialized.clone());
+        batch.header.source_position = Some(terminal_file_position());
     }
     let descriptor = descriptor();
     let baseline_snapshot = descriptor.schema_source.pinned_snapshot().unwrap().clone();
@@ -272,6 +287,8 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
             physical_schema,
         )],
     )
+    .unwrap()
+    .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
     .unwrap();
     let resource =
         MockResource::tier_b(batches).with_effective_schema_runtime(effective_schema, runtime);
@@ -290,11 +307,258 @@ fn effective_schema_reuses_observation_across_partitions_and_attests_only_attemp
     block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
     assert_eq!(resource.open_count.load(Ordering::SeqCst), 1);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 0);
     let witnessed: serde_json::Value = serde_json::from_slice(
         &std::fs::read(temp.path().join("schema/per-observation-coercion.json")).unwrap(),
     )
     .unwrap();
     assert_eq!(witnessed["observations"].as_array().unwrap().len(), 1);
+
+    let mut tampered = plan.clone();
+    tampered
+        .effective_schema_evidence
+        .as_mut()
+        .unwrap()
+        .discovery_executor_budget =
+        Some(DiscoveryExecutorBudgetEvidence::new(32, 128, 2).unwrap());
+    let tampered_package = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(
+        &tampered,
+        &resource,
+        tampered_package.path(),
+    ))
+    .unwrap_err();
+    assert!(
+        error.to_string().contains("discovery executor budget"),
+        "{error}"
+    );
+}
+
+#[test]
+fn terminal_schema_observation_quarantine_processes_repeated_partitions_without_opening_data() {
+    let effective_schema = sample_schema();
+    let physical_schema = sample_schema();
+    let physical_hash =
+        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash.clone());
+    let processed_position = terminal_file_position();
+    let secret_batches = vec![batch_for_partition_with_schema(
+        "secret-batch",
+        "part-0",
+        effective_schema.clone(),
+        vec![1],
+        vec!["super-secret-row-value"],
+        vec![true],
+    )];
+    let resource = MockResource::tier_b(secret_batches)
+        .with_effective_schema_runtime(effective_schema, runtime)
+        .with_attestation(PartitionAttestation::new(
+            processed_position.clone(),
+            Some(physical_hash),
+        ));
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let output = block_on(execute_to_package_with_segment_positions(
+        &plan,
+        &resource,
+        temp.path(),
+    ))
+    .unwrap();
+
+    assert!(output.output.segments.is_empty());
+    assert!(output.segment_positions.is_empty());
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    let processed = output.execution_evidence().processed_observations();
+    assert_eq!(processed.len(), 1);
+    assert_eq!(processed[0].source_position, processed_position);
+    assert!(
+        temp.path()
+            .join("quarantine/schema-observations.json")
+            .is_file()
+    );
+    assert!(!temp.path().join("quarantine/records.parquet").is_file());
+    let terminal_json =
+        std::fs::read_to_string(temp.path().join("quarantine/schema-observations.json")).unwrap();
+    assert!(!terminal_json.contains("super-secret-row-value"));
+
+    let mut conflicting = plan.clone();
+    conflicting.scan.partitions[1].metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+        "conflicting-binding".to_owned(),
+    );
+    let conflicting_package = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(
+        &conflicting,
+        &resource,
+        conflicting_package.path(),
+    ))
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("missing or spoofed cdf:schema_observation_binding"),
+        "{error}"
+    );
+}
+
+#[test]
+fn terminal_schema_observation_attestation_change_aborts_before_processed_evidence() {
+    let effective_schema = sample_schema();
+    let physical_schema = sample_schema();
+    let physical_hash =
+        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash);
+    let resource = MockResource::tier_b(Vec::new())
+        .with_effective_schema_runtime(effective_schema, runtime)
+        .with_attestation(PartitionAttestation::new(
+            terminal_file_position(),
+            Some(SchemaHash::new("changed-physical-schema").unwrap()),
+        ));
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+
+    assert!(
+        error.to_string().contains("changed physical schema"),
+        "{error}"
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    assert!(
+        !temp
+            .path()
+            .join("state/processed-observations.json")
+            .exists()
+    );
+    assert!(
+        !temp
+            .path()
+            .join("quarantine/schema-observations.json")
+            .exists()
+    );
+}
+
+#[test]
+fn terminal_schema_observation_identity_attestation_failure_aborts_before_processed_evidence() {
+    let effective_schema = sample_schema();
+    let physical_schema = sample_schema();
+    let physical_hash =
+        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let runtime = terminal_effective_schema_runtime(physical_schema, physical_hash);
+    let resource = MockResource::tier_b(Vec::new())
+        .with_effective_schema_runtime(effective_schema, runtime)
+        .with_attestation_error("file identity changed between planning and execution");
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, None, PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    let temp = TempDir::new().unwrap();
+
+    let error = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap_err();
+
+    assert!(
+        error.to_string().contains("file identity changed"),
+        "{error}"
+    );
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 0);
+    assert_eq!(resource.attest_count.load(Ordering::SeqCst), 1);
+    assert!(
+        !temp
+            .path()
+            .join("state/processed-observations.json")
+            .exists()
+    );
+}
+
+fn terminal_effective_schema_runtime(
+    physical_schema: SchemaRef,
+    physical_hash: SchemaHash,
+) -> EffectiveSchemaRuntime {
+    let descriptor = descriptor();
+    let evidence = EffectiveSchemaEvidence::new(
+        descriptor.schema_source.pinned_snapshot().unwrap().clone(),
+        SchemaHash::new("effective-snapshot-v1").unwrap(),
+        DiscoveryManifestReference {
+            manifest_hash: DiscoveryManifestHash::new("manifest-v1").unwrap(),
+            path: ".cdf/schemas/orders@manifest-v1.discovery.json".to_owned(),
+        },
+        vec![EffectiveSchemaObservationEvidence::new(
+            "input-0",
+            physical_hash.clone(),
+        )],
+    )
+    .unwrap();
+    let terminal = TerminalSchemaObservationQuarantine::new(
+        "input-0",
+        physical_hash.clone(),
+        "schema-observation:freeze-deviation",
+        "schema_observation_quarantined",
+        SchemaObservationPolicy::Freeze,
+        "refresh the pinned schema or correct the source file",
+        vec![
+            SchemaObservationFieldQuarantine::new_field_path(
+                vec!["id".to_owned()],
+                Some(
+                    cdf_kernel::CanonicalArrowField::from_arrow(&Field::new(
+                        "id",
+                        DataType::Utf8,
+                        false,
+                    ))
+                    .unwrap(),
+                ),
+                Some(
+                    cdf_kernel::CanonicalArrowField::from_arrow(&Field::new(
+                        "id",
+                        DataType::Int64,
+                        false,
+                    ))
+                    .unwrap(),
+                ),
+                "incompatible physical type",
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap();
+    EffectiveSchemaRuntime::new(
+        evidence,
+        vec![EffectiveSchemaCatalogEntry::new(
+            physical_hash,
+            physical_schema,
+        )],
+    )
+    .unwrap()
+    .with_terminal_quarantines(vec![terminal])
+    .unwrap()
+    .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
+    .unwrap()
+}
+
+fn terminal_file_position() -> SourcePosition {
+    SourcePosition::FileManifest(FileManifest {
+        version: 1,
+        files: vec![FilePosition {
+            path: "input-0".to_owned(),
+            size_bytes: 10,
+            etag: Some("etag-0".to_owned()),
+            sha256: Some("sha-0".to_owned()),
+        }],
+    })
 }
 
 #[test]
@@ -376,15 +640,15 @@ fn explain_and_operator_chain_carry_contract_package_details() {
 #[test]
 fn validation_program_source_name_can_cover_and_rename_batch_field() {
     let resource = MockResource::tier_a(sample_batches());
-    let input = plan_input(
+    let mut input = plan_input(
         vec![],
         Some(vec!["name".to_owned()]),
         None,
         PlanBoundedness::Bounded,
     );
-    let mut plan = Planner::new().plan_tier_a(&resource, input).unwrap();
-    rename_column_program_output(&mut plan.validation_program, "name", "customer_name");
-    retain_column_program_by_source(&mut plan.validation_program, "name");
+    rename_column_program_output(&mut input.validation_program, "name", "customer_name");
+    retain_column_program_by_source(&mut input.validation_program, "name");
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
@@ -400,16 +664,16 @@ fn validation_program_source_name_can_cover_and_rename_batch_field() {
 #[test]
 fn validation_program_output_name_can_cover_already_normalized_batch_field() {
     let resource = MockResource::tier_a(output_name_batches());
-    let input = plan_input_for_schema(
+    let mut input = plan_input_for_schema(
         output_name_schema(),
         vec![],
         Some(vec!["customer_name".to_owned()]),
         None,
         PlanBoundedness::Bounded,
     );
-    let mut plan = Planner::new().plan_tier_a(&resource, input).unwrap();
-    rename_column_program_source(&mut plan.validation_program, "customer_name", "name");
-    retain_column_program_by_output(&mut plan.validation_program, "customer_name");
+    rename_column_program_source(&mut input.validation_program, "customer_name", "name");
+    retain_column_program_by_output(&mut input.validation_program, "customer_name");
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
     let temp = TempDir::new().unwrap();
     let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
 
@@ -473,7 +737,10 @@ fn package_artifacts_record_schema_coercion_evidence_and_physical_type_metadata(
         output_schema["fields"][0]["metadata"]["cdf:source_name"],
         "id"
     );
-    assert!(output_schema["fields"][1].get("metadata").is_none());
+    assert_eq!(
+        output_schema["fields"][1]["metadata"]["cdf:source_name"],
+        "name"
+    );
 
     let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
     let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
@@ -487,6 +754,75 @@ fn package_artifacts_record_schema_coercion_evidence_and_physical_type_metadata(
             .values(),
         &[1, 2]
     );
+}
+
+#[test]
+fn compiled_output_schema_strips_runtime_provenance_only_after_serializing_evidence() {
+    let observed = Schema::new(vec![Field::new("id", DataType::Int32, false)]);
+    let constraint = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    let reconciliation = reconcile_schema(
+        &observed,
+        constraint.as_ref(),
+        &ContractPolicy::default().types,
+    )
+    .unwrap();
+    let serialized_plan = serde_json::to_string(&reconciliation.plan).unwrap();
+    let runtime_schema = Arc::new(reconciliation.schema);
+    assert_eq!(
+        runtime_schema
+            .field(0)
+            .metadata()
+            .get("cdf:physical_type")
+            .map(String::as_str),
+        Some("Int32")
+    );
+    let record_batch = RecordBatch::try_new(
+        runtime_schema,
+        vec![Arc::new(Int64Array::from(vec![1, 2])) as ArrayRef],
+    )
+    .unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-runtime-provenance").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-runtime-provenance").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    batch.header.schema_coercion_plan = Some(serialized_plan);
+    let resource = MockResource::tier_a(vec![batch]).with_schema(constraint.clone());
+    let input = plan_input_for_schema(constraint, vec![], None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    reader.verify().unwrap();
+    let runtime_output = reader.runtime_arrow_schema().unwrap();
+    assert_eq!(runtime_output, plan.output_arrow_schema().unwrap());
+    assert!(
+        !runtime_output
+            .field(0)
+            .metadata()
+            .contains_key("cdf:physical_type")
+    );
+    assert_eq!(
+        runtime_output
+            .field(0)
+            .metadata()
+            .get("cdf:source_name")
+            .map(String::as_str),
+        Some("id")
+    );
+    let evidence: cdf_contract::SchemaCoercionPlan = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/coercion-plan.json")).unwrap(),
+    )
+    .unwrap();
+    let widened = coercion_decision(&evidence, "id");
+    assert_eq!(widened.observed_type.as_deref(), Some("Int32"));
+    assert_eq!(widened.constraint_type.as_deref(), Some("Int64"));
+    assert_eq!(widened.decision, FieldCoercionDecision::Widened);
 }
 
 #[test]
@@ -997,7 +1333,10 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
             "name": VARIANT_COLUMN_NAME,
             "data_type": "Utf8",
             "nullable": true,
-            "semantic": VARIANT_SEMANTIC_TAG
+            "semantic": VARIANT_SEMANTIC_TAG,
+            "metadata": {
+                (RESIDUAL_ENCODING_METADATA_KEY): RESIDUAL_ENCODING_NAME
+            }
         })
     );
     let evolution_path = temp.path().join("schema/contract-evolution.json");
@@ -1050,6 +1389,424 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
     let quarantine_artifact =
         std::fs::read(temp.path().join("quarantine/part-000001.parquet")).unwrap();
     assert!(!String::from_utf8_lossy(&quarantine_artifact).contains("raw-secret"));
+}
+
+#[test]
+fn residual_contract_exec_captures_safe_values_redacts_pii_and_quarantines_controls() {
+    let id_field = Field::new("id", DataType::Int32, true);
+    let note_field = with_semantic(Field::new("note", DataType::Int32, true), "pii:note");
+    let schema = Arc::new(Schema::new(vec![id_field.clone(), note_field.clone()]));
+    let record_batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1), Some(2), None])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![Some(10), None, Some(30)])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-residual").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-v1").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    let note_values = Arc::new(StringArray::from(vec!["alice@example.test"])) as ArrayRef;
+    batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            1,
+            1,
+            vec!["note".to_owned()],
+            with_semantic(Field::new("note", DataType::Utf8, true), "pii:note"),
+            Some(note_field),
+            note_values,
+            0,
+        )
+        .unwrap(),
+    );
+    let unknown_values = Arc::new(StringArray::from(vec!["top-secret"])) as ArrayRef;
+    batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            1,
+            1,
+            vec!["new_secret".to_owned()],
+            with_semantic(Field::new("new_secret", DataType::Utf8, true), "pii:secret"),
+            None,
+            unknown_values,
+            0,
+        )
+        .unwrap(),
+    );
+    let id_values = Arc::new(StringArray::from(vec!["bad-id"])) as ArrayRef;
+    batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            2,
+            2,
+            vec!["id".to_owned()],
+            Field::new("id", DataType::Utf8, true),
+            Some(id_field),
+            id_values,
+            0,
+        )
+        .unwrap(),
+    );
+
+    let resource =
+        MockResource::tier_a(vec![batch]).with_write_disposition(WriteDisposition::Append);
+    let mut input = plan_input_for_schema(
+        schema,
+        vec![],
+        Some(vec!["id".to_owned(), "note".to_owned()]),
+        None,
+        PlanBoundedness::Bounded,
+    );
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let planned_schema = plan.output_arrow_schema().unwrap();
+    assert_eq!(planned_schema.fields().len(), 3);
+    assert_eq!(planned_schema.field(2).name(), VARIANT_COLUMN_NAME);
+    assert_ne!(
+        plan.schema_authority().unwrap().effective_schema_hash,
+        plan.output_schema.as_ref().unwrap().arrow_schema_hash
+    );
+
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    let output = &batches[0];
+    assert_eq!(output.num_rows(), 2);
+    let variants = output
+        .column_by_name(VARIANT_COLUMN_NAME)
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert!(variants.is_null(0));
+    assert!(variants.value(1).contains("sha256:"));
+    assert!(!variants.value(1).contains("alice@example.test"));
+    assert!(!variants.value(1).contains("top-secret"));
+
+    let quarantine = reader.read_quarantine_records().unwrap();
+    assert_eq!(quarantine.len(), 1);
+    assert_eq!(quarantine[0].error_code, "cdf.residual_control_critical");
+    let evolution_bytes =
+        std::fs::read(temp.path().join("schema/contract-evolution.json")).unwrap();
+    let evolution_text = String::from_utf8(evolution_bytes.clone()).unwrap();
+    assert!(!evolution_text.contains("alice@example.test"));
+    assert!(!evolution_text.contains("top-secret"));
+    let evolution: serde_json::Value = serde_json::from_slice(&evolution_bytes).unwrap();
+    assert_eq!(evolution["version"], 1);
+    assert_eq!(evolution["residual_decisions"].as_array().unwrap().len(), 3);
+    reader.verify().unwrap();
+    assert_eq!(reader.runtime_arrow_schema().unwrap(), planned_schema);
+}
+
+#[test]
+fn residual_multi_partition_decisions_share_verified_effective_schema_and_keep_identity() {
+    const CAPTURE_SENTINEL: &str = "rp2-captured-pii-sentinel";
+    const QUARANTINE_SENTINEL: &str = "rp2-quarantined-pii-sentinel";
+
+    let physical_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int32, true),
+        with_semantic(Field::new("note", DataType::Int32, true), "pii:note"),
+    ]));
+    let physical_hash =
+        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let reconciliation = reconcile_schema(
+        physical_schema.as_ref(),
+        physical_schema.as_ref(),
+        &ContractPolicy::default().types,
+    )
+    .unwrap();
+    let serialized_coercion = serde_json::to_string(&reconciliation.plan).unwrap();
+    let schema = Arc::new(reconciliation.schema);
+    let id_field = schema.field(0).as_ref().clone();
+    let note_field = schema.field(1).as_ref().clone();
+
+    let captured_record = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1)])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![None])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut captured_batch = Batch::from_record_batch(
+        BatchId::new("batch-residual-captured").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-v1").unwrap(),
+        captured_record,
+    )
+    .unwrap();
+    captured_batch.header.observed_schema_hash = physical_hash.clone();
+    captured_batch.header.schema_coercion_plan = Some(serialized_coercion.clone());
+    captured_batch.header.source_position = Some(terminal_file_position());
+    captured_batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            10,
+            0,
+            vec!["note".to_owned()],
+            with_semantic(Field::new("note", DataType::Utf8, true), "pii:note"),
+            Some(note_field),
+            Arc::new(StringArray::from(vec![CAPTURE_SENTINEL])) as ArrayRef,
+            0,
+        )
+        .unwrap(),
+    );
+
+    let quarantined_record = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(Int32Array::from(vec![None])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![Some(30)])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut quarantined_batch = Batch::from_record_batch(
+        BatchId::new("batch-residual-quarantined").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-1").unwrap(),
+        SchemaHash::new("schema-v1").unwrap(),
+        quarantined_record,
+    )
+    .unwrap();
+    quarantined_batch.header.observed_schema_hash = physical_hash.clone();
+    quarantined_batch.header.schema_coercion_plan = Some(serialized_coercion);
+    quarantined_batch.header.source_position = Some(terminal_file_position());
+    quarantined_batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            20,
+            0,
+            vec!["id".to_owned()],
+            Field::new("id", DataType::Utf8, true),
+            Some(id_field),
+            Arc::new(StringArray::from(vec!["bad-control-id"])) as ArrayRef,
+            0,
+        )
+        .unwrap(),
+    );
+    quarantined_batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            20,
+            0,
+            vec!["new_secret".to_owned()],
+            with_semantic(Field::new("new_secret", DataType::Utf8, true), "pii:secret"),
+            None,
+            Arc::new(StringArray::from(vec![QUARANTINE_SENTINEL])) as ArrayRef,
+            0,
+        )
+        .unwrap(),
+    );
+
+    let baseline_snapshot = descriptor()
+        .schema_source
+        .pinned_snapshot()
+        .unwrap()
+        .clone();
+    let effective_schema_hash = SchemaHash::new("effective-snapshot-v1").unwrap();
+    let evidence = EffectiveSchemaEvidence::new(
+        baseline_snapshot,
+        effective_schema_hash.clone(),
+        DiscoveryManifestReference {
+            manifest_hash: DiscoveryManifestHash::new("manifest-residual-mixed").unwrap(),
+            path: ".cdf/schemas/orders@manifest-residual-mixed.discovery.json".to_owned(),
+        },
+        vec![EffectiveSchemaObservationEvidence::new(
+            "input-0",
+            physical_hash.clone(),
+        )],
+    )
+    .unwrap();
+    let runtime = EffectiveSchemaRuntime::new(
+        evidence,
+        vec![EffectiveSchemaCatalogEntry::new(
+            physical_hash,
+            physical_schema,
+        )],
+    )
+    .unwrap()
+    .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(64, 128, 2).unwrap())
+    .unwrap();
+    let resource = MockResource::tier_b(vec![captured_batch, quarantined_batch])
+        .with_effective_schema_runtime(schema.clone(), runtime)
+        .with_write_disposition(WriteDisposition::Append);
+    let mut input = plan_input_for_schema(
+        schema,
+        vec![],
+        Some(vec!["id".to_owned(), "note".to_owned()]),
+        None,
+        PlanBoundedness::Bounded,
+    );
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_b(&resource, input).unwrap();
+    let planned_schema = plan.output_arrow_schema().unwrap();
+    assert_eq!(
+        plan.schema_authority().unwrap().effective_schema_hash,
+        effective_schema_hash
+    );
+
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    reader.verify().unwrap();
+    assert_eq!(reader.runtime_arrow_schema().unwrap(), planned_schema);
+
+    let evolution: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/contract-evolution.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        evolution["baseline_schema_hash"],
+        plan.schema_authority()
+            .unwrap()
+            .baseline_schema_hash
+            .as_str()
+    );
+    assert_eq!(
+        evolution["effective_schema_hash"],
+        effective_schema_hash.as_str()
+    );
+    let decisions = evolution["residual_decisions"].as_array().unwrap();
+    assert_eq!(decisions.len(), 3);
+    assert!(decisions.iter().all(|decision| decision["version"] == 1));
+    assert!(
+        decisions
+            .iter()
+            .all(|decision| decision["observation_id"] == "input-0")
+    );
+    let captured = decisions
+        .iter()
+        .filter(|decision| decision["batch_id"] == "batch-residual-captured")
+        .collect::<Vec<_>>();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0]["verdict"], "captured");
+    assert_eq!(captured[0]["source_path"], serde_json::json!(["note"]));
+    let quarantined = decisions
+        .iter()
+        .filter(|decision| decision["batch_id"] == "batch-residual-quarantined")
+        .collect::<Vec<_>>();
+    assert_eq!(quarantined.len(), 2);
+    assert!(
+        quarantined
+            .iter()
+            .all(|decision| decision["verdict"] == "quarantined")
+    );
+    assert_package_tree_excludes(temp.path(), &[CAPTURE_SENTINEL, QUARANTINE_SENTINEL]);
+}
+
+#[test]
+fn residual_unsupported_encoding_becomes_named_quarantine() {
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, true)]));
+    let record_batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(Int32Array::from(vec![Some(1)])) as ArrayRef],
+    )
+    .unwrap();
+    let mut batch = Batch::from_record_batch(
+        BatchId::new("batch-unsupported-residual").unwrap(),
+        ResourceId::new("orders").unwrap(),
+        PartitionId::new("part-0").unwrap(),
+        SchemaHash::new("schema-v1").unwrap(),
+        record_batch,
+    )
+    .unwrap();
+    let mut dictionary = StringDictionaryBuilder::<Int32Type>::new();
+    dictionary.append("value").unwrap();
+    let dictionary = Arc::new(dictionary.finish()) as ArrayRef;
+    batch.header.push_residual_candidate(
+        PreContractResidualCandidate::new(
+            0,
+            0,
+            vec!["unsupported".to_owned()],
+            Field::new("unsupported", dictionary.data_type().clone(), true),
+            None,
+            dictionary,
+            0,
+        )
+        .unwrap(),
+    );
+    let resource =
+        MockResource::tier_a(vec![batch]).with_write_disposition(WriteDisposition::Append);
+    let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    input.validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let quarantine = reader.read_quarantine_records().unwrap();
+    assert_eq!(quarantine.len(), 1);
+    assert_eq!(
+        quarantine[0].error_code,
+        cdf_contract::RESIDUAL_ENCODE_UNSUPPORTED_CODE
+    );
+    let evolution: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/contract-evolution.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        evolution["residual_decisions"][0]["observed_physical_type"]["kind"],
+        "dictionary"
+    );
+}
+
+#[test]
+fn execution_rejects_schema_authority_and_zero_row_output_schema_tampering() {
+    let resource =
+        MockResource::tier_a(Vec::new()).with_write_disposition(WriteDisposition::Append);
+    let input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+
+    let mut authority_tamper = plan.clone();
+    authority_tamper
+        .schema_authority
+        .as_mut()
+        .unwrap()
+        .effective_schema_hash = SchemaHash::new("sha256:forged-authority").unwrap();
+    let temp = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(
+        &authority_tamper,
+        &resource,
+        temp.path(),
+    ))
+    .unwrap_err();
+    assert!(error.to_string().contains("schema authority"));
+
+    let mut output_tamper = plan;
+    let output = output_tamper.output_schema.as_mut().unwrap();
+    output.fields.pop();
+    let forged_schema = Schema::new(
+        output
+            .fields
+            .iter()
+            .map(|field| field.to_arrow().unwrap())
+            .collect::<Vec<_>>(),
+    );
+    output.arrow_schema_hash = cdf_contract::canonical_arrow_schema_hash(&forged_schema).unwrap();
+    let temp = TempDir::new().unwrap();
+    let error = block_on(execute_to_package(&output_tamper, &resource, temp.path())).unwrap_err();
+    assert!(error.to_string().contains("compiled output schema"));
 }
 
 #[test]
@@ -1336,7 +2093,10 @@ fn freshness_contract_writes_observed_at_context_when_rule_requires_it() {
         .unwrap(),
     )
     .unwrap();
-    let resource = MockResource::tier_a(vec![batch]);
+    let mut resource = MockResource::tier_a(vec![batch]);
+    resource.descriptor.primary_key.clear();
+    resource.descriptor.merge_key.clear();
+    resource.descriptor.write_disposition = WriteDisposition::Append;
     let mut input = plan_input_for_schema(schema, vec![], None, None, PlanBoundedness::Bounded);
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Freshness {
@@ -1548,6 +2308,9 @@ struct MockResource {
     tier_b: bool,
     negotiate_count: Arc<AtomicUsize>,
     open_count: Arc<AtomicUsize>,
+    attest_count: Arc<AtomicUsize>,
+    attestation: Option<PartitionAttestation>,
+    attestation_error: Option<String>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
 }
 
@@ -1707,12 +2470,20 @@ impl MockResource {
             tier_b,
             negotiate_count: Arc::new(AtomicUsize::new(0)),
             open_count: Arc::new(AtomicUsize::new(0)),
+            attest_count: Arc::new(AtomicUsize::new(0)),
+            attestation: None,
+            attestation_error: None,
             effective_schema_runtime: None,
         }
     }
 
     fn with_write_disposition(mut self, write_disposition: WriteDisposition) -> Self {
         self.descriptor.write_disposition = write_disposition;
+        self
+    }
+
+    fn with_schema(mut self, schema: SchemaRef) -> Self {
+        self.schema = schema;
         self
     }
 
@@ -1723,6 +2494,16 @@ impl MockResource {
     ) -> Self {
         self.schema = schema;
         self.effective_schema_runtime = Some(runtime);
+        self
+    }
+
+    fn with_attestation(mut self, attestation: PartitionAttestation) -> Self {
+        self.attestation = Some(attestation);
+        self
+    }
+
+    fn with_attestation_error(mut self, error: impl Into<String>) -> Self {
+        self.attestation_error = Some(error.into());
         self
     }
 }
@@ -1745,6 +2526,10 @@ impl ResourceStream for MockResource {
                     metadata.insert(
                         PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
                         runtime.evidence.observations[0].observation_id.clone(),
+                    );
+                    metadata.insert(
+                        PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+                        "binding-input-0".to_owned(),
                     );
                 }
                 Ok(PartitionPlan {
@@ -1770,6 +2555,21 @@ impl ResourceStream for MockResource {
         Box::pin(
             async move { Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream) },
         )
+    }
+
+    fn attest_partition(
+        &self,
+        _partition: &PartitionPlan,
+    ) -> cdf_kernel::BoxFuture<'_, Result<Option<PartitionAttestation>>> {
+        self.attest_count.fetch_add(1, Ordering::SeqCst);
+        let attestation = self.attestation.clone();
+        let error = self.attestation_error.clone();
+        Box::pin(async move {
+            if let Some(error) = error {
+                return Err(cdf_kernel::CdfError::data(error));
+            }
+            Ok(attestation)
+        })
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
@@ -1908,6 +2708,26 @@ fn assert_span_fields(span: &CapturedSpan, expected: &[(&str, &str)]) {
     );
 }
 
+fn assert_package_tree_excludes(root: &std::path::Path, sentinels: &[&str]) {
+    for entry in std::fs::read_dir(root).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            assert_package_tree_excludes(&path, sentinels);
+            continue;
+        }
+        let bytes = std::fs::read(&path).unwrap();
+        for sentinel in sentinels {
+            assert!(
+                !bytes
+                    .windows(sentinel.len())
+                    .any(|window| window == sentinel.as_bytes()),
+                "package artifact {} contains raw sentinel {sentinel:?}",
+                path.display()
+            );
+        }
+    }
+}
+
 fn assert_honest_cdf_native_operator_metadata(plan: &EnginePlan) {
     let plan_json = serde_json::to_value(plan).unwrap();
     let plan_text = serde_json::to_string(&plan_json).unwrap();
@@ -2026,12 +2846,13 @@ fn apply_mock_exact_filters(batch: Batch, filters: &[String]) -> Result<Batch> {
     let filtered =
         arrow_select::filter::filter_record_batch(record_batch, &BooleanArray::from(keep))
             .map_err(cdf_kernel::CdfError::from)?;
+    let mut header = batch.header;
+    header.set_payload_counts(
+        filtered.num_rows() as u64,
+        filtered.get_array_memory_size() as u64,
+    );
     Ok(Batch {
-        header: BatchHeader {
-            row_count: filtered.num_rows() as u64,
-            byte_count: filtered.get_array_memory_size() as u64,
-            ..batch.header
-        },
+        header,
         payload: cdf_kernel::BatchPayload::RecordBatch(filtered),
     })
 }
@@ -2233,19 +3054,17 @@ fn parquet_reconciled_batch() -> Batch {
     .unwrap();
 
     Batch {
-        header: BatchHeader {
-            batch_id: BatchId::new("batch-parquet-reconciled").unwrap(),
-            resource_id: ResourceId::new("orders").unwrap(),
-            partition_id: PartitionId::new("part-0").unwrap(),
-            observed_schema_hash: SchemaHash::new("schema-v1").unwrap(),
-            row_count: record_batch.num_rows() as u64,
-            byte_count: record_batch.get_array_memory_size() as u64,
-            source_position: None,
-            pre_contract_quarantine: Vec::new(),
-            schema_coercion_plan: Some(serialized_plan),
-            watermarks: Vec::new(),
-            stats: BatchStats::default(),
-            cdc: None,
+        header: {
+            let mut header = BatchHeader::new(
+                BatchId::new("batch-parquet-reconciled").unwrap(),
+                ResourceId::new("orders").unwrap(),
+                PartitionId::new("part-0").unwrap(),
+                SchemaHash::new("schema-v1").unwrap(),
+                record_batch.num_rows() as u64,
+                record_batch.get_array_memory_size() as u64,
+            );
+            header.schema_coercion_plan = Some(serialized_plan);
+            header
         },
         payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
     }
@@ -2314,20 +3133,14 @@ fn nested_variant_batch() -> Batch {
     .unwrap();
 
     Batch {
-        header: BatchHeader {
-            batch_id: BatchId::new("batch-variant").unwrap(),
-            resource_id: ResourceId::new("orders").unwrap(),
-            partition_id: PartitionId::new("part-0").unwrap(),
-            observed_schema_hash: SchemaHash::new("schema-v1").unwrap(),
-            row_count: record_batch.num_rows() as u64,
-            byte_count: record_batch.get_array_memory_size() as u64,
-            source_position: None,
-            pre_contract_quarantine: Vec::new(),
-            schema_coercion_plan: None,
-            watermarks: Vec::new(),
-            stats: BatchStats::default(),
-            cdc: None,
-        },
+        header: BatchHeader::new(
+            BatchId::new("batch-variant").unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new("part-0").unwrap(),
+            SchemaHash::new("schema-v1").unwrap(),
+            record_batch.num_rows() as u64,
+            record_batch.get_array_memory_size() as u64,
+        ),
         payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
     }
 }
@@ -2361,20 +3174,14 @@ fn batch_for_partition_with_schema(
     .unwrap();
 
     Batch {
-        header: BatchHeader {
-            batch_id: BatchId::new(batch_id).unwrap(),
-            resource_id: ResourceId::new("orders").unwrap(),
-            partition_id: PartitionId::new(partition_id).unwrap(),
-            observed_schema_hash: SchemaHash::new("schema-v1").unwrap(),
-            row_count: record_batch.num_rows() as u64,
-            byte_count: record_batch.get_array_memory_size() as u64,
-            source_position: None,
-            pre_contract_quarantine: Vec::new(),
-            schema_coercion_plan: None,
-            watermarks: Vec::new(),
-            stats: BatchStats::default(),
-            cdc: None,
-        },
+        header: BatchHeader::new(
+            BatchId::new(batch_id).unwrap(),
+            ResourceId::new("orders").unwrap(),
+            PartitionId::new(partition_id).unwrap(),
+            SchemaHash::new("schema-v1").unwrap(),
+            record_batch.num_rows() as u64,
+            record_batch.get_array_memory_size() as u64,
+        ),
         payload: cdf_kernel::BatchPayload::RecordBatch(record_batch),
     }
 }

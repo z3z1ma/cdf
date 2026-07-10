@@ -13,7 +13,12 @@ pub fn plan_postgres_load(
 
     let stage_table = stage_table_name(&input.package_hash)?;
     let target_name = input.target.target_name()?;
-    let migrations = target_migrations(&input)?;
+    let no_data = input.segments.is_empty();
+    let migrations = if no_data {
+        Vec::new()
+    } else {
+        target_migrations(&input)?
+    };
     let mut kernel_migrations = system_table_migrations();
     kernel_migrations.extend(migrations.iter().map(|statement| MigrationRecord {
         migration_id: format!("postgres.{}", statement.name),
@@ -43,7 +48,11 @@ pub fn plan_postgres_load(
     add_segments_to_verify_parameters(&mut verify, &input.segments);
 
     let drift = drift_hooks();
-    let write_sql = write_statements(&input, &stage_table)?;
+    let write_sql = if no_data {
+        Vec::new()
+    } else {
+        write_statements(&input, &stage_table)?
+    };
     let mirror_sql = mirror_statements(&input, &verify);
 
     Ok(PostgresLoadPlan {

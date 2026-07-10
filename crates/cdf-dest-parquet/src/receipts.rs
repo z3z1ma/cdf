@@ -168,7 +168,18 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
         }
     }
 
-    if receipt.disposition == WriteDisposition::Replace {
+    if receipt.disposition == WriteDisposition::Replace && manifest.objects.is_empty() {
+        let has_pointer_evidence = receipt.transaction.as_ref().is_some_and(|transaction| {
+            transaction.values.contains_key("replace_pointer_key")
+                || transaction.values.contains_key("replace_pointer_sha256")
+                || transaction.values.contains_key("replace_pointer_etag")
+        });
+        if has_pointer_evidence {
+            return Err(CdfError::data(
+                "zero-data replace receipt must not claim a replace-pointer mutation",
+            ));
+        }
+    } else if receipt.disposition == WriteDisposition::Replace {
         let transaction = receipt
             .transaction
             .as_ref()

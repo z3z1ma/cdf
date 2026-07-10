@@ -765,6 +765,53 @@ fn replace_writes_current_pointer_to_latest_manifest() {
 }
 
 #[test]
+fn zero_data_append_and_replace_record_receipts_without_objects_or_pointer_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+
+    let data_dir = temp.path().join("pkg-data");
+    let data = build_package(
+        &data_dir,
+        "pkg-data",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("old"), Some("rows")])],
+        )],
+    );
+    let seeded = dest
+        .commit_package(request(&data_dir, &data, WriteDisposition::Replace))
+        .unwrap();
+    let pointer_key = seeded.plan.replace_pointer_key.clone().unwrap();
+    let pointer_before = dest
+        .store()
+        .get_required(dest.runtime(), &pointer_key)
+        .unwrap();
+
+    for (package_id, disposition) in [
+        ("pkg-empty-append", WriteDisposition::Append),
+        ("pkg-empty-replace", WriteDisposition::Replace),
+    ] {
+        let package_dir = temp.path().join(package_id);
+        let empty = build_package(&package_dir, package_id, Vec::new());
+        let commit = request(&package_dir, &empty, disposition.clone());
+        let plan = dest.plan_package_commit(&commit).unwrap();
+        assert!(plan.object_keys.is_empty());
+        assert!(plan.replace_pointer_key.is_none());
+
+        let outcome = dest.commit_package(commit).unwrap();
+        assert!(outcome.receipt.segment_acks.is_empty());
+        assert_eq!(outcome.receipt.counts.rows_written, 0);
+        assert!(dest.verify_receipt(&outcome.receipt).unwrap().verified);
+    }
+
+    let pointer_after = dest
+        .store()
+        .get_required(dest.runtime(), &pointer_key)
+        .unwrap();
+    assert_eq!(pointer_after, pointer_before);
+}
+
+#[test]
 fn dry_run_plan_reports_keys_without_writing() {
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-plan");

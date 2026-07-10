@@ -3,20 +3,23 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     policy::{
-        IdentifierPolicy, PromotionPolicy, RedactionDecision, TransformDescription,
-        ValidationDepth, VerdictAction,
+        IdentifierPolicy, PiiRedactionPolicy, PromotionPolicy, RedactionDecision,
+        TransformDescription, ValidationDepth, VerdictAction,
     },
     reconciliation::SchemaCoercionPlan,
     schema::ArrowType,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ValidationProgram {
     pub normalizer_version: String,
     #[serde(default)]
     pub identifier_policy: IdentifierPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub schema_coercion: Option<SchemaCoercionPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub residual: Option<ResidualProgram>,
     pub schema_verdicts: Vec<SchemaVerdictRule>,
     pub column_programs: Vec<ColumnProgram>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -27,6 +30,42 @@ pub struct ValidationProgram {
     pub transforms: Vec<TransformDescription>,
     pub promotion: PromotionPolicy,
     pub warnings: Vec<CompileWarning>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ResidualProgram {
+    pub default_verdict: ResidualCandidateVerdict,
+    pub pii_redaction: PiiRedactionPolicy,
+    pub fields: Vec<ResidualFieldProgram>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub capture: Option<ResidualCaptureOutput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ResidualFieldProgram {
+    pub source_name: String,
+    pub output_name: String,
+    pub required: bool,
+    pub control_critical: bool,
+    pub redaction: RedactionDecision,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct ResidualCaptureOutput {
+    pub variant_column: String,
+    pub semantic: String,
+    pub encoding: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ResidualCandidateVerdict {
+    Capture,
+    Quarantine,
 }
 
 impl ValidationProgram {

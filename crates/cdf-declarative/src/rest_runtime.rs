@@ -1,10 +1,10 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt,
     sync::{Arc, Mutex},
 };
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, new_null_array};
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_formats::{JsonOptions, ReadOptions, read_ndjson_bytes_with_declared_schema};
 use cdf_http::{
@@ -14,8 +14,8 @@ use cdf_http::{
 };
 use cdf_kernel::{
     Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue, PartitionPlan,
-    QueryableResource, ResourceDescriptor, ResourceStream, Result, ScanPlan, ScanRequest,
-    SchemaHash, SchemaSource, SourcePosition, source_name,
+    PreContractResidualCandidate, QueryableResource, ResourceDescriptor, ResourceStream, Result,
+    ScanPlan, ScanRequest, SchemaHash, SchemaSource, SourcePosition, source_name,
 };
 use futures_util::stream;
 use serde_json::{Map, Value};
@@ -327,6 +327,9 @@ fn execute_rest(
             )?;
             batch.header.source_position = page.source_position;
             batch.header.pre_contract_quarantine = page.pre_contract_quarantine;
+            batch
+                .header
+                .extend_residual_candidates(page.residual_candidates);
             batch.header.schema_coercion_plan = page.schema_coercion_plan;
             batches.push(batch);
         }
@@ -790,6 +793,7 @@ struct ReconciledRestPage {
     record_batch: RecordBatch,
     source_position: Option<SourcePosition>,
     pre_contract_quarantine: Vec<cdf_kernel::PreContractQuarantineFact>,
+    residual_candidates: Vec<cdf_kernel::PreContractResidualCandidate>,
     schema_coercion_plan: Option<String>,
 }
 
@@ -821,7 +825,42 @@ fn reconcile_rest_page(
             "REST page reconciliation expected exactly one format batch",
         ));
     };
-    let source_position = rest_page_cursor_position(schema, descriptor, records)?;
+    let mut residual_candidates = format_batch.header.residual_candidates().to_vec();
+    add_missing_cursor_candidates(schema, descriptor, records, &mut residual_candidates)?;
+    let cursor_identities = descriptor
+        .cursor
+        .as_ref()
+        .and_then(|cursor| {
+            schema
+                .fields()
+                .iter()
+                .map(|field| field.as_ref())
+                .find(|field| {
+                    cursor.field == field.name().as_str()
+                        || source_name(field).is_some_and(|source| cursor.field == source)
+                })
+        })
+        .map(|field| {
+            BTreeSet::from([
+                field.name().clone(),
+                source_name(field)
+                    .unwrap_or_else(|| field.name().as_str())
+                    .to_owned(),
+            ])
+        })
+        .unwrap_or_default();
+    let excluded_cursor_rows = residual_candidates
+        .iter()
+        .filter(|candidate| {
+            candidate
+                .source_path()
+                .first()
+                .is_some_and(|field| cursor_identities.contains(field))
+        })
+        .map(PreContractResidualCandidate::batch_row_ordinal)
+        .collect::<BTreeSet<_>>();
+    let source_position =
+        rest_page_cursor_position(schema, descriptor, records, &excluded_cursor_rows)?;
     let mut pre_contract_quarantine = format_batch.header.pre_contract_quarantine.clone();
     for fact in &mut pre_contract_quarantine {
         fact.source_position = source_position.clone();
@@ -834,6 +873,7 @@ fn reconcile_rest_page(
             .clone(),
         source_position,
         pre_contract_quarantine,
+        residual_candidates,
         schema_coercion_plan: format_batch.header.schema_coercion_plan.clone(),
     })
 }
@@ -842,6 +882,7 @@ fn rest_page_cursor_position(
     schema: &SchemaRef,
     descriptor: &ResourceDescriptor,
     records: &[Map<String, Value>],
+    excluded_rows: &BTreeSet<usize>,
 ) -> Result<Option<SourcePosition>> {
     let Some(cursor_spec) = &descriptor.cursor else {
         return Ok(None);
@@ -863,7 +904,9 @@ fn rest_page_cursor_position(
                 cursor_spec.field
             ))
         })?;
-    let value = max_cursor_for_field(field, records)?;
+    let Some(value) = max_cursor_for_field(field, records, excluded_rows)? else {
+        return Ok(None);
+    };
     Ok(Some(SourcePosition::Cursor(CursorPosition {
         version: 1,
         field: cursor_spec.field.clone(),
@@ -874,10 +917,14 @@ fn rest_page_cursor_position(
 fn max_cursor_for_field(
     field: &arrow_schema::Field,
     records: &[Map<String, Value>],
-) -> Result<ObservedCursor> {
+    excluded_rows: &BTreeSet<usize>,
+) -> Result<Option<ObservedCursor>> {
     let mut max_value = None;
     let key = source_name(field).unwrap_or_else(|| field.name().as_str());
-    for record in records {
+    for (row, record) in records.iter().enumerate() {
+        if excluded_rows.contains(&row) {
+            continue;
+        }
         let value = record.get(key).ok_or_else(|| {
             CdfError::data(format!(
                 "REST cursor field `{}` is missing from an accepted record",
@@ -898,12 +945,61 @@ fn max_cursor_for_field(
             max_value = Some(value);
         }
     }
-    max_value.ok_or_else(|| {
-        CdfError::data(format!(
-            "REST cursor field `{}` has no observed values",
-            field.name()
-        ))
-    })
+    Ok(max_value)
+}
+
+fn add_missing_cursor_candidates(
+    schema: &SchemaRef,
+    descriptor: &ResourceDescriptor,
+    records: &[Map<String, Value>],
+    candidates: &mut Vec<PreContractResidualCandidate>,
+) -> Result<()> {
+    let Some(cursor) = &descriptor.cursor else {
+        return Ok(());
+    };
+    let expected = schema
+        .fields()
+        .iter()
+        .map(|field| field.as_ref())
+        .find(|field| {
+            cursor.field == field.name().as_str()
+                || source_name(field).is_some_and(|source| cursor.field == source)
+        })
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "REST cursor candidate field `{}` is missing from declared schema fields {:?}",
+                cursor.field,
+                schema
+                    .fields()
+                    .iter()
+                    .map(|field| (field.name(), source_name(field.as_ref())))
+                    .collect::<Vec<_>>()
+            ))
+        })?;
+    let source = source_name(expected).unwrap_or_else(|| expected.name().as_str());
+    for (row, record) in records.iter().enumerate() {
+        if record.get(source).is_some_and(|value| !value.is_null())
+            || candidates.iter().any(|candidate| {
+                candidate.batch_row_ordinal() == row
+                    && candidate
+                        .source_path()
+                        .first()
+                        .is_some_and(|field| field == source)
+            })
+        {
+            continue;
+        }
+        candidates.push(PreContractResidualCandidate::new(
+            row as u64,
+            row,
+            vec![source.to_owned()],
+            Field::new(source, DataType::Null, true),
+            Some(expected.clone()),
+            new_null_array(&DataType::Null, 1),
+            0,
+        )?);
+    }
+    Ok(())
 }
 
 fn cursor_value_for_field(field: &arrow_schema::Field, value: &Value) -> Result<ObservedCursor> {

@@ -1,35 +1,45 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow_array::RecordBatch;
-use arrow_schema::Schema;
+use arrow_array::{Array, ArrayRef, BooleanArray, RecordBatch, StringArray, UInt64Array};
+use arrow_schema::{DataType, Field, Schema};
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, SCHEMA_COERCION_PLAN_METADATA_KEY,
-    ValidationProgram, VerdictSummary, evaluate_package_order_dedup, evaluate_record_batch,
-    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
+    ContractEvaluationContext, QuarantineCandidate, RESIDUAL_ENCODING_METADATA_KEY,
+    RedactionDecision, ResidualCandidateVerdict, ResidualFieldRef, ResidualFieldWithRedaction,
+    ValidationProgram, VerdictSummary, encode_residual_json_v1, encode_residual_json_v1_redacted,
+    evaluate_package_order_dedup, evaluate_record_batch, reject_untrusted_schema_coercion_metadata,
+    schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
     CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PreContractObservedValue, PreContractQuarantineFact,
-    ResourceStream, Result, RunId, SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId, SourcePosition,
-    WriteDisposition, semantic, source_name,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionAttestation,
+    PreContractObservedValue, PreContractQuarantineFact, PreContractResidualCandidate,
+    ProcessedObservationOutcome, ProcessedObservationPosition, ResourceStream, Result, RunId,
+    SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId, SourcePosition,
+    TerminalSchemaObservationQuarantine, WriteDisposition, semantic, source_name,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tracing::{Instrument, Span, info_span};
 
 use crate::{
-    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EnginePackageDraft,
-    EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions, EngineSegmentPosition,
-    ExecutionProfile, LineageSummary,
+    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineExecutionEvidence,
+    EnginePackageDraft, EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions,
+    EngineSegmentPosition, ExecutionProfile, LineageSummary,
+    output_schema::canonicalize_effective_output_schema,
     planning::validate_program,
     predicates::apply_residual_filters,
-    variant_capture::{contract_evolution_artifact, normalize_batch},
+    variant_capture::{
+        ResidualDecisionArtifact, ResidualRuntimeVerdict, ResidualTypedProjection,
+        contract_evolution_artifact, normalize_batch,
+    },
 };
 
 pub type PackagePreFinalizeHook<'a> =
@@ -67,12 +77,28 @@ struct ExecutionTraceContext {
 
 struct ContractExecOutput {
     accepted: RecordBatch,
+    variant_values: Vec<Option<String>>,
     quarantine_records: Vec<QuarantineRecord>,
     summary: VerdictSummary,
+    residual_decisions: Vec<ResidualDecisionArtifact>,
+}
+
+struct ResidualBatchContext<'a> {
+    evaluation: &'a ContractEvaluationContext,
+    source_rows: Option<&'a [usize]>,
+    cdc_operation_field: Option<&'a str>,
+    batch_id: &'a cdf_kernel::BatchId,
+    observation_id: Option<&'a str>,
+}
+
+struct ExecutedBatch {
+    batch: RecordBatch,
+    source_rows: Option<Vec<usize>>,
 }
 
 struct PendingDedupBatch {
     accepted: RecordBatch,
+    variant_values: Vec<Option<String>>,
     output_position: Option<SourcePosition>,
 }
 
@@ -82,6 +108,7 @@ struct OutputWriteState<'a> {
     segments: &'a mut Vec<cdf_package::SegmentEntry>,
     segment_positions: &'a mut Vec<EngineSegmentPosition>,
     output_schema: &'a mut Option<SchemaArtifact>,
+    expected_schema: &'a Schema,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -106,6 +133,11 @@ struct PerObservationSchemaCoercionArtifact {
     observation_id: String,
     physical_schema_hash: String,
     coercion_plan: cdf_contract::SchemaCoercionPlan,
+}
+
+enum PartitionSchemaDisposition {
+    Admitted(EffectiveSchemaObservationCoercion),
+    Quarantined(TerminalSchemaObservationQuarantine),
 }
 
 impl ExecutionTraceContext {
@@ -186,7 +218,16 @@ where
 {
     let mut validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
+    let schema_authority = plan.schema_authority()?;
+    if schema_authority.version != 1 {
+        return Err(CdfError::data(format!(
+            "unsupported engine schema-authority version {}",
+            schema_authority.version
+        )));
+    }
     let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
+    crate::planning::validate_plan_schema_authority(resource, plan)?;
+    let runtime_output_schema = plan.output_arrow_schema()?;
 
     let mut builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
@@ -213,11 +254,15 @@ where
     let mut quarantine_artifacts = Vec::new();
     let mut quarantine_part_count = 0_usize;
     let mut remaining_limit = plan.scan.request.limit;
-    let mut output_schema = None;
+    let mut output_schema = Some(schema_artifact(runtime_output_schema.as_ref()));
     let mut schema_coercion = validation_program.schema_coercion.clone();
     let mut per_observation_schema_evidence =
         BTreeMap::<String, PerObservationSchemaCoercionArtifact>::new();
     let mut attempted_observations = BTreeSet::new();
+    let mut processed_observations = Vec::new();
+    let mut terminal_quarantines = Vec::new();
+    let mut observation_attestations = BTreeMap::<String, PartitionAttestation>::new();
+    let mut residual_decisions = Vec::new();
     let apply_merge_dedup =
         plan.write_disposition == WriteDisposition::Merge && validation_program.has_dedup_rule();
     let mut pending_dedup_batches = Vec::new();
@@ -227,10 +272,54 @@ where
             break;
         }
         let partition_scope = partition.scope.clone();
-        let partition_schema_evidence = effective_schema_evidence
-            .map(|evidence| expected_partition_schema_evidence(&partition, evidence))
+        let partition_schema_disposition = effective_schema_evidence
+            .map(|evidence| partition_schema_disposition(&partition, evidence))
             .transpose()?;
-        if let Some(expected) = &partition_schema_evidence {
+        if let Some(PartitionSchemaDisposition::Quarantined(quarantine)) =
+            &partition_schema_disposition
+        {
+            let attestation = match observation_attestations.get(quarantine.observation_id()) {
+                Some(attestation) => attestation.clone(),
+                None => {
+                    let attestation = resource
+                        .attest_partition(&partition)
+                        .await?
+                        .ok_or_else(|| {
+                            CdfError::data(format!(
+                                "terminal schema observation {:?} has no execution-time attestation",
+                                quarantine.observation_id()
+                            ))
+                        })?;
+                    observation_attestations
+                        .insert(quarantine.observation_id().to_owned(), attestation.clone());
+                    attestation
+                }
+            };
+            if attestation.physical_schema_hash() != Some(quarantine.physical_schema_hash()) {
+                return Err(CdfError::data(format!(
+                    "terminal schema observation {:?} changed physical schema between planning and execution; expected {}, attested {:?}; re-plan before retrying",
+                    quarantine.observation_id(),
+                    quarantine.physical_schema_hash(),
+                    attestation.physical_schema_hash()
+                )));
+            }
+            let source_position = attestation.into_processed_position();
+            processed_observations.push(ProcessedObservationPosition::new(
+                quarantine.observation_id().to_owned(),
+                ProcessedObservationOutcome::Quarantined,
+                source_position,
+            )?);
+            terminal_quarantines.push(quarantine.clone());
+            continue;
+        }
+        let partition_schema_evidence =
+            partition_schema_disposition
+                .as_ref()
+                .and_then(|item| match item {
+                    PartitionSchemaDisposition::Admitted(evidence) => Some(evidence),
+                    PartitionSchemaDisposition::Quarantined(_) => None,
+                });
+        if let Some(expected) = partition_schema_evidence {
             attempted_observations.insert(expected.observation_id.clone());
         }
 
@@ -238,14 +327,18 @@ where
             .map(|context| partition_execution_span(context, partition.partition_id.as_str()))
             .unwrap_or_else(Span::none);
 
-        async {
-            let mut stream = resource.open(partition).await?;
+        let partition_for_open = partition.clone();
+        let (fully_processed, observed_positions) = async {
+            let mut stream = resource.open(partition_for_open).await?;
+            let mut fully_processed = true;
+            let mut observed_positions = Vec::new();
             while let Some(batch) = stream.next().await {
                 if remaining_limit == Some(0) {
+                    fully_processed = false;
                     break;
                 }
 
-                let batch = batch?;
+                let mut batch = batch?;
                 lineage.input_batches.push(batch.header.batch_id.clone());
                 if !batch.header.pre_contract_quarantine.is_empty() {
                     let quarantine_records =
@@ -261,6 +354,12 @@ where
                         &mut quarantine_artifacts,
                     )?;
                 }
+                let residual_candidates = batch.header.take_residual_candidates();
+                let cdc_operation_field = batch
+                    .header
+                    .cdc
+                    .as_ref()
+                    .map(|metadata| metadata.operation_field.clone());
                 let Some(record_batch) = batch.record_batch() else {
                     return Err(CdfError::data(
                         "package execution requires in-memory Arrow record batches at MVP",
@@ -328,23 +427,49 @@ where
                     ));
                 }
 
-                let output = execute_batch(record_batch, plan, &mut remaining_limit)?;
-                if output.num_rows() == 0 {
-                    continue;
-                }
+                let ExecutedBatch {
+                    batch: output,
+                    source_rows,
+                } = execute_batch(
+                    record_batch,
+                    plan,
+                    &mut remaining_limit,
+                    !residual_candidates.is_empty(),
+                )?;
                 let batch_source_position = normalize_source_position_for_partition(
                     batch.header.source_position.clone(),
                     &partition_scope,
                 );
+                if let Some(position) = &batch_source_position {
+                    observed_positions.push(position.clone());
+                }
+                if output.num_rows() == 0 {
+                    continue;
+                }
 
                 let evaluation_context = package_evaluation_context
                     .clone()
                     .with_source_position(batch_source_position.clone());
                 let ContractExecOutput {
                     accepted,
+                    variant_values,
                     quarantine_records,
                     summary,
-                } = apply_contract_exec(output, &validation_program, &evaluation_context)?;
+                    residual_decisions: batch_residual_decisions,
+                } = apply_contract_exec(
+                    output,
+                    &validation_program,
+                    residual_candidates,
+                    &ResidualBatchContext {
+                        evaluation: &evaluation_context,
+                        source_rows: source_rows.as_deref(),
+                        cdc_operation_field: cdc_operation_field.as_deref(),
+                        batch_id: &batch.header.batch_id,
+                        observation_id: partition_schema_evidence
+                            .map(|evidence| evidence.observation_id.as_str()),
+                    },
+                )?;
+                residual_decisions.extend(batch_residual_decisions);
                 merge_verdict_summary(&mut verdict_summary, summary);
                 if !quarantine_records.is_empty() {
                     write_quarantine_part(
@@ -361,6 +486,7 @@ where
                 if apply_merge_dedup {
                     pending_dedup_batches.push(PendingDedupBatch {
                         accepted: output,
+                        variant_values,
                         output_position: batch_source_position,
                     });
                     continue;
@@ -370,6 +496,7 @@ where
                     &validation_program,
                     effective_schema_evidence.is_some(),
                     output,
+                    variant_values,
                     batch_source_position,
                     &mut OutputWriteState {
                         profile: &mut profile,
@@ -377,13 +504,46 @@ where
                         segments: &mut segments,
                         segment_positions: &mut segment_positions,
                         output_schema: &mut output_schema,
+                        expected_schema: runtime_output_schema.as_ref(),
                     },
                 )?;
             }
-            Ok(())
+            Ok::<_, CdfError>((fully_processed, observed_positions))
         }
         .instrument(partition_span)
         .await?;
+        if fully_processed
+            && let Some(observation_id) = partition
+                .metadata
+                .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+                .cloned()
+        {
+            let fallback_attestation = if observed_positions.is_empty() {
+                match observation_attestations.get(&observation_id) {
+                    Some(attestation) => Some(attestation.clone()),
+                    None => {
+                        let attestation = resource.attest_partition(&partition).await?;
+                        if let Some(attestation) = &attestation {
+                            observation_attestations
+                                .insert(observation_id.clone(), attestation.clone());
+                        }
+                        attestation
+                    }
+                }
+            } else {
+                None
+            };
+            let source_position = aggregate_processed_partition_positions(
+                &observation_id,
+                &observed_positions,
+                fallback_attestation.map(PartitionAttestation::into_processed_position),
+            )?;
+            processed_observations.push(ProcessedObservationPosition::new(
+                observation_id,
+                ProcessedObservationOutcome::Admitted,
+                source_position,
+            )?);
+        }
     }
 
     if apply_merge_dedup {
@@ -398,6 +558,7 @@ where
                 segments: &mut segments,
                 segment_positions: &mut segment_positions,
                 output_schema: &mut output_schema,
+                expected_schema: runtime_output_schema.as_ref(),
             },
         )?;
     }
@@ -444,11 +605,21 @@ where
             },
         )?;
     }
+    if !terminal_quarantines.is_empty() {
+        builder
+            .write_json_artifact("quarantine/schema-observations.json", &terminal_quarantines)?;
+    }
     builder.write_json_artifact(
         "schema/output.json",
-        &output_schema.unwrap_or(SchemaArtifact { fields: Vec::new() }),
+        &output_schema.expect("compiled output schema is always present"),
     )?;
-    if let Some(evolution) = contract_evolution_artifact(&validation_program) {
+    builder.write_runtime_arrow_schema(runtime_output_schema.as_ref())?;
+    if let Some(evolution) = contract_evolution_artifact(
+        &validation_program,
+        schema_authority.baseline_schema_hash.clone(),
+        schema_authority.effective_schema_hash.clone(),
+        residual_decisions,
+    ) {
         builder.write_json_artifact("schema/contract-evolution.json", &evolution)?;
     }
     builder.write_stats_artifact(
@@ -476,6 +647,7 @@ where
         "lineage.json",
         &cdf_package::canonical_json_bytes(&lineage)?,
     )?;
+    let execution_evidence = EngineExecutionEvidence::new(processed_observations)?;
     builder.update_status(PackageStatus::Validated)?;
     if let Some(pre_finalize) = pre_finalize {
         pre_finalize(
@@ -485,6 +657,7 @@ where
                 profile: &profile,
                 lineage: &lineage,
                 segment_positions: &segment_positions,
+                execution_evidence: &execution_evidence,
             },
         )?;
     }
@@ -498,6 +671,7 @@ where
             lineage,
         },
         segment_positions,
+        execution_evidence,
     })
 }
 
@@ -520,6 +694,7 @@ fn apply_dedup_and_write_pending_batches(
     for (pending, retained_rows) in pending.into_iter().zip(dedup.retained_rows) {
         let output =
             filter_record_batch(&pending.accepted, &retained_rows).map_err(CdfError::from)?;
+        let variant_values = filter_optional_strings(&pending.variant_values, &retained_rows);
         if output.num_rows() == 0 {
             continue;
         }
@@ -528,6 +703,7 @@ fn apply_dedup_and_write_pending_batches(
             program,
             canonicalize_observed_schema,
             output,
+            variant_values,
             pending.output_position,
             state,
         )?;
@@ -548,6 +724,28 @@ fn normalize_source_position_for_partition(
         }
         (position, _) => position,
     }
+}
+
+fn aggregate_processed_partition_positions(
+    observation_id: &str,
+    observed: &[SourcePosition],
+    attested: Option<SourcePosition>,
+) -> Result<SourcePosition> {
+    let mut positions = observed.to_vec();
+    if let Some(attested) = attested {
+        positions.push(attested);
+    }
+    let first = positions.first().cloned().ok_or_else(|| {
+        CdfError::data(format!(
+            "processed observation {observation_id:?} completed without source-position evidence"
+        ))
+    })?;
+    if positions.iter().any(|position| position != &first) {
+        return Err(CdfError::data(format!(
+            "processed observation {observation_id:?} produced source-position evidence that differs from execution-time attestation"
+        )));
+    }
+    Ok(first)
 }
 
 fn merge_verdict_summary(total: &mut VerdictSummary, batch: VerdictSummary) {
@@ -655,19 +853,27 @@ fn write_output_batch(
     program: &ValidationProgram,
     canonicalize_observed_schema: bool,
     output: RecordBatch,
+    variant_values: Vec<Option<String>>,
     output_position: Option<SourcePosition>,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
+    let output = append_residual_variant(output, program, variant_values)?;
     let output = normalize_record_batch(output, program)?;
     let output = if canonicalize_observed_schema {
         canonicalize_effective_output_schema(output)?
     } else {
         output
     };
-    *state.output_schema = Some(schema_artifact(
-        output.schema().as_ref(),
-        canonicalize_observed_schema,
-    ));
+    let output = conform_to_compiled_output_schema(output, state.expected_schema)?;
+    let actual_schema = schema_artifact(output.schema().as_ref());
+    if let Some(expected_schema) = state.output_schema.as_ref()
+        && expected_schema != &actual_schema
+    {
+        return Err(CdfError::data(format!(
+            "emitted batch schema does not match the compiled output schema authority: expected {expected_schema:?}, observed {actual_schema:?}"
+        )));
+    }
+    *state.output_schema = Some(actual_schema);
     state.profile.output_rows += output.num_rows() as u64;
     state.profile.output_bytes += output.get_array_memory_size() as u64;
     state.profile.output_batches += 1;
@@ -683,21 +889,42 @@ fn write_output_batch(
     Ok(())
 }
 
-fn canonicalize_effective_output_schema(batch: RecordBatch) -> Result<RecordBatch> {
-    let fields = batch
+fn conform_to_compiled_output_schema(
+    batch: RecordBatch,
+    expected_schema: &Schema,
+) -> Result<RecordBatch> {
+    if batch.num_columns() != expected_schema.fields().len() {
+        return Err(CdfError::data(format!(
+            "emitted batch has {} columns but compiled output schema requires {}",
+            batch.num_columns(),
+            expected_schema.fields().len()
+        )));
+    }
+    for (index, (actual, expected)) in batch
         .schema()
         .fields()
         .iter()
-        .map(|field| {
-            let mut metadata = field.metadata().clone();
-            metadata.remove(PHYSICAL_TYPE_METADATA_KEY);
-            field.as_ref().clone().with_metadata(metadata)
-        })
-        .collect::<Vec<_>>();
-    let mut metadata = batch.schema().metadata().clone();
-    metadata.remove(SCHEMA_COERCION_PLAN_METADATA_KEY);
-    let schema = std::sync::Arc::new(Schema::new_with_metadata(fields, metadata));
-    RecordBatch::try_new(schema, batch.columns().to_vec()).map_err(CdfError::from)
+        .zip(expected_schema.fields())
+        .enumerate()
+    {
+        let actual_encoding = actual.metadata().get(RESIDUAL_ENCODING_METADATA_KEY);
+        let expected_encoding = expected.metadata().get(RESIDUAL_ENCODING_METADATA_KEY);
+        let expected_source_name = expected.metadata().get(SOURCE_NAME_METADATA_KEY);
+        let actual_source_name = actual.metadata().get(SOURCE_NAME_METADATA_KEY);
+        if actual.name() != expected.name()
+            || actual.data_type() != expected.data_type()
+            || actual.is_nullable() != expected.is_nullable()
+            || semantic(actual.as_ref()) != semantic(expected.as_ref())
+            || actual_encoding != expected_encoding
+            || expected_source_name.is_some() && actual_source_name != expected_source_name
+        {
+            return Err(CdfError::data(format!(
+                "emitted field {index} does not match compiled output schema authority: expected {expected:?}, observed {actual:?}"
+            )));
+        }
+    }
+    RecordBatch::try_new(Arc::new(expected_schema.clone()), batch.columns().to_vec())
+        .map_err(CdfError::from)
 }
 
 fn package_execution_span(context: &ExecutionTraceContext) -> Span {
@@ -723,8 +950,36 @@ fn execute_batch(
     batch: &RecordBatch,
     plan: &EnginePlan,
     remaining_limit: &mut Option<u64>,
-) -> Result<RecordBatch> {
-    let filtered = apply_residual_filters(batch, &plan.residual_predicates)?;
+    track_source_rows: bool,
+) -> Result<ExecutedBatch> {
+    const SOURCE_ROW_FIELD: &str = "_cdf_internal_source_row";
+    let tracked = if track_source_rows {
+        if batch.schema().index_of(SOURCE_ROW_FIELD).is_ok() {
+            return Err(CdfError::contract(format!(
+                "input field {SOURCE_ROW_FIELD:?} conflicts with reserved execution metadata"
+            )));
+        }
+        let mut fields = batch.schema().fields().iter().cloned().collect::<Vec<_>>();
+        fields.push(Arc::new(Field::new(
+            SOURCE_ROW_FIELD,
+            DataType::UInt64,
+            false,
+        )));
+        let mut columns = batch.columns().to_vec();
+        columns
+            .push(Arc::new(UInt64Array::from_iter_values(0..batch.num_rows() as u64)) as ArrayRef);
+        RecordBatch::try_new(
+            Arc::new(Schema::new_with_metadata(
+                fields,
+                batch.schema().metadata().clone(),
+            )),
+            columns,
+        )
+        .map_err(CdfError::from)?
+    } else {
+        batch.clone()
+    };
+    let filtered = apply_residual_filters(&tracked, &plan.residual_predicates)?;
     let limited = match remaining_limit {
         Some(remaining) => {
             let take = (*remaining).min(filtered.num_rows() as u64) as usize;
@@ -733,7 +988,55 @@ fn execute_batch(
         }
         None => filtered,
     };
-    apply_projection(&limited, plan.final_projection.as_deref())
+    let projected = if track_source_rows {
+        let mut projection = plan.final_projection.clone().unwrap_or_else(|| {
+            limited
+                .schema()
+                .fields()
+                .iter()
+                .filter(|field| field.name() != SOURCE_ROW_FIELD)
+                .map(|field| field.name().clone())
+                .collect()
+        });
+        if projection.is_empty() {
+            projection = limited
+                .schema()
+                .fields()
+                .iter()
+                .filter(|field| field.name() != SOURCE_ROW_FIELD)
+                .map(|field| field.name().clone())
+                .collect();
+        }
+        projection.push(SOURCE_ROW_FIELD.to_owned());
+        apply_projection(&limited, Some(&projection))?
+    } else {
+        apply_projection(&limited, plan.final_projection.as_deref())?
+    };
+    if !track_source_rows {
+        return Ok(ExecutedBatch {
+            batch: projected,
+            source_rows: None,
+        });
+    }
+    let ordinal_index = projected.schema().index_of(SOURCE_ROW_FIELD)?;
+    let ordinals = projected
+        .column(ordinal_index)
+        .as_any()
+        .downcast_ref::<UInt64Array>()
+        .ok_or_else(|| CdfError::internal("source-row tracking column is not uint64"))?;
+    let source_rows = ordinals
+        .values()
+        .iter()
+        .map(|value| usize::try_from(*value).map_err(|error| CdfError::internal(error.to_string())))
+        .collect::<Result<Vec<_>>>()?;
+    let keep = (0..projected.num_columns())
+        .filter(|index| *index != ordinal_index)
+        .collect::<Vec<_>>();
+    let batch = projected.project(&keep).map_err(CdfError::from)?;
+    Ok(ExecutedBatch {
+        batch,
+        source_rows: Some(source_rows),
+    })
 }
 
 fn apply_projection(batch: &RecordBatch, projection: Option<&[String]>) -> Result<RecordBatch> {
@@ -760,21 +1063,443 @@ fn apply_projection(batch: &RecordBatch, projection: Option<&[String]>) -> Resul
 fn apply_contract_exec(
     batch: RecordBatch,
     program: &ValidationProgram,
-    context: &ContractEvaluationContext,
+    residual_candidates: Vec<PreContractResidualCandidate>,
+    context: &ResidualBatchContext<'_>,
 ) -> Result<ContractExecOutput> {
-    let evaluation = evaluate_record_batch(program, context, &batch)?;
+    let residual = apply_residual_verdicts(batch, program, residual_candidates, context)?;
+    let evaluation = evaluate_record_batch(program, context.evaluation, &residual.typed_batch)?;
     let summary = evaluation.summary;
-    let quarantine_records = quarantine_records_from_candidates(evaluation.quarantine_candidates)?;
+    let mut quarantine_records = residual.quarantine_records;
+    quarantine_records.extend(quarantine_records_from_candidates(
+        evaluation.quarantine_candidates,
+    )?);
     let accepted = if summary.accepted_rows == summary.input_rows {
-        batch
+        residual.typed_batch
     } else {
-        filter_record_batch(&batch, &evaluation.accepted_rows).map_err(CdfError::from)?
+        filter_record_batch(&residual.typed_batch, &evaluation.accepted_rows)
+            .map_err(CdfError::from)?
     };
+    let variants = filter_optional_strings(&residual.variant_values, &evaluation.accepted_rows);
+    let mut combined = summary;
+    combined.input_rows = residual.input_rows;
+    combined.quarantined_rows += residual.quarantined_rows;
+    combined.violation_count += residual.violation_count;
+    combined.quarantine_candidate_count += residual.quarantine_candidate_count;
+    combined.rule_summaries.extend(residual.rule_summaries);
     Ok(ContractExecOutput {
         accepted,
+        variant_values: variants,
         quarantine_records,
-        summary,
+        summary: combined,
+        residual_decisions: residual.residual_decisions,
     })
+}
+
+struct ResidualExecOutput {
+    typed_batch: RecordBatch,
+    variant_values: Vec<Option<String>>,
+    quarantine_records: Vec<QuarantineRecord>,
+    input_rows: u64,
+    quarantined_rows: u64,
+    violation_count: u64,
+    quarantine_candidate_count: u64,
+    rule_summaries: Vec<cdf_contract::RuleVerdictSummary>,
+    residual_decisions: Vec<ResidualDecisionArtifact>,
+}
+
+fn apply_residual_verdicts(
+    batch: RecordBatch,
+    program: &ValidationProgram,
+    candidates: Vec<PreContractResidualCandidate>,
+    context: &ResidualBatchContext<'_>,
+) -> Result<ResidualExecOutput> {
+    let input_rows = batch.num_rows() as u64;
+    let mut variants = vec![None; batch.num_rows()];
+    let mut accepted = vec![true; batch.num_rows()];
+    let mut quarantine_records = Vec::new();
+    let mut rule_summaries = BTreeMap::<(String, String), cdf_contract::RuleVerdictSummary>::new();
+    let mut residual_decisions = Vec::new();
+    let source_to_output = context
+        .source_rows
+        .map(|rows| {
+            rows.iter()
+                .copied()
+                .enumerate()
+                .map(|(output, source)| (source, output))
+                .collect::<BTreeMap<_, _>>()
+        })
+        .unwrap_or_else(|| (0..batch.num_rows()).map(|row| (row, row)).collect());
+    let mut grouped = BTreeMap::<usize, Vec<PreContractResidualCandidate>>::new();
+    for candidate in candidates {
+        if let Some(output_row) = source_to_output.get(&candidate.batch_row_ordinal()) {
+            grouped.entry(*output_row).or_default().push(candidate);
+        }
+    }
+
+    let mut dynamic_controls = BTreeSet::new();
+    if let Some(field) = context.cdc_operation_field {
+        dynamic_controls.insert(field.to_owned());
+    }
+    collect_source_position_control_fields(
+        context.evaluation.source_position.as_ref(),
+        &mut dynamic_controls,
+    );
+
+    for (row, row_candidates) in grouped {
+        let mut quarantine_reason = None;
+        for candidate in &row_candidates {
+            let field = candidate
+                .source_path()
+                .first()
+                .map(String::as_str)
+                .unwrap_or_default();
+            let field_program = program.residual.as_ref().and_then(|residual| {
+                residual
+                    .fields
+                    .iter()
+                    .find(|item| item.source_name == field || item.output_name == field)
+            });
+            let control_critical = dynamic_controls.contains(field)
+                || field_program.is_some_and(|field| field.control_critical || field.required);
+            let residual = program.residual.as_ref();
+            let captures = residual.is_some_and(|residual| {
+                residual.default_verdict == ResidualCandidateVerdict::Capture
+                    && residual.capture.is_some()
+            });
+            if control_critical {
+                quarantine_reason = Some((
+                    format!("residual:{}:control-critical", residual_path(candidate)),
+                    "cdf.residual_control_critical".to_owned(),
+                ));
+                break;
+            }
+            if !captures {
+                quarantine_reason = Some((
+                    format!("residual:{}:contract", residual_path(candidate)),
+                    "cdf.residual_contract_quarantine".to_owned(),
+                ));
+                break;
+            }
+        }
+
+        let encoded = if quarantine_reason.is_none() {
+            let redactions = row_candidates
+                .iter()
+                .map(|candidate| residual_redaction(program, candidate))
+                .collect::<Vec<_>>();
+            let fields = row_candidates
+                .iter()
+                .zip(&redactions)
+                .map(|(candidate, redaction)| {
+                    let field = ResidualFieldRef::new(
+                        candidate.source_path().iter().map(String::as_str),
+                        candidate.value(),
+                        candidate.value_index(),
+                    )?;
+                    Ok(ResidualFieldWithRedaction::new(field, redaction))
+                })
+                .collect::<std::result::Result<Vec<_>, cdf_contract::ResidualCodecError>>();
+            match fields.and_then(encode_residual_json_v1_redacted) {
+                Ok(bytes) => Some(String::from_utf8(bytes).map_err(|error| {
+                    CdfError::internal(format!("residual codec produced non-UTF-8 JSON: {error}"))
+                })?),
+                Err(error) => {
+                    quarantine_reason = Some((
+                        format!("residual:{}:encode", residual_path(&row_candidates[0])),
+                        error.code().to_owned(),
+                    ));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        if let Some((rule_id, error_code)) = quarantine_reason {
+            accepted[row] = false;
+            for candidate in &row_candidates {
+                quarantine_records.push(QuarantineRecord {
+                    source_row_ordinal: candidate.source_row_ordinal(),
+                    rule_id: rule_id.clone(),
+                    error_code: error_code.clone(),
+                    source_position: context.evaluation.source_position.clone(),
+                    observed_value_redacted: residual_observed_value(program, candidate),
+                });
+                residual_decisions.push(residual_decision_artifact(
+                    program,
+                    candidate,
+                    context.batch_id,
+                    context.observation_id,
+                    ResidualRuntimeVerdict::Quarantined,
+                    &rule_id,
+                )?);
+            }
+            let summary = rule_summaries
+                .entry((rule_id.clone(), error_code.clone()))
+                .or_insert(cdf_contract::RuleVerdictSummary {
+                    rule_id,
+                    error_code,
+                    checked_rows: 0,
+                    violation_count: 0,
+                });
+            summary.checked_rows += 1;
+            summary.violation_count += 1;
+        } else {
+            variants[row] = encoded;
+            for candidate in &row_candidates {
+                residual_decisions.push(residual_decision_artifact(
+                    program,
+                    candidate,
+                    context.batch_id,
+                    context.observation_id,
+                    ResidualRuntimeVerdict::Captured,
+                    "cdf.residual_capture",
+                )?);
+            }
+        }
+    }
+
+    let accepted_mask = BooleanArray::from(accepted.clone());
+    let typed_batch = if accepted.iter().all(|accepted| *accepted) {
+        batch
+    } else {
+        filter_record_batch(&batch, &accepted_mask).map_err(CdfError::from)?
+    };
+    let typed_batch = restore_contract_nullability(typed_batch, program)?;
+    let variant_values = accepted
+        .into_iter()
+        .zip(variants)
+        .filter_map(|(accepted, value)| accepted.then_some(value))
+        .collect::<Vec<_>>();
+    let quarantined_rows = input_rows - typed_batch.num_rows() as u64;
+    let quarantine_candidate_count = quarantine_records.len() as u64;
+    Ok(ResidualExecOutput {
+        typed_batch,
+        variant_values,
+        quarantine_records,
+        input_rows,
+        quarantined_rows,
+        violation_count: quarantine_candidate_count,
+        quarantine_candidate_count,
+        rule_summaries: rule_summaries.into_values().collect(),
+        residual_decisions,
+    })
+}
+
+fn restore_contract_nullability(
+    batch: RecordBatch,
+    program: &ValidationProgram,
+) -> Result<RecordBatch> {
+    let Some(residual) = &program.residual else {
+        return Ok(batch);
+    };
+    let fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            let source = source_name(field.as_ref()).unwrap_or_else(|| field.name());
+            residual
+                .fields
+                .iter()
+                .find(|item| item.source_name == source || item.output_name == *field.name())
+                .map_or_else(
+                    || field.as_ref().clone(),
+                    |program| field.as_ref().clone().with_nullable(!program.required),
+                )
+        })
+        .collect::<Vec<_>>();
+    RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            batch.schema().metadata().clone(),
+        )),
+        batch.columns().to_vec(),
+    )
+    .map_err(CdfError::from)
+}
+
+fn residual_decision_artifact(
+    program: &ValidationProgram,
+    candidate: &PreContractResidualCandidate,
+    batch_id: &cdf_kernel::BatchId,
+    observation_id: Option<&str>,
+    verdict: ResidualRuntimeVerdict,
+    rule_id: &str,
+) -> Result<ResidualDecisionArtifact> {
+    Ok(ResidualDecisionArtifact {
+        version: 1,
+        observation_id: observation_id.map(str::to_owned),
+        batch_id: batch_id.clone(),
+        source_row_ordinal: candidate.source_row_ordinal(),
+        source_path: candidate.source_path().to_vec(),
+        observed_physical_type: cdf_contract::CanonicalArrowType::from_arrow(
+            candidate.observed_field().data_type(),
+        )?,
+        expected_effective_type: candidate
+            .expected_field()
+            .map(|field| cdf_contract::CanonicalArrowType::from_arrow(field.data_type()))
+            .transpose()?,
+        verdict,
+        rule_id: rule_id.to_owned(),
+        residual_encoding: program
+            .residual
+            .as_ref()
+            .and_then(|residual| residual.capture.as_ref())
+            .map(|capture| capture.encoding.clone())
+            .unwrap_or_else(|| cdf_contract::RESIDUAL_ENCODING_NAME.to_owned()),
+        typed_projection: if candidate.expected_field().is_some() {
+            ResidualTypedProjection::Nulled
+        } else {
+            ResidualTypedProjection::Absent
+        },
+        redaction: residual_redaction(program, candidate),
+    })
+}
+
+fn append_residual_variant(
+    batch: RecordBatch,
+    program: &ValidationProgram,
+    values: Vec<Option<String>>,
+) -> Result<RecordBatch> {
+    let Some(capture) = program
+        .residual
+        .as_ref()
+        .and_then(|residual| residual.capture.as_ref())
+    else {
+        return Ok(batch);
+    };
+    if values.len() != batch.num_rows() {
+        return Err(CdfError::internal(
+            "residual variant values do not align with accepted rows",
+        ));
+    }
+    if batch.schema().index_of(&capture.variant_column).is_ok() {
+        return Err(CdfError::contract(format!(
+            "residual variant column {:?} conflicts with typed output",
+            capture.variant_column
+        )));
+    }
+    let field = cdf_kernel::with_semantic(
+        Field::new(&capture.variant_column, DataType::Utf8, true),
+        capture.semantic.clone(),
+    );
+    let mut metadata = field.metadata().clone();
+    metadata.insert(
+        RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+        capture.encoding.clone(),
+    );
+    let mut fields = batch.schema().fields().iter().cloned().collect::<Vec<_>>();
+    fields.push(Arc::new(field.with_metadata(metadata)));
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(StringArray::from(values)) as ArrayRef);
+    RecordBatch::try_new(
+        Arc::new(Schema::new_with_metadata(
+            fields,
+            batch.schema().metadata().clone(),
+        )),
+        columns,
+    )
+    .map_err(CdfError::from)
+}
+
+fn filter_optional_strings(values: &[Option<String>], mask: &BooleanArray) -> Vec<Option<String>> {
+    values
+        .iter()
+        .zip(mask.iter())
+        .filter_map(|(value, keep)| keep.unwrap_or(false).then_some(value.clone()))
+        .collect()
+}
+
+fn residual_path(candidate: &PreContractResidualCandidate) -> String {
+    candidate.source_path().join(".")
+}
+
+fn residual_observed_value(
+    program: &ValidationProgram,
+    candidate: &PreContractResidualCandidate,
+) -> QuarantineObservedValue {
+    if candidate.value().is_null(candidate.value_index()) {
+        return QuarantineObservedValue::Null;
+    }
+    let decision = residual_redaction(program, candidate);
+    let encoded = ResidualFieldRef::new(
+        candidate.source_path().iter().map(String::as_str),
+        candidate.value(),
+        candidate.value_index(),
+    )
+    .and_then(|field| encode_residual_json_v1([field]))
+    .ok();
+    match &decision {
+        RedactionDecision::Preserve => encoded
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .map(|value| QuarantineObservedValue::Preserved { value })
+            .unwrap_or(QuarantineObservedValue::Omitted),
+        RedactionDecision::Hash { algorithm } if algorithm == "sha256" => {
+            encoded.map_or(QuarantineObservedValue::Omitted, |bytes| {
+                QuarantineObservedValue::Hashed {
+                    algorithm: algorithm.clone(),
+                    value: format!("sha256:{:x}", Sha256::digest(bytes)),
+                }
+            })
+        }
+        RedactionDecision::Mask { replacement } => QuarantineObservedValue::Masked {
+            value: replacement.clone(),
+        },
+        RedactionDecision::Hash { .. } | RedactionDecision::Omit => {
+            QuarantineObservedValue::Omitted
+        }
+    }
+}
+
+fn residual_redaction(
+    program: &ValidationProgram,
+    candidate: &PreContractResidualCandidate,
+) -> RedactionDecision {
+    let field = candidate
+        .source_path()
+        .first()
+        .map(String::as_str)
+        .unwrap_or_default();
+    if let Some(decision) = program
+        .residual
+        .as_ref()
+        .and_then(|residual| {
+            residual
+                .fields
+                .iter()
+                .find(|item| item.source_name == field || item.output_name == field)
+        })
+        .map(|field| field.redaction.clone())
+    {
+        return decision;
+    }
+    program
+        .residual
+        .as_ref()
+        .map_or(RedactionDecision::Omit, |residual| {
+            cdf_contract::redaction_decision_for_field(
+                candidate.observed_field(),
+                &residual.pii_redaction,
+            )
+        })
+}
+
+fn collect_source_position_control_fields(
+    position: Option<&SourcePosition>,
+    controls: &mut BTreeSet<String>,
+) {
+    match position {
+        Some(SourcePosition::Cursor(cursor)) => {
+            controls.insert(cursor.field.clone());
+        }
+        Some(SourcePosition::Composite(composite)) => {
+            for position in composite.positions.values() {
+                collect_source_position_control_fields(Some(position), controls);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn quarantine_records_from_candidates(
@@ -815,7 +1540,7 @@ fn quarantine_observed_value(
     }
 }
 
-fn schema_artifact(schema: &Schema, include_source_without_physical: bool) -> SchemaArtifact {
+fn schema_artifact(schema: &Schema) -> SchemaArtifact {
     SchemaArtifact {
         fields: schema
             .fields()
@@ -825,30 +1550,26 @@ fn schema_artifact(schema: &Schema, include_source_without_physical: bool) -> Sc
                 data_type: field.data_type().to_string(),
                 nullable: field.is_nullable(),
                 semantic: semantic(field.as_ref()).map(ToOwned::to_owned),
-                metadata: schema_field_metadata(field.as_ref(), include_source_without_physical),
+                metadata: schema_field_metadata(field.as_ref()),
             })
             .collect(),
     }
 }
 
-fn schema_field_metadata(
-    field: &arrow_schema::Field,
-    include_source_without_physical: bool,
-) -> BTreeMap<String, String> {
-    if !include_source_without_physical
-        && !field.metadata().contains_key(PHYSICAL_TYPE_METADATA_KEY)
-    {
-        return BTreeMap::new();
-    }
-    [SOURCE_NAME_METADATA_KEY, PHYSICAL_TYPE_METADATA_KEY]
-        .into_iter()
-        .filter_map(|key| {
-            field
-                .metadata()
-                .get(key)
-                .map(|value| (key.to_owned(), value.clone()))
-        })
-        .collect()
+fn schema_field_metadata(field: &arrow_schema::Field) -> BTreeMap<String, String> {
+    [
+        SOURCE_NAME_METADATA_KEY,
+        PHYSICAL_TYPE_METADATA_KEY,
+        RESIDUAL_ENCODING_METADATA_KEY,
+    ]
+    .into_iter()
+    .filter_map(|key| {
+        field
+            .metadata()
+            .get(key)
+            .map(|value| (key.to_owned(), value.clone()))
+    })
+    .collect()
 }
 
 fn validate_effective_schema_plan<'a, R>(
@@ -866,6 +1587,15 @@ where
         }
         return Ok(None);
     };
+    let schema_authority = plan.schema_authority()?;
+    if schema_authority.baseline_schema_hash != evidence.authority.baseline_snapshot.schema_hash
+        || schema_authority.effective_schema_hash
+            != evidence.authority.effective_snapshot_schema_hash
+    {
+        return Err(CdfError::data(
+            "engine plan schema authority does not match effective-schema evidence",
+        ));
+    }
     evidence
         .authority
         .validate_for_resource(resource.descriptor())?;
@@ -886,8 +1616,26 @@ where
             "serialized engine plan effective-schema evidence does not match the execution resource",
         ));
     }
+    if resource
+        .effective_schema_runtime()
+        .map(|runtime| runtime.terminal_quarantines.as_slice())
+        != Some(evidence.terminal_quarantines.as_slice())
+    {
+        return Err(CdfError::data(
+            "serialized terminal schema-observation evidence does not match the execution resource",
+        ));
+    }
+    if resource
+        .effective_schema_runtime()
+        .and_then(|runtime| runtime.discovery_executor_budget.as_ref())
+        != evidence.discovery_executor_budget.as_ref()
+    {
+        return Err(CdfError::data(
+            "serialized discovery executor budget does not match the execution resource",
+        ));
+    }
     for partition in &plan.scan.partitions {
-        expected_partition_schema_evidence(partition, evidence)?;
+        partition_schema_disposition(partition, evidence)?;
     }
     Ok(Some(evidence))
 }
@@ -906,16 +1654,42 @@ fn validate_plan_metadata(
     Ok(())
 }
 
-fn expected_partition_schema_evidence(
+fn partition_schema_disposition(
     partition: &cdf_kernel::PartitionPlan,
     evidence: &EffectiveSchemaPlanEvidence,
-) -> Result<EffectiveSchemaObservationCoercion> {
+) -> Result<PartitionSchemaDisposition> {
     let observation_id = partition
         .metadata
         .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
         .ok_or_else(|| {
             CdfError::data("effective-schema partition omitted its observation identity")
         })?;
+    let expected_binding = evidence
+        .observation_bindings
+        .get(observation_id)
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "effective-schema evidence omitted source identity binding for observation {observation_id:?}"
+            ))
+        })?;
+    validate_plan_metadata(
+        partition,
+        PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+        expected_binding,
+    )?;
+    if let Some(quarantine) = evidence
+        .terminal_quarantines
+        .binary_search_by(|item| item.observation_id().cmp(observation_id))
+        .ok()
+        .map(|index| &evidence.terminal_quarantines[index])
+    {
+        validate_plan_metadata(
+            partition,
+            PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+            quarantine.physical_schema_hash().as_str(),
+        )?;
+        return Ok(PartitionSchemaDisposition::Quarantined(quarantine.clone()));
+    }
     let observation = evidence
         .observations
         .binary_search_by(|observation| observation.observation_id.as_str().cmp(observation_id))
@@ -931,7 +1705,7 @@ fn expected_partition_schema_evidence(
         PLAN_PHYSICAL_SCHEMA_HASH_KEY,
         observation.physical_schema_hash.as_str(),
     )?;
-    Ok(observation.clone())
+    Ok(PartitionSchemaDisposition::Admitted(observation.clone()))
 }
 
 fn validate_effective_batch_schema(observed: &Schema, effective: &Schema) -> Result<()> {

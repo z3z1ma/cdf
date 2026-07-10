@@ -17,9 +17,10 @@ use cdf_formats::{
 };
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    BatchStream, BoxFuture, CdfError, EffectiveSchemaRuntime, PLAN_SCHEMA_OBSERVATION_ID_KEY,
-    PartitionId, PartitionPlan, QueryableResource, ResourceDescriptor, ResourceId, ResourceStream,
-    Result, ScanPlan, ScanRequest, ScopeKey, SourcePosition,
+    BatchStream, BoxFuture, CdfError, EffectiveSchemaRuntime, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan, QueryableResource,
+    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey,
+    SourcePosition,
 };
 use futures_util::stream;
 use sha2::{Digest, Sha256};
@@ -236,6 +237,76 @@ impl ResourceStream for FileResource {
             partition,
             self.dependencies.clone(),
         )
+    }
+
+    fn attest_partition(
+        &self,
+        partition: &PartitionPlan,
+    ) -> BoxFuture<'_, Result<Option<cdf_kernel::PartitionAttestation>>> {
+        let descriptor = self.compiled.descriptor().clone();
+        let plan = match self.compiled.plan() {
+            CompiledResourcePlan::Files(plan) => plan.clone(),
+            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
+                return Box::pin(async {
+                    Err(CdfError::contract(
+                        "only compiled file resources can attest file partitions",
+                    ))
+                });
+            }
+        };
+        let partition = partition.clone();
+        let dependencies = self.dependencies.clone();
+        let discovery_budget = self
+            .compiled
+            .effective_schema_runtime()
+            .and_then(|runtime| runtime.discovery_executor_budget.clone());
+        Box::pin(async move {
+            let resolved = dependencies.with_transport(|transport| {
+                validate_partition(&descriptor, &plan, &partition, transport)
+            })?;
+            let processed_position = SourcePosition::FileManifest(cdf_kernel::FileManifest {
+                version: 1,
+                files: vec![cdf_kernel::FilePosition {
+                    path: resolved.path_text,
+                    size_bytes: resolved.size_bytes,
+                    etag: resolved.etag,
+                    sha256: resolved.sha256,
+                }],
+            });
+            let physical_schema_hash = match (&resolved.open, &plan.format) {
+                (ResolvedFileOpen::LocalPath(path), FileFormatDeclaration::Parquet) => {
+                    let budget = discovery_budget.as_ref().ok_or_else(|| {
+                        CdfError::data(
+                            "schema-observation attestation requires the plan-recorded discovery executor budget",
+                        )
+                    })?;
+                    let probe = cdf_formats::discover_local_parquet_schema_bounded(
+                        path,
+                        0,
+                        budget.max_metadata_bytes_per_file,
+                    )?;
+                    Some(cdf_formats::schema_hash(probe.schema.as_ref())?)
+                }
+                (ResolvedFileOpen::LocalPath(path), FileFormatDeclaration::ArrowIpc) => {
+                    let budget = discovery_budget.as_ref().ok_or_else(|| {
+                        CdfError::data(
+                            "schema-observation attestation requires the plan-recorded discovery executor budget",
+                        )
+                    })?;
+                    let probe = cdf_formats::discover_local_arrow_ipc_schema_bounded(
+                        path,
+                        0,
+                        budget.max_metadata_bytes_per_file,
+                    )?;
+                    Some(cdf_formats::schema_hash(probe.schema.as_ref())?)
+                }
+                _ => None,
+            };
+            Ok(Some(cdf_kernel::PartitionAttestation::new(
+                processed_position,
+                physical_schema_hash,
+            )))
+        })
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
@@ -744,6 +815,10 @@ fn partition_for_file_match(
         PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
         file.path_text.clone(),
     );
+    metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_BINDING_KEY.to_owned(),
+        file_schema_observation_binding(file),
+    );
     metadata.insert("bytes".to_owned(), file.size_bytes.to_string());
     if let Some(sha256) = &file.sha256 {
         metadata.insert("sha256".to_owned(), sha256.clone());
@@ -808,6 +883,22 @@ fn partition_for_file_match(
         start_position: None,
         metadata,
     })
+}
+
+fn file_schema_observation_binding(file: &ResolvedFileMatch) -> String {
+    let mut hasher = Sha256::new();
+    let size = file.size_bytes.to_string();
+    for value in [
+        file.path_text.as_str(),
+        size.as_str(),
+        file.etag.as_deref().unwrap_or_default(),
+        file.sha256.as_deref().unwrap_or_default(),
+        file.modified_ms.as_deref().unwrap_or_default(),
+    ] {
+        hasher.update((value.len() as u64).to_be_bytes());
+        hasher.update(value.as_bytes());
+    }
+    format!("sha256:{:x}", hasher.finalize())
 }
 
 fn resolve_file_matches(

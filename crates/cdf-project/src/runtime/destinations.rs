@@ -1,10 +1,7 @@
 use super::{hooks::ReceiptVerifiedHook, prelude::*, types::ProjectReceiptSource};
 use crate::DestinationPolicy;
-use cdf_contract::{
-    IdentifierPolicy, identifier_policy_from_destination_rules, normalize_arrow_schema,
-};
+use cdf_contract::{IdentifierPolicy, identifier_policy_from_destination_rules};
 use cdf_kernel::{CapabilitySupport, CommitPlan, DestinationSheet};
-use std::sync::Arc;
 
 mod duckdb;
 mod parquet;
@@ -457,16 +454,18 @@ impl ResolvedProjectDestination {
         }
     }
 
-    pub fn output_schema(&self, resource: &dyn ResourceStream) -> Result<DestinationOutputSchema> {
+    pub fn output_schema(&self, plan: &EnginePlan) -> Result<DestinationOutputSchema> {
         let identifier_policy = self.column_identifier_policy()?;
-        let schema = match &identifier_policy {
-            Some(policy) => Arc::new(normalize_arrow_schema(resource.schema().as_ref(), policy)?),
-            None => resource.schema(),
-        };
-        let schema_hash = resource
-            .effective_schema_runtime()
-            .map(|runtime| runtime.evidence.effective_snapshot_schema_hash.clone())
-            .unwrap_or(super::validation::pinned_schema_hash(resource)?);
+        let schema = plan.output_arrow_schema()?;
+        if let Some(identifier_policy) = &identifier_policy
+            && plan.validation_program.identifier_policy != *identifier_policy
+        {
+            return Err(CdfError::contract(format!(
+                "run plan identifier policy does not match resolved destination sheet: planned {:?}, destination {:?}; rebuild the plan for the selected destination",
+                plan.validation_program.identifier_policy, identifier_policy
+            )));
+        }
+        let schema_hash = plan.effective_schema_hash()?.clone();
         Ok(DestinationOutputSchema {
             schema,
             schema_hash,

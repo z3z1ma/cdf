@@ -79,7 +79,11 @@ pub fn postgres_columns_for_schema(schema: &Schema) -> Result<Vec<PostgresColumn
         .iter()
         .map(|field| {
             let data_type = postgres_type_for_arrow(field.data_type())?;
-            PostgresColumn::new(field.name(), &data_type, field.is_nullable())
+            if cdf_contract::is_framework_variant_field(field.as_ref()) {
+                PostgresColumn::system(field.name(), &data_type, field.is_nullable())
+            } else {
+                PostgresColumn::new(field.name(), &data_type, field.is_nullable())
+            }
         })
         .collect()
 }

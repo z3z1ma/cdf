@@ -1,6 +1,7 @@
 #![doc = "Planning and execution boundary for cdf."]
 
 mod execution;
+mod output_schema;
 mod planning;
 mod predicates;
 mod table_provider;
@@ -16,6 +17,7 @@ pub use execution::{
 };
 pub use planning::{
     CDF_NATIVE_RESOURCE_ADAPTER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,
+    validate_plan_schema_authority,
 };
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
 pub use types::*;

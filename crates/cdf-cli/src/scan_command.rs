@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, fs};
 
-use cdf_contract::{ContractPolicy, IdentifierPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{
+    ContractPolicy, IdentifierPolicy, ObservedSchema, compile_resource_validation_program,
+};
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
@@ -240,7 +242,8 @@ pub(crate) fn build_engine_plan_for_resource(
     if let Some(identifier_policy) = identifier_policy {
         policy.normalization.identifier = identifier_policy.clone();
     }
-    let validation_program = compile_validation_program(&policy, &observed_schema)?;
+    let validation_program =
+        compile_resource_validation_program(&policy, &observed_schema, resource.descriptor())?;
     let request = scan_request(resource.descriptor(), args)?;
     let input = EnginePlanInput {
         request,
@@ -311,7 +314,7 @@ fn scan_report(
     resolved: EnvironmentDestination,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> Result<ScanPlanReport, CliError> {
-    let destination_plan = destination_plan_report(resolved, resource, command)?;
+    let destination_plan = destination_plan_report(resolved, resource, plan, command)?;
     Ok(ScanPlanReport {
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
@@ -382,11 +385,12 @@ pub(crate) fn default_target_for_resource(resource_id: &str) -> String {
 fn destination_plan_report(
     resolved: EnvironmentDestination,
     resource: &cdf_declarative::CompiledResource,
+    engine_plan: &EnginePlan,
     command: &'static str,
 ) -> Result<DestinationPlanReport, CliError> {
     let mut destination = resolved.destination;
     let plan = destination
-        .plan_resource_commit(resource)
+        .plan_resource_commit(resource, engine_plan)
         .map_err(|error| {
             let mut error = redact_error_value(error, resolved.secret_redaction.as_deref());
             error.message = command_correct_scan_message(command, error.message);

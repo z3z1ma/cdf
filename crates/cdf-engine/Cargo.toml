@@ -17,6 +17,7 @@ cdf-package = { path = "../cdf-package" }
 futures-util = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
+sha2 = "0.10.9"
 tracing = "0.1.44"
 
 [dev-dependencies]

@@ -34,10 +34,11 @@ impl ResolvedProjectDestination {
     pub fn plan_resource_commit(
         &mut self,
         resource: &dyn ResourceStream,
+        plan: &EnginePlan,
     ) -> Result<ProjectDestinationCommitPlan> {
         let description = self.describe();
         let target = self.target().clone();
-        let output = self.output_schema(resource)?;
+        let output = self.output_schema(plan)?;
         let schema_hash = output.schema_hash;
         let inputs = destination_planning_inputs(resource, &target, &schema_hash)?;
         let outcome =

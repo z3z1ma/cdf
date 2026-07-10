@@ -463,7 +463,7 @@ fn validate_package_replay_inputs(
             inputs.destination_commit.idempotency_token, inputs.state_delta.package_hash
         )));
     }
-    validate_package_segments_match_delta(&replay.segments, &inputs.state_delta.segments)?;
+    validate_package_segments_match_delta(reader, &replay.segments, &inputs.state_delta)?;
     Ok(replay)
 }
 
@@ -542,13 +542,31 @@ where
 }
 
 fn validate_package_segments_match_delta(
+    reader: &PackageReader,
     package_segments: &[SegmentEntry],
-    state_segments: &[StateSegment],
+    state_delta: &StateDelta,
 ) -> Result<()> {
+    let state_segments = &state_delta.segments;
     if state_segments.is_empty() {
-        return Err(CdfError::contract(
-            "StateDelta must include at least one state segment for package replay",
-        ));
+        if !package_segments.is_empty() {
+            return Err(CdfError::contract(
+                "zero-segment StateDelta cannot cover package data segments",
+            ));
+        }
+        let processed = reader.processed_observation_evidence()?.ok_or_else(|| {
+            CdfError::contract(
+                "zero-segment StateDelta requires typed processed-observation package evidence",
+            )
+        })?;
+        processed.validate()?;
+        if processed.input_position != state_delta.input_position
+            || processed.output_position != state_delta.output_position
+        {
+            return Err(CdfError::contract(
+                "processed-observation package evidence does not match StateDelta positions",
+            ));
+        }
+        return Ok(());
     }
     if package_segments.len() != state_segments.len() {
         return Err(CdfError::data(format!(

@@ -283,6 +283,7 @@ impl ParquetDestination {
         let manifest_key =
             package_manifest_key(&request.commit.target, &request.commit.idempotency_token);
         let replace_pointer_key = match request.commit.disposition {
+            _ if request.commit.is_data_noop() => None,
             WriteDisposition::Replace => Some(replace_pointer_key(&request.commit.target)),
             WriteDisposition::Append => None,
             WriteDisposition::Merge | WriteDisposition::CdcApply => {

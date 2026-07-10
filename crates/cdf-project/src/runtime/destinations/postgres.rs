@@ -289,9 +289,10 @@ fn postgres_columns_from_package(reader: &PackageReader) -> Result<Vec<PostgresC
         .iter()
         .flat_map(|(_, batches)| batches.iter())
         .next()
-        .map(|batch| batch.schema())
-        .ok_or_else(|| {
-            CdfError::data("Postgres destination requires at least one package batch")
-        })?;
+        .map(|batch| batch.schema());
+    let schema = match schema {
+        Some(schema) => schema,
+        None => reader.runtime_arrow_schema()?,
+    };
     postgres_columns_for_schema(schema.as_ref())
 }

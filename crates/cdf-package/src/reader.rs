@@ -11,8 +11,9 @@ use cdf_kernel::{
 use crate::{
     artifacts::{
         DEDUP_SUMMARY_FILE, DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage,
-        PackageReplayInputs, STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE,
-        StateDeltaPreimage, read_json_artifact, read_optional_json_artifact,
+        PROCESSED_OBSERVATIONS_FILE, PackageReplayInputs, ProcessedObservationEvidenceArtifact,
+        STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
+        read_json_artifact, read_optional_json_artifact,
     },
     model::{
         PackageManifest, PackageStatus, ReplayView, SegmentEntry, TombstoneReport,
@@ -89,15 +90,30 @@ impl PackageReader {
         read_json_artifact(&self.package_dir, DESTINATION_COMMIT_PLAN_FILE)
     }
 
+    pub fn processed_observation_evidence(
+        &self,
+    ) -> Result<Option<ProcessedObservationEvidenceArtifact>> {
+        read_optional_json_artifact(&self.package_dir, PROCESSED_OBSERVATIONS_FILE)
+    }
+
+    pub fn runtime_arrow_schema(&self) -> Result<arrow_schema::SchemaRef> {
+        self.verify()?;
+        let path = self.package_dir.join(crate::RUNTIME_ARROW_SCHEMA_FILE);
+        let bytes = std::fs::read(&path)
+            .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
+        crate::runtime_schema_from_bytes(bytes)
+    }
+
     pub fn replay_inputs(&self) -> Result<PackageReplayInputs> {
         self.verify()?;
         let replay = self.replay_view()?;
-        PackageReplayInputs::from_preimages(
+        PackageReplayInputs::from_preimages_with_processed(
             replay.package_hash,
             self.input_checkpoint()?,
             self.state_delta_preimage()?,
             self.destination_commit_plan_preimage()?,
             &replay.segments,
+            self.processed_observation_evidence()?,
         )
     }
 

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-09
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
-Depends-On: .10x/tickets/2026-07-09-p2-ws-a10e-file-quarantine-processed-positions.md, .10x/tickets/2026-07-10-p2-ws-a10g-explicit-sampled-binary-discovery.md, .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a10e-file-quarantine-processed-positions.md, .10x/tickets/2026-07-10-p2-ws-a10g-explicit-sampled-binary-discovery.md, .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 
 # P2 WS-A10f multi-file discovery/runtime conformance
 

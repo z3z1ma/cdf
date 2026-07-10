@@ -1,6 +1,6 @@
 use super::*;
 use crate::ddl::target_migrations;
-use arrow_schema::{DataType, TimeUnit};
+use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_conformance::destination::{
     DestinationConformanceCase, DestinationCorrectionConformanceEvidence,
     assert_destination_conformance, assert_destination_correction_conformance,
@@ -154,6 +154,15 @@ fn input(disposition: WriteDisposition, dedup: MergeDedupPolicy) -> PostgresLoad
     }
 }
 
+fn zero_data_input(disposition: WriteDisposition) -> PostgresLoadPlanInput {
+    let mut input = input(disposition, MergeDedupPolicy::Last);
+    input.segments.clear();
+    if let Some(state_delta) = &mut input.state_delta {
+        state_delta.segments.clear();
+    }
+    input
+}
+
 fn conformance_case(
     destination: &PostgresDestination,
     disposition: WriteDisposition,
@@ -297,6 +306,79 @@ fn identifiers_quote_safely_and_reject_reserved_user_names() {
 }
 
 #[test]
+fn framework_variant_column_is_system_owned_but_user_prefixed_columns_stay_rejected() {
+    let variant = cdf_kernel::with_semantic(
+        Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
+        cdf_contract::VARIANT_SEMANTIC_TAG,
+    );
+    let mut metadata = variant.metadata().clone();
+    metadata.insert(
+        cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+        cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
+    );
+    let variant = variant.with_metadata(metadata);
+    let columns = postgres_columns_for_schema(&Schema::new(vec![variant])).unwrap();
+    assert_eq!(columns[0].name.as_str(), cdf_contract::VARIANT_COLUMN_NAME);
+
+    let impostors = [
+        Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
+        cdf_kernel::with_semantic(
+            Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
+            "wrong",
+        ),
+        cdf_kernel::with_semantic(
+            Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
+            cdf_contract::VARIANT_SEMANTIC_TAG,
+        ),
+        cdf_kernel::with_semantic(
+            Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Int64, true),
+            cdf_contract::VARIANT_SEMANTIC_TAG,
+        )
+        .with_metadata(std::collections::HashMap::from([
+            (
+                cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+                cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+            ),
+            (
+                cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+                cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
+            ),
+        ])),
+        cdf_kernel::with_semantic(
+            Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, false),
+            cdf_contract::VARIANT_SEMANTIC_TAG,
+        )
+        .with_metadata(std::collections::HashMap::from([
+            (
+                cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+                cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+            ),
+            (
+                cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+                cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
+            ),
+        ])),
+        cdf_kernel::with_semantic(
+            Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
+            cdf_contract::VARIANT_SEMANTIC_TAG,
+        )
+        .with_metadata(std::collections::HashMap::from([
+            (
+                cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+                cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+            ),
+            (
+                cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+                "wrong".to_owned(),
+            ),
+        ])),
+    ];
+    for impostor in impostors {
+        assert!(postgres_columns_for_schema(&Schema::new(vec![impostor])).is_err());
+    }
+}
+
+#[test]
 fn append_replace_and_merge_plans_include_transactional_sql() {
     let destination = PostgresDestination::new();
     let append = destination
@@ -363,6 +445,35 @@ fn append_replace_and_merge_plans_include_transactional_sql() {
         .collect::<Vec<_>>();
     assert_eq!(transaction_names.first().unwrap(), "begin");
     assert_eq!(transaction_names.last().unwrap(), "commit");
+}
+
+#[test]
+fn zero_data_append_and_replace_plans_have_only_receipt_and_state_effects() {
+    let destination = PostgresDestination::new();
+    for disposition in [WriteDisposition::Append, WriteDisposition::Replace] {
+        let plan = destination.plan_load(zero_data_input(disposition)).unwrap();
+        assert!(plan.target_ddl.is_empty());
+        assert!(plan.write_sql.is_empty());
+        assert!(
+            plan.kernel
+                .migrations
+                .iter()
+                .all(|migration| migration.migration_id.starts_with("postgres.create_cdf_"))
+        );
+        let receipt = build_receipt(
+            &plan,
+            PostgresReceiptInput {
+                receipt_id: ReceiptId::new("receipt-zero").unwrap(),
+                xid: "1".to_owned(),
+                committed_at_ms: 1,
+                counts: CommitCounts::default(),
+                duplicate: false,
+            },
+        )
+        .unwrap();
+        assert!(receipt.segment_acks.is_empty());
+        assert_eq!(receipt.counts, CommitCounts::default());
+    }
 }
 
 #[test]

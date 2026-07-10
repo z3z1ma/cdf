@@ -1,6 +1,6 @@
 use crate::internal::*;
 use crate::*;
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_kernel::{
     DestinationCommitRequest, DestinationProtocol, DestinationProtocolCapabilities,
     DestinationSheetArtifact, IdempotencyToken, PackageHash, ResourceStream,
@@ -478,7 +478,8 @@ pub fn contract_snapshot_for_resource(resource: &CompiledResource) -> Result<Con
     let descriptor = resource.descriptor();
     let policy = ContractPolicy::for_trust(descriptor.trust_level.clone());
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let validation_program = compile_validation_program(&policy, &observed_schema)?;
+    let validation_program =
+        compile_resource_validation_program(&policy, &observed_schema, descriptor)?;
     Ok(ContractSnapshot {
         contract_ref: descriptor.contract.as_ref().map(ToString::to_string),
         schema_hash: schema_hash_from_source(&descriptor.schema_source),

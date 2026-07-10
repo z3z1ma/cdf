@@ -2274,7 +2274,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     assert_eq!(preview_json["result"]["row_count"], 2);
     assert_eq!(
         preview_json["result"]["fields"],
-        json!(["vendor_id", "note"])
+        json!(["vendor_id", "note", "_cdf_variant"])
     );
     assert!(!project.root.join(".cdf/packages").exists());
     assert!(!project.root.join(".cdf/state.db").exists());
@@ -2586,7 +2586,7 @@ trust = "governed"
 }
 
 #[test]
-fn pinned_arrow_ipc_type_drift_fails_preview_and_run_before_mutation() {
+fn pinned_arrow_ipc_type_drift_run_terminal_quarantines_file() {
     let project = TestProject::new();
     write_arrow_ipc_discover_resource(&project, "events.arrow");
     write_vendor_arrow_ipc(&project, "events.arrow");
@@ -2634,10 +2634,18 @@ fn pinned_arrow_ipc_type_drift_fails_preview_and_run_before_mutation() {
         "pkg-arrow-ipc-drift",
         "checkpoint-arrow-ipc-drift",
     );
-    assert_ne!(run_result.exit_code, 0);
-    assert!(run_result.stderr.contains("VendorID") || run_result.stderr.contains("vendor_id"));
-    assert!(!project.root.join(".cdf/state.db").exists());
-    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
+    let package_dir = project.root.join(".cdf/packages/pkg-arrow-ipc-drift");
+    let reader = PackageReader::open(package_dir).unwrap();
+    reader.verify().unwrap();
+    assert!(
+        reader
+            .manifest()
+            .identity
+            .files
+            .iter()
+            .any(|file| file.path == "quarantine/schema-observations.json")
+    );
 }
 
 #[test]
@@ -2678,7 +2686,7 @@ schema = { fields = [
     assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
     assert_eq!(
         stderr_or_stdout_json(&preview.stdout)["result"]["fields"],
-        json!(["vendor_id", "note"])
+        json!(["vendor_id", "note", "_cdf_variant"])
     );
 
     let run_result = run_valid_run_args(
@@ -2694,7 +2702,7 @@ schema = { fields = [
     let schema = batches[0].1[0].schema();
     assert_eq!(schema.field(0).data_type(), &DataType::Int64);
     assert_eq!(schema.field(0).metadata()["cdf:source_name"], "VendorID");
-    assert_eq!(schema.field(0).metadata()["cdf:physical_type"], "Int32");
+    assert!(!schema.field(0).metadata().contains_key("cdf:physical_type"));
     let coercion: cdf_contract::SchemaCoercionPlan =
         serde_json::from_slice(&fs::read(package_dir.join("schema/coercion-plan.json")).unwrap())
             .unwrap();
@@ -6867,7 +6875,7 @@ schema = {{ fields = [
     let preview_json = stderr_or_stdout_json(&preview.stdout);
     assert_eq!(
         preview_json["result"]["fields"],
-        serde_json::json!(["vendor_id", LONG_SOURCE])
+        serde_json::json!(["vendor_id", LONG_SOURCE, "_cdf_variant"])
     );
     assert_eq!(
         preview_json["result"]["normalization"],
@@ -6906,7 +6914,7 @@ schema = {{ fields = [
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(columns, vec!["vendor_id", LONG_SOURCE]);
+    assert_eq!(columns, vec!["vendor_id", LONG_SOURCE, "_cdf_variant"]);
 }
 
 #[test]
@@ -7548,9 +7556,9 @@ fn run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_obse
     let SourcePosition::FileManifest(runtime_manifest) = &head.delta.output_position else {
         panic!("multi-file run must commit exact FileManifest identity");
     };
-    // A10d attests the empty file in package schema evidence; processed-file
-    // checkpoint advancement for zero-row files remains explicitly owned by A10e.
-    assert_eq!(runtime_manifest.files.len(), 2);
+    // Schema evidence and processed-file checkpoint advancement cover the same
+    // three-file manifest, including the zero-row file.
+    assert_eq!(runtime_manifest.files.len(), 3);
     assert!(
         runtime_manifest
             .files
@@ -7605,7 +7613,7 @@ fn run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_obse
 }
 
 #[test]
-fn plan_financial_freeze_keeps_conforming_baseline_and_rejects_compatible_drift_before_writes() {
+fn financial_freeze_quarantines_deviating_file_and_commits_mixed_processed_manifest() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     set_file_resource_trust(&project, "financial");
@@ -7682,14 +7690,13 @@ fn plan_financial_freeze_keeps_conforming_baseline_and_rejects_compatible_drift_
         "plan",
         "local.events",
     ]);
-    assert_eq!(drift.exit_code, 3, "{}", drift.stderr);
-    let error = stderr_or_stdout_json(&drift.stderr);
-    let message = error["error"]["message"].as_str().unwrap();
-    assert!(
-        message.contains("freeze policy keeps baseline schema"),
-        "{message}"
+    assert_eq!(drift.exit_code, 0, "{}", drift.stderr);
+    let result = run_valid_run_args(
+        &project,
+        "pkg-freeze-mixed-quarantine",
+        "checkpoint-freeze-mixed-quarantine",
     );
-    assert!(message.contains("A10e file disposition"), "{message}");
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
     assert_eq!(
         fs::read(project.root.join("cdf.lock")).unwrap(),
         lock_before
@@ -7698,9 +7705,241 @@ fn plan_financial_freeze_keeps_conforming_baseline_and_rejects_compatible_drift_
         fs::read(project.root.join(&snapshot_path)).unwrap(),
         snapshot_before
     );
-    assert!(!project.root.join(".cdf/packages").exists());
-    assert!(!project.root.join(".cdf/state.db").exists());
-    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    let package = project
+        .root
+        .join(".cdf/packages/pkg-freeze-mixed-quarantine");
+    let quarantines: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("quarantine/schema-observations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(quarantines.as_array().unwrap().len(), 1);
+    assert_eq!(quarantines[0]["policy"], "freeze");
+    assert_eq!(
+        quarantines[0]["rule_id"],
+        "schema-observation:freeze-deviation"
+    );
+    let processed: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("state/processed-observations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(processed["observations"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        processed["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|item| item["outcome"] == "quarantined")
+            .count(),
+        1
+    );
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .unwrap();
+    let SourcePosition::FileManifest(manifest) = head.delta.output_position else {
+        panic!("freeze run must commit file manifest")
+    };
+    assert_eq!(manifest.files.len(), 3);
+}
+
+#[test]
+fn governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    let path = project.root.join("data/a.parquet");
+    write_vendor_parquet(&path);
+    let baseline = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(baseline.exit_code, 0, "{}", baseline.stderr);
+
+    write_string_vendor_parquet(&path);
+    let result = run_valid_run_args(
+        &project,
+        "pkg-evolve-incompatible",
+        "checkpoint-evolve-incompatible",
+    );
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    let package = project.root.join(".cdf/packages/pkg-evolve-incompatible");
+    let quarantine: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("quarantine/schema-observations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(quarantine[0]["policy"], "evolve");
+    assert_eq!(quarantine[0]["rule_id"], "schema-observation:incompatible");
+    let field = &quarantine[0]["fields"][0];
+    assert_eq!(field["scope"]["kind"], "field_path");
+    assert_eq!(field["observed_field"]["name"], "VendorID");
+    assert_eq!(field["observed_field"]["data_type"]["kind"], "utf8");
+    assert_eq!(field["effective_field"]["name"], "vendor_id");
+    assert_eq!(field["effective_field"]["data_type"]["kind"], "int");
+    assert!(
+        cdf_package::PackageReader::open(&package)
+            .unwrap()
+            .manifest()
+            .identity
+            .segments
+            .is_empty()
+    );
+}
+
+#[test]
+fn financial_freeze_admits_heterogeneous_files_that_formed_the_pinned_baseline() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    set_file_resource_trust(&project, "financial");
+    write_vendor_parquet(&project.root.join("data/a.parquet"));
+    write_wide_vendor_score_parquet(&project.root.join("data/b.parquet"));
+
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-freeze-heterogeneous-baseline",
+        "checkpoint-freeze-heterogeneous-baseline",
+    );
+    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
+    assert!(!project
+        .root
+        .join(".cdf/packages/pkg-freeze-heterogeneous-baseline/quarantine/schema-observations.json")
+        .exists());
+}
+
+#[test]
+fn all_quarantine_run_commits_zero_segments_and_skips_exact_identity_until_changed() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    set_file_resource_trust(&project, "financial");
+    let path = project.root.join("data/a.parquet");
+    write_vendor_parquet(&path);
+    let baseline = run_valid_run_args(
+        &project,
+        "pkg-freeze-baseline",
+        "checkpoint-freeze-baseline",
+    );
+    assert_eq!(baseline.exit_code, 0, "{}", baseline.stderr);
+    let baseline_report = stderr_or_stdout_json(&baseline.stdout);
+    let contract_schema_hash = baseline_report["result"]["schema_hash"].clone();
+
+    write_wide_vendor_score_parquet(&path);
+    let quarantined = run_valid_run_args(
+        &project,
+        "pkg-freeze-all-quarantine",
+        "checkpoint-freeze-all-quarantine",
+    );
+    assert_eq!(quarantined.exit_code, 0, "{}", quarantined.stderr);
+    let report = stderr_or_stdout_json(&quarantined.stdout);
+    assert_eq!(report["result"]["schema_hash"], contract_schema_hash);
+    assert_eq!(report["result"]["segment_count"], 0);
+    assert_eq!(report["result"]["row_count"], 0);
+    let package = project.root.join(".cdf/packages/pkg-freeze-all-quarantine");
+    let package_receipts = cdf_package::PackageReader::open(&package)
+        .unwrap()
+        .receipts()
+        .unwrap();
+    assert_eq!(package_receipts.len(), 1);
+    assert!(package_receipts[0].segment_acks.is_empty());
+    assert!(package.join("state/processed-observations.json").is_file());
+    assert!(
+        package
+            .join("quarantine/schema-observations.json")
+            .is_file()
+    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(package.join("manifest.json")).unwrap()).unwrap();
+    assert!(
+        manifest["identity"]["segments"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+
+    let unchanged = run_valid_run_args(
+        &project,
+        "pkg-freeze-all-quarantine-noop",
+        "checkpoint-freeze-all-quarantine-noop",
+    );
+    assert_eq!(unchanged.exit_code, 0, "{}", unchanged.stderr);
+    let unchanged_report = stderr_or_stdout_json(&unchanged.stdout);
+    assert_eq!(
+        unchanged_report["result"]["file_manifest"]["changed_file_count"],
+        0
+    );
+    assert!(
+        !project
+            .root
+            .join(".cdf/packages/pkg-freeze-all-quarantine-noop")
+            .exists()
+    );
+
+    write_wide_vendor_score_parquet_values(&path, &[9, 10, 11]);
+    let changed = run_valid_run_args(
+        &project,
+        "pkg-freeze-all-quarantine-changed",
+        "checkpoint-freeze-all-quarantine-changed",
+    );
+    assert_eq!(changed.exit_code, 0, "{}", changed.stderr);
+    let changed_report = stderr_or_stdout_json(&changed.stdout);
+    assert_eq!(
+        changed_report["result"]["schema_hash"],
+        contract_schema_hash
+    );
+    assert_eq!(
+        changed_report["result"]["file_manifest"]["changed_file_count"],
+        1
+    );
+
+    fs::remove_file(&path).unwrap();
+    fs::remove_file(project.root.join(".cdf/state.db")).unwrap();
+    fs::remove_file(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let replay = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "replay",
+        "package",
+        package.to_str().unwrap(),
+    ]);
+    assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
+    assert!(
+        cdf_package::PackageReader::open(&package)
+            .unwrap()
+            .receipts()
+            .unwrap()
+            .iter()
+            .all(|receipt| receipt.segment_acks.is_empty())
+    );
+    let replay_head = SqliteCheckpointStore::open(project.root.join(".cdf/state.db"))
+        .unwrap()
+        .head(
+            &PipelineId::new("pipeline-run").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        replay_head.delta.schema_hash.as_str(),
+        contract_schema_hash.as_str().unwrap()
+    );
 }
 
 #[test]
@@ -11690,6 +11929,18 @@ fn write_vendor_parquet(path: &Path) {
     fs::write(path, bytes).unwrap();
 }
 
+fn write_string_vendor_parquet(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "VendorID",
+        DataType::Utf8,
+        false,
+    )]));
+    let values: ArrayRef = Arc::new(StringArray::from(vec!["one", "two"]));
+    let batch = RecordBatch::try_new(schema, vec![values]).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
 fn write_vendor_score_parquet(path: &Path) {
     let fields = vec![
         Field::new("VendorID", DataType::Int32, false),
@@ -11705,13 +11956,19 @@ fn write_vendor_score_parquet(path: &Path) {
 }
 
 fn write_wide_vendor_score_parquet(path: &Path) {
+    write_wide_vendor_score_parquet_values(path, &[3, 4]);
+}
+
+fn write_wide_vendor_score_parquet_values(path: &Path, vendor_ids: &[i64]) {
     let fields = vec![
         Field::new("VendorID", DataType::Int64, false),
         Field::new("score", DataType::Int64, false),
     ];
     let columns: Vec<ArrayRef> = vec![
-        Arc::new(Int64Array::from_iter_values([3_i64, 4_i64])),
-        Arc::new(Int64Array::from_iter_values([10_i64, 20_i64])),
+        Arc::new(Int64Array::from_iter_values(vendor_ids.iter().copied())),
+        Arc::new(Int64Array::from_iter_values(
+            (0..vendor_ids.len()).map(|index| 10_i64 + index as i64),
+        )),
     ];
     let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
     let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();

@@ -146,6 +146,16 @@ fn finalize_session(dest: &DuckDbDestination, request: &DuckDbCommitRequest) -> 
     session.finalize().unwrap()
 }
 
+fn finalize_empty_session(dest: &DuckDbDestination, request: &DuckDbCommitRequest) -> Receipt {
+    let plan = dest.plan_empty_package_commit(request).unwrap();
+    assert_eq!(plan.effect, DuckDbCommitEffect::NoData);
+    let mut session = dest
+        .begin(request.commit.clone(), plan.kernel.clone())
+        .unwrap();
+    session.apply_migrations().unwrap();
+    session.finalize().unwrap()
+}
+
 fn assert_same_receipt_shape(left: &Receipt, right: &Receipt) {
     assert_eq!(left.receipt_id, right.receipt_id);
     assert_eq!(left.destination, right.destination);
@@ -405,6 +415,73 @@ fn append_commit_is_idempotent_and_verifiable_after_reopen() {
     assert_eq!(target_rows, 3);
     assert_eq!(load_rows, 1);
     assert_eq!(state_rows, 1);
+}
+
+#[test]
+fn zero_data_append_and_replace_record_receipts_without_mutating_target_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let db_path = temp.path().join("local.duckdb");
+    let dest = destination(&db_path);
+
+    let empty_append_dir = temp.path().join("pkg-empty-append");
+    let empty_append_hash = build_package_segments(&empty_append_dir, "pkg-empty-append", &[]);
+    let empty_append = request_with_segments(
+        &empty_append_dir,
+        empty_append_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        Vec::new(),
+    );
+    let append_receipt = finalize_empty_session(&dest, &empty_append);
+    assert!(append_receipt.segment_acks.is_empty());
+    assert_eq!(append_receipt.counts, CommitCounts::default());
+    assert!(dest.verify_receipt(&append_receipt).unwrap().verified);
+
+    let conn = Connection::open(&db_path).unwrap();
+    let target_tables: u64 = conn
+        .query_row(
+            "SELECT count(*) FROM information_schema.tables WHERE table_name = 'orders'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(target_tables, 0);
+    drop(conn);
+
+    let data_dir = temp.path().join("pkg-data");
+    let data_hash = build_package(
+        &data_dir,
+        "pkg-data",
+        &[sample_batch(vec![1, 2], vec![Some("old"), Some("rows")])],
+    );
+    dest.commit_package(request(
+        &data_dir,
+        data_hash,
+        WriteDisposition::Append,
+        Vec::new(),
+        2,
+    ))
+    .unwrap();
+
+    let empty_replace_dir = temp.path().join("pkg-empty-replace");
+    let empty_replace_hash = build_package_segments(&empty_replace_dir, "pkg-empty-replace", &[]);
+    let empty_replace = request_with_segments(
+        &empty_replace_dir,
+        empty_replace_hash,
+        WriteDisposition::Replace,
+        Vec::new(),
+        Vec::new(),
+    );
+    let replace_receipt = finalize_empty_session(&dest, &empty_replace);
+    assert!(replace_receipt.segment_acks.is_empty());
+    assert_eq!(replace_receipt.counts, CommitCounts::default());
+    assert!(dest.verify_receipt(&replace_receipt).unwrap().verified);
+
+    let conn = Connection::open(&db_path).unwrap();
+    let target_rows: u64 = conn
+        .query_row("SELECT count(*) FROM orders", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(target_rows, 2);
 }
 
 #[test]

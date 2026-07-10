@@ -51,9 +51,11 @@ fn package_data_from_segments(
     segments: Vec<(SegmentEntry, Vec<RecordBatch>)>,
 ) -> Result<PackageData> {
     if segments.is_empty() {
-        return Err(CdfError::data(
-            "Parquet destination requires at least one package segment",
-        ));
+        return Ok(PackageData {
+            segments: Vec::new(),
+            rows: 0,
+            bytes: 0,
+        });
     }
 
     let schema = first_schema(&segments)?;

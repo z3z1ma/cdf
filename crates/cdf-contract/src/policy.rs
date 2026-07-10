@@ -1,4 +1,5 @@
-use cdf_kernel::{CdfError, IdentifierRules, Result, TrustLevel};
+use arrow_schema::{DataType, Field};
+use cdf_kernel::{CdfError, IdentifierRules, Result, TrustLevel, semantic};
 use serde::{Deserialize, Serialize};
 
 use crate::schema::ArrowType;
@@ -6,6 +7,17 @@ use crate::schema::ArrowType;
 pub const NORMALIZER_NAMECASE_V1: &str = "namecase-v1";
 pub const VARIANT_COLUMN_NAME: &str = "_cdf_variant";
 pub const VARIANT_SEMANTIC_TAG: &str = "json";
+
+pub fn is_framework_variant_field(field: &Field) -> bool {
+    field.name() == VARIANT_COLUMN_NAME
+        && field.data_type() == &DataType::Utf8
+        && field.is_nullable()
+        && semantic(field) == Some(VARIANT_SEMANTIC_TAG)
+        && field
+            .metadata()
+            .get(crate::RESIDUAL_ENCODING_METADATA_KEY)
+            .is_some_and(|encoding| encoding == crate::RESIDUAL_ENCODING_NAME)
+}
 
 const NORMALIZER_POSTGRES_QUOTED_V1: &str = "namecase-v1/postgres-quoted-v1";
 const DUCKDB_NAMECASE_ALLOWED_PATTERN: &str = "^[a-z_][a-z0-9_]*$";

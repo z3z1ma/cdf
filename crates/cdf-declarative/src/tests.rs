@@ -181,7 +181,6 @@ fn rest_cursor_pushdown_can_be_explicit_exact() {
     let resource = compile_document(&parse_toml(&input).unwrap())
         .unwrap()
         .remove(0);
-
     assert_eq!(
         resource.capabilities().filters.default_fidelity,
         PushdownFidelity::Exact
@@ -420,7 +419,7 @@ schema = { fields = [
     assert_eq!(batches.len(), 1);
     let batch = &batches[0];
     let record_batch = batch.record_batch().unwrap();
-    assert_eq!(record_batch.num_rows(), 1);
+    assert_eq!(record_batch.num_rows(), 2);
     assert_eq!(
         source_name(record_batch.schema().field(0)),
         Some("VendorID")
@@ -433,16 +432,10 @@ schema = { fields = [
         .as_any()
         .downcast_ref::<Decimal128Array>()
         .unwrap();
-    assert_eq!(amounts.values(), &[10]);
-    assert_eq!(batch.header.pre_contract_quarantine.len(), 1);
-    assert_eq!(
-        batch.header.pre_contract_quarantine[0].rule_id,
-        "source-decode:amount:type-mismatch"
-    );
-    assert_eq!(
-        batch.header.pre_contract_quarantine[0].error_code,
-        "source_type_mismatch"
-    );
+    assert_eq!(amounts.value(0), 10);
+    assert!(amounts.is_null(1));
+    assert!(batch.header.pre_contract_quarantine.is_empty());
+    assert_eq!(batch.header.residual_candidates().len(), 3);
 
     let plan = cdf_contract::schema_coercion_plan_from_trusted_json(
         record_batch.schema().as_ref(),
@@ -457,13 +450,10 @@ schema = { fields = [
             .decision,
         cdf_contract::FieldCoercionDecision::Widened
     );
-    assert_eq!(
+    assert!(
         plan.fields
             .iter()
-            .find(|field| field.source_name == "source_only")
-            .unwrap()
-            .decision,
-        cdf_contract::FieldCoercionDecision::Extra
+            .all(|field| field.source_name != "source_only")
     );
 }
 
@@ -512,7 +502,7 @@ fn rest_runtime_multi_page_reconciliation_is_stable_and_ordered() {
 }
 
 #[test]
-fn rest_runtime_multi_page_reconciliation_fails_closed_on_inconsistent_plans() {
+fn rest_runtime_multi_page_unknown_fields_preserve_stable_typed_plan() {
     let input = rest_decimal_pages_input();
     let resource = compile_document(&parse_toml(input).unwrap())
         .unwrap()
@@ -530,13 +520,13 @@ fn rest_runtime_multi_page_reconciliation_fails_closed_on_inconsistent_plans() {
         .to_rest_resource(RestRuntimeDependencies::new(transport.clone()))
         .unwrap();
 
-    let error = expect_open_error(futures_executor::block_on(rest.open(partition)));
-
-    assert_eq!(error.kind, ErrorKind::Data);
-    assert!(
-        error
-            .to_string()
-            .contains("inconsistent schema coercion plans")
+    let batches = drain_batches(futures_executor::block_on(rest.open(partition)).unwrap());
+    assert_eq!(batches.len(), 2);
+    assert_eq!(batches[0].header.residual_candidates().len(), 1);
+    assert_eq!(batches[1].header.residual_candidates().len(), 2);
+    assert_eq!(
+        batches[0].header.schema_coercion_plan,
+        batches[1].header.schema_coercion_plan
     );
     assert_eq!(transport.requests().len(), 2);
 }
@@ -984,20 +974,63 @@ fn rest_runtime_requires_non_nullable_record_fields() {
 }
 
 #[test]
-fn rest_runtime_fails_closed_for_cursor_field_absence() {
+fn rest_runtime_cursor_candidates_preserve_safe_position_and_renamed_identity() {
     let input = REST_RUNTIME_EXAMPLE.replace(
-        r#"{ name = "updated_at", type = "timestamp_micros", nullable = false, timezone = "UTC" }"#,
-        r#"{ name = "updated_at", type = "timestamp_micros", nullable = true, timezone = "UTC" }"#,
+        r#"{ name = "updated_at", type = "string", nullable = false }"#,
+        r#"{ name = "updated_at", source_name = "Updated At", type = "string", nullable = true }"#,
     );
-    let error = rest_open_error(
-        &input,
-        [json_response(
-            r#"{ "items": [{ "id": 1, "name": "ada", "active": true, "score": 4.5 }] }"#,
-        )],
+    let resource = compile_document(&parse_toml(&input).unwrap())
+        .unwrap()
+        .remove(0);
+    let plan = resource
+        .negotiate(&rest_cursor_request(
+            &resource,
+            "updated_at >= \"2026-07-01T00:00:00Z\"",
+        ))
+        .unwrap();
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": 1, "name": "missing", "active": true, "score": 4.5 },
+            { "id": 2, "name": "good", "Updated At": "2026-07-03T00:00:00Z", "active": true, "score": 1.0 }
+        ] }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].header.residual_candidates().len(), 1);
+    assert_eq!(
+        batches[0].header.residual_candidates()[0].source_path(),
+        &["Updated At".to_owned()]
     );
-    assert_eq!(error.kind, ErrorKind::Contract);
-    assert!(error.to_string().contains("field \"updated_at\""));
-    assert!(error.to_string().contains("was not observed"));
+    assert_eq!(
+        cursor_string(&batches[0].header.source_position),
+        "2026-07-03T00:00:00Z"
+    );
+
+    let transport = RecordingTransport::new([json_response(
+        r#"{ "items": [
+            { "id": 3, "name": "missing", "active": true, "score": 4.5 },
+            { "id": 4, "name": "null", "Updated At": null, "active": true, "score": 1.0 }
+        ] }"#,
+    )]);
+    let rest = resource
+        .to_rest_resource(
+            RestRuntimeDependencies::new(transport).with_secret_provider(
+                StaticSecretProvider::new([("secret://env/API_TOKEN", "token-1")]),
+            ),
+        )
+        .unwrap();
+    let batches =
+        drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
+    assert_eq!(batches[0].header.residual_candidates().len(), 2);
+    assert!(batches[0].header.source_position.is_none());
 }
 
 #[test]
@@ -1027,12 +1060,9 @@ fn rest_runtime_localizes_later_page_scalar_drift_without_partial_loss() {
         drain_batches(futures_executor::block_on(rest.open(plan.partitions[0].clone())).unwrap());
     assert_eq!(batches.len(), 2);
     assert_eq!(batches[0].header.row_count, 1);
-    assert_eq!(batches[1].header.row_count, 0);
-    assert_eq!(batches[1].header.pre_contract_quarantine.len(), 1);
-    assert_eq!(
-        batches[1].header.pre_contract_quarantine[0].error_code,
-        "source_type_mismatch"
-    );
+    assert_eq!(batches[1].header.row_count, 1);
+    assert!(batches[1].header.pre_contract_quarantine.is_empty());
+    assert_eq!(batches[1].header.residual_candidates().len(), 1);
     assert_eq!(transport.requests().len(), 2);
 }
 
@@ -1368,7 +1398,8 @@ fn rest_runtime_localizes_scalar_drift_and_preserves_page_cursor_advancement() {
         .downcast_ref::<Int64Array>()
         .unwrap();
     assert_eq!(ids.value(0), 42);
-    assert_eq!(ids.value(1), 8);
+    assert_eq!(ids.value(1), 7);
+    assert_eq!(ids.value(2), 8);
 
     let names = first
         .column(1)
@@ -1376,7 +1407,8 @@ fn rest_runtime_localizes_scalar_drift_and_preserves_page_cursor_advancement() {
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(names.value(0), "first");
-    assert_eq!(names.value(1), "third");
+    assert!(names.is_null(1));
+    assert_eq!(names.value(2), "third");
 
     let active = first
         .column(3)
@@ -1392,12 +1424,10 @@ fn rest_runtime_localizes_scalar_drift_and_preserves_page_cursor_advancement() {
         .downcast_ref::<Float64Array>()
         .unwrap();
     assert!((scores.value(0) - 6.25).abs() < f64::EPSILON);
-    assert!(scores.is_null(1));
-    assert_eq!(batches[0].header.pre_contract_quarantine.len(), 1);
-    assert_eq!(
-        batches[0].header.pre_contract_quarantine[0].error_code,
-        "source_type_mismatch"
-    );
+    assert!((scores.value(1) - 9.5).abs() < f64::EPSILON);
+    assert!(scores.is_null(2));
+    assert!(batches[0].header.pre_contract_quarantine.is_empty());
+    assert_eq!(batches[0].header.residual_candidates().len(), 1);
 }
 
 #[test]
@@ -2298,6 +2328,26 @@ fn file_glob_partition_checksum_changes_when_file_content_changes() {
     assert_eq!(first.metadata.get("path"), second.metadata.get("path"));
     assert_eq!(first.metadata.get("bytes"), second.metadata.get("bytes"));
     assert_ne!(first.metadata.get("sha256"), second.metadata.get("sha256"));
+}
+
+#[test]
+fn file_partition_attestation_rejects_identity_change_after_planning() {
+    let (root, compiled) = compile_local_glob_runtime_resource([("events.ndjson", "{\"id\":1}\n")]);
+    let resource = compiled
+        .to_file_resource(FileRuntimeDependencies::local())
+        .unwrap();
+    let partition = resource
+        .plan_partitions(&scan_request_for(resource.compiled()))
+        .unwrap()
+        .remove(0);
+
+    fs::write(root.path().join("data/events.ndjson"), "{\"id\":200}\n").unwrap();
+    let error = futures_executor::block_on(resource.attest_partition(&partition)).unwrap_err();
+
+    assert!(
+        error.to_string().contains("changed size after planning"),
+        "{error}"
+    );
 }
 
 #[test]

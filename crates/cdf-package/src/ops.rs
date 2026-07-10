@@ -72,8 +72,48 @@ pub fn verify_package(package_dir: impl AsRef<Path>) -> Result<VerificationRepor
     let package_dir = package_dir.as_ref();
     let mut report = verify_package_identity(package_dir)?;
     let manifest = read_manifest(package_dir)?;
+    verify_contract_evolution_versions(package_dir, &manifest)?;
     report.checked_archives = verify_parquet_archive_metadata(package_dir, &manifest)?;
     Ok(report)
+}
+
+fn verify_contract_evolution_versions(
+    package_dir: &Path,
+    manifest: &PackageManifest,
+) -> Result<()> {
+    const PATH: &str = "schema/contract-evolution.json";
+    if !manifest.identity.files.iter().any(|file| file.path == PATH) {
+        return Ok(());
+    }
+    let bytes = fs::read(package_dir.join(PATH))
+        .map_err(|error| io_error(format!("read {PATH}"), error))?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).map_err(json_error)?;
+    if value.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+        return Err(CdfError::data(
+            "schema/contract-evolution.json has an unsupported or missing version",
+        ));
+    }
+    if value.get("residual_capture").is_some_and(|capture| {
+        !capture.is_null() && capture.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+    }) {
+        return Err(CdfError::data(
+            "schema/contract-evolution.json has an unsupported residual-capture version",
+        ));
+    }
+    if value
+        .get("residual_decisions")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|decisions| {
+            decisions.iter().any(|decision| {
+                decision.get("version").and_then(serde_json::Value::as_u64) != Some(1)
+            })
+        })
+    {
+        return Err(CdfError::data(
+            "schema/contract-evolution.json has an unsupported residual-decision version",
+        ));
+    }
+    Ok(())
 }
 
 pub fn verify_package_identity(package_dir: impl AsRef<Path>) -> Result<VerificationReport> {

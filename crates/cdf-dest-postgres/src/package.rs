@@ -97,12 +97,6 @@ pub(crate) fn expected_segments_for_session(
     }
 
     let manifest_segments = &reader.manifest().identity.segments;
-    if manifest_segments.is_empty() {
-        return Err(CdfError::data(
-            "Postgres destination requires at least one package segment",
-        ));
-    }
-
     let plan_by_id = plan_segment_map(plan)?;
     let mut manifest_by_id = BTreeMap::new();
     let mut order = Vec::with_capacity(manifest_segments.len());
@@ -226,9 +220,10 @@ fn package_data_from_segments(
     plan: &PostgresLoadPlan,
 ) -> Result<PostgresPackageData> {
     if segments.is_empty() {
-        return Err(CdfError::data(
-            "Postgres destination requires at least one package segment",
-        ));
+        return Ok(PostgresPackageData {
+            segments: Vec::new(),
+            rows: Vec::new(),
+        });
     }
 
     let schema = first_schema(&segments)?;

@@ -59,11 +59,21 @@ struct ExpectedSegment {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct DuckDbCommitPlan {
     pub kernel: CommitPlan,
     pub ddl: Vec<String>,
-    pub bulk_path: BulkPath,
-    pub target_exists: bool,
+    pub effect: DuckDbCommitEffect,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum DuckDbCommitEffect {
+    Data {
+        bulk_path: BulkPath,
+        target_exists: bool,
+    },
+    NoData,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -233,6 +243,24 @@ impl DuckDbDestination {
         Ok(plan)
     }
 
+    pub fn plan_empty_package_commit(
+        &self,
+        request: &DuckDbCommitRequest,
+    ) -> Result<DuckDbCommitPlan> {
+        if !request.commit.segments.is_empty() {
+            return Err(CdfError::contract(
+                "empty DuckDB package planning requires zero data segments",
+            ));
+        }
+        let plan = DuckDbCommitPlan {
+            kernel: self.plan_commit(&request.commit)?,
+            ddl: Vec::new(),
+            effect: DuckDbCommitEffect::NoData,
+        };
+        self.remember_session_context(&plan.kernel.plan_id, request)?;
+        Ok(plan)
+    }
+
     pub fn plan_schema_commit(
         &self,
         request: &DestinationCommitRequest,
@@ -264,8 +292,10 @@ impl DuckDbDestination {
         Ok(DuckDbCommitPlan {
             kernel,
             ddl: table_plan.ddl,
-            bulk_path: BulkPath::ArrowIpcPackageRows,
-            target_exists: table_plan.target_exists,
+            effect: DuckDbCommitEffect::Data {
+                bulk_path: BulkPath::ArrowIpcPackageRows,
+                target_exists: table_plan.target_exists,
+            },
         })
     }
 
@@ -372,6 +402,62 @@ impl DuckDbDestination {
         let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
         drop(lock);
 
+        Ok(DuckDbCommitOutcome {
+            receipt,
+            duplicate: false,
+            plan,
+            package_receipt_recorded: recorded,
+        })
+    }
+
+    fn commit_empty_package(&self, request: DuckDbCommitRequest) -> Result<DuckDbCommitOutcome> {
+        if !request.commit.segments.is_empty() {
+            return Err(CdfError::internal(
+                "empty DuckDB commit path received data segments",
+            ));
+        }
+        let lock = self.acquire_writer_lock()?;
+        let mut conn = self.open_connection()?;
+        ensure_mirror_tables(&conn)?;
+        let plan = DuckDbCommitPlan {
+            kernel: self.plan_commit(&request.commit)?,
+            ddl: Vec::new(),
+            effect: DuckDbCommitEffect::NoData,
+        };
+        if let Some(receipt) = find_duplicate_receipt(&conn, &request.commit)? {
+            let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
+            drop(lock);
+            return Ok(DuckDbCommitOutcome {
+                receipt,
+                duplicate: true,
+                plan,
+                package_receipt_recorded: recorded,
+            });
+        }
+        let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
+        let committed_at_ms = now_ms()?;
+        let receipt = build_receipt(
+            &request,
+            &[],
+            CommitCounts::default(),
+            &ReceiptBuildContext {
+                migrations: &[],
+                committed_at_ms,
+                duckdb_version: &duckdb_version,
+                database_path: &self.database_path,
+                lock_path: &self.lock_path(),
+            },
+        )?;
+        {
+            let tx = conn
+                .transaction()
+                .map_err(|error| duckdb_error("begin empty package transaction", error))?;
+            insert_mirrors(&tx, &request, &[], &receipt)?;
+            tx.commit()
+                .map_err(|error| duckdb_error("commit empty package transaction", error))?;
+        }
+        let recorded = record_package_receipt_once(&request.package_dir, &receipt)?;
+        drop(lock);
         Ok(DuckDbCommitOutcome {
             receipt,
             duplicate: false,
@@ -508,8 +594,10 @@ impl DuckDbDestination {
         Ok(DuckDbCommitPlan {
             kernel,
             ddl: table_plan.ddl,
-            bulk_path: BulkPath::ArrowIpcPackageRows,
-            target_exists: table_plan.target_exists,
+            effect: DuckDbCommitEffect::Data {
+                bulk_path: BulkPath::ArrowIpcPackageRows,
+                target_exists: table_plan.target_exists,
+            },
         })
     }
 
@@ -596,6 +684,9 @@ impl DuckDbCommitSession<'_> {
             ordered_segments.push(segment);
         }
 
+        if ordered_segments.is_empty() {
+            return self.destination.commit_empty_package(self.request);
+        }
         let package = package_data_from_commit_segments(ordered_segments)?;
         self.destination
             .commit_package_immediate(self.request, package)

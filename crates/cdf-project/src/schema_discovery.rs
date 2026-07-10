@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, path::Path, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+};
 
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
@@ -15,9 +19,11 @@ use cdf_declarative::{
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
-    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence,
-    EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime, PartitionId, PartitionPlan,
-    ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaHash, SchemaSource, ScopeKey,
+    CdfError, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
+    PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest,
+    SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource, ScopeKey,
+    TerminalSchemaObservationQuarantine,
 };
 
 use crate::{
@@ -73,6 +79,7 @@ pub struct VerifiedSchemaBaseline {
     resource_id: cdf_kernel::ResourceId,
     snapshot: cdf_kernel::SchemaSnapshotReference,
     schema: arrow_schema::SchemaRef,
+    baseline_observation_schema_hashes: BTreeSet<SchemaHash>,
 }
 
 impl VerifiedSchemaBaseline {
@@ -80,11 +87,13 @@ impl VerifiedSchemaBaseline {
         resource_id: cdf_kernel::ResourceId,
         snapshot: cdf_kernel::SchemaSnapshotReference,
         schema: arrow_schema::SchemaRef,
+        baseline_observation_schema_hashes: BTreeSet<SchemaHash>,
     ) -> Self {
         Self {
             resource_id,
             snapshot,
             schema,
+            baseline_observation_schema_hashes,
         }
     }
 
@@ -102,6 +111,11 @@ impl VerifiedSchemaBaseline {
 
     pub fn schema(&self) -> &arrow_schema::SchemaRef {
         &self.schema
+    }
+
+    pub fn contains_baseline_observation_schema(&self, schema_hash: &SchemaHash) -> bool {
+        self.baseline_observation_schema_hashes
+            .contains(schema_hash)
     }
 }
 
@@ -474,7 +488,7 @@ fn discover_local_binary_resource_schema(
         })
         .collect::<Vec<_>>();
     let file_aggregate = plan_aggregate_arrow_schema_join(&aggregate_candidates)?;
-    if !file_aggregate.is_compatible() {
+    if !options.runtime_effective_schema && !file_aggregate.is_compatible() {
         let file_reports = file_aggregate
             .files
             .iter()
@@ -505,67 +519,19 @@ fn discover_local_binary_resource_schema(
         )));
     }
 
-    let aggregate = if let Some(baseline) = options
-        .runtime_effective_schema
-        .then(|| options.verified_baseline())
-        .flatten()
-    {
-        let effective_candidates = vec![
-            AggregateSchemaCandidate::new(
-                "__cdf_current_observation__",
-                file_aggregate.schema.clone(),
-            ),
-            AggregateSchemaCandidate::new(
-                "__cdf_verified_baseline__",
-                baseline.schema().as_ref().clone(),
-            ),
-        ];
-        let effective = plan_aggregate_arrow_schema_join(&effective_candidates)?;
-        if !effective.is_compatible() {
-            let incompatibilities = effective
-                .incompatibilities
-                .iter()
-                .map(|item| {
-                    format!(
-                        "{} at {}: {}",
-                        item.location,
-                        item.field_path.join("."),
-                        item.reason
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("; ");
-            return Err(CdfError::contract(format!(
-                "effective-schema planning requires A10e disposition for resource `{}`; incompatibilities: {incompatibilities}",
-                resource.descriptor().resource_id
-            )));
-        }
-        effective
-    } else {
-        file_aggregate.clone()
-    };
-
     let contract = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
-    let effective_schema = match (
-        options
-            .runtime_effective_schema
-            .then(|| options.verified_baseline())
-            .flatten(),
-        &contract.schema.mode,
-    ) {
-        (Some(baseline), SchemaEvolutionMode::Freeze) => {
-            let aggregate_normalized =
-                normalize_arrow_schema(&aggregate.schema, &IdentifierPolicy::default())?;
-            if !same_effective_fields(&aggregate_normalized, baseline.schema().as_ref()) {
-                return Err(CdfError::contract(format!(
-                    "freeze policy keeps baseline schema {} effective for resource `{}`; discovered additions or incompatible widening require A10e file disposition",
-                    baseline.schema_hash(),
-                    resource.descriptor().resource_id
-                )));
-            }
-            baseline.schema().as_ref().clone()
-        }
-        _ => normalize_arrow_schema(&aggregate.schema, &IdentifierPolicy::default())?,
+    let (effective_schema, terminal_quarantines) = if options.runtime_effective_schema {
+        let baseline = options.verified_baseline().ok_or_else(|| {
+            CdfError::contract(
+                "runtime effective-schema discovery requires a verified baseline snapshot",
+            )
+        })?;
+        classify_runtime_schema_observations(&probes, baseline, &contract.schema.mode)?
+    } else {
+        (
+            normalize_arrow_schema(&file_aggregate.schema, &IdentifierPolicy::default())?,
+            Vec::new(),
+        )
     };
     let normalized = effective_schema;
     let normalized = Arc::new(normalized);
@@ -588,7 +554,13 @@ fn discover_local_binary_resource_schema(
                         probe.location
                     ))
                 })?;
-            manifest_candidate(probe, verdict)
+            manifest_candidate(
+                probe,
+                verdict,
+                terminal_quarantines
+                    .iter()
+                    .find(|item| item.observation_id() == probe.location),
+            )
         })
         .collect::<Result<Vec<_>>>()?;
     let manifest = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
@@ -688,7 +660,15 @@ fn discover_local_binary_resource_schema(
             manifest.reference(),
             observations,
         )?;
-        Some(EffectiveSchemaRuntime::new(evidence, schema_catalog)?)
+        Some(
+            EffectiveSchemaRuntime::new(evidence, schema_catalog)?
+                .with_terminal_quarantines(terminal_quarantines)?
+                .with_discovery_executor_budget(DiscoveryExecutorBudgetEvidence::new(
+                    options.budget.max_metadata_bytes_per_file(),
+                    options.budget.max_total_in_flight_bytes(),
+                    options.budget.max_concurrent_probes(),
+                )?)?,
+        )
     } else {
         None
     };
@@ -743,9 +723,187 @@ fn probe_local_binary_candidate(
     })
 }
 
+fn classify_runtime_schema_observations(
+    probes: &[LocalBinaryProbe],
+    baseline: &VerifiedSchemaBaseline,
+    mode: &SchemaEvolutionMode,
+) -> Result<(
+    arrow_schema::Schema,
+    Vec<TerminalSchemaObservationQuarantine>,
+)> {
+    let mut effective = baseline.schema().as_ref().clone();
+    let mut quarantines = Vec::new();
+    for probe in probes {
+        if matches!(mode, SchemaEvolutionMode::Freeze)
+            && baseline.contains_baseline_observation_schema(&probe.physical_schema_hash)
+        {
+            continue;
+        }
+        let report = plan_aggregate_arrow_schema_join(&[
+            AggregateSchemaCandidate::new("__cdf_verified_effective__", effective.clone()),
+            AggregateSchemaCandidate::new(probe.location.clone(), probe.schema.as_ref().clone()),
+        ])?;
+        let freeze_deviation = if matches!(mode, SchemaEvolutionMode::Freeze) {
+            let joined = normalize_arrow_schema(&report.schema, &IdentifierPolicy::default())?;
+            !same_effective_fields(&joined, baseline.schema().as_ref())
+        } else {
+            false
+        };
+        if report.is_compatible() && !freeze_deviation {
+            if matches!(mode, SchemaEvolutionMode::Evolve) {
+                effective = report.schema;
+            }
+            continue;
+        }
+
+        let mut fields = report
+            .incompatibilities
+            .iter()
+            .map(|item| {
+                SchemaObservationFieldQuarantine::new_field_path(
+                    item.field_path.clone(),
+                    canonical_field_at_path(probe.schema.as_ref(), &item.field_path)?,
+                    canonical_field_at_path(&effective, &item.field_path)?,
+                    item.reason.clone(),
+                )
+            })
+            .collect::<Result<Vec<_>>>()?;
+        if fields.is_empty() {
+            for verdict in report.files.iter().flat_map(|file| &file.fields) {
+                if verdict.decision != cdf_contract::AggregateFieldDecision::Preserved
+                    || verdict.observed_nullable != Some(verdict.effective_nullable)
+                    || !verdict.metadata_variance.is_empty()
+                {
+                    fields.push(SchemaObservationFieldQuarantine::new_field_path(
+                        verdict.field_path.clone(),
+                        canonical_field_at_path(probe.schema.as_ref(), &verdict.field_path)?,
+                        canonical_field_at_path(&effective, &verdict.field_path)?,
+                        verdict.reason.clone(),
+                    )?);
+                }
+            }
+        }
+        if fields.is_empty() {
+            fields.push(SchemaObservationFieldQuarantine::whole_schema(
+                "schema or field metadata differs from the frozen baseline",
+            )?);
+        }
+        fields.sort_by(|left, right| {
+            schema_observation_scope_sort_key(left.scope())
+                .cmp(&schema_observation_scope_sort_key(right.scope()))
+        });
+        fields.dedup();
+        let (rule_id, policy, remediation) = match mode {
+            SchemaEvolutionMode::Freeze => (
+                "schema-observation:freeze-deviation",
+                SchemaObservationPolicy::Freeze,
+                "restore the pinned schema for this input, explicitly repin after review, or change the resource contract to evolve",
+            ),
+            SchemaEvolutionMode::Evolve => (
+                "schema-observation:incompatible",
+                SchemaObservationPolicy::Evolve,
+                "publish a compatible source type, declare an allowed coercion, or repin the schema after review",
+            ),
+        };
+        quarantines.push(TerminalSchemaObservationQuarantine::new(
+            probe.location.clone(),
+            probe.physical_schema_hash.clone(),
+            rule_id,
+            "schema_observation_quarantined",
+            policy,
+            remediation,
+            fields,
+        )?);
+    }
+    let effective = match mode {
+        SchemaEvolutionMode::Freeze => baseline.schema().as_ref().clone(),
+        SchemaEvolutionMode::Evolve => {
+            normalize_arrow_schema(&effective, &IdentifierPolicy::default())?
+        }
+    };
+    Ok((effective, quarantines))
+}
+
+fn schema_observation_scope_sort_key(scope: &cdf_kernel::SchemaObservationScope) -> String {
+    match scope {
+        cdf_kernel::SchemaObservationScope::FieldPath { path } => {
+            format!("field:{}", path.join("\u{0}"))
+        }
+        cdf_kernel::SchemaObservationScope::WholeSchema => "schema".to_owned(),
+        _ => "unknown".to_owned(),
+    }
+}
+
+fn canonical_field_at_path(
+    schema: &arrow_schema::Schema,
+    path: &[String],
+) -> Result<Option<cdf_kernel::CanonicalArrowField>> {
+    let Some((first, rest)) = path.split_first() else {
+        return Ok(None);
+    };
+    let Some(mut field) = schema
+        .fields()
+        .iter()
+        .find(|field| schema_field_component_matches(field.as_ref(), first))
+        .cloned()
+    else {
+        return Ok(None);
+    };
+    for component in rest {
+        let next = match field.data_type() {
+            arrow_schema::DataType::Struct(fields) => fields
+                .iter()
+                .find(|field| schema_field_component_matches(field.as_ref(), component))
+                .cloned(),
+            arrow_schema::DataType::List(child)
+            | arrow_schema::DataType::LargeList(child)
+            | arrow_schema::DataType::FixedSizeList(child, _) => {
+                if schema_field_component_matches(child.as_ref(), component) {
+                    Some(child.clone())
+                } else if let arrow_schema::DataType::Struct(fields) = child.data_type() {
+                    fields
+                        .iter()
+                        .find(|field| schema_field_component_matches(field.as_ref(), component))
+                        .cloned()
+                } else {
+                    None
+                }
+            }
+            arrow_schema::DataType::Map(entries, _) => {
+                if schema_field_component_matches(entries.as_ref(), component) {
+                    Some(entries.clone())
+                } else if let arrow_schema::DataType::Struct(fields) = entries.data_type() {
+                    fields
+                        .iter()
+                        .find(|field| schema_field_component_matches(field.as_ref(), component))
+                        .cloned()
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        let Some(next) = next else {
+            return Ok(None);
+        };
+        field = next;
+    }
+    cdf_kernel::CanonicalArrowField::from_arrow(field.as_ref())
+        .map(Some)
+        .map_err(|error| CdfError::data(format!("encode exact Arrow field evidence: {error}")))
+}
+
+fn schema_field_component_matches(field: &arrow_schema::Field, component: &str) -> bool {
+    field.name() == component
+        || cdf_kernel::source_name(field) == Some(component)
+        || cdf_contract::normalize_identifier(field.name(), &IdentifierPolicy::default())
+            .is_ok_and(|normalized| normalized == component)
+}
+
 fn manifest_candidate(
     probe: &LocalBinaryProbe,
     verdict: &AggregateFileSchemaVerdict,
+    terminal_quarantine: Option<&TerminalSchemaObservationQuarantine>,
 ) -> Result<DiscoveryCandidateEvidence> {
     let outcome = if verdict
         .fields
@@ -756,6 +914,11 @@ fn manifest_candidate(
     } else {
         "pass"
     };
+    let field_verdicts = match terminal_quarantine {
+        Some(item) => serde_json::to_string(item.fields()),
+        None => serde_json::to_string(&verdict.fields),
+    }
+    .map_err(|error| CdfError::internal(error.to_string()))?;
     Ok(DiscoveryCandidateEvidence {
         transport: "file".to_owned(),
         canonical_location: probe.location.clone(),
@@ -770,15 +933,23 @@ fn manifest_candidate(
         physical_schema_hash: Some(probe.physical_schema_hash.clone()),
         probe_bytes: Some(probe.probe_bytes),
         schema_verdict: Some(DiscoverySchemaVerdict {
-            kind: DiscoverySchemaVerdictKind::Admitted,
-            rule: "aggregate-schema-join-v1".to_owned(),
+            kind: if terminal_quarantine.is_some() {
+                DiscoverySchemaVerdictKind::Quarantined
+            } else {
+                DiscoverySchemaVerdictKind::Admitted
+            },
+            rule: terminal_quarantine
+                .map(|item| item.rule_id().to_owned())
+                .unwrap_or_else(|| "aggregate-schema-join-v1".to_owned()),
             details: BTreeMap::from([
-                ("outcome".to_owned(), outcome.to_owned()),
                 (
-                    "field_verdicts".to_owned(),
-                    serde_json::to_string(&verdict.fields)
-                        .map_err(|error| CdfError::internal(error.to_string()))?,
+                    "outcome".to_owned(),
+                    terminal_quarantine
+                        .map(|_| "quarantined")
+                        .unwrap_or(outcome)
+                        .to_owned(),
                 ),
+                ("field_verdicts".to_owned(), field_verdicts),
             ]),
         }),
     })
@@ -1337,4 +1508,44 @@ fn unsupported_discover_slice(
         descriptor.resource_id,
         reason.into()
     ))
+}
+
+#[cfg(test)]
+mod terminal_evidence_tests {
+    use std::sync::Arc;
+
+    use arrow_schema::{DataType, Field, Fields, Schema};
+
+    use super::canonical_field_at_path;
+
+    fn nested_schema(children: Vec<Field>) -> Schema {
+        Schema::new(vec![Field::new(
+            "payload",
+            DataType::Struct(Fields::from(children)),
+            true,
+        )])
+    }
+
+    #[test]
+    fn nested_added_and_removed_children_are_exact_optional_field_evidence() {
+        let narrow = nested_schema(vec![Field::new("kept", DataType::Int64, true)]);
+        let wide = nested_schema(vec![
+            Field::new("kept", DataType::Int64, true),
+            Field::new(
+                "nested_change",
+                DataType::List(Arc::new(Field::new("item", DataType::Utf8, true))),
+                false,
+            ),
+        ]);
+        let path = vec!["payload".to_owned(), "nested_change".to_owned()];
+
+        let added = canonical_field_at_path(&wide, &path).unwrap().unwrap();
+        assert_eq!(added.name, "nested_change");
+        assert!(!added.nullable);
+        assert!(canonical_field_at_path(&narrow, &path).unwrap().is_none());
+
+        let removed = canonical_field_at_path(&wide, &path).unwrap().unwrap();
+        assert_eq!(removed, added);
+        assert!(canonical_field_at_path(&narrow, &path).unwrap().is_none());
+    }
 }

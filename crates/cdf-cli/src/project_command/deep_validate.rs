@@ -1,7 +1,8 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
+use cdf_engine::{EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{ResourceDescriptor, ResourceStream, ScanRequest, SchemaSource};
 use cdf_project::{
     FileResourceSourceResolver, ProjectResourceOrigin, ResourceSchemaDiscovery, validate_project,
@@ -203,7 +204,7 @@ fn validation_program_check(
 ) -> DeepValidateCheckReport {
     let observed = ObservedSchema::from_arrow(resource.schema().as_ref());
     let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
-    match compile_validation_program(&policy, &observed) {
+    match compile_resource_validation_program(&policy, &observed, resource.descriptor()) {
         Ok(program) => DeepValidateCheckReport {
             status: "ok".to_owned(),
             detail: format!(
@@ -285,7 +286,53 @@ fn destination_check(
             return DeepValidateDestinationReport::failed("destination resolution failed");
         }
     };
-    match resolved.destination.plan_resource_commit(resource) {
+    let identifier_policy = match resolved.destination.column_identifier_policy() {
+        Ok(policy) => policy,
+        Err(error) => {
+            diagnostics.push(diagnostic(
+                "error",
+                "destination_sheet",
+                error.message,
+                "Fix destination identifier policy before deep validation.",
+            ));
+            return DeepValidateDestinationReport::failed("destination identifier policy failed");
+        }
+    };
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    if let Some(identifier_policy) = identifier_policy {
+        policy.normalization.identifier = identifier_policy;
+    }
+    let observed = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let engine_plan =
+        compile_resource_validation_program(&policy, &observed, resource.descriptor()).and_then(
+            |validation_program| {
+                Planner::new().plan_tier_b(
+                    resource,
+                    EnginePlanInput {
+                        request: deep_scan_request(resource.descriptor())?,
+                        validation_program,
+                        boundedness: PlanBoundedness::Bounded,
+                        package_id: format!("deep-validate-{}", resource.descriptor().resource_id),
+                    },
+                )
+            },
+        );
+    let engine_plan = match engine_plan {
+        Ok(plan) => plan,
+        Err(error) => {
+            diagnostics.push(diagnostic(
+                "error",
+                "destination_sheet",
+                error.message,
+                "Fix compiler-front-end errors before destination planning.",
+            ));
+            return DeepValidateDestinationReport::failed("engine plan compilation failed");
+        }
+    };
+    match resolved
+        .destination
+        .plan_resource_commit(resource, &engine_plan)
+    {
         Ok(plan) => DeepValidateDestinationReport {
             status: "ok".to_owned(),
             destination_id: Some(plan.description.destination_id.to_string()),

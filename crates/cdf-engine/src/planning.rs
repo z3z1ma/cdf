@@ -1,22 +1,33 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use cdf_contract::{
-    ContractPolicy, ValidationProgram, assert_verdict_lattice_total, reconcile_schema,
+    ContractPolicy, ValidationProgram, assert_verdict_lattice_total,
+    bind_validation_program_to_resource, reconcile_schema,
 };
 use cdf_kernel::{
     CapabilitySupport, CdfError, DeliveryGuarantee, EstimateSupport, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionPlan, PlanId, PushdownFidelity, QueryableResource,
-    ResourceCapabilities, ResourceId, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest,
-    WriteDisposition,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionPlan, PlanId,
+    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceId, ResourceStream, Result,
+    ScanPlan, ScanPredicate, ScanRequest, WriteDisposition,
 };
 
 use crate::{
-    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EnginePlan, EnginePlanInput,
-    EstimateExplain, ExplainData, OperatorNode, PartitionExplain, PlanBoundedness,
-    PredicateExplain, predicates::predicate_operator,
+    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EngineOutputSchema,
+    EnginePlan, EnginePlanInput, EngineSchemaAuthority, EstimateExplain, ExplainData, OperatorNode,
+    PartitionExplain, PlanBoundedness, PredicateExplain, output_schema::compile_output_schema,
+    predicates::predicate_operator,
 };
 
 pub const CDF_NATIVE_RESOURCE_ADAPTER_KIND: &str = "cdf_native_resource_adapter";
+
+struct PlanFinishContext {
+    write_disposition: WriteDisposition,
+    projection_pushed: bool,
+    limit_pushed: bool,
+    estimate_support: EstimateSupport,
+    output_schema: EngineOutputSchema,
+    schema_authority: EngineSchemaAuthority,
+}
 
 #[derive(Debug, Default)]
 pub struct Planner;
@@ -26,10 +37,12 @@ impl Planner {
         Self
     }
 
-    pub fn plan_tier_a<R>(&self, resource: &R, input: EnginePlanInput) -> Result<EnginePlan>
+    pub fn plan_tier_a<R>(&self, resource: &R, mut input: EnginePlanInput) -> Result<EnginePlan>
     where
         R: ResourceStream + ?Sized,
     {
+        input.validation_program =
+            bind_validation_program_to_resource(input.validation_program, resource.descriptor())?;
         validate_boundedness(&input.boundedness)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
@@ -46,36 +59,67 @@ impl Planner {
             delivery_guarantee: delivery_guarantee(write_disposition.clone()),
         };
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
+        let output_schema = EngineOutputSchema::from_arrow(
+            compile_output_schema(
+                resource.schema().as_ref(),
+                &input.validation_program,
+                input.request.projection.as_deref(),
+                effective_schema_evidence.is_some(),
+            )?
+            .as_ref(),
+        )?;
+        let schema_authority = schema_authority(resource, effective_schema_evidence.as_ref())?;
 
         let mut plan = self.finish_plan(
             scan,
             input,
-            write_disposition,
-            false,
-            false,
-            EstimateSupport::None,
+            PlanFinishContext {
+                write_disposition,
+                projection_pushed: false,
+                limit_pushed: false,
+                estimate_support: EstimateSupport::None,
+                output_schema,
+                schema_authority,
+            },
         )?;
         plan.effective_schema_evidence = effective_schema_evidence;
         Ok(plan)
     }
 
-    pub fn plan_tier_b<R>(&self, resource: &R, input: EnginePlanInput) -> Result<EnginePlan>
+    pub fn plan_tier_b<R>(&self, resource: &R, mut input: EnginePlanInput) -> Result<EnginePlan>
     where
         R: QueryableResource + ?Sized,
     {
+        input.validation_program =
+            bind_validation_program_to_resource(input.validation_program, resource.descriptor())?;
         validate_boundedness(&input.boundedness)?;
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
 
         let mut scan = resource.negotiate(&input.request)?;
         let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
+        let output_schema = EngineOutputSchema::from_arrow(
+            compile_output_schema(
+                resource.schema().as_ref(),
+                &input.validation_program,
+                input.request.projection.as_deref(),
+                effective_schema_evidence.is_some(),
+            )?
+            .as_ref(),
+        )?;
+        let schema_authority = schema_authority(resource, effective_schema_evidence.as_ref())?;
         let mut plan = self.finish_plan(
             scan,
             input,
-            write_disposition,
-            resource.capabilities().projection == CapabilitySupport::Supported,
-            resource.capabilities().limits == CapabilitySupport::Supported,
-            resource.capabilities().estimates.clone(),
+            PlanFinishContext {
+                write_disposition,
+                projection_pushed: resource.capabilities().projection
+                    == CapabilitySupport::Supported,
+                limit_pushed: resource.capabilities().limits == CapabilitySupport::Supported,
+                estimate_support: resource.capabilities().estimates.clone(),
+                output_schema,
+                schema_authority,
+            },
         )?;
         plan.effective_schema_evidence = effective_schema_evidence;
         Ok(plan)
@@ -85,10 +129,7 @@ impl Planner {
         &self,
         scan: ScanPlan,
         input: EnginePlanInput,
-        write_disposition: WriteDisposition,
-        projection_pushed: bool,
-        limit_pushed: bool,
-        estimate_support: EstimateSupport,
+        finish: PlanFinishContext,
     ) -> Result<EnginePlan> {
         let residual_predicates = residual_predicates(&scan);
         let final_projection = input.request.projection.clone();
@@ -104,9 +145,9 @@ impl Planner {
             &scan,
             &input.boundedness,
             &operator_chain,
-            projection_pushed,
-            limit_pushed,
-            estimate_support,
+            finish.projection_pushed,
+            finish.limit_pushed,
+            finish.estimate_support,
         );
 
         Ok(EnginePlan {
@@ -115,8 +156,10 @@ impl Planner {
             final_projection,
             residual_predicates,
             boundedness: input.boundedness,
-            write_disposition,
+            write_disposition: finish.write_disposition,
             validation_program: input.validation_program,
+            schema_authority: Some(finish.schema_authority),
+            output_schema: Some(finish.output_schema),
             operator_chain,
             explain,
             package_id: input.package_id,
@@ -136,6 +179,7 @@ where
     };
     runtime.validate_for_resource(resource.descriptor())?;
     let evidence = &runtime.evidence;
+    let mut observation_bindings = BTreeMap::new();
     for partition in &mut scan.partitions {
         let observation_id = partition
             .metadata
@@ -150,6 +194,23 @@ where
                 "effective schema evidence has no candidate for planned observation {observation_id:?}"
             ))
         })?;
+        let binding = partition
+            .metadata
+            .get(PLAN_SCHEMA_OBSERVATION_BINDING_KEY)
+            .ok_or_else(|| {
+                CdfError::data(format!(
+                    "effective schema observation {observation_id:?} omitted its source identity binding"
+                ))
+            })?
+            .clone();
+        if observation_bindings
+            .insert(observation_id.clone(), binding.clone())
+            .is_some_and(|existing| existing != binding)
+        {
+            return Err(CdfError::data(format!(
+                "repeated effective schema observation {observation_id:?} carries conflicting source identity bindings"
+            )));
+        }
         partition.metadata.insert(
             PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
             observation.physical_schema_hash.to_string(),
@@ -171,6 +232,11 @@ where
     let observations = evidence
         .observations
         .iter()
+        .filter(|observation| {
+            runtime
+                .terminal_quarantine(&observation.observation_id)
+                .is_none()
+        })
         .map(|observation| {
             let physical_schema = runtime
                 .physical_schema(&observation.physical_schema_hash)
@@ -199,7 +265,71 @@ where
             resource.schema().as_ref(),
         )?,
         observations,
+        terminal_quarantines: runtime.terminal_quarantines.clone(),
+        discovery_executor_budget: runtime.discovery_executor_budget.clone(),
+        observation_bindings,
     }))
+}
+
+pub(crate) fn schema_authority<R>(
+    resource: &R,
+    effective: Option<&EffectiveSchemaPlanEvidence>,
+) -> Result<EngineSchemaAuthority>
+where
+    R: ResourceStream + ?Sized,
+{
+    if let Some(effective) = effective {
+        return Ok(EngineSchemaAuthority {
+            version: 1,
+            baseline_schema_hash: effective.authority.baseline_snapshot.schema_hash.clone(),
+            effective_schema_hash: effective.authority.effective_snapshot_schema_hash.clone(),
+        });
+    }
+    let schema_hash = match &resource.descriptor().schema_source {
+        cdf_kernel::SchemaSource::Declared { schema_hash, .. } => schema_hash.clone(),
+        cdf_kernel::SchemaSource::Discovered { snapshot } => snapshot.schema_hash.clone(),
+        cdf_kernel::SchemaSource::Hints {
+            snapshot: Some(snapshot),
+            ..
+        } => snapshot.schema_hash.clone(),
+        cdf_kernel::SchemaSource::Contract {
+            schema_hash: Some(schema_hash),
+            ..
+        } => schema_hash.clone(),
+        _ => cdf_contract::canonical_arrow_schema_hash(resource.schema().as_ref())?,
+    };
+    Ok(EngineSchemaAuthority {
+        version: 1,
+        baseline_schema_hash: schema_hash.clone(),
+        effective_schema_hash: schema_hash,
+    })
+}
+
+pub fn validate_plan_schema_authority<R>(resource: &R, plan: &EnginePlan) -> Result<()>
+where
+    R: ResourceStream + ?Sized,
+{
+    let expected_authority = schema_authority(resource, plan.effective_schema_evidence.as_ref())?;
+    if plan.schema_authority.as_ref() != Some(&expected_authority) {
+        return Err(CdfError::data(
+            "engine plan schema authority does not match the execution resource",
+        ));
+    }
+    let expected_output = EngineOutputSchema::from_arrow(
+        compile_output_schema(
+            resource.schema().as_ref(),
+            &plan.validation_program,
+            plan.final_projection.as_deref(),
+            plan.effective_schema_evidence.is_some(),
+        )?
+        .as_ref(),
+    )?;
+    if plan.output_schema.as_ref() != Some(&expected_output) {
+        return Err(CdfError::data(
+            "engine plan compiled output schema does not match the resource, projection, and validation program",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_reconciliation_target(

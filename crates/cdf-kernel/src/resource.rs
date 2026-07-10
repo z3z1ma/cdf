@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     async_types::{BatchStream, BoxFuture},
+    canonical_arrow::CanonicalArrowField,
     destination::DeliveryGuarantee,
     error::{CdfError, Result},
     ids::{ContractRef, PartitionId, PlanId, PredicateId, ResourceId, SchemaHash},
@@ -332,7 +333,276 @@ pub struct PushedPredicate {
 
 pub const EFFECTIVE_SCHEMA_EVIDENCE_VERSION: u16 = 1;
 pub const PLAN_SCHEMA_OBSERVATION_ID_KEY: &str = "cdf:schema_observation_id";
+pub const PLAN_SCHEMA_OBSERVATION_BINDING_KEY: &str = "cdf:schema_observation_binding";
 pub const PLAN_PHYSICAL_SCHEMA_HASH_KEY: &str = "cdf:physical_schema_hash";
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PartitionAttestation {
+    processed_position: SourcePosition,
+    physical_schema_hash: Option<SchemaHash>,
+}
+
+impl PartitionAttestation {
+    pub fn new(
+        processed_position: SourcePosition,
+        physical_schema_hash: Option<SchemaHash>,
+    ) -> Self {
+        Self {
+            processed_position,
+            physical_schema_hash,
+        }
+    }
+
+    pub fn processed_position(&self) -> &SourcePosition {
+        &self.processed_position
+    }
+
+    pub fn into_processed_position(self) -> SourcePosition {
+        self.processed_position
+    }
+
+    pub fn physical_schema_hash(&self) -> Option<&SchemaHash> {
+        self.physical_schema_hash.as_ref()
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ProcessedObservationOutcome {
+    Admitted,
+    Quarantined,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProcessedObservationPosition {
+    pub observation_id: String,
+    pub outcome: ProcessedObservationOutcome,
+    pub source_position: SourcePosition,
+}
+
+impl ProcessedObservationPosition {
+    pub fn new(
+        observation_id: impl Into<String>,
+        outcome: ProcessedObservationOutcome,
+        source_position: SourcePosition,
+    ) -> Result<Self> {
+        let observation_id = observation_id.into();
+        if observation_id.is_empty() {
+            return Err(CdfError::contract(
+                "processed observation identity cannot be empty",
+            ));
+        }
+        Ok(Self {
+            observation_id,
+            outcome,
+            source_position,
+        })
+    }
+}
+
+pub fn aggregate_processed_observation_positions(
+    input: Option<&SourcePosition>,
+    observations: &[ProcessedObservationPosition],
+    disposition: &WriteDisposition,
+) -> Result<SourcePosition> {
+    let positions = observations
+        .iter()
+        .map(|observation| observation.source_position.clone())
+        .collect::<Vec<_>>();
+    crate::aggregate_position_set("processed observations", input, &positions, disposition)
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SchemaObservationScope {
+    FieldPath { path: Vec<String> },
+    WholeSchema,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaObservationFieldQuarantine {
+    scope: SchemaObservationScope,
+    observed_field: Option<CanonicalArrowField>,
+    effective_field: Option<CanonicalArrowField>,
+    reason: String,
+}
+
+impl SchemaObservationFieldQuarantine {
+    pub fn new_field_path(
+        path: Vec<String>,
+        observed_field: Option<CanonicalArrowField>,
+        effective_field: Option<CanonicalArrowField>,
+        reason: impl Into<String>,
+    ) -> Result<Self> {
+        Self::new(
+            SchemaObservationScope::FieldPath { path },
+            observed_field,
+            effective_field,
+            reason,
+        )
+    }
+
+    pub fn whole_schema(reason: impl Into<String>) -> Result<Self> {
+        Self::new(SchemaObservationScope::WholeSchema, None, None, reason)
+    }
+
+    fn new(
+        scope: SchemaObservationScope,
+        observed_field: Option<CanonicalArrowField>,
+        effective_field: Option<CanonicalArrowField>,
+        reason: impl Into<String>,
+    ) -> Result<Self> {
+        let fact = Self {
+            scope,
+            observed_field,
+            effective_field,
+            reason: reason.into(),
+        };
+        fact.validate()?;
+        Ok(fact)
+    }
+
+    pub fn scope(&self) -> &SchemaObservationScope {
+        &self.scope
+    }
+
+    pub fn observed_field(&self) -> Option<&CanonicalArrowField> {
+        self.observed_field.as_ref()
+    }
+
+    pub fn effective_field(&self) -> Option<&CanonicalArrowField> {
+        self.effective_field.as_ref()
+    }
+
+    pub fn reason(&self) -> &str {
+        &self.reason
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.reason.trim().is_empty() {
+            return Err(CdfError::contract(
+                "schema-observation quarantine reason cannot be empty",
+            ));
+        }
+        match &self.scope {
+            SchemaObservationScope::FieldPath { path } => {
+                if path.is_empty() || path.iter().any(|component| component.trim().is_empty()) {
+                    return Err(CdfError::contract(
+                        "schema-observation field quarantine requires a non-empty field path",
+                    ));
+                }
+                if self.observed_field.is_none() && self.effective_field.is_none() {
+                    return Err(CdfError::contract(
+                        "field-scoped schema-observation quarantine requires an observed or effective exact Arrow field",
+                    ));
+                }
+            }
+            SchemaObservationScope::WholeSchema => {
+                if self.observed_field.is_some() || self.effective_field.is_some() {
+                    return Err(CdfError::contract(
+                        "whole-schema observation quarantine cannot carry field-scoped evidence",
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaObservationPolicy {
+    Evolve,
+    Freeze,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalSchemaObservationQuarantine {
+    observation_id: String,
+    physical_schema_hash: SchemaHash,
+    rule_id: String,
+    error_code: String,
+    policy: SchemaObservationPolicy,
+    remediation: String,
+    fields: Vec<SchemaObservationFieldQuarantine>,
+}
+
+impl TerminalSchemaObservationQuarantine {
+    pub fn new(
+        observation_id: impl Into<String>,
+        physical_schema_hash: SchemaHash,
+        rule_id: impl Into<String>,
+        error_code: impl Into<String>,
+        policy: SchemaObservationPolicy,
+        remediation: impl Into<String>,
+        fields: Vec<SchemaObservationFieldQuarantine>,
+    ) -> Result<Self> {
+        let quarantine = Self {
+            observation_id: observation_id.into(),
+            physical_schema_hash,
+            rule_id: rule_id.into(),
+            error_code: error_code.into(),
+            policy,
+            remediation: remediation.into(),
+            fields,
+        };
+        quarantine.validate()?;
+        Ok(quarantine)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.observation_id.is_empty()
+            || self.rule_id.is_empty()
+            || self.error_code.is_empty()
+            || self.remediation.is_empty()
+            || self.fields.is_empty()
+        {
+            return Err(CdfError::contract(
+                "terminal schema-observation quarantine requires identity, rule, policy, remediation, and field evidence",
+            ));
+        }
+        for field in &self.fields {
+            field.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn observation_id(&self) -> &str {
+        &self.observation_id
+    }
+
+    pub fn physical_schema_hash(&self) -> &SchemaHash {
+        &self.physical_schema_hash
+    }
+
+    pub fn rule_id(&self) -> &str {
+        &self.rule_id
+    }
+
+    pub fn error_code(&self) -> &str {
+        &self.error_code
+    }
+
+    pub fn policy(&self) -> &SchemaObservationPolicy {
+        &self.policy
+    }
+
+    pub fn remediation(&self) -> &str {
+        &self.remediation
+    }
+
+    pub fn fields(&self) -> &[SchemaObservationFieldQuarantine] {
+        &self.fields
+    }
+}
 
 #[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -446,6 +716,44 @@ impl EffectiveSchemaEvidence {
 pub struct EffectiveSchemaRuntime {
     pub evidence: EffectiveSchemaEvidence,
     pub schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
+    pub terminal_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+    pub discovery_executor_budget: Option<DiscoveryExecutorBudgetEvidence>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryExecutorBudgetEvidence {
+    pub max_metadata_bytes_per_file: u64,
+    pub max_total_in_flight_bytes: u64,
+    pub max_concurrent_probes: u32,
+}
+
+impl DiscoveryExecutorBudgetEvidence {
+    pub fn new(
+        max_metadata_bytes_per_file: u64,
+        max_total_in_flight_bytes: u64,
+        max_concurrent_probes: u32,
+    ) -> Result<Self> {
+        if max_metadata_bytes_per_file == 0
+            || max_total_in_flight_bytes == 0
+            || max_concurrent_probes == 0
+            || max_metadata_bytes_per_file > max_total_in_flight_bytes
+        {
+            return Err(CdfError::contract(
+                "discovery executor budget requires positive limits and per-file bytes no greater than total in-flight bytes",
+            ));
+        }
+        max_metadata_bytes_per_file
+            .checked_mul(u64::from(max_concurrent_probes))
+            .ok_or_else(|| {
+                CdfError::contract("discovery executor budget byte accounting overflowed")
+            })?;
+        Ok(Self {
+            max_metadata_bytes_per_file,
+            max_total_in_flight_bytes,
+            max_concurrent_probes,
+        })
+    }
 }
 
 impl EffectiveSchemaRuntime {
@@ -458,9 +766,45 @@ impl EffectiveSchemaRuntime {
         let runtime = Self {
             evidence,
             schema_catalog,
+            terminal_quarantines: Vec::new(),
+            discovery_executor_budget: None,
         };
         runtime.validate_intrinsic()?;
         Ok(runtime)
+    }
+
+    pub fn with_terminal_quarantines(
+        mut self,
+        mut terminal_quarantines: Vec<TerminalSchemaObservationQuarantine>,
+    ) -> Result<Self> {
+        terminal_quarantines.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+        self.terminal_quarantines = terminal_quarantines;
+        self.validate_intrinsic()?;
+        Ok(self)
+    }
+
+    pub fn with_discovery_executor_budget(
+        mut self,
+        budget: DiscoveryExecutorBudgetEvidence,
+    ) -> Result<Self> {
+        DiscoveryExecutorBudgetEvidence::new(
+            budget.max_metadata_bytes_per_file,
+            budget.max_total_in_flight_bytes,
+            budget.max_concurrent_probes,
+        )?;
+        self.discovery_executor_budget = Some(budget);
+        self.validate_intrinsic()?;
+        Ok(self)
+    }
+
+    pub fn terminal_quarantine(
+        &self,
+        observation_id: &str,
+    ) -> Option<&TerminalSchemaObservationQuarantine> {
+        self.terminal_quarantines
+            .binary_search_by(|item| item.observation_id.as_str().cmp(observation_id))
+            .ok()
+            .map(|index| &self.terminal_quarantines[index])
     }
 
     pub fn schema_catalog(&self) -> &[EffectiveSchemaCatalogEntry] {
@@ -489,6 +833,33 @@ impl EffectiveSchemaRuntime {
                 )));
             }
         }
+        let mut previous_quarantine = None::<&str>;
+        for quarantine in &self.terminal_quarantines {
+            quarantine.validate()?;
+            if previous_quarantine
+                .is_some_and(|previous| previous >= quarantine.observation_id.as_str())
+            {
+                return Err(CdfError::data(
+                    "terminal schema-observation quarantines are not in unique identity order",
+                ));
+            }
+            let observation = self
+                .evidence
+                .observation(&quarantine.observation_id)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "terminal quarantine references absent observation {:?}",
+                        quarantine.observation_id
+                    ))
+                })?;
+            if observation.physical_schema_hash != quarantine.physical_schema_hash {
+                return Err(CdfError::data(format!(
+                    "terminal quarantine physical schema {} does not match observation {}",
+                    quarantine.physical_schema_hash, observation.physical_schema_hash
+                )));
+            }
+            previous_quarantine = Some(&quarantine.observation_id);
+        }
         Ok(())
     }
 
@@ -510,6 +881,15 @@ pub trait ResourceStream {
     fn schema(&self) -> SchemaRef;
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>>;
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>>;
+    /// Revalidates a planned observation without opening its payload and returns
+    /// the exact source position safe to mark processed. Adapters with mutable
+    /// external identity MUST override this method.
+    fn attest_partition(
+        &self,
+        _partition: &PartitionPlan,
+    ) -> BoxFuture<'_, Result<Option<PartitionAttestation>>> {
+        Box::pin(async { Ok(None) })
+    }
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         None
     }

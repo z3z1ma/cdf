@@ -45,7 +45,7 @@ pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunRep
 
     let schema_hash = request
         .destination
-        .output_schema(request.resource.stream())?
+        .output_schema(&request.plan)?
         .schema_hash;
     let package_dir = request.package_root.join(&request.package_id);
     refuse_existing_package_dir(&package_dir)?;
@@ -230,7 +230,7 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         .identity
         .files
         .iter()
-        .any(|file| file.path.starts_with("quarantine/") && file.path.ends_with(".parquet"));
+        .any(|file| file.path.starts_with("quarantine/"));
     for transition in validation_depth_transitions_recorded(
         &execution.plan.validation_program,
         head.as_ref(),

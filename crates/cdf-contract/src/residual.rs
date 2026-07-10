@@ -14,12 +14,20 @@ use arrow_array::{
     new_null_array,
 };
 use arrow_buffer::{IntervalDayTime, IntervalMonthDayNano, OffsetBuffer, ScalarBuffer, i256};
-use arrow_schema::{DataType, Field, FieldRef, Fields, IntervalUnit, TimeUnit};
+use arrow_schema::{DataType, FieldRef, Fields, IntervalUnit, TimeUnit};
 use arrow_select::concat::concat;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use half::f16;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use crate::RedactionDecision;
+
+pub use cdf_kernel::{
+    CanonicalArrowDateUnit, CanonicalArrowField, CanonicalArrowIntervalUnit,
+    CanonicalArrowTimeUnit, CanonicalArrowType, CanonicalArrowUnionField, CanonicalArrowUnionMode,
+};
 
 pub const RESIDUAL_JSON_V1: u64 = 1;
 pub const RESIDUAL_ENCODING_NAME: &str = "residual-json-v1";
@@ -74,101 +82,13 @@ impl fmt::Display for ResidualCodecError {
 
 impl std::error::Error for ResidualCodecError {}
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ResidualArrowField {
-    pub name: String,
-    pub data_type: ResidualArrowType,
-    pub nullable: bool,
-    pub metadata: BTreeMap<String, String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ResidualArrowType {
-    Null,
-    Boolean,
-    Int {
-        signed: bool,
-        bits: u8,
-    },
-    Float {
-        bits: u8,
-    },
-    Decimal {
-        bits: u16,
-        precision: u8,
-        scale: i8,
-    },
-    Timestamp {
-        unit: ResidualTimeUnit,
-        timezone: Option<String>,
-    },
-    Date {
-        unit: ResidualDateUnit,
-    },
-    Time {
-        unit: ResidualTimeUnit,
-        bits: u8,
-    },
-    Duration {
-        unit: ResidualTimeUnit,
-    },
-    Interval {
-        unit: ResidualIntervalUnit,
-    },
-    Binary {
-        offset_width: u8,
-    },
-    FixedSizeBinary {
-        byte_width: i32,
-    },
-    BinaryView,
-    Utf8 {
-        offset_width: u8,
-    },
-    Utf8View,
-    List {
-        field: Box<ResidualArrowField>,
-        offset_width: u8,
-        view: bool,
-    },
-    FixedSizeList {
-        field: Box<ResidualArrowField>,
-        length: i32,
-    },
-    Struct {
-        fields: Vec<ResidualArrowField>,
-    },
-    Map {
-        field: Box<ResidualArrowField>,
-        sorted: bool,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResidualTimeUnit {
-    Second,
-    Millisecond,
-    Microsecond,
-    Nanosecond,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResidualDateUnit {
-    Day,
-    Millisecond,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ResidualIntervalUnit {
-    YearMonth,
-    DayTime,
-    MonthDayNano,
-}
+pub type ResidualArrowField = CanonicalArrowField;
+pub type ResidualArrowType = CanonicalArrowType;
+pub type ResidualUnionField = CanonicalArrowUnionField;
+pub type ResidualUnionMode = CanonicalArrowUnionMode;
+pub type ResidualTimeUnit = CanonicalArrowTimeUnit;
+pub type ResidualDateUnit = CanonicalArrowDateUnit;
+pub type ResidualIntervalUnit = CanonicalArrowIntervalUnit;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -187,6 +107,16 @@ struct ResidualValue {
     arrow_type: ResidualArrowType,
     encoding: ResidualValueEncoding,
     value: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    redaction: Option<ResidualRedaction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ResidualRedaction {
+    Hash { algorithm: String },
+    Omit,
+    Mask,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -200,6 +130,17 @@ pub struct ResidualFieldRef<'a> {
     path: String,
     array: &'a dyn Array,
     row: usize,
+}
+
+pub struct ResidualFieldWithRedaction<'a> {
+    field: ResidualFieldRef<'a>,
+    redaction: &'a RedactionDecision,
+}
+
+impl<'a> ResidualFieldWithRedaction<'a> {
+    pub fn new(field: ResidualFieldRef<'a>, redaction: &'a RedactionDecision) -> Self {
+        Self { field, redaction }
+    }
 }
 
 impl<'a> ResidualFieldRef<'a> {
@@ -284,7 +225,8 @@ where
 {
     let mut encoded = BTreeMap::new();
     for field in fields {
-        let arrow_type = ResidualArrowType::from_arrow(field.array.data_type())?;
+        let arrow_type = ResidualArrowType::from_arrow(field.array.data_type())
+            .map_err(|reason| unsupported_type(field.array.data_type(), &reason.to_string()))?;
         let encoding = encoding_for_type(field.array.data_type())?;
         let value = encode_arrow_value(field.array, field.row)?;
         if encoded
@@ -294,12 +236,84 @@ where
                     arrow_type,
                     encoding,
                     value,
+                    redaction: None,
                 },
             )
             .is_some()
         {
             return Err(ResidualCodecError::InvalidPath {
                 path: field.path,
+                reason: "duplicate canonical residual path".to_owned(),
+            });
+        }
+    }
+    if encoded.is_empty() {
+        return Err(ResidualCodecError::InvalidEnvelope {
+            reason: "a residual envelope must contain at least one field".to_owned(),
+        });
+    }
+    serde_json::to_vec(&ResidualEnvelope {
+        v: RESIDUAL_JSON_V1,
+        fields: encoded,
+    })
+    .map_err(|error| ResidualCodecError::InvalidEnvelope {
+        reason: error.to_string(),
+    })
+}
+
+pub fn encode_residual_json_v1_redacted<'a, I>(fields: I) -> Result<Vec<u8>, ResidualCodecError>
+where
+    I: IntoIterator<Item = ResidualFieldWithRedaction<'a>>,
+{
+    let mut encoded = BTreeMap::new();
+    for field in fields {
+        let arrow_type =
+            ResidualArrowType::from_arrow(field.field.array.data_type()).map_err(|reason| {
+                unsupported_type(field.field.array.data_type(), &reason.to_string())
+            })?;
+        let encoding = encoding_for_type(field.field.array.data_type())?;
+        let exact = encode_arrow_value(field.field.array, field.field.row)?;
+        let (value, redaction) = match field.redaction {
+            RedactionDecision::Preserve => (exact, None),
+            RedactionDecision::Hash { algorithm } if algorithm == "sha256" => {
+                let canonical = serde_json::to_vec(&exact).map_err(|error| {
+                    ResidualCodecError::InvalidEnvelope {
+                        reason: error.to_string(),
+                    }
+                })?;
+                (
+                    Value::String(format!("sha256:{:x}", Sha256::digest(canonical))),
+                    Some(ResidualRedaction::Hash {
+                        algorithm: algorithm.clone(),
+                    }),
+                )
+            }
+            RedactionDecision::Hash { algorithm } => {
+                return Err(ResidualCodecError::EncodeUnsupported {
+                    data_type: field.field.array.data_type().to_string(),
+                    reason: format!("unsupported residual hash algorithm {algorithm:?}"),
+                });
+            }
+            RedactionDecision::Omit => (Value::Null, Some(ResidualRedaction::Omit)),
+            RedactionDecision::Mask { replacement } => (
+                Value::String(replacement.clone()),
+                Some(ResidualRedaction::Mask),
+            ),
+        };
+        if encoded
+            .insert(
+                field.field.path.clone(),
+                ResidualValue {
+                    arrow_type,
+                    encoding,
+                    value,
+                    redaction,
+                },
+            )
+            .is_some()
+        {
+            return Err(ResidualCodecError::InvalidPath {
+                path: field.field.path,
                 reason: "duplicate canonical residual path".to_owned(),
             });
         }
@@ -350,10 +364,18 @@ pub fn decode_residual_json_v1(
         .into_iter()
         .map(|(path, residual)| {
             validate_canonical_pointer(&path)?;
+            if let Some(redaction) = residual.redaction {
+                return Err(ResidualCodecError::ExactDecode {
+                    path,
+                    reason: format!(
+                        "typed residual value is intentionally redacted ({redaction:?})"
+                    ),
+                });
+            }
             let data_type = residual.arrow_type.to_arrow().map_err(|reason| {
                 ResidualCodecError::ExactDecode {
                     path: path.clone(),
-                    reason,
+                    reason: reason.to_string(),
                 }
             })?;
             let expected_encoding =
@@ -374,340 +396,6 @@ pub fn decode_residual_json_v1(
             Ok(DecodedResidualField { path, array })
         })
         .collect()
-}
-
-impl ResidualArrowField {
-    fn from_arrow(field: &Field) -> Result<Self, ResidualCodecError> {
-        Ok(Self {
-            name: field.name().clone(),
-            data_type: ResidualArrowType::from_arrow(field.data_type())?,
-            nullable: field.is_nullable(),
-            metadata: field
-                .metadata()
-                .iter()
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect(),
-        })
-    }
-
-    fn to_arrow(&self) -> Result<Field, String> {
-        Ok(
-            Field::new(&self.name, self.data_type.to_arrow()?, self.nullable)
-                .with_metadata(self.metadata.clone().into_iter().collect()),
-        )
-    }
-}
-
-impl ResidualArrowType {
-    pub fn from_arrow(data_type: &DataType) -> Result<Self, ResidualCodecError> {
-        let data_type = match data_type {
-            DataType::Null => Self::Null,
-            DataType::Boolean => Self::Boolean,
-            DataType::Int8 => Self::Int {
-                signed: true,
-                bits: 8,
-            },
-            DataType::Int16 => Self::Int {
-                signed: true,
-                bits: 16,
-            },
-            DataType::Int32 => Self::Int {
-                signed: true,
-                bits: 32,
-            },
-            DataType::Int64 => Self::Int {
-                signed: true,
-                bits: 64,
-            },
-            DataType::UInt8 => Self::Int {
-                signed: false,
-                bits: 8,
-            },
-            DataType::UInt16 => Self::Int {
-                signed: false,
-                bits: 16,
-            },
-            DataType::UInt32 => Self::Int {
-                signed: false,
-                bits: 32,
-            },
-            DataType::UInt64 => Self::Int {
-                signed: false,
-                bits: 64,
-            },
-            DataType::Float16 => Self::Float { bits: 16 },
-            DataType::Float32 => Self::Float { bits: 32 },
-            DataType::Float64 => Self::Float { bits: 64 },
-            DataType::Decimal32(precision, scale) => Self::Decimal {
-                bits: 32,
-                precision: *precision,
-                scale: *scale,
-            },
-            DataType::Decimal64(precision, scale) => Self::Decimal {
-                bits: 64,
-                precision: *precision,
-                scale: *scale,
-            },
-            DataType::Decimal128(precision, scale) => Self::Decimal {
-                bits: 128,
-                precision: *precision,
-                scale: *scale,
-            },
-            DataType::Decimal256(precision, scale) => Self::Decimal {
-                bits: 256,
-                precision: *precision,
-                scale: *scale,
-            },
-            DataType::Timestamp(unit, timezone) => Self::Timestamp {
-                unit: ResidualTimeUnit::from_arrow(unit),
-                timezone: timezone.as_deref().map(str::to_owned),
-            },
-            DataType::Date32 => Self::Date {
-                unit: ResidualDateUnit::Day,
-            },
-            DataType::Date64 => Self::Date {
-                unit: ResidualDateUnit::Millisecond,
-            },
-            DataType::Time32(unit) => Self::Time {
-                unit: ResidualTimeUnit::from_arrow(unit),
-                bits: 32,
-            },
-            DataType::Time64(unit) => Self::Time {
-                unit: ResidualTimeUnit::from_arrow(unit),
-                bits: 64,
-            },
-            DataType::Duration(unit) => Self::Duration {
-                unit: ResidualTimeUnit::from_arrow(unit),
-            },
-            DataType::Interval(unit) => Self::Interval {
-                unit: ResidualIntervalUnit::from_arrow(unit),
-            },
-            DataType::Binary => Self::Binary { offset_width: 32 },
-            DataType::LargeBinary => Self::Binary { offset_width: 64 },
-            DataType::FixedSizeBinary(byte_width) => Self::FixedSizeBinary {
-                byte_width: *byte_width,
-            },
-            DataType::BinaryView => Self::BinaryView,
-            DataType::Utf8 => Self::Utf8 { offset_width: 32 },
-            DataType::LargeUtf8 => Self::Utf8 { offset_width: 64 },
-            DataType::Utf8View => Self::Utf8View,
-            DataType::List(field) => Self::List {
-                field: Box::new(ResidualArrowField::from_arrow(field)?),
-                offset_width: 32,
-                view: false,
-            },
-            DataType::LargeList(field) => Self::List {
-                field: Box::new(ResidualArrowField::from_arrow(field)?),
-                offset_width: 64,
-                view: false,
-            },
-            DataType::ListView(field) => Self::List {
-                field: Box::new(ResidualArrowField::from_arrow(field)?),
-                offset_width: 32,
-                view: true,
-            },
-            DataType::LargeListView(field) => Self::List {
-                field: Box::new(ResidualArrowField::from_arrow(field)?),
-                offset_width: 64,
-                view: true,
-            },
-            DataType::FixedSizeList(field, length) => Self::FixedSizeList {
-                field: Box::new(ResidualArrowField::from_arrow(field)?),
-                length: *length,
-            },
-            DataType::Struct(fields) => {
-                reject_duplicate_fields(fields, data_type)?;
-                Self::Struct {
-                    fields: fields
-                        .iter()
-                        .map(|field| ResidualArrowField::from_arrow(field))
-                        .collect::<Result<Vec<_>, _>>()?,
-                }
-            }
-            DataType::Map(field, sorted) => Self::Map {
-                field: Box::new(ResidualArrowField::from_arrow(field)?),
-                sorted: *sorted,
-            },
-            other => return Err(unsupported_type(other, "no exact residual-json-v1 codec")),
-        };
-        Ok(data_type)
-    }
-
-    pub fn to_arrow(&self) -> Result<DataType, String> {
-        match self {
-            Self::Null => Ok(DataType::Null),
-            Self::Boolean => Ok(DataType::Boolean),
-            Self::Int { signed, bits } => match (*signed, *bits) {
-                (true, 8) => Ok(DataType::Int8),
-                (true, 16) => Ok(DataType::Int16),
-                (true, 32) => Ok(DataType::Int32),
-                (true, 64) => Ok(DataType::Int64),
-                (false, 8) => Ok(DataType::UInt8),
-                (false, 16) => Ok(DataType::UInt16),
-                (false, 32) => Ok(DataType::UInt32),
-                (false, 64) => Ok(DataType::UInt64),
-                _ => Err(format!(
-                    "invalid integer descriptor signed={signed} bits={bits}"
-                )),
-            },
-            Self::Float { bits } => match bits {
-                16 => Ok(DataType::Float16),
-                32 => Ok(DataType::Float32),
-                64 => Ok(DataType::Float64),
-                _ => Err(format!("invalid float descriptor bits={bits}")),
-            },
-            Self::Decimal {
-                bits,
-                precision,
-                scale,
-            } => match bits {
-                32 => Ok(DataType::Decimal32(*precision, *scale)),
-                64 => Ok(DataType::Decimal64(*precision, *scale)),
-                128 => Ok(DataType::Decimal128(*precision, *scale)),
-                256 => Ok(DataType::Decimal256(*precision, *scale)),
-                _ => Err(format!("invalid decimal descriptor bits={bits}")),
-            },
-            Self::Timestamp { unit, timezone } => Ok(DataType::Timestamp(
-                unit.to_arrow(),
-                timezone.as_deref().map(Into::into),
-            )),
-            Self::Date {
-                unit: ResidualDateUnit::Day,
-            } => Ok(DataType::Date32),
-            Self::Date {
-                unit: ResidualDateUnit::Millisecond,
-            } => Ok(DataType::Date64),
-            Self::Time { unit, bits: 32 }
-                if matches!(
-                    unit,
-                    ResidualTimeUnit::Second | ResidualTimeUnit::Millisecond
-                ) =>
-            {
-                Ok(DataType::Time32(unit.to_arrow()))
-            }
-            Self::Time { unit, bits: 64 }
-                if matches!(
-                    unit,
-                    ResidualTimeUnit::Microsecond | ResidualTimeUnit::Nanosecond
-                ) =>
-            {
-                Ok(DataType::Time64(unit.to_arrow()))
-            }
-            Self::Time { unit, bits } => Err(format!("invalid time descriptor {bits}/{unit:?}")),
-            Self::Duration { unit } => Ok(DataType::Duration(unit.to_arrow())),
-            Self::Interval { unit } => Ok(DataType::Interval(unit.to_arrow())),
-            Self::Binary { offset_width: 32 } => Ok(DataType::Binary),
-            Self::Binary { offset_width: 64 } => Ok(DataType::LargeBinary),
-            Self::Binary { offset_width } => {
-                Err(format!("invalid binary offset width {offset_width}"))
-            }
-            Self::FixedSizeBinary { byte_width } if *byte_width >= 0 => {
-                Ok(DataType::FixedSizeBinary(*byte_width))
-            }
-            Self::FixedSizeBinary { byte_width } => {
-                Err(format!("negative fixed-size binary width {byte_width}"))
-            }
-            Self::BinaryView => Ok(DataType::BinaryView),
-            Self::Utf8 { offset_width: 32 } => Ok(DataType::Utf8),
-            Self::Utf8 { offset_width: 64 } => Ok(DataType::LargeUtf8),
-            Self::Utf8 { offset_width } => {
-                Err(format!("invalid UTF-8 offset width {offset_width}"))
-            }
-            Self::Utf8View => Ok(DataType::Utf8View),
-            Self::List {
-                field,
-                offset_width: 32,
-                view: false,
-            } => Ok(DataType::List(Arc::new(field.to_arrow()?))),
-            Self::List {
-                field,
-                offset_width: 64,
-                view: false,
-            } => Ok(DataType::LargeList(Arc::new(field.to_arrow()?))),
-            Self::List {
-                field,
-                offset_width: 32,
-                view: true,
-            } => Ok(DataType::ListView(Arc::new(field.to_arrow()?))),
-            Self::List {
-                field,
-                offset_width: 64,
-                view: true,
-            } => Ok(DataType::LargeListView(Arc::new(field.to_arrow()?))),
-            Self::List { offset_width, .. } => {
-                Err(format!("invalid list offset width {offset_width}"))
-            }
-            Self::FixedSizeList { field, length } if *length >= 0 => Ok(DataType::FixedSizeList(
-                Arc::new(field.to_arrow()?),
-                *length,
-            )),
-            Self::FixedSizeList { length, .. } => {
-                Err(format!("negative fixed-size list length {length}"))
-            }
-            Self::Struct { fields } => Ok(DataType::Struct(
-                fields
-                    .iter()
-                    .map(ResidualArrowField::to_arrow)
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into(),
-            )),
-            Self::Map { field, sorted } => Ok(DataType::Map(Arc::new(field.to_arrow()?), *sorted)),
-        }
-    }
-}
-
-impl ResidualTimeUnit {
-    fn from_arrow(unit: &TimeUnit) -> Self {
-        match unit {
-            TimeUnit::Second => Self::Second,
-            TimeUnit::Millisecond => Self::Millisecond,
-            TimeUnit::Microsecond => Self::Microsecond,
-            TimeUnit::Nanosecond => Self::Nanosecond,
-        }
-    }
-
-    fn to_arrow(&self) -> TimeUnit {
-        match self {
-            Self::Second => TimeUnit::Second,
-            Self::Millisecond => TimeUnit::Millisecond,
-            Self::Microsecond => TimeUnit::Microsecond,
-            Self::Nanosecond => TimeUnit::Nanosecond,
-        }
-    }
-}
-
-impl ResidualIntervalUnit {
-    fn from_arrow(unit: &IntervalUnit) -> Self {
-        match unit {
-            IntervalUnit::YearMonth => Self::YearMonth,
-            IntervalUnit::DayTime => Self::DayTime,
-            IntervalUnit::MonthDayNano => Self::MonthDayNano,
-        }
-    }
-
-    fn to_arrow(&self) -> IntervalUnit {
-        match self {
-            Self::YearMonth => IntervalUnit::YearMonth,
-            Self::DayTime => IntervalUnit::DayTime,
-            Self::MonthDayNano => IntervalUnit::MonthDayNano,
-        }
-    }
-}
-
-fn reject_duplicate_fields(
-    fields: &Fields,
-    data_type: &DataType,
-) -> Result<(), ResidualCodecError> {
-    let mut names = BTreeMap::new();
-    for field in fields {
-        if names.insert(field.name(), ()).is_some() {
-            return Err(unsupported_type(
-                data_type,
-                &format!("duplicate struct field name {:?}", field.name()),
-            ));
-        }
-    }
-    Ok(())
 }
 
 fn unsupported_type(data_type: &DataType, reason: &str) -> ResidualCodecError {

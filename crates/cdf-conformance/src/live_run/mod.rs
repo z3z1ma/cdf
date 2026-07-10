@@ -4,9 +4,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_engine::{EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
-    CdfError, CheckpointId, CheckpointStatus, PipelineId, Receipt, Result, SourcePosition,
-    StateDelta, TargetName, WriteDisposition,
+    CdfError, CheckpointId, CheckpointStatus, PipelineId, Receipt, ResourceStream, Result,
+    ScanRequest, SourcePosition, StateDelta, TargetName, WriteDisposition,
 };
 use cdf_package::{PackageReader, PackageStatus};
 use cdf_project::{
@@ -15,7 +17,6 @@ use cdf_project::{
     run_project,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 
 use crate::{
     golden_package::{
@@ -284,24 +285,31 @@ pub async fn run_live_local_file_fixture_with_destination(
         )));
     }
 
-    let identifier_policy = destination
-        .column_identifier_policy()?
-        .map(serde_json::to_value)
-        .transpose()
-        .map_err(|error| {
-            CdfError::data(format!(
-                "serialize live-run destination identifier policy: {error}"
-            ))
-        })?;
-    let plan = serde_json::from_value(live_engine_plan_json(
-        &spec.package_id,
-        identifier_policy.as_ref(),
-    ))
-    .map_err(|error| {
-        CdfError::data(format!(
-            "build live-local-file-v1 engine plan from fixture json: {error}"
-        ))
-    })?;
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    if let Some(identifier_policy) = destination.column_identifier_policy()? {
+        policy.normalization.identifier = identifier_policy;
+    }
+    let validation_program = compile_validation_program(
+        &policy,
+        &ObservedSchema::from_arrow(resource.schema().as_ref()),
+    )?;
+    let mut plan = Planner::new().plan_tier_b(
+        &resource,
+        EnginePlanInput {
+            request: ScanRequest {
+                resource_id: resource.descriptor().resource_id.clone(),
+                projection: None,
+                filters: Vec::new(),
+                limit: None,
+                order_by: Vec::new(),
+                scope: resource.descriptor().state_scope.clone(),
+            },
+            validation_program,
+            boundedness: PlanBoundedness::Bounded,
+            package_id: spec.package_id.clone(),
+        },
+    )?;
+    stabilize_live_fixture_plan(&mut plan);
 
     run_project(ProjectRunRequest {
         resource: ProjectRunSource::local_file(&resource),
@@ -317,6 +325,21 @@ pub async fn run_live_local_file_fixture_with_destination(
         after_receipt_verified,
     })
     .await
+}
+
+fn stabilize_live_fixture_plan(plan: &mut cdf_engine::EnginePlan) {
+    for partition in &mut plan.scan.partitions {
+        partition.metadata.remove("modified_ms");
+        partition
+            .metadata
+            .remove(cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY);
+    }
+    for partition in &mut plan.explain.partitions {
+        partition.metadata.remove("modified_ms");
+        partition
+            .metadata
+            .remove(cdf_kernel::PLAN_SCHEMA_OBSERVATION_BINDING_KEY);
+    }
 }
 
 pub fn assert_live_run_matches_expected(
@@ -516,157 +539,6 @@ fn assert_source_position_matches_expected(delta: &StateDelta, expected: &LiveRu
             "live run segment source position must match checkpoint output position"
         );
     }
-}
-
-fn live_engine_plan_json(
-    package_id: &str,
-    identifier_policy: Option<&serde_json::Value>,
-) -> serde_json::Value {
-    let mut validation_program = validation_program_json();
-    if let Some(identifier_policy) = identifier_policy {
-        validation_program["normalizer_version"] = identifier_policy["version"].clone();
-        validation_program["identifier_policy"] = identifier_policy.clone();
-    }
-    let scope = json!({ "kind": "file", "path": "events.ndjson" });
-    let scan = json!({
-        "plan_id": "plan-local.events",
-        "request": {
-            "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
-            "projection": null,
-            "filters": [],
-            "limit": null,
-            "order_by": [],
-            "scope": scope,
-        },
-        "partitions": [{
-            "partition_id": "files",
-            "scope": scope,
-            "start_position": null,
-            "metadata": {
-                "bytes": LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES.to_string(),
-                "kind": "files",
-                "glob": "events.ndjson",
-                "path": "events.ndjson",
-                "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
-                "sha256": LIVE_LOCAL_FILE_V1_SOURCE_SHA256,
-            },
-        }],
-        "pushed_predicates": [],
-        "unsupported_predicates": [],
-        "estimated_rows": null,
-        "estimated_bytes": null,
-        "delivery_guarantee": "effectively_once_per_package",
-    });
-    let operator_chain = json!([
-        {
-            "kind": "cdf_resource_adapter",
-            "adapter_kind": "cdf_native_resource_adapter",
-            "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
-        },
-        {
-            "kind": "cdf_native_scan",
-            "projection": null,
-            "residual_predicates": [],
-            "limit": null,
-        },
-        { "kind": "schema_fingerprint_exec" },
-        {
-            "kind": "contract_exec",
-            "normalizer_version": "namecase-v1",
-            "column_program_count": 2,
-        },
-        {
-            "kind": "normalize_exec",
-            "normalizer_version": "namecase-v1",
-        },
-        { "kind": "profile_exec" },
-        { "kind": "lineage_exec" },
-        {
-            "kind": "package_sink",
-            "package_id": package_id,
-        },
-    ]);
-
-    json!({
-        "scan": scan,
-        "final_projection": null,
-        "residual_predicates": [],
-        "boundedness": { "kind": "bounded" },
-        "validation_program": validation_program,
-        "operator_chain": operator_chain,
-        "explain": {
-            "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
-            "projected_fields": [],
-            "projection_pushed": false,
-            "limit": null,
-            "limit_pushed": false,
-            "pushed_predicates": [],
-            "inexact_predicates": [],
-            "unsupported_predicates": [],
-            "partitions": [{
-                "partition_id": "files",
-                "scope_kind": "file",
-                "metadata": {
-                    "bytes": LIVE_LOCAL_FILE_V1_SOURCE_SIZE_BYTES.to_string(),
-                    "kind": "files",
-                    "glob": "events.ndjson",
-                    "path": "events.ndjson",
-                    "resource_id": LIVE_LOCAL_FILE_V1_RESOURCE_ID,
-                    "sha256": LIVE_LOCAL_FILE_V1_SOURCE_SHA256,
-                },
-            }],
-            "estimates": {
-                "support": "bytes",
-                "rows": null,
-                "bytes": null,
-            },
-            "delivery_guarantee": "effectively_once_per_package",
-            "boundedness": { "kind": "bounded" },
-            "operator_chain": operator_chain,
-        },
-        "package_id": package_id,
-    })
-}
-
-fn validation_program_json() -> serde_json::Value {
-    json!({
-        "normalizer_version": "namecase-v1",
-        "schema_verdicts": [],
-        "column_programs": [
-            {
-                "source_name": "id",
-                "output_name": "id",
-                "arrow_type": { "kind": "int", "signed": true, "bits": 64 },
-                "steps": [],
-                "nested_action": { "kind": "not_nested" },
-                "redaction": { "kind": "preserve" },
-            },
-            {
-                "source_name": "name",
-                "output_name": "name",
-                "arrow_type": { "kind": "utf8" },
-                "steps": [],
-                "nested_action": { "kind": "not_nested" },
-                "redaction": { "kind": "preserve" },
-            },
-        ],
-        "row_dispositions": [
-            { "outcome": "pass", "disposition": "accept" },
-            { "outcome": "coerced", "disposition": "accept" },
-            { "outcome": "admitted_as_variant", "disposition": "accept" },
-            { "outcome": "violation", "disposition": "quarantine" },
-            { "outcome": "fatal", "disposition": "reject_run" },
-        ],
-        "transforms": [],
-        "promotion": {
-            "clean_runs_required": 3,
-            "allow_sampled_fast_path": false,
-            "demote_on_drift": true,
-            "demote_on_anomaly": true,
-            "demote_on_quarantine": true,
-        },
-        "warnings": [],
-    })
 }
 
 #[cfg(test)]

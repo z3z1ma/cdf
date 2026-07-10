@@ -172,10 +172,14 @@ impl PostgresCommitSession {
             .client
             .take()
             .ok_or_else(|| CdfError::internal("Postgres commit session has no transaction"))?;
-        execute_statements(&mut client, &self.plan.target_ddl)?;
         let xid = query_xid(&mut client, &self.plan)?;
         let committed_at_ms = now_ms()?;
-        let counts = apply_write_plan(&mut client, &self.plan, &package, committed_at_ms)?;
+        let counts = if self.expected_segments.is_empty() {
+            CommitCounts::default()
+        } else {
+            execute_statements(&mut client, &self.plan.target_ddl)?;
+            apply_write_plan(&mut client, &self.plan, &package, committed_at_ms)?
+        };
         let receipt = build_receipt(
             &self.plan,
             PostgresReceiptInput {
@@ -234,6 +238,9 @@ impl CommitSession for PostgresCommitSession {
         self.duplicate_receipt = find_duplicate_receipt(&mut client, &self.plan)?;
         self.client = Some(client);
         self.phase = PostgresCommitSessionPhase::MigrationsApplied;
+        if self.expected_segments.is_empty() {
+            self.write_accepted_segments()?;
+        }
         Ok(())
     }
 

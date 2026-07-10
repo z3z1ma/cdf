@@ -1,4 +1,4 @@
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_validation_program};
+use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_engine::{EnginePlan, EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{
     CdfError, CheckpointId, CursorOrderingClaim, IncrementalShape, PipelineId, PredicateId,
@@ -60,9 +60,10 @@ pub fn plan_backfill(
         .cursor
         .as_ref()
         .expect("validate_backfill_eligible requires cursor");
-    let validation_program = compile_validation_program(
+    let validation_program = compile_resource_validation_program(
         &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
+        resource.descriptor(),
     )?;
     let planner = Planner::new();
     let mut planned = Vec::with_capacity(slices.len());

@@ -32,18 +32,18 @@ use cdf_kernel::{
     DestinationId, DestinationProtocol, DestinationSheet, EstimateSupport, FileManifest,
     FilePosition, FilterCapabilities, IdempotencySupport, IdempotencyToken, IdentifierRules,
     IncrementalShape, LogPosition, MigrationRecord, PackageHash, PageToken, PartitionId,
-    PipelineId, PlanId, PushdownFidelity, QueryableResource, Receipt, ReceiptId,
-    ReceiptVerification, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
-    ResourceStream, Result, RewindReport, RewindRequest, RunEvent, RunEventSink,
-    RunEventSinkResult, RunId, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SegmentAck,
-    SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, TransactionSupport,
-    TrustLevel, VerifyClause, WriteDisposition,
+    PipelineId, PlanId, ProcessedObservationOutcome, ProcessedObservationPosition,
+    PushdownFidelity, QueryableResource, Receipt, ReceiptId, ReceiptVerification, ReplaySupport,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result, RewindReport,
+    RewindRequest, RunEvent, RunEventSink, RunEventSinkResult, RunId, ScanRequest, SchemaHash,
+    SchemaSource, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TargetName, TransactionSupport, TrustLevel, VerifyClause, WriteDisposition,
 };
 use cdf_package::{
     DESTINATION_COMMIT_PLAN_FILE, DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder,
-    PackageManifest, PackageReader, PackageReplayInputs, PackageStatus, RECEIPTS_FILE,
-    STATE_INPUT_CHECKPOINT_FILE, STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage,
-    canonical_json_bytes,
+    PackageManifest, PackageReader, PackageReplayInputs, PackageStatus,
+    ProcessedObservationEvidenceArtifact, RECEIPTS_FILE, STATE_INPUT_CHECKPOINT_FILE,
+    STATE_PROPOSED_DELTA_FILE, StateDeltaPreimage, canonical_json_bytes,
 };
 use cdf_state_sqlite::{
     RunEventDetails, RunEventKind, RunEventValue, SecretReference, SqliteCheckpointStore,
@@ -742,6 +742,65 @@ fn build_package(package_dir: &Path, package_id: &str, status: PackageStatus) ->
         .unwrap();
     write_state_commit_artifacts(&builder, &segment);
     builder.finish_with_status(status).unwrap()
+}
+
+fn build_zero_segment_processed_package(package_dir: &Path, package_id: &str) -> PackageManifest {
+    let builder = PackageBuilder::create(package_dir, package_id).unwrap();
+    builder.update_status(PackageStatus::Extracting).unwrap();
+    let output_position = SourcePosition::FileManifest(FileManifest {
+        version: CHECKPOINT_STATE_VERSION,
+        files: vec![FilePosition {
+            path: "month-07.parquet".to_owned(),
+            size_bytes: 41,
+            etag: Some("etag-07".to_owned()),
+            sha256: Some("sha256-07".to_owned()),
+        }],
+    });
+    let processed = ProcessedObservationPosition::new(
+        "month-07.parquet",
+        ProcessedObservationOutcome::Quarantined,
+        output_position.clone(),
+    )
+    .unwrap();
+    let scope = ScopeKey::Resource;
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-zero-artifact").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-1").unwrap(),
+        resource_id: ResourceId::new("orders").unwrap(),
+        scope,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position: output_position.clone(),
+        schema_hash: SchemaHash::new(SCHEMA_HASH).unwrap(),
+        segments: Vec::new(),
+    };
+    builder
+        .write_json_artifact(
+            cdf_package::PROCESSED_OBSERVATIONS_FILE,
+            &ProcessedObservationEvidenceArtifact::new(
+                None,
+                WriteDisposition::Append,
+                vec![processed],
+                output_position,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_state_delta_preimage_artifact(&state_delta)
+        .unwrap();
+    builder
+        .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("orders").unwrap(),
+            WriteDisposition::Append,
+            Vec::new(),
+            SchemaHash::new(SCHEMA_HASH).unwrap(),
+            Vec::new(),
+        ))
+        .unwrap();
+    builder.finish().unwrap()
 }
 
 fn write_state_commit_artifacts(builder: &PackageBuilder, segment: &cdf_package::SegmentEntry) {
@@ -1482,13 +1541,29 @@ fn live_plan_with_exact_policy(
     package_id: &str,
     policy: &ContractPolicy,
 ) -> EnginePlan {
-    let mut plan = default_live_plan(resource, package_id);
-    plan.validation_program = compile_validation_program(
+    let validation_program = compile_validation_program(
         policy,
         &ObservedSchema::from_arrow(resource.schema().as_ref()),
     )
     .unwrap();
-    plan
+    Planner::new()
+        .plan_tier_b(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                boundedness: PlanBoundedness::Bounded,
+                package_id: package_id.to_owned(),
+            },
+        )
+        .unwrap()
 }
 
 fn state_delta_request<'a>(
@@ -1536,15 +1611,15 @@ fn engine_output_with_positions(
         })
         .collect();
     manifest.identity.segments = segments.clone();
-    EngineRunOutputWithSegmentPositions {
-        output: EngineRunOutput {
+    EngineRunOutputWithSegmentPositions::new(
+        EngineRunOutput {
             manifest,
             segments,
             profile: ExecutionProfile::default(),
             lineage: LineageSummary::default(),
         },
         segment_positions,
-    }
+    )
 }
 
 fn state_delta_for_positions(
@@ -1573,7 +1648,10 @@ fn destination_planning_facade_previews_duckdb_schema_commit_without_writes() {
         ResolvedProjectDestination::duckdb(&database_path, TargetName::new("events").unwrap())
             .unwrap();
 
-    let plan = destination.plan_resource_commit(&resource).unwrap();
+    let engine_plan = live_plan(&resource, "pkg-plan-preview-duckdb");
+    let plan = destination
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap();
 
     assert_eq!(plan.description.destination_id.as_str(), "duckdb");
     assert_eq!(plan.target.as_str(), "events");
@@ -1612,7 +1690,10 @@ fn destination_planning_facade_rejects_parquet_merge_without_writes() {
 
     assert_eq!(destination.column_identifier_policy().unwrap(), None);
 
-    let error = destination.plan_resource_commit(&resource).unwrap_err();
+    let engine_plan = live_plan(&resource, "pkg-plan-preview-parquet");
+    let error = destination
+        .plan_resource_commit(&resource, &engine_plan)
+        .unwrap_err();
 
     assert!(error.to_string().contains("Parquet destination"));
     assert!(
@@ -5167,7 +5248,10 @@ fn state_delta_rejects_incompatible_cursor_fields_values_and_lag() {
         vec![cursor_position("updated_at", CursorValue::U64(3))],
     )
     .unwrap_err();
-    assert!(lag_error.to_string().contains("incompatible cursor lag"));
+    assert!(
+        lag_error.to_string().contains("incompatible cursor lag"),
+        "{lag_error}"
+    );
 }
 
 struct CommitFailingStore {
@@ -5749,6 +5833,73 @@ fn recovery_verifies_durable_receipt_and_commits_without_new_destination_write()
             .len(),
         loads_before
     );
+}
+
+#[test]
+fn zero_segment_processed_package_recovers_after_receipt_without_source_or_data_mutation() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-zero-recovery");
+    build_zero_segment_processed_package(&package_dir, "pkg-zero-recovery");
+    let db_path = temp.path().join("local.duckdb");
+    let state_path = temp.path().join("state.db");
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let hook = |_receipt: &Receipt| Err(CdfError::internal("stop before zero checkpoint"));
+
+    let error = replay_package_from_artifacts(PackageArtifactReplayRequest {
+        package_dir: package_dir.clone(),
+        destination: ResolvedProjectDestination::duckdb(
+            &db_path,
+            TargetName::new("orders").unwrap(),
+        )
+        .unwrap(),
+        checkpoint_store: &store,
+        after_receipt_verified: Some(&hook),
+    })
+    .unwrap_err();
+    assert!(error.to_string().contains("stop before zero checkpoint"));
+    let reader = PackageReader::open(&package_dir).unwrap();
+    let inputs = reader.replay_inputs().unwrap();
+    assert!(inputs.state_delta.segments.is_empty());
+    let receipts = reader.receipts().unwrap();
+    assert_eq!(receipts.len(), 1);
+    assert!(receipts[0].segment_acks.is_empty());
+    assert!(
+        store
+            .head(
+                &inputs.state_delta.pipeline_id,
+                &inputs.state_delta.resource_id,
+                &inputs.state_delta.scope,
+            )
+            .unwrap()
+            .is_none()
+    );
+
+    let recovered = recover_package_from_artifacts(PackageArtifactRecoveryRequest {
+        package_dir: package_dir.clone(),
+        destination: ResolvedProjectDestination::duckdb(
+            &db_path,
+            TargetName::new("orders").unwrap(),
+        )
+        .unwrap(),
+        checkpoint_store: &store,
+        receipt: receipts[0].clone(),
+        after_receipt_verified: None,
+    })
+    .unwrap();
+    assert_eq!(recovered.checkpoint.status, CheckpointStatus::Committed);
+    assert!(recovered.checkpoint.delta.segments.is_empty());
+    assert_eq!(
+        recovered.checkpoint.delta.output_position,
+        inputs.state_delta.output_position
+    );
+    assert_eq!(package_status(&package_dir), PackageStatus::Checkpointed);
+
+    let mirrors = DuckDbDestination::new(&db_path)
+        .unwrap()
+        .read_mirror_snapshot_read_only()
+        .unwrap();
+    assert_eq!(mirrors.loads.len(), 1);
+    assert!(mirrors.state.is_empty());
 }
 
 #[test]

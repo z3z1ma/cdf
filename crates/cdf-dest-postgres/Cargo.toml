@@ -9,6 +9,7 @@ description = "Postgres destination boundary for cdf."
 [dependencies]
 arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
+cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
 futures-util = "0.3.32"

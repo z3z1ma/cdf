@@ -6,19 +6,18 @@ use std::{
     sync::Arc,
 };
 
-use arrow_array::{ArrayRef, RecordBatch, new_null_array};
+use arrow_array::{Array, ArrayRef, RecordBatch, new_null_array};
 use arrow_cast::cast::{can_cast_types, cast};
 use arrow_csv::reader::{Format as ArrowCsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_ipc::reader::{FileReader, StreamReader};
 use arrow_json::reader::{ReaderBuilder as JsonReaderBuilder, infer_json_schema};
 use arrow_schema::{ArrowError, DataType, Field, Schema, SchemaRef};
 use cdf_contract::{
-    ContractPolicy, ObservedSchema, PiiRedactionPolicy, RedactionDecision, SchemaCoercionPlan,
-    TypePolicy, reconcile_schema, redaction_decision_for_field,
+    ContractPolicy, ObservedSchema, SchemaCoercionPlan, TypePolicy, reconcile_schema,
 };
 use cdf_kernel::{
-    Batch, BatchId, CdfError, FileManifest, FilePosition, PreContractObservedValue,
-    PreContractQuarantineFact, ResourceDescriptor, ResourceId, Result, SchemaHash,
+    Batch, BatchId, CdfError, FileManifest, FilePosition, PreContractQuarantineFact,
+    PreContractResidualCandidate, ResourceDescriptor, ResourceId, Result, SchemaHash,
     SchemaSnapshotReference, SchemaSource, ScopeKey, SourcePosition, TrustLevel, WriteDisposition,
     source_name,
 };
@@ -250,21 +249,24 @@ pub fn read_arrow_ipc_file_path_with_declared_schema(
     let reconciliation_plan = reconciliation.plan;
     let reconciled_schema = Arc::new(reconciliation.schema);
     let physical_batches = collect_record_batches(&mut reader)?;
-    let record_batches = reconcile_record_batches(
+    let reconciled = reconcile_record_batches(
         physical_schema.as_ref(),
         reconciled_schema.clone(),
         physical_batches,
         "Arrow IPC",
     )?;
     with_observed_schema_hash(
-        build_output_with_pre_contract_quarantine(
+        build_output_with_pre_contract_evidence(
             reconciled_schema,
-            record_batches,
+            reconciled.batches,
             options,
             scope,
             Some(position),
-            Vec::new(),
-            Some(&reconciliation_plan),
+            PreContractReadEvidence {
+                quarantine: Vec::new(),
+                residual_candidates: reconciled.residual_candidates,
+                schema_coercion_plan: Some(&reconciliation_plan),
+            },
         )?,
         physical_schema_hash,
     )
@@ -463,14 +465,17 @@ fn read_ndjson_bytes_with_declared_schema_and_scope(
     let filtered =
         filter_declared_ndjson_rows(bytes, declared_schema.as_ref(), type_policy, &position)?;
     if filtered.accepted_rows == 0 {
-        return build_output_with_pre_contract_quarantine(
+        return build_output_with_pre_contract_evidence(
             declared_schema.clone(),
             vec![RecordBatch::new_empty(declared_schema)],
             options,
             scope,
             position,
-            filtered.quarantine_facts,
-            None,
+            PreContractReadEvidence {
+                quarantine: filtered.quarantine_facts,
+                residual_candidates: Vec::new(),
+                schema_coercion_plan: None,
+            },
         );
     }
 
@@ -479,7 +484,11 @@ fn read_ndjson_bytes_with_declared_schema_and_scope(
         json_options.max_read_records,
     )
     .map_err(CdfError::from)?;
-    let physical_schema = Arc::new(physical_schema);
+    let physical_schema = Arc::new(repair_residual_null_inference(
+        physical_schema,
+        declared_schema.as_ref(),
+        &filtered.residual_candidates,
+    ));
     let physical_schema_hash = schema_hash(physical_schema.as_ref())?;
     let reconciliation = reconcile_schema(
         physical_schema.as_ref(),
@@ -487,27 +496,38 @@ fn read_ndjson_bytes_with_declared_schema_and_scope(
         type_policy,
     )?;
     let reconciliation_plan = reconciliation.plan;
-    let reconciled_schema = Arc::new(reconciliation.schema);
+    let reconciled_schema = Arc::new(nullable_residual_decode_schema(
+        reconciliation.schema,
+        &filtered.residual_candidates,
+    ));
     let mut reader = JsonReaderBuilder::new(physical_schema.clone())
         .with_batch_size(options.batch_size)
         .build(Cursor::new(filtered.accepted_ndjson))
         .map_err(CdfError::from)?;
     let physical_batches = collect_record_batches(&mut reader)?;
-    let record_batches = reconcile_record_batches(
+    let mut reconciled = reconcile_record_batches(
         physical_schema.as_ref(),
         reconciled_schema.clone(),
         physical_batches,
         "JSON",
     )?;
+    merge_pending_residual_candidates(
+        &mut reconciled.residual_candidates,
+        &reconciled.batches,
+        filtered.residual_candidates,
+    )?;
     with_observed_schema_hash(
-        build_output_with_pre_contract_quarantine(
+        build_output_with_pre_contract_evidence(
             reconciled_schema,
-            record_batches,
+            reconciled.batches,
             options,
             scope,
             position,
-            filtered.quarantine_facts,
-            Some(&reconciliation_plan),
+            PreContractReadEvidence {
+                quarantine: filtered.quarantine_facts,
+                residual_candidates: reconciled.residual_candidates,
+                schema_coercion_plan: Some(&reconciliation_plan),
+            },
         )?,
         physical_schema_hash,
     )
@@ -585,7 +605,7 @@ fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'st
         .build()
         .map_err(|error| parquet_data_error("create Parquet record batch reader", error))?;
     let physical_batches = collect_record_batches(&mut reader)?;
-    let record_batches = reconcile_record_batches(
+    let reconciled = reconcile_record_batches(
         physical_schema.as_ref(),
         reconciled_schema.clone(),
         physical_batches,
@@ -593,17 +613,25 @@ fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'st
     )?;
 
     with_observed_schema_hash(
-        build_output_with_pre_contract_quarantine(
+        build_output_with_pre_contract_evidence(
             reconciled_schema,
-            record_batches,
+            reconciled.batches,
             options,
             scope,
             position,
-            Vec::new(),
-            Some(&reconciliation_plan),
+            PreContractReadEvidence {
+                quarantine: Vec::new(),
+                residual_candidates: reconciled.residual_candidates,
+                schema_coercion_plan: Some(&reconciliation_plan),
+            },
         )?,
         physical_schema_hash,
     )
+}
+
+struct ReconciledRecordBatches {
+    batches: Vec<RecordBatch>,
+    residual_candidates: Vec<Vec<PreContractResidualCandidate>>,
 }
 
 fn reconcile_record_batches(
@@ -611,18 +639,49 @@ fn reconcile_record_batches(
     reconciled_schema: SchemaRef,
     record_batches: Vec<RecordBatch>,
     format_name: &str,
-) -> Result<Vec<RecordBatch>> {
-    record_batches
-        .into_iter()
-        .map(|batch| {
-            reconcile_record_batch(
-                physical_schema,
-                reconciled_schema.clone(),
-                batch,
-                format_name,
-            )
-        })
-        .collect()
+) -> Result<ReconciledRecordBatches> {
+    let projected_sources = reconciled_schema
+        .fields()
+        .iter()
+        .map(|field| field_source_name(field.as_ref()))
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut batches = Vec::with_capacity(record_batches.len());
+    let mut residual_candidates = Vec::with_capacity(record_batches.len());
+    let mut source_row_ordinal = 0_u64;
+    for batch in record_batches {
+        let mut candidates = Vec::new();
+        for (field_index, field) in physical_schema.fields().iter().enumerate() {
+            let source = field_source_name(field.as_ref());
+            if projected_sources.contains(source) {
+                continue;
+            }
+            let values = batch.column(field_index).clone();
+            for row in 0..batch.num_rows() {
+                candidates.push(PreContractResidualCandidate::new(
+                    source_row_ordinal + row as u64,
+                    row,
+                    vec![source.to_owned()],
+                    field.as_ref().clone(),
+                    None,
+                    values.clone(),
+                    row,
+                )?);
+            }
+        }
+        let row_count = batch.num_rows() as u64;
+        batches.push(reconcile_record_batch(
+            physical_schema,
+            reconciled_schema.clone(),
+            batch,
+            format_name,
+        )?);
+        residual_candidates.push(candidates);
+        source_row_ordinal += row_count;
+    }
+    Ok(ReconciledRecordBatches {
+        batches,
+        residual_candidates,
+    })
 }
 
 fn reconcile_record_batch(
@@ -702,29 +761,43 @@ fn build_output(
     scope: ScopeKey,
     position: Option<SourcePosition>,
 ) -> Result<FormatRead> {
-    build_output_with_pre_contract_quarantine(
+    build_output_with_pre_contract_evidence(
         schema,
         record_batches,
         options,
         scope,
         position,
-        Vec::new(),
-        None,
+        PreContractReadEvidence {
+            quarantine: Vec::new(),
+            residual_candidates: Vec::new(),
+            schema_coercion_plan: None,
+        },
     )
 }
 
-fn build_output_with_pre_contract_quarantine(
+struct PreContractReadEvidence<'a> {
+    quarantine: Vec<PreContractQuarantineFact>,
+    residual_candidates: Vec<Vec<PreContractResidualCandidate>>,
+    schema_coercion_plan: Option<&'a SchemaCoercionPlan>,
+}
+
+fn build_output_with_pre_contract_evidence(
     schema: SchemaRef,
     mut record_batches: Vec<RecordBatch>,
     options: &ReadOptions,
     scope: ScopeKey,
     position: Option<SourcePosition>,
-    mut pre_contract_quarantine: Vec<PreContractQuarantineFact>,
-    schema_coercion_plan: Option<&SchemaCoercionPlan>,
+    evidence: PreContractReadEvidence<'_>,
 ) -> Result<FormatRead> {
+    let PreContractReadEvidence {
+        mut quarantine,
+        mut residual_candidates,
+        schema_coercion_plan,
+    } = evidence;
     if record_batches.is_empty() {
         record_batches.push(RecordBatch::new_empty(Arc::clone(&schema)));
     }
+    residual_candidates.resize_with(record_batches.len(), Vec::new);
     let schema = record_batches
         .first()
         .map(RecordBatch::schema)
@@ -766,8 +839,11 @@ fn build_output_with_pre_contract_quarantine(
         batch.header.source_position = position.clone();
         batch.header.schema_coercion_plan = schema_coercion_plan.clone();
         if index == 0 {
-            batch.header.pre_contract_quarantine = std::mem::take(&mut pre_contract_quarantine);
+            batch.header.pre_contract_quarantine = std::mem::take(&mut quarantine);
         }
+        batch
+            .header
+            .extend_residual_candidates(std::mem::take(&mut residual_candidates[index]));
         batches.push(batch);
     }
 
@@ -793,13 +869,24 @@ struct DeclaredNdjsonFilter {
     accepted_ndjson: Vec<u8>,
     accepted_rows: usize,
     quarantine_facts: Vec<PreContractQuarantineFact>,
+    residual_candidates: Vec<PendingResidualCandidate>,
+}
+
+struct PendingResidualCandidate {
+    accepted_row_ordinal: usize,
+    source_row_ordinal: u64,
+    source_path: Vec<String>,
+    observed_field: Field,
+    expected_field: Option<Field>,
+    value: ArrayRef,
+    value_index: usize,
 }
 
 fn filter_declared_ndjson_rows(
     bytes: &[u8],
     schema: &arrow_schema::Schema,
     type_policy: &TypePolicy,
-    position: &Option<SourcePosition>,
+    _position: &Option<SourcePosition>,
 ) -> Result<DeclaredNdjsonFilter> {
     validate_declared_json_schema(schema)?;
     let declared_fields = schema
@@ -812,7 +899,8 @@ fn filter_declared_ndjson_rows(
     })?;
     let mut accepted_ndjson = Vec::new();
     let mut accepted_rows = 0_usize;
-    let mut quarantine_facts = Vec::new();
+    let quarantine_facts = Vec::new();
+    let mut residual_candidates = Vec::new();
     let mut row_ordinal = 0_u64;
 
     for (line_index, line) in text.lines().enumerate() {
@@ -822,39 +910,56 @@ fn filter_declared_ndjson_rows(
                 line_index + 1
             )));
         }
-        let row: Value = serde_json::from_str(line).map_err(json_error)?;
-        let object = row.as_object().ok_or_else(|| {
+        let mut row: Value = serde_json::from_str(line).map_err(json_error)?;
+        let object = row.as_object_mut().ok_or_else(|| {
             CdfError::data(format!(
                 "NDJSON file source line {} must be a JSON object",
                 line_index + 1
             ))
         })?;
-        let mut row_facts = Vec::new();
+        let unknown = object
+            .iter()
+            .filter(|(source, _)| !declared_fields.contains_key(source.as_str()))
+            .map(|(source, value)| (source.clone(), value.clone()))
+            .collect::<Vec<_>>();
+        for (source, value) in unknown {
+            let (observed_field, value_array) = json_residual_array(&source, &value)?;
+            residual_candidates.push(PendingResidualCandidate {
+                accepted_row_ordinal: accepted_rows,
+                source_row_ordinal: row_ordinal,
+                source_path: vec![source.clone()],
+                observed_field,
+                expected_field: None,
+                value: value_array,
+                value_index: 0,
+            });
+            object.remove(&source);
+        }
         for (source, field) in &declared_fields {
-            let Some(value) = object.get(*source) else {
+            let Some(value) = object.get(*source).cloned() else {
                 continue;
             };
             if value.is_null() {
                 continue;
             }
-            if declared_json_type_mismatch(field, value, type_policy)? {
-                row_facts.push(PreContractQuarantineFact {
+            if declared_json_type_mismatch(field, &value, type_policy)? {
+                let (observed_field, value_array) = json_residual_array(source, &value)?;
+                residual_candidates.push(PendingResidualCandidate {
+                    accepted_row_ordinal: accepted_rows,
                     source_row_ordinal: row_ordinal,
-                    rule_id: format!("source-decode:{source}:type-mismatch"),
-                    error_code: "source_type_mismatch".to_owned(),
-                    source_position: position.clone(),
-                    observed_value_redacted: redacted_declared_json_value(field, value)?,
+                    source_path: vec![(*source).to_owned()],
+                    observed_field,
+                    expected_field: Some((*field).clone()),
+                    value: value_array,
+                    value_index: 0,
                 });
+                object.insert((*source).to_owned(), Value::Null);
             }
         }
 
-        if row_facts.is_empty() {
-            serde_json::to_writer(&mut accepted_ndjson, &row).map_err(json_error)?;
-            accepted_ndjson.push(b'\n');
-            accepted_rows += 1;
-        } else {
-            quarantine_facts.extend(row_facts);
-        }
+        serde_json::to_writer(&mut accepted_ndjson, &row).map_err(json_error)?;
+        accepted_ndjson.push(b'\n');
+        accepted_rows += 1;
         row_ordinal += 1;
     }
 
@@ -862,7 +967,114 @@ fn filter_declared_ndjson_rows(
         accepted_rows,
         accepted_ndjson,
         quarantine_facts,
+        residual_candidates,
     })
+}
+
+fn repair_residual_null_inference(
+    physical: Schema,
+    declared: &Schema,
+    _candidates: &[PendingResidualCandidate],
+) -> Schema {
+    let fields = physical
+        .fields()
+        .iter()
+        .map(|field| {
+            let source = field_source_name(field.as_ref());
+            if field.data_type() != &DataType::Null {
+                return field.as_ref().clone();
+            }
+            let Some(expected) = declared
+                .fields()
+                .iter()
+                .find(|expected| field_source_name(expected.as_ref()) == source)
+            else {
+                return field.as_ref().clone();
+            };
+            Field::new(field.name(), expected.data_type().clone(), true)
+                .with_metadata(field.metadata().clone())
+        })
+        .collect::<Vec<_>>();
+    Schema::new_with_metadata(fields, physical.metadata().clone())
+}
+
+fn nullable_residual_decode_schema(
+    reconciled: Schema,
+    candidates: &[PendingResidualCandidate],
+) -> Schema {
+    let residual_sources = candidates
+        .iter()
+        .filter(|candidate| candidate.expected_field.is_some())
+        .filter_map(|candidate| candidate.source_path.first().map(String::as_str))
+        .collect::<std::collections::BTreeSet<_>>();
+    let fields = reconciled
+        .fields()
+        .iter()
+        .map(|field| {
+            if residual_sources.contains(field_source_name(field.as_ref())) {
+                field.as_ref().clone().with_nullable(true)
+            } else {
+                field.as_ref().clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Schema::new_with_metadata(fields, reconciled.metadata().clone())
+}
+
+fn json_residual_array(source: &str, value: &Value) -> Result<(Field, ArrayRef)> {
+    const VALUE_FIELD: &str = "__cdf_residual_value";
+    let row = serde_json::json!({VALUE_FIELD: value});
+    let mut encoded = serde_json::to_vec(&row).map_err(json_error)?;
+    encoded.push(b'\n');
+    let (schema, _) =
+        infer_json_schema(Cursor::new(encoded.as_slice()), Some(1)).map_err(CdfError::from)?;
+    let schema = Arc::new(schema);
+    let mut reader = JsonReaderBuilder::new(schema.clone())
+        .with_batch_size(1)
+        .build(Cursor::new(encoded))
+        .map_err(CdfError::from)?;
+    let batch = reader
+        .next()
+        .transpose()
+        .map_err(CdfError::from)?
+        .ok_or_else(|| CdfError::internal("residual JSON scalar produced no Arrow batch"))?;
+    let field = Field::new(source, schema.field(0).data_type().clone(), true);
+    Ok((field, batch.column(0).clone()))
+}
+
+fn merge_pending_residual_candidates(
+    target: &mut [Vec<PreContractResidualCandidate>],
+    batches: &[RecordBatch],
+    pending: Vec<PendingResidualCandidate>,
+) -> Result<()> {
+    let mut row_offset = 0_usize;
+    for candidate in pending {
+        let mut matched = false;
+        for (batch_index, batch) in batches.iter().enumerate() {
+            let row_end = row_offset + batch.num_rows();
+            if candidate.accepted_row_ordinal < row_end {
+                target[batch_index].push(PreContractResidualCandidate::new(
+                    candidate.source_row_ordinal,
+                    candidate.accepted_row_ordinal - row_offset,
+                    candidate.source_path,
+                    candidate.observed_field,
+                    candidate.expected_field,
+                    candidate.value,
+                    candidate.value_index,
+                )?);
+                matched = true;
+                break;
+            }
+            row_offset = row_end;
+        }
+        if !matched {
+            return Err(CdfError::internal(
+                "residual candidate row was not present in decoded Arrow batches",
+            ));
+        }
+        row_offset = 0;
+    }
+    Ok(())
 }
 
 fn validate_declared_json_schema(schema: &arrow_schema::Schema) -> Result<()> {
@@ -909,13 +1121,6 @@ fn declared_json_type_mismatch(
     value: &Value,
     type_policy: &TypePolicy,
 ) -> Result<bool> {
-    if !is_json_scalar(value) {
-        return Err(CdfError::data(format!(
-            "NDJSON field {:?} expected scalar {}, got complex JSON value",
-            field.name(),
-            field.data_type()
-        )));
-    }
     Ok(match field.data_type() {
         DataType::Boolean => !(value.is_boolean() || value.is_string() && type_policy.coerce_types),
         DataType::Int8 | DataType::Int16 | DataType::Int32 | DataType::Int64 => {
@@ -955,44 +1160,6 @@ fn json_signed_integer(value: &Value) -> bool {
 
 fn json_unsigned_integer(value: &Value) -> bool {
     value.as_u64().is_some()
-}
-
-fn is_json_scalar(value: &Value) -> bool {
-    value.is_boolean() || value.is_number() || value.is_string()
-}
-
-fn redacted_declared_json_value(field: &Field, value: &Value) -> Result<PreContractObservedValue> {
-    let value = source_scalar_string(value).ok_or_else(|| {
-        CdfError::data(format!(
-            "NDJSON field {:?} type mismatch value is not scalar",
-            field.name()
-        ))
-    })?;
-    match redaction_decision_for_field(field, &PiiRedactionPolicy::default()) {
-        RedactionDecision::Preserve => Ok(PreContractObservedValue::Preserved { value }),
-        RedactionDecision::Hash { algorithm } if algorithm == "sha256" => {
-            Ok(PreContractObservedValue::Hashed {
-                algorithm,
-                value: format!("sha256:{}", sha256_hex(value.as_bytes())),
-            })
-        }
-        RedactionDecision::Hash { algorithm } => Err(CdfError::contract(format!(
-            "unsupported quarantine hash algorithm {algorithm:?}"
-        ))),
-        RedactionDecision::Omit => Ok(PreContractObservedValue::Omitted),
-        RedactionDecision::Mask { replacement } => {
-            Ok(PreContractObservedValue::Masked { value: replacement })
-        }
-    }
-}
-
-fn source_scalar_string(value: &Value) -> Option<String> {
-    match value {
-        Value::Bool(value) => Some(value.to_string()),
-        Value::Number(value) => Some(value.to_string()),
-        Value::String(value) => Some(value.clone()),
-        Value::Null | Value::Array(_) | Value::Object(_) => None,
-    }
 }
 
 fn collect_record_batches<I>(reader: &mut I) -> Result<Vec<RecordBatch>>
@@ -1050,12 +1217,6 @@ fn file_sha256(path: &Path) -> Result<String> {
     std::io::copy(&mut file, &mut hasher)
         .map_err(|error| io_data_error(format!("hash {}", path.display()), error))?;
     Ok(hex::encode(hasher.finalize()))
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(bytes);
-    hex::encode(hasher.finalize())
 }
 
 fn path_string(path: &Path) -> Result<String> {

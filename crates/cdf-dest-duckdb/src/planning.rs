@@ -2,10 +2,15 @@ use crate::*;
 use crate::{api::*, sql::*};
 
 pub(crate) fn plan_table_from_commit_plan(plan: &DuckDbCommitPlan) -> Result<TablePlan> {
+    let DuckDbCommitEffect::Data { target_exists, .. } = &plan.effect else {
+        return Err(CdfError::internal(
+            "DuckDB no-data commit plan has no target table effect",
+        ));
+    };
     Ok(TablePlan {
         target: parse_target(&plan.kernel.target)?,
         ddl: plan.ddl.clone(),
-        target_exists: plan.target_exists,
+        target_exists: *target_exists,
     })
 }
 

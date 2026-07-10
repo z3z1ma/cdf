@@ -119,9 +119,17 @@ pub struct PostgresColumn {
 
 impl PostgresColumn {
     pub fn new(name: &str, data_type: &str, nullable: bool) -> Result<Self> {
+        Self::with_identifier(PostgresIdentifier::user(name)?, data_type, nullable)
+    }
+
+    pub(crate) fn system(name: &str, data_type: &str, nullable: bool) -> Result<Self> {
+        Self::with_identifier(PostgresIdentifier::system(name)?, data_type, nullable)
+    }
+
+    fn with_identifier(name: PostgresIdentifier, data_type: &str, nullable: bool) -> Result<Self> {
         validate_type_fragment(data_type)?;
         Ok(Self {
-            name: PostgresIdentifier::user(name)?,
+            name,
             data_type: data_type.to_owned(),
             nullable,
         })

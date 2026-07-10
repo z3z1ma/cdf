@@ -75,7 +75,11 @@ fn prepare_duckdb_package_commit(
         merge_keys: inputs.merge_keys.clone(),
     };
     let duplicate = duckdb_has_duplicate_receipt(destination, &request.commit)?;
-    let plan = destination.plan_package_commit(&request)?;
+    let plan = if request.commit.segments.is_empty() {
+        destination.plan_empty_package_commit(&request)?
+    } else {
+        destination.plan_package_commit(&request)?
+    };
     Ok(PreparedDestinationCommit::new(
         request.commit,
         plan.kernel,

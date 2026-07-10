@@ -42,7 +42,7 @@ mod prelude {
         path::{Component, Path, PathBuf},
     };
 
-    pub(super) use arrow_schema::{DataType, Schema, TimeUnit};
+    pub(super) use arrow_schema::Schema;
     pub(super) use cdf_declarative::{
         CompiledResource, CompiledResourcePlan, FileResource, RestResource, SqlResource,
     };
@@ -66,9 +66,8 @@ mod prelude {
         FilePosition, IdempotencyToken, IncrementalShape, PackageHash, PartitionPlan, PipelineId,
         PlanId, QueryableResource, Receipt, ResourceCapabilities, ResourceDescriptor, ResourceId,
         ResourceStream, Result, RunEventAppend, RunEventDetails, RunEventKind, RunEventSink,
-        RunEventValue, RunId, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey,
-        SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
-        WriteDisposition,
+        RunEventValue, RunId, ScanPlan, ScanRequest, SchemaHash, ScopeKey, SegmentAck, SegmentId,
+        SourcePosition, StateDelta, StateSegment, TargetName, WriteDisposition,
     };
     pub(super) use cdf_package::{
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,

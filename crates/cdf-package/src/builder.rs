@@ -85,6 +85,13 @@ impl PackageBuilder {
         self.write_identity_artifact(relative_path, &bytes)
     }
 
+    pub fn write_runtime_arrow_schema(&self, schema: &arrow_schema::Schema) -> Result<FileEntry> {
+        self.write_identity_artifact(
+            crate::RUNTIME_ARROW_SCHEMA_FILE,
+            &crate::runtime_schema_bytes(schema)?,
+        )
+    }
+
     pub fn write_input_checkpoint_artifact(
         &self,
         checkpoint: &Option<Checkpoint>,
