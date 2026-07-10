@@ -2101,6 +2101,40 @@ trust = "governed"
 }
 
 #[test]
+fn pinned_runtime_schema_preparation_leaves_non_observable_formats_source_free() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "ndjson", "*.missing");
+    let resource = compile_single_project_resource(temp.path());
+    let snapshot = cdf_kernel::SchemaSnapshotReference {
+        schema_hash: SchemaHash::new(
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        .unwrap(),
+        path: ".cdf/schemas/missing.json".to_owned(),
+        metadata: BTreeMap::new(),
+    };
+    let pinned = resource.with_schema_source_and_schema(
+        SchemaSource::Discovered {
+            snapshot: snapshot.clone(),
+        },
+        resource.schema(),
+    );
+
+    let prepared = prepare_pinned_resource_effective_schema(
+        temp.path(),
+        &pinned,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap();
+
+    assert_eq!(
+        prepared.descriptor().schema_source.pinned_snapshot(),
+        Some(&snapshot)
+    );
+    assert!(!temp.path().join(".cdf").exists());
+}
+
+#[test]
 fn generic_schema_discovery_dispatch_fails_closed_for_non_postgres_sql_dialect() {
     let project = r#"
 [project]

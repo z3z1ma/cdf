@@ -782,6 +782,7 @@ dependencies = [
  "base64",
  "cdf-kernel",
  "half",
+ "hex",
  "proptest",
  "regex",
  "serde",

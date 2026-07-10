@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
-use cdf_contract::ValidationProgram;
+use cdf_contract::{SchemaCoercionPlan, ValidationProgram};
 use cdf_kernel::{
-    BatchId, DeliveryGuarantee, EstimateSupport, PushdownFidelity, ResourceId, ScanPlan,
-    ScanPredicate, ScanRequest, SegmentId, SourcePosition, WriteDisposition,
+    BatchId, DeliveryGuarantee, EffectiveSchemaEvidence, EstimateSupport, PushdownFidelity,
+    ResourceId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash, SegmentId, SourcePosition,
+    WriteDisposition,
 };
 use cdf_package::{PackageManifest, SegmentEntry};
 use serde::{Deserialize, Serialize};
@@ -28,9 +29,12 @@ pub enum PlanBoundedness {
     },
 }
 
+#[non_exhaustive]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnginePlan {
     pub scan: ScanPlan,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub effective_schema_evidence: Option<EffectiveSchemaPlanEvidence>,
     pub final_projection: Option<Vec<String>>,
     pub residual_predicates: Vec<ScanPredicate>,
     pub boundedness: PlanBoundedness,
@@ -40,6 +44,28 @@ pub struct EnginePlan {
     pub operator_chain: Vec<OperatorNode>,
     pub explain: ExplainData,
     pub package_id: String,
+}
+
+impl EnginePlan {
+    pub fn effective_schema_evidence(&self) -> Option<&EffectiveSchemaPlanEvidence> {
+        self.effective_schema_evidence.as_ref()
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveSchemaPlanEvidence {
+    pub authority: EffectiveSchemaEvidence,
+    pub effective_arrow_schema_hash: SchemaHash,
+    pub observations: Vec<EffectiveSchemaObservationCoercion>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveSchemaObservationCoercion {
+    pub observation_id: String,
+    pub physical_schema_hash: SchemaHash,
+    pub coercion_plan: SchemaCoercionPlan,
 }
 
 fn default_write_disposition() -> WriteDisposition {

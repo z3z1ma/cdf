@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{policy::TypePolicy, program::RuleOutcome};
 
-const SCHEMA_COERCION_PLAN_METADATA_KEY: &str = "cdf:schema_coercion_plan";
+pub const SCHEMA_COERCION_PLAN_METADATA_KEY: &str = "cdf:schema_coercion_plan";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaReconciliation {
@@ -202,11 +202,28 @@ fn validate_schema_coercion_plan(schema: &Schema, plan: &SchemaCoercionPlan) -> 
 
 fn validate_output_field_decision(field: &Field, decision: &FieldCoercion) -> Result<()> {
     let source = field_source_name(field);
-    let observed = decision.observed_type.as_deref().ok_or_else(|| {
-        invalid_coercion_evidence(format!("field {source:?} has no observed type"))
-    })?;
     let constraint = decision.constraint_type.as_deref().ok_or_else(|| {
         invalid_coercion_evidence(format!("field {source:?} has no constraint type"))
+    })?;
+    if decision.decision == FieldCoercionDecision::Missing {
+        if decision.source_name != source
+            || decision.output_name.as_deref() != Some(field.name())
+            || decision.observed_name.is_some()
+            || decision.observed_type.is_some()
+            || constraint != field.data_type().to_string()
+            || !field.is_nullable()
+            || decision.outcome != RuleOutcome::Coerced
+            || decision.reason != "nullable constraint field is absent; materialize typed nulls"
+            || !decision.operator_fixes.is_empty()
+        {
+            return Err(invalid_coercion_evidence(format!(
+                "missing field {source:?} does not match nullable typed-null materialization"
+            )));
+        }
+        return Ok(());
+    }
+    let observed = decision.observed_type.as_deref().ok_or_else(|| {
+        invalid_coercion_evidence(format!("field {source:?} has no observed type"))
     })?;
     let expected_observed = physical_type(field)
         .map(str::to_owned)
@@ -376,6 +393,26 @@ pub fn plan_schema_reconciliation(
         let constraint_field = constraint_field_ref.as_ref();
         let field_source_name = field_source_name(constraint_field);
         let Some(observed_field) = observed_by_source.get(&field_source_name) else {
+            if constraint_field.is_nullable() {
+                let mut output = constraint_field.clone();
+                if source_name(&output).is_none() {
+                    output = with_source_name(output, field_source_name.clone());
+                }
+                output_fields.push(output);
+                decisions.push(FieldCoercion {
+                    source_name: field_source_name,
+                    observed_name: None,
+                    output_name: Some(constraint_field.name().clone()),
+                    observed_type: None,
+                    constraint_type: Some(constraint_field.data_type().to_string()),
+                    decision: FieldCoercionDecision::Missing,
+                    outcome: RuleOutcome::Coerced,
+                    reason: "nullable constraint field is absent; materialize typed nulls"
+                        .to_owned(),
+                    operator_fixes: Vec::new(),
+                });
+                continue;
+            }
             let field_error = missing_field_error(&field_source_name, constraint_field.data_type());
             decisions.push(field_error.decision());
             errors.push(field_error);

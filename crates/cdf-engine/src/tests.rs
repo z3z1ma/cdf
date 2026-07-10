@@ -21,8 +21,10 @@ use cdf_contract::{
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
-    ContractRef, DeliveryGuarantee, EstimateSupport, FileManifest, FilePosition,
-    FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId, PartitionPlan,
+    ContractRef, DeliveryGuarantee, DiscoveryManifestHash, DiscoveryManifestReference,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
+    EffectiveSchemaRuntime, EstimateSupport, FileManifest, FilePosition, FilterCapabilities,
+    FreshnessSpec, IncrementalShape, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan,
     PartitioningCapabilities, PreContractObservedValue, PreContractQuarantineFact, PredicateId,
     PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
     ResourceStream, Result, RunId, ScanPlan, ScanPredicate, ScanRequest, SchemaHash,
@@ -201,10 +203,98 @@ fn engine_plan_deserialization_defaults_legacy_missing_write_disposition_to_appe
         .as_object_mut()
         .unwrap()
         .remove("write_disposition");
+    plan_json
+        .as_object_mut()
+        .unwrap()
+        .remove("effective_schema_evidence");
 
     let decoded: EnginePlan = serde_json::from_value(plan_json).unwrap();
 
     assert_eq!(decoded.write_disposition, WriteDisposition::Append);
+    assert!(decoded.effective_schema_evidence().is_none());
+}
+
+#[test]
+fn effective_schema_reuses_observation_across_partitions_and_attests_only_attempted_inputs() {
+    let effective_schema = sample_schema();
+    let physical_schema = sample_schema();
+    let physical_hash =
+        cdf_contract::canonical_arrow_schema_hash(physical_schema.as_ref()).unwrap();
+    let reconciliation = reconcile_schema(
+        physical_schema.as_ref(),
+        effective_schema.as_ref(),
+        &ContractPolicy::default().types,
+    )
+    .unwrap();
+    let serialized = serde_json::to_string(&reconciliation.plan).unwrap();
+    let reconciled_schema = Arc::new(reconciliation.schema);
+    let mut batches = vec![
+        batch_for_partition_with_schema(
+            "batch-limit-0",
+            "part-0",
+            reconciled_schema.clone(),
+            vec![1, 2, 3],
+            vec!["one", "two", "three"],
+            vec![true, true, true],
+        ),
+        batch_for_partition_with_schema(
+            "batch-limit-1",
+            "part-1",
+            reconciled_schema,
+            vec![4, 5, 6],
+            vec!["four", "five", "six"],
+            vec![true, true, true],
+        ),
+    ];
+    for batch in &mut batches {
+        batch.header.observed_schema_hash = physical_hash.clone();
+        batch.header.schema_coercion_plan = Some(serialized.clone());
+    }
+    let descriptor = descriptor();
+    let baseline_snapshot = descriptor.schema_source.pinned_snapshot().unwrap().clone();
+    let evidence = EffectiveSchemaEvidence::new(
+        baseline_snapshot,
+        SchemaHash::new("effective-snapshot-v1").unwrap(),
+        DiscoveryManifestReference {
+            manifest_hash: DiscoveryManifestHash::new("manifest-v1").unwrap(),
+            path: ".cdf/schemas/orders@manifest-v1.discovery.json".to_owned(),
+        },
+        vec![EffectiveSchemaObservationEvidence::new(
+            "input-0",
+            physical_hash.clone(),
+        )],
+    )
+    .unwrap();
+    let runtime = EffectiveSchemaRuntime::new(
+        evidence,
+        vec![EffectiveSchemaCatalogEntry::new(
+            physical_hash,
+            physical_schema,
+        )],
+    )
+    .unwrap();
+    let resource =
+        MockResource::tier_b(batches).with_effective_schema_runtime(effective_schema, runtime);
+    let plan = Planner::new()
+        .plan_tier_b(
+            &resource,
+            plan_input(Vec::new(), None, Some(1), PlanBoundedness::Bounded),
+        )
+        .unwrap();
+    assert_eq!(
+        plan.effective_schema_evidence().unwrap().observations.len(),
+        1
+    );
+
+    let temp = TempDir::new().unwrap();
+    block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(resource.open_count.load(Ordering::SeqCst), 1);
+    let witnessed: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(temp.path().join("schema/per-observation-coercion.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(witnessed["observations"].as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -1458,6 +1548,7 @@ struct MockResource {
     tier_b: bool,
     negotiate_count: Arc<AtomicUsize>,
     open_count: Arc<AtomicUsize>,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
 }
 
 #[derive(Clone)]
@@ -1616,11 +1707,22 @@ impl MockResource {
             tier_b,
             negotiate_count: Arc::new(AtomicUsize::new(0)),
             open_count: Arc::new(AtomicUsize::new(0)),
+            effective_schema_runtime: None,
         }
     }
 
     fn with_write_disposition(mut self, write_disposition: WriteDisposition) -> Self {
         self.descriptor.write_disposition = write_disposition;
+        self
+    }
+
+    fn with_effective_schema_runtime(
+        mut self,
+        schema: SchemaRef,
+        runtime: EffectiveSchemaRuntime,
+    ) -> Self {
+        self.schema = schema;
+        self.effective_schema_runtime = Some(runtime);
         self
     }
 }
@@ -1638,13 +1740,20 @@ impl ResourceStream for MockResource {
         let count = if self.tier_b { 2 } else { 1 };
         (0..count)
             .map(|index| {
+                let mut metadata = BTreeMap::from([("ordinal".to_owned(), index.to_string())]);
+                if let Some(runtime) = &self.effective_schema_runtime {
+                    metadata.insert(
+                        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+                        runtime.evidence.observations[0].observation_id.clone(),
+                    );
+                }
                 Ok(PartitionPlan {
                     partition_id: PartitionId::new(format!("part-{index}"))?,
                     scope: ScopeKey::Partition {
                         partition_id: PartitionId::new(format!("part-{index}"))?,
                     },
                     start_position: None,
-                    metadata: BTreeMap::from([("ordinal".to_owned(), index.to_string())]),
+                    metadata,
                 })
             })
             .collect()
@@ -1661,6 +1770,10 @@ impl ResourceStream for MockResource {
         Box::pin(
             async move { Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream) },
         )
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
     }
 }
 

@@ -17,9 +17,9 @@ use cdf_formats::{
 };
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    BatchStream, BoxFuture, CdfError, PartitionId, PartitionPlan, QueryableResource,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey,
-    SourcePosition,
+    BatchStream, BoxFuture, CdfError, EffectiveSchemaRuntime, PLAN_SCHEMA_OBSERVATION_ID_KEY,
+    PartitionId, PartitionPlan, QueryableResource, ResourceDescriptor, ResourceId, ResourceStream,
+    Result, ScanPlan, ScanRequest, ScopeKey, SourcePosition,
 };
 use futures_util::stream;
 use sha2::{Digest, Sha256};
@@ -236,6 +236,10 @@ impl ResourceStream for FileResource {
             partition,
             self.dependencies.clone(),
         )
+    }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.compiled.effective_schema_runtime()
     }
 }
 
@@ -736,6 +740,10 @@ fn partition_for_file_match(
     metadata.insert("glob".to_owned(), plan.glob.clone());
     metadata.insert("resource_id".to_owned(), descriptor.resource_id.to_string());
     metadata.insert("path".to_owned(), file.path_text.clone());
+    metadata.insert(
+        PLAN_SCHEMA_OBSERVATION_ID_KEY.to_owned(),
+        file.path_text.clone(),
+    );
     metadata.insert("bytes".to_owned(), file.size_bytes.to_string());
     if let Some(sha256) = &file.sha256 {
         metadata.insert("sha256".to_owned(), sha256.clone());

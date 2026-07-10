@@ -463,7 +463,10 @@ impl ResolvedProjectDestination {
             Some(policy) => Arc::new(normalize_arrow_schema(resource.schema().as_ref(), policy)?),
             None => resource.schema(),
         };
-        let schema_hash = super::validation::pinned_schema_hash(resource)?;
+        let schema_hash = resource
+            .effective_schema_runtime()
+            .map(|runtime| runtime.evidence.effective_snapshot_schema_hash.clone())
+            .unwrap_or(super::validation::pinned_schema_hash(resource)?);
         Ok(DestinationOutputSchema {
             schema,
             schema_hash,

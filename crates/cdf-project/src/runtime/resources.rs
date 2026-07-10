@@ -151,6 +151,10 @@ impl ResourceStream for WindowScopedResource<'_> {
     ) -> cdf_kernel::BoxFuture<'_, Result<cdf_kernel::BatchStream>> {
         self.inner.open(self.inner_partition(partition))
     }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.inner.effective_schema_runtime()
+    }
 }
 
 impl QueryableResource for WindowScopedResource<'_> {

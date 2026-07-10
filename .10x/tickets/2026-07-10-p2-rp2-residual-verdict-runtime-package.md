@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
-Depends-On: .10x/tickets/done/2026-07-10-p2-rp1-residual-envelope-codec.md, .10x/tickets/2026-07-09-p2-ws-a10d-effective-schema-runtime-evidence.md, .10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md
+Depends-On: .10x/tickets/done/2026-07-10-p2-rp1-residual-envelope-codec.md, .10x/tickets/done/2026-07-09-p2-ws-a10d-effective-schema-runtime-evidence.md, .10x/tickets/done/2026-07-09-p2-ws-b5-validation-program-coercion-evidence.md
 
 # P2 RP2 residual verdict compiler, runtime, and package evidence
 
@@ -34,4 +34,4 @@ No schema promotion command, row correction, destination capability changes, or 
 
 ## Blockers
 
-Depends on RP1 and A10d.
+None. RP1, A10d, and B5 are complete.

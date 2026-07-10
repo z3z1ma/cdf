@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 
-use arrow_array::{ArrayRef, RecordBatch};
+use arrow_array::{ArrayRef, RecordBatch, new_null_array};
 use arrow_cast::cast::{can_cast_types, cast};
 use arrow_csv::reader::{Format as ArrowCsvFormat, ReaderBuilder as CsvReaderBuilder};
 use arrow_ipc::reader::{FileReader, StreamReader};
@@ -241,6 +241,7 @@ pub fn read_arrow_ipc_file_path_with_declared_schema(
         ))
     })?;
     let physical_schema = reader.schema();
+    let physical_schema_hash = schema_hash(physical_schema.as_ref())?;
     let reconciliation = reconcile_schema(
         physical_schema.as_ref(),
         declared_schema.as_ref(),
@@ -255,14 +256,17 @@ pub fn read_arrow_ipc_file_path_with_declared_schema(
         physical_batches,
         "Arrow IPC",
     )?;
-    build_output_with_pre_contract_quarantine(
-        reconciled_schema,
-        record_batches,
-        options,
-        scope,
-        Some(position),
-        Vec::new(),
-        Some(&reconciliation_plan),
+    with_observed_schema_hash(
+        build_output_with_pre_contract_quarantine(
+            reconciled_schema,
+            record_batches,
+            options,
+            scope,
+            Some(position),
+            Vec::new(),
+            Some(&reconciliation_plan),
+        )?,
+        physical_schema_hash,
     )
 }
 
@@ -476,6 +480,7 @@ fn read_ndjson_bytes_with_declared_schema_and_scope(
     )
     .map_err(CdfError::from)?;
     let physical_schema = Arc::new(physical_schema);
+    let physical_schema_hash = schema_hash(physical_schema.as_ref())?;
     let reconciliation = reconcile_schema(
         physical_schema.as_ref(),
         declared_schema.as_ref(),
@@ -494,14 +499,17 @@ fn read_ndjson_bytes_with_declared_schema_and_scope(
         physical_batches,
         "JSON",
     )?;
-    build_output_with_pre_contract_quarantine(
-        reconciled_schema,
-        record_batches,
-        options,
-        scope,
-        position,
-        filtered.quarantine_facts,
-        Some(&reconciliation_plan),
+    with_observed_schema_hash(
+        build_output_with_pre_contract_quarantine(
+            reconciled_schema,
+            record_batches,
+            options,
+            scope,
+            position,
+            filtered.quarantine_facts,
+            Some(&reconciliation_plan),
+        )?,
+        physical_schema_hash,
     )
 }
 
@@ -565,6 +573,7 @@ fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'st
         .map_err(|error| parquet_data_error("read Parquet file metadata", error))?
         .with_batch_size(options.batch_size);
     let physical_schema = builder.schema().clone();
+    let physical_schema_hash = schema_hash(physical_schema.as_ref())?;
     let reconciliation = reconcile_schema(
         physical_schema.as_ref(),
         declared_schema.as_ref(),
@@ -583,14 +592,17 @@ fn read_parquet_chunk_reader_with_declared_schema_and_scope<T: ChunkReader + 'st
         "Parquet",
     )?;
 
-    build_output_with_pre_contract_quarantine(
-        reconciled_schema,
-        record_batches,
-        options,
-        scope,
-        position,
-        Vec::new(),
-        Some(&reconciliation_plan),
+    with_observed_schema_hash(
+        build_output_with_pre_contract_quarantine(
+            reconciled_schema,
+            record_batches,
+            options,
+            scope,
+            position,
+            Vec::new(),
+            Some(&reconciliation_plan),
+        )?,
+        physical_schema_hash,
     )
 }
 
@@ -637,13 +649,16 @@ fn reconciled_column(
     let physical_index = physical_schema
         .fields()
         .iter()
-        .position(|field| field_source_name(field.as_ref()) == source)
-        .ok_or_else(|| {
-            CdfError::internal(format!(
-                "reconciled {format_name} field {:?} has no matching physical source field {source:?}",
-                output_field.name()
-            ))
-        })?;
+        .position(|field| field_source_name(field.as_ref()) == source);
+    let Some(physical_index) = physical_index else {
+        if output_field.is_nullable() {
+            return Ok(new_null_array(output_field.data_type(), batch.num_rows()));
+        }
+        return Err(CdfError::internal(format!(
+            "reconciled {format_name} field {:?} has no matching physical source field {source:?}",
+            output_field.name()
+        )));
+    };
     let column = batch.column(physical_index);
     if column.data_type() == output_field.data_type() {
         return Ok(column.clone());
@@ -657,6 +672,16 @@ fn reconciled_column(
         )));
     }
     cast(column.as_ref(), output_field.data_type()).map_err(CdfError::from)
+}
+
+fn with_observed_schema_hash(
+    mut read: FormatRead,
+    observed_schema_hash: SchemaHash,
+) -> Result<FormatRead> {
+    for batch in &mut read.batches {
+        batch.header.observed_schema_hash = observed_schema_hash.clone();
+    }
+    Ok(read)
 }
 
 fn strict_source_type_policy() -> TypePolicy {
@@ -690,13 +715,16 @@ fn build_output(
 
 fn build_output_with_pre_contract_quarantine(
     schema: SchemaRef,
-    record_batches: Vec<RecordBatch>,
+    mut record_batches: Vec<RecordBatch>,
     options: &ReadOptions,
     scope: ScopeKey,
     position: Option<SourcePosition>,
     mut pre_contract_quarantine: Vec<PreContractQuarantineFact>,
     schema_coercion_plan: Option<&SchemaCoercionPlan>,
 ) -> Result<FormatRead> {
+    if record_batches.is_empty() {
+        record_batches.push(RecordBatch::new_empty(Arc::clone(&schema)));
+    }
     let schema = record_batches
         .first()
         .map(RecordBatch::schema)

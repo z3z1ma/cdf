@@ -113,8 +113,13 @@ pub(crate) fn prepare_discover_resource_for_cli(
     if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
         && !no_pin
     {
+        let prepared = cdf_project::prepare_pinned_resource_effective_schema(
+            &context.root,
+            resource,
+            &context.secret_provider(),
+        )?;
         return Ok(PreparedDiscoveryForCli {
-            resource: resource.clone(),
+            resource: prepared,
             schema_snapshot: Some(SchemaSnapshotActionReport {
                 outcome: "unchanged",
                 schema_hash: snapshot.schema_hash.to_string(),
@@ -164,14 +169,14 @@ pub(crate) fn prepare_discover_resource_for_cli(
         )?
     } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
         let mut transport = ReqwestHttpTransport::new()?;
-        cdf_project::ResourceSchemaDiscoveryArtifacts {
-            discovery: cdf_project::discover_resource_schema_with_rest_transport(
+        cdf_project::ResourceSchemaDiscoveryArtifacts::new(
+            cdf_project::discover_resource_schema_with_rest_transport(
                 &probe_resource,
                 &secret_provider,
                 &mut transport,
             )?,
-            discovery_manifest: None,
-        }
+            None,
+        )
     } else {
         cdf_project::discover_resource_schema_artifacts(&probe_resource, &secret_provider, options)?
     };
@@ -204,8 +209,17 @@ pub(crate) fn prepare_discover_resource_for_cli(
         }
         (snapshot_written, lockfile_written)
     };
+    let prepared_resource = if !no_pin {
+        cdf_project::prepare_pinned_resource_effective_schema(
+            &context.root,
+            &prepared.resource,
+            &secret_provider,
+        )?
+    } else {
+        prepared.resource
+    };
     Ok(PreparedDiscoveryForCli {
-        resource: prepared.resource,
+        resource: prepared_resource,
         schema_snapshot: Some(SchemaSnapshotActionReport {
             outcome,
             schema_hash: artifact.schema_hash.to_string(),
@@ -306,6 +320,7 @@ fn scan_report(
             resource,
             &destination_plan.schema_hash,
             &plan.validation_program,
+            plan.effective_schema_evidence(),
         ),
         normalization: plan.validation_program.identifier_policy.clone(),
         will_fetch: FetchReport {
@@ -783,6 +798,12 @@ struct ScanPlanReport {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 struct ResourceSchemaReport {
     schema_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    baseline_snapshot_schema_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_snapshot_schema_hash: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    effective_arrow_schema_hash: Option<String>,
     schema_source: String,
     snapshot_path: Option<String>,
     snapshot_metadata: BTreeMap<String, String>,
@@ -950,10 +971,21 @@ fn resource_schema_report(
     resource: &cdf_declarative::CompiledResource,
     schema_hash: &cdf_kernel::SchemaHash,
     program: &cdf_contract::ValidationProgram,
+    effective: Option<&cdf_engine::EffectiveSchemaPlanEvidence>,
 ) -> ResourceSchemaReport {
     let snapshot = resource.descriptor().schema_source.pinned_snapshot();
     ResourceSchemaReport {
         schema_hash: schema_hash.to_string(),
+        baseline_snapshot_schema_hash: effective
+            .map(|evidence| evidence.authority.baseline_snapshot.schema_hash.to_string()),
+        effective_snapshot_schema_hash: effective.map(|evidence| {
+            evidence
+                .authority
+                .effective_snapshot_schema_hash
+                .to_string()
+        }),
+        effective_arrow_schema_hash: effective
+            .map(|evidence| evidence.effective_arrow_schema_hash.to_string()),
         schema_source: schema_source_name(&resource.descriptor().schema_source).to_owned(),
         snapshot_path: snapshot.map(|snapshot| snapshot.path.clone()),
         snapshot_metadata: snapshot

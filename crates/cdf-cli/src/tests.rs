@@ -2179,6 +2179,10 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     let pinned_hash = auto_pin_json["result"]["resource_schema"]["schema_hash"]
         .as_str()
         .unwrap();
+    let baseline_hash = auto_pin_json["result"]["schema_snapshot"]["schema_hash"]
+        .as_str()
+        .unwrap();
+    assert_ne!(pinned_hash, baseline_hash);
     let snapshot_path = auto_pin_json["result"]["resource_schema"]["snapshot_path"]
         .as_str()
         .unwrap();
@@ -2195,9 +2199,9 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
     let pin_json = stderr_or_stdout_json(&pin.stdout);
     assert_eq!(pin_json["result"]["status"], "unchanged");
-    assert_eq!(pin_json["result"]["schema_hash"], pinned_hash);
+    assert_eq!(pin_json["result"]["schema_hash"], baseline_hash);
     let snapshot = read_snapshot_json(&project, snapshot_path);
-    assert_eq!(snapshot["schema_hash"], pinned_hash);
+    assert_eq!(snapshot["schema_hash"], baseline_hash);
     assert_eq!(snapshot["schema"]["metadata"]["owner"], "source-system");
     assert_eq!(
         snapshot["schema"]["fields"][0]["metadata"]["source-tag"],
@@ -2220,7 +2224,7 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
     assert_eq!(show.exit_code, 0, "stderr: {}", show.stderr);
     assert_eq!(
         stderr_or_stdout_json(&show.stdout)["result"]["schema_hash"],
-        pinned_hash
+        baseline_hash
     );
 
     let diff = run([
@@ -2305,12 +2309,12 @@ fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() 
         packaged_schema.field(0).metadata()["cdf:source_name"],
         "VendorID"
     );
-    assert_eq!(
-        packaged_schema.field(0).metadata()["cdf:physical_type"],
-        "Int32"
-    );
+    let per_observation: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("schema/per-observation-coercion.json")).unwrap(),
+    )
+    .unwrap();
     let coercion: cdf_contract::SchemaCoercionPlan =
-        serde_json::from_slice(&fs::read(package_dir.join("schema/coercion-plan.json")).unwrap())
+        serde_json::from_value(per_observation["observations"][0]["coercion_plan"].clone())
             .unwrap();
     let vendor = coercion
         .fields
@@ -2632,11 +2636,7 @@ fn pinned_arrow_ipc_type_drift_fails_preview_and_run_before_mutation() {
     );
     assert_ne!(run_result.exit_code, 0);
     assert!(run_result.stderr.contains("VendorID") || run_result.stderr.contains("vendor_id"));
-    let state = Connection::open(project.root.join(".cdf/state.db")).unwrap();
-    let checkpoint_count: i64 = state
-        .query_row("SELECT COUNT(*) FROM cdf_checkpoints", [], |row| row.get(0))
-        .unwrap();
-    assert_eq!(checkpoint_count, 0);
+    assert!(!project.root.join(".cdf/state.db").exists());
     assert!(!project.root.join(".cdf/dev.duckdb").exists());
 }
 
@@ -3197,8 +3197,12 @@ fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
     let snapshot_path = report["resource_schema"]["snapshot_path"].as_str().unwrap();
     assert!(snapshot_path.starts_with(".cdf/schemas/local.events@sha256:"));
     let snapshot = read_snapshot_json(&project, snapshot_path);
-    assert_eq!(
+    assert_ne!(
         report["resource_schema"]["schema_hash"],
+        snapshot["schema_hash"]
+    );
+    assert_eq!(
+        report["schema_snapshot"]["schema_hash"],
         snapshot["schema_hash"]
     );
     assert_eq!(
@@ -3452,7 +3456,7 @@ fn multi_file_parquet_no_pin_and_autopin_are_exhaustive_and_byte_stable() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/a.parquet"));
-    write_vendor_parquet(&project.root.join("data/b.parquet"));
+    write_vendor_score_parquet(&project.root.join("data/b.parquet"));
 
     let inspection = run([
         "cdf",
@@ -3504,7 +3508,6 @@ fn multi_file_parquet_no_pin_and_autopin_are_exhaustive_and_byte_stable() {
             .iter()
             .all(|candidate| candidate["participation"] == "probed")
     );
-
     let second = run([
         "cdf",
         "--json",
@@ -3675,7 +3678,11 @@ fn plan_discover_autopin_is_byte_stable_and_preserves_unrelated_semantic_locks()
         run_report["result"]["schema_snapshot"]["outcome"],
         "unchanged"
     );
-    assert_eq!(run_report["result"]["schema_hash"], pinned_hash);
+    assert_ne!(run_report["result"]["schema_hash"], pinned_hash);
+    assert_eq!(
+        run_report["result"]["schema_snapshot"]["schema_hash"],
+        pinned_hash
+    );
     assert_eq!(
         fs::read(project.root.join("cdf.lock")).unwrap(),
         locked_before_drift
@@ -4996,7 +5003,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     assert!(staged_path.starts_with(".cdf/adhoc/data/parquet_"));
     assert!(project.root.join(config_path).is_file());
     assert!(project.root.join(staged_path).is_file());
-    assert_eq!(
+    assert_ne!(
         report["schema_hash"],
         report["schema_snapshot"]["schema_hash"]
     );
@@ -5023,7 +5030,7 @@ fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
     let locked = &lock.resources[resource_id];
     assert_eq!(
         locked.schema_hash.as_deref(),
-        report["schema_hash"].as_str()
+        report["schema_snapshot"]["schema_hash"].as_str()
     );
     assert_eq!(
         locked.schema_snapshot.as_ref().unwrap().path,
@@ -7369,7 +7376,8 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
     let snapshot_path = single_schema_snapshot_path(&project);
     let snapshot = read_snapshot_json(&project, &snapshot_path);
     let snapshot_hash = snapshot["schema_hash"].as_str().unwrap();
-    assert_eq!(report["schema_hash"], snapshot_hash);
+    assert_ne!(report["schema_hash"], snapshot_hash);
+    assert_eq!(report["schema_snapshot"]["schema_hash"], snapshot_hash);
     assert_eq!(snapshot["schema"]["fields"][0]["name"], "vendor_id");
     assert_eq!(
         snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
@@ -7385,7 +7393,7 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
         )
         .unwrap()
         .expect("committed Parquet discover run head");
-    assert_eq!(head.delta.schema_hash.as_str(), snapshot_hash);
+    assert_eq!(head.delta.schema_hash.as_str(), report["schema_hash"]);
     assert_eq!(
         head.delta.checkpoint_id.as_str(),
         "checkpoint-run-parquet-discover"
@@ -7403,20 +7411,31 @@ fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
 }
 
 #[test]
-fn run_multi_file_parquet_discover_autopins_and_preserves_runtime_exact_manifest() {
+fn run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
     write_vendor_parquet(&project.root.join("data/a.parquet"));
-    write_vendor_parquet(&project.root.join("data/b.parquet"));
 
-    let result = run_valid_run_args(
-        &project,
-        "pkg-run-parquet-discover-multi",
-        "checkpoint-run-parquet-discover-multi",
-    );
-
-    assert_eq!(result.exit_code, 0, "{}", result.stderr);
-    let snapshot_path = single_schema_snapshot_path(&project);
+    let baseline_plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(baseline_plan.exit_code, 0, "{}", baseline_plan.stderr);
+    let baseline_report = stderr_or_stdout_json(&baseline_plan.stdout);
+    let baseline_hash = baseline_report["result"]["schema_snapshot"]["schema_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let snapshot_path = baseline_report["result"]["schema_snapshot"]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
+    let snapshot_before = fs::read(project.root.join(&snapshot_path)).unwrap();
     let snapshot = read_snapshot_json(&project, &snapshot_path);
     let manifest_path = snapshot["metadata"]["cdf:discovery_manifest_path"]
         .as_str()
@@ -7425,15 +7444,97 @@ fn run_multi_file_parquet_discover_autopins_and_preserves_runtime_exact_manifest
         serde_json::from_slice(&fs::read(project.root.join(manifest_path)).unwrap()).unwrap();
     assert_eq!(
         discovery_manifest["candidates"].as_array().unwrap().len(),
-        2
+        1
     );
+
+    write_wide_vendor_score_parquet(&project.root.join("data/b.parquet"));
+    write_empty_vendor_parquet(&project.root.join("data/c.parquet"));
+
+    let evolved_plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(evolved_plan.exit_code, 0, "{}", evolved_plan.stderr);
+    let evolved_report = stderr_or_stdout_json(&evolved_plan.stdout);
+    let schema = &evolved_report["result"]["resource_schema"];
+    assert_eq!(schema["baseline_snapshot_schema_hash"], baseline_hash);
+    assert_ne!(schema["effective_snapshot_schema_hash"], baseline_hash);
+    assert!(schema["effective_arrow_schema_hash"].is_string());
     assert!(
-        discovery_manifest["candidates"]
+        schema["fields"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|candidate| candidate["identity"]["strength"] == "bounded_observation")
+            .any(|field| { field["name"] == "vendor_id" && field["data_type"] == "Int64" })
     );
+    assert!(schema["fields"].as_array().unwrap().iter().any(|field| {
+        field["name"] == "score" && field["data_type"] == "Int64" && field["nullable"] == true
+    }));
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        lock_before
+    );
+    assert_eq!(
+        fs::read(project.root.join(&snapshot_path)).unwrap(),
+        snapshot_before
+    );
+    assert_eq!(single_schema_snapshot_path(&project), snapshot_path);
+
+    let result = run_valid_run_args(
+        &project,
+        "pkg-run-parquet-discover-multi",
+        "checkpoint-run-parquet-discover-multi",
+    );
+
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        lock_before
+    );
+    assert_eq!(
+        fs::read(project.root.join(&snapshot_path)).unwrap(),
+        snapshot_before
+    );
+    let package_dir = project
+        .root
+        .join(".cdf/packages/pkg-run-parquet-discover-multi");
+    let effective: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("schema/effective-schema-evidence.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(effective["observations"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        effective["authority"]["baseline_snapshot"]["schema_hash"],
+        baseline_hash
+    );
+    assert_ne!(
+        effective["authority"]["effective_snapshot_schema_hash"],
+        effective["effective_arrow_schema_hash"]
+    );
+    let per_observation: serde_json::Value = serde_json::from_slice(
+        &fs::read(package_dir.join("schema/per-observation-coercion.json")).unwrap(),
+    )
+    .unwrap();
+    let per_observation = per_observation["observations"].as_array().unwrap();
+    assert_eq!(per_observation.len(), 3);
+    assert!(per_observation.iter().any(|observation| {
+        observation["coercion_plan"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["decision"] == "missing")
+    }));
+    assert!(per_observation.iter().any(|observation| {
+        observation["coercion_plan"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field["decision"] == "widened")
+    }));
 
     let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
     let head = store
@@ -7447,6 +7548,8 @@ fn run_multi_file_parquet_discover_autopins_and_preserves_runtime_exact_manifest
     let SourcePosition::FileManifest(runtime_manifest) = &head.delta.output_position else {
         panic!("multi-file run must commit exact FileManifest identity");
     };
+    // A10d attests the empty file in package schema evidence; processed-file
+    // checkpoint advancement for zero-row files remains explicitly owned by A10e.
     assert_eq!(runtime_manifest.files.len(), 2);
     assert!(
         runtime_manifest
@@ -7459,6 +7562,145 @@ fn run_multi_file_parquet_discover_autopins_and_preserves_runtime_exact_manifest
         .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
         .unwrap();
     assert_eq!(rows, 4);
+    let null_scores: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM events WHERE score IS NULL",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(null_scores, 2);
+
+    drop(conn);
+    fs::remove_file(project.root.join("data/a.parquet")).unwrap();
+    fs::remove_file(project.root.join("data/b.parquet")).unwrap();
+    fs::remove_file(project.root.join("data/c.parquet")).unwrap();
+    fs::remove_file(project.root.join(".cdf/state.db")).unwrap();
+    fs::remove_file(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let replay = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "replay",
+        "package",
+        package_dir.to_str().unwrap(),
+    ]);
+    assert_eq!(replay.exit_code, 0, "{}", replay.stderr);
+    fs::write(
+        package_dir.join("schema/per-observation-coercion.json"),
+        b"{\"tampered\":true}",
+    )
+    .unwrap();
+    let verify = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "package",
+        "verify",
+        package_dir.to_str().unwrap(),
+    ]);
+    assert_ne!(verify.exit_code, 0);
+}
+
+#[test]
+fn plan_financial_freeze_keeps_conforming_baseline_and_rejects_compatible_drift_before_writes() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    set_file_resource_trust(&project, "financial");
+    write_vendor_parquet(&project.root.join("data/a.parquet"));
+
+    let baseline = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(baseline.exit_code, 0, "{}", baseline.stderr);
+    let baseline_report = stderr_or_stdout_json(&baseline.stdout);
+    let baseline_hash = baseline_report["result"]["schema_snapshot"]["schema_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let baseline_effective_snapshot =
+        baseline_report["result"]["resource_schema"]["effective_snapshot_schema_hash"].clone();
+    let baseline_effective_arrow =
+        baseline_report["result"]["resource_schema"]["effective_arrow_schema_hash"].clone();
+    let snapshot_path = baseline_report["result"]["schema_snapshot"]["path"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let lock_before = fs::read(project.root.join("cdf.lock")).unwrap();
+    let snapshot_before = fs::read(project.root.join(&snapshot_path)).unwrap();
+
+    write_vendor_parquet(&project.root.join("data/b.parquet"));
+    let conforming = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(conforming.exit_code, 0, "{}", conforming.stderr);
+    let conforming_report = stderr_or_stdout_json(&conforming.stdout);
+    let conforming_schema = &conforming_report["result"]["resource_schema"];
+    assert_eq!(
+        conforming_schema["baseline_snapshot_schema_hash"],
+        baseline_hash
+    );
+    assert_eq!(
+        conforming_schema["effective_snapshot_schema_hash"],
+        baseline_effective_snapshot
+    );
+    assert_eq!(
+        conforming_schema["effective_arrow_schema_hash"],
+        baseline_effective_arrow
+    );
+    assert_eq!(conforming_schema["fields"].as_array().unwrap().len(), 1);
+    assert_eq!(conforming_schema["fields"][0]["name"], "vendor_id");
+    assert_eq!(conforming_schema["fields"][0]["data_type"], "Int32");
+    assert_eq!(conforming_schema["fields"][0]["nullable"], false);
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        lock_before
+    );
+    assert_eq!(
+        fs::read(project.root.join(&snapshot_path)).unwrap(),
+        snapshot_before
+    );
+
+    write_wide_vendor_score_parquet(&project.root.join("data/c.parquet"));
+    let drift = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(drift.exit_code, 3, "{}", drift.stderr);
+    let error = stderr_or_stdout_json(&drift.stderr);
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("freeze policy keeps baseline schema"),
+        "{message}"
+    );
+    assert!(message.contains("A10e file disposition"), "{message}");
+    assert_eq!(
+        fs::read(project.root.join("cdf.lock")).unwrap(),
+        lock_before
+    );
+    assert_eq!(
+        fs::read(project.root.join(&snapshot_path)).unwrap(),
+        snapshot_before
+    );
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
 }
 
 #[test]
@@ -11335,6 +11577,17 @@ trust = "governed"
     .unwrap();
 }
 
+fn set_file_resource_trust(project: &TestProject, trust: &str) {
+    let path = project.root.join("resources/files.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(text.contains("trust = \"governed\""));
+    fs::write(
+        path,
+        text.replacen("trust = \"governed\"", &format!("trust = \"{trust}\""), 1),
+    )
+    .unwrap();
+}
+
 fn write_arrow_ipc_discover_resource(project: &TestProject, glob: &str) {
     for entry in fs::read_dir(project.root.join("data")).unwrap() {
         fs::remove_file(entry.unwrap().path()).unwrap();
@@ -11447,6 +11700,31 @@ fn write_vendor_score_parquet(path: &Path) {
         Arc::new(Int64Array::from_iter_values([10_i64, 20_i64])),
     ];
     let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+fn write_wide_vendor_score_parquet(path: &Path) {
+    let fields = vec![
+        Field::new("VendorID", DataType::Int64, false),
+        Field::new("score", DataType::Int64, false),
+    ];
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(Int64Array::from_iter_values([3_i64, 4_i64])),
+        Arc::new(Int64Array::from_iter_values([10_i64, 20_i64])),
+    ];
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+fn write_empty_vendor_parquet(path: &Path) {
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        "VendorID",
+        DataType::Int32,
+        false,
+    )]));
+    let batch = RecordBatch::new_empty(schema);
     let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
     fs::write(path, bytes).unwrap();
 }

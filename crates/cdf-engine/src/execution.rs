@@ -8,14 +8,15 @@ use arrow_array::RecordBatch;
 use arrow_schema::Schema;
 use arrow_select::filter::filter_record_batch;
 use cdf_contract::{
-    ContractEvaluationContext, QuarantineCandidate, ValidationProgram, VerdictSummary,
-    evaluate_package_order_dedup, evaluate_record_batch, reject_untrusted_schema_coercion_metadata,
-    schema_coercion_plan_from_trusted_json,
+    ContractEvaluationContext, QuarantineCandidate, SCHEMA_COERCION_PLAN_METADATA_KEY,
+    ValidationProgram, VerdictSummary, evaluate_package_order_dedup, evaluate_record_batch,
+    reject_untrusted_schema_coercion_metadata, schema_coercion_plan_from_trusted_json,
 };
 use cdf_kernel::{
-    CdfError, PHYSICAL_TYPE_METADATA_KEY, PreContractObservedValue, PreContractQuarantineFact,
+    CdfError, PHYSICAL_TYPE_METADATA_KEY, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PreContractObservedValue, PreContractQuarantineFact,
     ResourceStream, Result, RunId, SOURCE_NAME_METADATA_KEY, ScopeKey, SegmentId, SourcePosition,
-    WriteDisposition, semantic,
+    WriteDisposition, semantic, source_name,
 };
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
@@ -23,8 +24,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{Instrument, Span, info_span};
 
 use crate::{
-    EnginePackageDraft, EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions,
-    EngineSegmentPosition, ExecutionProfile, LineageSummary,
+    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EnginePackageDraft,
+    EnginePlan, EngineRunOutput, EngineRunOutputWithSegmentPositions, EngineSegmentPosition,
+    ExecutionProfile, LineageSummary,
     planning::validate_program,
     predicates::apply_residual_filters,
     variant_capture::{contract_evolution_artifact, normalize_batch},
@@ -88,6 +90,22 @@ struct QuarantineSummaryArtifact {
     quarantine_candidate_count: u64,
     artifact_count: u64,
     artifacts: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct PerObservationSchemaEvidenceArtifact {
+    baseline_snapshot_schema_hash: String,
+    effective_snapshot_schema_hash: String,
+    effective_arrow_schema_hash: String,
+    discovery_manifest_hash: String,
+    observations: Vec<PerObservationSchemaCoercionArtifact>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+struct PerObservationSchemaCoercionArtifact {
+    observation_id: String,
+    physical_schema_hash: String,
+    coercion_plan: cdf_contract::SchemaCoercionPlan,
 }
 
 impl ExecutionTraceContext {
@@ -168,12 +186,16 @@ where
 {
     let mut validation_program = plan.validation_program.clone();
     validate_program(&validation_program)?;
+    let effective_schema_evidence = validate_effective_schema_plan(plan, resource)?;
 
     let mut builder = PackageBuilder::create(package_dir, plan.package_id.clone())?;
     builder.update_status(PackageStatus::Extracting)?;
     builder.write_json_artifact("plan/scan.json", &plan.scan)?;
     builder.write_json_artifact("plan/explain.json", &plan.explain)?;
     builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
+    if let Some(evidence) = effective_schema_evidence {
+        builder.write_json_artifact("schema/effective-schema-evidence.json", evidence)?;
+    }
     let package_evaluation_context =
         ContractEvaluationContext::observed_at(current_observed_at_ms()?);
     if validation_program.requires_observed_at_ms() {
@@ -193,6 +215,9 @@ where
     let mut remaining_limit = plan.scan.request.limit;
     let mut output_schema = None;
     let mut schema_coercion = validation_program.schema_coercion.clone();
+    let mut per_observation_schema_evidence =
+        BTreeMap::<String, PerObservationSchemaCoercionArtifact>::new();
+    let mut attempted_observations = BTreeSet::new();
     let apply_merge_dedup =
         plan.write_disposition == WriteDisposition::Merge && validation_program.has_dedup_rule();
     let mut pending_dedup_batches = Vec::new();
@@ -202,6 +227,12 @@ where
             break;
         }
         let partition_scope = partition.scope.clone();
+        let partition_schema_evidence = effective_schema_evidence
+            .map(|evidence| expected_partition_schema_evidence(&partition, evidence))
+            .transpose()?;
+        if let Some(expected) = &partition_schema_evidence {
+            attempted_observations.insert(expected.observation_id.clone());
+        }
 
         let partition_span = trace_context
             .map(|context| partition_execution_span(context, partition.partition_id.as_str()))
@@ -246,14 +277,55 @@ where
                     }
                 };
                 if let Some(batch_coercion) = batch_coercion {
-                    if let Some(existing) = &schema_coercion
-                        && existing != &batch_coercion
-                    {
-                        return Err(CdfError::data(
-                            "input batches carry inconsistent schema coercion evidence",
-                        ));
+                    if let Some(expected) = &partition_schema_evidence {
+                        if batch.header.observed_schema_hash != expected.physical_schema_hash {
+                            return Err(CdfError::data(format!(
+                                "schema observation {:?} produced physical schema hash {} but verified discovery evidence requires {}",
+                                expected.observation_id,
+                                batch.header.observed_schema_hash,
+                                expected.physical_schema_hash
+                            )));
+                        }
+                        validate_effective_batch_schema(
+                            record_batch.schema().as_ref(),
+                            resource.schema().as_ref(),
+                        )?;
+                        if batch_coercion != expected.coercion_plan {
+                            return Err(CdfError::data(format!(
+                                "schema observation {:?} produced coercion evidence that does not match the typed engine plan",
+                                expected.observation_id
+                            )));
+                        }
+                        let artifact = PerObservationSchemaCoercionArtifact {
+                            observation_id: expected.observation_id.clone(),
+                            physical_schema_hash: expected.physical_schema_hash.to_string(),
+                            coercion_plan: batch_coercion,
+                        };
+                        match per_observation_schema_evidence
+                            .insert(expected.observation_id.clone(), artifact.clone())
+                        {
+                            Some(existing) if existing != artifact => {
+                                return Err(CdfError::data(format!(
+                                    "schema observation {:?} produced inconsistent coercion evidence across batches",
+                                    expected.observation_id
+                                )));
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        if let Some(existing) = &schema_coercion
+                            && existing != &batch_coercion
+                        {
+                            return Err(CdfError::data(
+                                "input batches carry inconsistent schema coercion evidence",
+                            ));
+                        }
+                        schema_coercion = Some(batch_coercion);
                     }
-                    schema_coercion = Some(batch_coercion);
+                } else if partition_schema_evidence.is_some() {
+                    return Err(CdfError::data(
+                        "effective-schema execution requires trusted per-observation coercion evidence on every batch",
+                    ));
                 }
 
                 let output = execute_batch(record_batch, plan, &mut remaining_limit)?;
@@ -296,6 +368,7 @@ where
                 write_output_batch(
                     &mut builder,
                     &validation_program,
+                    effective_schema_evidence.is_some(),
                     output,
                     batch_source_position,
                     &mut OutputWriteState {
@@ -317,6 +390,7 @@ where
         apply_dedup_and_write_pending_batches(
             &mut builder,
             &validation_program,
+            effective_schema_evidence.is_some(),
             pending_dedup_batches,
             &mut OutputWriteState {
                 profile: &mut profile,
@@ -328,12 +402,47 @@ where
         )?;
     }
 
-    if validation_program.schema_coercion.is_none() {
+    if effective_schema_evidence.is_none() && validation_program.schema_coercion.is_none() {
         validation_program.schema_coercion = schema_coercion;
     }
     builder.write_json_artifact("plan/validation-program.json", &validation_program)?;
     if let Some(coercion) = &validation_program.schema_coercion {
         builder.write_json_artifact("schema/coercion-plan.json", coercion)?;
+    }
+    if let Some(evidence) = effective_schema_evidence {
+        if per_observation_schema_evidence
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>()
+            != attempted_observations
+        {
+            return Err(CdfError::data(format!(
+                "effective-schema execution recorded coercion evidence for {} observations but extraction attempted {} unique observations",
+                per_observation_schema_evidence.len(),
+                attempted_observations.len()
+            )));
+        }
+        builder.write_json_artifact(
+            "schema/per-observation-coercion.json",
+            &PerObservationSchemaEvidenceArtifact {
+                baseline_snapshot_schema_hash: evidence
+                    .authority
+                    .baseline_snapshot
+                    .schema_hash
+                    .to_string(),
+                effective_snapshot_schema_hash: evidence
+                    .authority
+                    .effective_snapshot_schema_hash
+                    .to_string(),
+                effective_arrow_schema_hash: evidence.effective_arrow_schema_hash.to_string(),
+                discovery_manifest_hash: evidence
+                    .authority
+                    .discovery_manifest
+                    .manifest_hash
+                    .to_string(),
+                observations: per_observation_schema_evidence.into_values().collect(),
+            },
+        )?;
     }
     builder.write_json_artifact(
         "schema/output.json",
@@ -395,6 +504,7 @@ where
 fn apply_dedup_and_write_pending_batches(
     builder: &mut PackageBuilder,
     program: &ValidationProgram,
+    canonicalize_observed_schema: bool,
     pending: Vec<PendingDedupBatch>,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
@@ -413,7 +523,14 @@ fn apply_dedup_and_write_pending_batches(
         if output.num_rows() == 0 {
             continue;
         }
-        write_output_batch(builder, program, output, pending.output_position, state)?;
+        write_output_batch(
+            builder,
+            program,
+            canonicalize_observed_schema,
+            output,
+            pending.output_position,
+            state,
+        )?;
     }
     Ok(())
 }
@@ -536,12 +653,21 @@ fn write_quarantine_part(
 fn write_output_batch(
     builder: &mut PackageBuilder,
     program: &ValidationProgram,
+    canonicalize_observed_schema: bool,
     output: RecordBatch,
     output_position: Option<SourcePosition>,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
     let output = normalize_record_batch(output, program)?;
-    *state.output_schema = Some(schema_artifact(output.schema().as_ref()));
+    let output = if canonicalize_observed_schema {
+        canonicalize_effective_output_schema(output)?
+    } else {
+        output
+    };
+    *state.output_schema = Some(schema_artifact(
+        output.schema().as_ref(),
+        canonicalize_observed_schema,
+    ));
     state.profile.output_rows += output.num_rows() as u64;
     state.profile.output_bytes += output.get_array_memory_size() as u64;
     state.profile.output_batches += 1;
@@ -555,6 +681,23 @@ fn write_output_batch(
     });
     state.segments.push(segment);
     Ok(())
+}
+
+fn canonicalize_effective_output_schema(batch: RecordBatch) -> Result<RecordBatch> {
+    let fields = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|field| {
+            let mut metadata = field.metadata().clone();
+            metadata.remove(PHYSICAL_TYPE_METADATA_KEY);
+            field.as_ref().clone().with_metadata(metadata)
+        })
+        .collect::<Vec<_>>();
+    let mut metadata = batch.schema().metadata().clone();
+    metadata.remove(SCHEMA_COERCION_PLAN_METADATA_KEY);
+    let schema = std::sync::Arc::new(Schema::new_with_metadata(fields, metadata));
+    RecordBatch::try_new(schema, batch.columns().to_vec()).map_err(CdfError::from)
 }
 
 fn package_execution_span(context: &ExecutionTraceContext) -> Span {
@@ -672,7 +815,7 @@ fn quarantine_observed_value(
     }
 }
 
-fn schema_artifact(schema: &Schema) -> SchemaArtifact {
+fn schema_artifact(schema: &Schema, include_source_without_physical: bool) -> SchemaArtifact {
     SchemaArtifact {
         fields: schema
             .fields()
@@ -682,17 +825,21 @@ fn schema_artifact(schema: &Schema) -> SchemaArtifact {
                 data_type: field.data_type().to_string(),
                 nullable: field.is_nullable(),
                 semantic: semantic(field.as_ref()).map(ToOwned::to_owned),
-                metadata: schema_field_metadata(field.as_ref()),
+                metadata: schema_field_metadata(field.as_ref(), include_source_without_physical),
             })
             .collect(),
     }
 }
 
-fn schema_field_metadata(field: &arrow_schema::Field) -> BTreeMap<String, String> {
-    if !field.metadata().contains_key(PHYSICAL_TYPE_METADATA_KEY) {
+fn schema_field_metadata(
+    field: &arrow_schema::Field,
+    include_source_without_physical: bool,
+) -> BTreeMap<String, String> {
+    if !include_source_without_physical
+        && !field.metadata().contains_key(PHYSICAL_TYPE_METADATA_KEY)
+    {
         return BTreeMap::new();
     }
-
     [SOURCE_NAME_METADATA_KEY, PHYSICAL_TYPE_METADATA_KEY]
         .into_iter()
         .filter_map(|key| {
@@ -702,6 +849,115 @@ fn schema_field_metadata(field: &arrow_schema::Field) -> BTreeMap<String, String
                 .map(|value| (key.to_owned(), value.clone()))
         })
         .collect()
+}
+
+fn validate_effective_schema_plan<'a, R>(
+    plan: &'a EnginePlan,
+    resource: &R,
+) -> Result<Option<&'a EffectiveSchemaPlanEvidence>>
+where
+    R: ResourceStream + ?Sized,
+{
+    let Some(evidence) = plan.effective_schema_evidence.as_ref() else {
+        if resource.effective_schema_runtime().is_some() {
+            return Err(CdfError::data(
+                "resource carries effective-schema evidence but the serialized engine plan omitted it",
+            ));
+        }
+        return Ok(None);
+    };
+    evidence
+        .authority
+        .validate_for_resource(resource.descriptor())?;
+    let effective_arrow_schema_hash =
+        cdf_contract::canonical_arrow_schema_hash(resource.schema().as_ref())?;
+    if evidence.effective_arrow_schema_hash != effective_arrow_schema_hash {
+        return Err(CdfError::data(format!(
+            "serialized effective Arrow schema hash {} does not match execution resource schema {}",
+            evidence.effective_arrow_schema_hash, effective_arrow_schema_hash
+        )));
+    }
+    if resource
+        .effective_schema_runtime()
+        .map(|runtime| &runtime.evidence)
+        != Some(&evidence.authority)
+    {
+        return Err(CdfError::data(
+            "serialized engine plan effective-schema evidence does not match the execution resource",
+        ));
+    }
+    for partition in &plan.scan.partitions {
+        expected_partition_schema_evidence(partition, evidence)?;
+    }
+    Ok(Some(evidence))
+}
+
+fn validate_plan_metadata(
+    partition: &cdf_kernel::PartitionPlan,
+    key: &str,
+    expected: &str,
+) -> Result<()> {
+    if partition.metadata.get(key).map(String::as_str) != Some(expected) {
+        return Err(CdfError::data(format!(
+            "planned partition {} has missing or spoofed {key} effective-schema evidence",
+            partition.partition_id
+        )));
+    }
+    Ok(())
+}
+
+fn expected_partition_schema_evidence(
+    partition: &cdf_kernel::PartitionPlan,
+    evidence: &EffectiveSchemaPlanEvidence,
+) -> Result<EffectiveSchemaObservationCoercion> {
+    let observation_id = partition
+        .metadata
+        .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+        .ok_or_else(|| {
+            CdfError::data("effective-schema partition omitted its observation identity")
+        })?;
+    let observation = evidence
+        .observations
+        .binary_search_by(|observation| observation.observation_id.as_str().cmp(observation_id))
+        .ok()
+        .map(|index| &evidence.observations[index])
+        .ok_or_else(|| {
+            CdfError::data(format!(
+                "effective-schema evidence has no candidate for observation {observation_id:?}"
+            ))
+        })?;
+    validate_plan_metadata(
+        partition,
+        PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+        observation.physical_schema_hash.as_str(),
+    )?;
+    Ok(observation.clone())
+}
+
+fn validate_effective_batch_schema(observed: &Schema, effective: &Schema) -> Result<()> {
+    if observed.fields().len() != effective.fields().len() {
+        return Err(CdfError::data(format!(
+            "per-observation coercion produced {} fields but the effective schema requires {}",
+            observed.fields().len(),
+            effective.fields().len()
+        )));
+    }
+    for (observed, effective) in observed.fields().iter().zip(effective.fields()) {
+        let observed_source = source_name(observed.as_ref()).unwrap_or_else(|| observed.name());
+        let effective_source = source_name(effective.as_ref()).unwrap_or_else(|| effective.name());
+        if observed.name() != effective.name()
+            || observed_source != effective_source
+            || observed.data_type() != effective.data_type()
+            || observed.is_nullable() != effective.is_nullable()
+        {
+            return Err(CdfError::data(format!(
+                "per-observation coercion output field {:?} does not target effective field {:?}",
+                observed.name(),
+                effective.name()
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn current_observed_at_ms() -> Result<i64> {

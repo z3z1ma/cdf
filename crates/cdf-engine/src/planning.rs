@@ -1,15 +1,19 @@
 use std::collections::BTreeSet;
 
-use cdf_contract::{ValidationProgram, assert_verdict_lattice_total};
+use cdf_contract::{
+    ContractPolicy, ValidationProgram, assert_verdict_lattice_total, reconcile_schema,
+};
 use cdf_kernel::{
-    CapabilitySupport, CdfError, DeliveryGuarantee, EstimateSupport, PartitionPlan, PlanId,
-    PushdownFidelity, QueryableResource, ResourceCapabilities, ResourceId, ResourceStream, Result,
-    ScanPlan, ScanPredicate, ScanRequest, WriteDisposition,
+    CapabilitySupport, CdfError, DeliveryGuarantee, EstimateSupport, PLAN_PHYSICAL_SCHEMA_HASH_KEY,
+    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionPlan, PlanId, PushdownFidelity, QueryableResource,
+    ResourceCapabilities, ResourceId, ResourceStream, Result, ScanPlan, ScanPredicate, ScanRequest,
+    WriteDisposition,
 };
 
 use crate::{
-    EnginePlan, EnginePlanInput, EstimateExplain, ExplainData, OperatorNode, PartitionExplain,
-    PlanBoundedness, PredicateExplain, predicates::predicate_operator,
+    EffectiveSchemaObservationCoercion, EffectiveSchemaPlanEvidence, EnginePlan, EnginePlanInput,
+    EstimateExplain, ExplainData, OperatorNode, PartitionExplain, PlanBoundedness,
+    PredicateExplain, predicates::predicate_operator,
 };
 
 pub const CDF_NATIVE_RESOURCE_ADAPTER_KIND: &str = "cdf_native_resource_adapter";
@@ -31,7 +35,7 @@ impl Planner {
         let write_disposition = resource.descriptor().write_disposition.clone();
 
         let partitions = resource.plan_partitions(&input.request)?;
-        let scan = ScanPlan {
+        let mut scan = ScanPlan {
             plan_id: PlanId::new(format!("plan-{}", input.request.resource_id.as_str()))?,
             request: input.request.clone(),
             partitions,
@@ -41,15 +45,18 @@ impl Planner {
             estimated_bytes: None,
             delivery_guarantee: delivery_guarantee(write_disposition.clone()),
         };
+        let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
 
-        self.finish_plan(
+        let mut plan = self.finish_plan(
             scan,
             input,
             write_disposition,
             false,
             false,
             EstimateSupport::None,
-        )
+        )?;
+        plan.effective_schema_evidence = effective_schema_evidence;
+        Ok(plan)
     }
 
     pub fn plan_tier_b<R>(&self, resource: &R, input: EnginePlanInput) -> Result<EnginePlan>
@@ -60,15 +67,18 @@ impl Planner {
         validate_program(&input.validation_program)?;
         let write_disposition = resource.descriptor().write_disposition.clone();
 
-        let scan = resource.negotiate(&input.request)?;
-        self.finish_plan(
+        let mut scan = resource.negotiate(&input.request)?;
+        let effective_schema_evidence = bind_effective_schema_evidence(&mut scan, resource)?;
+        let mut plan = self.finish_plan(
             scan,
             input,
             write_disposition,
             resource.capabilities().projection == CapabilitySupport::Supported,
             resource.capabilities().limits == CapabilitySupport::Supported,
             resource.capabilities().estimates.clone(),
-        )
+        )?;
+        plan.effective_schema_evidence = effective_schema_evidence;
+        Ok(plan)
     }
 
     fn finish_plan(
@@ -101,6 +111,7 @@ impl Planner {
 
         Ok(EnginePlan {
             scan,
+            effective_schema_evidence: None,
             final_projection,
             residual_predicates,
             boundedness: input.boundedness,
@@ -111,6 +122,108 @@ impl Planner {
             package_id: input.package_id,
         })
     }
+}
+
+fn bind_effective_schema_evidence<R>(
+    scan: &mut ScanPlan,
+    resource: &R,
+) -> Result<Option<EffectiveSchemaPlanEvidence>>
+where
+    R: ResourceStream + ?Sized,
+{
+    let Some(runtime) = resource.effective_schema_runtime() else {
+        return Ok(None);
+    };
+    runtime.validate_for_resource(resource.descriptor())?;
+    let evidence = &runtime.evidence;
+    for partition in &mut scan.partitions {
+        let observation_id = partition
+            .metadata
+            .get(PLAN_SCHEMA_OBSERVATION_ID_KEY)
+            .ok_or_else(|| {
+            CdfError::data(
+                "effective schema evidence requires every planned partition to identify its schema observation",
+            )
+        })?;
+        let observation = evidence.observation(observation_id).ok_or_else(|| {
+            CdfError::data(format!(
+                "effective schema evidence has no candidate for planned observation {observation_id:?}"
+            ))
+        })?;
+        partition.metadata.insert(
+            PLAN_PHYSICAL_SCHEMA_HASH_KEY.to_owned(),
+            observation.physical_schema_hash.to_string(),
+        );
+    }
+    let mut type_policy =
+        ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
+    type_policy.coerce_types = false;
+    type_policy.allow_lossy_mapping = false;
+    for physical in &runtime.schema_catalog {
+        let computed_hash = cdf_contract::canonical_arrow_schema_hash(physical.schema.as_ref())?;
+        if computed_hash != physical.physical_schema_hash {
+            return Err(CdfError::data(format!(
+                "physical schema catalog entry {} does not match its canonical schema hash {}",
+                physical.physical_schema_hash, computed_hash
+            )));
+        }
+    }
+    let observations = evidence
+        .observations
+        .iter()
+        .map(|observation| {
+            let physical_schema = runtime
+                .physical_schema(&observation.physical_schema_hash)
+                .ok_or_else(|| {
+                    CdfError::data(format!(
+                        "effective schema runtime omitted physical schema {} for observation {:?}",
+                        observation.physical_schema_hash, observation.observation_id
+                    ))
+                })?;
+            let reconciliation = reconcile_schema(
+                physical_schema.as_ref(),
+                resource.schema().as_ref(),
+                &type_policy,
+            )?;
+            validate_reconciliation_target(&reconciliation.schema, resource.schema().as_ref())?;
+            Ok(EffectiveSchemaObservationCoercion {
+                observation_id: observation.observation_id.clone(),
+                physical_schema_hash: observation.physical_schema_hash.clone(),
+                coercion_plan: reconciliation.plan,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(EffectiveSchemaPlanEvidence {
+        authority: evidence.clone(),
+        effective_arrow_schema_hash: cdf_contract::canonical_arrow_schema_hash(
+            resource.schema().as_ref(),
+        )?,
+        observations,
+    }))
+}
+
+fn validate_reconciliation_target(
+    reconciled: &arrow_schema::Schema,
+    effective: &arrow_schema::Schema,
+) -> Result<()> {
+    if reconciled.fields().len() != effective.fields().len()
+        || reconciled
+            .fields()
+            .iter()
+            .zip(effective.fields())
+            .any(|(left, right)| {
+                left.name() != right.name()
+                    || left.data_type() != right.data_type()
+                    || left.is_nullable() != right.is_nullable()
+                    || cdf_kernel::source_name(left.as_ref()).unwrap_or_else(|| left.name())
+                        != cdf_kernel::source_name(right.as_ref()).unwrap_or_else(|| right.name())
+            })
+    {
+        return Err(CdfError::data(
+            "schema reconciliation did not target the exact effective Arrow schema",
+        ));
+    }
+    Ok(())
 }
 
 pub fn negotiate_scan_plan(

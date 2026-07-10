@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     fs,
     path::{Component, Path, PathBuf},
+    sync::Arc,
 };
 
 use arrow_schema::{
@@ -873,7 +874,8 @@ impl SchemaSnapshotStore {
         let artifact = self.read(reference)?;
         let baseline = crate::VerifiedSchemaBaseline::from_hydrated_snapshot(
             ResourceId::new(artifact.resource_id.clone())?,
-            artifact.schema_hash.clone(),
+            reference.clone(),
+            Arc::new(artifact.schema.to_arrow()?),
         );
         Ok((artifact, baseline))
     }

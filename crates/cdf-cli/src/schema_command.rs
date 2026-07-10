@@ -206,14 +206,14 @@ fn discover_artifacts_for_cli_resource(
         && matches!(resource.plan(), CompiledResourcePlan::Rest(_))
     {
         let mut transport = ReqwestHttpTransport::new()?;
-        Ok(ResourceSchemaDiscoveryArtifacts {
-            discovery: cdf_project::discover_resource_schema_with_rest_transport(
+        Ok(ResourceSchemaDiscoveryArtifacts::new(
+            cdf_project::discover_resource_schema_with_rest_transport(
                 resource,
                 &secret_provider,
                 &mut transport,
             )?,
-            discovery_manifest: None,
-        })
+            None,
+        ))
     } else {
         Ok(cdf_project::discover_resource_schema_artifacts(
             resource,

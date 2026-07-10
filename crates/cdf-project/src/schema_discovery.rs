@@ -2,8 +2,8 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
-    ContractPolicy, IdentifierPolicy, NORMALIZER_NAMECASE_V1, RuleOutcome, normalize_arrow_schema,
-    plan_aggregate_arrow_schema_join,
+    ContractPolicy, IdentifierPolicy, NORMALIZER_NAMECASE_V1, RuleOutcome, SchemaEvolutionMode,
+    normalize_arrow_schema, plan_aggregate_arrow_schema_join,
 };
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
@@ -15,8 +15,9 @@ use cdf_declarative::{
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
-    CdfError, PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest,
-    SchemaHash, SchemaSource, ScopeKey,
+    CdfError, EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence,
+    EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime, PartitionId, PartitionPlan,
+    ResourceDescriptor, ResourceStream, Result, ScanRequest, SchemaHash, SchemaSource, ScopeKey,
 };
 
 use crate::{
@@ -41,10 +42,25 @@ pub struct ResourceSchemaDiscovery {
     pub snapshot: DiscoveredSchemaSnapshot,
 }
 
+#[non_exhaustive]
 #[derive(Clone, Debug)]
 pub struct ResourceSchemaDiscoveryArtifacts {
     pub discovery: ResourceSchemaDiscovery,
     pub discovery_manifest: Option<DiscoveryManifestArtifact>,
+    pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+}
+
+impl ResourceSchemaDiscoveryArtifacts {
+    pub fn new(
+        discovery: ResourceSchemaDiscovery,
+        discovery_manifest: Option<DiscoveryManifestArtifact>,
+    ) -> Self {
+        Self {
+            discovery,
+            discovery_manifest,
+            effective_schema_runtime: None,
+        }
+    }
 }
 
 /// Authority token proving that a schema snapshot and its linked discovery
@@ -55,17 +71,20 @@ pub struct ResourceSchemaDiscoveryArtifacts {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedSchemaBaseline {
     resource_id: cdf_kernel::ResourceId,
-    schema_hash: SchemaHash,
+    snapshot: cdf_kernel::SchemaSnapshotReference,
+    schema: arrow_schema::SchemaRef,
 }
 
 impl VerifiedSchemaBaseline {
     pub(crate) fn from_hydrated_snapshot(
         resource_id: cdf_kernel::ResourceId,
-        schema_hash: SchemaHash,
+        snapshot: cdf_kernel::SchemaSnapshotReference,
+        schema: arrow_schema::SchemaRef,
     ) -> Self {
         Self {
             resource_id,
-            schema_hash,
+            snapshot,
+            schema,
         }
     }
 
@@ -74,7 +93,15 @@ impl VerifiedSchemaBaseline {
     }
 
     pub fn schema_hash(&self) -> &SchemaHash {
-        &self.schema_hash
+        &self.snapshot.schema_hash
+    }
+
+    pub fn snapshot(&self) -> &cdf_kernel::SchemaSnapshotReference {
+        &self.snapshot
+    }
+
+    pub fn schema(&self) -> &arrow_schema::SchemaRef {
+        &self.schema
     }
 }
 
@@ -83,6 +110,7 @@ impl VerifiedSchemaBaseline {
 pub struct SchemaDiscoveryExecutionOptions {
     budget: DiscoveryExecutorBudget,
     verified_baseline: Option<VerifiedSchemaBaseline>,
+    runtime_effective_schema: bool,
 }
 
 impl SchemaDiscoveryExecutionOptions {
@@ -99,6 +127,11 @@ impl SchemaDiscoveryExecutionOptions {
     /// snapshot store. Arbitrary hashes are intentionally not accepted.
     pub fn with_verified_baseline(mut self, baseline: VerifiedSchemaBaseline) -> Self {
         self.verified_baseline = Some(baseline);
+        self
+    }
+
+    pub fn for_runtime_effective_schema(mut self) -> Self {
+        self.runtime_effective_schema = true;
         self
     }
 
@@ -209,6 +242,50 @@ pub fn discover_resource_schema_with_file_dependencies_artifacts(
     )
 }
 
+/// Prepares a pinned resource for execution against runtime schema observations.
+///
+/// The discovery/compiler adapter owns the decision to observe a source. Generic
+/// command orchestration calls this once and does not branch on concrete formats.
+pub fn prepare_pinned_resource_effective_schema(
+    project_root: &Path,
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+) -> Result<CompiledResource> {
+    let should_observe = matches!(
+        resource.plan(),
+        CompiledResourcePlan::Files(plan)
+            if !is_http_root(&plan.root)
+                && matches!(
+                    plan.format,
+                    FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
+                )
+    );
+    if !should_observe {
+        return Ok(resource.clone());
+    }
+    let snapshot = resource
+        .descriptor()
+        .schema_source
+        .pinned_snapshot()
+        .ok_or_else(|| {
+            CdfError::contract(
+                "runtime effective-schema preparation requires a pinned schema snapshot",
+            )
+        })?;
+    let (_, baseline) =
+        SchemaSnapshotStore::new(project_root).read_with_verified_baseline(snapshot)?;
+    let probe_resource =
+        resource.with_schema_source_and_schema(SchemaSource::Discover, baseline.schema().clone());
+    let artifacts = discover_resource_schema_artifacts(
+        &probe_resource,
+        secret_provider,
+        SchemaDiscoveryExecutionOptions::new()
+            .with_verified_baseline(baseline.clone())
+            .for_runtime_effective_schema(),
+    )?;
+    apply_effective_discovered_schema(resource, &artifacts, &baseline)
+}
+
 fn discover_resource_schema_artifacts_inner(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
@@ -238,6 +315,7 @@ fn discover_resource_schema_artifacts_inner(
                         },
                     },
                     discovery_manifest: None,
+                    effective_schema_runtime: None,
                 })
             }
             ref format => Err(unsupported_discover_slice(
@@ -250,11 +328,13 @@ fn discover_resource_schema_artifacts_inner(
         CompiledResourcePlan::Sql(plan) => Ok(ResourceSchemaDiscoveryArtifacts {
             discovery: discover_postgres_resource_schema(resource, plan, secret_provider)?,
             discovery_manifest: None,
+            effective_schema_runtime: None,
         }),
         CompiledResourcePlan::Rest(_) => match rest_transport {
             Some(transport) => Ok(ResourceSchemaDiscoveryArtifacts {
                 discovery: discover_rest_resource_schema(resource, secret_provider, transport)?,
                 discovery_manifest: None,
+                effective_schema_runtime: None,
             }),
             None => Err(unsupported_discover_slice(
                 resource.descriptor(),
@@ -393,15 +473,15 @@ fn discover_local_binary_resource_schema(
             AggregateSchemaCandidate::new(probe.location.clone(), probe.schema.as_ref().clone())
         })
         .collect::<Vec<_>>();
-    let aggregate = plan_aggregate_arrow_schema_join(&aggregate_candidates)?;
-    if !aggregate.is_compatible() {
-        let file_reports = aggregate
+    let file_aggregate = plan_aggregate_arrow_schema_join(&aggregate_candidates)?;
+    if !file_aggregate.is_compatible() {
+        let file_reports = file_aggregate
             .files
             .iter()
             .map(aggregate_file_report)
             .collect::<Vec<_>>()
             .join("; ");
-        let incompatibilities = aggregate
+        let incompatibilities = file_aggregate
             .incompatibilities
             .iter()
             .map(|incompatibility| {
@@ -415,12 +495,79 @@ fn discover_local_binary_resource_schema(
             .collect::<Vec<_>>()
             .join("; ");
         return Err(CdfError::contract(format!(
-            "initial exhaustive schema pin for resource `{}` found incompatible files; candidate verdicts: {file_reports}; incompatibilities: {incompatibilities}",
-            resource.descriptor().resource_id
+            "{} for resource `{}` found incompatible files; candidate verdicts: {file_reports}; incompatibilities: {incompatibilities}",
+            if options.runtime_effective_schema {
+                "effective-schema planning requires A10e disposition"
+            } else {
+                "initial exhaustive schema pin"
+            },
+            resource.descriptor().resource_id,
         )));
     }
 
-    let normalized = normalize_arrow_schema(&aggregate.schema, &IdentifierPolicy::default())?;
+    let aggregate = if let Some(baseline) = options
+        .runtime_effective_schema
+        .then(|| options.verified_baseline())
+        .flatten()
+    {
+        let effective_candidates = vec![
+            AggregateSchemaCandidate::new(
+                "__cdf_current_observation__",
+                file_aggregate.schema.clone(),
+            ),
+            AggregateSchemaCandidate::new(
+                "__cdf_verified_baseline__",
+                baseline.schema().as_ref().clone(),
+            ),
+        ];
+        let effective = plan_aggregate_arrow_schema_join(&effective_candidates)?;
+        if !effective.is_compatible() {
+            let incompatibilities = effective
+                .incompatibilities
+                .iter()
+                .map(|item| {
+                    format!(
+                        "{} at {}: {}",
+                        item.location,
+                        item.field_path.join("."),
+                        item.reason
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(CdfError::contract(format!(
+                "effective-schema planning requires A10e disposition for resource `{}`; incompatibilities: {incompatibilities}",
+                resource.descriptor().resource_id
+            )));
+        }
+        effective
+    } else {
+        file_aggregate.clone()
+    };
+
+    let contract = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let effective_schema = match (
+        options
+            .runtime_effective_schema
+            .then(|| options.verified_baseline())
+            .flatten(),
+        &contract.schema.mode,
+    ) {
+        (Some(baseline), SchemaEvolutionMode::Freeze) => {
+            let aggregate_normalized =
+                normalize_arrow_schema(&aggregate.schema, &IdentifierPolicy::default())?;
+            if !same_effective_fields(&aggregate_normalized, baseline.schema().as_ref()) {
+                return Err(CdfError::contract(format!(
+                    "freeze policy keeps baseline schema {} effective for resource `{}`; discovered additions or incompatible widening require A10e file disposition",
+                    baseline.schema_hash(),
+                    resource.descriptor().resource_id
+                )));
+            }
+            baseline.schema().as_ref().clone()
+        }
+        _ => normalize_arrow_schema(&aggregate.schema, &IdentifierPolicy::default())?,
+    };
+    let normalized = effective_schema;
     let normalized = Arc::new(normalized);
     let metadata = adapter.snapshot_metadata();
     let effective = SchemaSnapshotArtifact::new(
@@ -431,7 +578,7 @@ fn discover_local_binary_resource_schema(
     let manifest_candidates = probes
         .iter()
         .map(|probe| {
-            let verdict = aggregate
+            let verdict = file_aggregate
                 .files
                 .iter()
                 .find(|verdict| verdict.location == probe.location)
@@ -454,7 +601,7 @@ fn discover_local_binary_resource_schema(
         effective_schema_hash: Some(effective.schema_hash),
         coverage: DiscoveryCoverageMode::Exhaustive,
         selector: None,
-        budget: options.budget,
+        budget: options.budget.clone(),
         normalizer_version: NORMALIZER_NAMECASE_V1.to_owned(),
         policy_version: crate::internal::semantic_hash(&ContractPolicy::for_trust(
             resource.descriptor().trust_level.clone(),
@@ -500,9 +647,55 @@ fn discover_local_binary_resource_schema(
             source_identity,
         },
     };
+    let effective_schema_runtime = if options.runtime_effective_schema {
+        let baseline = options.verified_baseline().ok_or_else(|| {
+            CdfError::contract(
+                "runtime effective-schema discovery requires a verified baseline snapshot",
+            )
+        })?;
+        let effective_snapshot_schema_hash =
+            manifest.effective_schema_hash.clone().ok_or_else(|| {
+                CdfError::internal(
+                    "local binary discovery manifest omitted its effective schema snapshot hash",
+                )
+            })?;
+        let mut observations = probes
+            .iter()
+            .map(|probe| {
+                EffectiveSchemaObservationEvidence::new(
+                    probe.location.clone(),
+                    probe.physical_schema_hash.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        observations.sort_by(|left, right| left.observation_id.cmp(&right.observation_id));
+        let mut schema_catalog = probes
+            .iter()
+            .map(|probe| {
+                EffectiveSchemaCatalogEntry::new(
+                    probe.physical_schema_hash.clone(),
+                    Arc::clone(&probe.schema),
+                )
+            })
+            .collect::<Vec<_>>();
+        schema_catalog
+            .sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
+        schema_catalog
+            .dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
+        let evidence = EffectiveSchemaEvidence::new(
+            baseline.snapshot().clone(),
+            effective_snapshot_schema_hash,
+            manifest.reference(),
+            observations,
+        )?;
+        Some(EffectiveSchemaRuntime::new(evidence, schema_catalog)?)
+    } else {
+        None
+    };
     Ok(ResourceSchemaDiscoveryArtifacts {
         discovery,
         discovery_manifest: Some(manifest),
+        effective_schema_runtime,
     })
 }
 
@@ -964,6 +1157,7 @@ pub fn prepare_discover_resource_with_rest_transport(
             rest_transport,
         )?,
         discovery_manifest: None,
+        effective_schema_runtime: None,
     };
     prepare_discovered_schema(project_root, resource, discovery)
 }
@@ -1009,6 +1203,62 @@ pub fn apply_discovered_schema(
         resource: pinned,
         discovery: Some(discovery),
     }
+}
+
+pub fn apply_effective_discovered_schema(
+    resource: &CompiledResource,
+    artifacts: &ResourceSchemaDiscoveryArtifacts,
+    baseline: &VerifiedSchemaBaseline,
+) -> Result<CompiledResource> {
+    if resource.descriptor().resource_id != *baseline.resource_id() {
+        return Err(CdfError::contract(format!(
+            "verified effective-schema baseline belongs to `{}` but resource is `{}`",
+            baseline.resource_id(),
+            resource.descriptor().resource_id
+        )));
+    }
+    let manifest = artifacts.discovery_manifest.as_ref().ok_or_else(|| {
+        CdfError::contract(
+            "effective multi-file schema execution requires a discovery manifest artifact",
+        )
+    })?;
+    manifest.validate()?;
+    if manifest.baseline_schema_hash.as_ref() != Some(baseline.schema_hash()) {
+        return Err(CdfError::data(
+            "discovery manifest baseline hash does not match the verified pinned snapshot",
+        ));
+    }
+    let runtime = artifacts.effective_schema_runtime.clone().ok_or_else(|| {
+        CdfError::contract(
+            "effective multi-file schema execution requires verified physical schema runtime evidence",
+        )
+    })?;
+    if runtime.evidence.baseline_snapshot != *baseline.snapshot()
+        || runtime.evidence.discovery_manifest != manifest.reference()
+    {
+        return Err(CdfError::data(
+            "effective schema runtime authority does not match the verified baseline and discovery manifest",
+        ));
+    }
+    resource.with_effective_schema(Arc::clone(&artifacts.discovery.normalized_schema), runtime)
+}
+
+fn same_effective_fields(left: &arrow_schema::Schema, right: &arrow_schema::Schema) -> bool {
+    left.fields().len() == right.fields().len()
+        && left
+            .fields()
+            .iter()
+            .zip(right.fields())
+            .all(|(left, right)| {
+                let left_source =
+                    cdf_kernel::source_name(left.as_ref()).unwrap_or_else(|| left.name());
+                let right_source =
+                    cdf_kernel::source_name(right.as_ref()).unwrap_or_else(|| right.name());
+                left.name() == right.name()
+                    && left_source == right_source
+                    && left.data_type() == right.data_type()
+                    && left.is_nullable() == right.is_nullable()
+            })
 }
 
 fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {

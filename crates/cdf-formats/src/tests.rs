@@ -1048,6 +1048,7 @@ fn declared_parquet_int32_declared_int64_materializes_lossless_widening() {
     let temp = tempfile::tempdir().unwrap();
     let parquet_path = temp.path().join("events.parquet");
     let physical_schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+    let physical_schema_hash = schema_hash(physical_schema.as_ref()).unwrap();
     let physical_batch = RecordBatch::try_new(
         physical_schema,
         vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
@@ -1086,7 +1087,7 @@ fn declared_parquet_int32_declared_int64_materializes_lossless_widening() {
     );
     assert_eq!(
         read.batches[0].header.observed_schema_hash,
-        read.schema_hash
+        physical_schema_hash
     );
     let ids = batch
         .column_by_name("id")

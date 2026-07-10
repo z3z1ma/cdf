@@ -15,11 +15,12 @@ use cdf_http::{
 };
 use cdf_kernel::{
     BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CdfError, ContractRef,
-    CursorOrderingClaim, CursorSpec, DeliveryGuarantee, EstimateSupport, FilterCapabilities,
-    FreshnessSpec, IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities, PlanId,
-    PushdownFidelity, PushedPredicate, QueryableResource, ReplaySupport, ResourceCapabilities,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash,
-    SchemaSource, ScopeKey, ScopeKind, TrustLevel, WriteDisposition, with_cdf_metadata,
+    CursorOrderingClaim, CursorSpec, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
+    FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId, PartitionPlan,
+    PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate, QueryableResource,
+    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
+    ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind, TrustLevel,
+    WriteDisposition, with_cdf_metadata,
 };
 use sha2::{Digest, Sha256};
 
@@ -57,6 +58,7 @@ pub struct CompiledResource {
     schema: SchemaRef,
     capabilities: ResourceCapabilities,
     plan: CompiledResourcePlan,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
 }
 
 impl CompiledResource {
@@ -105,6 +107,18 @@ impl CompiledResource {
         resource.descriptor.schema_source = schema_source;
         resource.schema = schema;
         resource
+    }
+
+    pub fn with_effective_schema(
+        &self,
+        schema: SchemaRef,
+        runtime: EffectiveSchemaRuntime,
+    ) -> Result<Self> {
+        runtime.validate_for_resource(&self.descriptor)?;
+        let mut resource = self.clone();
+        resource.schema = schema;
+        resource.effective_schema_runtime = Some(runtime);
+        Ok(resource)
     }
 }
 
@@ -321,6 +335,10 @@ impl ResourceStream for CompiledResource {
             }),
         }
     }
+
+    fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
+        self.effective_schema_runtime.as_ref()
+    }
 }
 
 impl QueryableResource for CompiledResource {
@@ -478,6 +496,7 @@ fn compile_resource(
         schema: Arc::new(schema),
         capabilities,
         plan,
+        effective_schema_runtime: None,
     })
 }
 
