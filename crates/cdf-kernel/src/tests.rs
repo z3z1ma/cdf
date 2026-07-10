@@ -480,6 +480,102 @@ fn row_provenance_and_correction_plan_round_trip_without_destination_types() {
     assert_eq!(decoded.request.original_row, original_row);
 }
 
+fn correction_operation_fixture(
+    path: &str,
+    output_name: &str,
+    display_json: &str,
+    exact_authority: &[u8],
+) -> DestinationCorrectionOperation {
+    DestinationCorrectionOperation {
+        correction: DestinationCorrectionPlan {
+            request: DestinationCorrectionRequest {
+                promotion_id: PromotionId::new("promotion-digest").unwrap(),
+                original_row: RowProvenanceAddress::new(
+                    PackageHash::new("sha256:original-package").unwrap(),
+                    SegmentId::new("seg-000001").unwrap(),
+                    0,
+                ),
+                old_schema_hash: SchemaHash::new("sha256:old-schema").unwrap(),
+                new_schema_hash: SchemaHash::new("sha256:new-schema").unwrap(),
+                promoted_path: path.to_owned(),
+                promoted_value_json: display_json.to_owned(),
+                residual_operation: ResidualCorrectionOperation::RemovePromotedPath,
+                selected_strategy: CorrectionStrategy::InPlaceUpdate,
+            },
+            transaction_guarantee: TransactionSupport::AtomicPackage,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        },
+        output_field: CanonicalArrowField {
+            name: output_name.to_owned(),
+            data_type: CanonicalArrowType::Int {
+                signed: true,
+                bits: 64,
+            },
+            nullable: true,
+            metadata: BTreeMap::new(),
+        },
+        promoted_value_residual_json_v1: exact_authority.to_vec(),
+    }
+}
+
+#[test]
+fn correction_digest_excludes_display_json_and_binds_exact_authority() {
+    let base = correction_operation_fixture("/age", "age", "42", br#"{"exact":42}"#);
+    let display_changed =
+        correction_operation_fixture("/age", "age", r#"{"pretty":42}"#, br#"{"exact":42}"#);
+    assert_eq!(
+        correction_operations_digest(std::slice::from_ref(&base)).unwrap(),
+        correction_operations_digest(&[display_changed]).unwrap()
+    );
+
+    let exact_changed = correction_operation_fixture("/age", "age", "42", br#"{"exact":43}"#);
+    assert_ne!(
+        correction_operations_digest(std::slice::from_ref(&base)).unwrap(),
+        correction_operations_digest(&[exact_changed]).unwrap()
+    );
+
+    let type_changed = DestinationCorrectionOperation {
+        output_field: CanonicalArrowField {
+            data_type: CanonicalArrowType::Int {
+                signed: true,
+                bits: 32,
+            },
+            ..base.output_field.clone()
+        },
+        ..base.clone()
+    };
+    assert_ne!(
+        correction_operations_digest(&[base]).unwrap(),
+        correction_operations_digest(&[type_changed]).unwrap()
+    );
+}
+
+#[test]
+fn correction_request_rejects_two_paths_for_one_output_field() {
+    let first = correction_operation_fixture("/age", "promoted", "42", b"first");
+    let second = correction_operation_fixture("/years", "promoted", "42", b"second");
+    let error = DestinationCorrectionCommitRequest::new(
+        PackageHash::new("sha256:correction-package").unwrap(),
+        IdempotencyToken::new("sha256:correction-package").unwrap(),
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        vec![StateSegment {
+            segment_id: SegmentId::new("seg-correction").unwrap(),
+            scope: ScopeKey::Resource,
+            output_position: SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "correction".to_owned(),
+                value: CursorValue::U64(2),
+            }),
+            row_count: 2,
+            byte_count: 2,
+        }],
+        vec![first, second],
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("conflicting promoted paths"));
+}
+
 #[test]
 fn correction_capability_validation_rejects_impossible_claims_and_plans() {
     let mut targetable_without_persistence = DestinationCorrectionCapabilities::default();
@@ -1003,4 +1099,18 @@ fn receipt_rejects_state_delta_when_identity_or_segments_do_not_match() {
     let mut missing_segment = receipt;
     missing_segment.segment_acks.clear();
     assert!(!missing_segment.covers_state_delta(&delta));
+}
+
+#[test]
+fn sampled_discovery_coverage_evidence_is_total_and_round_trips() {
+    let evidence = DiscoveryCoverageEvidence::sampled("stratified-hash-v1", 2, 5, 2).unwrap();
+    assert_eq!(evidence.unprobed_files, 3);
+    let encoded = serde_json::to_vec(&evidence).unwrap();
+    let decoded: DiscoveryCoverageEvidence = serde_json::from_slice(&encoded).unwrap();
+    assert_eq!(decoded, evidence);
+    decoded.validate().unwrap();
+
+    let mut invalid = evidence;
+    invalid.unprobed_files = 2;
+    assert!(invalid.validate().is_err());
 }

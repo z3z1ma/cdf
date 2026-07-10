@@ -5,7 +5,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     checkpoint::{Receipt, StateSegment},
-    correction::{DestinationProtocolCapabilities, DestinationSheetArtifact},
+    correction::{
+        CorrectionCommitSession, DestinationCorrectionCommitPlan,
+        DestinationCorrectionCommitRequest, DestinationProtocolCapabilities,
+        DestinationResidualReadback, DestinationSheetArtifact, RowProvenanceAddress,
+    },
     error::Result,
     ids::{DestinationId, IdempotencyToken, PackageHash, PlanId, ReceiptId, SegmentId, TargetName},
     resource::{CapabilitySupport, WriteDisposition},
@@ -172,6 +176,45 @@ pub trait DestinationProtocol {
     ) -> Result<Box<dyn CommitSession + '_>>;
 
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification>;
+
+    fn plan_correction(
+        &self,
+        _request: &DestinationCorrectionCommitRequest,
+    ) -> Result<DestinationCorrectionCommitPlan> {
+        Err(crate::CdfError::destination(format!(
+            "destination {} does not support addressed corrections",
+            self.sheet().destination
+        )))
+    }
+
+    fn begin_correction(
+        &self,
+        _request: DestinationCorrectionCommitRequest,
+        _plan: DestinationCorrectionCommitPlan,
+    ) -> Result<Box<dyn CorrectionCommitSession + '_>> {
+        Err(crate::CdfError::destination(format!(
+            "destination {} does not support addressed corrections",
+            self.sheet().destination
+        )))
+    }
+
+    fn verify_correction(&self, _receipt: &Receipt) -> Result<ReceiptVerification> {
+        Err(crate::CdfError::destination(format!(
+            "destination {} does not support addressed corrections",
+            self.sheet().destination
+        )))
+    }
+
+    fn read_correction_residual(
+        &self,
+        _target: &TargetName,
+        _original_row: &RowProvenanceAddress,
+    ) -> Result<Option<DestinationResidualReadback>> {
+        Err(crate::CdfError::destination(format!(
+            "destination {} does not support correction residual readback",
+            self.sheet().destination
+        )))
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

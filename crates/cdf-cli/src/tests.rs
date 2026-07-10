@@ -27,8 +27,8 @@ use cdf_kernel::{
 };
 use cdf_package::{PackageBuilder, PackageReader, PackageStatus};
 use cdf_project::{
-    PackageArtifactReplayRequest, ResolvedProjectDestination, parse_lock,
-    replay_package_from_artifacts,
+    PackageArtifactReplayRequest, ResolvedProjectDestination, STRATIFIED_HASH_SELECTOR_V1,
+    parse_lock, replay_package_from_artifacts,
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
@@ -3540,6 +3540,167 @@ fn multi_file_parquet_no_pin_and_autopin_are_exhaustive_and_byte_stable() {
 }
 
 #[test]
+fn sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    set_file_resource_sample_files(&project, 2);
+    write_vendor_parquet(&project.root.join("data/a.parquet"));
+    write_string_vendor_parquet(&project.root.join("data/middle.parquet"));
+    write_vendor_parquet(&project.root.join("data/z.parquet"));
+
+    let discover = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_eq!(discover.exit_code, 0, "{}", discover.stderr);
+    let discovery = &stderr_or_stdout_json(&discover.stdout)["result"]["discovery"];
+    assert_eq!(discovery["coverage"], "sampled");
+    assert_eq!(discovery["selector"], STRATIFIED_HASH_SELECTOR_V1);
+    assert_eq!(discovery["sample_files"], 2);
+    assert_eq!(discovery["matched_files"], 3);
+    assert_eq!(discovery["probed_files"], 2);
+    assert_eq!(discovery["unprobed_files"], 1);
+    assert_no_schema_discovery_writes(&project);
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_eq!(human.exit_code, 0, "{}", human.stderr);
+    assert!(
+        human.stdout.contains("Discovery Coverage"),
+        "{}",
+        human.stdout
+    );
+    assert!(human.stdout.contains("sampled"), "{}", human.stdout);
+    assert!(human.stdout.contains("matched files"), "{}", human.stdout);
+    assert_no_schema_discovery_writes(&project);
+
+    let no_pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--no-pin",
+    ]);
+    assert_eq!(no_pin.exit_code, 0, "{}", no_pin.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&no_pin.stdout)["result"]["schema_snapshot"]["discovery"]["coverage"],
+        "sampled"
+    );
+    assert_no_schema_discovery_writes(&project);
+
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&pin.stdout)["result"]["discovery"]["coverage"],
+        "sampled"
+    );
+
+    let diff = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "diff",
+        "local.events",
+    ]);
+    assert_eq!(diff.exit_code, 0, "{}", diff.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&diff.stdout)["result"]["discovery"]["unprobed_files"],
+        1
+    );
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&preview.stdout)["result"]["schema_snapshot"]["discovery"]["coverage"],
+        "sampled"
+    );
+
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-sampled-unseen-drift",
+        "checkpoint-sampled-unseen-drift",
+    );
+    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&run_result.stdout)["result"]["schema_snapshot"]["discovery"]["coverage"],
+        "sampled"
+    );
+    let package = project.root.join(".cdf/packages/pkg-sampled-unseen-drift");
+    let schema_evidence: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("schema/per-observation-coercion.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(schema_evidence["discovery_coverage"]["coverage"], "sampled");
+    assert_eq!(schema_evidence["discovery_coverage"]["matched_files"], 3);
+    assert_eq!(schema_evidence["discovery_coverage"]["probed_files"], 2);
+    assert_eq!(schema_evidence["discovery_coverage"]["unprobed_files"], 1);
+    let quarantine: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("quarantine/schema-observations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(quarantine[0]["observation_id"], "middle.parquet");
+    assert_eq!(quarantine[0]["rule_id"], "schema-observation:incompatible");
+    assert!(cdf_package::PackageReader::open(&package).is_ok());
+    let processed: serde_json::Value = serde_json::from_slice(
+        &fs::read(package.join("state/processed-observations.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(processed["observations"].as_array().unwrap().len(), 3);
+
+    let auto = TestProject::new();
+    write_parquet_discover_resource(&auto, "*.parquet");
+    set_file_resource_sample_files(&auto, 2);
+    for name in ["a.parquet", "middle.parquet", "z.parquet"] {
+        write_vendor_parquet(&auto.root.join("data").join(name));
+    }
+    let auto_pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        auto.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(auto_pin.exit_code, 0, "{}", auto_pin.stderr);
+    let auto_report = stderr_or_stdout_json(&auto_pin.stdout);
+    assert_eq!(auto_report["result"]["schema_snapshot"]["outcome"], "added");
+    assert_eq!(
+        auto_report["result"]["schema_snapshot"]["discovery"]["coverage"],
+        "sampled"
+    );
+}
+
+#[test]
 fn plan_discover_autopin_is_byte_stable_and_preserves_unrelated_semantic_locks() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
@@ -6910,11 +7071,27 @@ schema = {{ fields = [
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let mut statement = conn.prepare("PRAGMA table_info('events')").unwrap();
     let columns = statement
-        .query_map([], |row| row.get::<_, String>(1))
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, bool>(3)?,
+            ))
+        })
         .unwrap()
         .collect::<std::result::Result<Vec<_>, _>>()
         .unwrap();
-    assert_eq!(columns, vec!["vendor_id", LONG_SOURCE, "_cdf_variant"]);
+    assert_eq!(
+        columns,
+        vec![
+            ("vendor_id".to_owned(), "BIGINT".to_owned(), true),
+            (LONG_SOURCE.to_owned(), "BIGINT".to_owned(), true),
+            ("_cdf_variant".to_owned(), "VARCHAR".to_owned(), false),
+            ("_cdf_load".to_owned(), "VARCHAR".to_owned(), true),
+            ("_cdf_segment".to_owned(), "VARCHAR".to_owned(), true),
+            ("_cdf_row".to_owned(), "UBIGINT".to_owned(), true),
+        ]
+    );
 }
 
 #[test]
@@ -11823,6 +12000,21 @@ fn set_file_resource_trust(project: &TestProject, trust: &str) {
     fs::write(
         path,
         text.replacen("trust = \"governed\"", &format!("trust = \"{trust}\""), 1),
+    )
+    .unwrap();
+}
+
+fn set_file_resource_sample_files(project: &TestProject, sample_files: u64) {
+    let path = project.root.join("resources/files.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    assert!(!text.contains("sample_files ="));
+    fs::write(
+        path,
+        text.replacen(
+            "write_disposition = \"append\"",
+            &format!("sample_files = {sample_files}\nwrite_disposition = \"append\""),
+            1,
+        ),
     )
     .unwrap();
 }

@@ -84,6 +84,8 @@ pub struct ResourceDeclaration {
     pub query: Option<String>,
     pub table: Option<String>,
     pub glob: Option<String>,
+    #[schemars(range(min = 1))]
+    pub sample_files: Option<u64>,
     pub format: Option<FileFormatDeclaration>,
     pub compression: Option<FileCompressionDeclaration>,
     #[serde(default)]

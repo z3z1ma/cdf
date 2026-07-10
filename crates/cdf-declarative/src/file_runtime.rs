@@ -86,6 +86,18 @@ pub struct LocalFileDiscoveryCandidate {
     pub selection_bytes_read: u64,
 }
 
+impl LocalFileDiscoveryCandidate {
+    pub fn modified_at_ms(&self) -> Option<i64> {
+        fs::metadata(&self.path)
+            .ok()?
+            .modified()
+            .ok()?
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+    }
+}
+
 pub fn local_file_discovery_candidates(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,

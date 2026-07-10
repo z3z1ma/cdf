@@ -97,7 +97,11 @@ pub(crate) fn batch_row_values(batch: &RecordBatch, row: usize) -> Result<Vec<Op
         .collect()
 }
 
-fn cell_text(array: &dyn Array, data_type: &DataType, row: usize) -> Result<Option<String>> {
+pub(crate) fn cell_text(
+    array: &dyn Array,
+    data_type: &DataType,
+    row: usize,
+) -> Result<Option<String>> {
     if array.is_null(row) {
         return Ok(None);
     }

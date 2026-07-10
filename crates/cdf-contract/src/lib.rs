@@ -2,6 +2,7 @@
 
 mod aggregation;
 mod compiler;
+mod correction;
 mod evaluator;
 mod fingerprint;
 mod lattice;
@@ -15,6 +16,7 @@ mod transforms;
 
 pub use aggregation::*;
 pub use compiler::*;
+pub use correction::*;
 pub use evaluator::*;
 pub use fingerprint::*;
 pub use lattice::*;

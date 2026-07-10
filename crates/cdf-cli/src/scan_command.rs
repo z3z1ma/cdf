@@ -30,7 +30,9 @@ use crate::{
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
         redaction::redact_uri_userinfo,
     },
-    reports::{SchemaSnapshotActionReport, WriteEffects},
+    reports::{
+        DiscoveryCoverageReport, SchemaSnapshotActionReport, WriteEffects, discovery_coverage_panel,
+    },
 };
 
 pub(crate) struct PreparedDiscoveryForCli {
@@ -95,7 +97,7 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         &args,
         identifier_policy.as_ref(),
     )?;
-    match preview_one_batch(&runtime_resource, &plan) {
+    match preview_one_batch(&runtime_resource, &plan, prepared.schema_snapshot) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
             "preview",
@@ -115,11 +117,15 @@ pub(crate) fn prepare_discover_resource_for_cli(
     if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
         && !no_pin
     {
-        let prepared = cdf_project::prepare_pinned_resource_effective_schema(
+        let prepared = cdf_project::prepare_pinned_resource_effective_schema_artifacts(
             &context.root,
             resource,
             &context.secret_provider(),
         )?;
+        let discovery = prepared
+            .discovery_manifest()
+            .map(DiscoveryCoverageReport::from_manifest);
+        let (prepared, _) = prepared.into_parts();
         return Ok(PreparedDiscoveryForCli {
             resource: prepared,
             schema_snapshot: Some(SchemaSnapshotActionReport {
@@ -128,6 +134,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
                 path: snapshot.path.clone(),
                 snapshot_written: false,
                 lockfile_written: false,
+                discovery,
             }),
         });
     }
@@ -183,6 +190,10 @@ pub(crate) fn prepare_discover_resource_for_cli(
         cdf_project::discover_resource_schema_artifacts(&probe_resource, &secret_provider, options)?
     };
     let discovery = artifacts.discovery.clone();
+    let discovery_coverage = artifacts
+        .discovery_manifest
+        .as_ref()
+        .map(DiscoveryCoverageReport::from_manifest);
     let artifact = discovery.snapshot.artifact.clone();
     let outcome = if no_pin { "inspection_only" } else { "added" };
     let prepared = cdf_project::apply_discovered_schema(&probe_resource, discovery);
@@ -211,14 +222,19 @@ pub(crate) fn prepare_discover_resource_for_cli(
         }
         (snapshot_written, lockfile_written)
     };
-    let prepared_resource = if !no_pin {
-        cdf_project::prepare_pinned_resource_effective_schema(
+    let (prepared_resource, discovery_coverage) = if !no_pin {
+        let prepared = cdf_project::prepare_pinned_resource_effective_schema_artifacts(
             &context.root,
             &prepared.resource,
             &secret_provider,
-        )?
+        )?;
+        let discovery = prepared
+            .discovery_manifest()
+            .map(DiscoveryCoverageReport::from_manifest);
+        let (resource, _) = prepared.into_parts();
+        (resource, discovery)
     } else {
-        prepared.resource
+        (prepared.resource, discovery_coverage)
     };
     Ok(PreparedDiscoveryForCli {
         resource: prepared_resource,
@@ -228,6 +244,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
             path: artifact.path.clone(),
             snapshot_written,
             lockfile_written,
+            discovery: discovery_coverage,
         }),
     })
 }
@@ -457,6 +474,7 @@ fn partition_report(partition: &PartitionPlan) -> PartitionReport {
 fn preview_one_batch(
     resource: &CliProjectRunSource,
     plan: &EnginePlan,
+    schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> cdf_kernel::Result<PreviewReport> {
     validate_preview_direct_stream_plan(plan)?;
     let partition = plan
@@ -492,6 +510,7 @@ fn preview_one_batch(
             .map(|field| field.name().clone())
             .collect(),
         normalization: plan.validation_program.identifier_policy.clone(),
+        schema_snapshot,
         write_effects: writes.clone(),
         writes,
     })
@@ -629,14 +648,21 @@ fn scan_report_document(
                 ),
         );
     let mut document = if let Some(snapshot) = &report.schema_snapshot {
-        document.blank_line().push(
+        let document = document.blank_line().push(
             KeyValuePanel::new("Schema Snapshot")
                 .row("outcome", snapshot.outcome)
                 .row("hash", snapshot.schema_hash.clone())
                 .row("path", snapshot.path.clone())
                 .row("snapshot written", yes_no(snapshot.snapshot_written))
                 .row("lockfile written", yes_no(snapshot.lockfile_written)),
-        )
+        );
+        if let Some(discovery) = &snapshot.discovery {
+            document
+                .blank_line()
+                .push(discovery_coverage_panel(discovery))
+        } else {
+            document
+        }
     } else {
         document
     };
@@ -706,7 +732,7 @@ fn next_run_command(resource_id: &str, target: &str, destination_uri: Option<&st
 }
 
 fn preview_document(report: &PreviewReport) -> RenderDocument {
-    RenderDocument::new()
+    let document = RenderDocument::new()
         .push(SectionRule::new())
         .push(StatusLine::new(
             StatusKind::Success,
@@ -722,7 +748,27 @@ fn preview_document(report: &PreviewReport) -> RenderDocument {
                 .row("bytes", humanize_bytes(report.byte_count))
                 .row("normalizer", report.normalization.version.clone())
                 .row("fields", report.fields.join(", ")),
-        )
+        );
+    let document = if let Some(snapshot) = &report.schema_snapshot {
+        let document = document.blank_line().push(
+            KeyValuePanel::new("Schema Snapshot")
+                .row("outcome", snapshot.outcome)
+                .row("hash", snapshot.schema_hash.clone())
+                .row("path", snapshot.path.clone())
+                .row("snapshot written", yes_no(snapshot.snapshot_written))
+                .row("lockfile written", yes_no(snapshot.lockfile_written)),
+        );
+        if let Some(discovery) = &snapshot.discovery {
+            document
+                .blank_line()
+                .push(discovery_coverage_panel(discovery))
+        } else {
+            document
+        }
+    } else {
+        document
+    };
+    document
         .blank_line()
         .push(
             KeyValuePanel::new("Writes")
@@ -896,6 +942,8 @@ struct PreviewReport {
     byte_count: u64,
     fields: Vec<String>,
     normalization: IdentifierPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    schema_snapshot: Option<SchemaSnapshotActionReport>,
     write_effects: WriteEffects,
     writes: WriteEffects,
 }

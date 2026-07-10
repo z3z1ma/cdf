@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
 use cdf_kernel::TargetName;
-use cdf_project::{ProjectDestinationDescription, ProjectReceiptSource, ProjectRunReport};
+use cdf_project::{
+    DiscoveryManifestArtifact, DiscoveryParticipation, ProjectDestinationDescription,
+    ProjectReceiptSource, ProjectRunReport,
+};
 use cdf_state_sqlite::{RunEventDetails, RunEventValue, RunLedgerSnapshot};
 use serde::Serialize;
 
@@ -19,6 +22,67 @@ pub(crate) struct SchemaSnapshotActionReport {
     pub(crate) path: String,
     pub(crate) snapshot_written: bool,
     pub(crate) lockfile_written: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) discovery: Option<DiscoveryCoverageReport>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct DiscoveryCoverageReport {
+    pub(crate) coverage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) selector: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) sample_files: Option<u64>,
+    pub(crate) matched_files: usize,
+    pub(crate) probed_files: usize,
+    pub(crate) unprobed_files: usize,
+}
+
+impl DiscoveryCoverageReport {
+    pub(crate) fn from_manifest(manifest: &DiscoveryManifestArtifact) -> Self {
+        let probed_files = manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Probed)
+            .count();
+        Self {
+            coverage: match manifest.coverage {
+                cdf_project::DiscoveryCoverageMode::Exhaustive => "exhaustive",
+                cdf_project::DiscoveryCoverageMode::Sampled => "sampled",
+            }
+            .to_owned(),
+            selector: manifest
+                .selector
+                .as_ref()
+                .map(|selector| selector.selector.clone()),
+            sample_files: manifest
+                .selector
+                .as_ref()
+                .map(|selector| selector.sample_files),
+            matched_files: manifest.candidates.len(),
+            probed_files,
+            unprobed_files: manifest.candidates.len() - probed_files,
+        }
+    }
+}
+
+pub(crate) fn discovery_coverage_panel(report: &DiscoveryCoverageReport) -> KeyValuePanel {
+    KeyValuePanel::new("Discovery Coverage")
+        .row("coverage", report.coverage.clone())
+        .row(
+            "selector",
+            report.selector.clone().unwrap_or_else(|| "none".to_owned()),
+        )
+        .row(
+            "sample files",
+            report
+                .sample_files
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "none".to_owned()),
+        )
+        .row("matched files", report.matched_files.to_string())
+        .row("probed files", report.probed_files.to_string())
+        .row("unprobed files", report.unprobed_files.to_string())
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -123,14 +187,21 @@ impl RunCliReport {
                     .row("dir", safe_display_value(&self.package_dir)),
             );
         let document = if let Some(snapshot) = &self.schema_snapshot {
-            document.blank_line().push(
+            let document = document.blank_line().push(
                 KeyValuePanel::new("Schema Snapshot")
                     .row("outcome", snapshot.outcome)
                     .row("hash", snapshot.schema_hash.clone())
                     .row("path", snapshot.path.clone())
                     .row("snapshot written", yes_no(snapshot.snapshot_written))
                     .row("lockfile written", yes_no(snapshot.lockfile_written)),
-            )
+            );
+            if let Some(discovery) = &snapshot.discovery {
+                document
+                    .blank_line()
+                    .push(discovery_coverage_panel(discovery))
+            } else {
+                document
+            }
         } else {
             document
         };

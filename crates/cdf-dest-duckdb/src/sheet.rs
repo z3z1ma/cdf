@@ -68,6 +68,20 @@ pub(crate) fn duckdb_sheet() -> Result<DestinationSheet> {
     })
 }
 
+pub(crate) fn duckdb_correction_capabilities() -> cdf_kernel::DestinationCorrectionCapabilities {
+    cdf_kernel::DestinationCorrectionCapabilities::default()
+        .with_row_provenance(RowProvenanceCapabilities::new(
+            CapabilitySupport::Supported,
+            CapabilitySupport::Supported,
+        ))
+        .with_residual_readback(CapabilitySupport::Supported)
+        .with_strategy(CorrectionStrategyCapability::new(
+            CorrectionStrategy::InPlaceUpdate,
+            TransactionSupport::AtomicPackage,
+            IdempotencySupport::PackageToken,
+        ))
+}
+
 pub(crate) fn mapping(
     arrow_type: impl Into<String>,
     destination_type: impl Into<String>,

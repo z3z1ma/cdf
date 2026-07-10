@@ -18,6 +18,7 @@ impl PostgresDestination {
             sheet: postgres_destination_sheet(),
             database_url: Some(database_url),
             pending_commit: None,
+            pending_correction: None,
         })
     }
 
@@ -515,7 +516,9 @@ fn copy_stage_rows(
     let mut writer = client
         .copy_in(&copy_sql)
         .map_err(|error| postgres_error("open Postgres COPY into stage", error))?;
-    let load = verify_parameter(plan, "idempotency_token")?;
+    // Row provenance is the immutable original package identity. The package
+    // token may differ from an operator-supplied idempotency token.
+    let load = verify_parameter(plan, "package_hash")?;
     for row in &package.rows {
         writer
             .write_all(row.csv_line(&load, loaded_at_ms).as_bytes())

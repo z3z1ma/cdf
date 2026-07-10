@@ -18,6 +18,7 @@ pub const DISCOVERY_MANIFEST_SUFFIX: &str = ".discovery.json";
 pub const DEFAULT_DISCOVERY_MAX_METADATA_BYTES_PER_FILE: u64 = 64 * 1024 * 1024;
 pub const DEFAULT_DISCOVERY_MAX_TOTAL_IN_FLIGHT_BYTES: u64 = 128 * 1024 * 1024;
 pub const DEFAULT_DISCOVERY_MAX_CONCURRENT_PROBES: u32 = 8;
+pub const STRATIFIED_HASH_SELECTOR_V1: &str = "stratified-hash-v1";
 
 static TEMP_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -226,6 +227,196 @@ pub struct DiscoverySelectorEvidence {
     pub matched_count: u64,
     pub selected: Vec<DiscoverySelectorSelection>,
     pub interior_strata: Vec<DiscoverySelectorStratum>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DiscoverySelectorCandidate {
+    pub canonical_location: String,
+    pub identity: DiscoveryBoundedIdentity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PlannedDiscoverySelection {
+    pub coverage: DiscoveryCoverageMode,
+    pub selector: Option<DiscoverySelectorEvidence>,
+    selected_locations: BTreeSet<String>,
+}
+
+impl PlannedDiscoverySelection {
+    pub fn selects(&self, canonical_location: &str) -> bool {
+        self.selected_locations.contains(canonical_location)
+    }
+
+    pub fn selected_count(&self) -> usize {
+        self.selected_locations.len()
+    }
+}
+
+pub(crate) fn plan_discovery_selection(
+    resource_id: &ResourceId,
+    sample_files: Option<u64>,
+    candidates: &[DiscoverySelectorCandidate],
+) -> Result<PlannedDiscoverySelection> {
+    if candidates.is_empty() {
+        return Err(CdfError::data(
+            "schema discovery selector received no matched candidates",
+        ));
+    }
+    let mut candidates = candidates.to_vec();
+    candidates.sort_by(|left, right| {
+        left.canonical_location
+            .cmp(&right.canonical_location)
+            .then_with(|| left.identity.cmp(&right.identity))
+    });
+    if candidates
+        .windows(2)
+        .any(|pair| pair[0].canonical_location == pair[1].canonical_location)
+    {
+        return Err(CdfError::contract(
+            "schema discovery selector candidates require unique canonical locations",
+        ));
+    }
+    let matched_count = u64::try_from(candidates.len())
+        .map_err(|_| CdfError::contract("discovery candidate count exceeds u64"))?;
+    let Some(sample_files) = sample_files else {
+        return Ok(exhaustive_selection(candidates));
+    };
+    if sample_files == 0 {
+        return Err(CdfError::contract(
+            "sampled schema discovery sample_files must be greater than zero",
+        ));
+    }
+    if matched_count <= sample_files {
+        return Ok(exhaustive_selection(candidates));
+    }
+
+    let selected_count = usize::try_from(sample_files)
+        .map_err(|_| CdfError::contract("sample_files exceeds executor address space"))?;
+    let mut selected_indexes = Vec::with_capacity(selected_count);
+    let mut interior_strata = Vec::new();
+    match selected_count {
+        1 => selected_indexes.push(lowest_score_index(
+            resource_id,
+            &candidates,
+            0,
+            candidates.len(),
+        )?),
+        2 => {
+            selected_indexes.push(0);
+            selected_indexes.push(candidates.len() - 1);
+        }
+        _ => {
+            selected_indexes.push(0);
+            let stratum_count = selected_count - 2;
+            let interior_count = candidates.len() - 2;
+            let base_size = interior_count / stratum_count;
+            let remainder = interior_count % stratum_count;
+            let mut start = 1_usize;
+            for stratum_index in 0..stratum_count {
+                let size = base_size + usize::from(stratum_index < remainder);
+                let end = start + size;
+                let selected = lowest_score_index(resource_id, &candidates, start, end)?;
+                interior_strata.push(DiscoverySelectorStratum {
+                    start_index_inclusive: u64::try_from(start)
+                        .map_err(|_| CdfError::contract("selector stratum index exceeds u64"))?,
+                    end_index_exclusive: u64::try_from(end)
+                        .map_err(|_| CdfError::contract("selector stratum index exceeds u64"))?,
+                    selected_location: candidates[selected].canonical_location.clone(),
+                });
+                selected_indexes.push(selected);
+                start = end;
+            }
+            selected_indexes.push(candidates.len() - 1);
+        }
+    }
+    selected_indexes.sort_unstable();
+    selected_indexes.dedup();
+    if selected_indexes.len() != selected_count {
+        return Err(CdfError::internal(
+            "stratified discovery selector produced duplicate membership",
+        ));
+    }
+    let selected = selected_indexes
+        .iter()
+        .map(|index| {
+            let candidate = &candidates[*index];
+            Ok(DiscoverySelectorSelection {
+                canonical_location: candidate.canonical_location.clone(),
+                score_sha256: selector_score(resource_id, candidate)?,
+                candidate_identity: candidate.identity.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let selected_locations = selected
+        .iter()
+        .map(|selection| selection.canonical_location.clone())
+        .collect();
+    Ok(PlannedDiscoverySelection {
+        coverage: DiscoveryCoverageMode::Sampled,
+        selector: Some(DiscoverySelectorEvidence {
+            selector: STRATIFIED_HASH_SELECTOR_V1.to_owned(),
+            sample_files,
+            matched_count,
+            selected,
+            interior_strata,
+        }),
+        selected_locations,
+    })
+}
+
+fn exhaustive_selection(candidates: Vec<DiscoverySelectorCandidate>) -> PlannedDiscoverySelection {
+    PlannedDiscoverySelection {
+        coverage: DiscoveryCoverageMode::Exhaustive,
+        selector: None,
+        selected_locations: candidates
+            .into_iter()
+            .map(|candidate| candidate.canonical_location)
+            .collect(),
+    }
+}
+
+fn lowest_score_index(
+    resource_id: &ResourceId,
+    candidates: &[DiscoverySelectorCandidate],
+    start: usize,
+    end: usize,
+) -> Result<usize> {
+    let mut scored = (start..end)
+        .map(|index| {
+            let identity_bytes = canonical_selector_identity_bytes(&candidates[index].identity)?;
+            Ok((
+                selector_score(resource_id, &candidates[index])?,
+                candidates[index].canonical_location.as_str(),
+                identity_bytes,
+                index,
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    scored.sort();
+    scored
+        .first()
+        .map(|(_, _, _, index)| *index)
+        .ok_or_else(|| CdfError::internal("discovery selector received an empty stratum"))
+}
+
+fn selector_score(
+    resource_id: &ResourceId,
+    candidate: &DiscoverySelectorCandidate,
+) -> Result<String> {
+    let identity = canonical_selector_identity_bytes(&candidate.identity)?;
+    let mut hasher = Sha256::new();
+    for component in [
+        b"cdf-sample:stratified-hash-v1".as_slice(),
+        resource_id.as_str().as_bytes(),
+        candidate.canonical_location.as_bytes(),
+        identity.as_slice(),
+    ] {
+        let length = u64::try_from(component.len())
+            .map_err(|_| CdfError::contract("selector score component exceeds u64"))?;
+        hasher.update(length.to_be_bytes());
+        hasher.update(component);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -550,7 +741,12 @@ fn validate_manifest_input(input: &DiscoveryManifestInput) -> Result<()> {
             ));
         }
         (DiscoveryCoverageMode::Sampled, Some(selector)) => {
-            validate_selector(selector, &input.candidates, &probed_locations)?;
+            validate_selector(
+                &ResourceId::new(input.resource_id.clone())?,
+                selector,
+                &input.candidates,
+                &probed_locations,
+            )?;
             if probed_locations.len() == input.candidates.len() {
                 return Err(CdfError::contract(
                     "sampled discovery manifest with every candidate probed must be recorded as exhaustive",
@@ -655,11 +851,12 @@ fn validate_candidate(candidate: &DiscoveryCandidateEvidence) -> Result<()> {
 }
 
 fn validate_selector(
+    resource_id: &ResourceId,
     selector: &DiscoverySelectorEvidence,
     candidates: &[DiscoveryCandidateEvidence],
     probed_locations: &BTreeSet<&str>,
 ) -> Result<()> {
-    if selector.selector != "stratified-hash-v1" {
+    if selector.selector != STRATIFIED_HASH_SELECTOR_V1 {
         return Err(CdfError::contract(format!(
             "unsupported discovery selector `{}`; expected `stratified-hash-v1`",
             selector.selector
@@ -758,6 +955,25 @@ fn validate_selector(
             ));
         }
     }
+    let selector_candidates = candidates
+        .iter()
+        .map(|candidate| DiscoverySelectorCandidate {
+            canonical_location: candidate.canonical_location.clone(),
+            identity: candidate.identity.clone(),
+        })
+        .collect::<Vec<_>>();
+    let expected = plan_discovery_selection(
+        resource_id,
+        Some(selector.sample_files),
+        &selector_candidates,
+    )?;
+    if expected.coverage != DiscoveryCoverageMode::Sampled
+        || expected.selector.as_ref() != Some(selector)
+    {
+        return Err(CdfError::contract(
+            "sampled discovery selector evidence does not match stratified-hash-v1 canonical membership, scores, or strata",
+        ));
+    }
     Ok(())
 }
 
@@ -812,6 +1028,11 @@ fn canonical_json_value(value: &impl Serialize) -> Result<serde_json::Value> {
         serde_json::to_value(value).map_err(|error| CdfError::internal(error.to_string()))?;
     value.sort_all_objects();
     Ok(value)
+}
+
+fn canonical_selector_identity_bytes(identity: &DiscoveryBoundedIdentity) -> Result<Vec<u8>> {
+    let value = canonical_json_value(identity)?;
+    serde_json::to_vec(&value).map_err(|error| CdfError::internal(error.to_string()))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -929,6 +1150,144 @@ mod tests {
     use std::sync::{Arc, Barrier};
 
     use super::*;
+
+    fn selector_candidates(count: usize) -> Vec<DiscoverySelectorCandidate> {
+        (0..count)
+            .map(|index| DiscoverySelectorCandidate {
+                canonical_location: format!("file://bucket/{index:04}.parquet"),
+                identity: DiscoveryBoundedIdentity {
+                    size_bytes: Some(100 + index as u64),
+                    modified_at_ms: (index % 2 == 0).then_some(1_700_000_000_000 + index as i64),
+                    value: None,
+                    strength: DiscoveryIdentityStrength::Unavailable,
+                },
+            })
+            .collect()
+    }
+
+    #[test]
+    fn stratified_hash_selector_covers_edges_and_exact_strata() {
+        let resource_id = ResourceId::new("events.raw").unwrap();
+        let candidates = selector_candidates(10);
+
+        let one = plan_discovery_selection(&resource_id, Some(1), &candidates).unwrap();
+        let expected_lowest = candidates
+            .iter()
+            .min_by_key(|candidate| selector_score(&resource_id, candidate).unwrap())
+            .unwrap();
+        assert_eq!(one.coverage, DiscoveryCoverageMode::Sampled);
+        assert_eq!(
+            one.selector.unwrap().selected[0].canonical_location,
+            expected_lowest.canonical_location
+        );
+
+        let two = plan_discovery_selection(&resource_id, Some(2), &candidates).unwrap();
+        let two = two.selector.unwrap();
+        assert_eq!(
+            two.selected
+                .iter()
+                .map(|selected| selected.canonical_location.as_str())
+                .collect::<Vec<_>>(),
+            vec!["file://bucket/0000.parquet", "file://bucket/0009.parquet"]
+        );
+        assert!(two.interior_strata.is_empty());
+
+        let four = plan_discovery_selection(&resource_id, Some(4), &candidates).unwrap();
+        let four = four.selector.unwrap();
+        assert_eq!(
+            four.interior_strata
+                .iter()
+                .map(|stratum| (stratum.start_index_inclusive, stratum.end_index_exclusive))
+                .collect::<Vec<_>>(),
+            vec![(1, 5), (5, 9)]
+        );
+        assert_eq!(four.selected.len(), 4);
+        assert_eq!(
+            four.selected.first().unwrap().canonical_location,
+            "file://bucket/0000.parquet"
+        );
+        assert_eq!(
+            four.selected.last().unwrap().canonical_location,
+            "file://bucket/0009.parquet"
+        );
+    }
+
+    #[test]
+    fn stratified_hash_selector_is_permutation_and_budget_independent() {
+        let resource_id = ResourceId::new("events.raw").unwrap();
+        let candidates = selector_candidates(19);
+        let expected = plan_discovery_selection(&resource_id, Some(7), &candidates).unwrap();
+        for offset in 0..candidates.len() {
+            let mut permuted = candidates.clone();
+            permuted.rotate_left(offset);
+            if offset % 2 == 1 {
+                permuted.reverse();
+            }
+            assert_eq!(
+                plan_discovery_selection(&resource_id, Some(7), &permuted).unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            plan_discovery_selection(&resource_id, Some(19), &candidates)
+                .unwrap()
+                .coverage,
+            DiscoveryCoverageMode::Exhaustive
+        );
+        assert_eq!(
+            plan_discovery_selection(&resource_id, Some(20), &candidates)
+                .unwrap()
+                .selector,
+            None
+        );
+    }
+
+    #[test]
+    fn stratified_hash_selector_score_has_canonical_golden_bytes() {
+        let resource_id = ResourceId::new("events.raw").unwrap();
+        let candidate = DiscoverySelectorCandidate {
+            canonical_location: "s3://acme/events/2026/01.parquet".to_owned(),
+            identity: DiscoveryBoundedIdentity {
+                size_bytes: Some(42),
+                modified_at_ms: None,
+                value: Some("etag-value".to_owned()),
+                strength: DiscoveryIdentityStrength::StableEtag,
+            },
+        };
+        assert_eq!(
+            selector_score(&resource_id, &candidate).unwrap(),
+            "1caaf43016737e252f12a8b0568d67951ecfd702010906cc8a7eaddb7b1caa27"
+        );
+    }
+
+    #[test]
+    fn stratified_hash_selector_large_set_is_executor_budget_independent() {
+        let resource_id = ResourceId::new("events.large").unwrap();
+        let candidates = selector_candidates(10_000);
+        let expected = plan_discovery_selection(&resource_id, Some(100), &candidates).unwrap();
+        for budget in [
+            DiscoveryExecutorBudget::new(1024, 1024, 1).unwrap(),
+            DiscoveryExecutorBudget::default(),
+            DiscoveryExecutorBudget::new(512 * 1024 * 1024, 1024 * 1024 * 1024, 64).unwrap(),
+        ] {
+            assert!(budget.max_concurrent_probes() > 0);
+            assert_eq!(
+                plan_discovery_selection(&resource_id, Some(100), &candidates).unwrap(),
+                expected
+            );
+        }
+        let selector = expected.selector.unwrap();
+        assert_eq!(selector.selected.len(), 100);
+        assert_eq!(selector.interior_strata.len(), 98);
+        assert_eq!(
+            selector.selected.first().unwrap().canonical_location,
+            "file://bucket/0000.parquet"
+        );
+        assert_eq!(
+            selector.selected.last().unwrap().canonical_location,
+            "file://bucket/9999.parquet"
+        );
+    }
 
     #[test]
     fn concurrent_atomic_install_is_no_clobber_and_conflict_detecting() {

@@ -826,6 +826,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
  "cdf-conformance",
+ "cdf-contract",
  "cdf-kernel",
  "cdf-package",
  "duckdb",
@@ -865,9 +866,11 @@ dependencies = [
  "cdf-package",
  "futures-executor",
  "futures-util",
+ "hex",
  "postgres",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
 ]
 
@@ -932,8 +935,10 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
  "futures-core",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -957,6 +962,7 @@ name = "cdf-project"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
+ "arrow-ipc",
  "arrow-schema 59.1.0",
  "cdf-contract",
  "cdf-declarative",

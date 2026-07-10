@@ -57,6 +57,46 @@ fn canonical_golden_orders_fields_and_escapes_original_source_paths() {
 }
 
 #[test]
+fn residual_path_removal_preserves_unrelated_canonical_fields_and_nulls_last() {
+    let first = BooleanArray::from(vec![true]);
+    let second = Int64Array::from(vec![42]);
+    let bytes = encode_residual_json_v1([
+        ResidualFieldRef::new(["promoted"], &second, 0).unwrap(),
+        ResidualFieldRef::new(["untouched"], &first, 0).unwrap(),
+    ])
+    .unwrap();
+
+    let preserved = remove_residual_json_v1_path(&bytes, "/promoted")
+        .unwrap()
+        .unwrap();
+    let untouched =
+        encode_residual_json_v1([ResidualFieldRef::new(["untouched"], &first, 0).unwrap()])
+            .unwrap();
+    assert_eq!(preserved, untouched);
+    assert_eq!(
+        remove_residual_json_v1_path(&preserved, "/untouched").unwrap(),
+        None
+    );
+}
+
+#[test]
+fn residual_path_removal_rejects_absent_and_noncanonical_inputs() {
+    let value = Int32Array::from(vec![1]);
+    let bytes =
+        encode_residual_json_v1([ResidualFieldRef::new(["present"], &value, 0).unwrap()]).unwrap();
+    assert!(matches!(
+        remove_residual_json_v1_path(&bytes, "/absent").unwrap_err(),
+        ResidualCodecError::InvalidPath { .. }
+    ));
+
+    let noncanonical = br#"{ "v":1,"fields":{"/present":{"arrow_type":{"kind":"int","signed":true,"bits":32},"encoding":"base10","value":"1"}}}"#;
+    assert!(matches!(
+        remove_residual_json_v1_path(noncanonical, "/present").unwrap_err(),
+        ResidualCodecError::InvalidEnvelope { .. }
+    ));
+}
+
+#[test]
 fn scalar_vocabulary_round_trips_exactly() {
     assert_eq!(canonical_float16(f16::from_f32(0.1)), "0.1");
     let decimal256 =

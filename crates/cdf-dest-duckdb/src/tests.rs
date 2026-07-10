@@ -9,10 +9,15 @@ use cdf_conformance::destination::{
     representative_commit_request,
 };
 use cdf_kernel::{
-    CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentAck,
-    SegmentId, SourcePosition,
+    CanonicalArrowField, CorrectionStrategy, CursorPosition, CursorValue,
+    DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
+    DestinationCorrectionReceiptEvidence, DestinationCorrectionRequest, IdempotencyToken,
+    PackageHash, PartitionId, PromotionId, ResidualCorrectionOperation, RowProvenanceAddress,
+    ScopeKey, SegmentAck, SegmentId, SourcePosition,
 };
 use cdf_package::{PackageBuilder, PackageStatus};
+
+use crate::sheet::duckdb_correction_capabilities;
 
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
@@ -22,6 +27,121 @@ fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let id: ArrayRef = Arc::new(Int64Array::from(ids));
     let name: ArrayRef = Arc::new(StringArray::from(names));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+fn residual_batch() -> RecordBatch {
+    let value_42 = Int64Array::from(vec![42_i64]);
+    let keep = StringArray::from(vec!["keep"]);
+    let first = cdf_contract::encode_residual_json_v1([
+        cdf_contract::ResidualFieldRef::new(["age"], &value_42, 0).unwrap(),
+        cdf_contract::ResidualFieldRef::new(["keep"], &keep, 0).unwrap(),
+    ])
+    .unwrap();
+    let value_84 = Int64Array::from(vec![84_i64]);
+    let second = cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+        ["age"],
+        &value_84,
+        0,
+    )
+    .unwrap()])
+    .unwrap();
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert(
+        cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+        cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+    );
+    metadata.insert(
+        cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+        cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("name", DataType::Utf8, true),
+        Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true).with_metadata(metadata),
+    ]));
+    RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2_i64])),
+            Arc::new(StringArray::from(vec![Some("ada"), Some("grace")])),
+            Arc::new(StringArray::from(vec![
+                Some(String::from_utf8(first).unwrap()),
+                Some(String::from_utf8(second).unwrap()),
+            ])),
+        ],
+    )
+    .unwrap()
+}
+
+fn correction_operation(
+    original_package_hash: &PackageHash,
+    row: u64,
+    value: i64,
+) -> DestinationCorrectionOperation {
+    let values = Int64Array::from(vec![value]);
+    let authority = cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+        ["age"],
+        &values,
+        0,
+    )
+    .unwrap()])
+    .unwrap();
+    DestinationCorrectionOperation {
+        correction: DestinationCorrectionPlan {
+            request: DestinationCorrectionRequest {
+                promotion_id: PromotionId::new("promotion-age").unwrap(),
+                original_row: RowProvenanceAddress::new(
+                    original_package_hash.clone(),
+                    SegmentId::new("seg-000001").unwrap(),
+                    row,
+                ),
+                old_schema_hash: SchemaHash::new("schema-v1").unwrap(),
+                new_schema_hash: SchemaHash::new("schema-v2").unwrap(),
+                promoted_path: "/age".to_owned(),
+                promoted_value_json: value.to_string(),
+                residual_operation: ResidualCorrectionOperation::RemovePromotedPath,
+                selected_strategy: CorrectionStrategy::InPlaceUpdate,
+            },
+            transaction_guarantee: TransactionSupport::AtomicPackage,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        },
+        output_field: CanonicalArrowField::from_arrow(&Field::new("age", DataType::Int64, true))
+            .unwrap(),
+        promoted_value_residual_json_v1: authority,
+    }
+}
+
+fn correction_request(
+    operations: Vec<DestinationCorrectionOperation>,
+) -> DestinationCorrectionCommitRequest {
+    let correction_hash = PackageHash::new("sha256:correction-age").unwrap();
+    DestinationCorrectionCommitRequest::new(
+        correction_hash.clone(),
+        IdempotencyToken::new(correction_hash.as_str()).unwrap(),
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        vec![state_segment_for(
+            "seg-correction",
+            operations.len() as u64,
+            4,
+        )],
+        operations,
+    )
+    .unwrap()
+}
+
+fn finalize_correction(
+    destination: &DuckDbDestination,
+    request: &DestinationCorrectionCommitRequest,
+) -> Receipt {
+    let plan = destination.plan_correction(request).unwrap();
+    let mut session = destination.begin_correction(request.clone(), plan).unwrap();
+    session.apply_migrations().unwrap();
+    assert_eq!(
+        session.apply_corrections().unwrap().rows_updated,
+        Some(request.addressed_row_count())
+    );
+    session.finalize().unwrap()
 }
 
 fn build_package(package_dir: &Path, package_id: &str, batches: &[RecordBatch]) -> PackageHash {
@@ -218,7 +338,12 @@ fn reusable_destination_conformance_suite_accepts_duckdb_sheet_and_plans() {
     );
     assert_destination_correction_conformance(
         &dest,
-        &DestinationCorrectionConformanceEvidence::unsupported(),
+        &DestinationCorrectionConformanceEvidence {
+            row_provenance_persistence: CapabilitySupport::Supported,
+            row_provenance_targetability: CapabilitySupport::Supported,
+            residual_readback: CapabilitySupport::Supported,
+            strategies: duckdb_correction_capabilities().strategies,
+        },
     );
 }
 
@@ -276,6 +401,22 @@ fn segment_session_flow_returns_wrapper_receipt_shape_and_verifies() {
     assert!(session_dest.verify_receipt(&receipt).unwrap().verified);
     let protocol: &dyn DestinationProtocol = &session_dest;
     assert!(protocol.verify(&receipt).unwrap().verified);
+    let conn = Connection::open(session_dest.database_path()).unwrap();
+    let provenance: Vec<(i64, String, u64)> = conn
+        .prepare("SELECT id, _cdf_segment, _cdf_row FROM orders ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(
+        provenance,
+        vec![
+            (1, "seg-000001".to_owned(), 0),
+            (2, "seg-000001".to_owned(), 1),
+            (3, "seg-000002".to_owned(), 0),
+        ]
+    );
 }
 
 #[test]
@@ -415,6 +556,29 @@ fn append_commit_is_idempotent_and_verifiable_after_reopen() {
     assert_eq!(target_rows, 3);
     assert_eq!(load_rows, 1);
     assert_eq!(state_rows, 1);
+    let provenance: Vec<(i64, String, String, u64)> = conn
+        .prepare("SELECT id, _cdf_load, _cdf_segment, _cdf_row FROM orders ORDER BY _cdf_row")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(
+        provenance,
+        vec![
+            (1, package_hash.to_string(), "seg-000001".to_owned(), 0),
+            (2, package_hash.to_string(), "seg-000001".to_owned(), 1),
+            (3, package_hash.to_string(), "seg-000001".to_owned(), 2),
+        ]
+    );
+    let duplicate_address = conn.execute(
+        "INSERT INTO orders (id, name, _cdf_load, _cdf_segment, _cdf_row) \
+         SELECT 99, 'duplicate', _cdf_load, _cdf_segment, _cdf_row FROM orders WHERE id = 1",
+        [],
+    );
+    assert!(duplicate_address.is_err());
 }
 
 #[test]
@@ -513,7 +677,7 @@ fn replace_rebuilds_target_atomically() {
     let outcome = dest
         .commit_package(request(
             &second_package,
-            second_hash,
+            second_hash.clone(),
             WriteDisposition::Replace,
             Vec::new(),
             1,
@@ -530,6 +694,17 @@ fn replace_rebuilds_target_atomically() {
         .map(|row| row.unwrap())
         .collect();
     assert_eq!(rows, vec![(9, "new".to_owned())]);
+    let provenance: (String, String, u64) = conn
+        .query_row(
+            "SELECT _cdf_load, _cdf_segment, _cdf_row FROM orders",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        provenance,
+        (second_hash.to_string(), "seg-000001".to_owned(), 0)
+    );
 }
 
 #[test]
@@ -545,7 +720,7 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
     let dest = destination(&db_path);
     dest.commit_package(request(
         &initial_package,
-        initial_hash,
+        initial_hash.clone(),
         WriteDisposition::Append,
         Vec::new(),
         2,
@@ -564,7 +739,7 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
     let outcome = dest
         .commit_package(request(
             &merge_package,
-            merge_hash,
+            merge_hash.clone(),
             WriteDisposition::Merge,
             vec!["id".to_owned()],
             3,
@@ -590,6 +765,487 @@ fn merge_deduplicates_exact_replayed_rows_and_updates_keys() {
             (3, "insert".to_owned())
         ]
     );
+    let provenance: Vec<(i64, String, u64)> = conn
+        .prepare("SELECT id, _cdf_load, _cdf_row FROM orders ORDER BY id")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(
+        provenance,
+        vec![
+            (1, merge_hash.to_string(), 0),
+            (2, initial_hash.to_string(), 1),
+            (3, merge_hash.to_string(), 2),
+        ]
+    );
+}
+
+#[test]
+fn legacy_or_partial_provenance_targets_fail_without_synthesizing_addresses() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-legacy");
+    let package_hash = build_package(
+        &package,
+        "pkg-legacy",
+        &[sample_batch(vec![2], vec![Some("new")])],
+    );
+    let db_path = temp.path().join("legacy.duckdb");
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute_batch("CREATE TABLE orders (id BIGINT NOT NULL, name VARCHAR)")
+        .unwrap();
+    conn.execute("INSERT INTO orders VALUES (1, 'legacy')", [])
+        .unwrap();
+    drop(conn);
+
+    let dest = destination(&db_path);
+    let error = dest
+        .plan_package_commit(&request(
+            &package,
+            package_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            1,
+        ))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("legacy target"), "{message}");
+    assert!(message.contains("no CDF row provenance"), "{message}");
+    assert!(message.contains("use replace"), "{message}");
+
+    let conn = Connection::open(db_path).unwrap();
+    let rows: Vec<(i64, String)> = conn
+        .prepare("SELECT id, name FROM orders")
+        .unwrap()
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(rows, vec![(1, "legacy".to_owned())]);
+}
+
+#[test]
+fn legacy_provenance_requires_exact_non_null_types_and_unique_address() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-legacy-provenance-shape");
+    let package_hash = build_package(
+        &package,
+        "pkg-legacy-provenance-shape",
+        &[sample_batch(vec![1], vec![Some("row")])],
+    );
+
+    let nullable_path = temp.path().join("nullable.duckdb");
+    let conn = Connection::open(&nullable_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE orders (
+            id BIGINT NOT NULL,
+            name VARCHAR,
+            _cdf_load VARCHAR,
+            _cdf_segment VARCHAR,
+            _cdf_row UBIGINT,
+            UNIQUE (_cdf_load, _cdf_segment, _cdf_row)
+        )",
+    )
+    .unwrap();
+    drop(conn);
+    let error = destination(&nullable_path)
+        .plan_package_commit(&request(
+            &package,
+            package_hash.clone(),
+            WriteDisposition::Append,
+            Vec::new(),
+            1,
+        ))
+        .unwrap_err();
+    assert!(error.to_string().contains("is nullable"), "{error}");
+
+    let wrong_type_path = temp.path().join("wrong-type.duckdb");
+    let conn = Connection::open(&wrong_type_path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE orders (
+            id BIGINT NOT NULL,
+            name VARCHAR,
+            _cdf_load VARCHAR NOT NULL,
+            _cdf_segment VARCHAR NOT NULL,
+            _cdf_row BIGINT NOT NULL,
+            UNIQUE (_cdf_load, _cdf_segment, _cdf_row)
+        )",
+    )
+    .unwrap();
+    drop(conn);
+    let error = destination(&wrong_type_path)
+        .plan_package_commit(&request(
+            &package,
+            package_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            1,
+        ))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("_cdf_row has type BIGINT"), "{message}");
+    assert!(message.contains("expected UBIGINT"), "{message}");
+}
+
+#[test]
+fn user_columns_cannot_impersonate_reserved_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-reserved");
+    let schema = Arc::new(Schema::new(vec![Field::new(
+        CDF_LOAD_COLUMN,
+        DataType::Utf8,
+        false,
+    )]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![Arc::new(StringArray::from(vec!["spoof"])) as ArrayRef],
+    )
+    .unwrap();
+    let package_hash = build_package(&package, "pkg-reserved", &[batch]);
+    let db_path = temp.path().join("reserved.duckdb");
+    let dest = destination(&db_path);
+    let error = dest
+        .commit_package(request(
+            &package,
+            package_hash,
+            WriteDisposition::Append,
+            Vec::new(),
+            1,
+        ))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("reserved `_cdf_*` namespace"), "{message}");
+    assert!(!db_path.exists());
+}
+
+#[test]
+fn addressed_correction_adds_nullable_column_preserves_residuals_and_replays_as_noop() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-residual");
+    let original_hash = build_package(&package, "pkg-residual", &[residual_batch()]);
+    let db_path = temp.path().join("correction.duckdb");
+    let dest = destination(&db_path);
+    dest.commit_package(request(
+        &package,
+        original_hash.clone(),
+        WriteDisposition::Append,
+        Vec::new(),
+        2,
+    ))
+    .unwrap();
+
+    let conn = Connection::open(&db_path).unwrap();
+    let readback: (String, String, String, u64) = conn
+        .query_row(
+            "SELECT _cdf_variant, _cdf_load, _cdf_segment, _cdf_row FROM orders WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    let decoded = cdf_contract::decode_residual_json_v1(readback.0.as_bytes()).unwrap();
+    assert_eq!(
+        decoded
+            .iter()
+            .map(|field| field.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/age", "/keep"]
+    );
+    assert_eq!(readback.1, original_hash.to_string());
+    assert_eq!(readback.2, "seg-000001");
+    assert_eq!(readback.3, 0);
+    drop(conn);
+
+    let first_address = RowProvenanceAddress::new(
+        original_hash.clone(),
+        SegmentId::new("seg-000001").unwrap(),
+        0,
+    );
+    let before = dest
+        .read_correction_residual(&TargetName::new("orders").unwrap(), &first_address)
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.original_row, first_address);
+    let before_bytes = before.residual_json_v1.unwrap();
+    assert_eq!(before_bytes, readback.0.as_bytes());
+    let before_fields = cdf_contract::decode_residual_json_v1(&before_bytes).unwrap();
+    assert_eq!(
+        before_fields
+            .iter()
+            .map(|field| field.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/age", "/keep"]
+    );
+
+    let correction = correction_request(vec![
+        correction_operation(&original_hash, 0, 42),
+        correction_operation(&original_hash, 1, 84),
+    ]);
+    let receipt = finalize_correction(&dest, &correction);
+    assert_eq!(receipt.counts.rows_written, 2);
+    assert_eq!(receipt.counts.rows_updated, Some(2));
+    assert!(dest.verify_correction(&receipt).unwrap().verified);
+    let reopened = destination(&db_path);
+    assert!(reopened.verify_correction(&receipt).unwrap().verified);
+    let evidence = DestinationCorrectionReceiptEvidence::from_receipt(&receipt).unwrap();
+    assert_eq!(evidence.addressed_rows, 2);
+    assert_eq!(evidence.residual_paths_removed, 2);
+
+    let conn = Connection::open(&db_path).unwrap();
+    let rows: Vec<(i64, i64, Option<String>, String, String, u64)> = conn
+        .prepare(
+            "SELECT id, age, _cdf_variant, _cdf_load, _cdf_segment, _cdf_row FROM orders ORDER BY id",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+            ))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(rows[0].0, 1);
+    assert_eq!(rows[0].1, 42);
+    let retained = rows[0].2.as_ref().unwrap();
+    let decoded = cdf_contract::decode_residual_json_v1(retained.as_bytes()).unwrap();
+    assert_eq!(decoded.len(), 1);
+    assert_eq!(decoded[0].path, "/keep");
+    assert_eq!(rows[1].0, 2);
+    assert_eq!(rows[1].1, 84);
+    assert_eq!(rows[1].2, None);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row.3, original_hash.to_string());
+        assert_eq!(row.4, "seg-000001");
+        assert_eq!(row.5, index as u64);
+    }
+    drop(conn);
+
+    let after = reopened
+        .read_correction_residual(&TargetName::new("orders").unwrap(), &first_address)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.original_row, first_address);
+    let after_bytes = after.residual_json_v1.unwrap();
+    assert_eq!(after_bytes, retained.as_bytes());
+    let after_fields = cdf_contract::decode_residual_json_v1(&after_bytes).unwrap();
+    assert_eq!(after_fields.len(), 1);
+    assert_eq!(after_fields[0].path, "/keep");
+    let second_address = RowProvenanceAddress::new(
+        original_hash.clone(),
+        SegmentId::new("seg-000001").unwrap(),
+        1,
+    );
+    let second_after = reopened
+        .read_correction_residual(&TargetName::new("orders").unwrap(), &second_address)
+        .unwrap()
+        .unwrap();
+    assert_eq!(second_after.original_row, second_address);
+    assert_eq!(second_after.residual_json_v1, None);
+
+    let replay = finalize_correction(&reopened, &correction);
+    assert_same_receipt_shape(&replay, &receipt);
+    let conn = Connection::open(&db_path).unwrap();
+    let loads: u64 = conn
+        .query_row("SELECT count(*) FROM _cdf_loads", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(loads, 2);
+    let ages: Vec<i64> = conn
+        .prepare("SELECT age FROM orders ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect();
+    assert_eq!(ages, vec![42, 84]);
+}
+
+#[test]
+fn correction_failure_after_planning_rolls_back_nullable_migration_and_all_updates() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-rollback");
+    let original_hash = build_package(&package, "pkg-rollback", &[residual_batch()]);
+    let db_path = temp.path().join("rollback.duckdb");
+    let dest = destination(&db_path);
+    dest.commit_package(request(
+        &package,
+        original_hash.clone(),
+        WriteDisposition::Append,
+        Vec::new(),
+        2,
+    ))
+    .unwrap();
+    let correction = correction_request(vec![
+        correction_operation(&original_hash, 0, 42),
+        correction_operation(&original_hash, 1, 84),
+    ]);
+    let plan = dest.plan_correction(&correction).unwrap();
+
+    let conn = Connection::open(&db_path).unwrap();
+    let first_residual: String = conn
+        .query_row("SELECT _cdf_variant FROM orders WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    conn.execute("UPDATE orders SET _cdf_variant = NULL WHERE id = 2", [])
+        .unwrap();
+    drop(conn);
+
+    let mut session = dest.begin_correction(correction, plan).unwrap();
+    session.apply_migrations().unwrap();
+    session.apply_corrections().unwrap();
+    let error = session.finalize().unwrap_err();
+    assert!(
+        error.to_string().contains("missing or has no residual"),
+        "{error}"
+    );
+
+    let conn = Connection::open(&db_path).unwrap();
+    let age_columns: u64 = conn
+        .query_row(
+            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'orders' AND column_name = 'age'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(age_columns, 0);
+    let actual_first: String = conn
+        .query_row("SELECT _cdf_variant FROM orders WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(actual_first, first_residual);
+    let correction_loads: u64 = conn
+        .query_row(
+            "SELECT count(*) FROM _cdf_loads WHERE package_hash = 'sha256:correction-age'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(correction_loads, 0);
+}
+
+#[test]
+fn correction_session_abort_before_finalize_is_a_noop() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-abort");
+    let original_hash = build_package(&package, "pkg-abort", &[residual_batch()]);
+    let db_path = temp.path().join("abort.duckdb");
+    let dest = destination(&db_path);
+    dest.commit_package(request(
+        &package,
+        original_hash.clone(),
+        WriteDisposition::Append,
+        Vec::new(),
+        2,
+    ))
+    .unwrap();
+    let correction = correction_request(vec![correction_operation(&original_hash, 0, 42)]);
+    let plan = dest.plan_correction(&correction).unwrap();
+    let mut session = dest.begin_correction(correction, plan).unwrap();
+    session.apply_migrations().unwrap();
+    session.apply_corrections().unwrap();
+    session.abort().unwrap();
+
+    let conn = Connection::open(db_path).unwrap();
+    let age_columns: u64 = conn
+        .query_row(
+            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'orders' AND column_name = 'age'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(age_columns, 0);
+    let residual: String = conn
+        .query_row("SELECT _cdf_variant FROM orders WHERE id = 1", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    let paths = cdf_contract::decode_residual_json_v1(residual.as_bytes())
+        .unwrap()
+        .into_iter()
+        .map(|field| field.path)
+        .collect::<Vec<_>>();
+    assert_eq!(paths, vec!["/age", "/keep"]);
+    let loads: u64 = conn
+        .query_row("SELECT count(*) FROM _cdf_loads", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(loads, 1);
+}
+
+#[test]
+fn correction_dry_plan_uses_read_only_database_without_wal_or_byte_changes() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-dry-correction");
+    let original_hash = build_package(&package, "pkg-dry-correction", &[residual_batch()]);
+    let db_path = temp.path().join("dry-correction.duckdb");
+    let dest = destination(&db_path);
+    dest.commit_package(request(
+        &package,
+        original_hash.clone(),
+        WriteDisposition::Append,
+        Vec::new(),
+        2,
+    ))
+    .unwrap();
+    let correction = correction_request(vec![correction_operation(&original_hash, 0, 42)]);
+    let bytes_before = fs::read(&db_path).unwrap();
+    let files_before = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<BTreeSet<_>>();
+
+    let plan = dest.plan_correction(&correction).unwrap();
+
+    assert_eq!(plan.correction_count, 1);
+    assert_eq!(fs::read(&db_path).unwrap(), bytes_before);
+    let files_after = fs::read_dir(temp.path())
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(files_after, files_before);
+}
+
+#[test]
+fn correction_missing_address_fails_dry_plan_without_migration_or_receipt() {
+    let temp = tempfile::tempdir().unwrap();
+    let package = temp.path().join("pkg-missing-address");
+    let original_hash = build_package(&package, "pkg-missing-address", &[residual_batch()]);
+    let db_path = temp.path().join("missing-address.duckdb");
+    let dest = destination(&db_path);
+    dest.commit_package(request(
+        &package,
+        original_hash.clone(),
+        WriteDisposition::Append,
+        Vec::new(),
+        2,
+    ))
+    .unwrap();
+    let correction = correction_request(vec![correction_operation(&original_hash, 99, 42)]);
+
+    let error = dest.plan_correction(&correction).unwrap_err();
+    assert!(
+        error.to_string().contains("missing or has no residual"),
+        "{error}"
+    );
+    let conn = Connection::open(db_path).unwrap();
+    let age_columns: u64 = conn
+        .query_row(
+            "SELECT count(*) FROM information_schema.columns WHERE table_name = 'orders' AND column_name = 'age'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(age_columns, 0);
+    let loads: u64 = conn
+        .query_row("SELECT count(*) FROM _cdf_loads", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(loads, 1);
 }
 
 #[test]

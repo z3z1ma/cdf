@@ -20,17 +20,23 @@ use arrow_array::{
     UInt64Array,
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
+use cdf_contract::is_framework_variant_field;
 use cdf_kernel::{
     CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest, DestinationId,
-    DestinationProtocol, DestinationSheet, IdempotencySupport, IdentifierRules, MigrationRecord,
-    PlanId, Receipt, ReceiptId, Result, SchemaHash, SegmentAck, StateSegment, TargetName,
+    ConcurrencyLimit, CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
+    DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee, DestinationCommitRequest,
+    DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest,
+    DestinationCorrectionOperation, DestinationCorrectionReceiptEvidence, DestinationId,
+    DestinationProtocol, DestinationResidualReadback, DestinationSheet, IdempotencySupport,
+    IdentifierRules, MigrationRecord, PlanId, Receipt, ReceiptId, Result, RowProvenanceAddress,
+    RowProvenanceCapabilities, SchemaHash, SegmentAck, StateSegment, TargetName,
     TransactionMetadata, TransactionSupport, TypeMapping, TypeMappingFidelity, VerifyClause,
     WriteDisposition,
 };
 use cdf_package::{PackageReader, SegmentEntry};
 use duckdb::{
     AccessMode, Config, Connection, OptionalExt, appender_params_from_iter, params,
+    params_from_iter,
     types::{TimeUnit as DuckTimeUnit, Value},
 };
 use serde::{Deserialize, Serialize};
@@ -38,11 +44,15 @@ use serde::{Deserialize, Serialize};
 const DESTINATION_ID: &str = "duckdb";
 const MAIN_SCHEMA: &str = "main";
 const LOCK_SUFFIX: &str = "cdf.lock";
+pub const CDF_LOAD_COLUMN: &str = "_cdf_load";
+pub const CDF_SEGMENT_COLUMN: &str = "_cdf_segment";
+pub const CDF_ROW_COLUMN: &str = "_cdf_row";
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 mod api;
 mod commit;
+mod corrections;
 mod mirrors;
 mod package;
 mod planning;

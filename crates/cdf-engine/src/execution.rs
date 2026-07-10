@@ -125,6 +125,8 @@ struct PerObservationSchemaEvidenceArtifact {
     effective_snapshot_schema_hash: String,
     effective_arrow_schema_hash: String,
     discovery_manifest_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery_coverage: Option<cdf_kernel::DiscoveryCoverageEvidence>,
     observations: Vec<PerObservationSchemaCoercionArtifact>,
 }
 
@@ -601,6 +603,7 @@ where
                     .discovery_manifest
                     .manifest_hash
                     .to_string(),
+                discovery_coverage: evidence.authority.discovery_coverage.clone(),
                 observations: per_observation_schema_evidence.into_values().collect(),
             },
         )?;

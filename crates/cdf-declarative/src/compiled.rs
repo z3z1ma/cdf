@@ -59,6 +59,7 @@ pub struct CompiledResource {
     capabilities: ResourceCapabilities,
     plan: CompiledResourcePlan,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    schema_discovery_sample_files: Option<u64>,
 }
 
 impl CompiledResource {
@@ -80,6 +81,10 @@ impl CompiledResource {
 
     pub fn plan(&self) -> &CompiledResourcePlan {
         &self.plan
+    }
+
+    pub fn schema_discovery_sample_files(&self) -> Option<u64> {
+        self.schema_discovery_sample_files
     }
 
     pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
@@ -436,6 +441,11 @@ fn compile_resource(
     project_root: Option<&Path>,
 ) -> Result<CompiledResource> {
     validate_escape_hatch(resource)?;
+    if resource.sample_files.is_some() && !matches!(source, SourceDeclaration::Files(_)) {
+        return Err(CdfError::contract(format!(
+            "resource `{name}` declares sample_files, but sampled schema discovery is only valid for file resources"
+        )));
+    }
 
     let resource_id = resource
         .id
@@ -497,6 +507,7 @@ fn compile_resource(
         capabilities,
         plan,
         effective_schema_runtime: None,
+        schema_discovery_sample_files: resource.sample_files,
     })
 }
 
@@ -662,6 +673,11 @@ fn compile_file_plan(
     resource: &ResourceDeclaration,
     project_root: Option<&Path>,
 ) -> Result<FileResourcePlan> {
+    if resource.sample_files == Some(0) {
+        return Err(CdfError::contract(format!(
+            "file resource `{resource_id}` sample_files must be greater than zero"
+        )));
+    }
     let allowlist = if source.egress_allowlist.is_empty() {
         EgressAllowlist::allow_any()
     } else {
@@ -671,6 +687,16 @@ fn compile_file_plan(
         Some(format) => (format.clone(), true),
         None => (infer_binary_file_format(resource_id, resource)?, false),
     };
+    if resource.sample_files.is_some()
+        && !matches!(
+            &format,
+            FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
+        )
+    {
+        return Err(CdfError::contract(format!(
+            "file resource `{resource_id}` sample_files is only supported for Parquet and Arrow IPC schema discovery; row sampling inside text files is excluded"
+        )));
+    }
     Ok(FileResourcePlan {
         source: source_name.to_owned(),
         root: compile_file_root(&source.root, project_root)?,

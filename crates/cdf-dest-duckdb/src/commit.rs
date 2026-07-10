@@ -175,9 +175,10 @@ pub(crate) fn merge_key_indexes(fields: &[FieldPlan], merge_keys: &[String]) -> 
         .collect()
 }
 
-pub(crate) fn dedup_merge_rows(
+pub(crate) fn dedup_merge_rows_with_width(
     rows: &[RowValues],
     key_indexes: &[usize],
+    equality_width: usize,
 ) -> Result<Vec<RowValues>> {
     let mut key_to_index = BTreeMap::<Vec<CellKey>, usize>::new();
     let mut deduped = Vec::<RowValues>::new();
@@ -192,7 +193,8 @@ pub(crate) fn dedup_merge_rows(
         }
 
         match key_to_index.get(&key) {
-            Some(existing_index) if same_row(&deduped[*existing_index], row) => {}
+            Some(existing_index)
+                if same_row_prefix(&deduped[*existing_index], row, equality_width)? => {}
             Some(_) => {
                 return Err(CdfError::data(
                     "DuckDB merge package contains conflicting duplicate merge keys; no winner policy is ratified",
@@ -208,8 +210,14 @@ pub(crate) fn dedup_merge_rows(
     Ok(deduped)
 }
 
-pub(crate) fn same_row(left: &RowValues, right: &RowValues) -> bool {
-    left.iter()
+fn same_row_prefix(left: &RowValues, right: &RowValues, width: usize) -> Result<bool> {
+    if left.len() < width || right.len() < width {
+        return Err(CdfError::internal(
+            "DuckDB merge equality width exceeds persisted row width",
+        ));
+    }
+    Ok(left[..width]
+        .iter()
         .map(|cell| &cell.key)
-        .eq(right.iter().map(|cell| &cell.key))
+        .eq(right[..width].iter().map(|cell| &cell.key)))
 }

@@ -12,6 +12,7 @@ use std::{
 };
 
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
+use arrow_ipc::writer::FileWriter;
 use arrow_schema::{
     DataType, Field, Fields, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode,
 };
@@ -833,24 +834,21 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
     let first = probed_discovery_candidate("file:///data/00.parquet", "sha256:00", 32);
     let middle = unprobed_discovery_candidate("file:///data/01.parquet", "etag:01");
     let last = probed_discovery_candidate("file:///data/02.parquet", "sha256:02", 40);
-    let selector = DiscoverySelectorEvidence {
-        selector: "stratified-hash-v1".to_owned(),
-        sample_files: 2,
-        matched_count: 3,
-        selected: vec![
-            DiscoverySelectorSelection {
-                canonical_location: first.canonical_location.clone(),
-                score_sha256: "0".repeat(64),
-                candidate_identity: first.identity.clone(),
-            },
-            DiscoverySelectorSelection {
-                canonical_location: last.canonical_location.clone(),
-                score_sha256: "f".repeat(64),
-                candidate_identity: last.identity.clone(),
-            },
-        ],
-        interior_strata: Vec::new(),
-    };
+    let selector_candidates = [&first, &middle, &last]
+        .into_iter()
+        .map(|candidate| DiscoverySelectorCandidate {
+            canonical_location: candidate.canonical_location.clone(),
+            identity: candidate.identity.clone(),
+        })
+        .collect::<Vec<_>>();
+    let selector = plan_discovery_selection(
+        &ResourceId::new("events.sampled").unwrap(),
+        Some(2),
+        &selector_candidates,
+    )
+    .unwrap()
+    .selector
+    .unwrap();
     let input = DiscoveryManifestInput {
         resource_id: "events.sampled".to_owned(),
         baseline_schema_hash: None,
@@ -871,6 +869,13 @@ fn sampled_discovery_manifest_enforces_truthful_participation() {
     assert!(artifact.candidates[1].physical_schema_hash.is_none());
     assert!(artifact.candidates[1].probe_bytes.is_none());
     assert!(artifact.candidates[1].schema_verdict.is_none());
+
+    let mut false_score = input.clone();
+    false_score.selector.as_mut().unwrap().selected[0].score_sha256 = "0".repeat(64);
+    let error = DiscoveryManifestArtifact::new(false_score)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("canonical membership, scores, or strata"));
 
     let mut false_unprobed = input;
     false_unprobed.candidates[1].physical_schema_hash =
@@ -1574,6 +1579,257 @@ fn local_parquet_discover_autopin_persists_exhaustive_multi_file_manifest() {
         vec!["a.parquet", "b.parquet"]
     );
     assert!(temp.path().join(discovery.snapshot.artifact.path).is_file());
+}
+
+#[test]
+fn explicit_sampled_parquet_pin_records_exact_participation_and_is_deterministic() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 3);
+    for index in 0..9 {
+        write_vendor_parquet(&temp.path().join(format!("data/{index:02}.parquet")));
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let first = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    let manifest = first.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Sampled);
+    let selector = manifest.selector.as_ref().unwrap();
+    assert_eq!(selector.selector, STRATIFIED_HASH_SELECTOR_V1);
+    assert_eq!(selector.sample_files, 3);
+    assert_eq!(selector.matched_count, 9);
+    assert_eq!(selector.selected.len(), 3);
+    assert_eq!(manifest.candidates.len(), 9);
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Probed)
+            .count(),
+        3
+    );
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Unprobed)
+            .count(),
+        6
+    );
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Probed
+            || (candidate.physical_schema_hash.is_none()
+                && candidate.probe_bytes.is_none()
+                && candidate.schema_verdict.is_none())
+    }));
+    assert_eq!(
+        first.discovery.snapshot.source_identity["coverage"],
+        "sampled"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["matched_files"],
+        "9"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["probed_files"],
+        "3"
+    );
+    assert_eq!(
+        first.discovery.snapshot.source_identity["unprobed_files"],
+        "6"
+    );
+
+    let repeated = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        serde_json::to_vec(manifest).unwrap(),
+        serde_json::to_vec(repeated.discovery_manifest.as_ref().unwrap()).unwrap()
+    );
+}
+
+#[test]
+fn explicit_sample_larger_than_set_preserves_exhaustive_manifest_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "parquet", "*.parquet");
+    write_vendor_parquet(&temp.path().join("data/a.parquet"));
+    write_vendor_parquet(&temp.path().join("data/b.parquet"));
+    let exhaustive_resource = compile_single_project_resource(temp.path());
+    let exhaustive = discover_resource_schema_artifacts(
+        &exhaustive_resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 2);
+    let configured_resource = compile_single_project_resource(temp.path());
+    let configured = discover_resource_schema_artifacts(
+        &configured_resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        configured.discovery_manifest.as_ref().unwrap().coverage,
+        DiscoveryCoverageMode::Exhaustive
+    );
+    assert_eq!(
+        serde_json::to_vec(exhaustive.discovery_manifest.as_ref().unwrap()).unwrap(),
+        serde_json::to_vec(configured.discovery_manifest.as_ref().unwrap()).unwrap()
+    );
+    assert_eq!(
+        exhaustive.discovery.snapshot.artifact,
+        configured.discovery.snapshot.artifact
+    );
+}
+
+#[test]
+fn explicit_sampled_arrow_ipc_uses_the_same_format_neutral_selector() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "arrow_ipc", "*.arrow", 2);
+    for index in 0..5 {
+        write_arrow_ipc_fixture(
+            &temp.path().join(format!("data/{index:02}.arrow")),
+            vec![Field::new("VendorID", DataType::Int32, false)],
+            vec![Arc::new(Int32Array::from(vec![index]))],
+        );
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let artifacts = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    let manifest = artifacts.discovery_manifest.unwrap();
+    assert_eq!(manifest.coverage, DiscoveryCoverageMode::Sampled);
+    assert_eq!(manifest.selector.unwrap().sample_files, 2);
+    assert_eq!(
+        manifest
+            .candidates
+            .iter()
+            .filter(|candidate| candidate.participation == DiscoveryParticipation::Probed)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn sampled_pin_observes_every_runtime_file_and_quarantines_unseen_incompatibility() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 2);
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("value", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![1]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/middle.parquet"),
+        vec![Field::new("value", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["drift"]))],
+    );
+    write_parquet_fixture(
+        &temp.path().join("data/z.parquet"),
+        vec![Field::new("value", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![2]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let initial = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap();
+    let initial_manifest = initial.discovery_manifest.as_ref().unwrap();
+    assert_eq!(initial_manifest.coverage, DiscoveryCoverageMode::Sampled);
+    assert_eq!(
+        initial_manifest.candidates[1].participation,
+        DiscoveryParticipation::Unprobed
+    );
+    write_schema_discovery_artifacts(temp.path(), &initial).unwrap();
+    let pinned = resource.with_schema_source_and_schema(
+        SchemaSource::Discovered {
+            snapshot: initial.discovery.snapshot.reference.clone(),
+        },
+        Arc::clone(&initial.discovery.normalized_schema),
+    );
+
+    let prepared = prepare_pinned_resource_effective_schema(
+        temp.path(),
+        &pinned,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+    )
+    .unwrap();
+    let runtime = prepared.effective_schema_runtime().unwrap();
+    assert_eq!(runtime.evidence.observations.len(), 3);
+    assert_eq!(runtime.terminal_quarantines.len(), 1);
+    assert_eq!(
+        runtime.terminal_quarantines[0].observation_id(),
+        "middle.parquet"
+    );
+    assert_eq!(
+        runtime.terminal_quarantines[0].rule_id(),
+        "schema-observation:incompatible"
+    );
+}
+
+#[test]
+fn sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 1);
+    for index in 0..5 {
+        write_vendor_parquet(&temp.path().join(format!("data/{index:02}.parquet")));
+    }
+    let resource = compile_single_project_resource(temp.path());
+    let error = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::new()
+            .with_budget(DiscoveryExecutorBudget::new(8, 8, 1).unwrap()),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("sampled local binary discovery failed"));
+    assert!(error.contains("without substitution"));
+    assert_eq!(error.matches(": failed:").count(), 1);
+    assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn sampled_initial_pin_reports_every_selected_incompatibility_without_writes() {
+    let temp = tempfile::tempdir().unwrap();
+    write_sampled_discover_project(temp.path(), "parquet", "*.parquet", 2);
+    write_parquet_fixture(
+        &temp.path().join("data/a.parquet"),
+        vec![Field::new("value", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![1]))],
+    );
+    write_vendor_parquet(&temp.path().join("data/middle.parquet"));
+    write_parquet_fixture(
+        &temp.path().join("data/z.parquet"),
+        vec![Field::new("value", DataType::Utf8, false)],
+        vec![Arc::new(StringArray::from(vec!["incompatible"]))],
+    );
+    let resource = compile_single_project_resource(temp.path());
+    let error = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        Default::default(),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("initial sampled schema pin"));
+    assert!(error.contains("a.parquet"));
+    assert!(error.contains("z.parquet"));
+    assert!(error.contains("candidate verdicts"));
+    assert!(!temp.path().join(".cdf/schemas").exists());
 }
 
 #[test]
@@ -2504,6 +2760,20 @@ trust = "governed"
     .unwrap();
 }
 
+fn write_sampled_discover_project(root: &Path, format: &str, glob: &str, sample_files: u64) {
+    write_discover_project(root, format, glob);
+    let path = root.join("resources/files.toml");
+    let input = fs::read_to_string(&path).unwrap();
+    fs::write(
+        path,
+        input.replace(
+            &format!("glob = \"{glob}\""),
+            &format!("glob = \"{glob}\"\nsample_files = {sample_files}"),
+        ),
+    )
+    .unwrap();
+}
+
 fn compile_single_project_resource(root: &Path) -> cdf_declarative::CompiledResource {
     let config = parse_cdf_toml(&fs::read_to_string(root.join("cdf.toml")).unwrap()).unwrap();
     let resolver = FileResourceSourceResolver::new(root);
@@ -2529,6 +2799,14 @@ fn write_parquet_fixture(path: &Path, fields: Vec<Field>, columns: Vec<ArrayRef>
     let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
     let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
     fs::write(path, bytes).unwrap();
+}
+
+fn write_arrow_ipc_fixture(path: &Path, fields: Vec<Field>, columns: Vec<ArrayRef>) {
+    let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+    let file = fs::File::create(path).unwrap();
+    let mut writer = FileWriter::try_new(file, batch.schema().as_ref()).unwrap();
+    writer.write(&batch).unwrap();
+    writer.finish().unwrap();
 }
 
 #[test]

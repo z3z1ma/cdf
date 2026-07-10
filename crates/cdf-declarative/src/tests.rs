@@ -2651,6 +2651,65 @@ fn json_schema_artifact_exposes_editor_schema_model() {
         .cloned()
         .unwrap_or_default();
     assert!(!required.iter().any(|field| field == "format"));
+    assert_eq!(
+        artifact
+            .schema
+            .pointer("/$defs/ResourceDeclaration/properties/sample_files/minimum")
+            .and_then(serde_json::Value::as_u64),
+        Some(1)
+    );
+}
+
+#[test]
+fn sampled_file_discovery_is_explicit_positive_and_file_only() {
+    let file = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "*.parquet"
+format = "parquet"
+sample_files = 7
+write_disposition = "append"
+trust = "governed"
+"#;
+    let resource = compile_document(&parse_toml(file).unwrap())
+        .unwrap()
+        .remove(0);
+    assert!(matches!(resource.plan(), CompiledResourcePlan::Files(_)));
+    assert_eq!(resource.schema_discovery_sample_files(), Some(7));
+
+    let zero = file.replace("sample_files = 7", "sample_files = 0");
+    let error = compile_document(&parse_toml(&zero).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("sample_files must be greater than zero"));
+
+    let rest = r#"
+[source.api]
+kind = "rest"
+base_url = "https://example.test"
+
+[resource.events]
+path = "/events"
+records = "$"
+sample_files = 2
+write_disposition = "append"
+trust = "governed"
+"#;
+    let error = compile_document(&parse_toml(rest).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("only valid for file resources"));
+
+    let text = file
+        .replace("*.parquet", "*.ndjson")
+        .replace("format = \"parquet\"", "format = \"ndjson\"");
+    let error = compile_document(&parse_toml(&text).unwrap())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("row sampling inside text files is excluded"));
 }
 
 #[test]

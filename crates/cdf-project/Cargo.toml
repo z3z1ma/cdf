@@ -27,6 +27,7 @@ tracing = "0.1.44"
 
 [dev-dependencies]
 arrow-array = "59.1.0"
+arrow-ipc = "59.1.0"
 futures-executor = "0.3.32"
 postgres = "0.19"
 tempfile = "3.27.0"

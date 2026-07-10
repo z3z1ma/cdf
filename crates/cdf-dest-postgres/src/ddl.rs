@@ -1,4 +1,5 @@
 use crate::*;
+use sha2::{Digest, Sha256};
 
 pub(crate) fn system_table_migrations() -> Vec<MigrationRecord> {
     system_table_ddl()
@@ -88,6 +89,7 @@ pub(crate) fn target_migrations(input: &PostgresLoadPlanInput) -> Result<Vec<Pos
                     ));
                 }
             }
+            migrations.push(provenance_unique_index_statement(&input.target)?);
             Ok(migrations)
         }
     }
@@ -125,12 +127,36 @@ pub(crate) fn create_target_table_sql(
                 .join(", ")
         ));
     }
+    definitions.push(format!(
+        "UNIQUE ({}, {}, {})",
+        quote_identifier_unchecked(CDF_LOAD_COLUMN),
+        quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
+        quote_identifier_unchecked(CDF_ROW_COLUMN)
+    ));
 
     format!(
         "CREATE TABLE IF NOT EXISTS {} (\n  {}\n)",
         target.sql(),
         definitions.join(",\n  ")
     )
+}
+
+pub(crate) fn provenance_unique_index_statement(
+    target: &PostgresTarget,
+) -> Result<PostgresStatement> {
+    let digest = hex::encode(Sha256::digest(target.display_name().as_bytes()));
+    let name = PostgresIdentifier::system(format!("_cdf_provenance_{}_uniq", &digest[..24]))?;
+    Ok(PostgresStatement::execute(
+        "ensure_unique_cdf_provenance",
+        format!(
+            "CREATE UNIQUE INDEX IF NOT EXISTS {} ON {} ({}, {}, {})",
+            name.quoted(),
+            target.sql(),
+            quote_identifier_unchecked(CDF_LOAD_COLUMN),
+            quote_identifier_unchecked(CDF_SEGMENT_COLUMN),
+            quote_identifier_unchecked(CDF_ROW_COLUMN)
+        ),
+    ))
 }
 
 pub(crate) fn system_target_columns() -> Vec<PostgresColumn> {

@@ -7,8 +7,10 @@ use cdf_conformance::destination::{
     representative_commit_request,
 };
 use cdf_kernel::{
-    CheckpointId, CursorPosition, CursorValue, PartitionId, PipelineId, ResourceId, ScopeKey,
-    SegmentId, SourcePosition,
+    CanonicalArrowField, CheckpointId, CursorPosition, CursorValue, DestinationCorrectionOperation,
+    DestinationCorrectionPlan, DestinationCorrectionRequest, PartitionId, PipelineId, PromotionId,
+    ResidualCorrectionOperation, ResourceId, RowProvenanceAddress, ScopeKey, SegmentId,
+    SourcePosition,
 };
 
 fn columns() -> Vec<PostgresColumn> {
@@ -209,13 +211,14 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
     );
     assert_eq!(
         corrections.row_provenance.targetability,
-        CapabilitySupport::Unsupported
+        CapabilitySupport::Supported
     );
+    assert_eq!(corrections.residual_readback, CapabilitySupport::Supported);
+    assert_eq!(corrections.strategies.len(), 1);
     assert_eq!(
-        corrections.residual_readback,
-        CapabilitySupport::Unsupported
+        corrections.strategies[0].strategy,
+        CorrectionStrategy::InPlaceUpdate
     );
-    assert!(corrections.strategies.is_empty());
     let artifact = destination.sheet_artifact().unwrap();
     assert_eq!(artifact.protocol_capabilities.corrections, corrections);
     assert!(
@@ -234,7 +237,7 @@ fn sheet_declares_postgres_capabilities_and_full_mapping_fidelity() {
         assert!(create_target.sql.contains(provenance_column));
     }
     assert!(
-        !create_target
+        create_target
             .sql
             .contains("UNIQUE (\"_cdf_load\", \"_cdf_segment\", \"_cdf_row\")")
     );
@@ -287,11 +290,137 @@ fn reusable_destination_conformance_suite_accepts_postgres_sheet_and_plans() {
         &destination,
         &DestinationCorrectionConformanceEvidence {
             row_provenance_persistence: CapabilitySupport::Supported,
-            row_provenance_targetability: CapabilitySupport::Unsupported,
-            residual_readback: CapabilitySupport::Unsupported,
-            strategies: Vec::new(),
+            row_provenance_targetability: CapabilitySupport::Supported,
+            residual_readback: CapabilitySupport::Supported,
+            strategies: vec![CorrectionStrategyCapability::new(
+                CorrectionStrategy::InPlaceUpdate,
+                TransactionSupport::AtomicPackage,
+                IdempotencySupport::PackageToken,
+            )],
         },
     );
+}
+
+fn correction_existing_table(nullable_provenance: bool) -> PostgresExistingTable {
+    let mut columns = BTreeMap::new();
+    for (name, data_type, nullable) in [
+        ("id", "BIGINT", false),
+        ("name", "TEXT", true),
+        ("_cdf_variant", "TEXT", true),
+        (CDF_LOAD_COLUMN, "TEXT", nullable_provenance),
+        (CDF_SEGMENT_COLUMN, "TEXT", false),
+        (CDF_ROW_COLUMN, "BIGINT", false),
+        (CDF_LOADED_AT_COLUMN, "BIGINT", false),
+    ] {
+        columns.insert(
+            name.to_owned(),
+            PostgresExistingColumn {
+                name: PostgresIdentifier::system(name).unwrap(),
+                data_type: data_type.to_owned(),
+                nullable,
+            },
+        );
+    }
+    PostgresExistingTable {
+        columns,
+        primary_key: Vec::new(),
+    }
+}
+
+fn correction_operation_for_test(path: &str, output: &str) -> DestinationCorrectionOperation {
+    let value = arrow_array::Int64Array::from(vec![42_i64]);
+    let exact = cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+        [path.trim_start_matches('/')],
+        &value,
+        0,
+    )
+    .unwrap()])
+    .unwrap();
+    DestinationCorrectionOperation {
+        correction: DestinationCorrectionPlan {
+            request: DestinationCorrectionRequest {
+                promotion_id: PromotionId::new("promotion-test").unwrap(),
+                original_row: RowProvenanceAddress::new(
+                    PackageHash::new("sha256:original").unwrap(),
+                    SegmentId::new("seg-000001").unwrap(),
+                    0,
+                ),
+                old_schema_hash: SchemaHash::new("sha256:old").unwrap(),
+                new_schema_hash: SchemaHash::new("sha256:new").unwrap(),
+                promoted_path: path.to_owned(),
+                promoted_value_json: "42".to_owned(),
+                residual_operation: ResidualCorrectionOperation::RemovePromotedPath,
+                selected_strategy: CorrectionStrategy::InPlaceUpdate,
+            },
+            transaction_guarantee: TransactionSupport::AtomicPackage,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        },
+        output_field: CanonicalArrowField::from_arrow(&Field::new(output, DataType::Int64, true))
+            .unwrap(),
+        promoted_value_residual_json_v1: exact,
+    }
+}
+
+fn correction_request_for_test() -> DestinationCorrectionCommitRequest {
+    DestinationCorrectionCommitRequest::new(
+        PackageHash::new("sha256:correction").unwrap(),
+        IdempotencyToken::new("sha256:correction").unwrap(),
+        TargetName::new("raw.orders").unwrap(),
+        WriteDisposition::Append,
+        vec![segment("seg-correction", 1)],
+        vec![correction_operation_for_test("/age", "age")],
+    )
+    .unwrap()
+}
+
+#[test]
+fn correction_plan_is_dry_runnable_nullable_and_keyless() {
+    let destination = PostgresDestination::new();
+    let request = correction_request_for_test();
+    let plan = destination
+        .plan_addressed_correction(PostgresCorrectionPlanInput {
+            request: request.clone(),
+            existing_table: correction_existing_table(false),
+        })
+        .unwrap();
+
+    plan.kernel
+        .validate_for(
+            &request,
+            &postgres_correction_capabilities(),
+            &TransactionSupport::AtomicPackage,
+            &IdempotencySupport::PackageToken,
+        )
+        .unwrap();
+    assert_eq!(plan.kernel.kernel.disposition, WriteDisposition::Append);
+    assert!(plan.target_ddl.iter().any(|statement| {
+        statement.sql == "ALTER TABLE \"raw\".\"orders\" ADD COLUMN \"age\" BIGINT"
+    }));
+    assert!(
+        plan.target_ddl
+            .iter()
+            .any(|statement| { statement.sql.contains("CREATE UNIQUE INDEX IF NOT EXISTS") })
+    );
+    assert!(plan.create_stage.dry_run_safe);
+    assert!(plan.update_sql[0].sql.contains("_cdf_load"));
+    assert!(plan.update_sql[0].sql.contains("_cdf_variant"));
+    assert!(
+        plan.transactional_statements()
+            .iter()
+            .all(|statement| statement.dry_run_safe)
+    );
+}
+
+#[test]
+fn correction_plan_rejects_nullable_provenance_address() {
+    let destination = PostgresDestination::new();
+    let error = destination
+        .plan_addressed_correction(PostgresCorrectionPlanInput {
+            request: correction_request_for_test(),
+            existing_table: correction_existing_table(true),
+        })
+        .unwrap_err();
+    assert!(error.to_string().contains("_cdf_load to be NOT NULL"));
 }
 
 #[test]

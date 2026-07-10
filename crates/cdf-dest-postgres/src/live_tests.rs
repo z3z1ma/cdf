@@ -20,10 +20,12 @@ use cdf_conformance::resource::{
     assert_queryable_resource_conformance, assert_resource_stream_execution_conformance,
 };
 use cdf_kernel::{
-    CheckpointId, ContractRef, CursorOrderingClaim, CursorPosition, CursorSpec, CursorValue,
-    PartitionId, PipelineId, PredicateId, QueryableResource, ResourceDescriptor, ResourceId,
-    ResourceStream, ScanPredicate, ScanRequest, SchemaSnapshotReference, SchemaSource, ScopeKey,
-    SegmentId, SortDirection, SourcePosition, TrustLevel, with_source_name,
+    CanonicalArrowField, CheckpointId, ContractRef, CursorOrderingClaim, CursorPosition,
+    CursorSpec, CursorValue, DestinationCorrectionOperation, DestinationCorrectionPlan,
+    DestinationCorrectionRequest, PartitionId, PipelineId, PredicateId, PromotionId,
+    QueryableResource, ResidualCorrectionOperation, ResourceDescriptor, ResourceId, ResourceStream,
+    RowProvenanceAddress, ScanPredicate, ScanRequest, SchemaSnapshotReference, SchemaSource,
+    ScopeKey, SegmentId, SortDirection, SourcePosition, TrustLevel, with_source_name,
 };
 use cdf_package::{
     PackageBuilder, PackageManifest, PackageReader, QuarantineObservedValue, QuarantineRecord,
@@ -197,6 +199,128 @@ fn batch(rows: &[(i64, Option<&str>)]) -> RecordBatch {
     let name: ArrayRef =
         std::sync::Arc::new(StringArray::from_iter(rows.iter().map(|(_, name)| *name)));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+fn residual_batch(rows: &[(i64, i64, Option<&str>)]) -> RecordBatch {
+    let mut metadata = std::collections::HashMap::new();
+    metadata.insert(
+        cdf_kernel::SEMANTIC_METADATA_KEY.to_owned(),
+        cdf_contract::VARIANT_SEMANTIC_TAG.to_owned(),
+    );
+    metadata.insert(
+        cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+        cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
+    );
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true).with_metadata(metadata),
+    ]));
+    let ids: ArrayRef = Arc::new(Int64Array::from_iter_values(
+        rows.iter().map(|(id, _, _)| *id),
+    ));
+    let ages = Int64Array::from_iter_values(rows.iter().map(|(_, age, _)| *age));
+    let untouched = StringArray::from_iter(rows.iter().map(|(_, _, value)| *value));
+    let variants = rows
+        .iter()
+        .enumerate()
+        .map(|(row, (_, _, value))| {
+            let age = cdf_contract::ResidualFieldRef::new(["age"], &ages, row).unwrap();
+            if value.is_some() {
+                cdf_contract::encode_residual_json_v1([
+                    age,
+                    cdf_contract::ResidualFieldRef::new(["untouched"], &untouched, row).unwrap(),
+                ])
+                .unwrap()
+            } else {
+                cdf_contract::encode_residual_json_v1([age]).unwrap()
+            }
+        })
+        .map(|bytes| String::from_utf8(bytes).unwrap())
+        .collect::<Vec<_>>();
+    RecordBatch::try_new(schema, vec![ids, Arc::new(StringArray::from(variants))]).unwrap()
+}
+
+fn residual_columns() -> Vec<PostgresColumn> {
+    postgres_columns_for_schema(residual_batch(&[(1, 1, None)]).schema().as_ref()).unwrap()
+}
+
+fn correction_existing_table_live() -> PostgresExistingTable {
+    let mut columns = BTreeMap::new();
+    for (name, data_type, nullable) in [
+        ("id", "BIGINT", false),
+        ("_cdf_variant", "TEXT", true),
+        (CDF_LOAD_COLUMN, "TEXT", false),
+        (CDF_SEGMENT_COLUMN, "TEXT", false),
+        (CDF_ROW_COLUMN, "BIGINT", false),
+        (CDF_LOADED_AT_COLUMN, "BIGINT", false),
+    ] {
+        columns.insert(
+            name.to_owned(),
+            PostgresExistingColumn {
+                name: PostgresIdentifier::system(name).unwrap(),
+                data_type: data_type.to_owned(),
+                nullable,
+            },
+        );
+    }
+    PostgresExistingTable {
+        columns,
+        primary_key: Vec::new(),
+    }
+}
+
+fn correction_operation_live(
+    original_package_hash: &PackageHash,
+    row: u64,
+    value: i64,
+) -> DestinationCorrectionOperation {
+    let values = Int64Array::from(vec![value]);
+    let exact = cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+        ["age"],
+        &values,
+        0,
+    )
+    .unwrap()])
+    .unwrap();
+    DestinationCorrectionOperation {
+        correction: DestinationCorrectionPlan {
+            request: DestinationCorrectionRequest {
+                promotion_id: PromotionId::new("promotion-live-age").unwrap(),
+                original_row: RowProvenanceAddress::new(
+                    original_package_hash.clone(),
+                    SegmentId::new("seg-000001").unwrap(),
+                    row,
+                ),
+                old_schema_hash: schema_hash(),
+                new_schema_hash: SchemaHash::new("sha256:live-schema-with-age").unwrap(),
+                promoted_path: "/age".to_owned(),
+                promoted_value_json: "inspection-only-not-execution-authority".to_owned(),
+                residual_operation: ResidualCorrectionOperation::RemovePromotedPath,
+                selected_strategy: CorrectionStrategy::InPlaceUpdate,
+            },
+            transaction_guarantee: TransactionSupport::AtomicPackage,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        },
+        output_field: CanonicalArrowField::from_arrow(&Field::new("age", DataType::Int64, true))
+            .unwrap(),
+        promoted_value_residual_json_v1: exact,
+    }
+}
+
+fn correction_request_live(
+    target: &PostgresTarget,
+    correction_manifest: &PackageManifest,
+    operations: Vec<DestinationCorrectionOperation>,
+) -> DestinationCorrectionCommitRequest {
+    DestinationCorrectionCommitRequest::new(
+        PackageHash::new(correction_manifest.package_hash.clone()).unwrap(),
+        IdempotencyToken::new(correction_manifest.package_hash.clone()).unwrap(),
+        target.target_name().unwrap(),
+        WriteDisposition::Append,
+        state_segments(correction_manifest),
+        operations,
+    )
+    .unwrap()
 }
 
 fn build_package(
@@ -857,14 +981,17 @@ fn live_append_duplicate_receipt_verification_and_state_mirror() {
             ("seg-000002", batch(&[(3, None)])),
         ],
     );
-    let plan = plan(
+    let mut first_input = load_input(
         &env,
         "orders_append",
         &manifest,
         WriteDisposition::Append,
         MergeDedupPolicy::Last,
         Some(state_delta(&manifest, "chk-live-append")),
+        columns(),
     );
+    first_input.idempotency_token = IdempotencyToken::new("operator-append-token").unwrap();
+    let plan = env.destination().plan_load(first_input).unwrap();
 
     let outcome = commit(&env, package_dir.path(), plan.clone());
     assert!(!outcome.duplicate);
@@ -1371,6 +1498,355 @@ fn live_rollback_after_stage_copy_leaves_no_target_or_mirror_partial_commit() {
             .unwrap()
             .is_empty()
     );
+}
+
+#[test]
+fn live_addressed_correction_updates_exact_rows_preserves_residuals_and_replays() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+    let original_dir = tempfile::tempdir().unwrap();
+    let original_manifest = build_package(
+        original_dir.path(),
+        "pkg-live-correction-original",
+        vec![(
+            "seg-000001",
+            residual_batch(&[(1, 42, Some("keep")), (2, 84, None)]),
+        )],
+    );
+    let original_plan = plan_with_columns(
+        &env,
+        "orders_correction",
+        &original_manifest,
+        WriteDisposition::Append,
+        MergeDedupPolicy::Last,
+        None,
+        residual_columns(),
+    );
+    commit(&env, original_dir.path(), original_plan);
+
+    let target = env.target("orders_correction");
+    let original_hash = PackageHash::new(original_manifest.package_hash.clone()).unwrap();
+    let first_address = RowProvenanceAddress::new(
+        original_hash.clone(),
+        SegmentId::new("seg-000001").unwrap(),
+        0,
+    );
+    let before = env
+        .destination()
+        .read_correction_residual(&target.target_name().unwrap(), &first_address)
+        .unwrap()
+        .unwrap();
+    assert_eq!(before.original_row, first_address);
+    let before_bytes = before.residual_json_v1.unwrap();
+    let before_fields = cdf_contract::decode_residual_json_v1(&before_bytes).unwrap();
+    assert_eq!(
+        before_fields
+            .iter()
+            .map(|field| field.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/age", "/untouched"]
+    );
+
+    let correction_dir = tempfile::tempdir().unwrap();
+    let correction_manifest = build_package(
+        correction_dir.path(),
+        "pkg-live-correction-update",
+        vec![(
+            "seg-correction",
+            batch(&[(1, Some("first")), (2, Some("second"))]),
+        )],
+    );
+    let request = correction_request_live(
+        &target,
+        &correction_manifest,
+        vec![
+            correction_operation_live(&original_hash, 0, 42),
+            correction_operation_live(&original_hash, 1, 84),
+        ],
+    );
+    let plan = env
+        .destination()
+        .plan_addressed_correction(PostgresCorrectionPlanInput {
+            request: request.clone(),
+            existing_table: correction_existing_table_live(),
+        })
+        .unwrap();
+    let commit_request = PostgresCorrectionCommitRequest {
+        package_dir: correction_dir.path().to_path_buf(),
+        plan: plan.clone(),
+    };
+    let destination = env
+        .destination()
+        .with_correction_request(commit_request.clone());
+    let generic_plan = destination.plan_correction(&request).unwrap();
+    let mut session = destination
+        .begin_correction(request.clone(), generic_plan)
+        .unwrap();
+    session.apply_migrations().unwrap();
+    let counts = session.apply_corrections().unwrap();
+    let receipt = session.finalize().unwrap();
+    assert_eq!(counts.rows_written, 2);
+    assert_eq!(counts.rows_updated, Some(2));
+    plan.kernel.validate_receipt(&request, &receipt).unwrap();
+    assert!(
+        env.destination()
+            .verify_correction(&receipt)
+            .unwrap()
+            .verified
+    );
+
+    let mut client = env.client();
+    let rows = client
+        .query(
+            &format!(
+                "SELECT \"id\", \"age\", \"_cdf_variant\" FROM {} ORDER BY \"id\"",
+                target.sql()
+            ),
+            &[],
+        )
+        .unwrap();
+    assert_eq!(rows[0].get::<_, i64>(1), 42);
+    assert_eq!(rows[1].get::<_, i64>(1), 84);
+    let preserved: String = rows[0].get(2);
+    let preserved_fields = cdf_contract::decode_residual_json_v1(preserved.as_bytes()).unwrap();
+    assert_eq!(preserved_fields.len(), 1);
+    assert_eq!(preserved_fields[0].path, "/untouched");
+    assert!(rows[1].get::<_, Option<String>>(2).is_none());
+
+    let index_count: i64 = client
+        .query_one(
+            "SELECT COUNT(*)::bigint FROM pg_indexes WHERE schemaname = $1 AND tablename = $2 AND indexname ~ '^_cdf_provenance_'",
+            &[&env.schema, &target.table.as_str()],
+        )
+        .unwrap()
+        .get(0);
+    assert_eq!(index_count, 1);
+
+    let after = env
+        .destination()
+        .read_correction_residual(&target.target_name().unwrap(), &first_address)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.residual_json_v1, Some(preserved.into_bytes()));
+
+    let replay = env
+        .destination()
+        .commit_corrections(request, commit_request)
+        .unwrap();
+    assert!(replay.duplicate);
+    assert_eq!(replay.receipt, receipt);
+    assert!(!replay.package_receipt_recorded);
+    assert_eq!(
+        PackageReader::open(correction_dir.path())
+            .unwrap()
+            .receipts()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn live_correction_missing_duplicate_and_post_update_failures_roll_back() {
+    let Some(env) = LivePostgres::start() else {
+        return;
+    };
+
+    let original_dir = tempfile::tempdir().unwrap();
+    let original_manifest = build_package(
+        original_dir.path(),
+        "pkg-live-correction-negative-original",
+        vec![("seg-000001", residual_batch(&[(1, 42, Some("keep"))]))],
+    );
+    let original_plan = plan_with_columns(
+        &env,
+        "orders_correction_missing",
+        &original_manifest,
+        WriteDisposition::Append,
+        MergeDedupPolicy::Last,
+        None,
+        residual_columns(),
+    );
+    commit(&env, original_dir.path(), original_plan);
+    let target = env.target("orders_correction_missing");
+    let original_hash = PackageHash::new(original_manifest.package_hash.clone()).unwrap();
+    let original_address = RowProvenanceAddress::new(
+        original_hash.clone(),
+        SegmentId::new("seg-000001").unwrap(),
+        0,
+    );
+    let original_residual = env
+        .destination()
+        .read_addressed_residual(&target.target_name().unwrap(), &original_address)
+        .unwrap()
+        .unwrap()
+        .residual_json_v1;
+
+    let missing_dir = tempfile::tempdir().unwrap();
+    let missing_manifest = build_package(
+        missing_dir.path(),
+        "pkg-live-correction-missing",
+        vec![("seg-correction", batch(&[(1, None)]))],
+    );
+    let missing_request = correction_request_live(
+        &target,
+        &missing_manifest,
+        vec![correction_operation_live(&original_hash, 99, 42)],
+    );
+    let missing_plan = env
+        .destination()
+        .plan_addressed_correction(PostgresCorrectionPlanInput {
+            request: missing_request.clone(),
+            existing_table: correction_existing_table_live(),
+        })
+        .unwrap();
+    let missing_error = env
+        .destination()
+        .commit_corrections(
+            missing_request,
+            PostgresCorrectionCommitRequest {
+                package_dir: missing_dir.path().to_path_buf(),
+                plan: missing_plan,
+            },
+        )
+        .unwrap_err();
+    assert!(missing_error.to_string().contains("matched 0 row(s)"));
+    assert!(!target_column_exists(
+        &mut env.client(),
+        &env.schema,
+        "orders_correction_missing",
+        "age"
+    ));
+
+    let duplicate_target = env.target("orders_correction_duplicate");
+    let duplicate_residual = String::from_utf8(
+        cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+            ["age"],
+            &Int64Array::from(vec![7_i64]),
+            0,
+        )
+        .unwrap()])
+        .unwrap(),
+    )
+    .unwrap();
+    let duplicate_hash = PackageHash::new("sha256:duplicate-original").unwrap();
+    let mut client = env.client();
+    client
+        .batch_execute(&format!(
+            "CREATE TABLE {} (\"id\" BIGINT NOT NULL, \"_cdf_variant\" TEXT, \"_cdf_load\" TEXT NOT NULL, \"_cdf_segment\" TEXT NOT NULL, \"_cdf_row\" BIGINT NOT NULL, \"_cdf_loaded_at_ms\" BIGINT NOT NULL)",
+            duplicate_target.sql()
+        ))
+        .unwrap();
+    for id in [1_i64, 2_i64] {
+        client
+            .execute(
+                &format!(
+                    "INSERT INTO {} (\"id\", \"_cdf_variant\", \"_cdf_load\", \"_cdf_segment\", \"_cdf_row\", \"_cdf_loaded_at_ms\") VALUES ($1, $2, $3, 'seg-000001', 0, 1)",
+                    duplicate_target.sql()
+                ),
+                &[&id, &duplicate_residual, &duplicate_hash.as_str()],
+            )
+            .unwrap();
+    }
+    let duplicate_dir = tempfile::tempdir().unwrap();
+    let duplicate_manifest = build_package(
+        duplicate_dir.path(),
+        "pkg-live-correction-duplicate",
+        vec![("seg-correction", batch(&[(1, None)]))],
+    );
+    let duplicate_request = correction_request_live(
+        &duplicate_target,
+        &duplicate_manifest,
+        vec![correction_operation_live(&duplicate_hash, 0, 7)],
+    );
+    let duplicate_plan = env
+        .destination()
+        .plan_addressed_correction(PostgresCorrectionPlanInput {
+            request: duplicate_request.clone(),
+            existing_table: correction_existing_table_live(),
+        })
+        .unwrap();
+    let duplicate_error = env
+        .destination()
+        .commit_corrections(
+            duplicate_request,
+            PostgresCorrectionCommitRequest {
+                package_dir: duplicate_dir.path().to_path_buf(),
+                plan: duplicate_plan,
+            },
+        )
+        .unwrap_err();
+    assert!(duplicate_error.to_string().contains("matched 2 row(s)"));
+    assert!(!target_column_exists(
+        &mut client,
+        &env.schema,
+        "orders_correction_duplicate",
+        "age"
+    ));
+
+    let fail_dir = tempfile::tempdir().unwrap();
+    let fail_manifest = build_package(
+        fail_dir.path(),
+        "pkg-live-correction-failpoint",
+        vec![("seg-correction", batch(&[(1, None)]))],
+    );
+    let fail_request = correction_request_live(
+        &target,
+        &fail_manifest,
+        vec![correction_operation_live(&original_hash, 0, 42)],
+    );
+    let mut fail_plan = env
+        .destination()
+        .plan_addressed_correction(PostgresCorrectionPlanInput {
+            request: fail_request.clone(),
+            existing_table: correction_existing_table_live(),
+        })
+        .unwrap();
+    fail_plan.verify.statement = "SELECT * FROM cdf_missing_correction_receipt".to_owned();
+    let fail_hash = fail_request.correction_package_hash.clone();
+    let fail_error = env
+        .destination()
+        .commit_corrections(
+            fail_request,
+            PostgresCorrectionCommitRequest {
+                package_dir: fail_dir.path().to_path_buf(),
+                plan: fail_plan,
+            },
+        )
+        .unwrap_err();
+    assert!(
+        fail_error
+            .to_string()
+            .contains("verify Postgres correction receipt")
+    );
+    assert!(!target_column_exists(
+        &mut client,
+        &env.schema,
+        "orders_correction_missing",
+        "age"
+    ));
+    assert_eq!(
+        load_mirror_count(&mut client, &target.display_name(), fail_hash.as_str()),
+        0
+    );
+    let after_failure = env
+        .destination()
+        .read_addressed_residual(&target.target_name().unwrap(), &original_address)
+        .unwrap()
+        .unwrap()
+        .residual_json_v1;
+    assert_eq!(after_failure, original_residual);
+}
+
+fn target_column_exists(client: &mut Client, schema: &str, table: &str, column: &str) -> bool {
+    client
+        .query_one(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 AND column_name = $3)",
+            &[&schema, &table, &column],
+        )
+        .unwrap()
+        .get(0)
 }
 
 fn load_mirror_count(client: &mut Client, target: &str, package_hash: &str) -> i64 {

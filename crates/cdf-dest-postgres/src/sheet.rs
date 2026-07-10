@@ -9,6 +9,8 @@ pub struct PostgresDestination {
     pub(crate) database_url: Option<String>,
     #[serde(skip)]
     pub(crate) pending_commit: Option<PostgresCommitRequest>,
+    #[serde(skip)]
+    pub(crate) pending_correction: Option<PostgresCorrectionCommitRequest>,
 }
 
 impl Default for PostgresDestination {
@@ -17,6 +19,7 @@ impl Default for PostgresDestination {
             sheet: postgres_destination_sheet(),
             database_url: None,
             pending_commit: None,
+            pending_correction: None,
         }
     }
 }
@@ -36,6 +39,11 @@ impl PostgresDestination {
 
     pub fn with_commit_request(mut self, request: PostgresCommitRequest) -> Self {
         self.pending_commit = Some(request);
+        self
+    }
+
+    pub fn with_correction_request(mut self, request: PostgresCorrectionCommitRequest) -> Self {
+        self.pending_correction = Some(request);
         self
     }
 }
@@ -89,6 +97,55 @@ impl DestinationProtocol for PostgresDestination {
             receipt_id: verification.receipt_id,
             reason: verification.reason,
         })
+    }
+
+    fn plan_correction(
+        &self,
+        request: &DestinationCorrectionCommitRequest,
+    ) -> Result<DestinationCorrectionCommitPlan> {
+        let pending = self.pending_correction.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "PostgresDestination::plan_correction requires PostgresDestination::with_correction_request",
+            )
+        })?;
+        validate_postgres_correction_begin(request, &pending.plan.kernel, &pending.plan)?;
+        Ok(pending.plan.kernel.clone())
+    }
+
+    fn begin_correction(
+        &self,
+        request: DestinationCorrectionCommitRequest,
+        plan: DestinationCorrectionCommitPlan,
+    ) -> Result<Box<dyn CorrectionCommitSession + '_>> {
+        let pending = self.pending_correction.as_ref().ok_or_else(|| {
+            CdfError::contract(
+                "PostgresDestination::begin_correction requires PostgresDestination::with_correction_request",
+            )
+        })?;
+        validate_postgres_correction_begin(&request, &plan, &pending.plan)?;
+        Ok(Box::new(self.begin_correction_session(
+            request,
+            pending.plan.clone(),
+            pending.package_dir.clone(),
+        )?))
+    }
+
+    fn verify_correction(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        DestinationCorrectionReceiptEvidence::from_receipt(receipt)?;
+        let verification = self.verify_receipt(receipt)?;
+        Ok(ReceiptVerification {
+            verified: verification.verified,
+            receipt_id: verification.receipt_id,
+            reason: verification.reason,
+        })
+    }
+
+    fn read_correction_residual(
+        &self,
+        target: &TargetName,
+        original_row: &RowProvenanceAddress,
+    ) -> Result<Option<DestinationResidualReadback>> {
+        self.read_addressed_residual(target, original_row)
     }
 }
 
@@ -146,12 +203,17 @@ pub fn postgres_destination_sheet() -> PostgresDestinationSheet {
 }
 
 pub fn postgres_correction_capabilities() -> DestinationCorrectionCapabilities {
-    DestinationCorrectionCapabilities::default().with_row_provenance(
-        RowProvenanceCapabilities::new(
+    DestinationCorrectionCapabilities::default()
+        .with_row_provenance(RowProvenanceCapabilities::new(
             CapabilitySupport::Supported,
-            CapabilitySupport::Unsupported,
-        ),
-    )
+            CapabilitySupport::Supported,
+        ))
+        .with_residual_readback(CapabilitySupport::Supported)
+        .with_strategy(CorrectionStrategyCapability::new(
+            CorrectionStrategy::InPlaceUpdate,
+            TransactionSupport::AtomicPackage,
+            IdempotencySupport::PackageToken,
+        ))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

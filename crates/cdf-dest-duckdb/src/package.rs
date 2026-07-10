@@ -40,6 +40,7 @@ fn package_data_from_segments(
     }
 
     let schema = first_schema(&segments)?;
+    validate_user_schema_fields(schema.as_ref())?;
     let fields = schema
         .fields()
         .iter()
@@ -78,6 +79,73 @@ fn package_data_from_segments(
     })
 }
 
+pub(crate) fn persistence_fields(user_fields: &[FieldPlan]) -> Vec<FieldPlan> {
+    let mut fields = user_fields.to_vec();
+    fields.extend([
+        FieldPlan {
+            name: CDF_LOAD_COLUMN.to_owned(),
+            sql_type: "VARCHAR".to_owned(),
+            nullable: false,
+        },
+        FieldPlan {
+            name: CDF_SEGMENT_COLUMN.to_owned(),
+            sql_type: "VARCHAR".to_owned(),
+            nullable: false,
+        },
+        FieldPlan {
+            name: CDF_ROW_COLUMN.to_owned(),
+            sql_type: "UBIGINT".to_owned(),
+            nullable: false,
+        },
+    ]);
+    fields
+}
+
+pub(crate) fn persistence_rows(
+    package: &PackageData,
+    package_hash: &cdf_kernel::PackageHash,
+) -> Result<Vec<RowValues>> {
+    let expected_rows = package
+        .segments
+        .iter()
+        .try_fold(0_u64, |total, segment| total.checked_add(segment.row_count))
+        .ok_or_else(|| CdfError::data("DuckDB package row count overflowed"))?;
+    if expected_rows != package.rows.len() as u64 {
+        return Err(CdfError::data(format!(
+            "DuckDB package segment rows total {expected_rows} but decoded payload has {} rows",
+            package.rows.len()
+        )));
+    }
+
+    let mut rows = Vec::with_capacity(package.rows.len());
+    let mut offset = 0_usize;
+    for segment in &package.segments {
+        for ordinal in 0..segment.row_count {
+            let mut row = package.rows[offset].clone();
+            row.push(text_cell(package_hash.as_str()));
+            row.push(text_cell(segment.entry.segment_id.as_str()));
+            row.push(u64_cell(ordinal));
+            rows.push(row);
+            offset += 1;
+        }
+    }
+    Ok(rows)
+}
+
+fn text_cell(value: &str) -> CellValue {
+    CellValue {
+        value: Value::Text(value.to_owned()),
+        key: CellKey::Text(value.to_owned()),
+    }
+}
+
+fn u64_cell(value: u64) -> CellValue {
+    CellValue {
+        value: Value::UBigInt(value),
+        key: CellKey::U64(value),
+    }
+}
+
 pub(crate) fn first_schema(segments: &[(SegmentEntry, Vec<RecordBatch>)]) -> Result<SchemaRef> {
     segments
         .iter()
@@ -95,6 +163,18 @@ pub(crate) fn validate_field_names(fields: &[FieldPlan]) -> Result<()> {
             return Err(CdfError::contract(format!(
                 "duplicate destination column name {}",
                 field.name
+            )));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_user_schema_fields(schema: &Schema) -> Result<()> {
+    for field in schema.fields() {
+        if field.name().starts_with("_cdf_") && !is_framework_variant_field(field.as_ref()) {
+            return Err(CdfError::contract(format!(
+                "DuckDB destination column {:?} uses the reserved `_cdf_*` namespace; rename the user field before planning",
+                field.name()
             )));
         }
     }

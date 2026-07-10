@@ -20,6 +20,7 @@ use crate::{
         RenderDocument,
         primitives::{KeyValuePanel, NextCommand, SectionRule, StatusKind, StatusLine, Table},
     },
+    reports::{DiscoveryCoverageReport, discovery_coverage_panel},
 };
 
 pub(crate) fn schema(cli: &Cli, command: SchemaCommand) -> Result<CommandOutput, CliError> {
@@ -34,12 +35,14 @@ pub(crate) fn schema(cli: &Cli, command: SchemaCommand) -> Result<CommandOutput,
 fn discover(cli: &Cli, args: SchemaDiscoverArgs) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema discover")?;
     let resource = context.resource(&args.resource_id)?;
-    let discovery = discover_for_cli(&context, resource)?;
+    let artifacts = discover_artifacts_for_cli(&context, resource)?;
+    let discovery = &artifacts.discovery;
     let report = SchemaDiscoverReport::from_discovery(
         &context,
         &args.resource_id,
         &discovery.snapshot.artifact,
         &discovery.snapshot.source_identity,
+        artifacts.discovery_manifest.as_ref(),
     );
     CommandOutput::rendered("schema discover", schema_discover_document(&report), report)
 }
@@ -92,13 +95,12 @@ fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
         None => "added",
     };
     let report = SchemaPinReport::from_pin(
-        &context,
-        &args.resource_id,
+        SchemaSnapshotReportBase::from_artifact(&context, &args.resource_id, snapshot),
         status,
-        snapshot,
         &artifacts.discovery.snapshot.source_identity,
         snapshot_written,
         lockfile,
+        artifacts.discovery_manifest.as_ref(),
     );
     CommandOutput::rendered("schema pin", schema_pin_document(&report), report)
 }
@@ -109,7 +111,12 @@ fn show(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> 
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
     let artifact = SchemaSnapshotStore::new(&context.root).read(reference)?;
-    let report = SchemaShowReport::from_artifact(&context, &args.resource_id, &artifact);
+    let manifest = artifact
+        .discovery_manifest_reference()?
+        .map(|reference| DiscoveryManifestStore::new(&context.root).read(&reference))
+        .transpose()?;
+    let report =
+        SchemaShowReport::from_artifact(&context, &args.resource_id, &artifact, manifest.as_ref());
     CommandOutput::rendered("schema show", schema_show_document(&report), report)
 }
 
@@ -131,7 +138,13 @@ fn diff(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> 
     } else {
         &artifacts.discovery.snapshot.artifact
     };
-    let report = SchemaDiffReport::from_snapshots(&context, &args.resource_id, &pinned, fresh);
+    let report = SchemaDiffReport::from_snapshots(
+        &context,
+        &args.resource_id,
+        &pinned,
+        fresh,
+        artifacts.discovery_manifest.as_ref(),
+    );
     CommandOutput::rendered("schema diff", schema_diff_document(&report), report)
 }
 
@@ -151,13 +164,6 @@ fn has_same_discovery_observation(
 
 fn load_context(cli: &Cli, command: &str) -> Result<ProjectContext, CliError> {
     ProjectContext::load_for_command(command, cli.project.as_ref(), cli.env.as_deref())
-}
-
-fn discover_for_cli(
-    context: &ProjectContext,
-    resource: &CompiledResource,
-) -> Result<cdf_project::ResourceSchemaDiscovery, CliError> {
-    Ok(discover_artifacts_for_cli(context, resource)?.discovery)
 }
 
 fn discover_artifacts_for_cli(
@@ -281,6 +287,8 @@ struct SchemaDiscoverReport {
     #[serde(flatten)]
     snapshot: SchemaSnapshotReportBase,
     source_identity: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery: Option<DiscoveryCoverageReport>,
     writes: SchemaWrites,
     next_command: String,
 }
@@ -291,6 +299,8 @@ struct SchemaPinReport {
     snapshot: SchemaSnapshotReportBase,
     status: String,
     source_identity: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery: Option<DiscoveryCoverageReport>,
     writes: SchemaWrites,
     unsupported: Vec<String>,
     next_command: String,
@@ -300,6 +310,8 @@ struct SchemaPinReport {
 struct SchemaShowReport {
     #[serde(flatten)]
     snapshot: SchemaSnapshotReportBase,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery: Option<DiscoveryCoverageReport>,
     writes: SchemaWrites,
     next_command: String,
 }
@@ -324,6 +336,8 @@ struct SchemaDiffReport {
     fresh_schema_hash: String,
     pinned_schema_snapshot_path: String,
     fresh_schema_snapshot_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    discovery: Option<DiscoveryCoverageReport>,
     summary: SchemaDiffSummary,
     added_fields: Vec<SchemaFieldReport>,
     removed_fields: Vec<SchemaFieldReport>,
@@ -396,10 +410,12 @@ impl SchemaDiscoverReport {
         resource_id: &str,
         artifact: &SchemaSnapshotArtifact,
         source_identity: &BTreeMap<String, String>,
+        manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
     ) -> Self {
         Self {
             snapshot: SchemaSnapshotReportBase::from_artifact(context, resource_id, artifact),
             source_identity: source_identity.clone(),
+            discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
             writes: SchemaWrites::none(),
             next_command: format!("cdf plan {resource_id}"),
         }
@@ -408,19 +424,20 @@ impl SchemaDiscoverReport {
 
 impl SchemaPinReport {
     fn from_pin(
-        context: &ProjectContext,
-        resource_id: &str,
+        snapshot: SchemaSnapshotReportBase,
         status: &str,
-        artifact: &SchemaSnapshotArtifact,
         source_identity: &BTreeMap<String, String>,
         snapshot_written: bool,
         lockfile: SchemaLockfileWrite,
+        manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
     ) -> Self {
         let unsupported = lockfile.unsupported_reason.into_iter().collect::<Vec<_>>();
+        let resource_id = snapshot.resource_id.clone();
         Self {
-            snapshot: SchemaSnapshotReportBase::from_artifact(context, resource_id, artifact),
+            snapshot,
             status: status.to_owned(),
             source_identity: source_identity.clone(),
+            discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
             writes: SchemaWrites {
                 schema_snapshot: snapshot_written,
                 lockfile: lockfile.written,
@@ -439,9 +456,11 @@ impl SchemaShowReport {
         context: &ProjectContext,
         resource_id: &str,
         artifact: &SchemaSnapshotArtifact,
+        manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
     ) -> Self {
         Self {
             snapshot: SchemaSnapshotReportBase::from_artifact(context, resource_id, artifact),
+            discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
             writes: SchemaWrites::none(),
             next_command: format!("cdf schema diff {resource_id}"),
         }
@@ -472,6 +491,7 @@ impl SchemaDiffReport {
         resource_id: &str,
         pinned: &SchemaSnapshotArtifact,
         fresh: &SchemaSnapshotArtifact,
+        manifest: Option<&cdf_project::DiscoveryManifestArtifact>,
     ) -> Self {
         let pinned_fields = fields_by_name(&pinned.schema.fields);
         let fresh_fields = fields_by_name(&fresh.schema.fields);
@@ -538,6 +558,7 @@ impl SchemaDiffReport {
             fresh_schema_hash: fresh.schema_hash.to_string(),
             pinned_schema_snapshot_path: pinned.path.clone(),
             fresh_schema_snapshot_path: fresh.path.clone(),
+            discovery: manifest.map(DiscoveryCoverageReport::from_manifest),
             summary,
             added_fields,
             removed_fields,
@@ -613,6 +634,7 @@ fn schema_discover_document(report: &SchemaDiscoverReport) -> RenderDocument {
             base: &report.snapshot,
             writes: &report.writes,
             source_identity: Some(&report.source_identity),
+            discovery: report.discovery.as_ref(),
             unsupported: &[],
             next_command: Some(&report.next_command),
         },
@@ -630,6 +652,7 @@ fn schema_pin_document(report: &SchemaPinReport) -> RenderDocument {
             base: &report.snapshot,
             writes: &report.writes,
             source_identity: Some(&report.source_identity),
+            discovery: report.discovery.as_ref(),
             unsupported: &report.unsupported,
             next_command: Some(&report.next_command),
         },
@@ -644,6 +667,7 @@ fn schema_show_document(report: &SchemaShowReport) -> RenderDocument {
             base: &report.snapshot,
             writes: &report.writes,
             source_identity: None,
+            discovery: report.discovery.as_ref(),
             unsupported: &[],
             next_command: Some(&report.next_command),
         },
@@ -654,6 +678,7 @@ struct SnapshotDocumentData<'a> {
     base: &'a SchemaSnapshotReportBase,
     writes: &'a SchemaWrites,
     source_identity: Option<&'a BTreeMap<String, String>>,
+    discovery: Option<&'a DiscoveryCoverageReport>,
     unsupported: &'a [String],
     next_command: Option<&'a str>,
 }
@@ -700,6 +725,11 @@ fn schema_snapshot_document(
             .blank_line()
             .push(key_value_table("Source Identity", source_identity));
     }
+    if let Some(discovery) = data.discovery {
+        document = document
+            .blank_line()
+            .push(discovery_coverage_panel(discovery));
+    }
     document = document.blank_line().push(writes_panel(data.writes));
     if !data.unsupported.is_empty() {
         document = document.blank_line().push(
@@ -724,7 +754,7 @@ fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument {
     } else {
         StatusKind::Success
     };
-    RenderDocument::new()
+    let document = RenderDocument::new()
         .push(SectionRule::new())
         .push(StatusLine::new(
             status,
@@ -771,9 +801,15 @@ fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument {
                 ),
         )
         .blank_line()
-        .push(diff_table(report))
-        .blank_line()
-        .push(writes_panel(&report.writes))
+        .push(diff_table(report));
+    let document = if let Some(discovery) = &report.discovery {
+        document
+            .blank_line()
+            .push(discovery_coverage_panel(discovery))
+    } else {
+        document
+    };
+    document.blank_line().push(writes_panel(&report.writes))
 }
 
 fn diff_table(report: &SchemaDiffReport) -> Table {

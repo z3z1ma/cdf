@@ -19,11 +19,11 @@ use cdf_declarative::{
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
-    CdfError, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
-    EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
-    PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest,
-    SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource, ScopeKey,
-    TerminalSchemaObservationQuarantine,
+    CdfError, DiscoveryCoverageEvidence, DiscoveryExecutorBudgetEvidence,
+    EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
+    EffectiveSchemaRuntime, PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result,
+    ScanRequest, SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy,
+    SchemaSource, ScopeKey, TerminalSchemaObservationQuarantine,
 };
 
 use crate::{
@@ -31,15 +31,37 @@ use crate::{
     DiscoveryCoverageMode, DiscoveryExecutorBudget, DiscoveryIdentityStrength,
     DiscoveryManifestArtifact, DiscoveryManifestInput, DiscoveryManifestStore,
     DiscoveryMetadataScope, DiscoveryMetadataVariance, DiscoveryParticipation,
-    DiscoverySchemaVerdict, DiscoverySchemaVerdictKind, SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
-    SCHEMA_DISCOVERY_FORMAT_PARQUET, SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA,
-    SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER, SchemaSnapshotArtifact, SchemaSnapshotStore,
+    DiscoverySchemaVerdict, DiscoverySchemaVerdictKind, DiscoverySelectorCandidate,
+    SCHEMA_DISCOVERY_FORMAT_ARROW_IPC, SCHEMA_DISCOVERY_FORMAT_PARQUET,
+    SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA, SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER,
+    SchemaSnapshotArtifact, SchemaSnapshotStore, plan_discovery_selection,
 };
 
 #[derive(Clone, Debug)]
 pub struct PreparedDiscoveredResource {
     pub resource: CompiledResource,
     pub discovery: Option<ResourceSchemaDiscovery>,
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub struct PreparedEffectiveSchemaResource {
+    resource: CompiledResource,
+    discovery_manifest: Option<DiscoveryManifestArtifact>,
+}
+
+impl PreparedEffectiveSchemaResource {
+    pub fn resource(&self) -> &CompiledResource {
+        &self.resource
+    }
+
+    pub fn discovery_manifest(&self) -> Option<&DiscoveryManifestArtifact> {
+        self.discovery_manifest.as_ref()
+    }
+
+    pub fn into_parts(self) -> (CompiledResource, Option<DiscoveryManifestArtifact>) {
+        (self.resource, self.discovery_manifest)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -265,6 +287,22 @@ pub fn prepare_pinned_resource_effective_schema(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
 ) -> Result<CompiledResource> {
+    Ok(
+        prepare_pinned_resource_effective_schema_artifacts(
+            project_root,
+            resource,
+            secret_provider,
+        )?
+        .into_parts()
+        .0,
+    )
+}
+
+pub fn prepare_pinned_resource_effective_schema_artifacts(
+    project_root: &Path,
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+) -> Result<PreparedEffectiveSchemaResource> {
     let should_observe = matches!(
         resource.plan(),
         CompiledResourcePlan::Files(plan)
@@ -275,7 +313,10 @@ pub fn prepare_pinned_resource_effective_schema(
                 )
     );
     if !should_observe {
-        return Ok(resource.clone());
+        return Ok(PreparedEffectiveSchemaResource {
+            resource: resource.clone(),
+            discovery_manifest: None,
+        });
     }
     let snapshot = resource
         .descriptor()
@@ -297,7 +338,11 @@ pub fn prepare_pinned_resource_effective_schema(
             .with_verified_baseline(baseline.clone())
             .for_runtime_effective_schema(),
     )?;
-    apply_effective_discovered_schema(resource, &artifacts, &baseline)
+    let prepared = apply_effective_discovered_schema(resource, &artifacts, &baseline)?;
+    Ok(PreparedEffectiveSchemaResource {
+        resource: prepared,
+        discovery_manifest: artifacts.discovery_manifest,
+    })
 }
 
 fn discover_resource_schema_artifacts_inner(
@@ -448,17 +493,40 @@ fn discover_local_binary_resource_schema(
     let candidates = local_file_discovery_candidates(&resource.descriptor().resource_id, plan)?;
     if candidates.is_empty() {
         return Err(CdfError::data(format!(
-            "exhaustive local binary discovery for resource `{}` matched no files under `{}` for glob `{}`",
+            "local binary discovery for resource `{}` matched no files under `{}` for glob `{}`",
             resource.descriptor().resource_id,
             plan.root,
             plan.glob
         )));
     }
 
-    let mut probes = Vec::with_capacity(candidates.len());
-    let mut probe_reports = Vec::with_capacity(candidates.len());
+    let selector_candidates = candidates
+        .iter()
+        .map(|candidate| DiscoverySelectorCandidate {
+            canonical_location: candidate.relative_path.clone(),
+            identity: selector_candidate_identity(candidate),
+        })
+        .collect::<Vec<_>>();
+    let selection = plan_discovery_selection(
+        &resource.descriptor().resource_id,
+        resource.schema_discovery_sample_files(),
+        &selector_candidates,
+    )?;
+    let coverage_label = match selection.coverage {
+        DiscoveryCoverageMode::Exhaustive => "exhaustive",
+        DiscoveryCoverageMode::Sampled => "sampled",
+    };
+
+    let scheduled_candidates = candidates
+        .iter()
+        .filter(|candidate| {
+            options.runtime_effective_schema || selection.selects(&candidate.relative_path)
+        })
+        .collect::<Vec<_>>();
+    let mut probes = Vec::with_capacity(scheduled_candidates.len());
+    let mut probe_reports = Vec::with_capacity(scheduled_candidates.len());
     let mut failed = false;
-    for candidate in &candidates {
+    for candidate in scheduled_candidates {
         match probe_local_binary_candidate(resource, adapter, candidate, &options.budget) {
             Ok(probe) => {
                 probe_reports.push(format!(
@@ -475,13 +543,17 @@ fn discover_local_binary_resource_schema(
     }
     if failed {
         return Err(CdfError::data(format!(
-            "exhaustive local binary discovery failed for resource `{}` after evaluating every matched candidate: {}",
+            "{coverage_label} local binary discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
             resource.descriptor().resource_id,
             probe_reports.join("; ")
         )));
     }
 
-    let aggregate_candidates = probes
+    let selected_probes = probes
+        .iter()
+        .filter(|probe| selection.selects(&probe.location))
+        .collect::<Vec<_>>();
+    let aggregate_candidates = selected_probes
         .iter()
         .map(|probe| {
             AggregateSchemaCandidate::new(probe.location.clone(), probe.schema.as_ref().clone())
@@ -510,8 +582,8 @@ fn discover_local_binary_resource_schema(
             .join("; ");
         return Err(CdfError::contract(format!(
             "{} for resource `{}` found incompatible files; candidate verdicts: {file_reports}; incompatibilities: {incompatibilities}",
-            if options.runtime_effective_schema {
-                "effective-schema planning requires A10e disposition"
+            if selection.coverage == DiscoveryCoverageMode::Sampled {
+                "initial sampled schema pin"
             } else {
                 "initial exhaustive schema pin"
             },
@@ -541,9 +613,21 @@ fn discover_local_binary_resource_schema(
         normalized.as_ref(),
         metadata.clone(),
     )?;
-    let manifest_candidates = probes
+    let manifest_candidates = candidates
         .iter()
-        .map(|probe| {
+        .map(|candidate| {
+            if !selection.selects(&candidate.relative_path) {
+                return Ok(unprobed_manifest_candidate(candidate));
+            }
+            let probe = probes
+                .iter()
+                .find(|probe| probe.location == candidate.relative_path)
+                .ok_or_else(|| {
+                    CdfError::internal(format!(
+                        "selected discovery candidate `{}` was not probed",
+                        candidate.relative_path
+                    ))
+                })?;
             let verdict = file_aggregate
                 .files
                 .iter()
@@ -557,6 +641,8 @@ fn discover_local_binary_resource_schema(
             manifest_candidate(
                 probe,
                 verdict,
+                (selection.coverage == DiscoveryCoverageMode::Sampled)
+                    .then(|| selector_candidate_identity(candidate)),
                 terminal_quarantines
                     .iter()
                     .find(|item| item.observation_id() == probe.location),
@@ -571,8 +657,8 @@ fn discover_local_binary_resource_schema(
         // circular. The manifest hash and linked v2 snapshot hash remain the
         // authoritative identities of the complete discovery evidence.
         effective_schema_hash: Some(effective.schema_hash),
-        coverage: DiscoveryCoverageMode::Exhaustive,
-        selector: None,
+        coverage: selection.coverage.clone(),
+        selector: selection.selector.clone(),
         budget: options.budget.clone(),
         normalizer_version: NORMALIZER_NAMECASE_V1.to_owned(),
         policy_version: crate::internal::semantic_hash(&ContractPolicy::for_trust(
@@ -586,10 +672,10 @@ fn discover_local_binary_resource_schema(
         metadata,
         manifest.reference(),
     )?;
-    let total_probe_bytes = probes.iter().try_fold(0_u64, |total, probe| {
+    let total_probe_bytes = selected_probes.iter().try_fold(0_u64, |total, probe| {
         total.checked_add(probe.probe_bytes).ok_or_else(|| {
             CdfError::data(format!(
-                "exhaustive local binary discovery metadata byte accounting overflowed for resource `{}` while adding `{}`; reduce the matched file set or probe budget",
+                "{coverage_label} local binary discovery metadata byte accounting overflowed for resource `{}` while adding `{}`; reduce the matched file set or probe budget",
                 resource.descriptor().resource_id,
                 probe.location
             ))
@@ -597,9 +683,16 @@ fn discover_local_binary_resource_schema(
     })?;
     let mut source_identity = BTreeMap::from([
         ("transport".to_owned(), "local".to_owned()),
-        ("coverage".to_owned(), "exhaustive".to_owned()),
-        ("matched_files".to_owned(), probes.len().to_string()),
-        ("probed_files".to_owned(), probes.len().to_string()),
+        ("coverage".to_owned(), coverage_label.to_owned()),
+        ("matched_files".to_owned(), candidates.len().to_string()),
+        (
+            "probed_files".to_owned(),
+            selection.selected_count().to_string(),
+        ),
+        (
+            "unprobed_files".to_owned(),
+            (candidates.len() - selection.selected_count()).to_string(),
+        ),
         ("probe_bytes_read".to_owned(), total_probe_bytes.to_string()),
         (
             "discovery_manifest_hash".to_owned(),
@@ -607,7 +700,15 @@ fn discover_local_binary_resource_schema(
         ),
         ("discovery_manifest_path".to_owned(), manifest.path.clone()),
     ]);
-    if let [probe] = probes.as_slice() {
+    if let Some(sample_files) = resource.schema_discovery_sample_files() {
+        source_identity.insert("sample_files".to_owned(), sample_files.to_string());
+    }
+    if let Some(selector) = &selection.selector {
+        source_identity.insert("selector".to_owned(), selector.selector.clone());
+    }
+    if let [probe] = selected_probes.as_slice()
+        && candidates.len() == 1
+    {
         source_identity.extend(probe.source_identity.clone());
         source_identity.insert("path".to_owned(), probe.location.clone());
     }
@@ -654,12 +755,22 @@ fn discover_local_binary_resource_schema(
             .sort_by(|left, right| left.physical_schema_hash.cmp(&right.physical_schema_hash));
         schema_catalog
             .dedup_by(|left, right| left.physical_schema_hash == right.physical_schema_hash);
-        let evidence = EffectiveSchemaEvidence::new(
+        let mut evidence = EffectiveSchemaEvidence::new(
             baseline.snapshot().clone(),
             effective_snapshot_schema_hash,
             manifest.reference(),
             observations,
         )?;
+        if let Some(selector) = &manifest.selector {
+            evidence = evidence.with_discovery_coverage(DiscoveryCoverageEvidence::sampled(
+                selector.selector.clone(),
+                selector.sample_files,
+                selector.matched_count,
+                u64::try_from(selection.selected_count()).map_err(|_| {
+                    CdfError::contract("sampled discovery selected count exceeds u64")
+                })?,
+            )?)?;
+        }
         Some(
             EffectiveSchemaRuntime::new(evidence, schema_catalog)?
                 .with_terminal_quarantines(terminal_quarantines)?
@@ -903,6 +1014,7 @@ fn schema_field_component_matches(field: &arrow_schema::Field, component: &str) 
 fn manifest_candidate(
     probe: &LocalBinaryProbe,
     verdict: &AggregateFileSchemaVerdict,
+    selector_identity: Option<DiscoveryBoundedIdentity>,
     terminal_quarantine: Option<&TerminalSchemaObservationQuarantine>,
 ) -> Result<DiscoveryCandidateEvidence> {
     let outcome = if verdict
@@ -922,12 +1034,12 @@ fn manifest_candidate(
     Ok(DiscoveryCandidateEvidence {
         transport: "file".to_owned(),
         canonical_location: probe.location.clone(),
-        identity: DiscoveryBoundedIdentity {
+        identity: selector_identity.unwrap_or_else(|| DiscoveryBoundedIdentity {
             size_bytes: Some(probe.size_bytes),
             modified_at_ms: probe.modified_at_ms,
             value: Some(probe.bounded_identity_value.clone()),
             strength: DiscoveryIdentityStrength::BoundedObservation,
-        },
+        }),
         participation: DiscoveryParticipation::Probed,
         metadata_variance: manifest_metadata_variance(verdict),
         physical_schema_hash: Some(probe.physical_schema_hash.clone()),
@@ -953,6 +1065,32 @@ fn manifest_candidate(
             ]),
         }),
     })
+}
+
+fn selector_candidate_identity(
+    candidate: &cdf_declarative::LocalFileDiscoveryCandidate,
+) -> DiscoveryBoundedIdentity {
+    DiscoveryBoundedIdentity {
+        size_bytes: Some(candidate.size_bytes),
+        modified_at_ms: candidate.modified_at_ms(),
+        value: None,
+        strength: DiscoveryIdentityStrength::Unavailable,
+    }
+}
+
+fn unprobed_manifest_candidate(
+    candidate: &cdf_declarative::LocalFileDiscoveryCandidate,
+) -> DiscoveryCandidateEvidence {
+    DiscoveryCandidateEvidence {
+        transport: "file".to_owned(),
+        canonical_location: candidate.relative_path.clone(),
+        identity: selector_candidate_identity(candidate),
+        participation: DiscoveryParticipation::Unprobed,
+        metadata_variance: Vec::new(),
+        physical_schema_hash: None,
+        probe_bytes: None,
+        schema_verdict: None,
+    }
 }
 
 fn manifest_metadata_variance(

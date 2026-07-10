@@ -398,6 +398,53 @@ pub fn decode_residual_json_v1(
         .collect()
 }
 
+pub fn remove_residual_json_v1_path(
+    bytes: &[u8],
+    pointer: &str,
+) -> Result<Option<Vec<u8>>, ResidualCodecError> {
+    validate_canonical_pointer(pointer)?;
+    let mut envelope: ResidualEnvelope =
+        serde_json::from_slice(bytes).map_err(|error| ResidualCodecError::InvalidEnvelope {
+            reason: error.to_string(),
+        })?;
+    if envelope.v != RESIDUAL_JSON_V1 {
+        return Err(ResidualCodecError::UnsupportedVersion {
+            version: envelope.v,
+        });
+    }
+    if envelope.fields.is_empty() {
+        return Err(ResidualCodecError::InvalidEnvelope {
+            reason: "a residual envelope must contain at least one field".to_owned(),
+        });
+    }
+    for path in envelope.fields.keys() {
+        validate_canonical_pointer(path)?;
+    }
+    let canonical =
+        serde_json::to_vec(&envelope).map_err(|error| ResidualCodecError::InvalidEnvelope {
+            reason: error.to_string(),
+        })?;
+    if canonical != bytes {
+        return Err(ResidualCodecError::InvalidEnvelope {
+            reason: "bytes are not canonical residual-json-v1".to_owned(),
+        });
+    }
+    if envelope.fields.remove(pointer).is_none() {
+        return Err(ResidualCodecError::InvalidPath {
+            path: pointer.to_owned(),
+            reason: "promoted path is absent from the residual envelope".to_owned(),
+        });
+    }
+    if envelope.fields.is_empty() {
+        return Ok(None);
+    }
+    serde_json::to_vec(&envelope)
+        .map(Some)
+        .map_err(|error| ResidualCodecError::InvalidEnvelope {
+            reason: error.to_string(),
+        })
+}
+
 fn unsupported_type(data_type: &DataType, reason: &str) -> ResidualCodecError {
     ResidualCodecError::EncodeUnsupported {
         data_type: data_type.to_string(),

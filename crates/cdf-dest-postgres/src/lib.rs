@@ -7,11 +7,14 @@ use std::{
 
 use cdf_kernel::{
     CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
-    ConcurrencyLimit, DeliveryGuarantee, DestinationCommitRequest,
-    DestinationCorrectionCapabilities, DestinationId, DestinationProtocol,
-    DestinationProtocolCapabilities, DestinationSheet, IdempotencySupport, IdempotencyToken,
-    IdentifierRules, MigrationRecord, PackageHash, PlanId, Receipt, ReceiptId, ReceiptVerification,
-    ResourceId, Result, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId, StateDelta,
+    ConcurrencyLimit, CorrectionCommitSession, CorrectionStrategy, CorrectionStrategyCapability,
+    DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY, DeliveryGuarantee, DestinationCommitRequest,
+    DestinationCorrectionCapabilities, DestinationCorrectionCommitPlan,
+    DestinationCorrectionCommitRequest, DestinationCorrectionReceiptEvidence, DestinationId,
+    DestinationProtocol, DestinationProtocolCapabilities, DestinationResidualReadback,
+    DestinationSheet, IdempotencySupport, IdempotencyToken, IdentifierRules, MigrationRecord,
+    PackageHash, PlanId, Receipt, ReceiptId, ReceiptVerification, ResourceId, Result,
+    RowProvenanceAddress, RowProvenanceCapabilities, SchemaHash, SegmentAck, SegmentId, StateDelta,
     StateSegment, TargetName, TransactionMetadata, TransactionSupport, TypeMapping,
     TypeMappingFidelity, VerifyClause, WriteDisposition,
 };
@@ -30,6 +33,7 @@ pub const POSTGRES_XID_SQL: &str = "SELECT txid_current()::text AS xid";
 mod api;
 mod catalog;
 mod commit;
+mod correction;
 mod ddl;
 mod dml;
 mod identifiers;
@@ -50,6 +54,7 @@ pub use catalog::{
     POSTGRES_CATALOG_DISCOVERY_PROBE, PostgresCatalogDiscovery,
     discover_postgres_table_catalog_schema,
 };
+pub use correction::*;
 pub use identifiers::*;
 pub use plan::*;
 pub use rows::{postgres_columns_for_schema, postgres_type_for_arrow};

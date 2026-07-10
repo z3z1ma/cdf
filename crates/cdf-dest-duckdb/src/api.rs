@@ -1,6 +1,7 @@
 use crate::*;
 use crate::{
-    commit::*, mirrors::*, package::*, planning::*, receipts::*, sheet::*, sql::*, table::*,
+    commit::*, corrections::*, mirrors::*, package::*, planning::*, receipts::*, sheet::*, sql::*,
+    table::*,
 };
 
 #[derive(Clone, Debug)]
@@ -9,6 +10,7 @@ pub struct DuckDbDestination {
     sheet: DestinationSheet,
     // 10x: kernel begin lacks DuckDB package inputs; remove this handoff once begin carries package replay inputs.
     pending_sessions: Arc<Mutex<BTreeMap<PlanId, DuckDbCommitRequest>>>,
+    pub(crate) pending_corrections: Arc<Mutex<BTreeMap<PlanId, DuckDbCorrectionContext>>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -50,6 +52,14 @@ struct DuckDbCommitSession<'a> {
     expected_order: Vec<cdf_kernel::SegmentId>,
     accepted_segments: BTreeSet<cdf_kernel::SegmentId>,
     staged_segments: Vec<CommitSegment>,
+}
+
+#[derive(Debug)]
+pub(crate) struct DuckDbCorrectionSession<'a> {
+    pub(crate) destination: &'a DuckDbDestination,
+    pub(crate) context: DuckDbCorrectionContext,
+    pub(crate) migrations_applied: bool,
+    pub(crate) corrections_applied: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +161,7 @@ pub(crate) struct TablePlan {
 #[derive(Clone, Debug)]
 pub(crate) struct ExistingColumn {
     pub(crate) data_type: String,
+    pub(crate) nullable: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -211,6 +222,7 @@ impl DuckDbDestination {
             database_path,
             sheet: duckdb_sheet()?,
             pending_sessions: Arc::new(Mutex::new(BTreeMap::new())),
+            pending_corrections: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -266,12 +278,14 @@ impl DuckDbDestination {
         request: &DestinationCommitRequest,
         schema: &Schema,
     ) -> Result<DuckDbCommitPlan> {
+        validate_user_schema_fields(schema)?;
         let fields = schema
             .fields()
             .iter()
             .map(|field| field_plan(field.as_ref()))
             .collect::<Result<Vec<_>>>()?;
         validate_field_names(&fields)?;
+        let fields = persistence_fields(&fields);
         let target = parse_target(&request.target)?;
         let table_plan = if self.database_path.exists() {
             let conn = self.open_read_only_connection()?;
@@ -335,6 +349,8 @@ impl DuckDbDestination {
         validate_requested_segments(&request.commit.segments, &package)?;
         let plan = self.plan_loaded_package(Some(&conn), &request, &package)?;
         let segment_acks = segment_acks(&request.commit.segments, &package);
+        let persisted_fields = persistence_fields(&package.fields);
+        let persisted_rows = persistence_rows(&package, &request.commit.package_hash)?;
         let duckdb_version = duckdb_version(&conn).unwrap_or_else(|_| "unknown".to_owned());
         let committed_at_ms = now_ms()?;
         let table_plan = plan_table_from_commit_plan(&plan)?;
@@ -346,18 +362,22 @@ impl DuckDbDestination {
             apply_table_plan(&tx, &table_plan, request.commit.disposition.clone())?;
             let counts = match request.commit.disposition {
                 WriteDisposition::Append => {
-                    append_rows(&tx, &table_plan.target, &package.fields, &package.rows)?
+                    append_rows(&tx, &table_plan.target, &persisted_fields, &persisted_rows)?
                 }
                 WriteDisposition::Replace => {
-                    append_rows(&tx, &table_plan.target, &package.fields, &package.rows)?
+                    append_rows(&tx, &table_plan.target, &persisted_fields, &persisted_rows)?
                 }
                 WriteDisposition::Merge => {
-                    let key_indexes = merge_key_indexes(&package.fields, &request.merge_keys)?;
-                    let deduped = dedup_merge_rows(&package.rows, &key_indexes)?;
+                    let key_indexes = merge_key_indexes(&persisted_fields, &request.merge_keys)?;
+                    let deduped = dedup_merge_rows_with_width(
+                        &persisted_rows,
+                        &key_indexes,
+                        package.fields.len(),
+                    )?;
                     merge_rows(
                         &tx,
                         &table_plan.target,
-                        &package.fields,
+                        &persisted_fields,
                         &request.merge_keys,
                         &deduped,
                     )?
@@ -534,12 +554,12 @@ impl DuckDbDestination {
         read_mirror_snapshot(&conn)
     }
 
-    fn open_connection(&self) -> Result<Connection> {
+    pub(crate) fn open_connection(&self) -> Result<Connection> {
         Connection::open(&self.database_path)
             .map_err(|error| duckdb_error(format!("open {}", self.database_path.display()), error))
     }
 
-    fn open_read_only_connection(&self) -> Result<Connection> {
+    pub(crate) fn open_read_only_connection(&self) -> Result<Connection> {
         let config = Config::default()
             .access_mode(AccessMode::ReadOnly)
             .map_err(|error| duckdb_error("configure read-only DuckDB open", error))?;
@@ -555,7 +575,7 @@ impl DuckDbDestination {
         WriterLock::acquire(self.lock_path())
     }
 
-    fn lock_path(&self) -> PathBuf {
+    pub(crate) fn lock_path(&self) -> PathBuf {
         let file_name = self
             .database_path
             .file_name()
@@ -572,14 +592,10 @@ impl DuckDbDestination {
         package: &PackageData,
     ) -> Result<DuckDbCommitPlan> {
         let target = parse_target(&request.commit.target)?;
+        let fields = persistence_fields(&package.fields);
         let table_plan = match conn {
-            Some(conn) => plan_table(
-                conn,
-                target,
-                &package.fields,
-                request.commit.disposition.clone(),
-            )?,
-            None => plan_absent_table(target, &package.fields, request.commit.disposition.clone())?,
+            Some(conn) => plan_table(conn, target, &fields, request.commit.disposition.clone())?,
+            None => plan_absent_table(target, &fields, request.commit.disposition.clone())?,
         };
         let mut kernel = self.plan_commit(&request.commit)?;
         kernel.migrations = table_plan
@@ -744,6 +760,11 @@ impl DestinationProtocol for DuckDbDestination {
         &self.sheet
     }
 
+    fn protocol_capabilities(&self) -> cdf_kernel::DestinationProtocolCapabilities {
+        cdf_kernel::DestinationProtocolCapabilities::default()
+            .with_corrections(duckdb_correction_capabilities())
+    }
+
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
         if !self
             .sheet
@@ -787,6 +808,33 @@ impl DestinationProtocol for DuckDbDestination {
 
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
         self.verify_receipt(receipt)
+    }
+
+    fn plan_correction(
+        &self,
+        request: &DestinationCorrectionCommitRequest,
+    ) -> Result<DestinationCorrectionCommitPlan> {
+        plan_correction_request(self, request)
+    }
+
+    fn begin_correction(
+        &self,
+        request: DestinationCorrectionCommitRequest,
+        plan: DestinationCorrectionCommitPlan,
+    ) -> Result<Box<dyn CorrectionCommitSession + '_>> {
+        begin_correction_request(self, request, plan)
+    }
+
+    fn verify_correction(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        verify_correction_receipt(self, receipt)
+    }
+
+    fn read_correction_residual(
+        &self,
+        target: &TargetName,
+        original_row: &RowProvenanceAddress,
+    ) -> Result<Option<DestinationResidualReadback>> {
+        read_addressed_residual(self, target, original_row)
     }
 }
 

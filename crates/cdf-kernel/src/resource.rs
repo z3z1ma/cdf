@@ -643,6 +643,8 @@ pub struct EffectiveSchemaEvidence {
     pub baseline_snapshot: SchemaSnapshotReference,
     pub effective_snapshot_schema_hash: SchemaHash,
     pub discovery_manifest: DiscoveryManifestReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub discovery_coverage: Option<DiscoveryCoverageEvidence>,
     pub observations: Vec<EffectiveSchemaObservationEvidence>,
 }
 
@@ -659,6 +661,7 @@ impl EffectiveSchemaEvidence {
             baseline_snapshot,
             effective_snapshot_schema_hash,
             discovery_manifest,
+            discovery_coverage: None,
             observations,
         };
         evidence.validate_intrinsic()?;
@@ -669,12 +672,21 @@ impl EffectiveSchemaEvidence {
         &self.observations
     }
 
+    pub fn with_discovery_coverage(mut self, coverage: DiscoveryCoverageEvidence) -> Result<Self> {
+        coverage.validate()?;
+        self.discovery_coverage = Some(coverage);
+        Ok(self)
+    }
+
     pub fn validate_intrinsic(&self) -> Result<()> {
         if self.version != EFFECTIVE_SCHEMA_EVIDENCE_VERSION {
             return Err(CdfError::data(format!(
                 "effective schema evidence uses unsupported version {}; expected {}",
                 self.version, EFFECTIVE_SCHEMA_EVIDENCE_VERSION
             )));
+        }
+        if let Some(coverage) = &self.discovery_coverage {
+            coverage.validate()?;
         }
         let mut previous = None::<&str>;
         for observation in &self.observations {
@@ -708,6 +720,58 @@ impl EffectiveSchemaEvidence {
             .binary_search_by(|observation| observation.observation_id.as_str().cmp(identity))
             .ok()
             .map(|index| &self.observations[index])
+    }
+}
+
+#[non_exhaustive]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryCoverageEvidence {
+    pub version: u16,
+    pub coverage: String,
+    pub selector: String,
+    pub sample_files: u64,
+    pub matched_files: u64,
+    pub probed_files: u64,
+    pub unprobed_files: u64,
+}
+
+impl DiscoveryCoverageEvidence {
+    pub fn sampled(
+        selector: impl Into<String>,
+        sample_files: u64,
+        matched_files: u64,
+        probed_files: u64,
+    ) -> Result<Self> {
+        let unprobed_files = matched_files.checked_sub(probed_files).ok_or_else(|| {
+            CdfError::contract("sampled discovery coverage probed count exceeds matched count")
+        })?;
+        let evidence = Self {
+            version: 1,
+            coverage: "sampled".to_owned(),
+            selector: selector.into(),
+            sample_files,
+            matched_files,
+            probed_files,
+            unprobed_files,
+        };
+        evidence.validate()?;
+        Ok(evidence)
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != 1
+            || self.coverage != "sampled"
+            || self.selector.trim().is_empty()
+            || self.sample_files == 0
+            || self.probed_files != self.sample_files
+            || self.matched_files <= self.probed_files
+            || self.probed_files.checked_add(self.unprobed_files) != Some(self.matched_files)
+        {
+            return Err(CdfError::data(
+                "sampled discovery coverage evidence requires version 1, a selector, positive exact sample membership, and matched = probed + unprobed",
+            ));
+        }
+        Ok(())
     }
 }
 
