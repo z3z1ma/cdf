@@ -20,11 +20,11 @@ Arrow field metadata MUST carry these annotations where applicable: `cdf:semanti
 
 Decimals MUST remain Arrow decimal values and MUST NOT silently become floats. Zoned timestamp meaning MUST be preserved: UTC-normalized timestamps retain zone story in metadata when needed; naive timestamps MUST NOT be silently assumed UTC.
 
-Destination type mapping MUST be declared data in destination sheets. Lossy mappings require explicit contract allowance. Unsupported mappings fail plan time.
+Destination type mapping MUST be declared data in destination sheets. Lossy mappings require explicit contract allowance. Unsupported mappings fail plan time. Destination namespace rules MUST occupy typed positions: `identifier_rules` governs tabular columns, while object-store paths use the optional typed `ObjectKeyRules` capability defined by `.10x/decisions/parquet-column-and-object-key-identifier-rules.md`. One namespace rule MUST NOT be interpreted as another.
 
 ## Identifiers and nested data
 
-Source-original names MUST be preserved verbatim in schema metadata. Destination identifiers MUST be derived by versioned normalizer `namecase-v1`: Unicode NFC, lower snake case, destination charset filter, and deterministic truncation/hash suffix for over-length names or collisions. Post-normalization collisions are plan-time hard errors.
+Source-original names MUST be preserved verbatim in schema metadata. Destination column identifiers MUST be derived by versioned normalizer `namecase-v1`: Unicode NFC, lower snake case, destination charset filter, and deterministic truncation/hash suffix for over-length names or collisions. Post-normalization collisions are plan-time hard errors. Parquet columns use `namecase-v1` with no destination-specific length cap; its storage object keys remain governed separately by `object-key-component-v1`.
 
 Arrow `Struct`, `List`, and `Map` values are first-class. The normalization policy MUST support keep-nested, deterministic child-table expansion, and variant capture into `_cdf_variant` tagged as `json`. Promoting a variant to typed columns is a contract-evolution event.
 
