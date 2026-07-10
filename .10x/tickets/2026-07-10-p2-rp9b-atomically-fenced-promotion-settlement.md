@@ -31,6 +31,7 @@ No distributed 2PC, destination rollback after receipt, remote lease store, cros
 ## Progress and notes
 
 - 2026-07-10: Opened from the TOCTOU finding in `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-independent-review.md`. Destination settlement is intentionally allowed to complete after lease expiry; checkpoint/lock/publication authority is not.
+- 2026-07-10: Read-only substrate preflight completed in `.10x/research/2026-07-10-rp9b-atomic-settlement-preflight.md`. The smallest sound boundary is one aggregate `PromotionSettlementStore: CheckpointStore + ScopeLeaseStore` over a single consistency domain, with separately atomic fenced checkpoint-commit and publication-append operations; exact filesystem lock CAS remains between them. Existing SQLite tables suffice without a data-schema migration. RP9B remains open and dependent on RP9A.
 
 ## Blockers
 
