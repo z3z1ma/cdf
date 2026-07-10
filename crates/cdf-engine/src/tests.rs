@@ -15,9 +15,9 @@ use arrow_array::{
 };
 use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
-    ContractPolicy, DedupKeep, FieldCoercionDecision, NestedDataPolicy, ObservedSchema, RowRule,
-    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program,
-    reconcile_schema,
+    ContractPolicy, DedupKeep, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
+    RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, VARIANT_COLUMN_NAME,
+    VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program, reconcile_schema,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStats, BatchStream, CapabilitySupport,
@@ -853,6 +853,13 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
         cdf_kernel::semantic(variant_field),
         Some(VARIANT_SEMANTIC_TAG)
     );
+    assert_eq!(
+        variant_field
+            .metadata()
+            .get(RESIDUAL_ENCODING_METADATA_KEY)
+            .map(String::as_str),
+        Some(RESIDUAL_ENCODING_NAME)
+    );
     let variants = batch
         .column_by_name(VARIANT_COLUMN_NAME)
         .unwrap()
@@ -861,7 +868,34 @@ fn variant_capture_materializes_nested_values_and_contract_evolution_evidence() 
         .unwrap();
     assert_eq!(
         variants.value(0),
-        r#"{"attributes":[{"key":"tier","value":1}],"payload":{"count":7,"kind":"alpha"},"tags":[1,2]}"#
+        r#"{"v":1,"fields":{"/attributes":{"arrow_type":{"kind":"map","field":{"name":"entries","data_type":{"kind":"struct","fields":[{"name":"keys","data_type":{"kind":"utf8","offset_width":32},"nullable":false,"metadata":{}},{"name":"values","data_type":{"kind":"int","signed":true,"bits":32},"nullable":true,"metadata":{}}]},"nullable":false,"metadata":{}},"sorted":false},"encoding":"nested","value":[{"key":"tier","value":"1"}]},"/payload":{"arrow_type":{"kind":"struct","fields":[{"name":"kind","data_type":{"kind":"utf8","offset_width":32},"nullable":false,"metadata":{}},{"name":"count","data_type":{"kind":"int","signed":true,"bits":32},"nullable":false,"metadata":{}}]},"encoding":"nested","value":{"count":"7","kind":"alpha"}},"/tags":{"arrow_type":{"kind":"list","field":{"name":"item","data_type":{"kind":"int","signed":true,"bits":32},"nullable":true,"metadata":{}},"offset_width":32,"view":false},"encoding":"nested","value":["1","2"]}}}"#
+    );
+    let decoded = cdf_contract::decode_residual_json_v1(variants.value(0).as_bytes()).unwrap();
+    assert_eq!(
+        decoded
+            .iter()
+            .map(|field| field.path.as_str())
+            .collect::<Vec<_>>(),
+        vec!["/attributes", "/payload", "/tags"]
+    );
+    let source_schema = resource.schema();
+    assert_eq!(
+        decoded[0].array.data_type(),
+        source_schema
+            .field_with_name("attributes")
+            .unwrap()
+            .data_type()
+    );
+    assert_eq!(
+        decoded[1].array.data_type(),
+        source_schema
+            .field_with_name("payload")
+            .unwrap()
+            .data_type()
+    );
+    assert_eq!(
+        decoded[2].array.data_type(),
+        source_schema.field_with_name("tags").unwrap().data_type()
     );
 
     let output_schema: serde_json::Value =

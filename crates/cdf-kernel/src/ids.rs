@@ -44,6 +44,7 @@ macro_rules! string_id {
 string_id!(BatchId);
 string_id!(CheckpointId);
 string_id!(ContractRef);
+string_id!(DiscoveryManifestHash);
 string_id!(DestinationId);
 string_id!(IdempotencyToken);
 string_id!(PackageHash);

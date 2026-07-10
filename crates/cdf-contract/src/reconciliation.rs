@@ -594,7 +594,7 @@ fn reconcile_type(
     if observed == constraint {
         return TypeReconciliation::Preserved;
     }
-    if is_lossless_widening(observed, constraint) {
+    if is_lossless_type_widening(observed, constraint) {
         return TypeReconciliation::Widened;
     }
     if is_parse_coercion(observed, constraint) {
@@ -618,7 +618,7 @@ fn reconcile_type(
     TypeReconciliation::Unsupported
 }
 
-fn is_lossless_widening(observed: &DataType, constraint: &DataType) -> bool {
+pub fn is_lossless_type_widening(observed: &DataType, constraint: &DataType) -> bool {
     if let (Some(observed_bits), Some(constraint_bits)) = (
         signed_integer_bits(observed),
         signed_integer_bits(constraint),

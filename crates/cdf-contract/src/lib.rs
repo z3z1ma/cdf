@@ -1,5 +1,6 @@
 #![doc = "Schema contract compilation boundary for cdf."]
 
+mod aggregation;
 mod compiler;
 mod evaluator;
 mod lattice;
@@ -7,9 +8,11 @@ mod normalization;
 mod policy;
 mod program;
 mod reconciliation;
+mod residual;
 mod schema;
 mod transforms;
 
+pub use aggregation::*;
 pub use compiler::*;
 pub use evaluator::*;
 pub use lattice::*;
@@ -17,6 +20,7 @@ pub use normalization::*;
 pub use policy::*;
 pub use program::*;
 pub use reconciliation::*;
+pub use residual::*;
 pub use schema::*;
 
 #[cfg(test)]

@@ -1,15 +1,13 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
-use arrow_array::{
-    Array, ArrayRef, BooleanArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array,
-    Int64Array, LargeListArray, LargeStringArray, ListArray, MapArray, RecordBatch, StringArray,
-    StringViewArray, StructArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
-};
+use arrow_array::{ArrayRef, RecordBatch, StringArray};
 use arrow_schema::{DataType, Field, Schema};
-use cdf_contract::{ColumnProgram, NestedAction, ValidationProgram};
+use cdf_contract::{
+    ColumnProgram, NestedAction, RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME,
+    ResidualFieldRef, ValidationProgram, encode_residual_json_v1,
+};
 use cdf_kernel::{CdfError, Result, source_name, with_semantic, with_source_name};
 use serde::{Deserialize, Serialize};
-use serde_json::{Number, Value};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ContractEvolutionArtifact {
@@ -80,10 +78,13 @@ pub(crate) fn normalize_batch(
                 "variant capture column {column_name:?} conflicts with normalized output schema"
             )));
         }
-        fields.push(with_semantic(
-            Field::new(column_name, DataType::Utf8, true),
-            semantic,
-        ));
+        let variant_field = with_semantic(Field::new(column_name, DataType::Utf8, true), semantic);
+        let mut metadata = variant_field.metadata().clone();
+        metadata.insert(
+            RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+            RESIDUAL_ENCODING_NAME.to_owned(),
+        );
+        fields.push(variant_field.with_metadata(metadata));
         columns.push(materialize_variant_column(
             batch.num_rows(),
             &variant_fields,
@@ -127,14 +128,14 @@ fn materialize_variant_column(
 ) -> Result<ArrayRef> {
     let mut values = Vec::with_capacity(row_count);
     for row in 0..row_count {
-        let mut captured = BTreeMap::new();
-        for field in fields {
-            captured.insert(
-                field.source_name.clone(),
-                arrow_value_to_json(field.array.as_ref(), row)?,
-            );
-        }
-        let bytes = cdf_package::canonical_json_bytes(&captured)?;
+        let captured = fields
+            .iter()
+            .map(|field| {
+                ResidualFieldRef::new([field.source_name.as_str()], field.array.as_ref(), row)
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(residual_codec_error)?;
+        let bytes = encode_residual_json_v1(captured).map_err(residual_codec_error)?;
         let value =
             String::from_utf8(bytes).map_err(|error| CdfError::internal(error.to_string()))?;
         values.push(value);
@@ -142,170 +143,8 @@ fn materialize_variant_column(
     Ok(Arc::new(StringArray::from(values)) as ArrayRef)
 }
 
-fn arrow_value_to_json(array: &dyn Array, row: usize) -> Result<Value> {
-    if array.is_null(row) {
-        return Ok(Value::Null);
-    }
-
-    match array.data_type() {
-        DataType::Boolean => Ok(Value::Bool(
-            downcast_array::<BooleanArray>(array, "Boolean")?.value(row),
-        )),
-        DataType::Int8
-        | DataType::Int16
-        | DataType::Int32
-        | DataType::Int64
-        | DataType::UInt8
-        | DataType::UInt16
-        | DataType::UInt32
-        | DataType::UInt64 => integer_value_to_json(array, row),
-        DataType::Float32 | DataType::Float64 => float_value_to_json(array, row),
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View => {
-            string_value_to_json(array, row)
-        }
-        DataType::Struct(_) => {
-            struct_value_to_json(downcast_array::<StructArray>(array, "Struct")?, row)
-        }
-        DataType::List(_) => list_value_to_json(
-            downcast_array::<ListArray>(array, "List")?
-                .value(row)
-                .as_ref(),
-        ),
-        DataType::LargeList(_) => list_value_to_json(
-            downcast_array::<LargeListArray>(array, "LargeList")?
-                .value(row)
-                .as_ref(),
-        ),
-        DataType::Map(_, _) => map_value_to_json(downcast_array::<MapArray>(array, "Map")?, row),
-        other => Err(CdfError::contract(format!(
-            "variant capture does not support Arrow type {other}"
-        ))),
-    }
-}
-
-fn integer_value_to_json(array: &dyn Array, row: usize) -> Result<Value> {
-    match array.data_type() {
-        DataType::Int8 => {
-            Ok(Number::from(downcast_array::<Int8Array>(array, "Int8")?.value(row)).into())
-        }
-        DataType::Int16 => {
-            Ok(Number::from(downcast_array::<Int16Array>(array, "Int16")?.value(row)).into())
-        }
-        DataType::Int32 => {
-            Ok(Number::from(downcast_array::<Int32Array>(array, "Int32")?.value(row)).into())
-        }
-        DataType::Int64 => {
-            Ok(Number::from(downcast_array::<Int64Array>(array, "Int64")?.value(row)).into())
-        }
-        DataType::UInt8 => {
-            Ok(Number::from(downcast_array::<UInt8Array>(array, "UInt8")?.value(row)).into())
-        }
-        DataType::UInt16 => {
-            Ok(Number::from(downcast_array::<UInt16Array>(array, "UInt16")?.value(row)).into())
-        }
-        DataType::UInt32 => {
-            Ok(Number::from(downcast_array::<UInt32Array>(array, "UInt32")?.value(row)).into())
-        }
-        DataType::UInt64 => {
-            Ok(Number::from(downcast_array::<UInt64Array>(array, "UInt64")?.value(row)).into())
-        }
-        other => Err(CdfError::internal(format!(
-            "Arrow type {other} was routed to integer variant capture"
-        ))),
-    }
-}
-
-fn float_value_to_json(array: &dyn Array, row: usize) -> Result<Value> {
-    match array.data_type() {
-        DataType::Float32 => finite_json_number(
-            downcast_array::<Float32Array>(array, "Float32")?
-                .value(row)
-                .into(),
-        ),
-        DataType::Float64 => {
-            finite_json_number(downcast_array::<Float64Array>(array, "Float64")?.value(row))
-        }
-        other => Err(CdfError::internal(format!(
-            "Arrow type {other} was routed to float variant capture"
-        ))),
-    }
-}
-
-fn string_value_to_json(array: &dyn Array, row: usize) -> Result<Value> {
-    match array.data_type() {
-        DataType::Utf8 => Ok(Value::String(
-            downcast_array::<StringArray>(array, "Utf8")?
-                .value(row)
-                .to_owned(),
-        )),
-        DataType::LargeUtf8 => Ok(Value::String(
-            downcast_array::<LargeStringArray>(array, "LargeUtf8")?
-                .value(row)
-                .to_owned(),
-        )),
-        DataType::Utf8View => Ok(Value::String(
-            downcast_array::<StringViewArray>(array, "Utf8View")?
-                .value(row)
-                .to_owned(),
-        )),
-        other => Err(CdfError::internal(format!(
-            "Arrow type {other} was routed to string variant capture"
-        ))),
-    }
-}
-
-fn downcast_array<'a, T: 'static>(array: &'a dyn Array, expected: &str) -> Result<&'a T> {
-    array.as_any().downcast_ref::<T>().ok_or_else(|| {
-        CdfError::internal(format!(
-            "Arrow array declared as {expected} could not be downcast for variant capture"
-        ))
-    })
-}
-
-fn finite_json_number(value: f64) -> Result<Value> {
-    Number::from_f64(value)
-        .map(Value::Number)
-        .ok_or_else(|| CdfError::contract("variant capture cannot encode non-finite float values"))
-}
-
-fn struct_value_to_json(array: &StructArray, row: usize) -> Result<Value> {
-    let mut fields = BTreeMap::new();
-    for (field, column) in array.fields().iter().zip(array.columns()) {
-        fields.insert(
-            field.name().clone(),
-            arrow_value_to_json(column.as_ref(), row)?,
-        );
-    }
-    serde_json::to_value(fields).map_err(|error| CdfError::data(error.to_string()))
-}
-
-fn list_value_to_json(array: &dyn Array) -> Result<Value> {
-    let mut values = Vec::with_capacity(array.len());
-    for row in 0..array.len() {
-        values.push(arrow_value_to_json(array, row)?);
-    }
-    Ok(Value::Array(values))
-}
-
-fn map_value_to_json(array: &MapArray, row: usize) -> Result<Value> {
-    let entries = array.value(row);
-    let mut values = Vec::with_capacity(entries.len());
-    let key_column = entries.column(0);
-    let value_column = entries.column(1);
-    for entry_row in 0..entries.len() {
-        let mut entry = BTreeMap::new();
-        entry.insert(
-            "key".to_owned(),
-            arrow_value_to_json(key_column.as_ref(), entry_row)?,
-        );
-        entry.insert(
-            "value".to_owned(),
-            arrow_value_to_json(value_column.as_ref(), entry_row)?,
-        );
-        values
-            .push(serde_json::to_value(entry).map_err(|error| CdfError::data(error.to_string()))?);
-    }
-    Ok(Value::Array(values))
+fn residual_codec_error(error: cdf_contract::ResidualCodecError) -> CdfError {
+    CdfError::data(format!("{}: {error}", error.code()))
 }
 
 pub(crate) fn contract_evolution_artifact(

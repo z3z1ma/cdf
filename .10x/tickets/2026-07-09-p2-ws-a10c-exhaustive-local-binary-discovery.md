@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
-Depends-On: .10x/tickets/2026-07-09-p2-ws-a10a-discovery-manifest-artifact-budget.md, .10x/tickets/2026-07-09-p2-ws-a10b-aggregate-schema-join-core.md, .10x/tickets/done/2026-07-09-p2-ws-a9-local-arrow-ipc-discover-run.md, .10x/tickets/done/2026-07-09-p2-ws-d5-binary-format-autodetection.md
+Depends-On: .10x/tickets/done/2026-07-09-p2-ws-a10a-discovery-manifest-artifact-budget.md, .10x/tickets/done/2026-07-09-p2-ws-a10b-aggregate-schema-join-core.md, .10x/tickets/done/2026-07-09-p2-ws-a9-local-arrow-ipc-discover-run.md, .10x/tickets/done/2026-07-09-p2-ws-d5-binary-format-autodetection.md
 
 # P2 WS-A10c exhaustive local binary discovery and pin lifecycle
 
@@ -36,4 +36,4 @@ No mixed-schema package execution, nullable array materialization, effective-sch
 
 ## Blockers
 
-Depends on A10a and A10b.
+None. A10a and A10b are complete.

@@ -7,11 +7,15 @@ use std::{
 use arrow_schema::{
     DataType, Field, Fields, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode,
 };
-use cdf_kernel::{CdfError, ResourceId, Result, SchemaHash, SchemaSnapshotReference};
+use cdf_kernel::{
+    CdfError, DiscoveryManifestReference, ResourceId, Result, SchemaHash, SchemaSnapshotReference,
+    discovery_manifest_from_metadata, insert_discovery_manifest_metadata,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION: u16 = 1;
+pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST: u16 = 2;
 pub const SCHEMA_SNAPSHOT_DIR: &str = ".cdf/schemas";
 pub const SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER: &str = "parquet-footer";
 pub const SCHEMA_DISCOVERY_FORMAT_PARQUET: &str = "parquet";
@@ -42,6 +46,15 @@ pub struct SchemaSnapshotHashInput {
     pub resource_id: String,
     pub schema: SchemaSnapshotSchema,
     pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaSnapshotHashInputWithManifest {
+    pub version: u16,
+    pub resource_id: String,
+    pub schema: SchemaSnapshotSchema,
+    pub metadata: BTreeMap<String, String>,
+    pub discovery_manifest: DiscoveryManifestReference,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -635,6 +648,35 @@ impl SchemaSnapshotArtifact {
         })
     }
 
+    pub fn new_with_discovery_manifest(
+        resource_id: &ResourceId,
+        schema: &Schema,
+        mut metadata: BTreeMap<String, String>,
+        discovery_manifest: DiscoveryManifestReference,
+    ) -> Result<Self> {
+        insert_discovery_manifest_metadata(&mut metadata, &discovery_manifest)?;
+        let schema = SchemaSnapshotSchema::from_arrow(schema);
+        let hash_input = SchemaSnapshotHashInputWithManifest {
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST,
+            resource_id: resource_id.as_str().to_owned(),
+            schema: schema.clone(),
+            metadata: metadata.clone(),
+            discovery_manifest: discovery_manifest.clone(),
+        };
+        let hash_input = canonical_json_value(&hash_input)?;
+        let schema_hash = schema_hash_for_canonical_value(&hash_input)?;
+        let path = schema_snapshot_relative_path(resource_id, &schema_hash)?;
+        Ok(Self {
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST,
+            resource_id: resource_id.as_str().to_owned(),
+            schema_hash,
+            path,
+            schema,
+            metadata,
+            hash_input,
+        })
+    }
+
     pub fn reference(&self) -> SchemaSnapshotReference {
         SchemaSnapshotReference {
             schema_hash: self.schema_hash.clone(),
@@ -643,14 +685,46 @@ impl SchemaSnapshotArtifact {
         }
     }
 
+    pub fn discovery_manifest_reference(&self) -> Result<Option<DiscoveryManifestReference>> {
+        discovery_manifest_from_metadata(&self.metadata)
+    }
+
     pub fn validate_hash_input(&self) -> Result<()> {
-        let expected_input = SchemaSnapshotHashInput {
-            version: self.version,
-            resource_id: self.resource_id.clone(),
-            schema: self.schema.clone(),
-            metadata: self.metadata.clone(),
+        let discovery_manifest = self.discovery_manifest_reference()?;
+        let expected_input = match (self.version, discovery_manifest.as_ref()) {
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, None) => {
+                canonical_json_value(&SchemaSnapshotHashInput {
+                    version: self.version,
+                    resource_id: self.resource_id.clone(),
+                    schema: self.schema.clone(),
+                    metadata: self.metadata.clone(),
+                })?
+            }
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, Some(discovery_manifest)) => {
+                canonical_json_value(&SchemaSnapshotHashInputWithManifest {
+                    version: self.version,
+                    resource_id: self.resource_id.clone(),
+                    schema: self.schema.clone(),
+                    metadata: self.metadata.clone(),
+                    discovery_manifest: discovery_manifest.clone(),
+                })?
+            }
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, Some(_)) => {
+                return Err(CdfError::data(
+                    "schema snapshot artifact version 1 cannot reference a discovery manifest",
+                ));
+            }
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, None) => {
+                return Err(CdfError::data(
+                    "schema snapshot artifact version 2 requires a discovery manifest reference",
+                ));
+            }
+            (version, _) => {
+                return Err(CdfError::data(format!(
+                    "schema snapshot uses unsupported artifact version {version}; expected 1 or 2"
+                )));
+            }
         };
-        let expected_input = canonical_json_value(&expected_input)?;
         if self.hash_input != expected_input {
             return Err(CdfError::data(
                 "schema snapshot hash_input does not match artifact schema and metadata",
@@ -717,6 +791,7 @@ impl SchemaSnapshotStore {
 
     pub fn write(&self, artifact: &SchemaSnapshotArtifact) -> Result<PathBuf> {
         artifact.validate_hash_input()?;
+        self.validate_discovery_manifest(artifact)?;
         let path = self.project_root.join(&artifact.path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)
@@ -729,6 +804,7 @@ impl SchemaSnapshotStore {
 
     pub fn write_if_changed(&self, artifact: &SchemaSnapshotArtifact) -> Result<bool> {
         artifact.validate_hash_input()?;
+        self.validate_discovery_manifest(artifact)?;
         let path = self.project_root.join(&artifact.path);
         let encoded = canonical_json_bytes(artifact)?;
         if fs::read(&path).ok().as_deref() == Some(encoded.as_slice()) {
@@ -749,12 +825,14 @@ impl SchemaSnapshotStore {
             .map_err(|error| CdfError::data(format!("read {}: {error}", path.display())))?;
         let artifact = serde_json::from_slice::<SchemaSnapshotArtifact>(&bytes)
             .map_err(|error| CdfError::data(format!("parse {}: {error}", path.display())))?;
-        if artifact.version != SCHEMA_SNAPSHOT_ARTIFACT_VERSION {
+        if !matches!(
+            artifact.version,
+            SCHEMA_SNAPSHOT_ARTIFACT_VERSION | SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST
+        ) {
             return Err(CdfError::data(format!(
-                "schema snapshot {} uses unsupported artifact version {}; expected {}",
+                "schema snapshot {} uses unsupported artifact version {}; expected 1 or 2",
                 path.display(),
-                artifact.version,
-                SCHEMA_SNAPSHOT_ARTIFACT_VERSION
+                artifact.version
             )));
         }
         artifact.validate_hash_input()?;
@@ -772,7 +850,31 @@ impl SchemaSnapshotStore {
                 path.display()
             )));
         }
+        if let Some(manifest) = reference.discovery_manifest()? {
+            let manifest_artifact =
+                crate::DiscoveryManifestStore::new(&self.project_root).read(&manifest)?;
+            if manifest_artifact.resource_id != artifact.resource_id {
+                return Err(CdfError::data(format!(
+                    "discovery manifest {} belongs to resource {} but schema snapshot belongs to {}",
+                    manifest.path, manifest_artifact.resource_id, artifact.resource_id
+                )));
+            }
+        }
         Ok(artifact)
+    }
+
+    fn validate_discovery_manifest(&self, artifact: &SchemaSnapshotArtifact) -> Result<()> {
+        let Some(reference) = artifact.discovery_manifest_reference()? else {
+            return Ok(());
+        };
+        let manifest = crate::DiscoveryManifestStore::new(&self.project_root).read(&reference)?;
+        if manifest.resource_id != artifact.resource_id {
+            return Err(CdfError::data(format!(
+                "discovery manifest {} belongs to resource {} but schema snapshot belongs to {}",
+                reference.path, manifest.resource_id, artifact.resource_id
+            )));
+        }
+        Ok(())
     }
 }
 

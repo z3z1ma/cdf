@@ -8,10 +8,17 @@ description = "Schema contract compilation boundary for cdf."
 
 [dependencies]
 arrow-array = "59.1.0"
+arrow-buffer = "59.1.0"
 arrow-schema = "59.1.0"
+arrow-select = "59.1.0"
+base64 = "0.22.1"
 cdf-kernel = { path = "../cdf-kernel" }
+half = "2.7.1"
 regex = "1.12.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"
 unicode-normalization = "0.1.24"
+
+[dev-dependencies]
+proptest = "1.11.0"

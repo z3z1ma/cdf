@@ -521,6 +521,25 @@ fn schema_source_modes_serde_round_trip() {
         path: ".cdf/schemas/orders@sha256:snapshot.json".to_owned(),
         metadata: BTreeMap::from([("probe".to_owned(), "parquet-footer".to_owned())]),
     };
+    assert!(snapshot.discovery_manifest().unwrap().is_none());
+    let manifest = DiscoveryManifestReference {
+        manifest_hash: DiscoveryManifestHash::new("sha256:manifest").unwrap(),
+        path: ".cdf/schemas/orders@sha256:manifest.discovery.json".to_owned(),
+    };
+    let linked = snapshot.clone().with_discovery_manifest(&manifest).unwrap();
+    assert_eq!(linked.discovery_manifest().unwrap(), Some(manifest));
+    assert!(
+        serde_json::to_value(&linked)
+            .unwrap()
+            .get("discovery_manifest")
+            .is_none()
+    );
+    let mut partial = snapshot.clone();
+    partial.metadata.insert(
+        DISCOVERY_MANIFEST_HASH_METADATA_KEY.to_owned(),
+        "sha256:partial".to_owned(),
+    );
+    assert!(partial.discovery_manifest().is_err());
     let sources = vec![
         SchemaSource::Declared {
             schema_hash: SchemaHash::new("sha256:declared").unwrap(),

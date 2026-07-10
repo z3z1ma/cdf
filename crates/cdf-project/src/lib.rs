@@ -24,6 +24,7 @@ pub const LOCK_FILE_NAME: &str = "cdf.lock";
 pub const LOCKFILE_VERSION: u16 = 1;
 
 mod backfill;
+mod discovery_manifest;
 mod internal;
 mod lockfile;
 mod models;
@@ -39,6 +40,7 @@ mod sources;
 mod tests;
 
 pub use backfill::*;
+pub use discovery_manifest::*;
 pub use lockfile::*;
 pub use models::*;
 pub use runtime::*;

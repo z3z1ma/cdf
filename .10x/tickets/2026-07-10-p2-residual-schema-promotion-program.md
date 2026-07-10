@@ -48,6 +48,7 @@ No implicit promotion, arbitrary user UPDATE SQL, indefinite retention, inferred
 ## Progress and notes
 
 - 2026-07-10: Opened after the user confirmed the exact selector, residual envelope/safety, and promotion lease/correction/retention contracts. Source audit confirmed Postgres already persists `_cdf_load`, `_cdf_segment`, and `_cdf_row`; the program generalizes that existing provenance rather than inventing a parallel row-id system.
+- 2026-07-10: RP1 closed with integrated evidence and review. The exact residual codec is available; RP2 still waits for A10d while RP3/RP4 remain independently executable.
 
 ## Blockers
 

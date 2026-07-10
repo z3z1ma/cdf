@@ -55,6 +55,69 @@ pub struct SchemaSnapshotReference {
     pub metadata: BTreeMap<String, String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryManifestReference {
+    pub manifest_hash: crate::DiscoveryManifestHash,
+    pub path: String,
+}
+
+pub const DISCOVERY_MANIFEST_HASH_METADATA_KEY: &str = "cdf:discovery_manifest_hash";
+pub const DISCOVERY_MANIFEST_PATH_METADATA_KEY: &str = "cdf:discovery_manifest_path";
+
+impl SchemaSnapshotReference {
+    pub fn discovery_manifest(&self) -> Result<Option<DiscoveryManifestReference>> {
+        discovery_manifest_from_metadata(&self.metadata)
+    }
+
+    pub fn with_discovery_manifest(
+        mut self,
+        manifest: &DiscoveryManifestReference,
+    ) -> Result<Self> {
+        insert_discovery_manifest_metadata(&mut self.metadata, manifest)?;
+        Ok(self)
+    }
+}
+
+pub fn discovery_manifest_from_metadata(
+    metadata: &BTreeMap<String, String>,
+) -> Result<Option<DiscoveryManifestReference>> {
+    match (
+        metadata.get(DISCOVERY_MANIFEST_HASH_METADATA_KEY),
+        metadata.get(DISCOVERY_MANIFEST_PATH_METADATA_KEY),
+    ) {
+        (None, None) => Ok(None),
+        (Some(hash), Some(path)) => Ok(Some(DiscoveryManifestReference {
+            manifest_hash: crate::DiscoveryManifestHash::new(hash.clone())?,
+            path: path.clone(),
+        })),
+        _ => Err(crate::CdfError::contract(format!(
+            "schema snapshot discovery manifest metadata requires both `{DISCOVERY_MANIFEST_HASH_METADATA_KEY}` and `{DISCOVERY_MANIFEST_PATH_METADATA_KEY}`"
+        ))),
+    }
+}
+
+pub fn insert_discovery_manifest_metadata(
+    metadata: &mut BTreeMap<String, String>,
+    manifest: &DiscoveryManifestReference,
+) -> Result<()> {
+    if metadata.contains_key(DISCOVERY_MANIFEST_HASH_METADATA_KEY)
+        || metadata.contains_key(DISCOVERY_MANIFEST_PATH_METADATA_KEY)
+    {
+        return Err(crate::CdfError::contract(
+            "schema snapshot metadata already contains a discovery manifest reference",
+        ));
+    }
+    metadata.insert(
+        DISCOVERY_MANIFEST_HASH_METADATA_KEY.to_owned(),
+        manifest.manifest_hash.to_string(),
+    );
+    metadata.insert(
+        DISCOVERY_MANIFEST_PATH_METADATA_KEY.to_owned(),
+        manifest.path.clone(),
+    );
+    Ok(())
+}
+
 impl SchemaSource {
     pub fn pinned_snapshot(&self) -> Option<&SchemaSnapshotReference> {
         match self {

@@ -20,9 +20,10 @@ use cdf_http::{
 };
 use cdf_kernel::{
     CapabilitySupport, CdfError, CheckpointId, ConcurrencyLimit, DestinationId, DestinationSheet,
-    IdempotencySupport, IdentifierRules, PipelineId, QueryableResource, ResourceId, ResourceStream,
-    RunId, ScanRequest, SchemaSource, SourcePosition, TargetName, TransactionSupport, TypeMapping,
-    TypeMappingFidelity, WriteDisposition, source_name,
+    DiscoveryManifestHash, DiscoveryManifestReference, IdempotencySupport, IdentifierRules,
+    PipelineId, QueryableResource, ResourceId, ResourceStream, RunId, ScanRequest, SchemaHash,
+    SchemaSource, SourcePosition, TargetName, TransactionSupport, TypeMapping, TypeMappingFidelity,
+    WriteDisposition, source_name,
 };
 
 const BOOK_PROJECT: &str = r#"
@@ -372,6 +373,334 @@ fn schema_snapshot_artifact_uses_deterministic_hash_and_project_path() {
     escaped.path = "../outside.json".to_owned();
     let error = store.read(&escaped).unwrap_err().to_string();
     assert!(error.contains("schema snapshot reference path"));
+}
+
+#[test]
+fn discovery_executor_budget_defaults_and_rejects_invalid_shapes() {
+    let budget = DiscoveryExecutorBudget::default();
+    assert_eq!(budget.max_metadata_bytes_per_file(), 64 * 1024 * 1024);
+    assert_eq!(budget.max_total_in_flight_bytes(), 128 * 1024 * 1024);
+    assert_eq!(budget.max_concurrent_probes(), 8);
+
+    for (per_file, total, probes, expected) in [
+        (0, 1, 1, "max_metadata_bytes_per_file"),
+        (1, 0, 1, "max_total_in_flight_bytes"),
+        (1, 1, 0, "max_concurrent_probes"),
+        (2, 1, 1, "cannot exceed"),
+        (u64::MAX / 2 + 1, u64::MAX, 2, "overflows"),
+    ] {
+        let error = DiscoveryExecutorBudget::new(per_file, total, probes)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+
+    let invalid_json = r#"{
+        "max_metadata_bytes_per_file": 0,
+        "max_total_in_flight_bytes": 1,
+        "max_concurrent_probes": 1
+    }"#;
+    assert!(serde_json::from_str::<DiscoveryExecutorBudget>(invalid_json).is_err());
+}
+
+#[test]
+fn discovery_manifest_is_canonical_content_addressed_and_fail_closed() {
+    let resource_id = ResourceId::new("events.raw").unwrap();
+    let first = probed_discovery_candidate("file:///data/a.parquet", "sha256:a", 48);
+    let mut second = probed_discovery_candidate("file:///data/b.parquet", "sha256:b", 64);
+    second.metadata_variance = vec![DiscoveryMetadataVariance {
+        scope: DiscoveryMetadataScope::Field,
+        path: "amount".to_owned(),
+        key: "source.logical_type".to_owned(),
+        observed_values: vec!["utf8".to_owned(), "decimal".to_owned(), "utf8".to_owned()],
+    }];
+    let input = DiscoveryManifestInput {
+        resource_id: resource_id.as_str().to_owned(),
+        baseline_schema_hash: Some(SchemaHash::new("sha256:baseline").unwrap()),
+        effective_schema_hash: Some(SchemaHash::new("sha256:effective").unwrap()),
+        coverage: DiscoveryCoverageMode::Exhaustive,
+        selector: None,
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![second, first],
+    };
+    let artifact = DiscoveryManifestArtifact::new(input.clone()).unwrap();
+    let repeated = DiscoveryManifestArtifact::new(input).unwrap();
+
+    assert_eq!(artifact, repeated);
+    assert_eq!(
+        artifact
+            .candidates
+            .iter()
+            .map(|candidate| candidate.canonical_location.as_str())
+            .collect::<Vec<_>>(),
+        vec!["file:///data/a.parquet", "file:///data/b.parquet"]
+    );
+    assert_eq!(
+        artifact.candidates[1].metadata_variance[0].observed_values,
+        vec!["decimal", "utf8"]
+    );
+    assert_eq!(artifact.hash_input["coverage"], "exhaustive");
+    assert_eq!(
+        artifact.path,
+        format!(
+            ".cdf/schemas/events.raw@{}.discovery.json",
+            artifact.manifest_hash
+        )
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let store = DiscoveryManifestStore::new(temp.path());
+    assert!(store.write_if_changed(&artifact).unwrap());
+    assert!(!store.write_if_changed(&artifact).unwrap());
+    assert_eq!(store.read(&artifact.reference()).unwrap(), artifact);
+    let schema_dir_entries = std::fs::read_dir(temp.path().join(".cdf/schemas"))
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert!(
+        schema_dir_entries
+            .iter()
+            .all(|name| !name.ends_with(".tmp"))
+    );
+
+    let mut unsafe_reference = artifact.reference();
+    unsafe_reference.path = "../manifest.json".to_owned();
+    assert!(
+        store
+            .read(&unsafe_reference)
+            .unwrap_err()
+            .to_string()
+            .contains("reference path")
+    );
+
+    let missing = DiscoveryManifestReference {
+        manifest_hash: DiscoveryManifestHash::new("sha256:missing").unwrap(),
+        path: ".cdf/schemas/events.raw@sha256:missing.discovery.json".to_owned(),
+    };
+    assert!(
+        store
+            .read(&missing)
+            .unwrap_err()
+            .to_string()
+            .contains("read")
+    );
+
+    let wrong_hash = DiscoveryManifestReference {
+        manifest_hash: DiscoveryManifestHash::new("sha256:wrong").unwrap(),
+        path: artifact.path.clone(),
+    };
+    assert!(
+        store
+            .read(&wrong_hash)
+            .unwrap_err()
+            .to_string()
+            .contains("does not match its hash/path reference")
+    );
+
+    let path = temp.path().join(&artifact.path);
+    let mut tampered = artifact.clone();
+    tampered.policy_version = "freeze-v1".to_owned();
+    std::fs::write(&path, serde_json::to_vec_pretty(&tampered).unwrap()).unwrap();
+    assert!(
+        store
+            .read(&artifact.reference())
+            .unwrap_err()
+            .to_string()
+            .contains("hash_input")
+    );
+}
+
+#[test]
+fn sampled_discovery_manifest_enforces_truthful_participation() {
+    let first = probed_discovery_candidate("file:///data/00.parquet", "sha256:00", 32);
+    let middle = unprobed_discovery_candidate("file:///data/01.parquet", "etag:01");
+    let last = probed_discovery_candidate("file:///data/02.parquet", "sha256:02", 40);
+    let selector = DiscoverySelectorEvidence {
+        selector: "stratified-hash-v1".to_owned(),
+        sample_files: 2,
+        matched_count: 3,
+        selected: vec![
+            DiscoverySelectorSelection {
+                canonical_location: first.canonical_location.clone(),
+                score_sha256: "0".repeat(64),
+                candidate_identity: first.identity.clone(),
+            },
+            DiscoverySelectorSelection {
+                canonical_location: last.canonical_location.clone(),
+                score_sha256: "f".repeat(64),
+                candidate_identity: last.identity.clone(),
+            },
+        ],
+        interior_strata: Vec::new(),
+    };
+    let input = DiscoveryManifestInput {
+        resource_id: "events.sampled".to_owned(),
+        baseline_schema_hash: None,
+        effective_schema_hash: Some(SchemaHash::new("sha256:sampled").unwrap()),
+        coverage: DiscoveryCoverageMode::Sampled,
+        selector: Some(selector),
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![last, middle.clone(), first],
+    };
+    let artifact = DiscoveryManifestArtifact::new(input.clone()).unwrap();
+    assert_eq!(artifact.coverage, DiscoveryCoverageMode::Sampled);
+    assert_eq!(
+        artifact.candidates[1].participation,
+        DiscoveryParticipation::Unprobed
+    );
+    assert!(artifact.candidates[1].physical_schema_hash.is_none());
+    assert!(artifact.candidates[1].probe_bytes.is_none());
+    assert!(artifact.candidates[1].schema_verdict.is_none());
+
+    let mut false_unprobed = input;
+    false_unprobed.candidates[1].physical_schema_hash =
+        Some(SchemaHash::new("sha256:invented").unwrap());
+    let error = DiscoveryManifestArtifact::new(false_unprobed)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("unprobed") && error.contains("forbids"));
+
+    let mut false_probed = middle;
+    false_probed.participation = DiscoveryParticipation::Probed;
+    let error = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
+        resource_id: "events.false-probed".to_owned(),
+        baseline_schema_hash: None,
+        effective_schema_hash: None,
+        coverage: DiscoveryCoverageMode::Exhaustive,
+        selector: None,
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![false_probed],
+    })
+    .unwrap_err()
+    .to_string();
+    assert!(error.contains("probed") && error.contains("requires"));
+}
+
+#[test]
+fn schema_snapshot_v1_bytes_stay_exact_and_v2_binds_manifest_sidecar() {
+    let legacy_resource = ResourceId::new("legacy.resource").unwrap();
+    let legacy_schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let legacy =
+        SchemaSnapshotArtifact::new(&legacy_resource, &legacy_schema, BTreeMap::new()).unwrap();
+    assert_eq!(legacy.version, 1);
+    assert_eq!(
+        legacy.schema_hash.as_str(),
+        "sha256:72f76d3bcff3c64ec909385548f8861b817b5959e4b3e5257e9e88f6c603e417"
+    );
+    assert!(
+        serde_json::to_value(&legacy)
+            .unwrap()
+            .get("discovery_manifest")
+            .is_none()
+    );
+    assert!(
+        serde_json::to_value(legacy.reference())
+            .unwrap()
+            .get("discovery_manifest")
+            .is_none()
+    );
+
+    let manifest = DiscoveryManifestArtifact::new(DiscoveryManifestInput {
+        resource_id: legacy_resource.as_str().to_owned(),
+        baseline_schema_hash: None,
+        effective_schema_hash: None,
+        coverage: DiscoveryCoverageMode::Exhaustive,
+        selector: None,
+        budget: DiscoveryExecutorBudget::default(),
+        normalizer_version: "namecase-v1".to_owned(),
+        policy_version: "evolve-v1".to_owned(),
+        candidates: vec![probed_discovery_candidate(
+            "file:///data/legacy.parquet",
+            "sha256:legacy",
+            24,
+        )],
+    })
+    .unwrap();
+    let linked = SchemaSnapshotArtifact::new_with_discovery_manifest(
+        &legacy_resource,
+        &legacy_schema,
+        BTreeMap::new(),
+        manifest.reference(),
+    )
+    .unwrap();
+    assert_eq!(linked.version, 2);
+    assert_ne!(linked.schema_hash, legacy.schema_hash);
+    assert_eq!(
+        linked.discovery_manifest_reference().unwrap(),
+        Some(manifest.reference())
+    );
+    assert_eq!(
+        linked.reference().discovery_manifest().unwrap(),
+        Some(manifest.reference())
+    );
+    assert_eq!(
+        linked.hash_input["discovery_manifest"]["manifest_hash"],
+        manifest.manifest_hash.as_str()
+    );
+
+    let temp = tempfile::tempdir().unwrap();
+    let manifest_store = DiscoveryManifestStore::new(temp.path());
+    manifest_store.write(&manifest).unwrap();
+    let snapshot_store = SchemaSnapshotStore::new(temp.path());
+    snapshot_store.write(&linked).unwrap();
+    assert_eq!(snapshot_store.read(&linked.reference()).unwrap(), linked);
+
+    std::fs::remove_file(temp.path().join(&manifest.path)).unwrap();
+    let error = snapshot_store
+        .read(&linked.reference())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("read") && error.contains("discovery"));
+}
+
+fn probed_discovery_candidate(
+    location: &str,
+    physical_schema_hash: &str,
+    probe_bytes: u64,
+) -> DiscoveryCandidateEvidence {
+    DiscoveryCandidateEvidence {
+        transport: "file".to_owned(),
+        canonical_location: location.to_owned(),
+        identity: DiscoveryBoundedIdentity {
+            size_bytes: Some(1024),
+            modified_at_ms: Some(1_700_000_000_000),
+            value: Some(format!("bounded:{location}")),
+            strength: DiscoveryIdentityStrength::BoundedObservation,
+        },
+        participation: DiscoveryParticipation::Probed,
+        metadata_variance: Vec::new(),
+        physical_schema_hash: Some(SchemaHash::new(physical_schema_hash).unwrap()),
+        probe_bytes: Some(probe_bytes),
+        schema_verdict: Some(DiscoverySchemaVerdict {
+            kind: DiscoverySchemaVerdictKind::Admitted,
+            rule: "schema-join-v1".to_owned(),
+            details: BTreeMap::new(),
+        }),
+    }
+}
+
+fn unprobed_discovery_candidate(location: &str, identity: &str) -> DiscoveryCandidateEvidence {
+    DiscoveryCandidateEvidence {
+        transport: "file".to_owned(),
+        canonical_location: location.to_owned(),
+        identity: DiscoveryBoundedIdentity {
+            size_bytes: Some(2048),
+            modified_at_ms: None,
+            value: Some(identity.to_owned()),
+            strength: DiscoveryIdentityStrength::WeakEtag,
+        },
+        participation: DiscoveryParticipation::Unprobed,
+        metadata_variance: Vec::new(),
+        physical_schema_hash: None,
+        probe_bytes: None,
+        schema_verdict: None,
+    }
 }
 
 #[test]
