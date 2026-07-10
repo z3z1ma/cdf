@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -32,7 +32,8 @@ No distributed scheduler, remote lease store, automatic promotion, arbitrary upd
 ## Progress and notes
 
 - 2026-07-10: Opened as the integration owner after destination strategies and dry planning.
+- 2026-07-10: Activated after RP4-RP8 closed and assigned to `/root/impl_i5`. Execution must consume the exact typed version-3 artifact and package/receipt/target graph emitted by RP5; it may not reconstruct, flatten, or reinterpret dry-plan authority. The integration must stay capability-driven across destinations and route every correction through immutable packages, canonical destination sessions/receipts, schema-contract checkpoints, fenced lease authority, exact lock CAS, and the existing ledger abstraction. GC reporting is evidence classification only and must not invent retention or readback authority.
 
 ## Blockers
 
-Depends on RP4-RP8.
+None. All declared dependencies are closed.
