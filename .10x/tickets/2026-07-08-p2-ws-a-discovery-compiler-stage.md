@@ -53,4 +53,4 @@ This ticket does not implement file manifest incrementality, remote transport cr
 
 ## Blockers
 
-None for shaping. Executable child tickets may need dependencies on WS-D/E for remote ranged reads.
+A10 multi-file aggregation is blocked on the ratification checkpoint in `.10x/research/2026-07-09-multi-file-discovery-aggregation-contract.md`. Other executable children may need dependencies on WS-D/E for remote ranged reads.
