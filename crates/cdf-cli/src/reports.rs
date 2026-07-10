@@ -45,6 +45,8 @@ pub(crate) struct RunCliReport {
     segment_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     file_manifest: Option<RunFileManifestReport>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    adhoc: Option<AdhocRunReport>,
     ledger_events: RunLedgerSummary,
     writes: WriteEffects,
 }
@@ -84,9 +86,15 @@ impl RunCliReport {
                 .file_manifest
                 .as_ref()
                 .map(RunFileManifestReport::from_project),
+            adhoc: None,
             ledger_events: RunLedgerSummary::from_snapshot(&report.ledger_snapshot),
             writes: run_write_effects(&report.receipt_source),
         }
+    }
+
+    pub(crate) fn with_adhoc(mut self, adhoc: AdhocRunReport) -> Self {
+        self.adhoc = Some(adhoc);
+        self
     }
 
     pub(crate) fn render_document(&self) -> RenderDocument {
@@ -144,6 +152,20 @@ impl RunCliReport {
         } else {
             document
         };
+        let document = if let Some(adhoc) = &self.adhoc {
+            let panel = KeyValuePanel::new("Ad-hoc Resource")
+                .row("resource", adhoc.resource_id.clone())
+                .row("config", adhoc.config_path.clone())
+                .row("reused", yes_no(adhoc.reused))
+                .row("make permanent", adhoc.make_permanent_command.clone());
+            let panel = match &adhoc.source_artifact_path {
+                Some(path) => panel.row("staged source", path.clone()),
+                None => panel,
+            };
+            document.blank_line().push(panel)
+        } else {
+            document
+        };
         document
             .blank_line()
             .push(
@@ -185,6 +207,16 @@ impl RunCliReport {
             .blank_line()
             .push(NextCommand::new(format!("cdf inspect run {}", self.run_id)))
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+pub(crate) struct AdhocRunReport {
+    pub(crate) resource_id: String,
+    pub(crate) config_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) source_artifact_path: Option<String>,
+    pub(crate) reused: bool,
+    pub(crate) make_permanent_command: String,
 }
 
 pub(crate) struct PreparedReplayReportRef<'a> {
@@ -842,6 +874,7 @@ mod tests {
             row_count: 2,
             segment_count: 1,
             file_manifest: None,
+            adhoc: None,
             ledger_events: RunLedgerSummary::default(),
             writes: WriteEffects::all(),
         };

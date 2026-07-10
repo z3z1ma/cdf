@@ -12,14 +12,14 @@ use std::{
     ffi::OsString,
     fs,
     io::{ErrorKind, Read, Write},
-    net::TcpListener,
+    net::{Shutdown, TcpListener, TcpStream},
     path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use super::{
@@ -592,7 +592,7 @@ fn p2_s5_rest_discover_pin_preview_run_package_checkpoint_conformance() {
     assert_eq!(cursor.value, CursorValue::I64(20));
 
     assert_generated_artifacts_do_not_contain(temp.path(), SECRET);
-    let requests = server.requests();
+    let requests = server.requests().unwrap();
     assert_eq!(requests.len(), 4);
     assert!(requests.iter().all(|request| {
         request.contains("GET /items HTTP/1.1")
@@ -670,7 +670,7 @@ fn p2_s7_keyless_append_and_precontact_merge_failure_conformance() {
             .unwrap()
             .contains("write_disposition = \"append\"")
     );
-    assert_eq!(merge_server.requests(), Vec::<String>::new());
+    assert_eq!(merge_server.requests().unwrap(), Vec::<String>::new());
     assert_eq!(project_tree_snapshot(merge.path()), before);
 }
 
@@ -1127,8 +1127,253 @@ fn project_tree_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
 struct RecordedHttpServer {
     base_url: String,
     requests: Arc<Mutex<Vec<String>>>,
+    failure: Arc<Mutex<Option<String>>>,
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+}
+
+const RECORDED_HTTP_HEADER_CAP: usize = 8192;
+const RECORDED_HTTP_HEADER_DEADLINE: Duration = Duration::from_secs(1);
+const RECORDED_HTTP_RESPONSE_DEADLINE: Duration = Duration::from_secs(1);
+
+fn read_recorded_http_header(
+    stream: &mut impl Read,
+    deadline: Duration,
+) -> std::io::Result<Vec<u8>> {
+    let started = Instant::now();
+    let mut request = Vec::new();
+
+    loop {
+        if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            return Ok(request);
+        }
+        if request.len() == RECORDED_HTTP_HEADER_CAP {
+            return Err(std::io::Error::new(
+                ErrorKind::InvalidData,
+                format!(
+                    "recorded HTTP fixture request header exceeded the {RECORDED_HTTP_HEADER_CAP}-byte cap before the header terminator"
+                ),
+            ));
+        }
+        if started.elapsed() >= deadline {
+            return Err(std::io::Error::new(
+                ErrorKind::TimedOut,
+                format!(
+                    "recorded HTTP fixture request header remained incomplete after {} ms",
+                    deadline.as_millis()
+                ),
+            ));
+        }
+
+        let remaining = RECORDED_HTTP_HEADER_CAP - request.len();
+        let mut chunk = [0_u8; 1024];
+        let read_len = remaining.min(chunk.len());
+        match stream.read(&mut chunk[..read_len]) {
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    ErrorKind::UnexpectedEof,
+                    format!(
+                        "recorded HTTP fixture request header ended after {} bytes before the header terminator",
+                        request.len()
+                    ),
+                ));
+            }
+            Ok(bytes_read) => request.extend_from_slice(&chunk[..bytes_read]),
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(1));
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn run_recorded_http_server(
+    listener: TcpListener,
+    requests: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+    mut bodies: VecDeque<String>,
+) -> std::result::Result<(), String> {
+    while !stop.load(Ordering::Relaxed) && !bodies.is_empty() {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                stream.set_nonblocking(true).map_err(|error| {
+                    format!(
+                        "recorded HTTP fixture could not make accepted socket nonblocking: {error}"
+                    )
+                })?;
+                let request = read_recorded_http_header(&mut stream, RECORDED_HTTP_HEADER_DEADLINE)
+                    .map_err(|error| {
+                        format!("recorded HTTP fixture request capture failed: {error}")
+                    })?;
+                requests
+                    .lock()
+                    .map_err(|_| "recorded HTTP fixture request log was poisoned".to_owned())?
+                    .push(String::from_utf8_lossy(&request).into_owned());
+                let body = bodies.pop_front().ok_or_else(|| {
+                    "recorded HTTP fixture accepted more requests than configured responses"
+                        .to_owned()
+                })?;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+
+                stream.set_nonblocking(false).map_err(|error| {
+                    format!(
+                        "recorded HTTP fixture could not restore blocking response I/O: {error}"
+                    )
+                })?;
+                stream
+                    .set_write_timeout(Some(RECORDED_HTTP_RESPONSE_DEADLINE))
+                    .map_err(|error| {
+                        format!("recorded HTTP fixture could not bound response writes: {error}")
+                    })?;
+                stream.write_all(response.as_bytes()).map_err(|error| {
+                    format!("recorded HTTP fixture response write failed: {error}")
+                })?;
+                stream.flush().map_err(|error| {
+                    format!("recorded HTTP fixture response flush failed: {error}")
+                })?;
+            }
+            Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(5));
+            }
+            Err(error) => {
+                return Err(format!("recorded HTTP fixture accept failed: {error}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn store_recorded_http_failure(failure: &Arc<Mutex<Option<String>>>, message: String) {
+    let mut failure = failure
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if failure.is_none() {
+        *failure = Some(message);
+    }
+}
+
+#[test]
+fn recorded_http_server_waits_for_split_request_headers() {
+    let server = RecordedHttpServer::new([r#"{"items":[]}"#]);
+    let address = server.base_url().strip_prefix("http://").unwrap();
+    let mut client = TcpStream::connect(address).unwrap();
+
+    client
+        .write_all(b"GET /items HTTP/1.1\r\nhost: local\r\n")
+        .unwrap();
+    thread::sleep(Duration::from_millis(20));
+    client
+        .write_all(b"authorization: Bearer split-secret\r\n\r\n")
+        .unwrap();
+
+    let mut response = String::new();
+    client.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200 OK\r\n"));
+    let requests = server.requests().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("authorization: Bearer split-secret"));
+}
+
+#[test]
+fn recorded_http_server_restores_blocking_response_writes() {
+    let body = "x".repeat(4 * 1024 * 1024);
+    let server = RecordedHttpServer::new([body.clone()]);
+    let address = server.base_url().strip_prefix("http://").unwrap();
+    let mut client = TcpStream::connect(address).unwrap();
+    client
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    client
+        .write_all(b"GET /items HTTP/1.1\r\nhost: local\r\n\r\n")
+        .unwrap();
+
+    thread::sleep(Duration::from_millis(20));
+    let mut response = Vec::new();
+    client.read_to_end(&mut response).unwrap();
+    let body_start = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|offset| offset + 4)
+        .expect("recorded HTTP response header terminator");
+    assert_eq!(&response[body_start..], body.as_bytes());
+    assert_eq!(server.requests().unwrap().len(), 1);
+}
+
+#[test]
+fn recorded_http_server_surfaces_capture_failure_without_drop_panic() {
+    let server = RecordedHttpServer::new([r#"{"items":[]}"#]);
+    let address = server.base_url().strip_prefix("http://").unwrap();
+    let mut client = TcpStream::connect(address).unwrap();
+    client
+        .write_all(b"GET /items HTTP/1.1\r\nhost: local\r\n")
+        .unwrap();
+    client.shutdown(Shutdown::Write).unwrap();
+
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let failure = loop {
+        match server.requests() {
+            Err(failure) => break failure,
+            Ok(_) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+            Ok(_) => panic!("recorded HTTP fixture did not surface incomplete header failure"),
+        }
+    };
+    assert!(failure.contains("request capture failed"));
+    assert!(failure.contains("before the header terminator"));
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(server))).is_ok());
+}
+
+#[test]
+fn recorded_http_header_capture_retries_would_block_and_bounds_incomplete_requests() {
+    struct BecomesReady {
+        would_block: bool,
+        bytes: std::io::Cursor<Vec<u8>>,
+    }
+    impl Read for BecomesReady {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            if self.would_block {
+                self.would_block = false;
+                return Err(std::io::Error::from(ErrorKind::WouldBlock));
+            }
+            self.bytes.read(buffer)
+        }
+    }
+
+    let complete = b"GET /items HTTP/1.1\r\nauthorization: Bearer delayed\r\n\r\n";
+    let mut becomes_ready = BecomesReady {
+        would_block: true,
+        bytes: std::io::Cursor::new(complete.to_vec()),
+    };
+    assert_eq!(
+        read_recorded_http_header(&mut becomes_ready, Duration::from_millis(50)).unwrap(),
+        complete
+    );
+
+    let mut eof = std::io::Cursor::new(b"GET /items HTTP/1.1\r\nhost: local\r\n".as_slice());
+    let error = read_recorded_http_header(&mut eof, Duration::from_millis(50)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::UnexpectedEof);
+    assert!(error.to_string().contains("before the header terminator"));
+
+    let mut oversized = std::io::Cursor::new(vec![b'x'; RECORDED_HTTP_HEADER_CAP]);
+    let error = read_recorded_http_header(&mut oversized, Duration::from_millis(50)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::InvalidData);
+    assert!(error.to_string().contains("8192-byte cap"));
+
+    struct NeverReady;
+    impl Read for NeverReady {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(ErrorKind::WouldBlock))
+        }
+    }
+
+    let mut never_ready = NeverReady;
+    let error = read_recorded_http_header(&mut never_ready, Duration::from_millis(5)).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::TimedOut);
+    assert!(error.to_string().contains("incomplete after 5 ms"));
 }
 
 impl RecordedHttpServer {
@@ -1142,47 +1387,22 @@ impl RecordedHttpServer {
         let address = listener.local_addr().unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_requests = Arc::clone(&requests);
+        let failure = Arc::new(Mutex::new(None));
+        let thread_failure = Arc::clone(&failure);
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
-        let mut bodies = bodies.into_iter().map(Into::into).collect::<VecDeque<_>>();
+        let bodies = bodies.into_iter().map(Into::into).collect::<VecDeque<_>>();
         let thread = thread::spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) && !bodies.is_empty() {
-                match listener.accept() {
-                    Ok((mut stream, _)) => {
-                        let mut request = Vec::new();
-                        while request.len() < 8192
-                            && !request.windows(4).any(|window| window == b"\r\n\r\n")
-                        {
-                            let mut chunk = [0_u8; 1024];
-                            let bytes_read = stream.read(&mut chunk).unwrap_or(0);
-                            if bytes_read == 0 {
-                                break;
-                            }
-                            request.extend_from_slice(&chunk[..bytes_read]);
-                        }
-                        thread_requests
-                            .lock()
-                            .unwrap()
-                            .push(String::from_utf8_lossy(&request).into_owned());
-                        let body = bodies.pop_front().unwrap();
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                            body.len(),
-                            body
-                        );
-                        stream.write_all(response.as_bytes()).unwrap();
-                        stream.flush().unwrap();
-                    }
-                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(5));
-                    }
-                    Err(error) => panic!("recorded HTTP fixture accept failed: {error}"),
-                }
+            if let Err(message) =
+                run_recorded_http_server(listener, thread_requests, thread_stop, bodies)
+            {
+                store_recorded_http_failure(&thread_failure, message);
             }
         });
         Self {
             base_url: format!("http://{address}"),
             requests,
+            failure,
             stop,
             thread: Some(thread),
         }
@@ -1192,16 +1412,32 @@ impl RecordedHttpServer {
         &self.base_url
     }
 
-    fn requests(&self) -> Vec<String> {
-        self.requests.lock().unwrap().clone()
+    fn requests(&self) -> std::result::Result<Vec<String>, String> {
+        if let Some(failure) = self
+            .failure
+            .lock()
+            .map_err(|_| "recorded HTTP fixture failure state was poisoned".to_owned())?
+            .clone()
+        {
+            return Err(failure);
+        }
+        self.requests
+            .lock()
+            .map_err(|_| "recorded HTTP fixture request log was poisoned".to_owned())
+            .map(|requests| requests.clone())
     }
 }
 
 impl Drop for RecordedHttpServer {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
-        if let Some(thread) = self.thread.take() {
-            thread.join().unwrap();
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            store_recorded_http_failure(
+                &self.failure,
+                "recorded HTTP fixture worker panicked".to_owned(),
+            );
         }
     }
 }

@@ -202,6 +202,70 @@ pub fn read_arrow_ipc_file<R: Read + Seek>(reader: R, options: &ReadOptions) -> 
     )
 }
 
+pub fn read_arrow_ipc_file_path(
+    path: impl AsRef<Path>,
+    options: &ReadOptions,
+) -> Result<FormatRead> {
+    let path = path.as_ref();
+    let position = file_source_position(path)?;
+    let scope = ScopeKey::File {
+        path: path_string(path)?,
+    };
+    let file = fs::File::open(path)
+        .map_err(|error| io_data_error(format!("read Arrow IPC file {}", path.display()), error))?;
+    let mut reader = FileReader::try_new(file, None).map_err(|error| {
+        CdfError::data(format!(
+            "read Arrow IPC file {} with file framing: {error}",
+            path.display()
+        ))
+    })?;
+    finish_arrow_ipc_read(reader.schema(), &mut reader, options, scope, Some(position))
+}
+
+pub fn read_arrow_ipc_file_path_with_declared_schema(
+    path: impl AsRef<Path>,
+    options: &ReadOptions,
+    declared_schema: SchemaRef,
+) -> Result<FormatRead> {
+    let path = path.as_ref();
+    let position = file_source_position(path)?;
+    let scope = ScopeKey::File {
+        path: path_string(path)?,
+    };
+    let file = fs::File::open(path)
+        .map_err(|error| io_data_error(format!("read Arrow IPC file {}", path.display()), error))?;
+    let mut reader = FileReader::try_new(file, None).map_err(|error| {
+        CdfError::data(format!(
+            "read Arrow IPC file {} with file framing: {error}",
+            path.display()
+        ))
+    })?;
+    let physical_schema = reader.schema();
+    let reconciliation = reconcile_schema(
+        physical_schema.as_ref(),
+        declared_schema.as_ref(),
+        &strict_source_type_policy(),
+    )?;
+    let reconciliation_plan = reconciliation.plan;
+    let reconciled_schema = Arc::new(reconciliation.schema);
+    let physical_batches = collect_record_batches(&mut reader)?;
+    let record_batches = reconcile_record_batches(
+        physical_schema.as_ref(),
+        reconciled_schema.clone(),
+        physical_batches,
+        "Arrow IPC",
+    )?;
+    build_output_with_pre_contract_quarantine(
+        reconciled_schema,
+        record_batches,
+        options,
+        scope,
+        Some(position),
+        Vec::new(),
+        Some(&reconciliation_plan),
+    )
+}
+
 fn finish_arrow_ipc_read<I>(
     schema: SchemaRef,
     reader: &mut I,

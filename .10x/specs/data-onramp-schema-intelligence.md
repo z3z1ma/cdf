@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-09
 
 # Data onramp schema intelligence
 
@@ -21,6 +21,8 @@ Discovery probes MUST be bounded and source-specific:
 - CSV, JSON, NDJSON: bounded sampling.
 - SQL: catalogs such as `information_schema`.
 - REST: one recorded sample page plus declared cursor policy.
+
+File discovery MUST be resource-level rather than single-file-only. A Parquet or Arrow IPC file resource whose glob or remote enumeration resolves multiple files MUST support discovery and pinning without requiring the operator to narrow the source. Per-format footer/schema-block/sampling probes MUST feed one discovery-set aggregation abstraction so later file formats do not reinvent aggregation semantics. The pinned result MUST represent the aggregate resource schema and durable provenance for the matched discovery set; incompatible per-file schemas MUST become named contract verdicts rather than an ambiguity rejection or unclassified crash. Exact aggregation, large-N sampling, metadata-conflict, and first-pin `freeze` semantics require an explicit ratified contract before implementation.
 
 Discovery MUST NOT silently mutate a pinned schema during run. Drift against a pinned snapshot is a contract event that admits, widens, variant-captures, quarantines, or rejects according to policy.
 
@@ -49,6 +51,7 @@ Declarative field types MUST cover Arrow's closed vocabulary from `VISION.md` Ch
 - The widening lattice has property tests proving value preservation and composition for supported widenings.
 - Decimal and nested declarative types round-trip through TOML/YAML parsing, JSON Schema generation, plan evidence, and package schema evidence.
 - Physical type provenance is preserved in field metadata after reconciliation.
+- Multi-file Parquet and Arrow IPC file discovery pin deterministic aggregate schemas and discovery-set identities without reading row data or narrowing the glob to one file.
 
 ## Explicit exclusions
 

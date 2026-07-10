@@ -140,6 +140,7 @@ pub struct FileResourcePlan {
     pub root: String,
     pub glob: String,
     pub format: FileFormatDeclaration,
+    pub format_declared: bool,
     pub compression: FileCompressionDeclaration,
     pub auth: Option<AuthScheme>,
     pub allowlist: EgressAllowlist,
@@ -202,6 +203,7 @@ pub fn discover_local_parquet_schema(path: impl AsRef<Path>) -> Result<LocalParq
 pub struct LocalArrowIpcSchemaProbe {
     pub schema: SchemaRef,
     pub source_identity: BTreeMap<String, String>,
+    pub probe_bytes_read: u64,
 }
 
 pub fn discover_local_arrow_ipc_schema(path: impl AsRef<Path>) -> Result<LocalArrowIpcSchemaProbe> {
@@ -209,6 +211,7 @@ pub fn discover_local_arrow_ipc_schema(path: impl AsRef<Path>) -> Result<LocalAr
     Ok(LocalArrowIpcSchemaProbe {
         schema: discovery.schema,
         source_identity: discovery.source_identity.cache_evidence(),
+        probe_bytes_read: discovery.probe_bytes_read,
     })
 }
 
@@ -414,6 +417,7 @@ fn compile_resource(
             CompiledResourcePlan::Sql(compile_sql_plan(source_name, sql, resource)?)
         }
         SourceDeclaration::Files(files) => CompiledResourcePlan::Files(compile_file_plan(
+            &resource_id,
             source_name,
             files,
             resource,
@@ -588,6 +592,7 @@ fn compile_sql_plan(
 }
 
 fn compile_file_plan(
+    resource_id: &str,
     source_name: &str,
     source: &FileSourceDeclaration,
     resource: &ResourceDeclaration,
@@ -598,15 +603,18 @@ fn compile_file_plan(
     } else {
         EgressAllowlist::from_hosts(source.egress_allowlist.clone())
     };
+    let (format, format_declared) = match &resource.format {
+        Some(format) => (format.clone(), true),
+        None => (infer_binary_file_format(resource_id, resource)?, false),
+    };
     Ok(FileResourcePlan {
         source: source_name.to_owned(),
         root: compile_file_root(&source.root, project_root)?,
         glob: resource.glob.clone().ok_or_else(|| {
             CdfError::contract("file resources must declare glob before compilation")
         })?,
-        format: resource.format.clone().ok_or_else(|| {
-            CdfError::contract("file resources must declare format before compilation")
-        })?,
+        format,
+        format_declared,
         compression: resource
             .compression
             .clone()
@@ -614,6 +622,27 @@ fn compile_file_plan(
         auth: source.auth.as_ref().map(compile_auth).transpose()?,
         allowlist,
     })
+}
+
+fn infer_binary_file_format(
+    resource_id: &str,
+    resource: &ResourceDeclaration,
+) -> Result<FileFormatDeclaration> {
+    let glob = resource
+        .glob
+        .as_deref()
+        .ok_or_else(|| CdfError::contract("file resources must declare glob before compilation"))?;
+    let normalized = glob.to_ascii_lowercase();
+    if normalized.ends_with(".parquet") {
+        return Ok(FileFormatDeclaration::Parquet);
+    }
+    if normalized.ends_with(".arrow") {
+        return Ok(FileFormatDeclaration::ArrowIpc);
+    }
+
+    Err(CdfError::contract(format!(
+        "file resource `{resource_id}` cannot infer a binary format from glob `{glob}`: only the record-backed `.parquet` and `.arrow` extensions are inferred; add an explicit `format = \"...\"` declaration"
+    )))
 }
 
 fn compile_file_root(root: &str, project_root: Option<&Path>) -> Result<String> {

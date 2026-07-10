@@ -3,9 +3,12 @@ use super::*;
 use std::{
     collections::{BTreeMap, HashMap},
     fs,
-    io::{Cursor, Write},
+    io::{Cursor, Read, Seek, SeekFrom, Write},
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use arrow_array::{
@@ -157,6 +160,77 @@ fn arrow_ipc_file_round_trips_kernel_batches_without_schema_loss() {
         output.schema().field_with_name("id").unwrap().metadata(),
         input.schema().field_with_name("id").unwrap().metadata()
     );
+}
+
+#[test]
+fn arrow_ipc_file_discovery_reads_schema_block_without_decoding_record_batches() {
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![Field::new("Payload", DataType::Utf8, false)],
+        HashMap::from([("owner".to_owned(), "source-system".to_owned())]),
+    ));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![Arc::new(StringArray::from(vec!["x".repeat(1_000_000)]))],
+    )
+    .unwrap();
+    let mut bytes = Cursor::new(Vec::new());
+    {
+        let mut writer = FileWriter::try_new(&mut bytes, schema.as_ref()).unwrap();
+        writer.write(&batch).unwrap();
+        writer.finish().unwrap();
+    }
+    let bytes = bytes.into_inner();
+    let read_bytes = Arc::new(AtomicUsize::new(0));
+    let reader = CountingCursor {
+        inner: Cursor::new(bytes.clone()),
+        read_bytes: Arc::clone(&read_bytes),
+    };
+
+    let discovered = discover_arrow_ipc_file_schema(reader).unwrap();
+
+    assert_eq!(discovered.as_ref(), schema.as_ref());
+    assert!(
+        read_bytes.load(Ordering::Relaxed) < bytes.len() / 2,
+        "schema discovery must not read the record-batch body"
+    );
+}
+
+#[test]
+fn arrow_ipc_file_discovery_rejects_stream_framing_explicitly() {
+    let input = sample_batch();
+    let mut bytes = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut bytes, input.schema().as_ref()).unwrap();
+        writer.write(&input).unwrap();
+        writer.finish().unwrap();
+    }
+
+    let error = discover_arrow_ipc_file_schema(Cursor::new(bytes)).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("expected Arrow IPC file framing")
+    );
+    assert!(error.to_string().contains("stream framing is unsupported"));
+}
+
+struct CountingCursor {
+    inner: Cursor<Vec<u8>>,
+    read_bytes: Arc<AtomicUsize>,
+}
+
+impl Read for CountingCursor {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.inner.read(buffer)?;
+        self.read_bytes.fetch_add(count, Ordering::Relaxed);
+        Ok(count)
+    }
+}
+
+impl Seek for CountingCursor {
+    fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+        self.inner.seek(position)
+    }
 }
 
 #[test]

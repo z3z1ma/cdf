@@ -7,7 +7,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use arrow_array::{Array, BooleanArray, Decimal128Array, Float64Array, Int64Array, StringArray};
+use arrow_array::{
+    Array, BooleanArray, Decimal128Array, Float64Array, Int64Array, RecordBatch, StringArray,
+};
+use arrow_ipc::writer::FileWriter;
 use arrow_schema::{DataType, Field, Fields, TimeUnit};
 use cdf_conformance::resource::{
     PredicateExpectation, ResourceConformanceCase, ResourceExecutionConformanceCase,
@@ -2054,6 +2057,191 @@ trust = "governed"
 }
 
 #[test]
+fn binary_format_is_inferred_only_from_record_backed_glob_extensions() {
+    for (glob, expected) in [
+        ("2026/**/*.parquet", FileFormatDeclaration::Parquet),
+        ("events.arrow", FileFormatDeclaration::ArrowIpc),
+    ] {
+        let input = format!(
+            r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+write_disposition = "append"
+trust = "governed"
+"#
+        );
+        let resource = compile_document(&parse_toml(&input).unwrap())
+            .unwrap()
+            .remove(0);
+        let CompiledResourcePlan::Files(plan) = resource.plan() else {
+            panic!("resource must compile as files");
+        };
+        assert_eq!(plan.format, expected);
+        assert!(!plan.format_declared);
+    }
+
+    for glob in ["events", "*.*", "*.ipc", "*.feather", "*.ndjson"] {
+        let input = format!(
+            r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+write_disposition = "append"
+trust = "governed"
+"#
+        );
+        let error = compile_document(&parse_toml(&input).unwrap()).unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("file resource `local.events`"));
+        assert!(message.contains(glob));
+        assert!(message.contains("`format = \"...\"`"));
+        assert!(message.contains("`.parquet` and `.arrow`"));
+    }
+}
+
+#[test]
+fn inferred_parquet_glob_confirms_every_file_before_partition_planning() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    write_test_parquet(&data_dir.join("a.parquet"), 1);
+    write_test_parquet(&data_dir.join("b.parquet"), 2);
+    let resource = compile_inferred_binary_resource(&root, "*.parquet");
+
+    let partitions = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap();
+    assert_eq!(
+        partition_file_names(&partitions),
+        ["a.parquet", "b.parquet"]
+    );
+    for partition in &partitions {
+        assert_eq!(partition.metadata["format"], "parquet");
+        assert_eq!(partition.metadata["format_declared"], "false");
+        assert_eq!(partition.metadata["format_extension"], "parquet");
+        assert_eq!(partition.metadata["format_magic"], "parquet");
+    }
+
+    fs::write(data_dir.join("b.parquet"), b"not parquet").unwrap();
+    let error = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("file format confirmation failed for resource `local.events`"));
+    assert!(message.contains("file `b.parquet`"));
+    assert!(message.contains("declared format `<omitted>`"));
+    assert!(message.contains("inferred format `parquet`"));
+    assert!(message.contains("extension signal `parquet`"));
+    assert!(message.contains("magic bytes signal `unknown`"));
+    assert!(message.contains("format = \"parquet\""));
+}
+
+#[test]
+fn inferred_parquet_and_arrow_preview_and_run_share_resolved_format() {
+    let parquet_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(parquet_root.path().join("data")).unwrap();
+    write_test_parquet(&parquet_root.path().join("data/events.parquet"), 7);
+    let parquet = compile_inferred_binary_resource(&parquet_root, "events.parquet");
+    assert_preview_run_first_id(&parquet, 7);
+
+    let arrow_root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(arrow_root.path().join("data")).unwrap();
+    write_test_arrow(&arrow_root.path().join("data/events.arrow"), 9);
+    let arrow = compile_inferred_binary_resource(&arrow_root, "events.arrow");
+    assert_preview_run_first_id(&arrow, 9);
+}
+
+#[test]
+fn explicit_binary_format_still_requires_matching_extension_and_magic() {
+    let root = tempfile::tempdir().unwrap();
+    let data_dir = root.path().join("data");
+    fs::create_dir_all(&data_dir).unwrap();
+    write_test_arrow(&data_dir.join("events.parquet"), 11);
+    let input = r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "events.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let resource = compile_document_with_project_root(&parse_toml(input).unwrap(), root.path())
+        .unwrap()
+        .remove(0);
+    let error = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("declared format `parquet`"));
+    assert!(message.contains("inferred format `parquet`"));
+    assert!(message.contains("extension signal `parquet`"));
+    assert!(message.contains("magic bytes signal `arrow_ipc`"));
+
+    write_test_parquet(&data_dir.join("extensionless"), 12);
+    let extensionless = input.replace("events.parquet", "extensionless");
+    let resource =
+        compile_document_with_project_root(&parse_toml(&extensionless).unwrap(), root.path())
+            .unwrap()
+            .remove(0);
+    let partition = resource
+        .plan_partitions(&scan_request_for(&resource))
+        .unwrap()
+        .remove(0);
+    assert_eq!(partition.metadata["format_extension"], "unknown");
+    assert_eq!(partition.metadata["format_magic"], "parquet");
+}
+
+#[test]
+fn inferred_https_parquet_confirmation_uses_only_bounded_ranges() {
+    let bytes =
+        cdf_package::transcode_record_batches_to_parquet_bytes(&[test_id_batch(21)]).unwrap();
+    assert!(bytes.len() > 12);
+    let transport = RecordingRangeFileTransport::new(bytes.clone());
+    let input = r#"
+[source.public]
+kind = "files"
+root = "https://data.example.test/trip-data/"
+egress_allowlist = ["data.example.test"]
+
+[resource.events]
+glob = "events.parquet"
+write_disposition = "append"
+trust = "governed"
+"#;
+    let resource = compile_document(&parse_toml(input).unwrap())
+        .unwrap()
+        .remove(0)
+        .to_file_resource(FileRuntimeDependencies::new(transport.clone()))
+        .unwrap();
+
+    let partitions = resource
+        .plan_partitions(&scan_request_for(resource.compiled()))
+        .unwrap();
+    assert_eq!(partitions.len(), 1);
+    assert_eq!(partitions[0].metadata["format"], "parquet");
+    assert_eq!(partitions[0].metadata["format_declared"], "false");
+    assert_eq!(partitions[0].metadata["format_magic"], "parquet");
+    let ranges = transport.ranges();
+    assert_eq!(ranges.len(), 2);
+    assert_eq!(ranges[0], ByteRange::new(0, 6).unwrap());
+    assert_eq!(
+        ranges[1],
+        ByteRange::new(bytes.len() as u64 - 6, 6).unwrap()
+    );
+    assert_eq!(ranges.iter().map(|range| range.length).sum::<u64>(), 12);
+}
+
+#[test]
 fn file_glob_plans_deterministic_partition_per_match() {
     let (_root, resource) = compile_local_glob_runtime_resource([
         ("b.ndjson", "{\"id\":2}\n"),
@@ -2405,6 +2593,14 @@ fn json_schema_artifact_exposes_editor_schema_model() {
         Some("string")
     );
     assert!(field_type_schema.get("enum").is_none());
+
+    let required = artifact
+        .schema
+        .pointer("/$defs/ResourceDeclaration/required")
+        .and_then(serde_json::Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    assert!(!required.iter().any(|field| field == "format"));
 }
 
 #[test]
@@ -2939,6 +3135,121 @@ schema = {{ fields = [{{ name = "id", type = "int64" }}] }}
     compile_document_with_project_root(&parse_toml(&input).unwrap(), root.path())
         .unwrap()
         .remove(0)
+}
+
+fn compile_inferred_binary_resource(root: &TempDir, glob: &str) -> CompiledResource {
+    let input = format!(
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+write_disposition = "append"
+trust = "governed"
+"#
+    );
+    compile_document_with_project_root(&parse_toml(&input).unwrap(), root.path())
+        .unwrap()
+        .remove(0)
+}
+
+#[derive(Clone)]
+struct RecordingRangeFileTransport {
+    bytes: Arc<Vec<u8>>,
+    ranges: Arc<Mutex<Vec<ByteRange>>>,
+}
+
+impl RecordingRangeFileTransport {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self {
+            bytes: Arc::new(bytes),
+            ranges: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn ranges(&self) -> Vec<ByteRange> {
+        self.ranges.lock().unwrap().clone()
+    }
+}
+
+impl FileTransport for RecordingRangeFileTransport {
+    fn metadata(
+        &mut self,
+        resource: &FileTransportResource,
+    ) -> cdf_kernel::Result<FileIdentityMetadata> {
+        let FileTransportLocation::HttpUrl { url } = &resource.location else {
+            panic!("test transport expects an HTTP URL");
+        };
+        Ok(FileIdentityMetadata {
+            location: url.clone(),
+            size_bytes: Some(self.bytes.len() as u64),
+            checksum: None,
+            etag: Some("fixture-etag".to_owned()),
+            modified: None,
+        })
+    }
+
+    fn read_range(
+        &mut self,
+        _resource: &FileTransportResource,
+        range: ByteRange,
+    ) -> cdf_kernel::Result<Vec<u8>> {
+        self.ranges.lock().unwrap().push(range);
+        let start = range.start as usize;
+        let end = start + range.length as usize;
+        Ok(self.bytes[start..end].to_vec())
+    }
+
+    fn list(
+        &mut self,
+        _resource: &FileTransportResource,
+    ) -> cdf_kernel::Result<Vec<FileIdentityMetadata>> {
+        Err(CdfError::contract(
+            "test transport does not support listing",
+        ))
+    }
+}
+
+fn test_id_batch(id: i64) -> RecordBatch {
+    let schema = Arc::new(arrow_schema::Schema::new(vec![Field::new(
+        "id",
+        DataType::Int64,
+        false,
+    )]));
+    RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![id]))]).unwrap()
+}
+
+fn write_test_parquet(path: &Path, id: i64) {
+    let bytes =
+        cdf_package::transcode_record_batches_to_parquet_bytes(&[test_id_batch(id)]).unwrap();
+    fs::write(path, bytes).unwrap();
+}
+
+fn write_test_arrow(path: &Path, id: i64) {
+    let batch = test_id_batch(id);
+    let file = fs::File::create(path).unwrap();
+    let mut writer = FileWriter::try_new(file, batch.schema().as_ref()).unwrap();
+    writer.write(&batch).unwrap();
+    writer.finish().unwrap();
+}
+
+fn assert_preview_run_first_id(resource: &CompiledResource, expected: i64) {
+    let partition = resource
+        .plan_partitions(&scan_request_for(resource))
+        .unwrap()
+        .remove(0);
+    let preview = drain_batches(
+        futures_executor::block_on(resource.open_preview(partition.clone())).unwrap(),
+    );
+    let run = drain_batches(futures_executor::block_on(resource.open(partition)).unwrap());
+    assert_eq!(first_i64_value(&preview), expected);
+    assert_eq!(first_i64_value(&run), expected);
+    assert_eq!(
+        preview[0].record_batch().unwrap(),
+        run[0].record_batch().unwrap()
+    );
 }
 
 fn gzip_bytes(bytes: &[u8]) -> Vec<u8> {

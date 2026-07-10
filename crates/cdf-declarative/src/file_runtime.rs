@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
-    io::Read,
+    io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
     sync::{Arc, Mutex},
     time::UNIX_EPOCH,
@@ -11,8 +11,9 @@ use std::{
 use arrow_schema::SchemaRef;
 use cdf_formats::{
     CsvOptions, FileCompression, FileFormat, FileSource, JsonOptions, RangeChunkReader,
-    ReadOptions, read_arrow_ipc_file, read_file_source, read_file_source_with_declared_schema,
-    read_parquet_range_source, read_parquet_range_source_with_declared_schema,
+    ReadOptions, read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema,
+    read_file_source, read_file_source_with_declared_schema, read_parquet_range_source,
+    read_parquet_range_source_with_declared_schema,
 };
 use cdf_http::SecretProvider;
 use cdf_kernel::{
@@ -73,6 +74,44 @@ impl FileRuntimeDependencies {
     ) -> RangeChunkReader {
         transport_range_reader(self.transport(), resource, size_bytes)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocalFileDiscoveryCandidate {
+    pub path: PathBuf,
+    pub relative_path: String,
+    pub size_bytes: u64,
+    pub compression: String,
+    pub selection_bytes_read: u64,
+}
+
+pub fn local_file_discovery_candidates(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+) -> Result<Vec<LocalFileDiscoveryCandidate>> {
+    if is_http_root(&plan.root) {
+        return Err(CdfError::contract(
+            "local file discovery candidate enumeration does not support HTTP(S) roots",
+        ));
+    }
+
+    let root = PathBuf::from(&plan.root);
+    if !root.is_absolute() {
+        return Err(CdfError::contract(format!(
+            "file source root `{}` must be absolute before discovery; compile with an explicit project root or declare an absolute file source root",
+            plan.root
+        )));
+    }
+    let components = pattern_components(&plan.glob)?;
+    let mut matches = Vec::new();
+    collect_matches(&root, &components, &mut matches)?;
+    matches.sort();
+    matches.dedup();
+
+    contained_matches(&root, matches)?
+        .into_iter()
+        .map(|path| local_file_discovery_candidate(resource_id, &root, path, plan))
+        .collect()
 }
 
 impl Default for FileRuntimeDependencies {
@@ -136,14 +175,7 @@ impl FileResource {
             }
         };
         let dependencies = self.dependencies.clone();
-        open_file_resource_with_dependencies(
-            &descriptor,
-            schema,
-            &plan,
-            partition,
-            true,
-            dependencies,
-        )
+        open_file_resource_with_dependencies(&descriptor, schema, &plan, partition, dependencies)
     }
 }
 
@@ -202,7 +234,6 @@ impl ResourceStream for FileResource {
             schema,
             &plan,
             partition,
-            false,
             self.dependencies.clone(),
         )
     }
@@ -229,6 +260,7 @@ pub(crate) struct ResolvedFileMatch {
     modified_ms: Option<String>,
     bytes_loaded: Option<u64>,
     compression: CompressionEvidence,
+    format: FormatEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -259,6 +291,31 @@ enum CompressionSignal {
     None,
     Gzip,
     Zstd,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum FormatSignal {
+    Unknown,
+    Parquet,
+    ArrowIpc,
+    ArrowIpcStream,
+}
+
+impl FormatSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::Parquet => "parquet",
+            Self::ArrowIpc => "arrow_ipc",
+            Self::ArrowIpcStream => "arrow_ipc_stream",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct FormatEvidence {
+    extension_signal: FormatSignal,
+    magic_signal: FormatSignal,
 }
 
 impl CompressionSignal {
@@ -315,7 +372,6 @@ pub(crate) fn open_file_resource(
         declared_schema,
         plan,
         partition,
-        false,
         FileRuntimeDependencies::local(),
     )
 }
@@ -331,7 +387,6 @@ pub(crate) fn open_file_resource_preview(
         declared_schema,
         plan,
         partition,
-        true,
         FileRuntimeDependencies::local(),
     )
 }
@@ -341,7 +396,6 @@ fn open_file_resource_with_dependencies(
     declared_schema: SchemaRef,
     plan: &FileResourcePlan,
     partition: PartitionPlan,
-    preview_arrow_ipc: bool,
     dependencies: FileRuntimeDependencies,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     let descriptor = descriptor.clone();
@@ -357,7 +411,6 @@ fn open_file_resource_with_dependencies(
             &plan.format,
             options,
             declared_schema,
-            preview_arrow_ipc,
             dependencies.transport(),
         )?;
         Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
@@ -377,7 +430,6 @@ fn read_file_match(
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     declared_schema: SchemaRef,
-    preview_arrow_ipc: bool,
     transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
 ) -> Result<cdf_formats::FormatRead> {
     match &resolved.open {
@@ -387,7 +439,6 @@ fn read_file_match(
             declaration,
             options,
             declared_schema,
-            preview_arrow_ipc,
         ),
         ResolvedFileOpen::Transport(resource) => read_transport_file(
             resource.clone(),
@@ -406,7 +457,6 @@ fn read_file_path(
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     declared_schema: SchemaRef,
-    preview_arrow_ipc: bool,
 ) -> Result<cdf_formats::FormatRead> {
     if compression != FileCompression::None
         && matches!(declaration, FileFormatDeclaration::ArrowIpc)
@@ -418,12 +468,10 @@ fn read_file_path(
         )));
     }
     let read = match declaration {
-        FileFormatDeclaration::ArrowIpc if preview_arrow_ipc => {
-            let file = File::open(path).map_err(|error| {
-                CdfError::data(format!("read Arrow IPC file {}: {error}", path.display()))
-            })?;
-            read_arrow_ipc_file(file, &options)
+        FileFormatDeclaration::ArrowIpc if !declared_schema.fields().is_empty() => {
+            read_arrow_ipc_file_path_with_declared_schema(path, &options, declared_schema)
         }
+        FileFormatDeclaration::ArrowIpc => read_arrow_ipc_file_path(path, &options),
         _ => {
             let format = compile_format(declaration)?;
             read_non_ipc_file_path(path, format, compression, options, declared_schema)
@@ -584,6 +632,36 @@ fn validate_partition(
         }
     }
     validate_compression_metadata(partition, &resolved, &plan.compression, path)?;
+    if records_format_metadata(plan) {
+        validate_partition_metadata_value(
+            partition,
+            "format",
+            file_format_name(&plan.format),
+            path,
+        )?;
+        validate_partition_metadata_value(
+            partition,
+            "format_declared",
+            if plan.format_declared {
+                "true"
+            } else {
+                "false"
+            },
+            path,
+        )?;
+        validate_partition_metadata_value(
+            partition,
+            "format_extension",
+            resolved.format.extension_signal.as_str(),
+            path,
+        )?;
+        validate_partition_metadata_value(
+            partition,
+            "format_magic",
+            resolved.format.magic_signal.as_str(),
+            path,
+        )?;
+    }
     Ok(resolved)
 }
 
@@ -671,6 +749,24 @@ fn partition_for_file_match(
     if let Some(bytes_loaded) = file.bytes_loaded {
         metadata.insert("bytes_loaded".to_owned(), bytes_loaded.to_string());
     }
+    if records_format_metadata(plan) {
+        metadata.insert(
+            "format".to_owned(),
+            file_format_name(&plan.format).to_owned(),
+        );
+        metadata.insert(
+            "format_declared".to_owned(),
+            plan.format_declared.to_string(),
+        );
+        metadata.insert(
+            "format_extension".to_owned(),
+            file.format.extension_signal.as_str().to_owned(),
+        );
+        metadata.insert(
+            "format_magic".to_owned(),
+            file.format.magic_signal.as_str().to_owned(),
+        );
+    }
     if records_compression_metadata(file, &plan.compression) {
         metadata.insert(
             "compression".to_owned(),
@@ -732,7 +828,7 @@ fn resolve_file_matches(
     let matches = contained_matches(&root, matches)?;
     matches
         .into_iter()
-        .map(|path| resolved_file_match(&root, path, &plan.compression))
+        .map(|path| resolved_file_match(resource_id, &root, path, plan))
         .collect()
 }
 
@@ -743,6 +839,7 @@ fn resolve_http_file_match(
 ) -> Result<Vec<ResolvedFileMatch>> {
     reject_remote_compression(resource_id, plan)?;
     validate_http_single_file_glob(resource_id, plan)?;
+    validate_http_format_support(resource_id, plan)?;
     let url = join_http_root_and_glob(&plan.root, &plan.glob);
     let resource = FileTransportResource {
         location: FileTransportLocation::HttpUrl { url: url.clone() },
@@ -750,7 +847,10 @@ fn resolve_http_file_match(
         auth: plan.auth.clone(),
     };
     let metadata = transport.metadata(&resource)?;
-    Ok(vec![resolved_transport_file_match(resource, metadata)?])
+    let format = resolve_transport_format(resource_id, plan, transport, &resource, &metadata)?;
+    Ok(vec![resolved_transport_file_match(
+        resource, metadata, format,
+    )?])
 }
 
 fn no_file_matches_error(resource_id: &ResourceId, plan: &FileResourcePlan) -> CdfError {
@@ -958,9 +1058,10 @@ fn contained_matches(root: &Path, matches: Vec<PathBuf>) -> Result<Vec<PathBuf>>
 }
 
 fn resolved_file_match(
+    resource_id: &ResourceId,
     root: &Path,
     path: PathBuf,
-    declared_compression: &FileCompressionDeclaration,
+    plan: &FileResourcePlan,
 ) -> Result<ResolvedFileMatch> {
     let metadata = fs::metadata(&path).map_err(|error| {
         CdfError::data(format!("stat matched file {}: {error}", path.display()))
@@ -990,8 +1091,9 @@ fn resolved_file_match(
         ))
     })?;
     let path_text = path_text.replace(std::path::MAIN_SEPARATOR, "/");
+    let compression = resolve_local_compression(&path_text, &path, &plan.compression)?;
+    let (format, _) = resolve_local_format(resource_id, plan, &path_text, &path, &compression)?;
     let sha256 = file_sha256(&path)?;
-    let compression = resolve_local_compression(&path_text, &path, declared_compression)?;
     Ok(ResolvedFileMatch {
         open: ResolvedFileOpen::LocalPath(path),
         path_text,
@@ -1001,12 +1103,55 @@ fn resolved_file_match(
         modified_ms,
         bytes_loaded: Some(metadata.len()),
         compression,
+        format,
+    })
+}
+
+fn local_file_discovery_candidate(
+    resource_id: &ResourceId,
+    root: &Path,
+    path: PathBuf,
+    plan: &FileResourcePlan,
+) -> Result<LocalFileDiscoveryCandidate> {
+    let metadata = fs::metadata(&path).map_err(|error| {
+        CdfError::data(format!("stat matched file {}: {error}", path.display()))
+    })?;
+    let canonical_root = fs::canonicalize(root).map_err(|error| {
+        CdfError::data(format!(
+            "canonicalize file source root {}: {error}",
+            root.display()
+        ))
+    })?;
+    let relative_path = path.strip_prefix(&canonical_root).map_err(|error| {
+        CdfError::internal(format!(
+            "matched file {} did not remain relative to canonical root {}: {error}",
+            path.display(),
+            canonical_root.display()
+        ))
+    })?;
+    let relative_path = relative_path.to_str().map(str::to_owned).ok_or_else(|| {
+        CdfError::data(format!(
+            "matched file path is not valid UTF-8: {}",
+            relative_path.display()
+        ))
+    })?;
+    let relative_path = relative_path.replace(std::path::MAIN_SEPARATOR, "/");
+    let compression = resolve_local_compression(&relative_path, &path, &plan.compression)?;
+    let (_, format_bytes_read) =
+        resolve_local_format(resource_id, plan, &relative_path, &path, &compression)?;
+    Ok(LocalFileDiscoveryCandidate {
+        path,
+        relative_path,
+        size_bytes: metadata.len(),
+        compression: compression.mode.as_str().to_owned(),
+        selection_bytes_read: metadata.len().min(4) + format_bytes_read,
     })
 }
 
 fn resolved_transport_file_match(
     resource: FileTransportResource,
     metadata: FileIdentityMetadata,
+    format: FormatEvidence,
 ) -> Result<ResolvedFileMatch> {
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
         CdfError::data(format!(
@@ -1034,7 +1179,270 @@ fn resolved_transport_file_match(
             .map(str::to_owned),
         bytes_loaded: Some(size_bytes),
         compression: CompressionEvidence::none(),
+        format,
     })
+}
+
+fn resolve_local_format(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    path_text: &str,
+    path: &Path,
+    compression: &CompressionEvidence,
+) -> Result<(FormatEvidence, u64)> {
+    let extension_signal = format_extension_signal(path_text);
+    if !requires_binary_format_confirmation(plan, extension_signal) {
+        return Ok((
+            FormatEvidence {
+                extension_signal,
+                magic_signal: FormatSignal::Unknown,
+            },
+            0,
+        ));
+    }
+    reject_compressed_binary_format(resource_id, plan, path_text, compression)?;
+    let (magic_signal, bytes_read) = local_format_magic_signal(path)?;
+    validate_format_evidence(resource_id, plan, path_text, extension_signal, magic_signal)?;
+    Ok((
+        FormatEvidence {
+            extension_signal,
+            magic_signal,
+        },
+        bytes_read,
+    ))
+}
+
+fn resolve_transport_format(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    transport: &mut dyn FileTransport,
+    resource: &FileTransportResource,
+    metadata: &FileIdentityMetadata,
+) -> Result<FormatEvidence> {
+    let extension_signal = format_extension_signal(&metadata.location);
+    if !requires_binary_format_confirmation(plan, extension_signal) {
+        return Ok(FormatEvidence {
+            extension_signal,
+            magic_signal: FormatSignal::Unknown,
+        });
+    }
+    let size_bytes = metadata.size_bytes.ok_or_else(|| {
+        CdfError::data(format!(
+            "HTTP(S) file metadata for `{}` did not include Content-Length for format confirmation",
+            diagnostic_location(&metadata.location)
+        ))
+    })?;
+    let magic_signal = transport_format_magic_signal(transport, resource, size_bytes)?;
+    validate_format_evidence(
+        resource_id,
+        plan,
+        &diagnostic_location(&metadata.location),
+        extension_signal,
+        magic_signal,
+    )?;
+    Ok(FormatEvidence {
+        extension_signal,
+        magic_signal,
+    })
+}
+
+fn requires_binary_format_confirmation(
+    plan: &FileResourcePlan,
+    extension_signal: FormatSignal,
+) -> bool {
+    matches!(
+        plan.format,
+        FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
+    ) || extension_signal != FormatSignal::Unknown
+}
+
+fn reject_compressed_binary_format(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    path_text: &str,
+    compression: &CompressionEvidence,
+) -> Result<()> {
+    if compression.mode == FileCompression::None {
+        return Ok(());
+    }
+    let exclusion = match plan.format {
+        FileFormatDeclaration::Parquet => "compressed Parquet discovery is excluded",
+        FileFormatDeclaration::ArrowIpc => "compressed Arrow IPC discovery is excluded",
+        FileFormatDeclaration::Csv
+        | FileFormatDeclaration::Json
+        | FileFormatDeclaration::Ndjson => "compressed binary discovery is excluded",
+    };
+    Err(CdfError::contract(format!(
+        "file resource `{resource_id}` cannot confirm binary format `{}` for compressed file `{path_text}`: {exclusion}; compressed Parquet and Arrow IPC are not supported; use an uncompressed `.parquet` or `.arrow` file",
+        file_format_name(&plan.format)
+    )))
+}
+
+fn validate_format_evidence(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    path_text: &str,
+    extension_signal: FormatSignal,
+    magic_signal: FormatSignal,
+) -> Result<()> {
+    let expected_signal = format_declaration_signal(&plan.format);
+    let extension_agrees = expected_signal == Some(extension_signal)
+        || (plan.format_declared && extension_signal == FormatSignal::Unknown);
+    if extension_agrees && expected_signal == Some(magic_signal) {
+        return Ok(());
+    }
+
+    let declared = if plan.format_declared {
+        file_format_name(&plan.format)
+    } else {
+        "<omitted>"
+    };
+    let mut format_requirement = match plan.format {
+        FileFormatDeclaration::Parquet => "expected Parquet file framing with PAR1 header/footer; ",
+        FileFormatDeclaration::ArrowIpc => {
+            "expected Arrow IPC file framing with ARROW1 header/footer; "
+        }
+        FileFormatDeclaration::Csv
+        | FileFormatDeclaration::Json
+        | FileFormatDeclaration::Ndjson => "",
+    };
+    if magic_signal == FormatSignal::ArrowIpcStream {
+        format_requirement = "Arrow IPC stream framing is unsupported; expected Arrow IPC file framing with ARROW1 header/footer; ";
+    }
+    Err(CdfError::data(format!(
+        "file format confirmation failed for resource `{resource_id}`, file `{path_text}`: declared format `{declared}`, inferred format `{}`, resolved format `{}`, extension signal `{}`, magic bytes signal `{}`; {format_requirement}make the file extension and magic agree with `format = \"{}\"`, or change the explicit format to match the file",
+        extension_signal.as_str(),
+        file_format_name(&plan.format),
+        extension_signal.as_str(),
+        magic_signal.as_str(),
+        file_format_name(&plan.format),
+    )))
+}
+
+fn format_declaration_signal(format: &FileFormatDeclaration) -> Option<FormatSignal> {
+    match format {
+        FileFormatDeclaration::Parquet => Some(FormatSignal::Parquet),
+        FileFormatDeclaration::ArrowIpc => Some(FormatSignal::ArrowIpc),
+        FileFormatDeclaration::Csv
+        | FileFormatDeclaration::Json
+        | FileFormatDeclaration::Ndjson => None,
+    }
+}
+
+fn file_format_name(format: &FileFormatDeclaration) -> &'static str {
+    match format {
+        FileFormatDeclaration::Csv => "csv",
+        FileFormatDeclaration::Json => "json",
+        FileFormatDeclaration::Ndjson => "ndjson",
+        FileFormatDeclaration::Parquet => "parquet",
+        FileFormatDeclaration::ArrowIpc => "arrow_ipc",
+    }
+}
+
+fn records_format_metadata(plan: &FileResourcePlan) -> bool {
+    matches!(
+        plan.format,
+        FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
+    )
+}
+
+fn format_extension_signal(path_text: &str) -> FormatSignal {
+    let path_without_fragment = path_text.split('#').next().unwrap_or(path_text);
+    let path_without_query = path_without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(path_without_fragment)
+        .to_ascii_lowercase();
+    if path_without_query.ends_with(".parquet") {
+        FormatSignal::Parquet
+    } else if path_without_query.ends_with(".arrow") {
+        FormatSignal::ArrowIpc
+    } else {
+        FormatSignal::Unknown
+    }
+}
+
+fn local_format_magic_signal(path: &Path) -> Result<(FormatSignal, u64)> {
+    let mut file = File::open(path).map_err(|error| {
+        CdfError::data(format!(
+            "open matched file {} for format detection: {error}",
+            path.display()
+        ))
+    })?;
+    let size_bytes = file
+        .metadata()
+        .map_err(|error| {
+            CdfError::data(format!(
+                "stat matched file {} for format detection: {error}",
+                path.display()
+            ))
+        })?
+        .len();
+    let mut head = [0_u8; 6];
+    let head_read = file.read(&mut head).map_err(|error| {
+        CdfError::data(format!(
+            "read matched file {} header for format detection: {error}",
+            path.display()
+        ))
+    })?;
+    let tail_length = size_bytes.min(6);
+    file.seek(SeekFrom::Start(size_bytes.saturating_sub(tail_length)))
+        .map_err(|error| {
+            CdfError::data(format!(
+                "seek matched file {} footer for format detection: {error}",
+                path.display()
+            ))
+        })?;
+    let mut tail = [0_u8; 6];
+    let tail_read = file.read(&mut tail).map_err(|error| {
+        CdfError::data(format!(
+            "read matched file {} footer for format detection: {error}",
+            path.display()
+        ))
+    })?;
+    Ok((
+        format_magic_signal(&head[..head_read], &tail[..tail_read]),
+        (head_read + tail_read) as u64,
+    ))
+}
+
+fn transport_format_magic_signal(
+    transport: &mut dyn FileTransport,
+    resource: &FileTransportResource,
+    size_bytes: u64,
+) -> Result<FormatSignal> {
+    if size_bytes == 0 {
+        return Ok(FormatSignal::Unknown);
+    }
+    let head_length = size_bytes.min(6);
+    let tail_length = size_bytes.min(6);
+    let head = transport.read_range(resource, ByteRange::new(0, head_length)?)?;
+    let tail = transport.read_range(
+        resource,
+        ByteRange::new(size_bytes - tail_length, tail_length)?,
+    )?;
+    Ok(format_magic_signal(&head, &tail))
+}
+
+fn format_magic_signal(head: &[u8], tail: &[u8]) -> FormatSignal {
+    if head.starts_with(b"PAR1") && tail.ends_with(b"PAR1") {
+        FormatSignal::Parquet
+    } else if head.starts_with(b"ARROW1") && tail.ends_with(b"ARROW1") {
+        FormatSignal::ArrowIpc
+    } else if head.starts_with(&[0xff, 0xff, 0xff, 0xff]) {
+        FormatSignal::ArrowIpcStream
+    } else {
+        FormatSignal::Unknown
+    }
+}
+
+fn diagnostic_location(location: &str) -> String {
+    let path = location.split('?').next().unwrap_or(location);
+    if path == location {
+        path.to_owned()
+    } else {
+        format!("{path}?<redacted>")
+    }
 }
 
 fn resolve_local_compression(
@@ -1220,6 +1628,16 @@ fn validate_http_single_file_glob(resource_id: &ResourceId, plan: &FileResourceP
         )));
     }
     Ok(())
+}
+
+fn validate_http_format_support(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
+    if plan.format == FileFormatDeclaration::Parquet {
+        return Ok(());
+    }
+    Err(CdfError::contract(format!(
+        "HTTP(S) file resource `{resource_id}` supports only single-file Parquet at the plan/deep-validate front end; resolved format `{}` is unsupported and remote Arrow IPC remains excluded",
+        file_format_name(&plan.format)
+    )))
 }
 
 fn join_http_root_and_glob(root: &str, glob: &str) -> String {

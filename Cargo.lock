@@ -714,6 +714,7 @@ name = "cdf-cli"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
+ "arrow-ipc",
  "arrow-schema 59.1.0",
  "cdf-contract",
  "cdf-declarative",
@@ -736,6 +737,7 @@ dependencies = [
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -788,6 +790,7 @@ name = "cdf-declarative"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
+ "arrow-ipc",
  "arrow-schema 59.1.0",
  "cdf-conformance",
  "cdf-contract",
@@ -795,6 +798,7 @@ dependencies = [
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-package",
  "flate2",
  "futures-executor",
  "futures-util",

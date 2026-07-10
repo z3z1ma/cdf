@@ -24,7 +24,9 @@ sha2 = "0.10.9"
 toml = "1.1.2"
 
 [dev-dependencies]
+arrow-ipc = "59.1.0"
 cdf-conformance = { path = "../cdf-conformance" }
+cdf-package = { path = "../cdf-package" }
 flate2 = "1.1.9"
 futures-executor = "0.3.32"
 tempfile = "3.27.0"

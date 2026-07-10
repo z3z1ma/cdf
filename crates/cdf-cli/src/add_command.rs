@@ -256,25 +256,46 @@ impl AddResourceRequest {
     }
 }
 
-struct AddTarget {
-    source_root: String,
-    display_source_root: String,
-    glob: String,
+#[derive(Clone, Debug)]
+pub(crate) struct AddTarget {
+    pub(crate) source_root: String,
+    pub(crate) display_source_root: String,
+    pub(crate) glob: String,
+    pub(crate) canonical_location: String,
+    pub(crate) is_http: bool,
 }
 
 impl AddTarget {
     fn from_location(context: &ProjectContext, location: &str) -> Result<Self, CliError> {
-        if looks_like_http_url(location) {
-            return Self::from_http_url(location);
-        }
-        Self::from_local_path(context, location)
+        Self::from_location_for("cdf add", context, location)
     }
 
-    fn from_http_url(location: &str) -> Result<Self, CliError> {
+    pub(crate) fn from_adhoc_location(
+        context: &ProjectContext,
+        location: &str,
+    ) -> Result<Self, CliError> {
+        if looks_like_http_url(location) {
+            return Self::from_http_url("cdf run ad-hoc", location);
+        }
+        Self::from_local_path("cdf run ad-hoc", context, location, true)
+    }
+
+    pub(crate) fn from_location_for(
+        command: &str,
+        context: &ProjectContext,
+        location: &str,
+    ) -> Result<Self, CliError> {
+        if looks_like_http_url(location) {
+            return Self::from_http_url(command, location);
+        }
+        Self::from_local_path(command, context, location, false)
+    }
+
+    fn from_http_url(command: &str, location: &str) -> Result<Self, CliError> {
         let parsed = reqwest::Url::parse(location).map_err(|error| {
             CliError::usage_with(
                 format!(
-                    "cdf add could not parse URL `{}`: {error}",
+                    "{command} could not parse URL `{}`: {error}",
                     redact_url(location)
                 ),
                 error_catalog::USAGE,
@@ -286,16 +307,24 @@ impl AddTarget {
             other => {
                 return Err(CliError::usage_with(
                     format!(
-                        "cdf add supports HTTPS Parquet URLs in this slice; `{other}` is not supported"
+                        "{command} supports HTTPS Parquet URLs in this slice; `{other}` is not supported"
                     ),
                     error_catalog::USAGE,
                 ));
             }
         }
+        if !parsed.username().is_empty() || parsed.password().is_some() {
+            return Err(CliError::usage_with(
+                format!(
+                    "{command} does not accept URL userinfo credentials; use a stable public HTTPS URL or a later secret-backed source"
+                ),
+                error_catalog::USAGE,
+            ));
+        }
         if parsed.query().is_some() || parsed.fragment().is_some() {
             return Err(CliError::usage_with(
                 format!(
-                    "cdf add does not write signed URL query or fragment material into project config; use a stable HTTPS URL or a later secret-backed source path (`{}`)",
+                    "{command} does not write signed URL query or fragment material into project config; use a stable HTTPS URL or a later secret-backed source path (`{}`)",
                     redact_url(location)
                 ),
                 error_catalog::USAGE,
@@ -308,14 +337,16 @@ impl AddTarget {
             .ok_or_else(|| {
                 CliError::usage_with(
                     format!(
-                        "cdf add URL `{}` does not name a Parquet file",
+                        "{command} URL `{}` does not name a Parquet file",
                         redact_url(location)
                     ),
                     error_catalog::USAGE,
                 )
             })?
             .to_owned();
-        ensure_parquet_name(&glob, &redact_url(location))?;
+        ensure_parquet_name(command, &glob, &redact_url(location))?;
+
+        let canonical_location = parsed.to_string();
 
         let mut root = parsed.clone();
         let mut parent_segments = parsed
@@ -341,10 +372,17 @@ impl AddTarget {
             display_source_root: redact_url(&source_root),
             source_root,
             glob,
+            canonical_location,
+            is_http: true,
         })
     }
 
-    fn from_local_path(context: &ProjectContext, location: &str) -> Result<Self, CliError> {
+    fn from_local_path(
+        command: &str,
+        context: &ProjectContext,
+        location: &str,
+        redact_path: bool,
+    ) -> Result<Self, CliError> {
         let input = PathBuf::from(location);
         let cwd = env::current_dir().map_err(|error| {
             CliError::mapped(
@@ -362,13 +400,19 @@ impl AddTarget {
             .find(|candidate| candidate.is_file())
             .ok_or_else(|| {
                 CliError::usage_with(
-                    format!("cdf add could not find local Parquet file `{location}`"),
+                    format!(
+                        "{command} could not find local Parquet file `{}`",
+                        local_path_display(location, redact_path)
+                    ),
                     error_catalog::USAGE,
                 )
             })?;
         let canonical_file = fs::canonicalize(&file).map_err(|error| {
             CliError::mapped(
-                CdfError::contract(format!("canonicalize {}: {error}", file.display())),
+                CdfError::contract(format!(
+                    "canonicalize {}: {error}",
+                    local_path_display(&file.display().to_string(), redact_path)
+                )),
                 error_catalog::PROJECT_IO,
             )
         })?;
@@ -378,19 +422,23 @@ impl AddTarget {
             .ok_or_else(|| {
                 CliError::usage_with(
                     format!(
-                        "cdf add local path `{}` has no UTF-8 file name",
-                        file.display()
+                        "{command} local path `{}` has no UTF-8 file name",
+                        local_path_display(&file.display().to_string(), redact_path)
                     ),
                     error_catalog::USAGE,
                 )
             })?
             .to_owned();
-        ensure_parquet_name(&glob, &file.display().to_string())?;
+        ensure_parquet_name(
+            command,
+            &glob,
+            &local_path_display(&file.display().to_string(), redact_path),
+        )?;
         let parent = canonical_file.parent().ok_or_else(|| {
             CliError::usage_with(
                 format!(
-                    "cdf add local path `{}` has no parent directory",
-                    file.display()
+                    "{command} local path `{}` has no parent directory",
+                    local_path_display(&file.display().to_string(), redact_path)
                 ),
                 error_catalog::USAGE,
             )
@@ -399,20 +447,22 @@ impl AddTarget {
             CliError::mapped(
                 CdfError::contract(format!(
                     "canonicalize project root {}: {error}",
-                    context.root.display()
+                    local_path_display(&context.root.display().to_string(), redact_path)
                 )),
                 error_catalog::PROJECT_IO,
             )
         })?;
         let source_root = match parent.strip_prefix(&project_root) {
             Ok(relative) if relative.as_os_str().is_empty() => ".".to_owned(),
-            Ok(relative) => path_to_toml_string(relative)?,
-            Err(_) => path_to_toml_string(parent)?,
+            Ok(relative) => path_to_toml_string_for(relative, redact_path)?,
+            Err(_) => path_to_toml_string_for(parent, redact_path)?,
         };
         Ok(Self {
             display_source_root: source_root.clone(),
             source_root,
             glob,
+            canonical_location: path_to_toml_string_for(&canonical_file, redact_path)?,
+            is_http: false,
         })
     }
 }
@@ -553,19 +603,37 @@ fn add_document(report: &AddReport) -> RenderDocument {
 }
 
 fn resource_toml(request: &AddResourceRequest) -> Result<String, CliError> {
+    parquet_resource_toml(
+        &request.source,
+        &request.resource,
+        &AddTarget {
+            source_root: request.source_root.clone(),
+            display_source_root: request.display_source_root.clone(),
+            glob: request.glob.clone(),
+            canonical_location: request.source_root.clone(),
+            is_http: looks_like_http_url(&request.source_root),
+        },
+    )
+}
+
+pub(crate) fn parquet_resource_toml(
+    source: &str,
+    resource: &str,
+    target: &AddTarget,
+) -> Result<String, CliError> {
     let mut source_lines = format!(
         "[source.{}]\nkind = \"files\"\nroot = {}\n",
-        request.source,
-        toml_string(&request.source_root)?
+        source,
+        toml_string(&target.source_root)?
     );
-    if let Some(host) = http_host(&request.source_root) {
+    if let Some(host) = http_host(&target.source_root) {
         source_lines.push_str(&format!("egress_allowlist = [{}]\n", toml_string(&host)?));
     }
     Ok(format!(
         "{}\n[resource.{}]\nglob = {}\nformat = \"parquet\"\nwrite_disposition = \"append\"\ntrust = \"governed\"\n",
         source_lines,
-        request.resource,
-        toml_string(&request.glob)?
+        resource,
+        toml_string(&target.glob)?
     ))
 }
 
@@ -620,12 +688,14 @@ fn is_bare_toml_key(value: &str) -> bool {
         .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
 }
 
-fn ensure_parquet_name(name: &str, display: &str) -> Result<(), CliError> {
+fn ensure_parquet_name(command: &str, name: &str, display: &str) -> Result<(), CliError> {
     if name.to_ascii_lowercase().ends_with(".parquet") {
         return Ok(());
     }
     Err(CliError::usage_with(
-        format!("cdf add supports single-file Parquet in this slice; `{display}` is not .parquet"),
+        format!(
+            "{command} supports single-file Parquet in this slice; `{display}` is not .parquet"
+        ),
         error_catalog::USAGE,
     ))
 }
@@ -648,6 +718,10 @@ fn http_host(value: &str) -> Option<String> {
 fn redact_url(value: &str) -> String {
     match reqwest::Url::parse(value) {
         Ok(mut url) => {
+            if !url.username().is_empty() || url.password().is_some() {
+                let _ = url.set_username("");
+                let _ = url.set_password(None);
+            }
             if url.query().is_some() {
                 url.set_query(Some("[redacted]"));
             }
@@ -656,7 +730,15 @@ fn redact_url(value: &str) -> String {
             }
             url.to_string()
         }
-        Err(_) => value.to_owned(),
+        Err(_) => "[redacted-url]".to_owned(),
+    }
+}
+
+fn local_path_display(value: &str, redact: bool) -> String {
+    if redact {
+        "[redacted-local-parquet-path]".to_owned()
+    } else {
+        value.to_owned()
     }
 }
 
@@ -666,6 +748,20 @@ fn path_to_toml_string(path: &Path) -> Result<String, CliError> {
         .ok_or_else(|| {
             CliError::usage_with(
                 format!("path `{}` is not valid UTF-8", path.display()),
+                error_catalog::USAGE,
+            )
+        })
+}
+
+fn path_to_toml_string_for(path: &Path, redact: bool) -> Result<String, CliError> {
+    if !redact {
+        return path_to_toml_string(path);
+    }
+    path.to_str()
+        .map(|value| value.replace(std::path::MAIN_SEPARATOR, "/"))
+        .ok_or_else(|| {
+            CliError::usage_with(
+                "path `[redacted-local-parquet-path]` is not valid UTF-8",
                 error_catalog::USAGE,
             )
         })

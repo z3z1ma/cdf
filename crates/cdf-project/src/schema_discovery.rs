@@ -3,9 +3,9 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use cdf_contract::{IdentifierPolicy, NORMALIZER_NAMECASE_V1, normalize_arrow_schema};
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
-    FileTransportLocation, FileTransportResource, discover_local_parquet_schema,
-    discover_rest_sample_schema, discover_transport_parquet_schema,
-    postgres_table_target_for_sql_plan,
+    FileTransportLocation, FileTransportResource, discover_local_arrow_ipc_schema,
+    discover_local_parquet_schema, discover_rest_sample_schema, discover_transport_parquet_schema,
+    local_file_discovery_candidates, postgres_table_target_for_sql_plan,
 };
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
@@ -14,7 +14,8 @@ use cdf_kernel::{
 };
 
 use crate::{
-    DiscoveredParquetSchemaSnapshot, SCHEMA_DISCOVERY_FORMAT_PARQUET,
+    DiscoveredParquetSchemaSnapshot, SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
+    SCHEMA_DISCOVERY_FORMAT_PARQUET, SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA,
     SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER, SchemaSnapshotArtifact, SchemaSnapshotStore,
 };
 
@@ -75,17 +76,32 @@ fn discover_resource_schema_inner(
 ) -> Result<ResourceSchemaDiscovery> {
     ensure_discover_schema_mode(resource)?;
     match resource.plan() {
-        CompiledResourcePlan::Files(_) => {
-            let discovery = discover_parquet_resource_schema(resource, file_dependencies)?;
-            Ok(ResourceSchemaDiscovery {
-                normalized_schema: Arc::clone(&discovery.normalized_schema),
-                snapshot: DiscoveredSchemaSnapshot {
-                    artifact: discovery.snapshot.artifact,
-                    reference: discovery.snapshot.reference,
-                    source_identity: discovery.snapshot.source_identity,
-                },
-            })
-        }
+        CompiledResourcePlan::Files(plan) => match plan.format {
+            FileFormatDeclaration::ArrowIpc if is_http_root(&plan.root) => {
+                Err(unsupported_discover_slice(
+                    resource.descriptor(),
+                    "remote Arrow IPC discovery is excluded; use a local single-file Arrow IPC file",
+                ))
+            }
+            FileFormatDeclaration::ArrowIpc => discover_local_arrow_ipc_resource_schema(resource),
+            FileFormatDeclaration::Parquet => {
+                let discovery = discover_parquet_resource_schema(resource, file_dependencies)?;
+                Ok(ResourceSchemaDiscovery {
+                    normalized_schema: Arc::clone(&discovery.normalized_schema),
+                    snapshot: DiscoveredSchemaSnapshot {
+                        artifact: discovery.snapshot.artifact,
+                        reference: discovery.snapshot.reference,
+                        source_identity: discovery.snapshot.source_identity,
+                    },
+                })
+            }
+            ref format => Err(unsupported_discover_slice(
+                resource.descriptor(),
+                format!(
+                    "schema discovery for local file format {format:?} is not implemented in this slice; supported file formats are Parquet and local single-file Arrow IPC"
+                ),
+            )),
+        },
         CompiledResourcePlan::Sql(plan) => {
             discover_postgres_resource_schema(resource, plan, secret_provider)
         }
@@ -97,6 +113,60 @@ fn discover_resource_schema_inner(
             )),
         },
     }
+}
+
+fn discover_local_arrow_ipc_resource_schema(
+    resource: &CompiledResource,
+) -> Result<ResourceSchemaDiscovery> {
+    ensure_discover_schema_mode(resource)?;
+    let candidate = single_local_arrow_ipc_candidate(resource)?;
+    if candidate.compression != "none" {
+        return Err(unsupported_discover_slice(
+            resource.descriptor(),
+            "compressed Arrow IPC discovery is excluded; use an uncompressed Arrow IPC file",
+        ));
+    }
+    let mut probe = discover_local_arrow_ipc_schema(&candidate.path)?;
+    probe
+        .source_identity
+        .insert("path".to_owned(), candidate.relative_path);
+    probe
+        .source_identity
+        .insert("transport".to_owned(), "local".to_owned());
+    probe.source_identity.insert(
+        "probe_bytes_read".to_owned(),
+        (probe.probe_bytes_read + candidate.selection_bytes_read).to_string(),
+    );
+    let normalized = normalize_arrow_schema(probe.schema.as_ref(), &IdentifierPolicy::default())?;
+    let normalized = Arc::new(normalized);
+    let metadata = BTreeMap::from([
+        (
+            "probe".to_owned(),
+            SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA.to_owned(),
+        ),
+        (
+            "format".to_owned(),
+            SCHEMA_DISCOVERY_FORMAT_ARROW_IPC.to_owned(),
+        ),
+        ("source_kind".to_owned(), "files".to_owned()),
+        (
+            "cdf:normalizer".to_owned(),
+            NORMALIZER_NAMECASE_V1.to_owned(),
+        ),
+    ]);
+    let artifact = SchemaSnapshotArtifact::new(
+        &resource.descriptor().resource_id,
+        normalized.as_ref(),
+        metadata,
+    )?;
+    Ok(ResourceSchemaDiscovery {
+        normalized_schema: normalized,
+        snapshot: DiscoveredSchemaSnapshot {
+            reference: artifact.reference(),
+            artifact,
+            source_identity: probe.source_identity,
+        },
+    })
 }
 
 fn discover_parquet_resource_schema(
@@ -475,6 +545,47 @@ fn single_local_parquet_partition(
             plan.glob,
             plan.root,
             partitions.len()
+        ))),
+    }
+}
+
+fn single_local_arrow_ipc_candidate(
+    resource: &CompiledResource,
+) -> Result<cdf_declarative::LocalFileDiscoveryCandidate> {
+    let plan = match resource.plan() {
+        CompiledResourcePlan::Files(plan) => plan,
+        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
+            return Err(unsupported_discover_slice(
+                resource.descriptor(),
+                "local Arrow IPC discovery only supports file resources",
+            ));
+        }
+    };
+    if plan.format != FileFormatDeclaration::ArrowIpc {
+        return Err(unsupported_discover_slice(
+            resource.descriptor(),
+            format!(
+                "local Arrow IPC discovery requires format = \"arrow_ipc\"; resource uses {:?}",
+                plan.format
+            ),
+        ));
+    }
+
+    let candidates = local_file_discovery_candidates(&resource.descriptor().resource_id, plan)?;
+    match candidates.as_slice() {
+        [candidate] => Ok(candidate.clone()),
+        [] => Err(CdfError::data(format!(
+            "local Arrow IPC discovery for resource `{}` matched no files under `{}` for glob `{}`",
+            resource.descriptor().resource_id,
+            plan.root,
+            plan.glob
+        ))),
+        _ => Err(CdfError::contract(format!(
+            "multi-file Arrow IPC discovery is unsupported for resource `{}`; glob `{}` under `{}` resolved to {} files",
+            resource.descriptor().resource_id,
+            plan.glob,
+            plan.root,
+            candidates.len()
         ))),
     }
 }

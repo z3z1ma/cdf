@@ -15,6 +15,8 @@ pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION: u16 = 1;
 pub const SCHEMA_SNAPSHOT_DIR: &str = ".cdf/schemas";
 pub const SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER: &str = "parquet-footer";
 pub const SCHEMA_DISCOVERY_FORMAT_PARQUET: &str = "parquet";
+pub const SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA: &str = "arrow-ipc-file-schema";
+pub const SCHEMA_DISCOVERY_FORMAT_ARROW_IPC: &str = "arrow_ipc";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct SchemaSnapshotArtifact {

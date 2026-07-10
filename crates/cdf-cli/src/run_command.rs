@@ -1,12 +1,21 @@
 use std::{
     fs,
+    path::Path,
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, TargetName};
-use cdf_project::{ProjectRunRequest, run_project};
+use cdf_declarative::{
+    CompiledResource, compile_document_with_project_root, parse_toml as parse_declarative_toml,
+};
+use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, SchemaSource, TargetName};
+use cdf_project::{
+    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunRequest, SchemaSnapshotStore, run_project,
+};
+use sha2::{Digest, Sha256};
 
 use crate::{
+    add_command::{AddTarget, parquet_resource_toml},
     args::{Cli, RunArgs, ScanArgs},
     context::ProjectContext,
     destination_uri::{
@@ -16,7 +25,7 @@ use crate::{
     output::{CliError, CommandOutput},
     progress::human_progress_sink,
     project_run_resource::build_project_run_resource,
-    reports::{RunCliReport, RunDestinationReport},
+    reports::{AdhocRunReport, RunCliReport, RunDestinationReport},
     scan_command::{
         build_engine_plan_for_resource, default_target_for_resource,
         prepare_discover_resource_for_cli,
@@ -34,14 +43,49 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
             error_catalog::RUN_LOOP_NOT_SUPPORTED,
         ));
     }
-    let explicit = resolved_run_args(args)?;
-    let context =
+    let mut args = args;
+    let requested = args.resource_id.clone().ok_or_else(|| {
+        CliError::usage_with(
+            "run requires RESOURCE or --resource",
+            error_catalog::RUN_ARGUMENT,
+        )
+    })?;
+    let mut context =
         ProjectContext::load_for_command("run", cli.project.as_ref(), cli.env.as_deref())?;
+    let adhoc = if context
+        .resources
+        .iter()
+        .any(|resource| resource.descriptor().resource_id.as_str() == requested)
+    {
+        None
+    } else if looks_like_adhoc_location(&requested) {
+        if args.destination_uri.is_none() {
+            return Err(CliError::usage_with(
+                "cdf run ad-hoc mode requires an explicit `--to <destination>`",
+                error_catalog::RUN_ARGUMENT,
+            ));
+        }
+        let synthesized = synthesize_adhoc_parquet(&mut context, &requested)?;
+        args.resource_id = Some(synthesized.resource_id.clone());
+        Some(synthesized.report)
+    } else {
+        None
+    };
+    let explicit = resolved_run_args(args)?;
     let resource = context.resource(&explicit.resource_id)?;
     let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
     let resource = &prepared.resource;
     let run_resource = build_project_run_resource(&context, resource)?;
     let state_store_path = context.state_store_path()?;
+    let resolved = resolve_selected_destination(
+        &context,
+        &explicit.target,
+        explicit.destination_uri.as_deref(),
+    )
+    .map_err(|error| {
+        run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)
+    })?;
+    let identifier_policy = resolved.destination.column_identifier_policy()?;
     let plan = build_engine_plan_for_resource(
         run_resource.as_queryable(),
         &ScanArgs {
@@ -55,15 +99,8 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
             package_id: Some(explicit.package_id.clone()),
             no_pin: false,
         },
+        identifier_policy.as_ref(),
     )?;
-    let resolved = resolve_selected_destination(
-        &context,
-        &explicit.target,
-        explicit.destination_uri.as_deref(),
-    )
-    .map_err(|error| {
-        run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)
-    })?;
     let destination = resolved.destination;
     let destination_report =
         RunDestinationReport::from_project(&destination.describe(), destination.target());
@@ -94,8 +131,11 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
             return Err(error);
         }
     };
-    let cli_report =
+    let mut cli_report =
         RunCliReport::from_report(&report, destination_report, prepared.schema_snapshot);
+    if let Some(adhoc) = adhoc {
+        cli_report = cli_report.with_adhoc(adhoc);
+    }
     let document = cli_report.render_document();
     match progress {
         Some(progress) => {
@@ -126,6 +166,232 @@ fn run_destination_resolution_error(
         .with_suggestions(destination_error_suggestions(context, destination_uri))
     } else {
         error.into()
+    }
+}
+
+struct SynthesizedAdhoc {
+    resource_id: String,
+    report: AdhocRunReport,
+}
+
+fn looks_like_adhoc_location(value: &str) -> bool {
+    value.contains("://")
+        || value.contains(std::path::MAIN_SEPARATOR)
+        || value.to_ascii_lowercase().ends_with(".parquet")
+        || Path::new(value).is_file()
+}
+
+fn synthesize_adhoc_parquet(
+    context: &mut ProjectContext,
+    location: &str,
+) -> Result<SynthesizedAdhoc, CliError> {
+    if location.contains("://")
+        && !location.starts_with("https://")
+        && !location.starts_with("http://")
+    {
+        return Err(CliError::not_supported(
+            "cdf run ad-hoc",
+            "only local paths and stable HTTPS Parquet URLs are supported in this slice",
+            ".10x/tickets/2026-07-09-p2-ws-h3-adhoc-parquet-run.md",
+        ));
+    }
+    let target = AddTarget::from_adhoc_location(context, location)?;
+    let digest = stable_adhoc_digest(&target.canonical_location);
+    let resource_name = format!("parquet_{}", &digest[..24]);
+    let resource_id = format!("adhoc.{resource_name}");
+    if context
+        .resources
+        .iter()
+        .any(|resource| resource.descriptor().resource_id.as_str() == resource_id)
+    {
+        return Err(CliError::mapped(
+            CdfError::contract(format!(
+                "cdf run ad-hoc synthesized resource id `{resource_id}` conflicts with an already compiled project resource; rename or remove the conflicting project resource before retrying"
+            )),
+            error_catalog::PROJECT_RESOURCE_MAPPING,
+        ));
+    }
+    let config_path = format!(".cdf/adhoc/{resource_name}.toml");
+    let config_path_abs = context.root.join(&config_path);
+
+    let (compiled_target, source_artifact_path, permanent_location) = if target.is_http {
+        (target.clone(), None, target.canonical_location.clone())
+    } else {
+        let staged_path = format!(".cdf/adhoc/data/{resource_name}.parquet");
+        persist_local_adhoc_source(
+            Path::new(&target.canonical_location),
+            &context.root.join(&staged_path),
+        )?;
+        (
+            AddTarget {
+                source_root: ".cdf/adhoc/data".to_owned(),
+                display_source_root: ".cdf/adhoc/data".to_owned(),
+                glob: format!("{resource_name}.parquet"),
+                canonical_location: staged_path.clone(),
+                is_http: false,
+            },
+            Some(staged_path.clone()),
+            staged_path,
+        )
+    };
+    let resource_toml = parquet_resource_toml("adhoc", &resource_name, &compiled_target)?;
+    let reused = fs::read_to_string(&config_path_abs).ok().as_deref() == Some(&resource_toml);
+    if !reused {
+        let parent = config_path_abs.parent().ok_or_else(|| {
+            CliError::mapped(
+                CdfError::internal("ad-hoc resource path has no parent"),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::mapped(
+                CdfError::data(format!("create .cdf/adhoc resource directory: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+        fs::write(&config_path_abs, &resource_toml).map_err(|error| {
+            CliError::mapped(
+                CdfError::data(format!("write ad-hoc resource config: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+    }
+
+    let document = parse_declarative_toml(&resource_toml)?;
+    let mut resources = compile_document_with_project_root(&document, &context.root)?;
+    if resources.len() != 1 {
+        return Err(CliError::mapped(
+            CdfError::internal(format!(
+                "generated ad-hoc TOML compiled {} resources instead of one",
+                resources.len()
+            )),
+            error_catalog::PROJECT_IO,
+        ));
+    }
+    let resource = hydrate_adhoc_locked_snapshot(context, resources.remove(0))?;
+    if resource.descriptor().resource_id.as_str() != resource_id {
+        return Err(CliError::mapped(
+            CdfError::internal("generated ad-hoc resource id did not match its stable identity"),
+            error_catalog::PROJECT_IO,
+        ));
+    }
+    context.resources.push(resource);
+    context.resource_origins.push(ProjectResourceOrigin {
+        source_name: "adhoc".to_owned(),
+        resource_name: resource_name.clone(),
+        source_file: Some(config_path.clone()),
+        mapping_pattern: resource_id.clone(),
+        mapping_status: "synthesized".to_owned(),
+    });
+
+    Ok(SynthesizedAdhoc {
+        resource_id: resource_id.clone(),
+        report: AdhocRunReport {
+            resource_id: resource_id.clone(),
+            config_path,
+            source_artifact_path,
+            reused,
+            make_permanent_command: format!(
+                "cdf add {resource_id} {}",
+                shell_argument(&permanent_location)
+            ),
+        },
+    })
+}
+
+fn hydrate_adhoc_locked_snapshot(
+    context: &ProjectContext,
+    resource: CompiledResource,
+) -> Result<CompiledResource, CliError> {
+    let Some(lock) = context.lock.as_ref() else {
+        return Ok(resource);
+    };
+    let Some(locked) = lock
+        .resources
+        .get(resource.descriptor().resource_id.as_str())
+    else {
+        return Ok(resource);
+    };
+    let Some(reference) = locked.schema_snapshot.as_ref() else {
+        return Ok(resource);
+    };
+    if locked.schema_hash.as_deref() != Some(reference.schema_hash.as_str())
+        || locked.descriptor.schema_source.pinned_snapshot() != Some(reference)
+    {
+        return Err(CliError::from(CdfError::data(format!(
+            "{LOCK_FILE_NAME} has inconsistent schema snapshot pointers for ad-hoc resource `{}`",
+            resource.descriptor().resource_id
+        ))));
+    }
+    let artifact = SchemaSnapshotStore::new(&context.root).read(reference)?;
+    if artifact.resource_id != resource.descriptor().resource_id.as_str() {
+        return Err(CliError::from(CdfError::data(format!(
+            "schema snapshot {} belongs to resource `{}` instead of ad-hoc resource `{}`",
+            reference.path,
+            artifact.resource_id,
+            resource.descriptor().resource_id
+        ))));
+    }
+    Ok(resource.with_schema_source_and_schema(
+        SchemaSource::Discovered {
+            snapshot: reference.clone(),
+        },
+        Arc::new(artifact.schema.to_arrow()?),
+    ))
+}
+
+fn persist_local_adhoc_source(source: &Path, destination: &Path) -> Result<(), CliError> {
+    let parent = destination.parent().ok_or_else(|| {
+        CliError::mapped(
+            CdfError::internal("ad-hoc staged source path has no parent"),
+            error_catalog::PROJECT_IO,
+        )
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        CliError::mapped(
+            CdfError::data(format!("create .cdf/adhoc staging directory: {error}")),
+            error_catalog::PROJECT_IO,
+        )
+    })?;
+    let temporary = destination.with_extension(format!("tmp-{}", std::process::id()));
+    let _ = fs::remove_file(&temporary);
+    if fs::hard_link(source, &temporary).is_err() {
+        fs::copy(source, &temporary).map_err(|error| {
+            CliError::mapped(
+                CdfError::data(format!("stage local ad-hoc Parquet input: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+    }
+    if destination.exists() {
+        fs::remove_file(destination).map_err(|error| {
+            CliError::mapped(
+                CdfError::data(format!("refresh staged ad-hoc Parquet input: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+    }
+    fs::rename(&temporary, destination).map_err(|error| {
+        CliError::mapped(
+            CdfError::data(format!("publish staged ad-hoc Parquet input: {error}")),
+            error_catalog::PROJECT_IO,
+        )
+    })?;
+    Ok(())
+}
+
+fn stable_adhoc_digest(value: &str) -> String {
+    let digest = Sha256::digest(value.as_bytes());
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn shell_argument(value: &str) -> String {
+    if value.bytes().all(|byte| {
+        byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'_' | b'-' | b':' | b'%')
+    }) {
+        value.to_owned()
+    } else {
+        format!("'{}'", value.replace('\'', "'\\''"))
     }
 }
 

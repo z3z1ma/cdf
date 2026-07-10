@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     env,
     ffi::OsString,
     fs,
@@ -15,6 +15,7 @@ use std::{
 };
 
 use arrow_array::{ArrayRef, Int32Array, Int64Array, RecordBatch, StringArray};
+use arrow_ipc::writer::StreamWriter;
 use arrow_schema::{DataType, Field, Schema};
 use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use cdf_kernel::{
@@ -38,6 +39,7 @@ use postgres::{Client, NoTls};
 use rusqlite::Connection;
 use serde_json::Value;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use crate::invoke;
 
@@ -722,6 +724,7 @@ fn validate_json_reports_project_shape() {
 fn validate_deep_reports_source_front_end_checks_without_writes() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
+    remove_resource_format(&project, "parquet");
     write_vendor_parquet(&project.root.join("data/vendors.parquet"));
 
     let result = run([
@@ -777,6 +780,105 @@ fn validate_deep_reports_source_front_end_checks_without_writes() {
     assert_eq!(resource["validation_program"]["status"], "ok");
     assert_eq!(resource["identifier_normalization"]["status"], "ok");
     assert_eq!(resource["destination"]["status"], "ok");
+}
+
+#[test]
+fn validate_deep_inferred_binary_mismatch_names_all_signals_without_writes() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "events.parquet");
+    remove_resource_format(&project, "parquet");
+    write_vendor_arrow_ipc(&project, "events.parquet");
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let diagnostics = json["result"]["resources"][0]["diagnostics"]
+        .as_array()
+        .unwrap();
+    let message = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["message"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(message.contains("file format confirmation failed for resource `local.events`"));
+    assert!(message.contains("file `events.parquet`"));
+    assert!(message.contains("declared format `<omitted>`"));
+    assert!(message.contains("inferred format `parquet`"));
+    assert!(message.contains("extension signal `parquet`"));
+    assert!(message.contains("magic bytes signal `arrow_ipc`"));
+    assert!(message.contains("format = \"parquet\""));
+    assert_no_schema_discovery_writes(&project);
+}
+
+#[test]
+fn remote_arrow_declared_schema_fails_plan_and_deep_validate_before_writes() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "https://data.example.test/"
+egress_allowlist = ["data.example.test"]
+
+[resource.events]
+glob = "events.arrow"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
+"#,
+    )
+    .unwrap();
+    let before = project_tree_snapshot(&project.root);
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_ne!(plan.exit_code, 0);
+    let plan_json = stderr_or_stdout_json(&plan.stderr);
+    let plan_message = plan_json["error"]["message"].as_str().unwrap();
+    assert!(plan_message.contains("HTTP(S) file resource `local.events`"));
+    assert!(plan_message.contains("only single-file Parquet"));
+    assert!(plan_message.contains("resolved format `arrow_ipc`"));
+    assert!(plan_message.contains("remote Arrow IPC remains excluded"));
+    assert_eq!(project_tree_snapshot(&project.root), before);
+
+    let deep = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+    assert_ne!(deep.exit_code, 0);
+    let deep_json = stderr_or_stdout_json(&deep.stdout);
+    let diagnostics = deep_json["result"]["resources"][0]["diagnostics"]
+        .as_array()
+        .unwrap();
+    let deep_messages = diagnostics
+        .iter()
+        .filter_map(|diagnostic| diagnostic["message"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(deep_messages.contains("HTTP(S) file resource `local.events`"));
+    assert!(deep_messages.contains("only single-file Parquet"));
+    assert!(deep_messages.contains("resolved format `arrow_ipc`"));
+    assert!(deep_messages.contains("remote Arrow IPC remains excluded"));
+    assert_eq!(project_tree_snapshot(&project.root), before);
 }
 
 #[test]
@@ -937,7 +1039,7 @@ fn add_http_parquet_pins_schema_with_bounded_fixture_requests() {
     let project = TestProject::new();
     write_vendor_parquet(&project.root.join("data/yellow.parquet"));
     let parquet = fs::read(project.root.join("data/yellow.parquet")).unwrap();
-    let (base_url, requests) = serve_parquet_file(parquet, 16);
+    let (base_url, requests) = serve_parquet_file(parquet, 64);
     let url = format!("{base_url}/yellow.parquet");
 
     let result = run([
@@ -1986,6 +2088,600 @@ fn schema_discover_local_parquet_reports_schema_without_project_writes() {
 }
 
 #[test]
+fn local_arrow_ipc_discover_pin_show_diff_preview_and_run_share_pinned_schema() {
+    let project = TestProject::new();
+    write_arrow_ipc_discover_resource(&project, "events.arrow");
+    remove_resource_format(&project, "arrow_ipc");
+    write_large_vendor_arrow_ipc(&project, "events.arrow");
+
+    let discover = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_eq!(discover.exit_code, 0, "stderr: {}", discover.stderr);
+    let discover_json = stderr_or_stdout_json(&discover.stdout);
+    let discovered = &discover_json["result"];
+    assert_eq!(
+        discovered["snapshot_metadata"]["probe"],
+        "arrow-ipc-file-schema"
+    );
+    assert_eq!(discovered["snapshot_metadata"]["format"], "arrow_ipc");
+    assert_eq!(discovered["snapshot_metadata"]["source_kind"], "files");
+    assert_eq!(
+        discovered["snapshot_metadata"]["cdf:normalizer"],
+        "namecase-v1"
+    );
+    assert_eq!(discovered["source_identity"]["path"], "events.arrow");
+    assert_eq!(discovered["source_identity"]["transport"], "local");
+    assert!(
+        discovered["source_identity"]["schema_hash"]
+            .as_str()
+            .is_some()
+    );
+    let source_size = discovered["source_identity"]["size_bytes"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let probe_bytes = discovered["source_identity"]["probe_bytes_read"]
+        .as_str()
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    assert!(
+        probe_bytes < source_size / 2,
+        "generic CLI discovery read {probe_bytes} of {source_size} source bytes"
+    );
+    assert_eq!(discovered["fields"][0]["name"], "vendor_id");
+    assert_eq!(discovered["fields"][0]["source_name"], "VendorID");
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+
+    let no_pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+        "--no-pin",
+    ]);
+    assert_eq!(no_pin.exit_code, 0, "stderr: {}", no_pin.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&no_pin.stdout)["result"]["schema_snapshot"]["outcome"],
+        "inspection_only"
+    );
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let auto_pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(auto_pin.exit_code, 0, "stderr: {}", auto_pin.stderr);
+    let auto_pin_json = stderr_or_stdout_json(&auto_pin.stdout);
+    assert_eq!(
+        auto_pin_json["result"]["schema_snapshot"]["outcome"],
+        "added"
+    );
+    let pinned_hash = auto_pin_json["result"]["resource_schema"]["schema_hash"]
+        .as_str()
+        .unwrap();
+    let snapshot_path = auto_pin_json["result"]["resource_schema"]["snapshot_path"]
+        .as_str()
+        .unwrap();
+
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
+    let pin_json = stderr_or_stdout_json(&pin.stdout);
+    assert_eq!(pin_json["result"]["status"], "unchanged");
+    assert_eq!(pin_json["result"]["schema_hash"], pinned_hash);
+    let snapshot = read_snapshot_json(&project, snapshot_path);
+    assert_eq!(snapshot["schema_hash"], pinned_hash);
+    assert_eq!(snapshot["schema"]["metadata"]["owner"], "source-system");
+    assert_eq!(
+        snapshot["schema"]["fields"][0]["metadata"]["source-tag"],
+        "vendor"
+    );
+    assert_eq!(
+        snapshot["schema"]["fields"][0]["metadata"]["cdf:source_name"],
+        "VendorID"
+    );
+
+    let show = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "show",
+        "local.events",
+    ]);
+    assert_eq!(show.exit_code, 0, "stderr: {}", show.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&show.stdout)["result"]["schema_hash"],
+        pinned_hash
+    );
+
+    let diff = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "diff",
+        "local.events",
+    ]);
+    assert_eq!(diff.exit_code, 0, "stderr: {}", diff.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&diff.stdout)["result"]["summary"]["changed"],
+        false
+    );
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    assert_eq!(
+        plan_json["result"]["resource_schema"]["schema_hash"],
+        pinned_hash
+    );
+    assert_eq!(
+        plan_json["result"]["schema_snapshot"]["outcome"],
+        "unchanged"
+    );
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
+    let preview_json = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_json["result"]["row_count"], 2);
+    assert_eq!(
+        preview_json["result"]["fields"],
+        json!(["vendor_id", "note"])
+    );
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-arrow-ipc-discover",
+        "checkpoint-arrow-ipc-discover",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    assert_eq!(run_json["result"]["schema_hash"], pinned_hash);
+    assert_eq!(run_json["result"]["row_count"], 2);
+    assert_eq!(run_json["result"]["checkpoint"]["status"], "committed");
+    let package_dir = project.root.join(".cdf/packages/pkg-arrow-ipc-discover");
+    let reader = PackageReader::open(&package_dir).unwrap();
+    reader.verify().unwrap();
+    let receipts = reader.receipts().unwrap();
+    assert_eq!(receipts.len(), 1);
+    let receipt = &receipts[0];
+    assert_eq!(receipt.schema_hash.as_str(), pinned_hash);
+    assert_eq!(receipt.disposition, WriteDisposition::Append);
+    assert_eq!(receipt.counts.rows_written, 2);
+    let destination = DuckDbDestination::new(project.root.join(".cdf/dev.duckdb")).unwrap();
+    assert!(destination.verify_receipt(receipt).unwrap().verified);
+    let segments = reader.read_all_segments().unwrap();
+    assert_eq!(segments.len(), 1);
+    let packaged_schema = segments[0].1[0].schema();
+    assert_eq!(packaged_schema.metadata()["owner"], "source-system");
+    assert_eq!(
+        packaged_schema.field(0).metadata()["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(
+        packaged_schema.field(0).metadata()["cdf:physical_type"],
+        "Int32"
+    );
+    let coercion: cdf_contract::SchemaCoercionPlan =
+        serde_json::from_slice(&fs::read(package_dir.join("schema/coercion-plan.json")).unwrap())
+            .unwrap();
+    let vendor = coercion
+        .fields
+        .iter()
+        .find(|field| field.source_name == "VendorID")
+        .unwrap();
+    assert_eq!(
+        vendor.decision,
+        cdf_contract::FieldCoercionDecision::Preserved
+    );
+    assert_eq!(vendor.observed_type.as_deref(), Some("Int32"));
+    assert_eq!(vendor.constraint_type.as_deref(), Some("Int32"));
+
+    let replay = reader.replay_inputs().unwrap();
+    assert_eq!(replay.state_delta.schema_hash.as_str(), pinned_hash);
+    assert!(receipt.covers_state_delta(&replay.state_delta));
+    let SourcePosition::FileManifest(manifest) = &replay.state_delta.output_position else {
+        panic!("Arrow IPC run must commit FileManifest source position");
+    };
+    assert_eq!(manifest.files.len(), 1);
+    let source_path = project.root.join("data/events.arrow");
+    let source_bytes = fs::read(&source_path).unwrap();
+    let expected_sha = Sha256::digest(&source_bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(manifest.files[0].path, "events.arrow");
+    assert_eq!(
+        manifest.files[0].size_bytes,
+        u64::try_from(source_bytes.len()).unwrap()
+    );
+    assert_eq!(
+        manifest.files[0].sha256.as_deref(),
+        Some(expected_sha.as_str())
+    );
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &replay.state_delta.pipeline_id,
+            &replay.state_delta.resource_id,
+            &replay.state_delta.scope,
+        )
+        .unwrap()
+        .expect("committed Arrow IPC checkpoint head");
+    assert_eq!(head.delta.schema_hash.as_str(), pinned_hash);
+    assert_eq!(
+        head.delta.output_position,
+        replay.state_delta.output_position
+    );
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let rows: i64 = conn
+        .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(rows, 2);
+}
+
+#[test]
+fn local_arrow_ipc_discovery_rejects_malformed_multi_file_and_remote_without_writes() {
+    let malformed = TestProject::new();
+    write_arrow_ipc_discover_resource(&malformed, "events.arrow");
+    fs::write(malformed.root.join("data/events.arrow"), b"not-arrow-ipc").unwrap();
+    let malformed_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        malformed.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_ne!(malformed_result.exit_code, 0);
+    assert!(
+        malformed_result
+            .stderr
+            .contains("file format confirmation failed")
+    );
+    assert_no_schema_discovery_writes(&malformed);
+
+    let truncated = TestProject::new();
+    write_arrow_ipc_discover_resource(&truncated, "events.arrow");
+    write_vendor_arrow_ipc(&truncated, "events.arrow");
+    fs::OpenOptions::new()
+        .write(true)
+        .open(truncated.root.join("data/events.arrow"))
+        .unwrap()
+        .set_len(16)
+        .unwrap();
+    let truncated_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        truncated.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_ne!(truncated_result.exit_code, 0);
+    assert!(
+        truncated_result
+            .stderr
+            .contains("file format confirmation failed")
+    );
+    assert_no_schema_discovery_writes(&truncated);
+
+    let stream = TestProject::new();
+    write_arrow_ipc_discover_resource(&stream, "events.arrow");
+    let stream_schema = Arc::new(Schema::new(vec![Field::new(
+        "VendorID",
+        DataType::Int32,
+        false,
+    )]));
+    let stream_batch = RecordBatch::try_new(
+        Arc::clone(&stream_schema),
+        vec![Arc::new(Int32Array::from_iter_values([1_i32]))],
+    )
+    .unwrap();
+    let mut stream_bytes = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut stream_bytes, stream_schema.as_ref()).unwrap();
+        writer.write(&stream_batch).unwrap();
+        writer.finish().unwrap();
+    }
+    fs::write(stream.root.join("data/events.arrow"), stream_bytes).unwrap();
+    let stream_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        stream.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_ne!(stream_result.exit_code, 0);
+    assert!(
+        stream_result
+            .stderr
+            .contains("expected Arrow IPC file framing")
+    );
+    assert!(
+        stream_result
+            .stderr
+            .contains("stream framing is unsupported")
+    );
+    assert_no_schema_discovery_writes(&stream);
+
+    for (label, magic, compression_override) in [
+        ("gzip-auto", vec![0x1f, 0x8b, 0x00, 0x00], None),
+        ("zstd-auto", vec![0x28, 0xb5, 0x2f, 0xfd], None),
+        ("gzip-override", vec![0x1f, 0x8b, 0x00, 0x00], Some("gzip")),
+    ] {
+        let compressed = TestProject::new();
+        write_arrow_ipc_discover_resource(&compressed, "events.arrow");
+        if let Some(compression) = compression_override {
+            let resource_path = compressed.root.join("resources/files.toml");
+            let resource = fs::read_to_string(&resource_path).unwrap().replace(
+                "format = \"arrow_ipc\"",
+                &format!("format = \"arrow_ipc\"\ncompression = \"{compression}\""),
+            );
+            fs::write(resource_path, resource).unwrap();
+        }
+        fs::write(compressed.root.join("data/events.arrow"), magic).unwrap();
+        let compressed_result = run([
+            "cdf",
+            "--json",
+            "--project",
+            compressed.root_str(),
+            "schema",
+            "discover",
+            "local.events",
+        ]);
+        assert_ne!(compressed_result.exit_code, 0, "{label}");
+        assert!(
+            compressed_result
+                .stderr
+                .contains("compressed Arrow IPC discovery is excluded"),
+            "{label}: {}",
+            compressed_result.stderr
+        );
+        assert_no_schema_discovery_writes(&compressed);
+    }
+
+    let multi = TestProject::new();
+    write_arrow_ipc_discover_resource(&multi, "*.arrow");
+    write_vendor_arrow_ipc(&multi, "first.arrow");
+    fs::copy(
+        multi.root.join("data/first.arrow"),
+        multi.root.join("data/second.arrow"),
+    )
+    .unwrap();
+    let multi_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        multi.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_ne!(multi_result.exit_code, 0);
+    assert!(
+        multi_result
+            .stderr
+            .contains("multi-file Arrow IPC discovery")
+    );
+    assert_no_schema_discovery_writes(&multi);
+
+    let remote = TestProject::new();
+    fs::write(
+        remote.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "https://data.example.test/"
+
+[resource.events]
+glob = "events.arrow"
+format = "arrow_ipc"
+write_disposition = "append"
+trust = "governed"
+"#,
+    )
+    .unwrap();
+    let remote_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        remote.root_str(),
+        "schema",
+        "discover",
+        "local.events",
+    ]);
+    assert_ne!(remote_result.exit_code, 0);
+    assert!(
+        remote_result
+            .stderr
+            .contains("remote Arrow IPC discovery is excluded")
+    );
+    assert_no_schema_discovery_writes(&remote);
+}
+
+#[test]
+fn pinned_arrow_ipc_type_drift_fails_preview_and_run_before_mutation() {
+    let project = TestProject::new();
+    write_arrow_ipc_discover_resource(&project, "events.arrow");
+    write_vendor_arrow_ipc(&project, "events.arrow");
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "stderr: {}", pin.stderr);
+
+    let drift_schema = Arc::new(Schema::new(vec![
+        Field::new("VendorID", DataType::Utf8, false),
+        Field::new("Note", DataType::Utf8, true),
+    ]));
+    let drift_batch = RecordBatch::try_new(
+        drift_schema,
+        vec![
+            Arc::new(StringArray::from(vec!["unexpected"])),
+            Arc::new(StringArray::from(vec![Some("drifted")])),
+        ],
+    )
+    .unwrap();
+    write_arrow_ipc_source(&project, "events.arrow", drift_batch);
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_ne!(preview.exit_code, 0);
+    assert!(preview.stderr.contains("VendorID") || preview.stderr.contains("vendor_id"));
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-arrow-ipc-drift",
+        "checkpoint-arrow-ipc-drift",
+    );
+    assert_ne!(run_result.exit_code, 0);
+    assert!(run_result.stderr.contains("VendorID") || run_result.stderr.contains("vendor_id"));
+    let state = Connection::open(project.root.join(".cdf/state.db")).unwrap();
+    let checkpoint_count: i64 = state
+        .query_row("SELECT COUNT(*) FROM cdf_checkpoints", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(checkpoint_count, 0);
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+}
+
+#[test]
+fn declared_arrow_ipc_lossless_widening_records_physical_and_coercion_evidence() {
+    let project = TestProject::new();
+    for entry in fs::read_dir(project.root.join("data")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "events.arrow"
+format = "arrow_ipc"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "VendorID", type = "int64", nullable = false },
+  { name = "Note", type = "string", nullable = true },
+] }
+"#,
+    )
+    .unwrap();
+    write_vendor_arrow_ipc(&project, "events.arrow");
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&preview.stdout)["result"]["fields"],
+        json!(["vendor_id", "note"])
+    );
+
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-arrow-ipc-widening",
+        "checkpoint-arrow-ipc-widening",
+    );
+    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
+    let package_dir = project.root.join(".cdf/packages/pkg-arrow-ipc-widening");
+    let reader = PackageReader::open(&package_dir).unwrap();
+    reader.verify().unwrap();
+    let batches = reader.read_all_segments().unwrap();
+    let schema = batches[0].1[0].schema();
+    assert_eq!(schema.field(0).data_type(), &DataType::Int64);
+    assert_eq!(schema.field(0).metadata()["cdf:source_name"], "VendorID");
+    assert_eq!(schema.field(0).metadata()["cdf:physical_type"], "Int32");
+    let coercion: cdf_contract::SchemaCoercionPlan =
+        serde_json::from_slice(&fs::read(package_dir.join("schema/coercion-plan.json")).unwrap())
+            .unwrap();
+    let vendor = coercion
+        .fields
+        .iter()
+        .find(|field| field.source_name == "VendorID")
+        .unwrap();
+    assert_eq!(
+        vendor.decision,
+        cdf_contract::FieldCoercionDecision::Widened
+    );
+    assert_eq!(vendor.observed_type.as_deref(), Some("Int32"));
+    assert_eq!(vendor.constraint_type.as_deref(), Some("Int64"));
+}
+
+#[test]
 fn schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_leak() {
     let project = TestProject::new();
     fs::write(project.root.join("rest-token"), "rest-schema-secret\n").unwrap();
@@ -2494,6 +3190,231 @@ fn plan_local_parquet_discover_autopins_snapshot_and_reports_hash() {
             .as_str(),
         snapshot["schema_hash"].as_str().unwrap()
     );
+}
+
+#[test]
+fn keyless_append_file_validate_plan_preview_run_has_no_key_nudge() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("resources/files.toml"),
+        RESOURCE.replace("primary_key = [\"id\"]\n", ""),
+    )
+    .unwrap();
+
+    let validate = run(["cdf", "--json", "--project", project.root_str(), "validate"]);
+    assert_eq!(validate.exit_code, 0, "stderr: {}", validate.stderr);
+    assert_no_key_nudge(&validate);
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    assert_no_key_nudge(&plan);
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    assert_eq!(plan_json["result"]["destination"]["disposition"], "append");
+    assert_eq!(
+        plan_json["result"]["delivery_guarantee"],
+        "effectively_once_per_package"
+    );
+
+    let human_plan = run([
+        "cdf",
+        "--no-color",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(human_plan.exit_code, 0, "stderr: {}", human_plan.stderr);
+    assert!(human_plan.stdout.contains("disposition  append"));
+    assert_no_key_nudge(&human_plan);
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
+    assert_no_key_nudge(&preview);
+
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-keyless-append-file",
+        "checkpoint-keyless-append-file",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    assert_no_key_nudge(&run_result);
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    assert_eq!(run_json["result"]["receipt"]["disposition"], "append");
+    assert_eq!(run_json["result"]["row_count"], 2);
+}
+
+#[test]
+fn keyless_append_rest_validate_plan_preview_run_has_no_key_nudge() {
+    let project = TestProject::new();
+    fs::write(project.root.join("rest-token"), "keyless-rest-token\n").unwrap();
+    let body = r#"{ "items": [
+        { "id": 1, "updated_at": 10 },
+        { "id": 2, "updated_at": 20 }
+    ] }"#;
+    let (base_url, requests) = serve_json_sequence([body, body]);
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/rest-token",
+    );
+    let resource_path = project.root.join("resources/api.toml");
+    let resource = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace("primary_key = [\"id\"]\n", "");
+    fs::write(&resource_path, resource).unwrap();
+
+    let validate = run(["cdf", "--json", "--project", project.root_str(), "validate"]);
+    assert_eq!(validate.exit_code, 0, "stderr: {}", validate.stderr);
+    assert_no_key_nudge(&validate);
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "api.items",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    assert_no_key_nudge(&plan);
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "api.items",
+    ]);
+    assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
+    assert_no_key_nudge(&preview);
+
+    let run_result = run_valid_run_resource_target(
+        &project,
+        "api.items",
+        "pkg-keyless-append-rest",
+        "checkpoint-keyless-append-rest",
+        "items",
+    );
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    assert_no_key_nudge(&run_result);
+    let run_json = stderr_or_stdout_json(&run_result.stdout);
+    assert_eq!(run_json["result"]["receipt"]["disposition"], "append");
+    assert_eq!(run_json["result"]["row_count"], 2);
+    assert_eq!(requests.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn merge_without_key_fails_all_entry_commands_before_contact_or_writes() {
+    let project = TestProject::new();
+    let body = r#"{ "items": [{ "id": 1, "updated_at": 10 }] }"#;
+    let (base_url, requests) = serve_json_sequence([body]);
+    write_rest_project(
+        &project,
+        "duckdb://.cdf/dev.duckdb",
+        &base_url,
+        "secret://file/missing-token",
+    );
+    let resource_path = project.root.join("resources/api.toml");
+    let resource = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace("primary_key = [\"id\"]\n", "")
+        .replace(
+            "write_disposition = \"append\"",
+            "write_disposition = \"merge\"",
+        );
+    fs::write(resource_path, resource).unwrap();
+    let before = project_tree_snapshot(&project.root);
+
+    for (command_name, command_args) in [
+        ("validate", vec!["validate"]),
+        ("plan", vec!["plan", "api.items"]),
+        ("preview", vec!["preview", "api.items"]),
+        ("run", vec!["run", "api.items"]),
+    ] {
+        let mut args = vec![
+            "cdf".to_owned(),
+            "--json".to_owned(),
+            "--project".to_owned(),
+            project.root_str().to_owned(),
+        ];
+        args.extend(command_args.into_iter().map(ToOwned::to_owned));
+        let result = run_dynamic(args);
+        assert_eq!(result.exit_code, 3, "{}", result.stderr);
+        let error = stderr_or_stdout_json(&result.stderr);
+        assert_eq!(error["error"]["code"], "CDF-PROJECT-MERGE-KEY");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.contains(&format!("cdf {command_name}")),
+            "{message}"
+        );
+        assert!(message.contains("resource `api.items`"), "{message}");
+        assert!(message.contains("missing merge_key"), "{message}");
+        assert_eq!(message.matches("missing merge_key").count(), 1, "{message}");
+        assert!(message.contains("add `merge_key = [...]`"), "{message}");
+        assert!(
+            message.contains("use `write_disposition = \"append\"`"),
+            "{message}"
+        );
+        assert_eq!(
+            error["error"]["remediation"]["summary"],
+            "Choose append or declare the merge identity before contacting the source or destination."
+        );
+        let steps = error["error"]["remediation"]["steps"].as_array().unwrap();
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].as_str().unwrap().contains("merge_key = [...]"));
+        assert!(
+            steps[1]
+                .as_str()
+                .unwrap()
+                .contains("write_disposition = \"append\"")
+        );
+        assert_eq!(project_tree_snapshot(&project.root), before);
+    }
+
+    let human = run([
+        "cdf",
+        "--no-color",
+        "--project",
+        project.root_str(),
+        "plan",
+        "api.items",
+    ]);
+    assert_eq!(human.exit_code, 3);
+    assert!(
+        human.stderr.contains("resource `api.items`"),
+        "{}",
+        human.stderr
+    );
+    assert!(
+        human.stderr.contains("Add `merge_key = [...]`"),
+        "{}",
+        human.stderr
+    );
+    assert!(
+        human
+            .stderr
+            .contains("use `write_disposition = \"append\"`"),
+        "{}",
+        human.stderr
+    );
+    assert_eq!(requests.lock().unwrap().len(), 0);
+    assert_eq!(project_tree_snapshot(&project.root), before);
 }
 
 #[test]
@@ -3922,6 +4843,552 @@ fn run_short_form_uses_product_defaults_and_destination_alias() {
 }
 
 #[test]
+fn run_adhoc_local_parquet_reuses_identity_and_ordinary_evidence_spine() {
+    const PATH_SECRET: &str = "local-path-secret-sentinel";
+    let project = TestProject::new();
+    let source_dir = project.root.join("data").join(PATH_SECRET);
+    fs::create_dir_all(&source_dir).unwrap();
+    let source = source_dir.join("yellow.parquet");
+    write_vendor_parquet(&source);
+    let source = source.to_str().unwrap();
+
+    let first = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        source,
+        "--to",
+        "duckdb://.cdf/adhoc-local.duckdb",
+        "--pipeline",
+        "pipeline-adhoc-local",
+        "--target",
+        "yellow",
+        "--package-id",
+        "pkg-adhoc-local-1",
+        "--checkpoint-id",
+        "checkpoint-adhoc-local-1",
+    ]);
+
+    assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    assert_secret_absent(&first, PATH_SECRET);
+    let first_json = stderr_or_stdout_json(&first.stdout);
+    let report = &first_json["result"];
+    let resource_id = report["resource_id"].as_str().unwrap();
+    assert!(resource_id.starts_with("adhoc.parquet_"));
+    assert_eq!(report["adhoc"]["resource_id"], resource_id);
+    assert_eq!(report["adhoc"]["reused"], false);
+    let config_path = report["adhoc"]["config_path"].as_str().unwrap();
+    let staged_path = report["adhoc"]["source_artifact_path"].as_str().unwrap();
+    assert!(config_path.starts_with(".cdf/adhoc/parquet_"));
+    assert!(staged_path.starts_with(".cdf/adhoc/data/parquet_"));
+    assert!(project.root.join(config_path).is_file());
+    assert!(project.root.join(staged_path).is_file());
+    assert_eq!(
+        report["schema_hash"],
+        report["schema_snapshot"]["schema_hash"]
+    );
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
+    assert_eq!(
+        report["ledger_events"]["kinds"]["destination_receipt_recorded"],
+        1
+    );
+    assert_eq!(report["writes"]["package"], true);
+    assert_eq!(report["writes"]["destination"], true);
+    assert_eq!(report["writes"]["checkpoint"], true);
+    assert!(
+        report["adhoc"]["make_permanent_command"]
+            .as_str()
+            .unwrap()
+            .starts_with(&format!("cdf add {resource_id} .cdf/adhoc/data/"))
+    );
+
+    let resource_toml = fs::read_to_string(project.root.join(config_path)).unwrap();
+    assert!(resource_toml.contains("root = \".cdf/adhoc/data\""));
+    assert!(!resource_toml.contains(PATH_SECRET));
+    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    let locked = &lock.resources[resource_id];
+    assert_eq!(
+        locked.schema_hash.as_deref(),
+        report["schema_hash"].as_str()
+    );
+    assert_eq!(
+        locked.schema_snapshot.as_ref().unwrap().path,
+        report["schema_snapshot"]["path"].as_str().unwrap()
+    );
+
+    let package =
+        PackageReader::open(project.root.join(".cdf/packages/pkg-adhoc-local-1")).unwrap();
+    package.verify().unwrap();
+    let receipt = package.receipts().unwrap().remove(0);
+    assert_eq!(receipt.schema_hash.as_str(), report["schema_hash"]);
+    let destination = DuckDbDestination::new(project.root.join(".cdf/adhoc-local.duckdb")).unwrap();
+    assert!(destination.verify_receipt(&receipt).unwrap().verified);
+    let store = SqliteCheckpointStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let head = store
+        .head(
+            &PipelineId::new("pipeline-adhoc-local").unwrap(),
+            &ResourceId::new(resource_id).unwrap(),
+            &ScopeKey::Resource,
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(head.delta.schema_hash.as_str(), report["schema_hash"]);
+    assert!(receipt.covers_state_delta(&head.delta));
+
+    let second = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        source,
+        "--to",
+        "duckdb://.cdf/adhoc-local.duckdb",
+        "--pipeline",
+        "pipeline-adhoc-local",
+        "--target",
+        "yellow",
+        "--package-id",
+        "pkg-adhoc-local-2",
+        "--checkpoint-id",
+        "checkpoint-adhoc-local-2",
+    ]);
+    assert_eq!(second.exit_code, 0, "stderr: {}", second.stderr);
+    assert_secret_absent(&second, PATH_SECRET);
+    let second_json = stderr_or_stdout_json(&second.stdout);
+    assert_eq!(second_json["result"]["resource_id"], resource_id);
+    assert_eq!(second_json["result"]["adhoc"]["reused"], true);
+    assert_eq!(second_json["result"]["schema_hash"], report["schema_hash"]);
+    assert_eq!(
+        fs::read_dir(project.root.join(".cdf/adhoc"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(
+                |entry| entry.path().extension().and_then(|value| value.to_str()) == Some("toml")
+            )
+            .count(),
+        1
+    );
+    assert_generated_artifacts_exclude(&project.root, PATH_SECRET);
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "run",
+        source,
+        "--to",
+        "duckdb://.cdf/adhoc-local.duckdb",
+        "--pipeline",
+        "pipeline-adhoc-local",
+        "--target",
+        "yellow",
+        "--package-id",
+        "pkg-adhoc-local-3",
+        "--checkpoint-id",
+        "checkpoint-adhoc-local-3",
+    ]);
+    assert_eq!(human.exit_code, 0, "stderr: {}", human.stderr);
+    assert_secret_absent(&human, PATH_SECRET);
+    assert!(human.stdout.contains("Ad-hoc Resource"));
+    assert!(human.stdout.contains(config_path));
+    assert!(human.stdout.contains(&format!("cdf add {resource_id}")));
+}
+
+#[test]
+fn run_adhoc_destination_failure_preserves_recoverable_evidence_and_retry() {
+    let project = TestProject::new();
+    let source = project.root.join("data/yellow.parquet");
+    write_vendor_parquet(&source);
+    let destination_path = project.root.join(".cdf/adhoc-retry.duckdb");
+    let connection = DuckConnection::open(&destination_path).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE yellow (vendor_id INTEGER NOT NULL UNIQUE); INSERT INTO yellow VALUES (1), (2)",
+        )
+        .unwrap();
+    drop(connection);
+
+    let failed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        source.to_str().unwrap(),
+        "--to",
+        "duckdb://.cdf/adhoc-retry.duckdb",
+        "--pipeline",
+        "pipeline-adhoc-retry",
+        "--target",
+        "yellow",
+        "--package-id",
+        "pkg-adhoc-retry-failed",
+        "--checkpoint-id",
+        "checkpoint-adhoc-retry-failed",
+    ]);
+    assert_ne!(failed.exit_code, 0);
+
+    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    let resource_id = lock
+        .resources
+        .keys()
+        .find(|id| id.starts_with("adhoc.parquet_"))
+        .unwrap()
+        .clone();
+    let package_dir = project.root.join(".cdf/packages/pkg-adhoc-retry-failed");
+    let package = PackageReader::open(&package_dir).unwrap();
+    package.verify().unwrap();
+    assert!(package.receipts().unwrap().is_empty());
+    assert_eq!(
+        package.manifest().lifecycle.status,
+        PackageStatus::Loading,
+        "failed run stderr: {}",
+        failed.stderr
+    );
+
+    let state_path = project.root.join(".cdf/state.db");
+    let state = Connection::open(&state_path).unwrap();
+    let run_id: String = state
+        .query_row(
+            "SELECT run_id FROM cdf_runs ORDER BY created_at_ms DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    drop(state);
+    let ledger = SqliteRunLedger::open(&state_path).unwrap();
+    let events = ledger.events(&RunId::new(run_id).unwrap()).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|event| event.kind == RunEventKind::PackageFinalized)
+    );
+    assert_eq!(events.last().unwrap().kind, RunEventKind::RunFailed);
+    assert!(
+        events
+            .iter()
+            .all(|event| event.kind != RunEventKind::DestinationReceiptRecorded)
+    );
+    assert!(
+        events
+            .iter()
+            .all(|event| event.kind != RunEventKind::CheckpointCommitted)
+    );
+    let store = SqliteCheckpointStore::open(&state_path).unwrap();
+    assert!(
+        store
+            .head(
+                &PipelineId::new("pipeline-adhoc-retry").unwrap(),
+                &ResourceId::new(&resource_id).unwrap(),
+                &ScopeKey::Resource,
+            )
+            .unwrap()
+            .is_none()
+    );
+
+    let connection = DuckConnection::open(&destination_path).unwrap();
+    connection.execute_batch("DROP TABLE yellow").unwrap();
+    drop(connection);
+    let retry = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        source.to_str().unwrap(),
+        "--to",
+        "duckdb://.cdf/adhoc-retry.duckdb",
+        "--pipeline",
+        "pipeline-adhoc-retry",
+        "--target",
+        "yellow",
+        "--package-id",
+        "pkg-adhoc-retry-success",
+        "--checkpoint-id",
+        "checkpoint-adhoc-retry-success",
+    ]);
+    assert_eq!(retry.exit_code, 0, "stderr: {}", retry.stderr);
+    let retry = stderr_or_stdout_json(&retry.stdout);
+    assert_eq!(retry["result"]["resource_id"], resource_id);
+    assert_eq!(retry["result"]["adhoc"]["reused"], true);
+    assert_eq!(retry["result"]["checkpoint"]["status"], "committed");
+    assert_eq!(
+        retry["result"]["ledger_events"]["terminal_kind"],
+        "run_succeeded"
+    );
+}
+
+#[test]
+fn run_adhoc_http_parquet_uses_bounded_discovery_and_ordinary_run() {
+    let project = TestProject::new();
+    write_vendor_parquet(&project.root.join("data/yellow.parquet"));
+    let parquet = fs::read(project.root.join("data/yellow.parquet")).unwrap();
+    let max_requests = parquet.len() + 64;
+    let (base_url, requests) = serve_parquet_file(parquet, max_requests);
+    let url = format!("{base_url}/yellow.parquet");
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        &url,
+        "--to",
+        "duckdb://.cdf/adhoc-http.duckdb",
+        "--package-id",
+        "pkg-adhoc-http",
+        "--checkpoint-id",
+        "checkpoint-adhoc-http",
+    ]);
+
+    let observed_requests = requests.lock().unwrap().clone();
+    assert_eq!(
+        result.exit_code, 0,
+        "stderr: {}\nrequests: {observed_requests:#?}",
+        result.stderr
+    );
+    let json = stderr_or_stdout_json(&result.stdout);
+    let report = &json["result"];
+    assert!(
+        report["resource_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("adhoc.parquet_")
+    );
+    assert!(report["adhoc"]["source_artifact_path"].is_null());
+    assert_eq!(
+        report["schema_hash"],
+        report["schema_snapshot"]["schema_hash"]
+    );
+    assert_eq!(report["checkpoint"]["status"], "committed");
+    assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
+    let config = fs::read_to_string(
+        project
+            .root
+            .join(report["adhoc"]["config_path"].as_str().unwrap()),
+    )
+    .unwrap();
+    assert!(config.contains(&format!("root = \"{base_url}\"")));
+    assert!(config.contains("glob = \"yellow.parquet\""));
+    assert!(
+        observed_requests
+            .iter()
+            .any(|request| request.starts_with("HEAD /yellow.parquet"))
+    );
+    assert!(observed_requests.iter().any(|request| {
+        request.starts_with("GET /yellow.parquet")
+            && request.to_ascii_lowercase().contains("range: bytes=")
+    }));
+}
+
+#[test]
+fn run_adhoc_rejects_missing_destination_and_sensitive_or_unsupported_urls_without_writes() {
+    let project = TestProject::new();
+    let source = project.root.join("data/yellow.parquet");
+    write_vendor_parquet(&source);
+    let before = project_tree_snapshot(&project.root);
+    let missing_destination = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        source.to_str().unwrap(),
+    ]);
+    assert_ne!(missing_destination.exit_code, 0);
+    assert!(
+        missing_destination
+            .stderr
+            .contains("explicit `--to <destination>`")
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before);
+
+    const URL_SECRET: &str = "signed-url-secret-sentinel";
+    let signed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "https://data.example.test/yellow.parquet?sig=signed-url-secret-sentinel",
+        "--to",
+        "duckdb://.cdf/adhoc-rejected.duckdb",
+    ]);
+    assert_ne!(signed.exit_code, 0);
+    assert_secret_absent(&signed, URL_SECRET);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+
+    const USERINFO_SECRET: &str = "userinfo-secret-sentinel";
+    let userinfo = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "https://public-user:userinfo-secret-sentinel@data.example.test/yellow.parquet",
+        "--to",
+        "duckdb://.cdf/adhoc-rejected.duckdb",
+    ]);
+    assert_ne!(userinfo.exit_code, 0);
+    assert!(
+        userinfo
+            .stderr
+            .contains("does not accept URL userinfo credentials")
+    );
+    assert_secret_absent(&userinfo, USERINFO_SECRET);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+
+    const MALFORMED_URL_SECRET: &str = "malformed-url-secret-sentinel";
+    let malformed_url = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "https://public-user:malformed-url-secret-sentinel@[bad/yellow.parquet",
+        "--to",
+        "duckdb://.cdf/adhoc-rejected.duckdb",
+    ]);
+    assert_ne!(malformed_url.exit_code, 0);
+    assert!(malformed_url.stderr.contains("[redacted-url]"));
+    assert_secret_absent(&malformed_url, MALFORMED_URL_SECRET);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+
+    const UNSUPPORTED_SECRET: &str = "unsupported-location-secret";
+    let unsupported = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "s3://unsupported-location-secret@bucket/yellow.parquet",
+        "--to",
+        "duckdb://.cdf/adhoc-rejected.duckdb",
+    ]);
+    assert_ne!(unsupported.exit_code, 0);
+    assert_secret_absent(&unsupported, UNSUPPORTED_SECRET);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    assert!(!project.root.join(".cdf/adhoc").exists());
+}
+
+#[test]
+fn run_adhoc_rejected_local_paths_redact_details_without_writes() {
+    let project = TestProject::new();
+    const MISSING_SECRET: &str = "missing-local-secret-sentinel";
+    const EXTENSION_SECRET: &str = "wrong-extension-secret-sentinel";
+    const DIRECTORY_SECRET: &str = "directory-local-secret-sentinel";
+    let missing = project
+        .root
+        .join("data")
+        .join(MISSING_SECRET)
+        .join("yellow.parquet");
+    let wrong_extension = project
+        .root
+        .join("data")
+        .join(format!("{EXTENSION_SECRET}.csv"));
+    fs::write(&wrong_extension, "not parquet").unwrap();
+    let directory = project
+        .root
+        .join("data")
+        .join(format!("{DIRECTORY_SECRET}.parquet"));
+    fs::create_dir_all(&directory).unwrap();
+    let before = project_tree_snapshot(&project.root);
+
+    for (path, secret) in [
+        (missing, MISSING_SECRET),
+        (wrong_extension, EXTENSION_SECRET),
+        (directory, DIRECTORY_SECRET),
+    ] {
+        let result = run_dynamic(vec![
+            "cdf".to_owned(),
+            "--json".to_owned(),
+            "--project".to_owned(),
+            project.root_str().to_owned(),
+            "run".to_owned(),
+            path.to_string_lossy().into_owned(),
+            "--to".to_owned(),
+            "duckdb://.cdf/adhoc-rejected-local.duckdb".to_owned(),
+        ]);
+        assert_ne!(result.exit_code, 0);
+        assert!(result.stderr.contains("[redacted-local-parquet-path]"));
+        assert_secret_absent(&result, secret);
+        assert_eq!(project_tree_snapshot(&project.root), before);
+    }
+}
+
+#[test]
+fn run_adhoc_synthetic_resource_id_collision_fails_before_mutation() {
+    let project = TestProject::new();
+    let source = project.root.join("data/yellow.parquet");
+    write_vendor_parquet(&source);
+    let canonical = fs::canonicalize(&source)
+        .unwrap()
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let digest = Sha256::digest(canonical.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let resource_name = format!("parquet_{}", &digest[..24]);
+    let resource_id = format!("adhoc.{resource_name}");
+    fs::write(
+        project.root.join("resources/collision.toml"),
+        format!(
+            r#"
+[source.adhoc]
+kind = "files"
+root = "data"
+
+[resource.{resource_name}]
+glob = "*.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+  {{ name = "id", type = "int64", nullable = false }},
+  {{ name = "updated_at", type = "int64", nullable = false }},
+] }}
+"#
+        ),
+    )
+    .unwrap();
+    let mut project_toml = fs::read_to_string(project.root.join("cdf.toml")).unwrap();
+    project_toml.push_str(&format!(
+        "\n[resources.\"{resource_id}\"]\nsource = \"resources/collision.toml\"\n"
+    ));
+    fs::write(project.root.join("cdf.toml"), project_toml).unwrap();
+    let before = project_tree_snapshot(&project.root);
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        source.to_str().unwrap(),
+        "--to",
+        "duckdb://.cdf/adhoc-collision.duckdb",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    assert!(result.stderr.contains(&resource_id));
+    assert!(
+        result
+            .stderr
+            .contains("conflicts with an already compiled project resource")
+    );
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    assert!(!project.root.join(".cdf/adhoc").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/adhoc-collision.duckdb").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+}
+
+#[test]
 fn run_human_output_mentions_receipt_verified_commit_gate() {
     let project = TestProject::new();
     let result = run([
@@ -5074,6 +6541,22 @@ fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
 
+    let package_dir = project.root.join(".cdf/packages/pkg-run-rest-success");
+    let coercion: cdf_contract::SchemaCoercionPlan =
+        serde_json::from_slice(&fs::read(package_dir.join("schema/coercion-plan.json")).unwrap())
+            .unwrap();
+    let validation: cdf_contract::ValidationProgram = serde_json::from_slice(
+        &fs::read(package_dir.join("plan/validation-program.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(validation.schema_coercion.as_ref(), Some(&coercion));
+    assert!(
+        coercion
+            .fields
+            .iter()
+            .all(|field| field.decision == cdf_contract::FieldCoercionDecision::Preserved)
+    );
+
     let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
     let rows: i64 = conn
         .query_row("SELECT COUNT(*) FROM items", [], |row| row.get(0))
@@ -5093,6 +6576,261 @@ fn run_rest_resource_uses_http_transport_and_commits_checkpoint() {
         head.delta.checkpoint_id.as_str(),
         "checkpoint-run-rest-success"
     );
+}
+
+#[test]
+fn run_rest_runtime_defaults_cannot_authorize_parse_or_lossy_coercion() {
+    let parse_project = TestProject::new();
+    fs::write(
+        parse_project.root.join("rest-token"),
+        "parse-token-secret\n",
+    )
+    .unwrap();
+    let parse_url = serve_json_once(
+        r#"{ "items": [
+            { "id": 1, "updated_at": 10 },
+            { "id": 2, "updated_at": "20" }
+        ] }"#,
+    );
+    write_rest_project(
+        &parse_project,
+        "duckdb://.cdf/dev.duckdb",
+        &parse_url,
+        "secret://file/rest-token",
+    );
+
+    let parse = run_valid_run_resource_target(
+        &parse_project,
+        "api.items",
+        "pkg-run-rest-parse-denied",
+        "checkpoint-run-rest-parse-denied",
+        "items",
+    );
+
+    assert_eq!(parse.exit_code, 0, "{}", parse.stderr);
+    assert_secret_absent(&parse, "parse-token-secret");
+    let parse_report = stderr_or_stdout_json(&parse.stdout);
+    assert_eq!(parse_report["result"]["row_count"], 1);
+    let parse_package = parse_project
+        .root
+        .join(".cdf/packages/pkg-run-rest-parse-denied");
+    let parse_coercion: cdf_contract::SchemaCoercionPlan =
+        serde_json::from_slice(&fs::read(parse_package.join("schema/coercion-plan.json")).unwrap())
+            .unwrap();
+    assert!(parse_coercion.fields.iter().all(|field| !matches!(
+        field.decision,
+        cdf_contract::FieldCoercionDecision::CoercedByPolicy
+            | cdf_contract::FieldCoercionDecision::LossyAllowed
+    )));
+
+    let lossy_project = TestProject::new();
+    fs::write(
+        lossy_project.root.join("rest-token"),
+        "lossy-token-secret\n",
+    )
+    .unwrap();
+    let lossy_url = serve_json_once(r#"{ "items": [{ "id": 1, "updated_at": 20 }] }"#);
+    write_rest_project(
+        &lossy_project,
+        "duckdb://.cdf/dev.duckdb",
+        &lossy_url,
+        "secret://file/rest-token",
+    );
+    let resource_path = lossy_project.root.join("resources/api.toml");
+    let resource = fs::read_to_string(&resource_path).unwrap().replace(
+        r#"{ name = "id", type = "int64", nullable = false }"#,
+        r#"{ name = "id", type = "u_int64", nullable = false }"#,
+    );
+    fs::write(resource_path, resource).unwrap();
+
+    let lossy = run_valid_run_resource_target(
+        &lossy_project,
+        "api.items",
+        "pkg-run-rest-lossy-denied",
+        "checkpoint-run-rest-lossy-denied",
+        "items",
+    );
+
+    assert_ne!(lossy.exit_code, 0);
+    assert_secret_absent(&lossy, "lossy-token-secret");
+    let lossy_output = format!("{}{}", lossy.stdout, lossy.stderr);
+    assert!(
+        lossy_output.contains("enable allow_lossy_mapping"),
+        "{lossy_output}"
+    );
+    assert!(!lossy_output.contains("LossyAllowed"), "{lossy_output}");
+    let lossy_coercion_path = lossy_project
+        .root
+        .join(".cdf/packages/pkg-run-rest-lossy-denied/schema/coercion-plan.json");
+    if lossy_coercion_path.exists() {
+        let lossy_coercion: cdf_contract::SchemaCoercionPlan =
+            serde_json::from_slice(&fs::read(lossy_coercion_path).unwrap()).unwrap();
+        assert!(
+            lossy_coercion
+                .fields
+                .iter()
+                .all(|field| field.decision != cdf_contract::FieldCoercionDecision::LossyAllowed)
+        );
+    }
+}
+
+#[test]
+fn duckdb_destination_policy_normalizes_plan_preview_package_and_commit() {
+    const LONG_SOURCE: &str =
+        "this_is_a_very_long_vendor_identifier_column_name_that_exceeds_sixty_three_bytes_total";
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        format!("{{\"VendorID\":1,\"{LONG_SOURCE}\":10}}\n"),
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("resources/files.toml"),
+        format!(
+            r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "events.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = {{ fields = [
+  {{ name = "VendorID", type = "int64", nullable = false }},
+  {{ name = "{LONG_SOURCE}", type = "int64", nullable = false }},
+] }}
+"#,
+        ),
+    )
+    .unwrap();
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "{}", plan.stderr);
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    assert_eq!(
+        plan_json["result"]["normalization"]["version"],
+        "namecase-v1"
+    );
+    assert_eq!(
+        plan_json["result"]["normalization"]["max_length"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        plan_json["result"]["normalization"]["allowed_pattern"],
+        "^[a-z_][a-z0-9_]*$"
+    );
+    assert_eq!(
+        plan_json["result"]["resource_schema"]["fields"][0]["name"],
+        "vendor_id"
+    );
+    assert_eq!(
+        plan_json["result"]["resource_schema"]["fields"][1]["name"],
+        LONG_SOURCE
+    );
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "local.events",
+    ]);
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    let preview_json = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(
+        preview_json["result"]["fields"],
+        serde_json::json!(["vendor_id", LONG_SOURCE])
+    );
+    assert_eq!(
+        preview_json["result"]["normalization"],
+        plan_json["result"]["normalization"]
+    );
+
+    let run_result = run_valid_run_args(
+        &project,
+        "pkg-duckdb-destination-normalization",
+        "checkpoint-duckdb-destination-normalization",
+    );
+    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
+    let package = project
+        .root
+        .join(".cdf/packages/pkg-duckdb-destination-normalization");
+    let validation: serde_json::Value =
+        serde_json::from_slice(&fs::read(package.join("plan/validation-program.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        validation["identifier_policy"],
+        plan_json["result"]["normalization"]
+    );
+    let output: serde_json::Value =
+        serde_json::from_slice(&fs::read(package.join("schema/output.json")).unwrap()).unwrap();
+    assert_eq!(output["fields"][0]["name"], "vendor_id");
+    assert_eq!(
+        output["fields"][0]["metadata"]["cdf:source_name"],
+        "VendorID"
+    );
+    assert_eq!(output["fields"][1]["name"], LONG_SOURCE);
+
+    let conn = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let mut statement = conn.prepare("PRAGMA table_info('events')").unwrap();
+    let columns = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .unwrap()
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(columns, vec!["vendor_id", LONG_SOURCE]);
+}
+
+#[test]
+fn destination_normalization_collision_fails_before_writes() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "events.ndjson"
+format = "ndjson"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "VendorID", type = "int64" },
+  { name = "vendor_id", type = "int64" },
+] }
+"#,
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+
+    assert_ne!(result.exit_code, 0);
+    let output = format!("{}{}", result.stdout, result.stderr);
+    assert!(output.contains("VendorID"), "{output}");
+    assert!(output.contains("vendor_id"), "{output}");
+    assert!(output.contains("explicit rename"), "{output}");
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
 }
 
 #[test]
@@ -5505,6 +7243,7 @@ fn run_existing_package_directory_is_refused_before_destination_or_checkpoint_wr
 fn run_local_parquet_discover_autopins_and_commits_pinned_schema() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");
+    remove_resource_format(&project, "parquet");
     write_vendor_parquet(&project.root.join("data/vendors.parquet"));
 
     let result = run_valid_run_args(
@@ -8819,6 +10558,19 @@ fn project_tree_snapshot(root: &Path) -> BTreeMap<String, Vec<u8>> {
     files
 }
 
+fn assert_generated_artifacts_exclude(root: &Path, secret: &str) {
+    for (path, bytes) in project_tree_snapshot(root) {
+        if path == "cdf.lock" || path.starts_with(".cdf/") {
+            assert!(
+                !bytes
+                    .windows(secret.len())
+                    .any(|window| window == secret.as_bytes()),
+                "generated artifact {path} contains secret sentinel"
+            );
+        }
+    }
+}
+
 fn assert_no_headless_progress_controls(output: &str) {
     assert!(
         !output.contains("\u{1b}["),
@@ -8843,6 +10595,14 @@ fn assert_no_run_writes(project: &TestProject, package_id: &str) {
         !project.root.join(".cdf/dev.duckdb").exists(),
         "rejected run must not create destination DB"
     );
+}
+
+fn assert_no_schema_discovery_writes(project: &TestProject) {
+    assert!(!project.root.join(".cdf/schemas").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
 }
 
 fn run_valid_run_args(
@@ -9417,6 +11177,100 @@ write_disposition = "append"
 trust = "governed"
 "#
         ),
+    )
+    .unwrap();
+}
+
+fn write_arrow_ipc_discover_resource(project: &TestProject, glob: &str) {
+    for entry in fs::read_dir(project.root.join("data")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    fs::write(
+        project.root.join("resources/files.toml"),
+        format!(
+            r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "{glob}"
+format = "arrow_ipc"
+write_disposition = "append"
+trust = "governed"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn remove_resource_format(project: &TestProject, format: &str) {
+    let path = project.root.join("resources/files.toml");
+    let text = fs::read_to_string(&path).unwrap();
+    let explicit = format!("format = \"{format}\"\n");
+    assert!(text.contains(&explicit));
+    fs::write(path, text.replacen(&explicit, "", 1)).unwrap();
+}
+
+fn write_vendor_arrow_ipc(project: &TestProject, filename: &str) {
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("VendorID", DataType::Int32, false).with_metadata(HashMap::from([(
+                "source-tag".to_owned(),
+                "vendor".to_owned(),
+            )])),
+            Field::new("Note", DataType::Utf8, true),
+        ],
+        HashMap::from([("owner".to_owned(), "source-system".to_owned())]),
+    ));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from_iter_values([1_i32, 2_i32])),
+            Arc::new(StringArray::from(vec![Some("first"), Some("second")])),
+        ],
+    )
+    .unwrap();
+    write_arrow_ipc_source(project, filename, batch);
+}
+
+fn write_large_vendor_arrow_ipc(project: &TestProject, filename: &str) {
+    let schema = Arc::new(Schema::new_with_metadata(
+        vec![
+            Field::new("VendorID", DataType::Int32, false).with_metadata(HashMap::from([(
+                "source-tag".to_owned(),
+                "vendor".to_owned(),
+            )])),
+            Field::new("Note", DataType::Utf8, true),
+        ],
+        HashMap::from([("owner".to_owned(), "source-system".to_owned())]),
+    ));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from_iter_values([1_i32, 2_i32])),
+            Arc::new(StringArray::from(vec![
+                Some("x".repeat(1_000_000)),
+                Some("second".to_owned()),
+            ])),
+        ],
+    )
+    .unwrap();
+    write_arrow_ipc_source(project, filename, batch);
+}
+
+fn write_arrow_ipc_source(project: &TestProject, filename: &str, batch: RecordBatch) {
+    let temp = TempDir::new("cdf-cli-arrow-ipc-discover-source");
+    let package_dir = temp.path().join("pkg-arrow-ipc-discover-source");
+    let mut builder =
+        PackageBuilder::create(&package_dir, "pkg-arrow-ipc-discover-source").unwrap();
+    builder
+        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .unwrap();
+    builder.finish_with_status(PackageStatus::Packaged).unwrap();
+    fs::copy(
+        package_dir.join("data/seg-000001.arrow"),
+        project.root.join("data").join(filename),
     )
     .unwrap();
 }
@@ -10160,6 +12014,22 @@ fn write_sql_project_with_secret(
 fn assert_secret_absent(result: &crate::InvocationResult, secret: &str) {
     assert!(!result.stdout.contains(secret), "stdout leaked {secret}");
     assert!(!result.stderr.contains(secret), "stderr leaked {secret}");
+}
+
+fn assert_no_key_nudge(result: &crate::InvocationResult) {
+    let output = format!("{}{}", result.stdout, result.stderr).to_ascii_lowercase();
+    for forbidden in [
+        "primary_key",
+        "merge_key",
+        "missing key",
+        "add a key",
+        "invent a key",
+    ] {
+        assert!(
+            !output.contains(forbidden),
+            "keyless append output contained {forbidden:?}:\n{output}"
+        );
+    }
 }
 
 fn write_minimal_lockfile(project: &TestProject) {

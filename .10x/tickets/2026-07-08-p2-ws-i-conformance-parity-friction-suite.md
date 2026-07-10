@@ -31,6 +31,8 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 
 ## Progress and notes
 
+- 2026-07-09: Opened I5, now terminal at `.10x/tickets/done/2026-07-09-p2-ws-i5-recorded-http-request-capture-race.md`, after the standalone-green S5 fixture failed reproducibly only under full parallel workspace load because its nonblocking request reader treats `WouldBlock` as EOF. The child owns bounded complete-header capture; S5 assertions remain unchanged.
+
 - 2026-07-08: Opened as P2 workstream owner from the directive.
 - 2026-07-08: Split first executable child `.10x/tickets/done/2026-07-08-p2-ws-i1-friction-regression-registry.md` to map the eighteen P2 frictions to existing tests or explicit open coverage gaps before implementation lanes start closing.
 - 2026-07-09: Friction registry recorded in `.10x/evidence/2026-07-08-p2-friction-regression-registry.md`. Initial capture classified all eighteen directive frictions as open P2 coverage obligations, with partial primitive or negative coverage named where source/tests supported it.
@@ -45,6 +47,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-09: I3 closed as `.10x/tickets/done/2026-07-09-p2-ws-i3-matrix-friction-reconciliation.md` with `.10x/evidence/2026-07-09-p2-a8-b6-i3-integration.md` and `.10x/reviews/2026-07-09-p2-a8-b6-i3-integration-review.md`. The registry now rejects stale owners and missing test functions while keeping all S1-S8 rows pending until runtime acceptance is complete.
 - 2026-07-09: Split executable child, now terminal at `.10x/tickets/done/2026-07-09-p2-ws-i4-s5-s7-standalone-conformance.md`, for exact deterministic S5 REST discover/pin/package and S7 key/disposition scenarios. Only those two matrix rows may be promoted by the child.
 - 2026-07-09: I4 closed as `.10x/tickets/done/2026-07-09-p2-ws-i4-s5-s7-standalone-conformance.md` with `.10x/evidence/2026-07-09-p2-c3-i4-integration.md` and `.10x/reviews/2026-07-09-p2-c3-i4-integration-review.md`. S5 and S7 are now standalone deterministic conformance scenarios and the only promoted P2 rows; S1-S4/S6/S8 remain pending.
+- 2026-07-09: I5 closed as `.10x/tickets/done/2026-07-09-p2-ws-i5-recorded-http-request-capture-race.md` with `.10x/evidence/2026-07-09-p2-d5-i5-integration.md` and `.10x/reviews/2026-07-09-p2-d5-i5-integration-review.md`. The S5 recorded server now captures complete bounded headers, uses bounded response writes, and surfaces worker failures without teardown panics. Final parallel workspace nextest passed 809/809 without weakening S5.
 
 ## Blockers
 
