@@ -842,6 +842,7 @@ dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
  "cdf-conformance",
+ "cdf-contract",
  "cdf-kernel",
  "cdf-package",
  "hex",

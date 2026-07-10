@@ -577,6 +577,115 @@ fn correction_request_rejects_two_paths_for_one_output_field() {
 }
 
 #[test]
+fn correction_sidecar_receipt_uses_insert_counts_and_closed_manifest_evidence() {
+    let mut operation = correction_operation_fixture("/age", "age", "42", b"exact");
+    operation.correction.request.selected_strategy = CorrectionStrategy::CorrectionSidecar;
+    operation.correction.transaction_guarantee = TransactionSupport::AtomicTarget;
+    let request = DestinationCorrectionCommitRequest::new(
+        PackageHash::new("sha256:correction-package").unwrap(),
+        IdempotencyToken::new("sha256:correction-package").unwrap(),
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        vec![StateSegment {
+            segment_id: SegmentId::new("seg-correction").unwrap(),
+            scope: ScopeKey::Resource,
+            output_position: SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "correction".to_owned(),
+                value: CursorValue::U64(1),
+            }),
+            row_count: 1,
+            byte_count: 1,
+        }],
+        vec![operation],
+    )
+    .unwrap();
+    let plan = DestinationCorrectionCommitPlan {
+        kernel: CommitPlan {
+            plan_id: PlanId::new("sidecar-plan").unwrap(),
+            target: request.target.clone(),
+            disposition: request.resource_disposition.clone(),
+            idempotency: IdempotencySupport::PackageToken,
+            migrations: Vec::new(),
+            delivery_guarantee: DeliveryGuarantee::EffectivelyOncePerPackage,
+        },
+        correction_package_hash: request.correction_package_hash.clone(),
+        promotion_id: request.promotion_id().clone(),
+        old_schema_hash: request.old_schema_hash().clone(),
+        new_schema_hash: request.new_schema_hash().clone(),
+        strategy: CorrectionStrategy::CorrectionSidecar,
+        operations_digest: request.operations_digest.clone(),
+        correction_count: 1,
+    };
+    let sidecar = DestinationCorrectionSidecarReceiptEvidence {
+        version: DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_VERSION,
+        manifest_key: "targets/orders/corrections/manifest.json".to_owned(),
+        manifest_sha256: format!("sha256:{}", "a".repeat(64)),
+        operation_count: 1,
+        atomic_manifest_publication: true,
+        base_target_unchanged: true,
+        objects: vec![DestinationCorrectionSidecarObjectEvidence {
+            key: "targets/orders/corrections/object.json".to_owned(),
+            sha256: format!("sha256:{}", "b".repeat(64)),
+            byte_count: 42,
+            operation_count: 1,
+        }],
+    };
+    let receipt = Receipt {
+        receipt_id: ReceiptId::new("sidecar-receipt").unwrap(),
+        destination: DestinationId::new("parquet").unwrap(),
+        target: request.target.clone(),
+        package_hash: request.correction_package_hash.clone(),
+        segment_acks: request.segment_acks(),
+        disposition: request.resource_disposition.clone(),
+        idempotency_token: request.idempotency_token.clone(),
+        transaction: Some(TransactionMetadata {
+            system: "object_store_correction_sidecar".to_owned(),
+            values: BTreeMap::from([
+                (
+                    DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY.to_owned(),
+                    DestinationCorrectionReceiptEvidence::for_request(&request)
+                        .to_json()
+                        .unwrap(),
+                ),
+                (
+                    DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_KEY.to_owned(),
+                    sidecar.to_json().unwrap(),
+                ),
+            ]),
+        }),
+        counts: CommitCounts {
+            rows_written: 1,
+            rows_inserted: Some(1),
+            rows_updated: Some(0),
+            rows_deleted: Some(0),
+        },
+        schema_hash: request.new_schema_hash().clone(),
+        migrations: Vec::new(),
+        committed_at_ms: 1,
+        verify: VerifyClause {
+            kind: "sidecar".to_owned(),
+            statement: "verify sidecar".to_owned(),
+            parameters: BTreeMap::new(),
+        },
+    };
+
+    plan.validate_receipt(&request, &receipt).unwrap();
+    let mut false_update = receipt.clone();
+    false_update.counts.rows_inserted = Some(0);
+    false_update.counts.rows_updated = Some(1);
+    assert!(
+        plan.validate_receipt(&request, &false_update)
+            .unwrap_err()
+            .to_string()
+            .contains("sidecar operations")
+    );
+    let mut false_base = sidecar;
+    false_base.base_target_unchanged = false;
+    assert!(false_base.to_json().is_err());
+}
+
+#[test]
 fn correction_capability_validation_rejects_impossible_claims_and_plans() {
     let mut targetable_without_persistence = DestinationCorrectionCapabilities::default();
     targetable_without_persistence.row_provenance.targetability = CapabilitySupport::Supported;

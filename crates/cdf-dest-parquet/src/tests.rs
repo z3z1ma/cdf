@@ -2,7 +2,14 @@ use super::*;
 
 use std::io::Write;
 
-use crate::manifest::{ParquetObjectManifest, ReplacePointer, canonical_json_bytes, sha256_hex};
+use crate::{
+    corrections::{build_correction_context, build_correction_receipt},
+    manifest::{
+        ParquetCorrectionSidecar, ParquetCorrectionSidecarManifest, ParquetObjectManifest,
+        ReplacePointer, canonical_json_bytes, sha256_hex,
+    },
+    sheet::parquet_correction_capabilities,
+};
 use ::parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
 use arrow_array::{ArrayRef, Int64Array, StringArray};
 use arrow_schema::{DataType, Field, Schema};
@@ -12,7 +19,11 @@ use cdf_conformance::destination::{
     representative_commit_request,
 };
 use cdf_kernel::{
-    CursorPosition, CursorValue, IdempotencyToken, PackageHash, PartitionId, ScopeKey, SegmentAck,
+    CanonicalArrowField, CorrectionStrategy, CursorPosition, CursorValue,
+    DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
+    DestinationCorrectionReceiptEvidence, DestinationCorrectionRequest,
+    DestinationCorrectionSidecarReceiptEvidence, IdempotencyToken, PackageHash, PartitionId,
+    PromotionId, ResidualCorrectionOperation, RowProvenanceAddress, ScopeKey, SegmentAck,
     SegmentId, SourcePosition,
 };
 use cdf_package::{PackageBuilder, PackageStatus, SegmentEntry};
@@ -38,6 +49,84 @@ fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let id: ArrayRef = Arc::new(Int64Array::from(ids));
     let name: ArrayRef = Arc::new(StringArray::from(names));
     RecordBatch::try_new(schema, vec![id, name]).unwrap()
+}
+
+fn correction_operation(
+    original_package_hash: &PackageHash,
+    row: u64,
+    value: i64,
+) -> DestinationCorrectionOperation {
+    let values = Int64Array::from(vec![value]);
+    let authority = cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+        ["age"],
+        &values,
+        0,
+    )
+    .unwrap()])
+    .unwrap();
+    DestinationCorrectionOperation {
+        correction: DestinationCorrectionPlan {
+            request: DestinationCorrectionRequest {
+                promotion_id: PromotionId::new("promotion-age").unwrap(),
+                original_row: RowProvenanceAddress::new(
+                    original_package_hash.clone(),
+                    SegmentId::new("seg-000001").unwrap(),
+                    row,
+                ),
+                old_schema_hash: SchemaHash::new("schema-v1").unwrap(),
+                new_schema_hash: SchemaHash::new("schema-v2").unwrap(),
+                promoted_path: "/age".to_owned(),
+                promoted_value_json: value.to_string(),
+                residual_operation: ResidualCorrectionOperation::RemovePromotedPath,
+                selected_strategy: CorrectionStrategy::CorrectionSidecar,
+            },
+            transaction_guarantee: TransactionSupport::AtomicTarget,
+            idempotency_guarantee: IdempotencySupport::PackageToken,
+        },
+        output_field: CanonicalArrowField::from_arrow(&Field::new("age", DataType::Int64, true))
+            .unwrap(),
+        promoted_value_residual_json_v1: authority,
+    }
+}
+
+fn correction_request(original_package_hash: &PackageHash) -> DestinationCorrectionCommitRequest {
+    let operations = vec![
+        correction_operation(original_package_hash, 0, 42),
+        correction_operation(original_package_hash, 1, 84),
+    ];
+    let correction_hash = PackageHash::new("sha256:parquet-correction-age").unwrap();
+    DestinationCorrectionCommitRequest::new(
+        correction_hash.clone(),
+        IdempotencyToken::new(correction_hash.as_str()).unwrap(),
+        TargetName::new("orders").unwrap(),
+        WriteDisposition::Append,
+        vec![StateSegment {
+            segment_id: SegmentId::new("seg-correction").unwrap(),
+            scope: ScopeKey::Resource,
+            output_position: SourcePosition::Cursor(CursorPosition {
+                version: 1,
+                field: "correction".to_owned(),
+                value: CursorValue::U64(2),
+            }),
+            row_count: operations.len() as u64,
+            byte_count: 2,
+        }],
+        operations,
+    )
+    .unwrap()
+}
+
+fn finalize_correction(
+    destination: &ParquetDestination,
+    request: &DestinationCorrectionCommitRequest,
+) -> Receipt {
+    let plan = destination.plan_correction(request).unwrap();
+    let mut session = destination.begin_correction(request.clone(), plan).unwrap();
+    session.apply_migrations().unwrap();
+    let counts = session.apply_corrections().unwrap();
+    assert_eq!(counts.rows_inserted, Some(request.corrections.len() as u64));
+    assert_eq!(counts.rows_updated, Some(0));
+    session.finalize().unwrap()
 }
 
 fn build_package(
@@ -363,8 +452,306 @@ fn reusable_destination_conformance_suite_accepts_parquet_sheet_and_plans() {
     );
     assert_destination_correction_conformance(
         &dest,
-        &DestinationCorrectionConformanceEvidence::unsupported(),
+        &DestinationCorrectionConformanceEvidence {
+            row_provenance_persistence: CapabilitySupport::Unsupported,
+            row_provenance_targetability: CapabilitySupport::Unsupported,
+            residual_readback: CapabilitySupport::Unsupported,
+            strategies: parquet_correction_capabilities().strategies,
+        },
     );
+}
+
+#[test]
+fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable() {
+    let temp = tempfile::tempdir().unwrap();
+    let package_dir = temp.path().join("pkg-sidecar-base");
+    let built = build_package(
+        &package_dir,
+        "pkg-sidecar-base",
+        vec![(
+            "seg-000001",
+            vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
+        )],
+    );
+    let dest = ParquetDestination::new_filesystem(temp.path().join("lake")).unwrap();
+    let base = dest
+        .commit_package(request(&package_dir, &built, WriteDisposition::Append))
+        .unwrap();
+    let base_manifest_before = dest
+        .store()
+        .get_required(dest.runtime(), &base.plan.manifest_key)
+        .unwrap();
+    let base_object_key = base.object_manifest.objects[0].key.clone();
+    let base_object_before = dest
+        .store()
+        .get_required(dest.runtime(), &base_object_key)
+        .unwrap();
+
+    let correction = correction_request(&built.hash);
+    let receipt = finalize_correction(&dest, &correction);
+
+    assert_eq!(receipt.counts.rows_written, 2);
+    assert_eq!(receipt.counts.rows_inserted, Some(2));
+    assert_eq!(receipt.counts.rows_updated, Some(0));
+    assert_eq!(receipt.counts.rows_deleted, Some(0));
+    assert_eq!(receipt.schema_hash.as_str(), "schema-v2");
+    assert_eq!(
+        receipt
+            .transaction
+            .as_ref()
+            .unwrap()
+            .values
+            .get("base_target_unchanged")
+            .map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        receipt
+            .transaction
+            .as_ref()
+            .unwrap()
+            .values
+            .get("atomic_target_scope")
+            .map(String::as_str),
+        Some("immutable_correction_manifest_only")
+    );
+    let correction_evidence = DestinationCorrectionReceiptEvidence::from_receipt(&receipt).unwrap();
+    assert_eq!(
+        correction_evidence.strategy,
+        CorrectionStrategy::CorrectionSidecar
+    );
+    let sidecar_evidence =
+        DestinationCorrectionSidecarReceiptEvidence::from_receipt(&receipt).unwrap();
+    assert!(sidecar_evidence.atomic_manifest_publication);
+    assert!(sidecar_evidence.base_target_unchanged);
+    assert_eq!(sidecar_evidence.operation_count, 2);
+    assert!(
+        sidecar_evidence
+            .manifest_key
+            .contains("/corrections/manifests/sha256~3a")
+    );
+    assert_eq!(sidecar_evidence.objects.len(), 1);
+    assert!(
+        sidecar_evidence.objects[0]
+            .key
+            .contains("/corrections/objects/sha256~3a")
+    );
+
+    let manifest_bytes = dest
+        .store()
+        .get_required(dest.runtime(), &sidecar_evidence.manifest_key)
+        .unwrap();
+    assert_eq!(
+        format!("sha256:{}", sha256_hex(&manifest_bytes)),
+        sidecar_evidence.manifest_sha256
+    );
+    let manifest: ParquetCorrectionSidecarManifest =
+        serde_json::from_slice(&manifest_bytes).unwrap();
+    assert_eq!(
+        manifest.correction_package_hash,
+        correction.correction_package_hash.as_str()
+    );
+    assert_eq!(manifest.old_schema_hash.as_str(), "schema-v1");
+    assert_eq!(manifest.new_schema_hash.as_str(), "schema-v2");
+    assert_eq!(manifest.addressed_rows, 2);
+    assert!(manifest.base_target_unchanged);
+    let sidecar_bytes = dest
+        .store()
+        .get_required(dest.runtime(), &manifest.objects[0].key)
+        .unwrap();
+    assert_eq!(
+        format!("sha256:{}", sha256_hex(&sidecar_bytes)),
+        manifest.objects[0].sha256
+    );
+    let sidecar: ParquetCorrectionSidecar = serde_json::from_slice(&sidecar_bytes).unwrap();
+    assert_eq!(sidecar.operations.len(), 2);
+    assert_eq!(
+        sidecar.operations[0].correction.request.original_row,
+        RowProvenanceAddress::new(built.hash.clone(), SegmentId::new("seg-000001").unwrap(), 0,)
+    );
+    assert_eq!(
+        sidecar.operations[0].correction.request.promoted_path,
+        "/age"
+    );
+    assert_eq!(sidecar.operations[0].output_field.name, "age");
+    assert_eq!(
+        sidecar.operations[0].correction.request.residual_operation,
+        ResidualCorrectionOperation::RemovePromotedPath
+    );
+    assert!(dest.verify_correction(&receipt).unwrap().verified);
+    assert_eq!(
+        dest.store()
+            .get_required(dest.runtime(), &base.plan.manifest_key)
+            .unwrap(),
+        base_manifest_before
+    );
+    assert_eq!(
+        dest.store()
+            .get_required(dest.runtime(), &base_object_key)
+            .unwrap(),
+        base_object_before
+    );
+
+    let replay = finalize_correction(&dest, &correction);
+    assert_eq!(replay, receipt);
+    assert!(dest.verify_correction(&replay).unwrap().verified);
+    assert!(
+        dest.read_correction_residual(
+            &TargetName::new("orders").unwrap(),
+            &sidecar.operations[0].correction.request.original_row,
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("does not support correction residual readback")
+    );
+}
+
+#[test]
+fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_once() {
+    let store = Arc::new(InMemory::default());
+    let dest = ParquetDestination::new_object_store(store, "").unwrap();
+    let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
+    let context = build_correction_context(&correction).unwrap();
+    let object = context.manifest.objects[0].clone();
+    dest.store()
+        .put_create_or_verify(dest.runtime(), &object.key, context.sidecar_bytes.clone())
+        .unwrap();
+    assert!(dest.store().exists(dest.runtime(), &object.key).unwrap());
+    assert!(
+        !dest
+            .store()
+            .exists(dest.runtime(), &context.manifest_key)
+            .unwrap()
+    );
+    dest.store()
+        .put_create_or_verify(
+            dest.runtime(),
+            &context.manifest_key,
+            context.manifest_bytes.clone(),
+        )
+        .unwrap();
+    assert!(
+        dest.store()
+            .exists(dest.runtime(), &context.manifest_key)
+            .unwrap()
+    );
+    assert!(
+        !dest
+            .store()
+            .exists(dest.runtime(), &context.receipt_key)
+            .unwrap()
+    );
+    let unrecorded = build_correction_receipt(
+        &context.request,
+        &context.plan,
+        &context.manifest,
+        &context.manifest_key,
+        &context.manifest_sha256,
+        &context.receipt_key,
+        1,
+    )
+    .unwrap();
+    let verification = dest.verify_correction(&unrecorded).unwrap();
+    assert!(!verification.verified);
+    assert!(verification.reason.unwrap().contains("marker"));
+
+    let receipt = finalize_correction(&dest, &correction);
+
+    assert!(dest.verify_correction(&receipt).unwrap().verified);
+    assert_eq!(
+        dest.store()
+            .get_required(dest.runtime(), &object.key)
+            .unwrap(),
+        context.sidecar_bytes
+    );
+    assert_eq!(
+        dest.store()
+            .get_required(dest.runtime(), &context.manifest_key)
+            .unwrap(),
+        context.manifest_bytes
+    );
+    assert!(
+        dest.store()
+            .exists(dest.runtime(), &context.receipt_key)
+            .unwrap()
+    );
+}
+
+#[test]
+fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
+    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
+    let context = build_correction_context(&correction).unwrap();
+    let plan = dest.plan_correction(&correction).unwrap();
+    let mut session = dest.begin_correction(correction.clone(), plan).unwrap();
+    session.apply_migrations().unwrap();
+    session.apply_corrections().unwrap();
+    session.abort().unwrap();
+    assert!(
+        !dest
+            .store()
+            .exists(dest.runtime(), &context.manifest.objects[0].key)
+            .unwrap()
+    );
+    assert!(
+        !dest
+            .store()
+            .exists(dest.runtime(), &context.manifest_key)
+            .unwrap()
+    );
+    assert!(
+        !dest
+            .store()
+            .exists(dest.runtime(), &context.receipt_key)
+            .unwrap()
+    );
+
+    let receipt = finalize_correction(&dest, &correction);
+    dest.store()
+        .put(
+            dest.runtime(),
+            &context.manifest.objects[0].key,
+            b"tampered".to_vec(),
+        )
+        .unwrap();
+    let verification = dest.verify_correction(&receipt).unwrap();
+    assert!(!verification.verified);
+    assert!(verification.reason.unwrap().contains("bytes or hash"));
+}
+
+#[test]
+fn versioned_rematerialization_is_an_explicit_non_executable_plan_boundary() {
+    let temp = tempfile::tempdir().unwrap();
+    let dest = ParquetDestination::new_filesystem(temp.path()).unwrap();
+    let plan = dest
+        .plan_versioned_rematerialization(ParquetVersionedRematerializationRequest {
+            promotion_id: PromotionId::new("promotion-age").unwrap(),
+            target: TargetName::new("orders").unwrap(),
+            correction_package_hash: PackageHash::new("sha256:correction").unwrap(),
+            required_source_packages: vec![
+                PackageHash::new("sha256:base-1").unwrap(),
+                PackageHash::new("sha256:base-2").unwrap(),
+            ],
+            target_version: "schema-v2".to_owned(),
+        })
+        .unwrap();
+
+    assert_eq!(plan.required_source_packages.len(), 2);
+    assert_eq!(plan.target_version, "schema-v2");
+    assert_eq!(
+        plan.target_manifest_key,
+        "targets/orders/versions/schema-v2/manifest.json"
+    );
+    assert_eq!(plan.target_pointer_key, "targets/orders/current.json");
+    assert_eq!(plan.atomic_pointer_advance, CapabilitySupport::Unsupported);
+    assert!(!plan.executable);
+    assert!(plan.unsupported_reason.contains("compare-and-swap"));
+    assert!(
+        parquet_correction_capabilities()
+            .strategy(CorrectionStrategy::VersionedRematerialization)
+            .is_none()
+    );
+    assert!(!temp.path().join("targets").exists());
 }
 
 #[test]

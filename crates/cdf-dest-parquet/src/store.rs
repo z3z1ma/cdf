@@ -6,6 +6,12 @@ pub(crate) struct StoredObject {
     pub(crate) e_tag: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CreateObjectOutcome {
+    Created(StoredObject),
+    AlreadyExists,
+}
+
 pub(crate) struct StoreClient {
     store: Arc<dyn ObjectStore>,
     root_prefix: String,
@@ -40,6 +46,55 @@ impl StoreClient {
             byte_count,
             e_tag: put.e_tag,
         })
+    }
+
+    pub(crate) fn put_create(
+        &self,
+        runtime: &Runtime,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> Result<CreateObjectOutcome> {
+        let byte_count = bytes.len() as u64;
+        let path = self.path(key)?;
+        let options = PutOptions {
+            mode: PutMode::Create,
+            ..PutOptions::default()
+        };
+        match runtime.block_on(self.store.put_opts(&path, PutPayload::from(bytes), options)) {
+            Ok(put) => Ok(CreateObjectOutcome::Created(StoredObject {
+                byte_count,
+                e_tag: put.e_tag,
+            })),
+            Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. }) => {
+                Ok(CreateObjectOutcome::AlreadyExists)
+            }
+            Err(error) => Err(store_error(format!("create {key}"), error)),
+        }
+    }
+
+    pub(crate) fn put_create_or_verify(
+        &self,
+        runtime: &Runtime,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> Result<StoredObject> {
+        let byte_count = bytes.len() as u64;
+        match self.put_create(runtime, key, bytes.clone())? {
+            CreateObjectOutcome::Created(stored) => Ok(stored),
+            CreateObjectOutcome::AlreadyExists => {
+                let existing = self.get_required(runtime, key)?;
+                if existing != bytes {
+                    return Err(CdfError::destination(format!(
+                        "immutable object {key} already exists with different bytes"
+                    )));
+                }
+                Ok(StoredObject {
+                    byte_count,
+                    e_tag: self.etag(runtime, key)?,
+                })
+            }
+        }
     }
 
     pub(crate) fn get_optional(&self, runtime: &Runtime, key: &str) -> Result<Option<Vec<u8>>> {
@@ -122,6 +177,41 @@ pub(crate) fn segment_object_key(
 
 pub(crate) fn replace_pointer_key(target: &TargetName) -> String {
     format!("targets/{}/current.json", encode_component(target.as_str()))
+}
+
+pub(crate) fn correction_sidecar_object_key(target: &TargetName, sha256: &str) -> String {
+    format!(
+        "targets/{}/corrections/objects/{}.json",
+        encode_component(target.as_str()),
+        encode_component(sha256)
+    )
+}
+
+pub(crate) fn correction_sidecar_manifest_key(target: &TargetName, sha256: &str) -> String {
+    format!(
+        "targets/{}/corrections/manifests/{}.json",
+        encode_component(target.as_str()),
+        encode_component(sha256)
+    )
+}
+
+pub(crate) fn correction_receipt_key(
+    target: &TargetName,
+    token: &cdf_kernel::IdempotencyToken,
+) -> String {
+    format!(
+        "targets/{}/corrections/receipts/{}.json",
+        encode_component(target.as_str()),
+        encode_component(token.as_str())
+    )
+}
+
+pub(crate) fn version_manifest_key(target: &TargetName, target_version: &str) -> String {
+    format!(
+        "targets/{}/versions/{}/manifest.json",
+        encode_component(target.as_str()),
+        encode_component(target_version)
+    )
 }
 
 fn normalize_prefix(prefix: String) -> Result<String> {

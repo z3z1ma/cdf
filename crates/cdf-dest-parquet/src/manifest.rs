@@ -46,6 +46,52 @@ pub struct ReplacePointer {
     pub updated_at_ms: i64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParquetCorrectionSidecar {
+    pub sidecar_version: u16,
+    pub destination: String,
+    pub target: String,
+    pub correction_package_hash: String,
+    pub idempotency_token: String,
+    pub resource_disposition: WriteDisposition,
+    pub promotion_id: PromotionId,
+    pub old_schema_hash: SchemaHash,
+    pub new_schema_hash: SchemaHash,
+    pub operations_digest: String,
+    pub base_target_unchanged: bool,
+    pub operations: Vec<DestinationCorrectionOperation>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParquetCorrectionSidecarManifest {
+    pub manifest_version: u16,
+    pub destination: String,
+    pub target: String,
+    pub correction_package_hash: String,
+    pub idempotency_token: String,
+    pub resource_disposition: WriteDisposition,
+    pub promotion_id: PromotionId,
+    pub old_schema_hash: SchemaHash,
+    pub new_schema_hash: SchemaHash,
+    pub operations_digest: String,
+    pub operation_count: u64,
+    pub addressed_rows: u64,
+    pub segments: Vec<SegmentAck>,
+    pub base_target_unchanged: bool,
+    pub objects: Vec<ParquetCorrectionSidecarObject>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ParquetCorrectionSidecarObject {
+    pub key: String,
+    pub sha256: String,
+    pub byte_count: u64,
+    pub operation_count: u64,
+}
+
 pub(crate) fn canonical_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let value = serde_json::to_value(value)
         .map_err(|error| CdfError::data(format!("serialize JSON value: {error}")))?;

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
-Depends-On: .10x/tickets/done/2026-07-10-p2-rp4-schema-scope-lease-lock-cas.md, .10x/tickets/2026-07-10-p2-rp5-schema-promote-dry-planner-cli.md, .10x/tickets/done/2026-07-10-p2-rp6-postgres-in-place-corrections.md, .10x/tickets/done/2026-07-10-p2-rp7-duckdb-in-place-corrections.md, .10x/tickets/2026-07-10-p2-rp8-parquet-correction-sidecars.md
+Depends-On: .10x/tickets/done/2026-07-10-p2-rp4-schema-scope-lease-lock-cas.md, .10x/tickets/2026-07-10-p2-rp5-schema-promote-dry-planner-cli.md, .10x/tickets/done/2026-07-10-p2-rp6-postgres-in-place-corrections.md, .10x/tickets/done/2026-07-10-p2-rp7-duckdb-in-place-corrections.md, .10x/tickets/done/2026-07-10-p2-rp8-parquet-correction-sidecars.md
 
 # P2 RP9 promotion execution, recovery, and GC availability
 

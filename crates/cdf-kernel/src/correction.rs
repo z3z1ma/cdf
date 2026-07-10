@@ -354,6 +354,8 @@ impl DestinationCorrectionPlan {
 
 pub const DESTINATION_CORRECTION_RECEIPT_EVIDENCE_VERSION: u16 = 1;
 pub const DESTINATION_CORRECTION_RECEIPT_EVIDENCE_KEY: &str = "cdf.correction.v1";
+pub const DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_VERSION: u16 = 1;
+pub const DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_KEY: &str = "cdf.correction.sidecar.v1";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -698,14 +700,40 @@ impl DestinationCorrectionCommitPlan {
                 "destination correction receipt evidence does not match its request",
             ));
         }
-        if receipt.counts.rows_written != expected.addressed_rows
-            || receipt.counts.rows_updated != Some(expected.addressed_rows)
-            || receipt.counts.rows_inserted != Some(0)
-            || receipt.counts.rows_deleted != Some(0)
-        {
-            return Err(CdfError::destination(
-                "destination correction receipt counts do not match addressed updates",
-            ));
+        match request.strategy() {
+            CorrectionStrategy::InPlaceUpdate => {
+                if receipt.counts.rows_written != expected.addressed_rows
+                    || receipt.counts.rows_updated != Some(expected.addressed_rows)
+                    || receipt.counts.rows_inserted != Some(0)
+                    || receipt.counts.rows_deleted != Some(0)
+                {
+                    return Err(CdfError::destination(
+                        "destination correction receipt counts do not match addressed updates",
+                    ));
+                }
+            }
+            CorrectionStrategy::CorrectionSidecar => {
+                if receipt.counts.rows_written != expected.correction_count
+                    || receipt.counts.rows_inserted != Some(expected.correction_count)
+                    || receipt.counts.rows_updated != Some(0)
+                    || receipt.counts.rows_deleted != Some(0)
+                {
+                    return Err(CdfError::destination(
+                        "destination correction receipt counts do not match immutable sidecar operations",
+                    ));
+                }
+                let sidecar = DestinationCorrectionSidecarReceiptEvidence::from_receipt(receipt)?;
+                if sidecar.operation_count != expected.correction_count {
+                    return Err(CdfError::destination(
+                        "destination correction sidecar receipt operation count does not match its request",
+                    ));
+                }
+            }
+            CorrectionStrategy::VersionedRematerialization => {
+                return Err(CdfError::destination(
+                    "versioned rematerialization receipt validation requires a materialization-specific evidence contract",
+                ));
+            }
         }
         Ok(evidence)
     }
@@ -777,6 +805,130 @@ impl DestinationCorrectionReceiptEvidence {
         }
         Ok(evidence)
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationCorrectionSidecarObjectEvidence {
+    pub key: String,
+    pub sha256: String,
+    pub byte_count: u64,
+    pub operation_count: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DestinationCorrectionSidecarReceiptEvidence {
+    pub version: u16,
+    pub manifest_key: String,
+    pub manifest_sha256: String,
+    pub operation_count: u64,
+    pub atomic_manifest_publication: bool,
+    pub base_target_unchanged: bool,
+    pub objects: Vec<DestinationCorrectionSidecarObjectEvidence>,
+}
+
+impl DestinationCorrectionSidecarReceiptEvidence {
+    pub fn validate(&self) -> Result<()> {
+        if self.version != DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_VERSION {
+            return Err(CdfError::destination(format!(
+                "unsupported destination correction sidecar receipt evidence version {}; expected {}",
+                self.version, DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_VERSION
+            )));
+        }
+        if self.manifest_key.trim().is_empty() {
+            return Err(CdfError::destination(
+                "destination correction sidecar receipt manifest key cannot be empty",
+            ));
+        }
+        validate_sidecar_sha256("manifest", &self.manifest_sha256)?;
+        if !self.atomic_manifest_publication {
+            return Err(CdfError::destination(
+                "destination correction sidecar receipt must prove atomic manifest publication",
+            ));
+        }
+        if !self.base_target_unchanged {
+            return Err(CdfError::destination(
+                "destination correction sidecar receipt must state that the base target is unchanged",
+            ));
+        }
+        if self.operation_count == 0 || self.objects.is_empty() {
+            return Err(CdfError::destination(
+                "destination correction sidecar receipt must contain at least one operation and object",
+            ));
+        }
+        let mut keys = BTreeSet::new();
+        let mut object_operations = 0_u64;
+        for object in &self.objects {
+            if object.key.trim().is_empty() || !keys.insert(object.key.as_str()) {
+                return Err(CdfError::destination(
+                    "destination correction sidecar receipt object keys must be non-empty and unique",
+                ));
+            }
+            validate_sidecar_sha256("object", &object.sha256)?;
+            if object.byte_count == 0 || object.operation_count == 0 {
+                return Err(CdfError::destination(
+                    "destination correction sidecar receipt objects must have non-zero bytes and operations",
+                ));
+            }
+            object_operations = object_operations
+                .checked_add(object.operation_count)
+                .ok_or_else(|| {
+                    CdfError::destination(
+                        "destination correction sidecar receipt operation count overflow",
+                    )
+                })?;
+        }
+        if object_operations != self.operation_count {
+            return Err(CdfError::destination(format!(
+                "destination correction sidecar receipt objects contain {object_operations} operations but evidence declares {}",
+                self.operation_count
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn to_json(&self) -> Result<String> {
+        self.validate()?;
+        serde_json::to_string(self).map_err(|error| CdfError::internal(error.to_string()))
+    }
+
+    pub fn from_receipt(receipt: &Receipt) -> Result<Self> {
+        let transaction = receipt.transaction.as_ref().ok_or_else(|| {
+            CdfError::destination(
+                "destination correction sidecar receipt is missing transaction evidence",
+            )
+        })?;
+        let json = transaction
+            .values
+            .get(DESTINATION_CORRECTION_SIDECAR_RECEIPT_EVIDENCE_KEY)
+            .ok_or_else(|| {
+                CdfError::destination(
+                    "destination correction receipt is missing closed sidecar evidence",
+                )
+            })?;
+        let evidence: Self = serde_json::from_str(json).map_err(|error| {
+            CdfError::destination(format!(
+                "destination correction sidecar receipt evidence is invalid: {error}"
+            ))
+        })?;
+        evidence.validate()?;
+        Ok(evidence)
+    }
+}
+
+fn validate_sidecar_sha256(kind: &str, value: &str) -> Result<()> {
+    let Some(hex) = value.strip_prefix("sha256:") else {
+        return Err(CdfError::destination(format!(
+            "destination correction sidecar {kind} hash must use sha256:<hex>"
+        )));
+    };
+    if hex.len() != 64 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(CdfError::destination(format!(
+            "destination correction sidecar {kind} hash must contain exactly 64 hexadecimal characters"
+        )));
+    }
+    Ok(())
 }
 
 pub trait CorrectionCommitSession {

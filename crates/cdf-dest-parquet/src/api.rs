@@ -1,5 +1,6 @@
 use crate::*;
 use crate::{
+    corrections::*,
     manifest::{
         ParquetObjectEntry, ParquetObjectManifest, ParquetReplacePointerReceipt, ReplacePointer,
         canonical_json_bytes, sha256_hex,
@@ -9,7 +10,7 @@ use crate::{
         validate_requested_segments, write_parquet_segment,
     },
     receipts::{build_receipt, record_package_receipt_once, verify_receipt},
-    sheet::parquet_sheet,
+    sheet::{parquet_correction_capabilities, parquet_sheet},
     store::{StoreClient, now_ms, package_manifest_key, replace_pointer_key, segment_object_key},
 };
 
@@ -18,6 +19,7 @@ pub struct ParquetDestination {
     runtime: Runtime,
     sheet: DestinationSheet,
     pending_sessions: Mutex<BTreeMap<PlanId, ParquetSessionContext>>,
+    pub(crate) pending_corrections: Mutex<BTreeMap<PlanId, ParquetCorrectionContext>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,6 +87,7 @@ impl ParquetDestination {
             runtime,
             sheet: parquet_sheet()?,
             pending_sessions: Mutex::new(BTreeMap::new()),
+            pending_corrections: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -585,6 +588,11 @@ impl DestinationProtocol for ParquetDestination {
         &self.sheet
     }
 
+    fn protocol_capabilities(&self) -> cdf_kernel::DestinationProtocolCapabilities {
+        cdf_kernel::DestinationProtocolCapabilities::default()
+            .with_corrections(parquet_correction_capabilities())
+    }
+
     fn plan_commit(&self, request: &DestinationCommitRequest) -> Result<CommitPlan> {
         plan_kernel_commit(&self.sheet, request)
     }
@@ -606,6 +614,25 @@ impl DestinationProtocol for ParquetDestination {
 
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
         self.verify_receipt(receipt)
+    }
+
+    fn plan_correction(
+        &self,
+        request: &DestinationCorrectionCommitRequest,
+    ) -> Result<DestinationCorrectionCommitPlan> {
+        plan_correction_request(self, request)
+    }
+
+    fn begin_correction(
+        &self,
+        request: DestinationCorrectionCommitRequest,
+        plan: DestinationCorrectionCommitPlan,
+    ) -> Result<Box<dyn CorrectionCommitSession + '_>> {
+        begin_correction_request(self, request, plan)
+    }
+
+    fn verify_correction(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
+        verify_correction_receipt(self, receipt)
     }
 }
 

@@ -57,6 +57,16 @@ pub(crate) fn parquet_sheet() -> Result<DestinationSheet> {
     })
 }
 
+pub(crate) fn parquet_correction_capabilities() -> cdf_kernel::DestinationCorrectionCapabilities {
+    cdf_kernel::DestinationCorrectionCapabilities::default().with_strategy(
+        CorrectionStrategyCapability::new(
+            CorrectionStrategy::CorrectionSidecar,
+            TransactionSupport::AtomicTarget,
+            IdempotencySupport::PackageToken,
+        ),
+    )
+}
+
 fn mapping(
     arrow_type: impl Into<String>,
     destination_type: impl Into<String>,
