@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-10
 
 # Checkpoints, state, and the commit gate
 
@@ -39,6 +39,8 @@ Scopes MUST support partition, window, file, stream, schema-contract, and destin
 The store trait MUST support head lookup, propose, commit, abandon, history, and rewind. SQLite and in-memory stores ship at MVP. Future stores MUST pass the same conformance contract.
 
 The public checkpoint store trait MUST be `Send + Sync` and use shared receivers so a runtime can hold one store handle across workers. Store implementations MUST hide mutation behind implementation-owned synchronization or transactional storage and MUST NOT expose raw write handles that bypass the commit-gate invariant.
+
+Schema promotion additionally requires the executor-neutral fenced `ScopeKey::SchemaContract` lease specified by `.10x/specs/schema-promotion-corrections.md`. That focused lease does not authorize a scheduler or weaken receipt-gated checkpoint commit.
 
 Rewind MUST append history or markers and move the head without deleting old transitions. Rewind output MUST report committed packages that are now ahead of state.
 

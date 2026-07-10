@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-08
+Updated: 2026-07-10
 
 # Types, contracts, and normalization
 
@@ -9,6 +9,8 @@ Updated: 2026-07-08
 This specification governs cdf's type fidelity rules, identifier normalization, nested-data policy, contract compiler, validation chain, trust presets, and bounded transforms. It derives from book Chapters 6 and 10 and decisions D-3, D-6, D-9, D-14, and D-15.
 
 P2 data-onramp schema vocabulary, discovery/reconciliation, and automatic source-boundary normalization are further governed by `.10x/specs/data-onramp-schema-intelligence.md`, `.10x/specs/data-onramp-source-experience-cli.md`, `.10x/decisions/data-onramp-schema-discovery-reconciliation.md`, and `.10x/decisions/data-onramp-source-identity-preview-disposition.md`.
+
+Exact field/path residual capture beyond the original nested slice is governed by `.10x/specs/residual-variant-capture.md`; explicit promotion of those residuals is governed by `.10x/specs/schema-promotion-corrections.md`.
 
 ## Type system
 

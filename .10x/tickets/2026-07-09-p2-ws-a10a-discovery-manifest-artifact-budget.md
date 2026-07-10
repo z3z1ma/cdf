@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-09
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
-Depends-On: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/tickets/done/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
+Depends-On: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/specs/sampled-schema-discovery-coverage.md, .10x/tickets/done/2026-07-08-p2-ws-a1-schema-source-model-snapshot-foundation.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
 
 # P2 WS-A10a discovery manifest artifact and executor budget
 
@@ -16,8 +16,8 @@ This child changes artifact/model plumbing only. It does not enumerate multiple 
 
 - A validated executor discovery budget defaults to 64 MiB per file, 128 MiB total in flight, and 8 probes; zero, overflow, and per-file-greater-than-total shapes fail precisely.
 - The resolved budget is part of canonical discovery-manifest evidence but not candidate membership or schema-join semantics.
-- The manifest has deterministic versioned canonical JSON and hash identity over resource, baseline/effective schema references when present, resolved budget, normalizer/policy versions, and sorted candidate/probe/verdict entries.
-- Candidate identity explicitly records transport, canonical location, size/mtime when present, identity value and strength, physical-schema hash, probe bytes, participation, metadata variance, and verdict.
+- The manifest has deterministic versioned canonical JSON and hash identity over resource, baseline/effective schema references when present, coverage mode, selector evidence when sampled, resolved budget, normalizer/policy versions, and sorted candidate/probe/verdict entries.
+- Candidate identity explicitly records transport, canonical location, size/mtime when present, identity value and strength, participation, metadata variance, and verdict. Physical-schema hash/probe bytes/schema verdict are required only for probed candidates and forbidden for unprobed candidates.
 - The sidecar is written atomically under a content-addressed `.cdf/schemas/` path; unsafe paths, missing files, tampering, and hash mismatch fail hydration.
 - Snapshot/lock references gain optional manifest fields with serde defaults/omission so every existing v1 artifact and byte-stability test remains unchanged.
 - Public/compiler models below the CLI remain executor/transport neutral.
@@ -35,7 +35,8 @@ No candidate enumeration, schema joining, format probing, CLI reporting, package
 - 2026-07-09: Opened after the user ratified `.10x/decisions/multi-file-discovery-aggregation-and-budget.md`.
 - 2026-07-09: Paused before implementation. The user proposed explicit sampled discovery with runtime residual capture and later promotion. The manifest must be able to represent an unprobed candidate without inventing a physical-schema hash or discovery verdict, and must distinguish sampled baseline coverage from exhaustive coverage. See `.10x/research/2026-07-09-sampled-discovery-variant-promotion.md`.
 - 2026-07-09: The user ratified the architectural recommendation in `.10x/decisions/explicit-sampled-discovery-and-residual-promotion.md`. Exact selector evidence remains a blocker because it determines the durable manifest fields and validation invariants.
+- 2026-07-10: `stratified-hash-v1` and probed/unprobed validation are ratified in `.10x/specs/sampled-schema-discovery-coverage.md`; this artifact foundation is executable again.
 
 ## Blockers
 
-Coverage and participation semantics are ratified. The exact deterministic selector/version/parameters and validation rules for its evidence remain blocked pending the focused sampled-discovery specification.
+None.

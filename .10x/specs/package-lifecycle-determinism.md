@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-10
 
 # Packages, lifecycle, and determinism
 
@@ -70,6 +70,8 @@ Replay MUST prefer canonical IPC segment paths from `manifest.identity.segments[
 ## Retention and GC
 
 Retention policy is per trust/environment. GC MUST refuse to collect any package that is sole proof of a committed checkpoint inside retention. GC MAY tombstone package data, but manifest and hashes MUST survive.
+
+Residual-promotion availability is governed by `.10x/specs/schema-promotion-corrections.md`. GC does not extend retention indefinitely, but MUST report when collection removes the last local residual bytes capable of driving a recorded promotion.
 
 `cdf package archive` is fast-follow. Archive transcodes `data/` to Parquet with a fidelity report and updates package metadata without making Parquet canonical unless a later decision supersedes D-4.
 

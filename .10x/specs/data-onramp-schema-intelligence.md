@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-08
-Updated: 2026-07-09
+Updated: 2026-07-10
 
 # Data onramp schema intelligence
 
@@ -24,11 +24,11 @@ Discovery probes MUST be bounded and source-specific:
 
 File discovery MUST be resource-level rather than single-file-only. A Parquet or Arrow IPC file resource whose glob or remote enumeration resolves multiple files MUST support discovery and pinning without requiring the operator to narrow the source. Per-format footer/schema-block/sampling probes MUST feed one discovery-set aggregation abstraction so later file formats do not reinvent aggregation semantics. The pinned result MUST represent the aggregate resource schema and durable provenance for the matched discovery set; incompatible per-file schemas MUST become named contract verdicts rather than an ambiguity rejection or unclassified crash. `.10x/decisions/multi-file-discovery-aggregation-and-budget.md` governs exhaustive binary aggregation, metadata conflicts, pin/effective/manifest authority, quarantine advancement, and executor budgets.
 
-For Parquet and Arrow IPC, discovery MUST probe every matched footer/schema block and MUST NOT sample. Aggregation MUST use equality or the ratified lossless widening lattice recursively; missing compatible fields become nullable and materialize typed nulls. Initial pinning MUST fail with a complete per-file report when the exhaustive set is incompatible. Reserved CDF metadata is regenerated; identical non-reserved metadata is retained; conflicts are recorded per file.
+For Parquet and Arrow IPC, discovery MUST probe every matched footer/schema block by default. Explicit sampled coverage is permitted only under `.10x/specs/sampled-schema-discovery-coverage.md`; it must never be activated implicitly or represented as exhaustive. Aggregation MUST use equality or the ratified lossless widening lattice recursively; missing compatible fields become nullable and materialize typed nulls. Initial exhaustive pinning MUST fail with a complete per-file report when the set is incompatible; sampled pinning requires the selected sample to aggregate compatibly. Reserved CDF metadata is regenerated; identical non-reserved metadata is retained; conflicts are recorded per file.
 
 Discovery evidence MUST distinguish the immutable baseline snapshot hash, the current verdict-bearing effective schema hash, and the content-addressed discovery-manifest hash. Ordinary commands MUST verify and hydrate the baseline before any file-source observation. Existing pins remain immutable until explicit `cdf schema pin`; `evolve` MAY derive a recorded effective output schema against that baseline, while `freeze` MUST keep the baseline effective and quarantine deviations. File listing/probing for execution MUST NOT be reported or persisted as a pin refresh.
 
-Binary discovery defaults to 64 MiB metadata per file, 128 MiB total in-flight metadata, and 8 concurrent probes per executor. These values MUST be configurable through executor options and serialized into discovery evidence. Exceeding a resolved budget MUST fail explicitly and MUST NOT sample or omit candidates.
+Binary discovery defaults to 64 MiB metadata per file, 128 MiB total in-flight metadata, and 8 concurrent probes per executor. These values MUST be configurable through executor options and serialized into discovery evidence. Exceeding a resolved budget MUST fail explicitly and MUST NOT activate sampling, change an explicit sample, or substitute candidates.
 
 Discovery MUST NOT silently mutate a pinned schema during run. Drift against a pinned snapshot is a contract event that admits, widens, variant-captures, quarantines, or rejects according to policy.
 

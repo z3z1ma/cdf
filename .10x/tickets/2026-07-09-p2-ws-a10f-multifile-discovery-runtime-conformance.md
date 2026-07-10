@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-09
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
-Depends-On: .10x/tickets/2026-07-09-p2-ws-a10e-file-quarantine-processed-positions.md, .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Depends-On: .10x/tickets/2026-07-09-p2-ws-a10e-file-quarantine-processed-positions.md, .10x/tickets/2026-07-10-p2-ws-a10g-explicit-sampled-binary-discovery.md, .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 
 # P2 WS-A10f multi-file discovery/runtime conformance
 
@@ -17,8 +17,8 @@ Gate A10 with deterministic multi-file discovery, pin, compatible execution, dri
 - Incompatible month/file drift completes with named quarantine evidence and correct manifest advancement/retry.
 - Preview uses the same exhaustive file resolution/discovery/reconciliation/normalization front end and boundedly opens every planned partition; rendered rows remain under the global limit in deterministic order.
 - A green preview cannot later fail run for a file/decode/schema reason within the bytes/batches preview actually inspected.
-- Default and overridden executor budgets are visible; exhaustion is explicit and never changes membership or samples.
-- Large-N deterministic fixtures prove bounded in-flight bytes/concurrency without requiring a production network.
+- Default and overridden executor budgets are visible; exhaustion is explicit and never activates or changes sampling.
+- Large-N deterministic fixtures prove bounded in-flight bytes/concurrency plus byte-identical `stratified-hash-v1` selection without requiring a production network.
 - The friction registry and S2/S6/S8 rows are promoted only for the exact behavior proved; HTTP-template/cloud exclusions remain pending under WS-E/WS-I.
 
 ## Evidence expectations
@@ -35,4 +35,4 @@ No S3/GCS/Azure implementation, HTTP template enumeration, text inference, zip, 
 
 ## Blockers
 
-Depends on A10e.
+Depends on A10e and A10g.

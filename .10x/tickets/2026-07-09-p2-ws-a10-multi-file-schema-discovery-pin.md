@@ -1,8 +1,8 @@
-Status: blocked
+Status: open
 Created: 2026-07-09
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md
-Depends-On: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/tickets/done/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
+Depends-On: .10x/decisions/multi-file-discovery-aggregation-and-budget.md, .10x/decisions/explicit-sampled-discovery-and-residual-promotion.md, .10x/specs/sampled-schema-discovery-coverage.md, .10x/tickets/done/2026-07-09-p2-ws-a2-local-parquet-discovery-probe.md, .10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md
 
 # P2 WS-A10 multi-file schema discovery and pinned manifest identity
 
@@ -13,13 +13,13 @@ Parent plan: replace single-file discovery slices with a format-neutral resource
 ## Acceptance criteria
 
 - `cdf schema discover|pin`, `plan --no-pin`, and first-use auto-pin accept multi-file Parquet and Arrow IPC file resources and never require narrowing a glob to one file.
-- Discovery probes every footer/schema block without reading data pages or computing runtime full-file hashes; resolved per-executor budgets are explicit evidence and exhaustion fails rather than sampling.
+- Exhaustive discovery probes every footer/schema block without reading data pages or computing runtime full-file hashes. Explicit `sample_files = N` uses `stratified-hash-v1`; resolved per-executor budgets are evidence and exhaustion never activates or changes sampling.
 - Default `evolve` produces one deterministic union schema using only ratified lossless widenings; missing fields, new fields, incompatible physical types, and metadata variance have explicit recorded semantics.
-- First pin requires the exhaustive compatible aggregate. Existing baseline pins stay immutable; `evolve` derives a recorded effective schema and `freeze` quarantines deviations.
-- The pinned artifact identity includes aggregate schema, normalizer/policy versions, and a sorted discovery manifest with content identity, physical-schema hash, probe participation, and verdict for every matched file.
+- First exhaustive pin requires the exhaustive compatible aggregate; first sampled pin requires the selected compatible aggregate and records every unprobed entry honestly. Existing baseline pins stay immutable; `evolve` derives a recorded effective schema and `freeze` quarantines deviations.
+- The pinned artifact identity includes aggregate schema, normalizer/policy versions, coverage/selector evidence, and a sorted discovery manifest with content identity and participation for every matched file; only probed files carry physical-schema hashes and discovery verdicts.
 - Adding/removing a file or changing its bounded observation identity changes the fresh discovery manifest even when the aggregate Arrow schema is unchanged; runtime exact identity remains authoritative for data-only changes outside bounded discovery evidence. Ordinary commands never refresh the baseline pin implicitly.
 - Plan/preview/run share the pinned aggregate schema and per-file reconciliation front end. Runtime exact `FileManifest` SHA/ETag evidence and append incrementality remain intact.
-- Deterministic local multi-file Parquet/Arrow IPC and transport-fixture tests cover compatible union/widening, missing fields, incompatible quarantine, no-change identity, changed-set diff, bounded large-N behavior, and no-write failures.
+- Deterministic local multi-file Parquet/Arrow IPC and transport-fixture tests cover compatible union/widening, missing fields, incompatible quarantine, exhaustive and sampled coverage, unseen runtime residual/quarantine routing, no-change identity, changed-set diff, bounded large-N behavior, and no-write failures.
 
 ## Evidence expectations
 
@@ -78,7 +78,8 @@ This ticket does not add Arrow IPC stream framing, Parquet/IPC row decoding chan
 - 2026-07-09: Split executable children A10a through A10f. A10a (artifact/budget) and A10b (pure aggregate join) are independent first lanes; A10c-f sequence the I/O, runtime evidence, quarantine/checkpoint, and conformance integration.
 - 2026-07-09: Implementation paused at the user's request to shape explicit sampled discovery plus residual `_cdf_variant` capture and governed promotion. Research in `.10x/research/2026-07-09-sampled-discovery-variant-promotion.md` confirms sampling itself is not forbidden: silent or falsely exhaustive sampling is. The active exhaustive-default decision remains valid, but A10a's manifest shape cannot be finalized until sampled candidates, absent physical-schema hashes/verdicts, and promotion-oriented retention/row identity have an explicit contract.
 - 2026-07-09: The user ratified the recommendations. `.10x/decisions/explicit-sampled-discovery-and-residual-promotion.md` now authorizes explicit sampled coverage, safe field/path residual capture, framework-managed correction identity, capability-dependent correction/rematerialization, and a distinct plan-first promotion surface. Implementation remains paused for one exact semantic checkpoint: deterministic sample selection and promotion transaction/recovery ordering.
+- 2026-07-10: The user confirmed all three exact contracts. `.10x/specs/sampled-schema-discovery-coverage.md` fixes `stratified-hash-v1`; `.10x/specs/residual-variant-capture.md` fixes field/path residual safety and encoding; `.10x/specs/schema-promotion-corrections.md` fixes provenance, leases, correction strategies, crash recovery, and retention. A10a is executable again; A10g owns explicit sampled discovery after the exhaustive orchestrator.
 
 ## Blockers
 
-The architecture is ratified, but the deterministic selector and promotion transaction/recovery contract remain unspecified. No A10 child may enter implementation until those details are confirmed and focused specifications/tickets are updated; A10a is directly blocked because it owns the durable manifest shape.
+None. Child dependencies govern execution order. The residual/promotion execution graph is owned separately by `.10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md`.

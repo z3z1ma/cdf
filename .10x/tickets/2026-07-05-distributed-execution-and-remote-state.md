@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/2026-07-05-conformance-chaos-golden.md, .10x/tickets/done/2026-07-05-checkpoint-store-sqlite.md
 
@@ -29,6 +29,7 @@ No new artifact type may be introduced without superseding decision.
 ## Progress and notes
 
 - 2026-07-05: Opened from book and specs.
+- 2026-07-10: `.10x/tickets/2026-07-10-p2-rp4-schema-scope-lease-lock-cas.md` now owns the first executor-neutral fenced `ScopeKey` lease primitive required by schema promotion, with in-memory/SQLite implementations only. This ticket MUST reuse/extend that conformance-tested primitive for remote stores and worker scheduling rather than introducing a second lease model.
 
 ## Blockers
 

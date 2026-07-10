@@ -1,12 +1,14 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-07
+Updated: 2026-07-10
 
 # Destinations, receipts, and delivery guarantees
 
 ## Purpose and scope
 
 This specification governs destination commit protocols, destination sheets, dispositions, receipts, idempotency, replay, guarantee derivation, and first destinations. It derives from book Chapter 13 and decisions D-5, D-16, D-27, and D-28. General run composition is governed by `.10x/specs/run-orchestration-ledger.md`.
+
+Destination row-provenance, correction/readback capability sheets, and residual-promotion strategies are further governed by `.10x/specs/schema-promotion-corrections.md`.
 
 ## Destination protocol
 

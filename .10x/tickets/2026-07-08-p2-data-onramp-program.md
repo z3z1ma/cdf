@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
@@ -19,10 +19,14 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/decisions/data-onramp-schema-discovery-reconciliation.md`.
 - `.10x/decisions/data-onramp-file-source-transport-manifest.md`.
 - `.10x/decisions/data-onramp-source-identity-preview-disposition.md`.
+- `.10x/decisions/explicit-sampled-discovery-and-residual-promotion.md`.
 - `.10x/specs/data-onramp-schema-intelligence.md`.
 - `.10x/specs/data-onramp-file-sources-transports.md`.
 - `.10x/specs/data-onramp-source-experience-cli.md`.
 - `.10x/specs/data-onramp-conformance.md`.
+- `.10x/specs/sampled-schema-discovery-coverage.md`.
+- `.10x/specs/residual-variant-capture.md`.
+- `.10x/specs/schema-promotion-corrections.md`.
 - `.10x/specs/resource-authoring-planning-batches.md`.
 - `.10x/specs/types-contracts-normalization.md`.
 - `.10x/specs/project-cli-observability-security.md`.
@@ -60,6 +64,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md`
 - `.10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md`
 - `.10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md`
+- `.10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md`
 
 ## Sequencing
 
@@ -79,6 +84,8 @@ Where performance tickets intersect file partitioning, remote reads, compression
 - `namecase-v1` runs automatically and `source_name` is override-only.
 - The eighteen P2 frictions each name a regression test in closure evidence.
 - Coverage matrix rows for Chapter 7.5, 8.2, 8.6, 9.2, and 13.3 are updated as work closes.
+- Explicit sampled discovery is truthful and deterministic; unseen compatible data is validated, and safe nonconforming paths can survive in exact `_cdf_variant` residuals.
+- `cdf schema promote` can dry-plan and, where destination capabilities permit, correct or rematerialize retained residuals through packages, receipts, checkpoints, and atomic pin publication without making append require a key.
 
 ## Evidence expectations
 
@@ -86,7 +93,7 @@ Each workstream records focused evidence and adversarial review. Parent closure 
 
 ## Explicit exclusions
 
-P2 does not implement a GUI, a scheduler, distributed execution, resident streaming supervisor, zip archive member semantics, lakehouse destinations, or new non-source product surfaces unless later active tickets explicitly scope them.
+P2 does not implement a GUI, a scheduler, distributed execution, resident streaming supervisor, zip archive member semantics, or lakehouse destinations. The residual/promotion surface is explicitly scoped by the active focused specs and `.10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md`; no broader post-load modeling surface is implied.
 
 ## Progress and notes
 
@@ -129,6 +136,7 @@ P2 does not implement a GUI, a scheduler, distributed execution, resident stream
 - 2026-07-09: Closed D5 and I5 with integration evidence `.10x/evidence/2026-07-09-p2-d5-i5-integration.md` and review `.10x/reviews/2026-07-09-p2-d5-i5-integration-review.md`. Glob/resource-level Parquet and Arrow IPC format inference now confirms every local match, bounded HTTPS Parquet remains supported, unsupported remote Arrow fails at plan time, and the S5 parallel request-capture race is closed. Final workspace nextest passed 809/809. The program remains open for A10's resource-level multi-file schema aggregation/pinning contract, G2 ratification, S1-S4/S6/S8, cloud/remote file breadth, docs, and the recorded S1+S2 session.
 - 2026-07-09: Multi-file discovery research is consolidated in `.10x/research/2026-07-09-multi-file-discovery-aggregation-contract.md`. It rejects sampled binary pins and recommends one exhaustive resource-level aggregator with distinct baseline/effective/manifest identities and per-file gate-bearing verdicts. A10 was blocked at this checkpoint until the following ratification entry.
 - 2026-07-09: The user ratified A10 and the production-scale portability invariant. `.10x/decisions/multi-file-discovery-aggregation-and-budget.md` makes discovery exhaustive and executor-neutral; 64 MiB/file, 128 MiB in flight, and 8 probes are configurable plan-recorded per-executor defaults rather than global ceilings. A10a/A10b are executable in parallel, followed by A10c-f.
+- 2026-07-10: The user confirmed explicit `stratified-hash-v1` sampled discovery, exact field/path residual capture, and fenced plan-first schema promotion with framework row provenance and capability-dependent correction/rematerialization. Active focused specs now govern each surface. A10g owns sampled binary discovery; `.10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md` owns the separately decomposed residual/correction/lease/promotion/conformance graph. This turn is governing-record activation only; implementation begins from executable children afterward.
 
 ## Blockers
 
