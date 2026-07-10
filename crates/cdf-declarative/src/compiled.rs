@@ -1220,6 +1220,12 @@ fn parse_field_data_type(raw: &str) -> std::result::Result<DataType, String> {
     Err("expected an Arrow type string such as `int64`, `timestamp(us, UTC)`, `list<int64>`, or `struct<name: utf8>`".to_owned())
 }
 
+pub fn parse_arrow_field_type(raw: &str) -> Result<DataType> {
+    parse_field_data_type(raw).map_err(|error| {
+        CdfError::contract(format!("invalid Arrow type declaration {raw:?}: {error}"))
+    })
+}
+
 #[derive(Clone, Copy)]
 enum DecimalWidth {
     Decimal128,

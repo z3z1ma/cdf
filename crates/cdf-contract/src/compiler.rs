@@ -1,6 +1,7 @@
+use std::cmp::Reverse;
 use std::collections::BTreeSet;
 
-use arrow_schema::Field;
+use arrow_schema::{DataType, Field, TimeUnit};
 use cdf_kernel::{
     CdfError, ResourceDescriptor, Result, TypeMapping, TypeMappingFidelity, semantic,
 };
@@ -268,6 +269,110 @@ pub fn validate_type_mapping(
     }
 }
 
+/// Resolves a canonical Arrow type against the destination-sheet pattern vocabulary.
+/// Destination adapters declare data; shared compiler semantics interpret that data.
+pub fn resolve_destination_type_mapping<'a>(
+    mappings: &'a [TypeMapping],
+    data_type: &DataType,
+) -> Result<Option<&'a TypeMapping>> {
+    let mut matches = mappings
+        .iter()
+        .filter_map(|mapping| {
+            destination_type_pattern_specificity(&mapping.arrow_type, data_type)
+                .map(|specificity| (specificity, mapping))
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|item| Reverse(item.0));
+    let Some((best_specificity, best)) = matches.first().copied() else {
+        return Ok(None);
+    };
+    let ambiguous = matches
+        .iter()
+        .skip(1)
+        .take_while(|(specificity, _)| *specificity == best_specificity)
+        .map(|(_, mapping)| mapping.arrow_type.as_str())
+        .collect::<Vec<_>>();
+    if !ambiguous.is_empty() {
+        return Err(CdfError::contract(format!(
+            "destination type mappings are ambiguous for Arrow type {data_type}: {:?} and {:?} have equal specificity {best_specificity}",
+            best.arrow_type, ambiguous
+        )));
+    }
+    Ok(Some(best))
+}
+
+fn destination_type_pattern_specificity(pattern: &str, data_type: &DataType) -> Option<u8> {
+    let pattern = compact_ascii_lower(pattern);
+    let display = compact_ascii_lower(&data_type.to_string());
+    if pattern == display {
+        return Some(100);
+    }
+    match data_type {
+        DataType::Decimal128(_, _) if pattern == "decimal128(p,s)" => Some(90),
+        DataType::Decimal256(_, _) if pattern == "decimal256(p,s)" => Some(90),
+        DataType::Decimal128(_, _) | DataType::Decimal256(_, _) if pattern == "decimal*" => {
+            Some(50)
+        }
+        DataType::Time32(TimeUnit::Second | TimeUnit::Millisecond)
+            if pattern == "time32(second|millisecond)" =>
+        {
+            Some(70)
+        }
+        DataType::Time64(TimeUnit::Microsecond) if pattern == "time64(microsecond)" => Some(90),
+        DataType::Time64(TimeUnit::Nanosecond) if pattern == "time64(nanosecond)" => Some(90),
+        DataType::Timestamp(unit, timezone) => {
+            let unit = compact_ascii_lower(&format!("{unit:?}"));
+            match timezone {
+                None if pattern == format!("timestamp({unit},none)") => Some(90),
+                Some(_) if pattern == format!("timestamp({unit},some(_))") => Some(90),
+                _ if pattern == format!("timestamp({unit},*)") => Some(75),
+                None if pattern == "timestamp(second|millisecond|microsecond,none)"
+                    && matches!(unit.as_str(), "second" | "millisecond" | "microsecond") =>
+                {
+                    Some(70)
+                }
+                Some(_) if pattern == "timestamp(*,timezone)" => Some(60),
+                _ => None,
+            }
+        }
+        DataType::Struct(_) if pattern == "struct" => Some(85),
+        DataType::Struct(_) if pattern == "struct/list/map" => Some(60),
+        DataType::List(_)
+        | DataType::LargeList(_)
+        | DataType::ListView(_)
+        | DataType::LargeListView(_)
+        | DataType::FixedSizeList(_, _)
+            if pattern == "list" =>
+        {
+            Some(85)
+        }
+        DataType::List(_)
+        | DataType::LargeList(_)
+        | DataType::ListView(_)
+        | DataType::LargeListView(_)
+        | DataType::FixedSizeList(_, _)
+            if pattern == "struct/list/map" =>
+        {
+            Some(60)
+        }
+        DataType::Map(_, _) if pattern == "map" => Some(85),
+        DataType::Map(_, _) if pattern == "struct/list/map" => Some(60),
+        DataType::Union(_, _) if pattern == "union" => Some(85),
+        DataType::Dictionary(_, _) if pattern == "dictionary" => Some(85),
+        DataType::Duration(_) if pattern == "duration" => Some(85),
+        DataType::Interval(_) if pattern == "interval" => Some(85),
+        _ => None,
+    }
+}
+
+fn compact_ascii_lower(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 fn validate_type_fidelity(policy: &ContractPolicy, field: &ObservedField) -> Result<()> {
     if policy.types.preserve_decimal_exactness
         && let Some(SourceTypeClaim::Decimal { precision, scale }) = field.source_type
@@ -504,5 +609,93 @@ fn nested_action_for_field(
             column_name: spec.column_name.clone(),
             semantic: spec.semantic.clone(),
         }),
+    }
+}
+
+#[cfg(test)]
+mod destination_mapping_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn mapping(pattern: &str) -> TypeMapping {
+        TypeMapping {
+            arrow_type: pattern.to_owned(),
+            destination_type: pattern.to_owned(),
+            fidelity: TypeMappingFidelity::Lossless,
+        }
+    }
+
+    #[test]
+    fn exact_mapping_outranks_family_and_sheet_order() {
+        let mappings = vec![mapping("Decimal*"), mapping("Decimal128(p,s)")];
+        let selected =
+            resolve_destination_type_mapping(&mappings, &DataType::Decimal128(38, 9)).unwrap();
+        assert_eq!(selected.unwrap().arrow_type, "Decimal128(p,s)");
+        let reversed = mappings.into_iter().rev().collect::<Vec<_>>();
+        let selected =
+            resolve_destination_type_mapping(&reversed, &DataType::Decimal128(38, 9)).unwrap();
+        assert_eq!(selected.unwrap().arrow_type, "Decimal128(p,s)");
+    }
+
+    #[test]
+    fn current_temporal_and_nested_patterns_resolve_case_insensitively() {
+        let mappings = vec![
+            mapping("Time32(second|millisecond)"),
+            mapping("Time64(microsecond)"),
+            mapping("Timestamp(second|millisecond|microsecond, none)"),
+            mapping("Timestamp(*, timezone)"),
+            mapping("Timestamp(Nanosecond,*)"),
+            mapping("Struct/List/Map"),
+        ];
+        for data_type in [
+            DataType::Time32(TimeUnit::Second),
+            DataType::Time64(TimeUnit::Microsecond),
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            DataType::Struct(vec![Field::new("x", DataType::Int64, true)].into()),
+            DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            DataType::Map(
+                Arc::new(Field::new(
+                    "entries",
+                    DataType::Struct(
+                        vec![
+                            Field::new("key", DataType::Utf8, false),
+                            Field::new("value", DataType::Int64, true),
+                        ]
+                        .into(),
+                    ),
+                    false,
+                )),
+                false,
+            ),
+        ] {
+            assert!(
+                resolve_destination_type_mapping(&mappings, &data_type)
+                    .unwrap()
+                    .is_some(),
+                "missing mapping for {data_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn equal_specificity_is_rejected_as_ambiguous() {
+        let mappings = vec![mapping("Int64"), mapping(" int64 ")];
+        let error = resolve_destination_type_mapping(&mappings, &DataType::Int64).unwrap_err();
+        assert!(error.to_string().contains("ambiguous"));
+    }
+
+    #[test]
+    fn unsupported_mapping_remains_explicit_sheet_authority() {
+        let mappings = vec![TypeMapping {
+            arrow_type: "Decimal*".to_owned(),
+            destination_type: "DECIMAL".to_owned(),
+            fidelity: TypeMappingFidelity::Unsupported,
+        }];
+        let selected = resolve_destination_type_mapping(&mappings, &DataType::Decimal128(38, 9))
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.fidelity, TypeMappingFidelity::Unsupported);
     }
 }

@@ -139,6 +139,9 @@ _cdf() {
             cdf__subcmd__schema,pin)
                 cmd="cdf__subcmd__schema__subcmd__pin"
                 ;;
+            cdf__subcmd__schema,promote)
+                cmd="cdf__subcmd__schema__subcmd__promote"
+                ;;
             cdf__subcmd__schema,show)
                 cmd="cdf__subcmd__schema__subcmd__show"
                 ;;
@@ -794,7 +797,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema)
-            opts="-h --no-color --help discover pin show diff"
+            opts="-h --no-color --help discover pin show diff promote"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -851,6 +854,28 @@ _cdf() {
             fi
             case "${prev}" in
                 --resource)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        cdf__subcmd__schema__subcmd__promote)
+            opts="-h --resource --type --no-color --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --resource)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --type)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;

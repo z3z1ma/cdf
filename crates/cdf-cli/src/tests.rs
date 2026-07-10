@@ -21,11 +21,13 @@ use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CursorPosition, CursorValue, DestinationCommitRequest, DestinationId,
-    IdempotencyToken, PackageHash, PartitionId, PipelineId, Receipt, ReceiptId, ResourceId, RunId,
-    SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
-    TargetName, VerifyClause, WriteDisposition,
+    FileManifest, FilePosition, IdempotencyToken, PackageHash, PartitionId, PipelineId, Receipt,
+    ReceiptId, ResourceId, RunId, SchemaHash, ScopeKey, SegmentAck, SegmentId, SourcePosition,
+    StateDelta, StateSegment, TargetName, VerifyClause, WriteDisposition,
 };
-use cdf_package::{PackageBuilder, PackageReader, PackageStatus};
+use cdf_package::{
+    DestinationCommitPlanPreimage, PackageBuilder, PackageReader, PackageStatus, StateDeltaPreimage,
+};
 use cdf_project::{
     PackageArtifactReplayRequest, ResolvedProjectDestination, STRATIFIED_HASH_SELECTOR_V1,
     parse_lock, replay_package_from_artifacts,
@@ -138,7 +140,7 @@ fn parser_provides_subcommand_help_at_nested_layers() {
     assert!(schema.stdout.contains("Usage: cdf schema discover"));
     assert!(schema.stdout.contains("--resource <RESOURCE>"));
 
-    for subcommand in ["pin", "show", "diff"] {
+    for subcommand in ["pin", "show", "diff", "promote"] {
         let result = run(["cdf", "schema", subcommand, "--help"]);
 
         assert_eq!(result.exit_code, 0);
@@ -148,6 +150,10 @@ fn parser_provides_subcommand_help_at_nested_layers() {
                 .contains(&format!("Usage: cdf schema {subcommand}"))
         );
         assert!(result.stdout.contains("--resource <RESOURCE>"));
+        if subcommand == "promote" {
+            assert!(result.stdout.contains("--type <JSON_POINTER=ARROW_TYPE>"));
+            assert!(!result.stdout.contains("--execute"));
+        }
     }
 
     let rewind = run(["cdf", "state", "rewind", "--help"]);
@@ -3028,6 +3034,198 @@ fn schema_pin_without_lockfile_creates_semantic_lockfile_reference() {
     assert!(project.root.join(".cdf/schemas").exists());
     let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
     assert!(lock.resources["local.events"].schema_snapshot.is_some());
+}
+
+#[test]
+fn schema_promote_plans_fresh_residual_correction_without_writes() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    let source_path = project.root.join("data/events.parquet");
+    write_vendor_parquet(&source_path);
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    let pin_json = stderr_or_stdout_json(&pin.stdout);
+    let pinned_hash = pin_json["result"]["schema_hash"].as_str().unwrap();
+
+    write_vendor_score_parquet(&source_path);
+    write_schema_promote_package_fixture(&project, pinned_hash);
+    let before = project_tree_snapshot(&project.root);
+
+    let planned = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_eq!(planned.exit_code, 0, "{}", planned.stderr);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    let json = stderr_or_stdout_json(&planned.stdout);
+    let report = &json["result"];
+    assert_eq!(report["writes"]["schema_snapshot"], false);
+    assert_eq!(report["writes"]["destination"], false);
+    assert_eq!(report["evidence_inventory_complete"], true);
+    assert_eq!(report["paths"][0]["path"], "/score", "{report}");
+    assert_eq!(report["paths"][0]["source_name"], "score", "{report}");
+    assert_eq!(report["paths"][0]["selected_type"], "Int64");
+    assert_eq!(report["paths"][0]["observed_count"], 2);
+    assert!(
+        report["paths"][0]["affected_address_value_digest"]
+            .as_str()
+            .unwrap()
+            .starts_with("sha256:")
+    );
+    assert_eq!(report["evidence"][0]["availability"], "retained_package");
+    assert_eq!(report["targets"][0]["destination"], "duckdb");
+    assert_eq!(
+        report["paths"][0]["associations"][0]["target"],
+        report["targets"][0]["target"]
+    );
+    assert_eq!(
+        report["paths"][0]["associations"][0]["package_hash"],
+        report["paths"][0]["affected_packages"][0]
+    );
+    assert_eq!(report["targets"][0]["strategy"], "in_place_update");
+    assert_eq!(report["targets"][0]["migrations"][0]["path"], "/score");
+    assert_eq!(report["recovery_argv"][0], "cdf");
+    assert!(
+        report["recovery_command"]
+            .as_str()
+            .unwrap()
+            .contains("--type /score=Int64")
+    );
+    assert!(
+        report["proposed_snapshot"]["path"]
+            .as_str()
+            .unwrap()
+            .contains(report["new_schema_hash"].as_str().unwrap())
+    );
+    assert_eq!(report["proposed_snapshot"]["artifact"]["version"], 3);
+    let repeated = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_eq!(repeated.exit_code, 0, "{}", repeated.stderr);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    let repeated_json = stderr_or_stdout_json(&repeated.stdout);
+    assert_eq!(
+        repeated_json["result"]["promotion_id"],
+        report["promotion_id"]
+    );
+    assert_eq!(
+        repeated_json["result"]["new_schema_hash"],
+        report["new_schema_hash"]
+    );
+
+    let human = run([
+        "cdf",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_eq!(human.exit_code, 0, "{}", human.stderr);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    assert!(human.stdout.contains("retained_package"));
+    assert!(human.stdout.contains("in_place_update"));
+    assert!(human.stdout.contains("score"));
+    assert!(human.stdout.contains("Writes"));
+    assert!(human.stdout.contains("Fresh discovery identity"));
+    assert!(human.stdout.contains("Target evidence"));
+    assert!(human.stdout.contains("receipt verification"));
+    assert!(human.stdout.contains("preserved"));
+    assert!(human.stdout.contains("Execution preconditions"));
+
+    let invalid = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--type",
+        "/score=not-an-arrow-type",
+    ]);
+    assert_ne!(invalid.exit_code, 0);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    assert!(invalid.stderr.contains("invalid Arrow type declaration"));
+
+    let unknown = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--type",
+        "/missing=int64",
+    ]);
+    assert_eq!(unknown.exit_code, 0, "{}", unknown.stderr);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    let unknown_json = stderr_or_stdout_json(&unknown.stdout);
+    assert!(
+        unknown_json["result"]["conflicts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|conflict| conflict["code"] == "unknown_path")
+    );
+
+    let mut stale_lock =
+        parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    stale_lock
+        .resources
+        .get_mut("local.events")
+        .unwrap()
+        .schema_snapshot
+        .as_mut()
+        .unwrap()
+        .schema_hash = SchemaHash::new("sha256:stale-pin").unwrap();
+    fs::write(
+        project.root.join("cdf.lock"),
+        cdf_project::lock_to_toml(&stale_lock).unwrap(),
+    )
+    .unwrap();
+    let stale_before = project_tree_snapshot(&project.root);
+    let stale = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_ne!(stale.exit_code, 0);
+    assert_eq!(project_tree_snapshot(&project.root), stale_before);
+    let stale_json = stderr_or_stdout_json(&stale.stderr);
+    assert_eq!(stale_json["error"]["kind"], "data");
+    assert!(
+        stale_json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("stale-pin"),
+        "{}",
+        stale.stderr
+    );
 }
 
 #[test]
@@ -12145,6 +12343,128 @@ fn write_vendor_score_parquet(path: &Path) {
     let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
     let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
     fs::write(path, bytes).unwrap();
+}
+
+fn write_schema_promote_package_fixture(project: &TestProject, schema_hash: &str) {
+    let package_dir = project.root.join(".cdf/packages/pkg-promote-source");
+    fs::create_dir_all(project.root.join(".cdf/packages")).unwrap();
+    let scores = Int64Array::from_iter_values([10_i64, 20_i64]);
+    let residuals = (0..scores.len())
+        .map(|row| {
+            String::from_utf8(
+                cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+                    ["score"],
+                    &scores,
+                    row,
+                )
+                .unwrap()])
+                .unwrap(),
+            )
+            .unwrap()
+        })
+        .collect::<Vec<_>>();
+    let mut variant = cdf_kernel::with_semantic(
+        Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
+        cdf_contract::VARIANT_SEMANTIC_TAG,
+    );
+    let mut metadata = variant.metadata().clone();
+    metadata.insert(
+        cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+        cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
+    );
+    variant = variant.with_metadata(metadata);
+    let schema = Arc::new(Schema::new(vec![
+        cdf_kernel::with_source_name(Field::new("vendor_id", DataType::Int32, false), "VendorID"),
+        variant,
+    ]));
+    let batch = RecordBatch::try_new(
+        schema,
+        vec![
+            Arc::new(Int32Array::from_iter_values([1_i32, 2_i32])),
+            Arc::new(StringArray::from(residuals)),
+        ],
+    )
+    .unwrap();
+    let mut builder = PackageBuilder::create(&package_dir, "pkg-promote-source").unwrap();
+    let segment = builder
+        .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
+        .unwrap();
+    let output_position = SourcePosition::FileManifest(FileManifest {
+        version: CHECKPOINT_STATE_VERSION,
+        files: vec![FilePosition {
+            path: "events.parquet".to_owned(),
+            size_bytes: 1,
+            etag: None,
+            sha256: Some("sha256:source".to_owned()),
+        }],
+    });
+    let state_segment = StateSegment {
+        segment_id: segment.segment_id.clone(),
+        scope: ScopeKey::Resource,
+        output_position: output_position.clone(),
+        row_count: segment.row_count,
+        byte_count: segment.byte_count,
+    };
+    let state_delta = StateDeltaPreimage {
+        checkpoint_id: CheckpointId::new("checkpoint-promote-source").unwrap(),
+        pipeline_id: PipelineId::new("pipeline-run").unwrap(),
+        resource_id: ResourceId::new("local.events").unwrap(),
+        scope: ScopeKey::Resource,
+        state_version: CHECKPOINT_STATE_VERSION,
+        parent_checkpoint_id: None,
+        input_position: None,
+        output_position,
+        schema_hash: SchemaHash::new(schema_hash).unwrap(),
+        segments: vec![state_segment.clone()],
+    };
+    builder.write_input_checkpoint_artifact(&None).unwrap();
+    builder
+        .write_state_delta_preimage_artifact(&state_delta)
+        .unwrap();
+    builder
+        .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
+            TargetName::new("events").unwrap(),
+            WriteDisposition::Append,
+            Vec::new(),
+            SchemaHash::new(schema_hash).unwrap(),
+            vec![state_segment],
+        ))
+        .unwrap();
+    let manifest = builder
+        .finish_with_status(PackageStatus::Checkpointed)
+        .unwrap();
+    let package_hash = PackageHash::new(manifest.package_hash).unwrap();
+    PackageReader::open(&package_dir)
+        .unwrap()
+        .append_receipt(Receipt {
+            receipt_id: ReceiptId::new(format!("duckdb:events:{package_hash}")).unwrap(),
+            destination: DestinationId::new("duckdb").unwrap(),
+            target: TargetName::new("events").unwrap(),
+            package_hash: package_hash.clone(),
+            segment_acks: vec![SegmentAck {
+                segment_id: segment.segment_id,
+                row_count: segment.row_count,
+                byte_count: segment.byte_count,
+            }],
+            disposition: WriteDisposition::Append,
+            idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
+            transaction: None,
+            counts: CommitCounts {
+                rows_written: 2,
+                rows_inserted: Some(2),
+                rows_updated: Some(0),
+                rows_deleted: Some(0),
+            },
+            schema_hash: SchemaHash::new(schema_hash).unwrap(),
+            migrations: Vec::new(),
+            committed_at_ms: 1,
+            verify: VerifyClause {
+                kind: "fixture".to_owned(),
+                statement: "fixture".to_owned(),
+                parameters: BTreeMap::new(),
+            },
+        })
+        .unwrap();
 }
 
 fn write_wide_vendor_score_parquet(path: &Path) {

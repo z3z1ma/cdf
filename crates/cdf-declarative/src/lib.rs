@@ -15,7 +15,7 @@ pub use compiled::{
     compile_document, compile_document_with_project_root, discover_local_arrow_ipc_schema,
     discover_local_arrow_ipc_schema_bounded, discover_local_parquet_schema,
     discover_local_parquet_schema_bounded, discover_transport_parquet_schema,
-    physical_arrow_schema_hash, validate_document,
+    parse_arrow_field_type, physical_arrow_schema_hash, validate_document,
 };
 pub use declarations::*;
 pub use file_runtime::{

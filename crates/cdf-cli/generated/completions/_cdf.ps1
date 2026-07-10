@@ -227,6 +227,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             [CompletionResult]::new('pin', 'pin', [CompletionResultType]::ParameterValue, 'pin')
             [CompletionResult]::new('show', 'show', [CompletionResultType]::ParameterValue, 'show')
             [CompletionResult]::new('diff', 'diff', [CompletionResultType]::ParameterValue, 'diff')
+            [CompletionResult]::new('promote', 'promote', [CompletionResultType]::ParameterValue, 'promote')
             break
         }
         'cdf;schema;discover' {
@@ -252,6 +253,14 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
         }
         'cdf;schema;diff' {
             [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'resource')
+            [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
+            [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
+            [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')
+            break
+        }
+        'cdf;schema;promote' {
+            [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'resource')
+            [CompletionResult]::new('--type', '--type', [CompletionResultType]::ParameterName, 'type')
             [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')

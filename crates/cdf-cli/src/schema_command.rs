@@ -11,7 +11,7 @@ use cdf_project::{
 use serde::Serialize;
 
 use crate::{
-    args::{Cli, SchemaCommand, SchemaDiscoverArgs, SchemaResourceArgs},
+    args::{Cli, SchemaCommand, SchemaDiscoverArgs, SchemaPromoteArgs, SchemaResourceArgs},
     context::ProjectContext,
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
@@ -29,7 +29,44 @@ pub(crate) fn schema(cli: &Cli, command: SchemaCommand) -> Result<CommandOutput,
         SchemaCommand::Pin(args) => pin(cli, args),
         SchemaCommand::Show(args) => show(cli, args),
         SchemaCommand::Diff(args) => diff(cli, args),
+        SchemaCommand::Promote(args) => promote(cli, args),
     }
+}
+
+fn promote(cli: &Cli, args: SchemaPromoteArgs) -> Result<CommandOutput, CliError> {
+    let context = load_context(cli, "schema promote")?;
+    let resource = context.resource(&args.resource_id)?;
+    let reference = pinned_snapshot_reference(&context, resource)
+        .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
+    let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
+    let lock = context.lock.as_ref().ok_or_else(|| {
+        CdfError::contract("schema promote requires cdf.lock; run `cdf schema pin` first")
+    })?;
+    let authority = context.lock_authority.as_ref().ok_or_else(|| {
+        CdfError::contract("schema promote requires an exact cdf.lock precondition")
+    })?;
+    let fresh_discovery = match discover_artifacts_for_cli(&context, resource) {
+        Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
+            content_identity: artifacts.discovery.snapshot.source_identity,
+            snapshot: Box::new(artifacts.discovery.snapshot.artifact),
+            discovery_manifest: artifacts.discovery_manifest.map(Box::new),
+        },
+        Err(error) => cdf_project::SchemaPromotionFreshDiscovery::Unavailable {
+            reason: error.message,
+        },
+    };
+    let evidence_inventory =
+        cdf_project::LocalPackagePromotionEvidenceInventory::new(context.package_root());
+    let report = cdf_project::plan_schema_promotion(
+        &evidence_inventory,
+        resource,
+        &pinned,
+        lock,
+        authority,
+        &fresh_discovery,
+        &args.types,
+    )?;
+    CommandOutput::rendered("schema promote", schema_promote_document(&report), report)
 }
 
 fn discover(cli: &Cli, args: SchemaDiscoverArgs) -> Result<CommandOutput, CliError> {
@@ -810,6 +847,338 @@ fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument {
         document
     };
     document.blank_line().push(writes_panel(&report.writes))
+}
+
+fn schema_promote_document(report: &cdf_project::SchemaPromotionPlanReport) -> RenderDocument {
+    let mut document = RenderDocument::new()
+        .push(SectionRule::new())
+        .push(StatusLine::new(
+            if report.executable {
+                StatusKind::Success
+            } else {
+                StatusKind::Warning
+            },
+            format!(
+                "promotion plan {} for {}",
+                if report.executable {
+                    "ready"
+                } else {
+                    "blocked"
+                },
+                report.resource_id
+            ),
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Promotion")
+                .row("id", report.promotion_id.clone())
+                .row("old schema", report.old_schema_hash.clone())
+                .row(
+                    "new schema",
+                    report
+                        .new_schema_hash
+                        .clone()
+                        .unwrap_or_else(|| "blocked".to_owned()),
+                )
+                .row(
+                    "snapshot path",
+                    report
+                        .new_schema_snapshot_path
+                        .clone()
+                        .unwrap_or_else(|| "blocked".to_owned()),
+                )
+                .row(
+                    "fresh discovery",
+                    report
+                        .fresh_discovery_schema_hash
+                        .clone()
+                        .unwrap_or_else(|| "unavailable".to_owned()),
+                )
+                .row(
+                    "discovery coverage",
+                    report
+                        .fresh_discovery_coverage
+                        .as_ref()
+                        .map(|coverage| {
+                            match coverage {
+                                cdf_project::DiscoveryCoverageMode::Exhaustive => "exhaustive",
+                                cdf_project::DiscoveryCoverageMode::Sampled => "sampled",
+                            }
+                            .to_owned()
+                        })
+                        .unwrap_or_else(|| "unavailable".to_owned()),
+                )
+                .row(
+                    "discovery manifest",
+                    report
+                        .fresh_discovery_manifest_hash
+                        .clone()
+                        .unwrap_or_else(|| "unavailable".to_owned()),
+                )
+                .row("lock precondition", report.lock_precondition_sha256.clone()),
+        );
+    if !report.fresh_discovery_content_identity.is_empty() {
+        document = document
+            .blank_line()
+            .push(report.fresh_discovery_content_identity.iter().fold(
+                KeyValuePanel::new("Fresh discovery identity"),
+                |panel, (key, value)| panel.row(key, value),
+            ));
+    }
+    let mut table = Table::new(["path", "source", "observed", "count", "selected", "output"]);
+    let mut path_evidence = Table::new(["path", "coercions", "packages", "address examples"]);
+    for path in &report.paths {
+        table = table.row([
+            path.path.clone(),
+            path.source_name.clone(),
+            path.observed_types.join(", "),
+            path.observed_count.to_string(),
+            path.selected_type
+                .clone()
+                .unwrap_or_else(|| "required".to_owned()),
+            path.output_field.clone(),
+        ]);
+        path_evidence = path_evidence.row([
+            path.path.clone(),
+            path.coercion_verdicts
+                .iter()
+                .map(|verdict| {
+                    format!(
+                        "{}→{}:{}",
+                        verdict.observed_type.to_arrow().map_or_else(
+                            |_| "invalid".to_owned(),
+                            |data_type| data_type.to_string()
+                        ),
+                        verdict.selected_type.to_arrow().map_or_else(
+                            |_| "invalid".to_owned(),
+                            |data_type| data_type.to_string()
+                        ),
+                        promotion_coercion_label(verdict.decision)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            path.affected_packages.join(", "),
+            path.affected_row_examples
+                .iter()
+                .map(|address| {
+                    format!(
+                        "{}/{}/{}",
+                        address.original_package_hash,
+                        address.original_segment_id,
+                        address.original_row_ordinal
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+        ]);
+    }
+    document = document
+        .blank_line()
+        .push(table)
+        .blank_line()
+        .push(path_evidence);
+    let mut evidence = Table::new(["package", "availability", "rows", "receipts"]);
+    for item in &report.evidence {
+        evidence = evidence.row([
+            item.package_hash
+                .clone()
+                .unwrap_or_else(|| item.artifact_location.clone()),
+            promotion_availability_label(&item.availability).to_owned(),
+            item.residual_rows.to_string(),
+            item.recorded_receipts.len().to_string(),
+        ]);
+    }
+    document = document.blank_line().push(evidence);
+    let mut targets = Table::new(["destination", "target", "strategy", "migrations"]);
+    for target in &report.targets {
+        targets = targets.row([
+            target.destination.clone(),
+            target.target.clone(),
+            target
+                .strategy
+                .map(promotion_strategy_label)
+                .unwrap_or_else(|| "unsupported".to_owned()),
+            target.migrations.len().to_string(),
+        ]);
+    }
+    document = document.blank_line().push(targets);
+    for target in &report.targets {
+        document = document.blank_line().push(
+            KeyValuePanel::new(format!(
+                "Target evidence {}:{}",
+                target.destination, target.target
+            ))
+            .row("sheet hash", target.destination_sheet_hash.clone())
+            .row(
+                "receipt verification",
+                promotion_receipt_verification_label(&target.receipt_verification),
+            )
+            .row("receipts", target.recorded_receipt_ids.join(", "))
+            .row("packages", target.affected_packages.join(", "))
+            .row("paths", target.affected_paths.join(", "))
+            .row(
+                "evidence availability",
+                target
+                    .evidence
+                    .iter()
+                    .map(|item| {
+                        format!(
+                            "{}:{}",
+                            item.package_hash,
+                            promotion_availability_label(&item.availability)
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            ),
+        );
+    }
+    let mut migrations = Table::new([
+        "target",
+        "path",
+        "output",
+        "destination field",
+        "mapping",
+        "fidelity",
+    ]);
+    for target in &report.targets {
+        for migration in &target.migrations {
+            migrations = migrations.row([
+                format!("{}:{}", target.destination, target.target),
+                migration.path.clone(),
+                migration.output_field.clone(),
+                migration
+                    .destination_field
+                    .clone()
+                    .unwrap_or_else(|| "blocked".to_owned()),
+                format!(
+                    "{} -> {}",
+                    migration.arrow_type,
+                    migration
+                        .destination_type
+                        .as_deref()
+                        .unwrap_or("unsupported")
+                ),
+                migration
+                    .fidelity
+                    .as_ref()
+                    .map(promotion_fidelity_label)
+                    .unwrap_or("missing")
+                    .to_owned(),
+            ]);
+        }
+    }
+    document = document.blank_line().push(migrations);
+    let evidence_details = report.evidence.iter().filter_map(|item| {
+        item.detail.as_ref().map(|detail| {
+            (
+                item.package_hash
+                    .as_deref()
+                    .unwrap_or(&item.artifact_location),
+                detail.as_str(),
+            )
+        })
+    });
+    let mut details_panel = KeyValuePanel::new("Evidence constraints");
+    let mut has_evidence_details = false;
+    for (location, detail) in evidence_details {
+        has_evidence_details = true;
+        details_panel = details_panel.row(location, detail);
+    }
+    if has_evidence_details {
+        document = document.blank_line().push(details_panel);
+    }
+    document = document.blank_line().push(
+        KeyValuePanel::new("Writes")
+            .row("snapshot", yes_no(report.writes.schema_snapshot))
+            .row("lockfile", yes_no(report.writes.lockfile))
+            .row("package", yes_no(report.writes.package))
+            .row("destination", yes_no(report.writes.destination))
+            .row("checkpoint", yes_no(report.writes.checkpoint))
+            .row("lease", yes_no(report.writes.lease))
+            .row("ledger", yes_no(report.writes.ledger)),
+    );
+    if !report.conflicts.is_empty() {
+        document = document.blank_line().push(report.conflicts.iter().fold(
+            KeyValuePanel::new("Conflicts"),
+            |panel, conflict| {
+                panel.row(
+                    &conflict.code,
+                    format!("{} Fix: {}", conflict.message, conflict.remediation),
+                )
+            },
+        ));
+    }
+    if !report.execution_preconditions.is_empty() {
+        document =
+            document
+                .blank_line()
+                .push(report.execution_preconditions.iter().enumerate().fold(
+                    KeyValuePanel::new("Execution preconditions"),
+                    |panel, (index, precondition)| {
+                        panel.row(format!("{}", index + 1), precondition)
+                    },
+                ));
+    }
+    document
+        .blank_line()
+        .push(NextCommand::new(report.recovery_command.clone()))
+}
+
+fn promotion_availability_label(
+    availability: &cdf_project::SchemaPromotionEvidenceAvailability,
+) -> &'static str {
+    match availability {
+        cdf_project::SchemaPromotionEvidenceAvailability::RetainedPackage => "retained_package",
+        cdf_project::SchemaPromotionEvidenceAvailability::DestinationReadback => {
+            "destination_readback"
+        }
+        cdf_project::SchemaPromotionEvidenceAvailability::TombstoneOnly => "tombstone_only",
+        cdf_project::SchemaPromotionEvidenceAvailability::Missing => "missing",
+    }
+}
+
+fn promotion_strategy_label(strategy: cdf_kernel::CorrectionStrategy) -> String {
+    match strategy {
+        cdf_kernel::CorrectionStrategy::InPlaceUpdate => "in_place_update",
+        cdf_kernel::CorrectionStrategy::CorrectionSidecar => "correction_sidecar",
+        cdf_kernel::CorrectionStrategy::VersionedRematerialization => "versioned_rematerialization",
+    }
+    .to_owned()
+}
+
+fn promotion_fidelity_label(fidelity: &cdf_kernel::TypeMappingFidelity) -> &'static str {
+    match fidelity {
+        cdf_kernel::TypeMappingFidelity::Lossless => "lossless",
+        cdf_kernel::TypeMappingFidelity::LossyRequiresContractAllowance => {
+            "lossy_requires_contract_allowance"
+        }
+        cdf_kernel::TypeMappingFidelity::Unsupported => "unsupported",
+    }
+}
+
+fn promotion_receipt_verification_label(
+    verification: &cdf_project::SchemaPromotionReceiptVerification,
+) -> &'static str {
+    match verification {
+        cdf_project::SchemaPromotionReceiptVerification::StructuralCoverageVerifiedDestinationVerificationPending => {
+            "structural_coverage_verified_destination_verification_pending"
+        }
+    }
+}
+
+fn promotion_coercion_label(decision: cdf_contract::FieldCoercionDecision) -> &'static str {
+    match decision {
+        cdf_contract::FieldCoercionDecision::Preserved => "preserved",
+        cdf_contract::FieldCoercionDecision::Widened => "widened",
+        cdf_contract::FieldCoercionDecision::CoercedByPolicy => "coerced_by_policy",
+        cdf_contract::FieldCoercionDecision::LossyAllowed => "lossy_allowed",
+        cdf_contract::FieldCoercionDecision::LossyRejected => "lossy_rejected",
+        cdf_contract::FieldCoercionDecision::Unsupported => "unsupported",
+        cdf_contract::FieldCoercionDecision::Missing => "missing",
+        cdf_contract::FieldCoercionDecision::Extra => "extra",
+    }
 }
 
 fn diff_table(report: &SchemaDiffReport) -> Table {

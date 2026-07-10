@@ -134,12 +134,13 @@ complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcom
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and not __fish_seen_subcommand_from schema" -f -a "schema"
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand diff; and __fish_seen_subcommand_from schema" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -l no-color
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -s h -l help -d 'Print help'
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "discover"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "pin"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "show"
-complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff" -f -a "diff"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "discover"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "pin"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "show"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "diff"
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and not __fish_seen_subcommand_from discover pin show diff promote" -f -a "promote"
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l resource -r
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from discover" -s h -l help -d 'Print help'
@@ -152,6 +153,10 @@ complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcomma
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from diff" -l resource -r
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from diff" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from diff" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -l resource -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -l type -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -l no-color
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and not __fish_seen_subcommand_from freeze show test" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and not __fish_seen_subcommand_from freeze show test" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and not __fish_seen_subcommand_from freeze show test" -f -a "freeze"

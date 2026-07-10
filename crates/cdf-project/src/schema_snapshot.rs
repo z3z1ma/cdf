@@ -8,22 +8,25 @@ use std::{
 use arrow_schema::{
     DataType, Field, Fields, IntervalUnit, Schema, TimeUnit, UnionFields, UnionMode,
 };
+use cdf_contract::FieldCoercionDecision;
 use cdf_kernel::{
-    CdfError, DiscoveryManifestReference, ResourceId, Result, SchemaHash, SchemaSnapshotReference,
-    discovery_manifest_from_metadata, insert_discovery_manifest_metadata,
+    CanonicalArrowType, CdfError, DiscoveryManifestReference, ResourceId, Result, SchemaHash,
+    SchemaSnapshotReference, discovery_manifest_from_metadata, insert_discovery_manifest_metadata,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION: u16 = 1;
 pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST: u16 = 2;
+pub const SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION: u16 = 3;
+pub const SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION: u16 = 1;
 pub const SCHEMA_SNAPSHOT_DIR: &str = ".cdf/schemas";
 pub const SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER: &str = "parquet-footer";
 pub const SCHEMA_DISCOVERY_FORMAT_PARQUET: &str = "parquet";
 pub const SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA: &str = "arrow-ipc-file-schema";
 pub const SCHEMA_DISCOVERY_FORMAT_ARROW_IPC: &str = "arrow_ipc";
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SchemaSnapshotArtifact {
     pub version: u16,
     pub resource_id: String,
@@ -31,6 +34,8 @@ pub struct SchemaSnapshotArtifact {
     pub path: String,
     pub schema: SchemaSnapshotSchema,
     pub metadata: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub promotion_authority: Option<SchemaSnapshotPromotionAuthority>,
     pub hash_input: serde_json::Value,
 }
 
@@ -56,6 +61,73 @@ pub struct SchemaSnapshotHashInputWithManifest {
     pub schema: SchemaSnapshotSchema,
     pub metadata: BTreeMap<String, String>,
     pub discovery_manifest: DiscoveryManifestReference,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SchemaSnapshotHashInputWithPromotion {
+    pub version: u16,
+    pub resource_id: String,
+    pub schema: SchemaSnapshotSchema,
+    pub metadata: BTreeMap<String, String>,
+    pub promotion_authority: SchemaSnapshotPromotionAuthority,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaSnapshotPromotionAuthority {
+    pub version: u16,
+    pub resource_id: String,
+    pub old_snapshot: SchemaSnapshotReference,
+    pub proposed_schema: SchemaSnapshotSchema,
+    pub fresh_discovery_schema_hash: Option<String>,
+    pub fresh_discovery_manifest_hash: Option<String>,
+    pub fresh_discovery_coverage: Option<crate::DiscoveryCoverageMode>,
+    pub fresh_discovery_content_identity: BTreeMap<String, String>,
+    pub normalizer_version: String,
+    pub contract_policy_hash: String,
+    pub validation_program_hash: Option<String>,
+    pub selected_paths: Vec<SchemaSnapshotPromotionPathAuthority>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaSnapshotPromotionPathAuthority {
+    pub path: String,
+    pub source_name: String,
+    pub output_field: String,
+    pub selected_arrow_type: CanonicalArrowType,
+    pub coercion_verdicts: Vec<SchemaSnapshotPromotionCoercionAuthority>,
+    pub observed_count: u64,
+    pub address_value_digest: String,
+    pub packages: Vec<String>,
+    pub associations: Vec<SchemaSnapshotPromotionTargetAssociationAuthority>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaSnapshotPromotionCoercionAuthority {
+    pub observed_type: CanonicalArrowType,
+    pub selected_type: CanonicalArrowType,
+    pub decision: FieldCoercionDecision,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SchemaSnapshotPromotionTargetAssociationAuthority {
+    pub package_hash: String,
+    pub destination: String,
+    pub target: String,
+    pub recorded_receipt_ids: Vec<String>,
+    pub availability: SchemaSnapshotPromotionEvidenceAvailability,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaSnapshotPromotionEvidenceAvailability {
+    RetainedPackage,
+    DestinationReadback,
+    TombstoneOnly,
+    Missing,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -622,6 +694,161 @@ fn metadata_map(metadata: &std::collections::HashMap<String, String>) -> BTreeMa
         .collect()
 }
 
+impl SchemaSnapshotPromotionAuthority {
+    fn validate_for_artifact(
+        &self,
+        resource_id: &ResourceId,
+        proposed_schema: &SchemaSnapshotSchema,
+    ) -> Result<()> {
+        if self.version != SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION {
+            return Err(CdfError::data(format!(
+                "schema snapshot promotion authority uses unsupported version {}; expected {}",
+                self.version, SCHEMA_SNAPSHOT_PROMOTION_AUTHORITY_VERSION
+            )));
+        }
+        if self.resource_id != resource_id.as_str() {
+            return Err(CdfError::data(format!(
+                "schema snapshot promotion authority belongs to resource {:?}, not {:?}",
+                self.resource_id,
+                resource_id.as_str()
+            )));
+        }
+        if &self.proposed_schema != proposed_schema {
+            return Err(CdfError::data(
+                "schema snapshot promotion authority proposed_schema does not match the artifact schema",
+            ));
+        }
+        let expected_old_path =
+            schema_snapshot_relative_path(resource_id, &self.old_snapshot.schema_hash)?;
+        if self.old_snapshot.path != expected_old_path {
+            return Err(CdfError::data(format!(
+                "schema snapshot promotion authority old snapshot path {} does not match {}",
+                self.old_snapshot.path, expected_old_path
+            )));
+        }
+        if self.normalizer_version.trim().is_empty()
+            || self.contract_policy_hash.trim().is_empty()
+            || self.selected_paths.is_empty()
+        {
+            return Err(CdfError::data(
+                "schema snapshot promotion authority requires a normalizer version, contract policy hash, and at least one selected path",
+            ));
+        }
+        if self.fresh_discovery_manifest_hash.is_some()
+            && (self.fresh_discovery_schema_hash.is_none()
+                || self.fresh_discovery_coverage.is_none())
+        {
+            return Err(CdfError::data(
+                "schema snapshot promotion authority manifest hash requires fresh schema hash and coverage",
+            ));
+        }
+
+        let mut previous_path = None::<&str>;
+        let mut output_fields = BTreeMap::new();
+        for field in &proposed_schema.fields {
+            if output_fields.insert(field.name.as_str(), field).is_some() {
+                return Err(CdfError::data(format!(
+                    "schema snapshot promotion artifact schema contains duplicate field {:?}",
+                    field.name
+                )));
+            }
+        }
+        let mut seen_outputs = BTreeMap::new();
+        for selected in &self.selected_paths {
+            if previous_path.is_some_and(|previous| previous >= selected.path.as_str()) {
+                return Err(CdfError::data(
+                    "schema snapshot promotion authority selected paths must be unique and sorted",
+                ));
+            }
+            previous_path = Some(&selected.path);
+            if selected.source_name.trim().is_empty()
+                || selected.output_field.trim().is_empty()
+                || selected.observed_count == 0
+                || selected.coercion_verdicts.is_empty()
+                || selected.packages.is_empty()
+            {
+                return Err(CdfError::data(format!(
+                    "schema snapshot promotion authority path {:?} has incomplete typed evidence",
+                    selected.path
+                )));
+            }
+            let expected_path =
+                cdf_contract::residual_json_pointer([selected.source_name.as_str()]);
+            if selected.path != expected_path {
+                return Err(CdfError::data(format!(
+                    "schema snapshot promotion authority path {:?} is not the top-level source identifier {:?}",
+                    selected.path, selected.source_name
+                )));
+            }
+            if seen_outputs
+                .insert(selected.output_field.as_str(), selected.path.as_str())
+                .is_some()
+            {
+                return Err(CdfError::data(format!(
+                    "schema snapshot promotion authority reuses output field {:?}",
+                    selected.output_field
+                )));
+            }
+            let Some(field) = output_fields.get(selected.output_field.as_str()) else {
+                return Err(CdfError::data(format!(
+                    "schema snapshot promotion authority output field {:?} is absent from the proposed schema",
+                    selected.output_field
+                )));
+            };
+            if field.metadata.get("cdf:source_name") != Some(&selected.source_name)
+                || field.metadata.get("cdf:promoted_path") != Some(&selected.path)
+                || field.data_type
+                    != SchemaSnapshotDataType::from_arrow(&selected.selected_arrow_type.to_arrow()?)
+            {
+                return Err(CdfError::data(format!(
+                    "schema snapshot promotion authority path {:?} does not match proposed field {:?} type and provenance metadata",
+                    selected.path, selected.output_field
+                )));
+            }
+            if !is_sorted_unique(&selected.packages) {
+                return Err(CdfError::data(format!(
+                    "schema snapshot promotion authority path {:?} packages must be unique and sorted",
+                    selected.path
+                )));
+            }
+            for verdict in &selected.coercion_verdicts {
+                if verdict.selected_type != selected.selected_arrow_type {
+                    return Err(CdfError::data(format!(
+                        "schema snapshot promotion authority path {:?} has a coercion verdict for a different selected type",
+                        selected.path
+                    )));
+                }
+            }
+            let mut previous_association = None::<(&str, &str, &str)>;
+            for association in &selected.associations {
+                let key = (
+                    association.package_hash.as_str(),
+                    association.destination.as_str(),
+                    association.target.as_str(),
+                );
+                if previous_association.is_some_and(|previous| previous >= key)
+                    || !selected.packages.contains(&association.package_hash)
+                    || association.destination.trim().is_empty()
+                    || association.target.trim().is_empty()
+                    || association.recorded_receipt_ids.is_empty()
+                    || !is_sorted_unique(&association.recorded_receipt_ids)
+                {
+                    return Err(CdfError::data(format!(
+                        "schema snapshot promotion authority path {:?} has an invalid package/target association",
+                        selected.path
+                    )));
+                }
+                previous_association = Some(key);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn is_sorted_unique(values: &[String]) -> bool {
+    values.windows(2).all(|pair| pair[0] < pair[1])
+}
+
 impl SchemaSnapshotArtifact {
     pub fn new(
         resource_id: &ResourceId,
@@ -645,6 +872,7 @@ impl SchemaSnapshotArtifact {
             path,
             schema,
             metadata,
+            promotion_authority: None,
             hash_input,
         })
     }
@@ -674,6 +902,37 @@ impl SchemaSnapshotArtifact {
             path,
             schema,
             metadata,
+            promotion_authority: None,
+            hash_input,
+        })
+    }
+
+    pub fn new_with_promotion(
+        resource_id: &ResourceId,
+        schema: &Schema,
+        promotion_authority: SchemaSnapshotPromotionAuthority,
+    ) -> Result<Self> {
+        let schema = SchemaSnapshotSchema::from_arrow(schema);
+        promotion_authority.validate_for_artifact(resource_id, &schema)?;
+        let metadata = promotion_snapshot_metadata(&promotion_authority);
+        let hash_input = SchemaSnapshotHashInputWithPromotion {
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION,
+            resource_id: resource_id.as_str().to_owned(),
+            schema: schema.clone(),
+            metadata: metadata.clone(),
+            promotion_authority: promotion_authority.clone(),
+        };
+        let hash_input = canonical_json_value(&hash_input)?;
+        let schema_hash = schema_hash_for_canonical_value(&hash_input)?;
+        let path = schema_snapshot_relative_path(resource_id, &schema_hash)?;
+        Ok(Self {
+            version: SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION,
+            resource_id: resource_id.as_str().to_owned(),
+            schema_hash,
+            path,
+            schema,
+            metadata,
+            promotion_authority: Some(promotion_authority),
             hash_input,
         })
     }
@@ -690,10 +949,21 @@ impl SchemaSnapshotArtifact {
         discovery_manifest_from_metadata(&self.metadata)
     }
 
+    pub fn normalizer_version(&self) -> Option<&str> {
+        self.promotion_authority
+            .as_ref()
+            .map(|authority| authority.normalizer_version.as_str())
+            .or_else(|| self.metadata.get("cdf:normalizer").map(String::as_str))
+    }
+
     pub fn validate_hash_input(&self) -> Result<()> {
         let discovery_manifest = self.discovery_manifest_reference()?;
-        let expected_input = match (self.version, discovery_manifest.as_ref()) {
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, None) => {
+        let expected_input = match (
+            self.version,
+            discovery_manifest.as_ref(),
+            self.promotion_authority.as_ref(),
+        ) {
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, None, None) => {
                 canonical_json_value(&SchemaSnapshotHashInput {
                     version: self.version,
                     resource_id: self.resource_id.clone(),
@@ -701,7 +971,7 @@ impl SchemaSnapshotArtifact {
                     metadata: self.metadata.clone(),
                 })?
             }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, Some(discovery_manifest)) => {
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, Some(discovery_manifest), None) => {
                 canonical_json_value(&SchemaSnapshotHashInputWithManifest {
                     version: self.version,
                     resource_id: self.resource_id.clone(),
@@ -710,19 +980,51 @@ impl SchemaSnapshotArtifact {
                     discovery_manifest: discovery_manifest.clone(),
                 })?
             }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, Some(_)) => {
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION, None, Some(promotion_authority)) => {
+                let resource_id = ResourceId::new(self.resource_id.clone())?;
+                promotion_authority.validate_for_artifact(&resource_id, &self.schema)?;
+                if self.metadata != promotion_snapshot_metadata(promotion_authority) {
+                    return Err(CdfError::data(
+                        "schema snapshot version 3 metadata must contain only the normalizer derived from typed promotion authority",
+                    ));
+                }
+                canonical_json_value(&SchemaSnapshotHashInputWithPromotion {
+                    version: self.version,
+                    resource_id: self.resource_id.clone(),
+                    schema: self.schema.clone(),
+                    metadata: self.metadata.clone(),
+                    promotion_authority: promotion_authority.clone(),
+                })?
+            }
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, Some(_), _) => {
                 return Err(CdfError::data(
                     "schema snapshot artifact version 1 cannot reference a discovery manifest",
                 ));
             }
-            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, None) => {
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, None, _) => {
                 return Err(CdfError::data(
                     "schema snapshot artifact version 2 requires a discovery manifest reference",
                 ));
             }
-            (version, _) => {
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION, Some(_), _) => {
+                return Err(CdfError::data(
+                    "schema snapshot artifact version 3 cannot reference a discovery manifest",
+                ));
+            }
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION, None, None) => {
+                return Err(CdfError::data(
+                    "schema snapshot artifact version 3 requires promotion lineage",
+                ));
+            }
+            (SCHEMA_SNAPSHOT_ARTIFACT_VERSION, None, Some(_))
+            | (SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST, Some(_), Some(_)) => {
+                return Err(CdfError::data(
+                    "schema snapshot promotion lineage does not match its artifact version",
+                ));
+            }
+            (version, _, _) => {
                 return Err(CdfError::data(format!(
-                    "schema snapshot uses unsupported artifact version {version}; expected 1 or 2"
+                    "schema snapshot uses unsupported artifact version {version}; expected 1, 2, or 3"
                 )));
             }
         };
@@ -748,6 +1050,15 @@ impl SchemaSnapshotArtifact {
         }
         Ok(())
     }
+}
+
+fn promotion_snapshot_metadata(
+    authority: &SchemaSnapshotPromotionAuthority,
+) -> BTreeMap<String, String> {
+    BTreeMap::from([(
+        "cdf:normalizer".to_owned(),
+        authority.normalizer_version.clone(),
+    )])
 }
 
 pub fn schema_snapshot_from_parquet_footer_schema(
@@ -828,10 +1139,12 @@ impl SchemaSnapshotStore {
             .map_err(|error| CdfError::data(format!("parse {}: {error}", path.display())))?;
         if !matches!(
             artifact.version,
-            SCHEMA_SNAPSHOT_ARTIFACT_VERSION | SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST
+            SCHEMA_SNAPSHOT_ARTIFACT_VERSION
+                | SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_MANIFEST
+                | SCHEMA_SNAPSHOT_ARTIFACT_VERSION_WITH_PROMOTION
         ) {
             return Err(CdfError::data(format!(
-                "schema snapshot {} uses unsupported artifact version {}; expected 1 or 2",
+                "schema snapshot {} uses unsupported artifact version {}; expected 1, 2, or 3",
                 path.display(),
                 artifact.version
             )));

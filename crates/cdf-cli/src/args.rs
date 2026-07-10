@@ -25,7 +25,7 @@ const INSPECT_NOUNS: &[&str] = &[
     "run",
 ];
 const DIFF_SUBCOMMANDS: &[&str] = &["schema"];
-const SCHEMA_SUBCOMMANDS: &[&str] = &["discover", "pin", "show", "diff"];
+const SCHEMA_SUBCOMMANDS: &[&str] = &["discover", "pin", "show", "diff", "promote"];
 const CONTRACT_SUBCOMMANDS: &[&str] = &["freeze", "show", "test"];
 const STATE_SUBCOMMANDS: &[&str] = &["show", "history", "rewind", "migrate", "recover"];
 const REPLAY_SUBCOMMANDS: &[&str] = &["package"];
@@ -135,6 +135,13 @@ pub enum SchemaCommand {
     Pin(SchemaResourceArgs),
     Show(SchemaResourceArgs),
     Diff(SchemaResourceArgs),
+    Promote(SchemaPromoteArgs),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemaPromoteArgs {
+    pub resource_id: String,
+    pub types: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -522,7 +529,7 @@ fn parse_diff(matches: &ArgMatches) -> Result<Command, CliError> {
 fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
     let Some((subcommand, matches)) = matches.subcommand() else {
         return Err(CliError::usage(
-            "schema requires one of discover, pin, show, or diff",
+            "schema requires one of discover, pin, show, diff, or promote",
         ));
     };
     match subcommand {
@@ -538,6 +545,10 @@ fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
         })),
         "diff" => Ok(SchemaCommand::Diff(SchemaResourceArgs {
             resource_id: parse_schema_resource("schema diff", matches)?,
+        })),
+        "promote" => Ok(SchemaCommand::Promote(SchemaPromoteArgs {
+            resource_id: parse_schema_resource("schema promote", matches)?,
+            types: values(matches, "type"),
         })),
         other => Err(unknown_subcommand_error(
             &["schema"],
@@ -869,6 +880,14 @@ fn schema_command() -> ClapCommand {
         .subcommand(schema_resource_command("pin"))
         .subcommand(schema_resource_command("show"))
         .subcommand(schema_resource_command("diff"))
+        .subcommand(
+            schema_resource_command("promote").arg(
+                Arg::new("type")
+                    .long("type")
+                    .value_name("JSON_POINTER=ARROW_TYPE")
+                    .action(ArgAction::Append),
+            ),
+        )
 }
 
 fn schema_resource_command(name: &'static str) -> ClapCommand {

@@ -29,6 +29,7 @@ mod internal;
 mod lock_cas;
 mod lockfile;
 mod models;
+mod promotion;
 mod runtime;
 #[cfg(test)]
 mod runtime_tests;
@@ -45,6 +46,7 @@ pub use discovery_manifest::*;
 pub use lock_cas::*;
 pub use lockfile::*;
 pub use models::*;
+pub use promotion::*;
 pub use runtime::*;
 pub use scaffold::*;
 pub use schema_discovery::*;

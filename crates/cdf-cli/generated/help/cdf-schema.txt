@@ -5,6 +5,7 @@ Commands:
   pin
   show
   diff
+  promote
 
 Options:
       --no-color

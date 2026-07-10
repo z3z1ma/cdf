@@ -305,6 +305,16 @@ _arguments "${_arguments_options[@]}" : \
 '*::resource_arg:_default' \
 && ret=0
 ;;
+(promote)
+_arguments "${_arguments_options[@]}" : \
+'--resource=[]:RESOURCE:_default' \
+'*--type=[]:JSON_POINTER=ARROW_TYPE:_default' \
+'--no-color[]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'*::resource_arg:_default' \
+&& ret=0
+;;
         esac
     ;;
 esac
@@ -777,6 +787,7 @@ _cdf__subcmd__schema_commands() {
 'pin:' \
 'show:' \
 'diff:' \
+'promote:' \
     )
     _describe -t commands 'cdf schema commands' commands "$@"
 }
@@ -794,6 +805,11 @@ _cdf__subcmd__schema__subcmd__discover_commands() {
 _cdf__subcmd__schema__subcmd__pin_commands() {
     local commands; commands=()
     _describe -t commands 'cdf schema pin commands' commands "$@"
+}
+(( $+functions[_cdf__subcmd__schema__subcmd__promote_commands] )) ||
+_cdf__subcmd__schema__subcmd__promote_commands() {
+    local commands; commands=()
+    _describe -t commands 'cdf schema promote commands' commands "$@"
 }
 (( $+functions[_cdf__subcmd__schema__subcmd__show_commands] )) ||
 _cdf__subcmd__schema__subcmd__show_commands() {
