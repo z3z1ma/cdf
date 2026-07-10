@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
@@ -31,6 +31,7 @@ No checkpoint/publication atomic-fence API, Parquet identifier-policy choice, mu
 ## Progress and notes
 
 - 2026-07-10: Opened from critical/significant findings in `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-independent-review.md`. The initial RP9 implementation skeleton is reusable, but recovery may not recompute expected packages from source once an immutable correction package exists.
+- 2026-07-10: Activated and assigned to `/root/impl_d5`. Repair must reuse the initial capability-driven skeleton while replacing its shallow staged validation, overwrite staging, mutable source indexing/receipt checks, and source-dependent package hydration with one exact typed authority path.
 
 ## Blockers
 
