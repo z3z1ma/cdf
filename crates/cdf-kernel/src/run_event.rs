@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     error::{CdfError, Result},
     ids::{
-        CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, ReceiptId, ResourceId, RunId,
+        CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, PromotionId, ReceiptId,
+        ResourceId, RunId, SchemaHash, TargetName,
     },
     scope::ScopeKey,
 };
@@ -43,6 +44,63 @@ pub struct RunEventAppend {
     pub destination_id: Option<DestinationId>,
     pub plan_id: Option<PlanId>,
     pub details: RunEventDetails,
+}
+
+pub const PROMOTION_PUBLICATION_EVENT_VERSION: u16 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromotionPublicationEvent {
+    pub version: u16,
+    pub promotion_id: PromotionId,
+    pub resource_id: ResourceId,
+    pub old_schema_hash: SchemaHash,
+    pub new_schema_hash: SchemaHash,
+    pub installed_lock_sha256: String,
+    pub targets: Vec<PromotionPublicationTarget>,
+    pub published_at_ms: i64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PromotionPublicationTarget {
+    pub destination_id: DestinationId,
+    pub target: TargetName,
+    pub correction_package_hash: PackageHash,
+    pub receipt_id: ReceiptId,
+    pub checkpoint_id: CheckpointId,
+}
+
+impl PromotionPublicationEvent {
+    pub fn validate(&self) -> Result<()> {
+        if self.version != PROMOTION_PUBLICATION_EVENT_VERSION
+            || self.installed_lock_sha256.trim().is_empty()
+            || self.targets.is_empty()
+            || self.published_at_ms <= 0
+        {
+            return Err(CdfError::contract(
+                "promotion publication requires the current version, installed lock hash, targets, and publication time",
+            ));
+        }
+        if self.targets.windows(2).any(|pair| {
+            (&pair[0].destination_id, &pair[0].target) >= (&pair[1].destination_id, &pair[1].target)
+        }) {
+            return Err(CdfError::contract(
+                "promotion publication targets must be unique and sorted",
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn same_authority(&self, other: &Self) -> bool {
+        self.version == other.version
+            && self.promotion_id == other.promotion_id
+            && self.resource_id == other.resource_id
+            && self.old_schema_hash == other.old_schema_hash
+            && self.new_schema_hash == other.new_schema_hash
+            && self.installed_lock_sha256 == other.installed_lock_sha256
+            && self.targets == other.targets
+    }
 }
 
 impl RunEventAppend {

@@ -155,6 +155,7 @@ complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcomma
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from diff" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -l resource -r
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -l type -r
+complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -l execute
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand schema; and __fish_seen_subcommand_from promote" -s h -l help -d 'Print help'
 complete -c cdf -n "__fish_cdf_using_subcommand contract; and not __fish_seen_subcommand_from freeze show test" -l no-color

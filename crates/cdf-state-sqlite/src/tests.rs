@@ -14,9 +14,11 @@ use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CompositePosition, ContractRef, CursorPosition, CursorValue, DestinationId,
     FileManifest, FilePosition, ForeignState, IdempotencyToken, LeaseOwnerId, LogPosition,
-    MigrationRecord, PackageHash, PageToken, PartitionId, PipelineId, PlanId, Receipt, ReceiptId,
-    ResourceId, RewindRequest, RunId, SchemaHash, ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId,
-    SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause, WriteDisposition,
+    MigrationRecord, PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken, PartitionId,
+    PipelineId, PlanId, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
+    Receipt, ReceiptId, ResourceId, RewindRequest, RunId, SchemaHash, ScopeKey, ScopeLeaseStore,
+    SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
+    WriteDisposition,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -736,8 +738,8 @@ fn sqlite_state_migration_initializes_missing_database_and_is_idempotent() {
     );
     assert_eq!(first.components[1].component, "run_ledger");
     assert_eq!(first.components[1].before_version, None);
-    assert_eq!(first.components[1].after_version, 3);
-    assert_eq!(first.components[1].target_version, 3);
+    assert_eq!(first.components[1].after_version, 4);
+    assert_eq!(first.components[1].target_version, 4);
     assert_eq!(
         first.components[1].action,
         SqliteStateMigrationAction::Initialized
@@ -784,7 +786,7 @@ fn sqlite_state_migration_upgrades_committed_run_ledger_v1_fixture() {
     );
     assert_eq!(report.components[1].component, "run_ledger");
     assert_eq!(report.components[1].before_version, Some(1));
-    assert_eq!(report.components[1].after_version, 3);
+    assert_eq!(report.components[1].after_version, 4);
     assert_eq!(
         report.components[1].action,
         SqliteStateMigrationAction::Migrated
@@ -1267,7 +1269,7 @@ fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
             applied_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
-        VALUES ('run_ledger', 4, 1);
+        VALUES ('run_ledger', 5, 1);
         ",
     )
     .unwrap();
@@ -1287,7 +1289,7 @@ fn sqlite_run_ledger_open_read_only_rejects_unsupported_schema_version() {
         assert!(
             error
                 .message
-                .contains("unsupported run ledger SQLite schema version 4")
+                .contains("unsupported run ledger SQLite schema version 5")
         );
     }
 }
@@ -1358,7 +1360,51 @@ fn sqlite_run_ledger_records_schema_version() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
+}
+
+#[test]
+fn sqlite_promotion_publication_is_append_only_idempotent_authority() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let promotion_id = PromotionId::new("promotion-1").unwrap();
+    let event = PromotionPublicationEvent {
+        version: PROMOTION_PUBLICATION_EVENT_VERSION,
+        promotion_id: promotion_id.clone(),
+        resource_id: resource_id(),
+        old_schema_hash: SchemaHash::new("sha256:old").unwrap(),
+        new_schema_hash: SchemaHash::new("sha256:new").unwrap(),
+        installed_lock_sha256: "sha256:lock".to_owned(),
+        targets: vec![PromotionPublicationTarget {
+            destination_id: DestinationId::new("duckdb").unwrap(),
+            target: TargetName::new("orders").unwrap(),
+            correction_package_hash: PackageHash::new("sha256:correction").unwrap(),
+            receipt_id: ReceiptId::new("receipt-correction").unwrap(),
+            checkpoint_id: CheckpointId::new("checkpoint-correction").unwrap(),
+        }],
+        published_at_ms: 10,
+    };
+
+    assert_eq!(ledger.publish_promotion(event.clone()).unwrap(), event);
+    let mut replay = event.clone();
+    replay.published_at_ms = 20;
+    assert_eq!(ledger.publish_promotion(replay).unwrap(), event);
+    assert_eq!(
+        ledger.promotion_publication(&promotion_id).unwrap(),
+        Some(event.clone())
+    );
+
+    let mut conflict = event.clone();
+    conflict.installed_lock_sha256 = "sha256:other-lock".to_owned();
+    assert!(ledger.publish_promotion(conflict).is_err());
+
+    drop(ledger);
+    let reopened = SqliteRunLedger::open_read_only(&db_path).unwrap();
+    assert_eq!(
+        reopened.promotion_publication(&promotion_id).unwrap(),
+        Some(event)
+    );
 }
 
 #[test]
@@ -1374,7 +1420,7 @@ fn sqlite_run_ledger_rejects_unsupported_schema_version() {
             applied_at_ms INTEGER NOT NULL
         );
         INSERT INTO cdf_sqlite_schema_migrations (component, version, applied_at_ms)
-        VALUES ('run_ledger', 4, 1);
+        VALUES ('run_ledger', 5, 1);
         ",
     )
     .unwrap();
@@ -1387,7 +1433,7 @@ fn sqlite_run_ledger_rejects_unsupported_schema_version() {
     assert!(
         error
             .to_string()
-            .contains("unsupported run ledger SQLite schema version 4")
+            .contains("unsupported run ledger SQLite schema version 5")
     );
 }
 

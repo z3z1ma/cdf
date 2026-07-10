@@ -261,6 +261,7 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
         'cdf;schema;promote' {
             [CompletionResult]::new('--resource', '--resource', [CompletionResultType]::ParameterName, 'resource')
             [CompletionResult]::new('--type', '--type', [CompletionResultType]::ParameterName, 'type')
+            [CompletionResult]::new('--execute', '--execute', [CompletionResultType]::ParameterName, 'execute')
             [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')
             [CompletionResult]::new('--help', '--help', [CompletionResultType]::ParameterName, 'Print help')

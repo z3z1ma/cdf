@@ -7,4 +7,5 @@ Options:
       --no-color
       --resource <RESOURCE>
       --type <JSON_POINTER=ARROW_TYPE>
+      --execute
   -h, --help                            Print help

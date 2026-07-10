@@ -1,18 +1,25 @@
 use std::{collections::BTreeMap, fs, sync::Arc};
 
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
-use cdf_kernel::{CdfError, SchemaSnapshotReference, SchemaSource};
+use cdf_kernel::{
+    CdfError, LeaseOwnerId, PipelineId, ResourceId, SchemaSnapshotReference, SchemaSource,
+    TargetName,
+};
 use cdf_project::{
-    DiscoveryManifestStore, LOCK_FILE_NAME, ResourceSchemaDiscoveryArtifacts,
-    SchemaDiscoveryExecutionOptions, SchemaSnapshotArtifact, SchemaSnapshotDataType,
-    SchemaSnapshotField, SchemaSnapshotStore, lock_to_toml,
+    DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS, DiscoveryManifestStore, LOCK_FILE_NAME,
+    ResourceSchemaDiscoveryArtifacts, SchemaDiscoveryExecutionOptions,
+    SchemaPromotionExecutionRequest, SchemaSnapshotArtifact, SchemaSnapshotDataType,
+    SchemaSnapshotField, SchemaSnapshotStore, execute_schema_promotion,
+    load_resumable_schema_promotion, lock_to_toml, parse_lock,
     pin_schema_snapshot_in_project_lockfile, write_schema_discovery_artifacts,
 };
+use cdf_state_sqlite::{SqliteCheckpointStore, SqliteRunLedger, SqliteScopeLeaseStore};
 use serde::Serialize;
 
 use crate::{
     args::{Cli, SchemaCommand, SchemaDiscoverArgs, SchemaPromoteArgs, SchemaResourceArgs},
     context::ProjectContext,
+    destination_uri::{redact_error_value, resolve_environment_destination},
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     project_run_resource::file_runtime_dependencies,
@@ -36,6 +43,9 @@ pub(crate) fn schema(cli: &Cli, command: SchemaCommand) -> Result<CommandOutput,
 fn promote(cli: &Cli, args: SchemaPromoteArgs) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema promote")?;
     let resource = context.resource(&args.resource_id)?;
+    if args.execute {
+        return execute_promotion(&context, resource, &args);
+    }
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
     let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
@@ -67,6 +77,127 @@ fn promote(cli: &Cli, args: SchemaPromoteArgs) -> Result<CommandOutput, CliError
         &args.types,
     )?;
     CommandOutput::rendered("schema promote", schema_promote_document(&report), report)
+}
+
+fn execute_promotion(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    args: &SchemaPromoteArgs,
+) -> Result<CommandOutput, CliError> {
+    let current_authority = context.lock_authority.as_ref().ok_or_else(|| {
+        CdfError::contract("schema promote --execute requires an exact cdf.lock precondition")
+    })?;
+    let resource_id = ResourceId::new(args.resource_id.clone())?;
+    let resumable =
+        load_resumable_schema_promotion(&context.root, &resource_id, current_authority)?;
+    let (lock, authority, report) = if let Some(staged) = resumable {
+        let expected_types = staged
+            .dry_plan
+            .paths
+            .iter()
+            .filter_map(|path| {
+                path.selected_type
+                    .as_ref()
+                    .map(|data_type| format!("{}={data_type}", path.path))
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        let supplied_types = args
+            .types
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>();
+        if !supplied_types.is_empty() && supplied_types != expected_types {
+            return Err(CdfError::contract(
+                "schema promote recovery --type values conflict with the exact staged authority; use the rendered recovery command",
+            )
+            .into());
+        }
+        let lock = parse_lock(
+            std::str::from_utf8(&staged.old_lock_authority.bytes)
+                .map_err(|error| CdfError::data(error.to_string()))?,
+        )?;
+        (lock, staged.old_lock_authority, staged.dry_plan)
+    } else {
+        let reference = pinned_snapshot_reference(context, resource)
+            .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
+        let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
+        let lock = context.lock.as_ref().ok_or_else(|| {
+            CdfError::contract("schema promote requires cdf.lock; run `cdf schema pin` first")
+        })?;
+        let fresh_discovery = match discover_artifacts_for_cli(context, resource) {
+            Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
+                content_identity: artifacts.discovery.snapshot.source_identity,
+                snapshot: Box::new(artifacts.discovery.snapshot.artifact),
+                discovery_manifest: artifacts.discovery_manifest.map(Box::new),
+            },
+            Err(error) => cdf_project::SchemaPromotionFreshDiscovery::Unavailable {
+                reason: error.message,
+            },
+        };
+        let inventory =
+            cdf_project::LocalPackagePromotionEvidenceInventory::new(context.package_root());
+        let report = cdf_project::plan_schema_promotion(
+            &inventory,
+            resource,
+            &pinned,
+            lock,
+            current_authority,
+            &fresh_discovery,
+            &args.types,
+        )?;
+        (lock.clone(), current_authority.clone(), report)
+    };
+
+    let mut destinations = Vec::new();
+    let mut redactions = Vec::new();
+    for target in &report.targets {
+        let target_name = TargetName::new(target.target.clone())?;
+        let resolved = resolve_environment_destination(context, &target_name)
+            .map_err(|error| CliError::from(redact_error_value(error, None)))?;
+        if resolved.destination.describe().destination_id.as_str() != target.destination {
+            return Err(CdfError::contract(format!(
+                "resolved destination {} does not match staged promotion target {} for {}",
+                resolved.destination.describe().destination_id,
+                target.destination,
+                target.target
+            ))
+            .into());
+        }
+        redactions.push(resolved.secret_redaction);
+        destinations.push(resolved.destination);
+    }
+
+    let state_path = context.state_store_path()?;
+    let lease_store = SqliteScopeLeaseStore::open(&state_path)?;
+    let checkpoint_store = SqliteCheckpointStore::open(&state_path)?;
+    let run_ledger = SqliteRunLedger::open(&state_path)?;
+    let result = execute_schema_promotion(SchemaPromotionExecutionRequest {
+        project_root: &context.root,
+        package_root: &context.package_root(),
+        resource,
+        lock: &lock,
+        lock_authority: &authority,
+        dry_plan: &report,
+        destinations,
+        pipeline_id: PipelineId::new("cdf-schema-promotion")?,
+        lease_owner: LeaseOwnerId::new(format!("schema-promote:{}", report.promotion_id))?,
+        lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
+        lease_store: &lease_store,
+        checkpoint_store: &checkpoint_store,
+        run_ledger: &run_ledger,
+        failpoint: None,
+    })
+    .map_err(|mut error| {
+        for redaction in redactions.iter().flatten() {
+            error = redact_error_value(error, Some(redaction));
+        }
+        CliError::from(error)
+    })?;
+    CommandOutput::rendered(
+        "schema promote",
+        schema_promotion_execution_document(&result),
+        result,
+    )
 }
 
 fn discover(cli: &Cli, args: SchemaDiscoverArgs) -> Result<CommandOutput, CliError> {
@@ -847,6 +978,64 @@ fn schema_diff_document(report: &SchemaDiffReport) -> RenderDocument {
         document
     };
     document.blank_line().push(writes_panel(&report.writes))
+}
+
+fn schema_promotion_execution_document(
+    report: &cdf_project::SchemaPromotionExecutionReport,
+) -> RenderDocument {
+    let targets = report.targets.iter().fold(
+        Table::new([
+            "destination",
+            "target",
+            "package",
+            "receipt",
+            "checkpoint",
+            "committed",
+        ]),
+        |table, target| {
+            table.row([
+                target.destination.clone(),
+                target.target.clone(),
+                target.correction_package_hash.clone(),
+                target
+                    .receipt_id
+                    .clone()
+                    .unwrap_or_else(|| "pending".to_owned()),
+                target
+                    .checkpoint_id
+                    .clone()
+                    .unwrap_or_else(|| "pending".to_owned()),
+                yes_no(target.committed).to_owned(),
+            ])
+        },
+    );
+    RenderDocument::new()
+        .push(SectionRule::new())
+        .push(StatusLine::new(
+            StatusKind::Success,
+            format!("schema promotion complete for {}", report.resource_id),
+        ))
+        .blank_line()
+        .push(
+            KeyValuePanel::new("Promotion execution")
+                .row("promotion", report.promotion_id.clone())
+                .row("phase", format!("{:?}", report.phase).to_lowercase())
+                .row("resumed", yes_no(report.resumed))
+                .row("old schema", report.old_schema_hash.clone())
+                .row("new schema", report.new_schema_hash.clone())
+                .row("staged plan", report.staged_plan_path.clone())
+                .row("snapshot", report.snapshot_path.clone())
+                .row("lock published", yes_no(report.lock_published))
+                .row(
+                    "publication event",
+                    yes_no(report.publication_event_recorded),
+                )
+                .row("remaining action", report.remaining_action.clone()),
+        )
+        .blank_line()
+        .push(targets)
+        .blank_line()
+        .push(NextCommand::new(report.recovery_command.clone()))
 }
 
 fn schema_promote_document(report: &cdf_project::SchemaPromotionPlanReport) -> RenderDocument {

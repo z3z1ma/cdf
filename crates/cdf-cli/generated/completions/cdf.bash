@@ -865,7 +865,7 @@ _cdf() {
             return 0
             ;;
         cdf__subcmd__schema__subcmd__promote)
-            opts="-h --resource --type --no-color --help"
+            opts="-h --resource --type --execute --no-color --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

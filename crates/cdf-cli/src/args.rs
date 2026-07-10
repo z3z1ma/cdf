@@ -142,6 +142,7 @@ pub enum SchemaCommand {
 pub struct SchemaPromoteArgs {
     pub resource_id: String,
     pub types: Vec<String>,
+    pub execute: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -549,6 +550,7 @@ fn parse_schema(matches: &ArgMatches) -> Result<SchemaCommand, CliError> {
         "promote" => Ok(SchemaCommand::Promote(SchemaPromoteArgs {
             resource_id: parse_schema_resource("schema promote", matches)?,
             types: values(matches, "type"),
+            execute: matches.get_flag("execute"),
         })),
         other => Err(unknown_subcommand_error(
             &["schema"],
@@ -881,12 +883,14 @@ fn schema_command() -> ClapCommand {
         .subcommand(schema_resource_command("show"))
         .subcommand(schema_resource_command("diff"))
         .subcommand(
-            schema_resource_command("promote").arg(
-                Arg::new("type")
-                    .long("type")
-                    .value_name("JSON_POINTER=ARROW_TYPE")
-                    .action(ArgAction::Append),
-            ),
+            schema_resource_command("promote")
+                .arg(
+                    Arg::new("type")
+                        .long("type")
+                        .value_name("JSON_POINTER=ARROW_TYPE")
+                        .action(ArgAction::Append),
+                )
+                .arg(flag("execute", "execute")),
         )
 }
 

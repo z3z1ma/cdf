@@ -6,6 +6,10 @@ use std::{
 
 use cdf_kernel::{CdfError, PackageHash};
 use cdf_package::{MANIFEST_FILE, PackageReader, PackageStatus};
+use cdf_project::{
+    LocalPromotionCollectionAction, LocalPromotionCollectionAssessment,
+    assess_local_promotion_collection, inspect_local_package_promotion_availability,
+};
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
 
@@ -78,12 +82,14 @@ fn package_gc_plan(
         None => BTreeSet::new(),
     };
     let artifacts = plan_package_gc_artifacts(&root, &protected_hashes)?;
+    let promotion_availability = promotion_gc_availability(&root, &artifacts)?;
     let counts = PackageGcCounts::from_artifacts(&artifacts);
     Ok(PackageGcPlanReport {
         command: "package gc",
         package_root: root.display().to_string(),
         mode: "dry_run",
         artifacts,
+        promotion_availability,
         counts,
     })
 }
@@ -379,6 +385,7 @@ struct PackageGcPlanReport {
     package_root: String,
     mode: &'static str,
     artifacts: Vec<PackageGcArtifact>,
+    promotion_availability: Vec<LocalPromotionCollectionAssessment>,
     counts: PackageGcCounts,
 }
 
@@ -418,10 +425,69 @@ impl PackageGcPlanReport {
             document = document.blank_line().push(table);
         }
 
+        if !self.promotion_availability.is_empty() {
+            document = document
+                .blank_line()
+                .push(self.promotion_availability.iter().fold(
+                    Table::new([
+                        "resource",
+                        "package",
+                        "local bytes",
+                        "promotable",
+                        "action",
+                        "removes last local authority",
+                    ]),
+                    |table, item| {
+                        table.row([
+                            item.resource_id.clone(),
+                            item.package_hash.clone(),
+                            humanize_bytes(item.local_residual_bytes),
+                            yes_no(item.locally_promotable).to_owned(),
+                            item.planned_action.as_str().to_owned(),
+                            yes_no(item.collection_removes_last_local_promotable_copy).to_owned(),
+                        ])
+                    },
+                ))
+                .blank_line()
+                .push(
+                    KeyValuePanel::new("Promotion availability")
+                        .row(
+                            "remediation",
+                            self.promotion_availability[0].remediation.clone(),
+                        )
+                        .row("destination readback inferred", "no"),
+                );
+        }
+
         document
             .blank_line()
             .push(NextCommand::new("cdf package verify <package>"))
     }
+}
+
+fn promotion_gc_availability(
+    package_root: &Path,
+    artifacts: &[PackageGcArtifact],
+) -> Result<Vec<LocalPromotionCollectionAssessment>, CliError> {
+    let local = inspect_local_package_promotion_availability(package_root)?;
+    let actions = artifacts
+        .iter()
+        .filter_map(|artifact| {
+            artifact.package_path.as_ref().map(|path| {
+                let action = match artifact.planned_action {
+                    PackageGcPlannedAction::Retain => LocalPromotionCollectionAction::Retain,
+                    PackageGcPlannedAction::WouldCollect => {
+                        LocalPromotionCollectionAction::WouldCollect
+                    }
+                    PackageGcPlannedAction::RestoreRequired => {
+                        LocalPromotionCollectionAction::RestoreRequired
+                    }
+                };
+                (path.clone(), action)
+            })
+        })
+        .collect::<BTreeMap<_, _>>();
+    Ok(assess_local_promotion_collection(local, &actions))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -634,4 +700,8 @@ fn planned_action_name(action: &PackageGcPlannedAction) -> &'static str {
         PackageGcPlannedAction::WouldCollect => "would_collect",
         PackageGcPlannedAction::RestoreRequired => "restore_required",
     }
+}
+
+fn yes_no(value: bool) -> &'static str {
+    if value { "yes" } else { "no" }
 }

@@ -13,7 +13,7 @@ use cdf_contract::{
 };
 use cdf_declarative::{CompiledResource, parse_arrow_field_type};
 use cdf_kernel::{
-    CanonicalArrowType, CapabilitySupport, CdfError, CorrectionStrategy, PackageHash,
+    CanonicalArrowType, CapabilitySupport, CdfError, CorrectionStrategy, PackageHash, PromotionId,
     RowProvenanceAddress, TypeMappingFidelity,
 };
 use cdf_package::PackageReader;
@@ -266,6 +266,75 @@ pub struct LocalPackagePromotionEvidenceInventory {
     package_root: PathBuf,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalPackagePromotionAvailability {
+    pub artifact_location: String,
+    pub package_hash: Option<String>,
+    pub resource_id: Option<String>,
+    pub contains_local_residual_bytes: bool,
+    pub locally_promotable: bool,
+    pub local_residual_bytes: u64,
+    pub promotable_residual_bytes: u64,
+    pub receipt_targets: Vec<LocalPromotionReceiptTarget>,
+    pub status: LocalPromotionAvailabilityStatus,
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalPromotionReceiptTarget {
+    pub destination: String,
+    pub target: String,
+    pub receipt_ids: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalPromotionAvailabilityStatus {
+    RetainedPackage,
+    NoResidualBytes,
+    NoReceiptAuthority,
+    TombstoneOnly,
+    InvalidPackage,
+    InvalidStateAuthority,
+    InvalidReceiptAuthority,
+    InvalidResidualEnvelope,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocalPromotionCollectionAction {
+    Retain,
+    WouldCollect,
+    RestoreRequired,
+}
+
+impl LocalPromotionCollectionAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Retain => "retain",
+            Self::WouldCollect => "would_collect",
+            Self::RestoreRequired => "restore_required",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocalPromotionCollectionAssessment {
+    pub artifact_location: String,
+    pub resource_id: String,
+    pub package_hash: String,
+    pub contains_local_residual_bytes: bool,
+    pub locally_promotable: bool,
+    pub local_residual_bytes: u64,
+    pub promotable_residual_bytes: u64,
+    pub last_locally_promotable_for_resource: bool,
+    pub collection_removes_last_local_promotable_copy: bool,
+    pub planned_action: LocalPromotionCollectionAction,
+    pub authority: LocalPromotionAvailabilityStatus,
+    pub receipt_targets: Vec<LocalPromotionReceiptTarget>,
+    pub remediation: String,
+}
+
 impl LocalPackagePromotionEvidenceInventory {
     pub fn new(package_root: impl Into<PathBuf>) -> Self {
         Self {
@@ -281,6 +350,183 @@ impl PromotionEvidenceInventory for LocalPackagePromotionEvidenceInventory {
     ) -> cdf_kernel::Result<SchemaPromotionEvidenceInventoryFacts> {
         inventory_local_packages(&self.package_root, resource_id)
     }
+}
+
+/// Inspects local package evidence using the same canonical residual codec and receipt authority
+/// rules as schema-promotion planning. Per-package damage is reported as typed unavailability; it
+/// never becomes promotion authority and does not abort inspection of unrelated packages.
+pub fn inspect_local_package_promotion_availability(
+    package_root: &Path,
+) -> cdf_kernel::Result<Vec<LocalPackagePromotionAvailability>> {
+    if !package_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut directories = fs::read_dir(package_root)
+        .map_err(|error| CdfError::data(format!("read {}: {error}", package_root.display())))?
+        .map(|entry| {
+            entry
+                .map_err(|error| CdfError::data(error.to_string()))
+                .map(|entry| entry.path())
+        })
+        .collect::<cdf_kernel::Result<Vec<_>>>()?;
+    directories.retain(|path| path.is_dir());
+    directories.sort();
+    Ok(directories
+        .into_iter()
+        .map(|directory| inspect_local_promotion_package(&directory))
+        .collect())
+}
+
+pub fn assess_local_promotion_collection(
+    availability: Vec<LocalPackagePromotionAvailability>,
+    planned_actions: &BTreeMap<String, LocalPromotionCollectionAction>,
+) -> Vec<LocalPromotionCollectionAssessment> {
+    let mut assessments = availability
+        .into_iter()
+        .filter_map(|item| {
+            let resource_id = item.resource_id?;
+            let package_hash = item.package_hash?;
+            let planned_action = planned_actions
+                .get(&item.artifact_location)
+                .copied()
+                .unwrap_or(LocalPromotionCollectionAction::Retain);
+            Some(LocalPromotionCollectionAssessment {
+                artifact_location: item.artifact_location,
+                resource_id,
+                package_hash,
+                contains_local_residual_bytes: item.contains_local_residual_bytes,
+                locally_promotable: item.locally_promotable,
+                local_residual_bytes: item.local_residual_bytes,
+                promotable_residual_bytes: item.promotable_residual_bytes,
+                last_locally_promotable_for_resource: false,
+                collection_removes_last_local_promotable_copy: false,
+                planned_action,
+                authority: item.status,
+                receipt_targets: item.receipt_targets,
+                remediation: "retain or restore one verified receipted package before collection if residual promotion must remain locally executable".to_owned(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut promotable_counts = BTreeMap::<String, usize>::new();
+    let mut retained_promotable = BTreeSet::new();
+    for item in &assessments {
+        if item.locally_promotable {
+            *promotable_counts
+                .entry(item.resource_id.clone())
+                .or_default() += 1;
+            if item.planned_action != LocalPromotionCollectionAction::WouldCollect {
+                retained_promotable.insert(item.resource_id.clone());
+            }
+        }
+    }
+    for item in &mut assessments {
+        item.last_locally_promotable_for_resource =
+            item.locally_promotable && promotable_counts.get(&item.resource_id) == Some(&1);
+        item.collection_removes_last_local_promotable_copy = item.locally_promotable
+            && item.planned_action == LocalPromotionCollectionAction::WouldCollect
+            && !retained_promotable.contains(&item.resource_id);
+    }
+    assessments.sort_by(|left, right| {
+        (&left.resource_id, &left.package_hash).cmp(&(&right.resource_id, &right.package_hash))
+    });
+    assessments
+}
+
+fn inspect_local_promotion_package(package_dir: &Path) -> LocalPackagePromotionAvailability {
+    let mut availability = LocalPackagePromotionAvailability {
+        artifact_location: package_dir.display().to_string(),
+        package_hash: None,
+        resource_id: None,
+        contains_local_residual_bytes: false,
+        locally_promotable: false,
+        local_residual_bytes: 0,
+        promotable_residual_bytes: 0,
+        receipt_targets: Vec::new(),
+        status: LocalPromotionAvailabilityStatus::InvalidPackage,
+        detail: None,
+    };
+    let reader = match PackageReader::open(package_dir) {
+        Ok(reader) => reader,
+        Err(error) => {
+            availability.detail = Some(error.to_string());
+            return availability;
+        }
+    };
+    availability.package_hash = Some(reader.manifest().package_hash.clone());
+    let package_hash = match PackageHash::new(reader.manifest().package_hash.clone()) {
+        Ok(package_hash) => package_hash,
+        Err(error) => {
+            availability.detail = Some(error.to_string());
+            return availability;
+        }
+    };
+    if reader.manifest().lifecycle.status == cdf_package::PackageStatus::Archived {
+        availability.status = LocalPromotionAvailabilityStatus::TombstoneOnly;
+        return availability;
+    }
+    let delta = match reader.state_delta_preimage() {
+        Ok(delta) => delta,
+        Err(error) => {
+            availability.status = LocalPromotionAvailabilityStatus::InvalidStateAuthority;
+            availability.detail = Some(error.to_string());
+            return availability;
+        }
+    };
+    availability.resource_id = Some(delta.resource_id.to_string());
+    if let Err(error) = reader.verify() {
+        availability.detail = Some(error.to_string());
+        return availability;
+    }
+    let scan = match scan_canonical_package_residuals(&reader, &package_hash, |_, _, _| Ok(())) {
+        Ok(scan) => scan,
+        Err(error) => {
+            availability.status = LocalPromotionAvailabilityStatus::InvalidResidualEnvelope;
+            availability.detail = Some(error.to_string());
+            return availability;
+        }
+    };
+    availability.contains_local_residual_bytes = scan.byte_count > 0;
+    availability.local_residual_bytes = scan.byte_count;
+    let receipts = match structurally_verified_package_receipts(&reader, &delta, &package_hash) {
+        Ok(receipts) => receipts,
+        Err(error) => {
+            availability.status = LocalPromotionAvailabilityStatus::InvalidReceiptAuthority;
+            availability.detail = Some(error.to_string());
+            return availability;
+        }
+    };
+    availability.receipt_targets = receipt_targets(&receipts);
+    if scan.byte_count == 0 {
+        availability.status = LocalPromotionAvailabilityStatus::NoResidualBytes;
+    } else if receipts.is_empty() {
+        availability.status = LocalPromotionAvailabilityStatus::NoReceiptAuthority;
+    } else {
+        availability.status = LocalPromotionAvailabilityStatus::RetainedPackage;
+        availability.locally_promotable = true;
+        availability.promotable_residual_bytes = scan.byte_count;
+    }
+    availability
+}
+
+fn receipt_targets(receipts: &[cdf_kernel::Receipt]) -> Vec<LocalPromotionReceiptTarget> {
+    let mut targets = BTreeMap::<(String, String), Vec<String>>::new();
+    for receipt in receipts {
+        targets
+            .entry((receipt.destination.to_string(), receipt.target.to_string()))
+            .or_default()
+            .push(receipt.receipt_id.to_string());
+    }
+    targets
+        .into_iter()
+        .map(|((destination, target), mut receipt_ids)| {
+            receipt_ids.sort();
+            LocalPromotionReceiptTarget {
+                destination,
+                target,
+                receipt_ids,
+            }
+        })
+        .collect()
 }
 
 /// Builds a promotion proposal from immutable package and lock evidence. This function is
@@ -428,51 +674,9 @@ pub fn plan_schema_promotion(
         .join(" ");
     let execution_preconditions =
         vec!["reverify_recorded_destination_receipts_and_current_target_state".to_owned()];
-    let identity = PromotionIdentity {
-        version: 1,
-        resource_id,
-        old_schema_hash: pinned.schema_hash.to_string(),
-        new_schema_hash: new_schema_hash.clone(),
-        lock_precondition_sha256: authority.sha256.clone(),
-        evidence_extraction_program: "residual-json-v1/all-verified-package-rows/v1".to_owned(),
-        evidence_inventory_complete,
-        fresh_discovery_schema_hash: fresh_discovery_schema_hash.clone(),
-        fresh_discovery_manifest_hash: fresh_authority.manifest_hash.clone(),
-        fresh_discovery_coverage: fresh_authority.coverage.clone(),
-        fresh_discovery_content_identity: fresh_authority.content_identity.clone(),
-        paths: paths
-            .iter()
-            .map(|path| PromotionIdentityPath {
-                path: path.path.clone(),
-                projection_supported: path.projection_supported,
-                selected_arrow_type: path.selected_arrow_type.clone(),
-                output_field: path.output_field.clone(),
-                observed_count: path.observed_count,
-                affected_address_value_digest: path.affected_address_value_digest.clone(),
-                affected_packages: path.affected_packages.clone(),
-                associations: path.associations.clone(),
-            })
-            .collect(),
-        targets: targets
-            .iter()
-            .map(|target| PromotionIdentityTarget {
-                destination: target.destination.clone(),
-                target: target.target.clone(),
-                destination_sheet_hash: target.destination_sheet_hash.clone(),
-                strategy_selection_rule: target.strategy_selection_rule,
-                strategy: target.strategy,
-                recorded_receipt_ids: target.recorded_receipt_ids.clone(),
-                affected_packages: target.affected_packages.clone(),
-                affected_paths: target.affected_paths.clone(),
-                evidence: target.evidence.clone(),
-            })
-            .collect(),
-        execution_preconditions: execution_preconditions.clone(),
-    };
-    let promotion_id = semantic_hash(&identity)?;
-    Ok(SchemaPromotionPlanReport {
+    let mut report = SchemaPromotionPlanReport {
         resource_id: resource_id.to_owned(),
-        promotion_id,
+        promotion_id: String::new(),
         old_schema_hash: pinned.schema_hash.to_string(),
         new_schema_hash,
         new_schema_snapshot_path,
@@ -493,7 +697,292 @@ pub fn plan_schema_promotion(
         writes: SchemaPromotionWrites::none(),
         recovery_argv,
         recovery_command,
-    })
+    };
+    report.promotion_id = recompute_schema_promotion_id(&report)?.to_string();
+    Ok(report)
+}
+
+/// Recomputes the canonical RP5 promotion identity from the typed dry-plan projection.
+///
+/// The identifier deliberately excludes presentation-only fields, but binds every execution
+/// authority selected by the planner: schema transition, lock precondition, evidence lineage,
+/// path/package/receipt associations, destination targets and strategies, and execution
+/// preconditions.
+pub fn recompute_schema_promotion_id(
+    plan: &SchemaPromotionPlanReport,
+) -> cdf_kernel::Result<PromotionId> {
+    PromotionId::new(semantic_hash(&PromotionIdentity::from_report(plan))?)
+}
+
+/// Validates a persisted executable promotion plan against its typed version-3 snapshot and the
+/// exact old lock bytes, then returns the recomputed canonical identifier.
+pub fn validate_schema_promotion_plan_identity(
+    plan: &SchemaPromotionPlanReport,
+    old_lock_authority: &LockFileAuthority,
+) -> cdf_kernel::Result<PromotionId> {
+    if LockFileAuthority::from_bytes(old_lock_authority.bytes.clone()) != *old_lock_authority
+        || plan.lock_precondition_sha256 != old_lock_authority.sha256
+    {
+        return Err(CdfError::data(
+            "schema promotion plan old lock bytes/hash do not match its execution precondition",
+        ));
+    }
+    if !plan.executable
+        || !plan.evidence_inventory_complete
+        || !plan.conflicts.is_empty()
+        || plan.paths.is_empty()
+        || plan.targets.is_empty()
+        || plan.evidence_extraction_program != "residual-json-v1/all-verified-package-rows/v1"
+        || plan.execution_preconditions
+            != ["reverify_recorded_destination_receipts_and_current_target_state"]
+    {
+        return Err(CdfError::data(
+            "schema promotion execution requires one complete conflict-free canonical dry plan",
+        ));
+    }
+    let snapshot_plan = plan.proposed_snapshot.as_ref().ok_or_else(|| {
+        CdfError::data("executable schema promotion plan has no typed proposed snapshot")
+    })?;
+    snapshot_plan.artifact.validate_hash_input()?;
+    if snapshot_plan.schema_hash != snapshot_plan.artifact.schema_hash.as_str()
+        || snapshot_plan.path != snapshot_plan.artifact.path
+        || plan.new_schema_hash.as_deref() != Some(snapshot_plan.schema_hash.as_str())
+        || plan.new_schema_snapshot_path.as_deref() != Some(snapshot_plan.path.as_str())
+        || plan.resource_id != snapshot_plan.artifact.resource_id
+    {
+        return Err(CdfError::data(
+            "schema promotion dry plan does not match its content-addressed proposed snapshot",
+        ));
+    }
+    let snapshot_authority = snapshot_plan
+        .artifact
+        .promotion_authority
+        .as_ref()
+        .ok_or_else(|| CdfError::data("promotion snapshot has no typed version-3 authority"))?;
+    if snapshot_authority.resource_id != plan.resource_id
+        || snapshot_authority.old_snapshot.schema_hash.as_str() != plan.old_schema_hash
+        || snapshot_authority.fresh_discovery_schema_hash != plan.fresh_discovery_schema_hash
+        || snapshot_authority.fresh_discovery_manifest_hash != plan.fresh_discovery_manifest_hash
+        || snapshot_authority.fresh_discovery_coverage != plan.fresh_discovery_coverage
+        || snapshot_authority.fresh_discovery_content_identity
+            != plan.fresh_discovery_content_identity
+    {
+        return Err(CdfError::data(
+            "schema promotion dry plan diverges from typed snapshot lineage",
+        ));
+    }
+
+    let lock_text = std::str::from_utf8(&old_lock_authority.bytes)
+        .map_err(|error| CdfError::data(format!("decode staged old lock: {error}")))?;
+    let old_lock = crate::parse_lock(lock_text)?;
+    let locked_resource = old_lock.resources.get(&plan.resource_id).ok_or_else(|| {
+        CdfError::data("schema promotion resource is absent from staged old lock authority")
+    })?;
+    if locked_resource.schema_snapshot.as_ref() != Some(&snapshot_authority.old_snapshot) {
+        return Err(CdfError::data(
+            "schema promotion typed old snapshot does not match staged old lock authority",
+        ));
+    }
+
+    if plan.paths.len() != snapshot_authority.selected_paths.len() {
+        return Err(CdfError::data(
+            "schema promotion dry-plan paths do not match typed snapshot authority",
+        ));
+    }
+    for (path, selected) in plan.paths.iter().zip(&snapshot_authority.selected_paths) {
+        let selected_display_type = path
+            .selected_type
+            .as_deref()
+            .ok_or_else(|| CdfError::data("executable promotion path has no selected type"))?;
+        let selected_display_type =
+            CanonicalArrowType::from_arrow(&parse_arrow_field_type(selected_display_type)?)?;
+        let coercions = path
+            .coercion_verdicts
+            .iter()
+            .map(|item| SchemaSnapshotPromotionCoercionAuthority {
+                observed_type: item.observed_type.clone(),
+                selected_type: item.selected_type.clone(),
+                decision: item.decision,
+            })
+            .collect::<Vec<_>>();
+        let associations = path
+            .associations
+            .iter()
+            .map(|item| SchemaSnapshotPromotionTargetAssociationAuthority {
+                package_hash: item.package_hash.clone(),
+                destination: item.destination.clone(),
+                target: item.target.clone(),
+                recorded_receipt_ids: item.recorded_receipt_ids.clone(),
+                availability: promotion_snapshot_availability(&item.availability),
+            })
+            .collect::<Vec<_>>();
+        if !path.projection_supported
+            || path.path != selected.path
+            || path.source_name != selected.source_name
+            || path.output_field != selected.output_field
+            || path.selected_arrow_type.as_ref() != Some(&selected.selected_arrow_type)
+            || selected_display_type != selected.selected_arrow_type
+            || path.observed_count != selected.observed_count
+            || path.affected_address_value_digest != selected.address_value_digest
+            || path.affected_packages != selected.packages
+            || coercions != selected.coercion_verdicts
+            || associations != selected.associations
+        {
+            return Err(CdfError::data(format!(
+                "schema promotion dry-plan path {:?} diverges from typed snapshot authority",
+                path.path
+            )));
+        }
+    }
+
+    let mut expected_targets = BTreeMap::<
+        (String, String),
+        (
+            BTreeSet<String>,
+            BTreeSet<String>,
+            BTreeSet<String>,
+            Vec<SchemaPromotionTargetEvidenceReport>,
+        ),
+    >::new();
+    let mut evidence_by_target = BTreeMap::<
+        (String, String),
+        BTreeMap<String, (SchemaPromotionEvidenceAvailability, BTreeSet<String>)>,
+    >::new();
+    for selected in &snapshot_authority.selected_paths {
+        for association in &selected.associations {
+            let key = (association.destination.clone(), association.target.clone());
+            let entry = expected_targets.entry(key.clone()).or_default();
+            entry.0.insert(association.package_hash.clone());
+            entry.1.insert(selected.path.clone());
+            entry
+                .2
+                .extend(association.recorded_receipt_ids.iter().cloned());
+            let package = evidence_by_target
+                .entry(key)
+                .or_default()
+                .entry(association.package_hash.clone())
+                .or_insert_with(|| {
+                    (
+                        promotion_plan_availability(&association.availability),
+                        BTreeSet::new(),
+                    )
+                });
+            if package.0 != promotion_plan_availability(&association.availability) {
+                return Err(CdfError::data(
+                    "schema promotion typed target association has conflicting availability",
+                ));
+            }
+            package
+                .1
+                .extend(association.recorded_receipt_ids.iter().cloned());
+        }
+    }
+    for (key, packages) in evidence_by_target {
+        expected_targets
+            .get_mut(&key)
+            .expect("association target was inserted")
+            .3 = packages
+            .into_iter()
+            .map(|(package_hash, (availability, receipt_ids))| {
+                SchemaPromotionTargetEvidenceReport {
+                    package_hash,
+                    availability,
+                    recorded_receipt_ids: receipt_ids.into_iter().collect(),
+                }
+            })
+            .collect();
+    }
+    if plan.targets.len() != expected_targets.len() {
+        return Err(CdfError::data(
+            "schema promotion dry-plan target set does not match typed snapshot associations",
+        ));
+    }
+    for target in &plan.targets {
+        let key = (target.destination.clone(), target.target.clone());
+        let expected = expected_targets.remove(&key).ok_or_else(|| {
+            CdfError::data("schema promotion dry plan contains an untyped destination target")
+        })?;
+        let locked = old_lock
+            .destinations
+            .get(&target.destination)
+            .ok_or_else(|| {
+                CdfError::data("schema promotion target destination is absent from staged old lock")
+            })?;
+        let strategy = target.strategy.ok_or_else(|| {
+            CdfError::data("executable schema promotion target has no correction strategy")
+        })?;
+        let residual_values_available = !expected.3.is_empty()
+            && expected.3.iter().all(|evidence| {
+                matches!(
+                    evidence.availability,
+                    SchemaPromotionEvidenceAvailability::RetainedPackage
+                        | SchemaPromotionEvidenceAvailability::DestinationReadback
+                )
+            });
+        let expected_strategy = select_correction_strategy(
+            &locked.protocol_capabilities.corrections,
+            residual_values_available,
+        );
+        if target.destination_sheet_hash != locked.sheet_hash
+            || expected_strategy != CorrectionStrategySelection::Selected(strategy)
+            || target.affected_packages != expected.0.into_iter().collect::<Vec<_>>()
+            || target.affected_paths != expected.1.into_iter().collect::<Vec<_>>()
+            || target.recorded_receipt_ids != expected.2.into_iter().collect::<Vec<_>>()
+            || target.evidence != expected.3
+        {
+            return Err(CdfError::data(format!(
+                "schema promotion target {}/{} diverges from typed snapshot and lock authority",
+                target.destination, target.target
+            )));
+        }
+    }
+
+    let recomputed = recompute_schema_promotion_id(plan)?;
+    if recomputed.as_str() != plan.promotion_id {
+        return Err(CdfError::data(format!(
+            "schema promotion id {} does not match canonical identity {}",
+            plan.promotion_id, recomputed
+        )));
+    }
+    Ok(recomputed)
+}
+
+fn promotion_snapshot_availability(
+    availability: &SchemaPromotionEvidenceAvailability,
+) -> SchemaSnapshotPromotionEvidenceAvailability {
+    match availability {
+        SchemaPromotionEvidenceAvailability::RetainedPackage => {
+            SchemaSnapshotPromotionEvidenceAvailability::RetainedPackage
+        }
+        SchemaPromotionEvidenceAvailability::DestinationReadback => {
+            SchemaSnapshotPromotionEvidenceAvailability::DestinationReadback
+        }
+        SchemaPromotionEvidenceAvailability::TombstoneOnly => {
+            SchemaSnapshotPromotionEvidenceAvailability::TombstoneOnly
+        }
+        SchemaPromotionEvidenceAvailability::Missing => {
+            SchemaSnapshotPromotionEvidenceAvailability::Missing
+        }
+    }
+}
+
+fn promotion_plan_availability(
+    availability: &SchemaSnapshotPromotionEvidenceAvailability,
+) -> SchemaPromotionEvidenceAvailability {
+    match availability {
+        SchemaSnapshotPromotionEvidenceAvailability::RetainedPackage => {
+            SchemaPromotionEvidenceAvailability::RetainedPackage
+        }
+        SchemaSnapshotPromotionEvidenceAvailability::DestinationReadback => {
+            SchemaPromotionEvidenceAvailability::DestinationReadback
+        }
+        SchemaSnapshotPromotionEvidenceAvailability::TombstoneOnly => {
+            SchemaPromotionEvidenceAvailability::TombstoneOnly
+        }
+        SchemaSnapshotPromotionEvidenceAvailability::Missing => {
+            SchemaPromotionEvidenceAvailability::Missing
+        }
+    }
 }
 
 fn promotion_target_keys(
@@ -708,6 +1197,140 @@ fn parse_type_overrides(raw: &[String]) -> cdf_kernel::Result<BTreeMap<String, D
     Ok(parsed)
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct CanonicalResidualScan {
+    row_count: u64,
+    byte_count: u64,
+}
+
+fn structurally_verified_package_receipts(
+    reader: &PackageReader,
+    delta: &cdf_package::StateDeltaPreimage,
+    package_hash: &PackageHash,
+) -> cdf_kernel::Result<Vec<cdf_kernel::Receipt>> {
+    let mut receipts = reader.receipts()?;
+    if receipts.is_empty() {
+        return Ok(receipts);
+    }
+    let commit = reader.destination_commit_plan_preimage()?;
+    if commit.schema_hash != delta.schema_hash || commit.segments != delta.segments {
+        return Err(CdfError::data(
+            "package destination commit preimage does not match state authority",
+        ));
+    }
+    let expected_acks = delta
+        .segments
+        .iter()
+        .map(|segment| cdf_kernel::SegmentAck {
+            segment_id: segment.segment_id.clone(),
+            row_count: segment.row_count,
+            byte_count: segment.byte_count,
+        })
+        .collect::<Vec<_>>();
+    let expected_token = cdf_kernel::IdempotencyToken::new(package_hash.as_str())?;
+    let concrete_delta = delta.clone().into_state_delta(package_hash.clone());
+    let mut seen = BTreeSet::new();
+    for receipt in &receipts {
+        if !seen.insert((
+            receipt.destination.clone(),
+            receipt.target.clone(),
+            receipt.receipt_id.clone(),
+        )) || receipt.package_hash != *package_hash
+            || receipt.target != commit.target
+            || receipt.disposition != commit.disposition
+            || receipt.idempotency_token != expected_token
+            || receipt.schema_hash != delta.schema_hash
+            || receipt.segment_acks != expected_acks
+            || !receipt.covers_state_delta(&concrete_delta)
+        {
+            return Err(CdfError::data(format!(
+                "receipt {} does not exactly match package/state/schema/disposition/segment authority",
+                receipt.receipt_id
+            )));
+        }
+    }
+    receipts.sort_by(|left, right| {
+        (&left.destination, &left.target, &left.receipt_id).cmp(&(
+            &right.destination,
+            &right.target,
+            &right.receipt_id,
+        ))
+    });
+    Ok(receipts)
+}
+
+fn scan_canonical_package_residuals(
+    reader: &PackageReader,
+    package_hash: &PackageHash,
+    mut visit: impl FnMut(
+        &cdf_contract::DecodedResidualField,
+        &RowProvenanceAddress,
+        &[u8],
+    ) -> cdf_kernel::Result<()>,
+) -> cdf_kernel::Result<CanonicalResidualScan> {
+    let mut scan = CanonicalResidualScan::default();
+    for segment in &reader.manifest().identity.segments {
+        let mut segment_ordinal = 0_u64;
+        for batch in reader.read_segment(&segment.segment_id)? {
+            let variant_indexes = batch
+                .schema()
+                .fields()
+                .iter()
+                .enumerate()
+                .filter_map(|(index, field)| is_framework_variant_field(field).then_some(index))
+                .collect::<Vec<_>>();
+            if variant_indexes.len() > 1 {
+                return Err(CdfError::data(
+                    "verified package contains multiple framework residual columns",
+                ));
+            }
+            let Some(variant_index) = variant_indexes.first().copied() else {
+                segment_ordinal += batch.num_rows() as u64;
+                continue;
+            };
+            let variant = batch
+                .column(variant_index)
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .ok_or_else(|| {
+                    CdfError::data("verified framework residual column is not canonical utf8")
+                })?;
+            for row in 0..batch.num_rows() {
+                if variant.is_null(row) {
+                    continue;
+                }
+                let residual_bytes = variant.value(row).as_bytes();
+                let decoded = decode_residual_json_v1(residual_bytes).map_err(|error| {
+                    CdfError::data(format!(
+                        "decode residual in package {} segment {} row {}: {error}",
+                        package_hash,
+                        segment.segment_id,
+                        segment_ordinal + row as u64
+                    ))
+                })?;
+                let address = RowProvenanceAddress::new(
+                    package_hash.clone(),
+                    segment.segment_id.clone(),
+                    segment_ordinal + row as u64,
+                );
+                for field in &decoded {
+                    visit(field, &address, residual_bytes)?;
+                }
+                scan.row_count = scan
+                    .row_count
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("schema promotion residual count overflow"))?;
+                scan.byte_count = scan
+                    .byte_count
+                    .checked_add(residual_bytes.len() as u64)
+                    .ok_or_else(|| CdfError::data("schema promotion residual byte overflow"))?;
+            }
+            segment_ordinal += batch.num_rows() as u64;
+        }
+    }
+    Ok(scan)
+}
+
 fn inventory_local_packages(
     package_root: &Path,
     resource_id: &str,
@@ -796,7 +1419,8 @@ fn inventory_local_packages(
         }
         report.resource_attribution = SchemaPromotionResourceAttribution::Attributed;
         let package_hash = PackageHash::new(reader.manifest().package_hash.clone())?;
-        let receipts = match reader.receipts() {
+        let receipts = match structurally_verified_package_receipts(&reader, &delta, &package_hash)
+        {
             Ok(receipts) => receipts,
             Err(error) => {
                 coverage_complete = false;
@@ -806,17 +1430,6 @@ fn inventory_local_packages(
             }
         };
         for receipt in receipts {
-            if receipt.package_hash != package_hash
-                || !receipt
-                    .covers_state_delta(&delta.clone().into_state_delta(package_hash.clone()))
-            {
-                report.detail = Some(format!(
-                    "receipt {} does not cover package {} exactly",
-                    receipt.receipt_id, package_hash
-                ));
-                coverage_complete = false;
-                continue;
-            }
             report.recorded_receipts.push(SchemaPromotionReceiptReport {
                 receipt_id: receipt.receipt_id.to_string(),
                 destination: receipt.destination.to_string(),
@@ -838,93 +1451,58 @@ fn inventory_local_packages(
         }
         report.availability = SchemaPromotionEvidenceAvailability::RetainedPackage;
         let mut report_paths = BTreeSet::new();
-        for segment in &reader.manifest().identity.segments {
-            let mut segment_ordinal = 0_u64;
-            for batch in reader.read_segment(&segment.segment_id)? {
-                let variant_index = batch
-                    .schema()
-                    .fields()
-                    .iter()
-                    .position(|field| is_framework_variant_field(field));
-                let Some(variant_index) = variant_index else {
-                    segment_ordinal += batch.num_rows() as u64;
-                    continue;
-                };
-                let variant = batch
-                    .column(variant_index)
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .ok_or_else(|| {
-                        CdfError::data("verified framework variant field is not a StringArray")
-                    })?;
-                for row in 0..batch.num_rows() {
-                    if variant.is_null(row) {
-                        continue;
-                    }
-                    let residual_bytes = variant.value(row).as_bytes();
-                    let decoded = decode_residual_json_v1(residual_bytes).map_err(|error| {
-                        CdfError::data(format!(
-                            "decode residual in package {} segment {} row {}: {error}",
-                            package_hash,
-                            segment.segment_id,
-                            segment_ordinal + row as u64
+        let scan = scan_canonical_package_residuals(
+            &reader,
+            &package_hash,
+            |field, address, residual_bytes| {
+                report_paths.insert(field.path.clone());
+                let arrow_type = CanonicalArrowType::from_arrow(field.array.data_type())?;
+                let accumulator = path_accumulators.entry(field.path.clone()).or_default();
+                let canonical_type = serde_json::to_string(&arrow_type)
+                    .map_err(|error| CdfError::data(error.to_string()))?;
+                accumulator
+                    .observed_types
+                    .insert(canonical_type, arrow_type);
+                accumulator.count = accumulator
+                    .count
+                    .checked_add(1)
+                    .ok_or_else(|| CdfError::data("schema promotion residual count overflow"))?;
+                accumulator.packages.insert(package_hash.to_string());
+                for receipt in &report.recorded_receipts {
+                    accumulator
+                        .associations
+                        .entry((
+                            package_hash.to_string(),
+                            receipt.destination.clone(),
+                            receipt.target.clone(),
                         ))
-                    })?;
-                    for field in decoded {
-                        report_paths.insert(field.path.clone());
-                        let arrow_type = CanonicalArrowType::from_arrow(field.array.data_type())?;
-                        let address = RowProvenanceAddress::new(
-                            package_hash.clone(),
-                            segment.segment_id.clone(),
-                            segment_ordinal + row as u64,
-                        );
-                        let accumulator = path_accumulators.entry(field.path.clone()).or_default();
-                        let canonical_type = serde_json::to_string(&arrow_type)
-                            .map_err(|error| CdfError::data(error.to_string()))?;
-                        accumulator
-                            .observed_types
-                            .insert(canonical_type, arrow_type);
-                        accumulator.count = accumulator.count.checked_add(1).ok_or_else(|| {
-                            CdfError::data("schema promotion residual count overflow")
-                        })?;
-                        accumulator.packages.insert(package_hash.to_string());
-                        for receipt in &report.recorded_receipts {
-                            accumulator
-                                .associations
-                                .entry((
-                                    package_hash.to_string(),
-                                    receipt.destination.clone(),
-                                    receipt.target.clone(),
-                                ))
-                                .or_default()
-                                .insert(receipt.receipt_id.clone());
-                        }
-                        accumulator.examples.insert(address.clone());
-                        if accumulator.examples.len() > 5 {
-                            accumulator.examples.pop_last();
-                        }
-                        let digest_item = serde_json::to_vec(&(
-                            &field.path,
-                            &address,
-                            hex::encode(Sha256::digest(residual_bytes)),
-                        ))
-                        .map_err(|error| CdfError::data(error.to_string()))?;
-                        accumulator
-                            .package_digests
-                            .entry(package_hash.to_string())
-                            .or_default()
-                            .update((digest_item.len() as u64).to_be_bytes());
-                        accumulator
-                            .package_digests
-                            .get_mut(package_hash.as_str())
-                            .expect("package digest was inserted")
-                            .update(digest_item);
-                    }
-                    report.residual_rows += 1;
+                        .or_default()
+                        .insert(receipt.receipt_id.clone());
                 }
-                segment_ordinal += batch.num_rows() as u64;
-            }
-        }
+                accumulator.examples.insert(address.clone());
+                if accumulator.examples.len() > 5 {
+                    accumulator.examples.pop_last();
+                }
+                let digest_item = serde_json::to_vec(&(
+                    &field.path,
+                    address,
+                    hex::encode(Sha256::digest(residual_bytes)),
+                ))
+                .map_err(|error| CdfError::data(error.to_string()))?;
+                accumulator
+                    .package_digests
+                    .entry(package_hash.to_string())
+                    .or_default()
+                    .update((digest_item.len() as u64).to_be_bytes());
+                accumulator
+                    .package_digests
+                    .get_mut(package_hash.as_str())
+                    .expect("package digest was inserted")
+                    .update(digest_item);
+                Ok(())
+            },
+        )?;
+        report.residual_rows = scan.row_count;
         report.residual_paths = report_paths.into_iter().collect();
         evidence.push(report);
     }
@@ -1807,9 +2385,58 @@ struct PromotionIdentityTarget {
     evidence: Vec<SchemaPromotionTargetEvidenceReport>,
 }
 
+impl<'a> PromotionIdentity<'a> {
+    fn from_report(plan: &'a SchemaPromotionPlanReport) -> Self {
+        Self {
+            version: 1,
+            resource_id: &plan.resource_id,
+            old_schema_hash: plan.old_schema_hash.clone(),
+            new_schema_hash: plan.new_schema_hash.clone(),
+            lock_precondition_sha256: plan.lock_precondition_sha256.clone(),
+            evidence_extraction_program: plan.evidence_extraction_program.clone(),
+            evidence_inventory_complete: plan.evidence_inventory_complete,
+            fresh_discovery_schema_hash: plan.fresh_discovery_schema_hash.clone(),
+            fresh_discovery_manifest_hash: plan.fresh_discovery_manifest_hash.clone(),
+            fresh_discovery_coverage: plan.fresh_discovery_coverage.clone(),
+            fresh_discovery_content_identity: plan.fresh_discovery_content_identity.clone(),
+            paths: plan
+                .paths
+                .iter()
+                .map(|path| PromotionIdentityPath {
+                    path: path.path.clone(),
+                    projection_supported: path.projection_supported,
+                    selected_arrow_type: path.selected_arrow_type.clone(),
+                    output_field: path.output_field.clone(),
+                    observed_count: path.observed_count,
+                    affected_address_value_digest: path.affected_address_value_digest.clone(),
+                    affected_packages: path.affected_packages.clone(),
+                    associations: path.associations.clone(),
+                })
+                .collect(),
+            targets: plan
+                .targets
+                .iter()
+                .map(|target| PromotionIdentityTarget {
+                    destination: target.destination.clone(),
+                    target: target.target.clone(),
+                    destination_sheet_hash: target.destination_sheet_hash.clone(),
+                    strategy_selection_rule: target.strategy_selection_rule,
+                    strategy: target.strategy,
+                    recorded_receipt_ids: target.recorded_receipt_ids.clone(),
+                    affected_packages: target.affected_packages.clone(),
+                    affected_paths: target.affected_paths.clone(),
+                    evidence: target.evidence.clone(),
+                })
+                .collect(),
+            execution_preconditions: plan.execution_preconditions.clone(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::{Int64Array, RecordBatch, StringArray};
     use arrow_schema::{Field, Schema, TimeUnit};
     use cdf_kernel::{
         CHECKPOINT_STATE_VERSION, CapabilitySupport, CheckpointId, CommitCounts, ConcurrencyLimit,
@@ -2285,6 +2912,17 @@ mod tests {
         builder
             .write_state_delta_preimage_artifact(&state_delta)
             .unwrap();
+        builder
+            .write_commit_plan_preimage_artifact(
+                &cdf_package::DestinationCommitPlanPreimage::package_hash_token(
+                    TargetName::new("archived_target").unwrap(),
+                    WriteDisposition::Append,
+                    Vec::new(),
+                    SchemaHash::new("sha256:old-schema").unwrap(),
+                    Vec::new(),
+                ),
+            )
+            .unwrap();
         let manifest = builder
             .finish_with_status(cdf_package::PackageStatus::Archived)
             .unwrap();
@@ -2710,5 +3348,327 @@ mod tests {
         let changed =
             promotion_snapshot_plan(&pinned, &proposed, &fresh, lineage(), &paths).unwrap();
         assert_ne!(first.schema_hash, changed.schema_hash);
+    }
+
+    #[test]
+    fn local_promotion_availability_rejects_non_authority_and_preserves_byte_presence() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let canonical = canonical_residual_values();
+        let canonical_bytes = canonical.iter().map(String::len).sum::<usize>() as u64;
+        build_availability_package(
+            root,
+            "canonical",
+            "resource.one",
+            canonical.clone(),
+            true,
+            true,
+        );
+        build_availability_package(
+            root,
+            "unreceipted",
+            "resource.one",
+            canonical.clone(),
+            true,
+            false,
+        );
+        build_availability_package(
+            root,
+            "malformed",
+            "resource.two",
+            vec!["{\"x\":1}".to_owned()],
+            true,
+            true,
+        );
+        build_availability_package(
+            root,
+            "noncanonical-field",
+            "resource.two",
+            canonical.clone(),
+            false,
+            true,
+        );
+        let tombstone = build_availability_package(
+            root,
+            "tombstone",
+            "resource.three",
+            canonical.clone(),
+            true,
+            true,
+        );
+        cdf_package::tombstone_package(&tombstone).unwrap();
+        let invalid_receipt = build_availability_package(
+            root,
+            "invalid-receipt",
+            "resource.four",
+            canonical,
+            true,
+            true,
+        );
+        let reader = PackageReader::open(&invalid_receipt).unwrap();
+        let mut receipts = reader.receipts().unwrap();
+        receipts[0].schema_hash = SchemaHash::new("sha256:wrong").unwrap();
+        fs::write(
+            invalid_receipt.join(cdf_package::RECEIPTS_FILE),
+            serde_json::to_vec_pretty(&receipts).unwrap(),
+        )
+        .unwrap();
+        let corrupt = build_availability_package(
+            root,
+            "corrupt",
+            "resource.five",
+            canonical_residual_values(),
+            true,
+            true,
+        );
+        fs::write(corrupt.join("data/segment-1.arrow"), b"corrupt").unwrap();
+        fs::create_dir(root.join("missing-manifest")).unwrap();
+
+        let availability = inspect_local_package_promotion_availability(root).unwrap();
+        let by_name = availability
+            .iter()
+            .map(|item| {
+                (
+                    Path::new(&item.artifact_location)
+                        .file_name()
+                        .unwrap()
+                        .to_string_lossy()
+                        .into_owned(),
+                    item,
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let retained = by_name["canonical"];
+        assert!(retained.contains_local_residual_bytes);
+        assert!(retained.locally_promotable);
+        assert_eq!(retained.local_residual_bytes, canonical_bytes);
+        assert_eq!(retained.promotable_residual_bytes, canonical_bytes);
+        assert_eq!(
+            retained.status,
+            LocalPromotionAvailabilityStatus::RetainedPackage
+        );
+        assert_eq!(retained.receipt_targets.len(), 1);
+
+        let unreceipted = by_name["unreceipted"];
+        assert!(unreceipted.contains_local_residual_bytes);
+        assert!(!unreceipted.locally_promotable);
+        assert_eq!(unreceipted.local_residual_bytes, canonical_bytes);
+        assert_eq!(unreceipted.promotable_residual_bytes, 0);
+        assert_eq!(
+            unreceipted.status,
+            LocalPromotionAvailabilityStatus::NoReceiptAuthority
+        );
+        assert_eq!(
+            by_name["malformed"].status,
+            LocalPromotionAvailabilityStatus::InvalidResidualEnvelope
+        );
+        assert!(!by_name["malformed"].contains_local_residual_bytes);
+        assert_eq!(
+            by_name["noncanonical-field"].status,
+            LocalPromotionAvailabilityStatus::NoResidualBytes
+        );
+        assert_eq!(
+            by_name["tombstone"].status,
+            LocalPromotionAvailabilityStatus::TombstoneOnly
+        );
+        assert_eq!(
+            by_name["invalid-receipt"].status,
+            LocalPromotionAvailabilityStatus::InvalidReceiptAuthority
+        );
+        assert!(by_name["invalid-receipt"].contains_local_residual_bytes);
+        assert!(!by_name["invalid-receipt"].locally_promotable);
+        assert_eq!(
+            by_name["corrupt"].status,
+            LocalPromotionAvailabilityStatus::InvalidPackage
+        );
+        assert_eq!(
+            by_name["missing-manifest"].status,
+            LocalPromotionAvailabilityStatus::InvalidPackage
+        );
+        assert!(by_name["missing-manifest"].resource_id.is_none());
+    }
+
+    #[test]
+    fn local_promotion_collection_matrix_uses_actions_without_changing_retention() {
+        let item = |package: &str| LocalPackagePromotionAvailability {
+            artifact_location: package.to_owned(),
+            package_hash: Some(format!("sha256:{package}")),
+            resource_id: Some("resource.one".to_owned()),
+            contains_local_residual_bytes: true,
+            locally_promotable: true,
+            local_residual_bytes: 10,
+            promotable_residual_bytes: 10,
+            receipt_targets: Vec::new(),
+            status: LocalPromotionAvailabilityStatus::RetainedPackage,
+            detail: None,
+        };
+        let mixed = assess_local_promotion_collection(
+            vec![item("a"), item("b")],
+            &BTreeMap::from([
+                ("a".to_owned(), LocalPromotionCollectionAction::WouldCollect),
+                ("b".to_owned(), LocalPromotionCollectionAction::Retain),
+            ]),
+        );
+        assert!(
+            mixed
+                .iter()
+                .all(|item| !item.last_locally_promotable_for_resource)
+        );
+        assert!(
+            mixed
+                .iter()
+                .all(|item| !item.collection_removes_last_local_promotable_copy)
+        );
+
+        let all_collect = assess_local_promotion_collection(
+            vec![item("a"), item("b")],
+            &BTreeMap::from([
+                ("a".to_owned(), LocalPromotionCollectionAction::WouldCollect),
+                ("b".to_owned(), LocalPromotionCollectionAction::WouldCollect),
+            ]),
+        );
+        assert!(
+            all_collect
+                .iter()
+                .all(|item| item.collection_removes_last_local_promotable_copy)
+        );
+
+        let single = assess_local_promotion_collection(
+            vec![item("only")],
+            &BTreeMap::from([(
+                "only".to_owned(),
+                LocalPromotionCollectionAction::WouldCollect,
+            )]),
+        );
+        assert!(single[0].last_locally_promotable_for_resource);
+        assert!(single[0].collection_removes_last_local_promotable_copy);
+    }
+
+    fn canonical_residual_values() -> Vec<String> {
+        let values = Int64Array::from_iter_values([1_i64, 2_i64]);
+        (0..values.len())
+            .map(|row| {
+                String::from_utf8(
+                    cdf_contract::encode_residual_json_v1([cdf_contract::ResidualFieldRef::new(
+                        ["x"],
+                        &values,
+                        row,
+                    )
+                    .unwrap()])
+                    .unwrap(),
+                )
+                .unwrap()
+            })
+            .collect()
+    }
+
+    fn build_availability_package(
+        root: &Path,
+        package_id: &str,
+        resource_id: &str,
+        residuals: Vec<String>,
+        canonical_field: bool,
+        add_receipt: bool,
+    ) -> PathBuf {
+        let package_dir = root.join(package_id);
+        let mut builder = cdf_package::PackageBuilder::create(&package_dir, package_id).unwrap();
+        let field = if canonical_field {
+            let field = cdf_kernel::with_semantic(
+                Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true),
+                cdf_contract::VARIANT_SEMANTIC_TAG,
+            );
+            let mut metadata = field.metadata().clone();
+            metadata.insert(
+                cdf_contract::RESIDUAL_ENCODING_METADATA_KEY.to_owned(),
+                cdf_contract::RESIDUAL_ENCODING_NAME.to_owned(),
+            );
+            field.with_metadata(metadata)
+        } else {
+            Field::new(cdf_contract::VARIANT_COLUMN_NAME, DataType::Utf8, true)
+        };
+        let batch = RecordBatch::try_new(
+            std::sync::Arc::new(Schema::new(vec![field])),
+            vec![std::sync::Arc::new(StringArray::from(residuals))],
+        )
+        .unwrap();
+        let segment = builder
+            .write_segment(SegmentId::new("segment-1").unwrap(), &[batch])
+            .unwrap();
+        let output_position = SourcePosition::FileManifest(FileManifest {
+            version: CHECKPOINT_STATE_VERSION,
+            files: Vec::new(),
+        });
+        let state_segment = cdf_kernel::StateSegment {
+            segment_id: segment.segment_id,
+            scope: ScopeKey::Resource,
+            output_position: output_position.clone(),
+            row_count: segment.row_count,
+            byte_count: segment.byte_count,
+        };
+        let schema_hash = SchemaHash::new("sha256:schema").unwrap();
+        builder.write_input_checkpoint_artifact(&None).unwrap();
+        builder
+            .write_state_delta_preimage_artifact(&cdf_package::StateDeltaPreimage {
+                checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
+                pipeline_id: PipelineId::new("pipeline").unwrap(),
+                resource_id: ResourceId::new(resource_id).unwrap(),
+                scope: ScopeKey::Resource,
+                state_version: CHECKPOINT_STATE_VERSION,
+                parent_checkpoint_id: None,
+                input_position: None,
+                output_position,
+                schema_hash: schema_hash.clone(),
+                segments: vec![state_segment.clone()],
+            })
+            .unwrap();
+        builder
+            .write_commit_plan_preimage_artifact(
+                &cdf_package::DestinationCommitPlanPreimage::package_hash_token(
+                    TargetName::new("events").unwrap(),
+                    WriteDisposition::Append,
+                    Vec::new(),
+                    schema_hash.clone(),
+                    vec![state_segment.clone()],
+                ),
+            )
+            .unwrap();
+        let manifest = builder
+            .finish_with_status(cdf_package::PackageStatus::Packaged)
+            .unwrap();
+        if add_receipt {
+            let package_hash = PackageHash::new(manifest.package_hash).unwrap();
+            PackageReader::open(&package_dir)
+                .unwrap()
+                .append_receipt(Receipt {
+                    receipt_id: ReceiptId::new(format!("receipt-{package_id}")).unwrap(),
+                    destination: DestinationId::new("warehouse").unwrap(),
+                    target: TargetName::new("events").unwrap(),
+                    package_hash: package_hash.clone(),
+                    segment_acks: vec![cdf_kernel::SegmentAck {
+                        segment_id: state_segment.segment_id,
+                        row_count: state_segment.row_count,
+                        byte_count: state_segment.byte_count,
+                    }],
+                    disposition: WriteDisposition::Append,
+                    idempotency_token: IdempotencyToken::new(package_hash.as_str()).unwrap(),
+                    transaction: None,
+                    counts: CommitCounts {
+                        rows_written: state_segment.row_count,
+                        rows_inserted: Some(state_segment.row_count),
+                        rows_updated: Some(0),
+                        rows_deleted: Some(0),
+                    },
+                    schema_hash,
+                    migrations: Vec::new(),
+                    committed_at_ms: 1,
+                    verify: VerifyClause {
+                        kind: "fixture".to_owned(),
+                        statement: "fixture".to_owned(),
+                        parameters: BTreeMap::new(),
+                    },
+                })
+                .unwrap();
+        }
+        package_dir
     }
 }

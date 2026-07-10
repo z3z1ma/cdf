@@ -4,6 +4,7 @@ mod hooks;
 mod ledger;
 mod orchestration;
 mod planning;
+mod promotion;
 mod receipts;
 mod replay;
 mod resources;
@@ -15,6 +16,7 @@ pub use destinations::*;
 pub use hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook};
 pub use orchestration::run_project;
 pub use planning::*;
+pub use promotion::*;
 pub use replay::{
     recover_package_from_artifacts, recover_prepared_package, replay_package_from_artifacts,
     replay_package_from_artifacts_with_stage_hook, replay_prepared_package,

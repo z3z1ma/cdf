@@ -19,6 +19,7 @@ required-features = ["cli-artifacts"]
 cli-artifacts = ["dep:clap_complete", "dep:clap_mangen"]
 
 [dependencies]
+arrow-array = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
@@ -41,8 +42,8 @@ reqwest = { version = "0.12.28", default-features = false, features = ["blocking
 sha2 = "0.10.9"
 
 [dev-dependencies]
-arrow-array = "59.1.0"
 arrow-ipc = "59.1.0"
 arrow-schema = "59.1.0"
+cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 duckdb = { version = "1.10504.0", features = ["bundled"] }
 postgres = "0.19"

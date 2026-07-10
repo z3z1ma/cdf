@@ -4,8 +4,9 @@ use std::{
 };
 
 use cdf_kernel::{
-    CdfError, CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, ReceiptId, ResourceId,
-    Result, RunEvent, RunEventAppend, RunEventDetails, RunEventKind, RunId, ScopeKey,
+    CdfError, CheckpointId, DestinationId, PackageHash, PartitionId, PlanId, PromotionId,
+    PromotionPublicationEvent, ReceiptId, ResourceId, Result, RunEvent, RunEventAppend,
+    RunEventDetails, RunEventKind, RunId, ScopeKey,
 };
 use rusqlite::{
     Connection, ErrorCode, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior,
@@ -19,7 +20,7 @@ use crate::support::{
 };
 
 pub(crate) const RUN_LEDGER_COMPONENT: &str = "run_ledger";
-pub(crate) const RUN_LEDGER_SCHEMA_VERSION: i64 = 3;
+pub(crate) const RUN_LEDGER_SCHEMA_VERSION: i64 = 4;
 const RUN_EVENT_SELECT: &str = "SELECT run_id, sequence, timestamp_ms, kind, resource_id, scope_json, partition_id, package_id, package_hash, package_path, checkpoint_id, receipt_id, destination_id, plan_id, details_json FROM cdf_run_events";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,6 +135,63 @@ impl SqliteRunLedger {
         }))
     }
 
+    pub fn promotion_publication(
+        &self,
+        promotion_id: &PromotionId,
+    ) -> Result<Option<PromotionPublicationEvent>> {
+        let conn = self.lock_conn()?;
+        conn.query_row(
+            "SELECT event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
+            params![promotion_id.as_str()],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .map(|json| serde_json::from_str(&json).map_err(|error| CdfError::data(error.to_string())))
+        .transpose()
+    }
+
+    pub fn publish_promotion(
+        &self,
+        event: PromotionPublicationEvent,
+    ) -> Result<PromotionPublicationEvent> {
+        event.validate()?;
+        let mut conn = self.lock_conn()?;
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(sqlite_error)?;
+        let existing = tx
+            .query_row(
+                "SELECT event_json FROM cdf_promotion_publications WHERE promotion_id = ?",
+                params![event.promotion_id.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?
+            .map(|json| {
+                serde_json::from_str::<PromotionPublicationEvent>(&json)
+                    .map_err(|error| CdfError::data(error.to_string()))
+            })
+            .transpose()?;
+        if let Some(existing) = existing {
+            if !existing.same_authority(&event) {
+                return Err(CdfError::contract(format!(
+                    "promotion publication {} conflicts with existing ledger authority",
+                    event.promotion_id
+                )));
+            }
+            return Ok(existing);
+        }
+        let json = encode_json(&event)?;
+        tx.execute(
+            "INSERT INTO cdf_promotion_publications (promotion_id, published_at_ms, event_json) VALUES (?, ?, ?)",
+            params![event.promotion_id.as_str(), event.published_at_ms, json],
+        )
+        .map_err(sqlite_error)?;
+        tx.commit().map_err(sqlite_error)?;
+        Ok(event)
+    }
+
     fn lock_conn(&self) -> Result<MutexGuard<'_, Connection>> {
         self.conn.lock().map_err(lock_error)
     }
@@ -175,7 +233,7 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
 
     let existing_version = read_run_schema_version(conn)?;
     match existing_version {
-        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | None => {}
+        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | Some(3) | None => {}
         Some(version) => return Err(unsupported_run_schema_version(version)),
     }
 
@@ -249,6 +307,7 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
         migrate_run_schema_v2_to_v3(conn)?;
     }
     create_run_event_indexes(conn)?;
+    create_promotion_publication_table(conn)?;
 
     conn.execute_batch(
         "
@@ -282,6 +341,12 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
 
     if existing_version.is_none() {
         write_component_schema_version(conn, RUN_LEDGER_COMPONENT, RUN_LEDGER_SCHEMA_VERSION)?;
+    } else if existing_version != Some(RUN_LEDGER_SCHEMA_VERSION) {
+        conn.execute(
+            "UPDATE cdf_sqlite_schema_migrations SET version = ?, applied_at_ms = ? WHERE component = ?",
+            params![RUN_LEDGER_SCHEMA_VERSION, now_ms()?, RUN_LEDGER_COMPONENT],
+        )
+        .map_err(sqlite_error)?;
     }
 
     Ok(())
@@ -290,7 +355,7 @@ pub(crate) fn initialize_run_schema(conn: &Connection) -> Result<()> {
 fn validate_run_schema_version(conn: &Connection) -> Result<Option<i64>> {
     let existing_version = read_run_schema_version(conn)?;
     match existing_version {
-        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | None => {}
+        Some(RUN_LEDGER_SCHEMA_VERSION) | Some(1) | Some(2) | Some(3) | None => {}
         Some(version) => return Err(unsupported_run_schema_version(version)),
     }
     Ok(existing_version)
@@ -521,6 +586,31 @@ fn create_run_event_indexes(conn: &Connection) -> Result<()> {
     )
     .map_err(sqlite_error)?;
     Ok(())
+}
+
+fn create_promotion_publication_table(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "
+        CREATE TABLE IF NOT EXISTS cdf_promotion_publications (
+            promotion_id TEXT PRIMARY KEY,
+            published_at_ms INTEGER NOT NULL,
+            event_json TEXT NOT NULL
+        );
+
+        CREATE TRIGGER IF NOT EXISTS cdf_promotion_publications_no_update
+        BEFORE UPDATE ON cdf_promotion_publications
+        BEGIN
+            SELECT RAISE(ABORT, 'cdf_promotion_publications is append-only');
+        END;
+
+        CREATE TRIGGER IF NOT EXISTS cdf_promotion_publications_no_delete
+        BEFORE DELETE ON cdf_promotion_publications
+        BEGIN
+            SELECT RAISE(ABORT, 'cdf_promotion_publications is append-only');
+        END;
+        ",
+    )
+    .map_err(sqlite_error)
 }
 
 fn insert_supplied_run(

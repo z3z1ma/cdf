@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
-Depends-On: .10x/tickets/2026-07-10-p2-rp9a-promotion-artifact-recovery-authority.md, .10x/tickets/done/2026-07-10-p2-rp4-schema-scope-lease-lock-cas.md
+Depends-On: .10x/tickets/done/2026-07-10-p2-rp9a-promotion-artifact-recovery-authority.md, .10x/tickets/done/2026-07-10-p2-rp4-schema-scope-lease-lock-cas.md
 
 # RP9B atomically fenced promotion checkpoint and publication settlement
 

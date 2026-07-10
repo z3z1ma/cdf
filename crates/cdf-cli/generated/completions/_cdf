@@ -309,6 +309,7 @@ _arguments "${_arguments_options[@]}" : \
 _arguments "${_arguments_options[@]}" : \
 '--resource=[]:RESOURCE:_default' \
 '*--type=[]:JSON_POINTER=ARROW_TYPE:_default' \
+'--execute[]' \
 '--no-color[]' \
 '-h[Print help]' \
 '--help[Print help]' \

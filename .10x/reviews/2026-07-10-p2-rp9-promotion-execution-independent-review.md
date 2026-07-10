@@ -67,7 +67,7 @@ The phase enum names intermediate states, but successful report construction alw
 
 ### Significant — required cross-destination and concurrency acceptance is unproved
 
-The command-level execution and six-boundary crash matrix cover a single DuckDB target. There is no multi-target test, no failure on a later target, no proof of parent-checkpoint ordering across targets, and no proof that publication waits for every target. RP6 proves the Postgres destination protocol independently, but RP9 has no live or command-level Postgres promotion execution. Parquet promotion remains explicitly blocked by `.10x/tickets/2026-07-10-parquet-promotion-identifier-policy.md`.
+The command-level execution and six-boundary crash matrix cover a single DuckDB target. There is no multi-target test, no failure on a later target, no proof of parent-checkpoint ordering across targets, and no proof that publication waits for every target. RP6 proves the Postgres destination protocol independently, but RP9 has no live or command-level Postgres promotion execution. Parquet promotion was explicitly blocked by `.10x/tickets/done/2026-07-10-parquet-promotion-identifier-policy.md` and is now resolved.
 
 Promotion-vs-promotion and pin-vs-promotion have lease/CAS protection at publication, but ordinary runs do not acquire the schema-contract promotion lease. No test proves that a run using the old schema cannot commit concurrently while promotion packages residual corrections and publishes the new snapshot. The active ticket's named run/pin/promotion conflict criterion is therefore not met.
 
