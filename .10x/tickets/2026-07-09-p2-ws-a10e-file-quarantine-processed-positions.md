@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-09
 Updated: 2026-07-09
 Parent: .10x/tickets/2026-07-09-p2-ws-a10-multi-file-schema-discovery-pin.md
@@ -32,6 +32,7 @@ No row-level policy redesign, destination quarantine-sheet expansion beyond exis
 ## Progress and notes
 
 - 2026-07-09: Opened from the ratified gate-backed quarantine advancement rule.
+- 2026-07-10: Activated after A10d closure. Implementation must consume the source-neutral schema-observation authority from `.10x/decisions/effective-schema-runtime-authority.md`; file-specific identity belongs at the file adapter/package presentation boundary, while processed-position and commit-gate semantics remain generic.
 
 ## Blockers
 

@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -31,6 +31,7 @@ No schema promotion command, row correction, destination capability changes, or 
 ## Progress and notes
 
 - 2026-07-10: Opened after exact safety and encoding ratification.
+- 2026-07-10: Activated after A10d closure. RP2 must extend the existing validation-program/evaluator/package spine with total residual verdicts; it may not add a format-specific residual path, duplicate the contract lattice, or weaken quarantine for control-critical fields.
 
 ## Blockers
 
