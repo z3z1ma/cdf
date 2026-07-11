@@ -4,6 +4,7 @@ members = [
     "crates/cdf-engine",
     "crates/cdf-contract",
     "crates/cdf-package",
+    "crates/cdf-runtime",
     "crates/cdf-state-sqlite",
     "crates/cdf-http",
     "crates/cdf-formats",

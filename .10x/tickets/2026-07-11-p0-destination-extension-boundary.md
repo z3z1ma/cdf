@@ -14,7 +14,7 @@ This parent is a plan. Its children are the executable units.
 
 ## Child tickets
 
-- `.10x/tickets/2026-07-11-p0-dx1-neutral-runtime-crate.md`
+- `.10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md`
 - `.10x/tickets/2026-07-11-p0-dx2-driver-owned-adapters-composition.md`
 - `.10x/tickets/2026-07-11-p0-dx3-generic-lock-doctor-replay.md`
 - `.10x/tickets/2026-07-11-p0-dx4-conformance-extension-law.md`
@@ -31,3 +31,7 @@ This parent is a plan. Its children are the executable units.
 ## Blockers
 
 None after shaping. P3 WS-A and WS-D wait for the relevant children; WS-L remains unblocked.
+
+## Progress and notes
+
+- 2026-07-11: DX1 closed with neutral runtime registry/inspection/prepared-commit contracts and unchanged project runtime behavior. DX2 is unblocked and owns driver-crate adapter migration plus the single CLI composition root.

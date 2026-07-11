@@ -2,6 +2,23 @@ use super::*;
 
 pub struct DuckDbProjectDestinationDriver;
 
+pub(crate) struct DuckDbProjectDestinationRuntime {
+    destination: DuckDbDestination,
+}
+
+impl DuckDbProjectDestinationRuntime {
+    pub(super) fn new(database_path: impl AsRef<Path>) -> Result<Self> {
+        Ok(Self {
+            destination: DuckDbDestination::new(database_path)?,
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_destination(destination: DuckDbDestination) -> Self {
+        Self { destination }
+    }
+}
+
 impl ProjectDestinationDriver for DuckDbProjectDestinationDriver {
     fn schemes(&self) -> &'static [&'static str] {
         &["duckdb"]
@@ -14,17 +31,19 @@ impl ProjectDestinationDriver for DuckDbProjectDestinationDriver {
     ) -> Result<Box<dyn ProjectDestinationRuntime>> {
         let database_path =
             absolute_under_root(context.project_root()?, local_uri_path(uri, "duckdb")?);
-        Ok(Box::new(DuckDbDestination::new(database_path)?))
+        Ok(Box::new(DuckDbProjectDestinationRuntime::new(
+            database_path,
+        )?))
     }
 }
 
-impl ProjectDestinationRuntime for DuckDbDestination {
+impl ProjectDestinationRuntime for DuckDbProjectDestinationRuntime {
     fn protocol(&self) -> &dyn DestinationProtocol {
-        self
+        &self.destination
     }
 
     fn describe(&self) -> ProjectDestinationDescription {
-        duckdb_project_description(self)
+        duckdb_project_description(&self.destination)
     }
 
     fn plan_resource_commit(
@@ -33,9 +52,11 @@ impl ProjectDestinationRuntime for DuckDbDestination {
         output_schema: &Schema,
         inputs: &DestinationCommitPlanningInputs,
     ) -> Result<DestinationCommitPlanningOutcome> {
-        let plan = self.plan_schema_commit(&inputs.destination_commit, output_schema)?;
+        let plan = self
+            .destination
+            .plan_schema_commit(&inputs.destination_commit, output_schema)?;
         Ok(DestinationCommitPlanningOutcome::new(
-            self.sheet().clone(),
+            self.destination.sheet().clone(),
             plan.kernel,
         ))
     }
@@ -47,7 +68,7 @@ impl ProjectDestinationRuntime for DuckDbDestination {
         inputs: &PackageReplayInputs,
         _context: &DestinationPlanningContext<'_>,
     ) -> Result<PreparedDestinationCommit> {
-        prepare_duckdb_package_commit(self, package_dir, inputs)
+        prepare_duckdb_package_commit(&self.destination, package_dir, inputs)
     }
 
     fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
@@ -56,11 +77,11 @@ impl ProjectDestinationRuntime for DuckDbDestination {
 }
 
 fn duckdb_project_description(destination: &DuckDbDestination) -> ProjectDestinationDescription {
-    ProjectDestinationDescription {
-        destination_id: destination.sheet().destination.clone(),
-        schemes: &["duckdb"],
-        label: destination.database_path().display().to_string(),
-    }
+    ProjectDestinationDescription::new(
+        destination.sheet().destination.clone(),
+        &["duckdb"],
+        destination.database_path().display().to_string(),
+    )
 }
 
 fn prepare_duckdb_package_commit(

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-11-p0-destination-extension-boundary.md
@@ -20,4 +20,10 @@ Create `cdf-runtime`, move destination-neutral registry/resolution/inspection/pr
 
 ## Blockers
 
-None.
+None. Complete.
+
+## Progress and notes
+
+- 2026-07-11: Added dependency-neutral `cdf-runtime` authority for driver registration/resolution, typed no-mutation inspection, prepared commits, runtime planning, policy/secret context, and staged/finalized ingress plus concurrency/byte capability declarations.
+- 2026-07-11: Adapted `cdf-project` through compatibility re-exports and local adapter wrappers. The complete 171-test project library suite and four runtime boundary tests passed; package/receipt/checkpoint behavior remained stable.
+- 2026-07-11: Evidence is `.10x/evidence/2026-07-11-p0-dx1-neutral-runtime-crate.md`; architecture review `.10x/reviews/2026-07-11-p0-dx1-neutral-runtime-review.md` passed. DX2 owns removal of compatibility adapters and built-in project composition.

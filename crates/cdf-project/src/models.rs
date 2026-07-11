@@ -108,6 +108,17 @@ impl DestinationPolicy {
     }
 }
 
+impl cdf_runtime::DestinationPolicyProvider for DestinationPolicy {
+    fn value(&self, destination: &str, key: &str) -> Option<&str> {
+        match (destination, key, self.postgres.as_ref()) {
+            ("postgres", "merge_dedup", Some(policy)) => match policy.merge_dedup {
+                PostgresMergeDedupPolicy::Fail => Some("fail"),
+            },
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PostgresDestinationPolicy {

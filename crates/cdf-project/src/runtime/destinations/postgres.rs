@@ -1,5 +1,5 @@
 use super::*;
-use crate::{PostgresMergeDedupPolicy, SecretRef};
+use crate::SecretRef;
 
 pub struct PostgresProjectDestinationDriver;
 
@@ -23,18 +23,14 @@ impl ProjectDestinationDriver for PostgresProjectDestinationDriver {
                 "Postgres destination URI is malformed; expected postgres://database-url or postgres://secret://provider/key",
             ));
         }
-        let policy = context
-            .destination_policy()?
-            .postgres
-            .as_ref()
-            .ok_or_else(|| {
-                CdfError::contract(format!(
+        let dedup = match context.policy_value("postgres", "merge_dedup") {
+            Ok("fail") => MergeDedupPolicy::Fail,
+            _ => {
+                return Err(CdfError::contract(format!(
                     "Postgres cdf run requires [environments.{}.destination_policy.postgres] merge_dedup = \"fail\"",
                     context.environment_name()
-                ))
-            })?;
-        let dedup = match policy.merge_dedup {
-            PostgresMergeDedupPolicy::Fail => MergeDedupPolicy::Fail,
+                )));
+            }
         };
         let (database_url, secret_redaction) = if raw.starts_with("secret://") {
             let secret = SecretRef::new(raw.to_owned())?;
@@ -99,11 +95,11 @@ impl ProjectDestinationRuntime for PostgresProjectDestinationRuntime {
     }
 
     fn describe(&self) -> ProjectDestinationDescription {
-        ProjectDestinationDescription {
-            destination_id: self.destination.sheet().destination.clone(),
-            schemes: &["postgres"],
-            label: "postgres".to_owned(),
-        }
+        ProjectDestinationDescription::new(
+            self.destination.sheet().destination.clone(),
+            &["postgres"],
+            "postgres",
+        )
     }
 
     fn validate_run_preflight(

@@ -38,7 +38,6 @@ pub(crate) use replay::{
 
 mod prelude {
     pub(super) use std::{
-        any::Any,
         collections::{BTreeMap, BTreeSet},
         fs,
         path::{Component, Path, PathBuf},
@@ -59,7 +58,6 @@ mod prelude {
         EngineExecutionOptions, EnginePackageDraft, EnginePlan,
         execute_to_package_with_segment_positions_and_pre_finalize,
     };
-    pub(super) use cdf_http::SecretProvider;
     pub(super) use cdf_kernel::{
         CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
         CheckpointStore, CursorOrderingClaim, CursorPosition, CursorValue,

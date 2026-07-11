@@ -986,6 +986,7 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-package",
+ "cdf-runtime",
  "cdf-state-sqlite",
  "flate2",
  "futures-executor",
@@ -1018,6 +1019,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "cdf-runtime"
+version = "0.1.0"
+dependencies = [
+ "arrow-schema 59.1.0",
+ "cdf-contract",
+ "cdf-http",
+ "cdf-kernel",
+ "cdf-package",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

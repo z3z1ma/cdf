@@ -19,6 +19,7 @@ cdf-engine = { path = "../cdf-engine" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
+cdf-runtime = { path = "../cdf-runtime" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 hex = "0.4.3"
 serde = { version = "1.0.228", features = ["derive"] }

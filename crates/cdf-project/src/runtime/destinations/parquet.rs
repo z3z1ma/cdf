@@ -19,38 +19,6 @@ impl ProjectDestinationDriver for ParquetProjectDestinationDriver {
     }
 }
 
-impl ProjectDestinationRuntime for ParquetDestination {
-    fn protocol(&self) -> &dyn DestinationProtocol {
-        self
-    }
-
-    fn describe(&self) -> ProjectDestinationDescription {
-        parquet_project_description(self)
-    }
-
-    fn prepare_package_commit(
-        &mut self,
-        package_dir: &Path,
-        _reader: &PackageReader,
-        inputs: &PackageReplayInputs,
-        _context: &DestinationPlanningContext<'_>,
-    ) -> Result<PreparedDestinationCommit> {
-        prepare_parquet_package_commit(self, package_dir, inputs)
-    }
-
-    fn bind_prepared_commit(&mut self, prepared: &mut PreparedDestinationCommit) -> Result<()> {
-        reject_unexpected_pending_context(prepared, "Parquet")
-    }
-}
-
-fn parquet_project_description(destination: &ParquetDestination) -> ProjectDestinationDescription {
-    ProjectDestinationDescription {
-        destination_id: destination.sheet().destination.clone(),
-        schemes: &["parquet"],
-        label: "parquet filesystem".to_owned(),
-    }
-}
-
 fn prepare_parquet_package_commit(
     destination: &ParquetDestination,
     package_dir: &Path,
@@ -100,12 +68,11 @@ impl ProjectDestinationRuntime for FilesystemParquetProjectDestinationRuntime {
     }
 
     fn describe(&self) -> ProjectDestinationDescription {
-        ProjectDestinationDescription {
-            destination_id: DestinationId::new("parquet_object_store")
-                .expect("static destination id"),
-            schemes: &["parquet"],
-            label: self.root.display().to_string(),
-        }
+        ProjectDestinationDescription::new(
+            DestinationId::new("parquet_object_store").expect("static destination id"),
+            &["parquet"],
+            self.root.display().to_string(),
+        )
     }
 
     fn destination_sheet(&self) -> Result<DestinationSheet> {

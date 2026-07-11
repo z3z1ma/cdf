@@ -241,9 +241,8 @@ where
         &package_dir,
         &reader,
         &inputs,
-        &DestinationPlanningContext {
-            after_receipt_verified: hooks.after_receipt_verified,
-        },
+        &DestinationPlanningContext::new()
+            .with_after_receipt_verified(hooks.after_receipt_verified),
     ) {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -286,7 +285,10 @@ where
     Ok(PackageReplayReport {
         checkpoint,
         receipt,
-        receipt_source: receipt_policy.into_project_receipt_source(package_receipt_recorded),
+        receipt_source: super::destinations::project_receipt_source(
+            receipt_policy,
+            package_receipt_recorded,
+        ),
         package_status,
     })
 }
