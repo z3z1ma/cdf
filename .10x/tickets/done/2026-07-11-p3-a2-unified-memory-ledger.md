@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
@@ -40,6 +40,8 @@ None. L5 baseline/headroom evidence and DX1 are complete.
 - 2026-07-11: Added the default engine-owned `DataFusionMemoryCoordinator`. CDF leases reserve from the same finite `MemoryPool` returned for DataFusion session installation; the coordinated pool observes DataFusion release and wakes CDF waiters. Focused tests prove cross-consumer competition, finite-pool enforcement, sub-cap reconciliation, and exact release.
 - 2026-07-11: Migrated multi-file schema discovery from a sequential loop with decorative limits to deterministic weighted execution. Probe I/O starts only after acquiring the `discovery.metadata` byte sub-cap; worker slots enforce `max_concurrent_probes`; injected coordinators join the run-wide pool; the default compiler coordinator enforces the recorded 64 MiB/file, 128 MiB concurrent, eight-probe policy. A permanent scheduler law proves eight small probes reach exactly two-way concurrency under a two-probe byte cap while retaining input order.
 - 2026-07-11: Added the neutral `OperatorMemoryProfile` for source/destination/custom operators. Legacy polls reserve the declared maximum before invocation, non-pausable operators must declare spill, and conformance rejects observed retained bytes above the declaration. Mock external source/destination types compile and exercise admission using only `cdf-memory`.
+- 2026-07-11: Adversarial review found that shared totals initially lacked named DataFusion consumer facts. The coordinated pool now records DataFusion current/peak usage under a typed query-engine class and wakes CDF waiters on DataFusion release. Panic unwind and pending-reservation cancellation laws also reconcile to zero.
+- 2026-07-11: Closure evidence is `.10x/evidence/2026-07-11-p3-a2-unified-memory-ledger.md`; review passes in `.10x/reviews/2026-07-11-p3-a2-unified-memory-ledger-review.md`.
 
 ## References
 

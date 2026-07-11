@@ -65,6 +65,7 @@ pub enum MemoryClass {
     Destination,
     Discovery,
     Control,
+    QueryEngine,
 }
 
 impl MemoryClass {
@@ -79,6 +80,7 @@ impl MemoryClass {
             Self::Destination => "destination",
             Self::Discovery => "discovery",
             Self::Control => "control",
+            Self::QueryEngine => "query_engine",
         }
     }
 
@@ -93,6 +95,7 @@ impl MemoryClass {
             "destination" => Ok(Self::Destination),
             "discovery" => Ok(Self::Discovery),
             "control" => Ok(Self::Control),
+            "query_engine" => Ok(Self::QueryEngine),
             _ => Err(CdfError::contract(format!(
                 "unknown memory consumer class `{value}`"
             ))),

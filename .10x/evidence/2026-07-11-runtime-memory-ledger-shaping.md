@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/runtime-memory-ledger-byte-permits.md, .10x/specs/runtime-memory-backpressure.md, .10x/tickets/2026-07-11-p3-a2-unified-memory-ledger.md
+Relates-To: .10x/decisions/runtime-memory-ledger-byte-permits.md, .10x/specs/runtime-memory-backpressure.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md
 
 # Runtime memory ledger shaping evidence
 

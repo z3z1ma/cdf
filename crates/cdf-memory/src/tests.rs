@@ -209,3 +209,31 @@ fn external_operator_profiles_admit_before_poll_and_falsify_understatement() {
     );
     assert!(OperatorMemoryProfile::new(1, 2, PressureStrategy::Backpressure, false).is_err());
 }
+
+#[test]
+fn panic_unwind_and_pending_reservation_cancellation_reconcile() {
+    let coordinator = Arc::new(DeterministicMemoryCoordinator::new(64, BTreeMap::new()).unwrap());
+    let request = ReservationRequest::new(consumer("panic", MemoryClass::Transform), 64).unwrap();
+    let unwind_coordinator = Arc::clone(&coordinator);
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        let _lease = unwind_coordinator.try_reserve(&request).unwrap().unwrap();
+        panic!("intentional unwind");
+    }));
+    assert!(outcome.is_err());
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+
+    let held = coordinator
+        .try_reserve(&ReservationRequest::new(consumer("held", MemoryClass::Queue), 64).unwrap())
+        .unwrap()
+        .unwrap();
+    let coordinator_trait: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let mut pending = Box::pin(reserve(
+        coordinator_trait,
+        ReservationRequest::new(consumer("cancelled", MemoryClass::Queue), 64).unwrap(),
+    ));
+    assert!(matches!(futures_poll(pending.as_mut()), Poll::Pending));
+    drop(pending);
+    assert_eq!(coordinator.snapshot().current_bytes, 64);
+    drop(held);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+}

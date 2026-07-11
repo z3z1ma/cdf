@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/specs/performance-lab-and-envelope.md, .10x/specs/runtime-memory-backpressure.md
+Depends-On: .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/specs/performance-lab-and-envelope.md, .10x/specs/runtime-memory-backpressure.md
 
 # P3 WS-F: constant-memory guarantee
 

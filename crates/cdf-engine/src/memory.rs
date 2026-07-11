@@ -101,12 +101,12 @@ impl MemoryPool for DataFusionMemoryCoordinator {
 
     fn grow(&self, reservation: &MemoryReservation, additional: usize) {
         self.pool.grow(reservation, additional);
-        self.record_external_growth(additional);
+        self.record_external_growth(reservation, additional);
     }
 
     fn shrink(&self, reservation: &MemoryReservation, shrink: usize) {
         self.pool.shrink(reservation, shrink);
-        self.record_external_release(shrink);
+        self.record_external_release(reservation, shrink);
     }
 
     fn try_grow(
@@ -115,7 +115,7 @@ impl MemoryPool for DataFusionMemoryCoordinator {
         additional: usize,
     ) -> datafusion::common::Result<()> {
         self.pool.try_grow(reservation, additional)?;
-        self.record_external_growth(additional);
+        self.record_external_growth(reservation, additional);
         Ok(())
     }
 
@@ -129,21 +129,42 @@ impl MemoryPool for DataFusionMemoryCoordinator {
 }
 
 impl DataFusionMemoryCoordinator {
-    fn record_external_growth(&self, bytes: usize) {
+    fn record_external_growth(&self, reservation: &MemoryReservation, bytes: usize) {
         if let Ok(bytes) = u64::try_from(bytes) {
             let mut state = self.inner.state.lock().unwrap();
             state.snapshot.current_bytes = state.snapshot.current_bytes.saturating_add(bytes);
             state.snapshot.peak_bytes = state.snapshot.peak_bytes.max(state.snapshot.current_bytes);
+            if let Some(key) = datafusion_consumer_key(reservation) {
+                let usage = state.snapshot.consumers.entry(key).or_default();
+                usage.current_bytes = usage.current_bytes.saturating_add(bytes);
+                usage.peak_bytes = usage.peak_bytes.max(usage.current_bytes);
+            }
         }
     }
 
-    fn record_external_release(&self, bytes: usize) {
+    fn record_external_release(&self, reservation: &MemoryReservation, bytes: usize) {
         if let Ok(bytes) = u64::try_from(bytes) {
             let mut state = self.inner.state.lock().unwrap();
             state.snapshot.current_bytes = state.snapshot.current_bytes.saturating_sub(bytes);
+            if let Some(key) = datafusion_consumer_key(reservation)
+                && let Some(usage) = state.snapshot.consumers.get_mut(&key)
+            {
+                usage.current_bytes = usage.current_bytes.saturating_sub(bytes);
+            }
             wake_waiters(&mut state.waiters);
         }
     }
+}
+
+fn datafusion_consumer_key(reservation: &MemoryReservation) -> Option<cdf_memory::ConsumerKey> {
+    let name = reservation
+        .consumer()
+        .name()
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(240)
+        .collect::<String>();
+    cdf_memory::ConsumerKey::new(format!("datafusion/{name}"), MemoryClass::QueryEngine).ok()
 }
 
 impl MemoryCoordinator for DataFusionMemoryCoordinator {
@@ -354,6 +375,12 @@ mod tests {
         let datafusion = MemoryConsumer::new("datafusion-test").register(&shared_pool);
         datafusion.try_grow(80).unwrap();
         assert_eq!(coordinator.snapshot().current_bytes, 80);
+        assert!(coordinator.snapshot().consumers.iter().any(|(key, usage)| {
+            key.name == "datafusion/datafusion-test"
+                && key.class == MemoryClass::QueryEngine
+                && usage.current_bytes == 80
+                && usage.peak_bytes == 80
+        }));
 
         let request = ReservationRequest::new(
             ConsumerKey::new("cdf-test", MemoryClass::Decode).unwrap(),

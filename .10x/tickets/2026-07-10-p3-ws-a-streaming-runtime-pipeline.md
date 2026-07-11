@@ -15,7 +15,7 @@ This workstream is a plan and requires bounded executable children for runtime o
 ## Activated children
 
 - `.10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md` — complete
-- `.10x/tickets/2026-07-11-p3-a2-unified-memory-ledger.md`
+- `.10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md` — complete
 - `.10x/tickets/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md`
 - `.10x/tickets/2026-07-11-p3-a4-injected-execution-host.md`
 - `.10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md`
@@ -45,3 +45,4 @@ Blocked until WS-L baseline evidence exists. This lane has an exclusive freeze o
 ## Progress and notes
 
 - 2026-07-11: A1 completed the destination-neutral staged-ingress/final-binding contract without provisional package identity or destination-specific runtime branches.
+- 2026-07-11: A2 completed the neutral memory ledger, shared finite DataFusion coordinator, weighted discovery execution, working-set conformance, and versioned headroom policy.
