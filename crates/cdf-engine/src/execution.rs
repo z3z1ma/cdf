@@ -1306,7 +1306,7 @@ where
                         validation_output_bytes,
                     );
                     if let Some((rule, index, payload)) = &mut external_dedup {
-                        index.push_keys(&encode_package_dedup_keys(
+                        index.push_owned_keys(encode_package_dedup_keys(
                             &validation_program,
                             rule,
                             &output,
