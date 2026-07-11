@@ -1,6 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    any::Any,
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use cdf_kernel::{BoxFuture, CdfError, Result};
@@ -8,6 +12,8 @@ use cdf_memory::MemoryCoordinator;
 use serde::{Deserialize, Serialize};
 
 pub type IoTask = BoxFuture<'static, Result<()>>;
+pub type IoValue = Box<dyn Any + Send + 'static>;
+pub type IoValueTask = BoxFuture<'static, Result<IoValue>>;
 pub type BlockingTask = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
 
 #[derive(Clone, Debug, Default)]
@@ -153,6 +159,7 @@ pub trait ExecutionHost: Send + Sync {
     fn capabilities(&self) -> &ExecutionHostCapabilities;
     fn memory(&self) -> Arc<dyn MemoryCoordinator>;
     fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>>;
+    fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue>;
 }
 
 #[derive(Clone)]
@@ -181,5 +188,18 @@ impl ExecutionServices {
             ));
         }
         self.host.open_scope(run_id)
+    }
+
+    pub fn run_io<T, F>(&self, future: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T>> + Send + 'static,
+    {
+        let value = self.host.run_io_blocking(Box::pin(async move {
+            future.await.map(|value| Box::new(value) as IoValue)
+        }))?;
+        value.downcast::<T>().map(|value| *value).map_err(|_| {
+            CdfError::internal("execution host returned an unexpected I/O result type")
+        })
     }
 }

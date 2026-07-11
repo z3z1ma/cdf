@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Condvar, Mutex},
+    sync::{Arc, Condvar, Mutex, mpsc},
     thread::JoinHandle,
     time::Instant,
 };
@@ -10,8 +10,9 @@ use cdf_kernel::{CdfError, Result};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{
     BlockingLaneSpec, BlockingTask, CpuTaskSpec, ExecutionHost, ExecutionHostCapabilities,
-    ExecutionTaskScope, IoTask, RunCancellation, TaskScopeReport,
+    ExecutionTaskScope, IoTask, IoValue, IoValueTask, RunCancellation, TaskScopeReport,
 };
+use futures_util::FutureExt;
 use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle as TokioJoinHandle};
 
 struct WorkCompletion {
@@ -289,6 +290,20 @@ impl ExecutionHost for StandaloneExecutionHost {
             report: TaskScopeReport::default(),
         }))
     }
+
+    fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue> {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        self.runtime.handle().spawn(async move {
+            let result = AssertUnwindSafe(task)
+                .catch_unwind()
+                .await
+                .unwrap_or_else(|_| Err(CdfError::internal("I/O operation panicked")));
+            let _ = sender.send(result);
+        });
+        receiver
+            .recv()
+            .map_err(|_| CdfError::internal("I/O runtime stopped before the operation completed"))?
+    }
 }
 
 struct StandaloneTaskScope {
@@ -519,5 +534,21 @@ mod tests {
         assert_eq!(memory.snapshot().current_bytes, 0);
         drop(embedding);
         drop(host);
+    }
+
+    #[test]
+    fn synchronous_driver_io_uses_host_runtime_under_existing_tokio_runtime() {
+        let host = Arc::new(host());
+        let services = cdf_runtime::ExecutionServices::new(host.clone()).unwrap();
+        let embedding = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        embedding.block_on(async {
+            let value = services
+                .run_io(async { Ok::<_, CdfError>("host-io".to_owned()) })
+                .unwrap();
+            assert_eq!(value, "host-io");
+        });
     }
 }
