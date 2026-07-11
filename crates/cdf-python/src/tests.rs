@@ -197,6 +197,10 @@ fn concurrency_semantics_are_identical_for_fixture_hashes() {
     let hash = deterministic_fixture_hash(&read).unwrap();
     assert_eq!(hash, deterministic_fixture_hash(&read).unwrap());
     if let Ok(path) = std::env::var("CDF_PYTHON_FIXTURE_HASH_OUTPUT") {
+        let path = PathBuf::from(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).unwrap();
+        }
         std::fs::write(path, format!("{hash}\n")).unwrap();
     }
 }
