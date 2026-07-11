@@ -155,12 +155,13 @@ const P2_SCENARIOS: &[P2Scenario] = &[
         id: "S8",
         title: "Preview/run parity per source archetype",
         status: CoverageStatus::Pending,
-        rationale: "the shared engine preview front end now covers local multi-file plus REST and Postgres fixtures with the ratified global payload bound/selector, compatible evolution, and terminal file quarantine; HTTP-template/cloud cells remain pending",
+        rationale: "the shared engine preview front end now covers local multi-file plus REST and Postgres fixtures with the ratified global payload bound/selector, compatible evolution, residual-row reporting, and terminal file quarantine; HTTP-template/cloud cells remain pending",
         tests: &[
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
             "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
             "crates/cdf-cli/src/tests.rs::sampled_discovery_renders_every_cli_path_and_routes_unseen_drift_to_package_quarantine",
+            "crates/cdf-cli/src/tests.rs::sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_source_replay",
             "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
             "crates/cdf-project/src/tests.rs::sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate",
         ],
@@ -219,7 +220,8 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
     P2FrictionRow {
         id: 5,
         closed_tests: &[
-            "crates/cdf-formats/src/tests.rs::declared_parquet_projection_renames_by_source_name_and_drops_extra_fields",
+            "crates/cdf-formats/src/tests.rs::declared_parquet_projection_preserves_extra_fields_as_residual_candidates",
+            "crates/cdf-formats/src/tests.rs::declared_arrow_ipc_projection_preserves_extra_fields_as_residual_candidates",
             "crates/cdf-formats/src/tests.rs::declared_parquet_lossy_narrowing_fails_before_batches_are_emitted",
             "crates/cdf-formats/src/tests.rs::undeclared_parquet_read_preserves_physical_schema_after_declared_path_added",
         ],
@@ -443,7 +445,7 @@ fn p2_friction_registry_maps_closed_slices_to_tests_and_open_rows_to_tickets() {
         friction(5)
             .closed_tests
             .iter()
-            .any(|test| test.contains("declared_parquet_projection_renames_by_source_name"))
+            .any(|test| test.contains("declared_parquet_projection_preserves_extra_fields"))
     );
     assert!(
         friction(9)

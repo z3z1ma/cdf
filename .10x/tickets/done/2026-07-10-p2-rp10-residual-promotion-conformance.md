@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -35,7 +35,8 @@ No public-network dependency, distributed scheduler, source re-extraction backfi
 - 2026-07-10: Added the sampled-discovery-to-promotion end-to-end scenario. It exposed a data-loss bug in runtime effective-schema preparation: compatible fields unseen by the sampled pin were being added to the runtime projection, then dropped by pinned output authority instead of becoming residual candidates. Runtime observation now reconciles every physical schema against the immutable baseline with parse coercion disabled; safe extras remain outside the projection and flow into `_cdf_variant`, lossless physical widths still reconcile, and incompatible physical types remain file-level quarantine. The scenario proves two unseen `/score` values survive the sampled run as residuals, fresh exhaustive discovery produces an executable promotion, DuckDB addressed correction materializes the values, and every residual clears.
 - 2026-07-10: Preview now reports `residual_row_count` from the same post-contract batches used by execution. The sampled scenario proves preview sees the two residual-bearing rows within its deterministic bounds, reports zero row quarantine, and writes nothing; the subsequent run captures the same two values. Repeated fresh promotion plans are JSON-identical and write-free before execution. `cdf-engine` 50/50 and the 23 focused CLI preview tests pass.
 - 2026-07-10: Strengthened format-neutral residual fixtures: declared Parquet and Arrow IPC projections now explicitly assert every extra physical value survives as a row-addressed residual candidate while remaining outside the pinned projection. NDJSON/JSON fixtures already cover clean rows, unknown fields, scalar mismatches, nested variance, malformed framing, and PII-safe evidence; engine fixtures cover control-field quarantine and unsupported residual encodings.
+- 2026-07-10: Closed with full workspace tests, strict workspace Clippy, formatting, and diff checks. Final evidence is `.10x/evidence/2026-07-10-p2-rp10-residual-promotion-conformance.md`; the severity-focused adversarial review passes at `.10x/reviews/2026-07-10-p2-rp10-residual-promotion-review.md`. The P2 matrix now indexes the residual preview/promotion and columnar preservation tests while deliberately retaining unrelated pending S1-S8 rows.
 
 ## Blockers
 
-Depends on RP9.
+None.
