@@ -35,6 +35,7 @@ None. L5 baseline evidence and A2 accounted payloads are complete.
 
 - 2026-07-11: Ratified exact `canonical-segmentation-v1` targets in `.10x/decisions/p3-initial-batch-segment-targets.md`: 64k rows/8 MiB canonical target, 64k/32 MiB hard ceiling, and 8k–64k/1–32 MiB adaptive execution bounds.
 - 2026-07-11: Added validated policy and deterministic `p{partition}-s{segment}` identifier namespace, an adaptive controller driven only by observed width and non-identity memory telemetry, and conservative typed position joins. File manifests union by exact identity, numeric/timestamp cursors advance only within identical authority, compatible logs/composites join recursively, and opaque/page/foreign mismatches force a boundary.
+- 2026-07-11: Added the canonical partition-local assembler. Unpositioned inputs split/coalesce at policy row boundaries independent of source rechunking; typed positions join or force flush; positioned oversize fails unless later supplied exact slice authority. Focused laws prove one large batch and four differently chunked tiny batches emit identical ids, row boundaries, and values.
 
 ## References
 

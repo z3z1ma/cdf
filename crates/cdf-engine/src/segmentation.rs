@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use arrow_array::RecordBatch;
 use cdf_kernel::{
     CdfError, CompositePosition, CursorPosition, CursorValue, FileManifest, FilePosition, Result,
     SegmentId, SourcePosition,
@@ -76,6 +77,128 @@ impl CanonicalSegmentationPolicy {
 #[derive(Clone, Debug)]
 pub struct AdaptiveMicrobatchController {
     policy: CanonicalSegmentationPolicy,
+}
+
+#[derive(Clone, Debug)]
+pub struct CanonicalSegment {
+    pub segment_id: SegmentId,
+    pub partition_ordinal: u32,
+    pub segment_ordinal: u32,
+    pub batches: Vec<RecordBatch>,
+    pub output_position: Option<SourcePosition>,
+    pub row_count: u64,
+    pub retained_bytes: u64,
+}
+
+pub struct CanonicalSegmentAssembler {
+    policy: CanonicalSegmentationPolicy,
+    partition_ordinal: u32,
+    next_segment_ordinal: u32,
+    batches: Vec<RecordBatch>,
+    output_position: Option<SourcePosition>,
+    rows: u64,
+    retained_bytes: u64,
+}
+
+impl CanonicalSegmentAssembler {
+    pub fn new(policy: CanonicalSegmentationPolicy, partition_ordinal: u32) -> Result<Self> {
+        policy.validate()?;
+        Ok(Self {
+            policy,
+            partition_ordinal,
+            next_segment_ordinal: 0,
+            batches: Vec::new(),
+            output_position: None,
+            rows: 0,
+            retained_bytes: 0,
+        })
+    }
+
+    pub fn push(
+        &mut self,
+        mut batch: RecordBatch,
+        position: Option<SourcePosition>,
+    ) -> Result<Vec<CanonicalSegment>> {
+        let mut emitted = Vec::new();
+        if self.rows > 0 {
+            match (&self.output_position, &position) {
+                (Some(left), Some(right)) => match join_positions(left, right)? {
+                    PositionJoin::Joined(joined) => self.output_position = Some(joined),
+                    PositionJoin::Boundary => emitted.push(self.flush()?.unwrap()),
+                },
+                (None, None) => {}
+                _ => emitted.push(self.flush()?.unwrap()),
+            }
+        }
+        if self.rows == 0 {
+            self.output_position = position.clone();
+        }
+        while batch.num_rows() > 0 {
+            let remaining_rows = u64::from(self.policy.target_rows).saturating_sub(self.rows);
+            let take = usize::try_from(remaining_rows)
+                .unwrap_or(usize::MAX)
+                .min(batch.num_rows());
+            if take < batch.num_rows() && position.is_some() {
+                if self.rows > 0 {
+                    emitted.push(self.flush()?.unwrap());
+                    continue;
+                }
+                return Err(CdfError::data(
+                    "oversized positioned batch requires exact slice-position authority",
+                ));
+            }
+            let chunk = if take == batch.num_rows() {
+                let schema = batch.schema();
+                std::mem::replace(&mut batch, RecordBatch::new_empty(schema))
+            } else {
+                let chunk = batch.slice(0, take);
+                batch = batch.slice(take, batch.num_rows() - take);
+                chunk
+            };
+            let chunk_bytes = u64::try_from(chunk.get_array_memory_size())
+                .map_err(|_| CdfError::data("canonical segment memory exceeds u64"))?;
+            if chunk_bytes > self.policy.maximum_bytes {
+                return Err(CdfError::data(format!(
+                    "one canonical segment chunk retains {chunk_bytes} bytes above the {}-byte policy maximum",
+                    self.policy.maximum_bytes
+                )));
+            }
+            self.rows += u64::try_from(chunk.num_rows())
+                .map_err(|_| CdfError::data("canonical segment rows exceed u64"))?;
+            self.retained_bytes = self.retained_bytes.saturating_add(chunk_bytes);
+            self.batches.push(chunk);
+            if self.rows >= u64::from(self.policy.target_rows) {
+                emitted.push(self.flush()?.unwrap());
+            }
+        }
+        Ok(emitted)
+    }
+
+    pub fn finish(&mut self) -> Result<Vec<CanonicalSegment>> {
+        Ok(self.flush()?.into_iter().collect())
+    }
+
+    fn flush(&mut self) -> Result<Option<CanonicalSegment>> {
+        if self.rows == 0 {
+            return Ok(None);
+        }
+        let segment_ordinal = self.next_segment_ordinal;
+        self.next_segment_ordinal = self
+            .next_segment_ordinal
+            .checked_add(1)
+            .ok_or_else(|| CdfError::data("canonical segment ordinal overflow"))?;
+        Ok(Some(CanonicalSegment {
+            segment_id: self
+                .policy
+                .segment_id(self.partition_ordinal, segment_ordinal)?,
+            partition_ordinal: self.partition_ordinal,
+            segment_ordinal,
+            batches: std::mem::take(&mut self.batches),
+            output_position: self.output_position.take(),
+            row_count: std::mem::take(&mut self.rows),
+            retained_bytes: std::mem::take(&mut self.retained_bytes),
+        }))
+    }
 }
 
 impl AdaptiveMicrobatchController {
@@ -217,6 +340,7 @@ fn join_cursors(left: &CursorPosition, right: &CursorPosition) -> Result<Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_array::{Array, Int64Array};
     use cdf_kernel::{CursorPosition, FileManifest};
 
     #[test]
@@ -302,5 +426,78 @@ mod tests {
             .unwrap(),
             PositionJoin::Boundary
         );
+    }
+
+    fn test_policy() -> CanonicalSegmentationPolicy {
+        CanonicalSegmentationPolicy {
+            target_rows: 4,
+            maximum_rows: 4,
+            microbatch_minimum_rows: 1,
+            microbatch_maximum_rows: 4,
+            microbatch_minimum_bytes: 1,
+            ..CanonicalSegmentationPolicy::p3_v1()
+        }
+    }
+
+    fn batch(values: &[i64]) -> RecordBatch {
+        RecordBatch::try_from_iter([(
+            "value",
+            std::sync::Arc::new(Int64Array::from(values.to_vec())) as _,
+        )])
+        .unwrap()
+    }
+
+    fn assemble(chunks: &[&[i64]]) -> Vec<CanonicalSegment> {
+        let mut assembler = CanonicalSegmentAssembler::new(test_policy(), 3).unwrap();
+        let mut output = Vec::new();
+        for chunk in chunks {
+            output.extend(assembler.push(batch(chunk), None).unwrap());
+        }
+        output.extend(assembler.finish().unwrap());
+        output
+    }
+
+    #[test]
+    fn assembler_is_source_rechunking_invariant_and_coalesces_tiny_inputs() {
+        let one = assemble(&[&[1, 2, 3, 4, 5, 6]]);
+        let many = assemble(&[&[1], &[2, 3], &[4], &[5, 6]]);
+        for segments in [&one, &many] {
+            assert_eq!(segments.len(), 2);
+            assert_eq!(segments[0].segment_id.as_str(), "p00000003-s00000000");
+            assert_eq!(segments[0].row_count, 4);
+            assert_eq!(segments[1].row_count, 2);
+        }
+        let values = |segments: &[CanonicalSegment]| {
+            segments
+                .iter()
+                .flat_map(|segment| &segment.batches)
+                .flat_map(|batch| {
+                    batch
+                        .column(0)
+                        .as_any()
+                        .downcast_ref::<Int64Array>()
+                        .unwrap()
+                        .values()
+                })
+                .copied()
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(values(&one), values(&many));
+    }
+
+    #[test]
+    fn positioned_oversize_requires_slice_authority_instead_of_inventing_cursor() {
+        let mut assembler = CanonicalSegmentAssembler::new(test_policy(), 0).unwrap();
+        let error = assembler
+            .push(
+                batch(&[1, 2, 3, 4, 5]),
+                Some(SourcePosition::Cursor(CursorPosition {
+                    version: 1,
+                    field: "id".to_owned(),
+                    value: CursorValue::U64(5),
+                })),
+            )
+            .unwrap_err();
+        assert!(error.message.contains("slice-position authority"));
     }
 }

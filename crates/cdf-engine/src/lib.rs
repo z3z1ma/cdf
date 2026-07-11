@@ -24,7 +24,8 @@ pub use planning::{
     validate_plan_schema_authority,
 };
 pub use segmentation::{
-    AdaptiveMicrobatchController, CanonicalSegmentationPolicy, PositionJoin, join_positions,
+    AdaptiveMicrobatchController, CanonicalSegment, CanonicalSegmentAssembler,
+    CanonicalSegmentationPolicy, PositionJoin, join_positions,
 };
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
 pub use types::*;
