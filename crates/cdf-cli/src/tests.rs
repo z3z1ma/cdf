@@ -1209,6 +1209,89 @@ fn add_local_parquet_dry_run_writes_nothing() {
 }
 
 #[test]
+fn add_rest_requires_explicit_selector_and_cursor_then_pins_sample() {
+    let project = TestProject::new();
+    let base_url =
+        serve_json_once(r#"{"items":[{"id":1,"updated_at":1783296000000000,"name":"first"}]}"#);
+    let endpoint = format!("{base_url}/items");
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "api.items",
+        &endpoint,
+        "--records",
+        "$.items",
+        "--cursor",
+        "updated_at",
+        "--cursor-param",
+        "since",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["resource_id"], "api.items");
+    assert_eq!(json["result"]["glob"], "/items");
+    assert_eq!(json["result"]["cursor"], "updated_at");
+    assert!(
+        json["result"]["cursor_candidates"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(json["result"]["writes"]["schema_snapshot"], true);
+    let resource = fs::read_to_string(project.root.join("resources/api.toml")).unwrap();
+    assert!(resource.contains("kind = \"rest\""));
+    assert!(resource.contains(&format!("base_url = {base_url:?}")));
+    assert!(resource.contains("path = \"/items\""));
+    assert!(resource.contains("records = \"$.items\""));
+    assert!(resource.contains("field = \"updated_at\""));
+    assert!(resource.contains("param = \"since\""));
+    assert!(resource.contains("ordering = \"best_effort\""));
+    assert!(!resource.contains("schema ="));
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "api.items",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+}
+
+#[test]
+fn add_rest_rejects_partial_semantics_before_network_or_writes() {
+    let project = TestProject::new();
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "api.items",
+        "https://api.example.test/items",
+        "--records",
+        "$.items",
+    ]);
+
+    assert_eq!(result.exit_code, 2);
+    let json = stderr_or_stdout_json(&result.stderr);
+    assert!(
+        json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("requires --records, --cursor, and --cursor-param together")
+    );
+    assert!(!project.root.join("resources/api.toml").exists());
+    assert!(!project.root.join("cdf.lock").exists());
+}
+
+#[test]
 fn p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields() {
     let project = TestProject::new();
     write_vendor_parquet(&project.root.join("data/yellow.parquet"));

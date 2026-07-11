@@ -24,6 +24,7 @@ use crate::{
     args::{AddArgs, Cli},
     context::ProjectContext,
     error_catalog,
+    http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     project_run_resource::file_runtime_dependencies,
     render::{
@@ -43,7 +44,7 @@ pub(crate) fn add(cli: &Cli, args: AddArgs) -> Result<CommandOutput, CliError> {
         AddRequestTarget::Postgres(target) => {
             Some((target.secret_ref.as_str(), target.dsn.as_str()))
         }
-        AddRequestTarget::File(_) => None,
+        AddRequestTarget::File(_) | AddRequestTarget::Rest(_) => None,
     };
     let add_secrets = AddSecretProvider {
         fallback: context.secret_provider(),
@@ -179,11 +180,17 @@ fn discover_for_add(
             secret_provider,
             Default::default(),
         )?),
-        CompiledResourcePlan::Rest(_) => Err(CliError::not_supported(
-            "cdf add",
-            "REST, SQL, Python, and other source archetypes are excluded from H2",
-            ".10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md",
-        )),
+        CompiledResourcePlan::Rest(_) => {
+            let mut transport = ReqwestHttpTransport::new()?;
+            Ok(ResourceSchemaDiscoveryArtifacts::new(
+                cdf_project::discover_resource_schema_with_rest_transport(
+                    resource,
+                    secret_provider,
+                    &mut transport,
+                )?,
+                None,
+            ))
+        }
     }
 }
 
@@ -310,10 +317,25 @@ struct AddResourceRequest {
 impl AddResourceRequest {
     fn from_args(context: &ProjectContext, args: &AddArgs) -> Result<Self, CliError> {
         let (source, resource) = split_resource_id(&args.resource_id)?;
+        let rest_options = [&args.records, &args.cursor, &args.cursor_param];
+        let rest_option_count = rest_options.iter().filter(|value| value.is_some()).count();
+        if rest_option_count != 0 && rest_option_count != rest_options.len() {
+            return Err(CliError::usage_with(
+                "REST cdf add requires --records, --cursor, and --cursor-param together",
+                error_catalog::USAGE,
+            ));
+        }
         let target = if args.location.starts_with("postgres://")
             || args.location.starts_with("postgresql://")
         {
             AddRequestTarget::Postgres(PostgresAddTarget::from_dsn(&source, &args.location)?)
+        } else if rest_option_count == rest_options.len() {
+            AddRequestTarget::Rest(RestAddTarget::from_url(
+                &args.location,
+                args.records.as_deref().expect("count checked"),
+                args.cursor.as_deref().expect("count checked"),
+                args.cursor_param.as_deref().expect("count checked"),
+            )?)
         } else {
             AddRequestTarget::File(AddTarget::from_location(context, &args.location)?)
         };
@@ -335,6 +357,84 @@ impl AddResourceRequest {
 enum AddRequestTarget {
     File(AddTarget),
     Postgres(PostgresAddTarget),
+    Rest(RestAddTarget),
+}
+
+#[derive(Clone, Debug)]
+struct RestAddTarget {
+    base_url: String,
+    path: String,
+    records: String,
+    cursor: String,
+    cursor_param: String,
+    host: String,
+}
+
+impl RestAddTarget {
+    fn from_url(
+        url: &str,
+        records: &str,
+        cursor: &str,
+        cursor_param: &str,
+    ) -> Result<Self, CliError> {
+        let parsed = reqwest::Url::parse(url).map_err(|error| {
+            CliError::usage_with(
+                format!(
+                    "cdf add could not parse REST URL `{}`: {error}",
+                    redact_url(url)
+                ),
+                error_catalog::USAGE,
+            )
+        })?;
+        match parsed.scheme() {
+            "https" => {}
+            "http" if is_loopback_host(&parsed) => {}
+            other => {
+                return Err(CliError::usage_with(
+                    format!(
+                        "cdf add REST endpoints require HTTPS (or loopback HTTP for local development); `{other}` is not supported"
+                    ),
+                    error_catalog::USAGE,
+                ));
+            }
+        }
+        if !parsed.username().is_empty()
+            || parsed.password().is_some()
+            || parsed.query().is_some()
+            || parsed.fragment().is_some()
+        {
+            return Err(CliError::usage_with(
+                "cdf add REST URL must not contain userinfo, query secrets, or fragments; declare stable params/auth in the generated resource",
+                error_catalog::USAGE,
+            ));
+        }
+        if records.trim().is_empty() || cursor.trim().is_empty() || cursor_param.trim().is_empty() {
+            return Err(CliError::usage_with(
+                "REST --records, --cursor, and --cursor-param values must be non-empty",
+                error_catalog::USAGE,
+            ));
+        }
+        let host = parsed.host_str().ok_or_else(|| {
+            CliError::usage_with("cdf add REST URL must contain a host", error_catalog::USAGE)
+        })?;
+        let mut origin = parsed.clone();
+        origin.set_path("");
+        origin.set_query(None);
+        origin.set_fragment(None);
+        let path = if parsed.path().is_empty() {
+            "/".to_owned()
+        } else {
+            parsed.path().to_owned()
+        };
+        Ok(Self {
+            base_url: origin.as_str().trim_end_matches('/').to_owned(),
+            path,
+            records: records.to_owned(),
+            cursor: cursor.to_owned(),
+            cursor_param: cursor_param.to_owned(),
+            host: host.to_owned(),
+        })
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -622,6 +722,7 @@ struct AddReport {
     write_disposition: &'static str,
     schema_source: &'static str,
     fields: Vec<AddFieldReport>,
+    cursor: Option<String>,
     cursor_candidates: Vec<String>,
     writes: AddWrites,
     next_command: String,
@@ -642,6 +743,7 @@ impl AddReport {
             AddRequestTarget::Postgres(target) => {
                 (target.display_dsn.clone(), target.table.clone())
             }
+            AddRequestTarget::Rest(target) => (target.base_url.clone(), target.path.clone()),
         };
         let cursor_candidates = if matches!(&request.target, AddRequestTarget::Postgres(_)) {
             snapshot
@@ -680,6 +782,10 @@ impl AddReport {
                 .iter()
                 .map(AddFieldReport::from_field)
                 .collect(),
+            cursor: match &request.target {
+                AddRequestTarget::Rest(target) => Some(target.cursor.clone()),
+                AddRequestTarget::File(_) | AddRequestTarget::Postgres(_) => None,
+            },
             cursor_candidates,
             writes: AddWrites {
                 resource_config: !request.dry_run,
@@ -758,14 +864,21 @@ fn add_document(report: &AddReport) -> RenderDocument {
                 .row("schema", report.schema_hash.clone())
                 .row("snapshot", report.schema_snapshot_path.clone()),
         )
-        .push(KeyValuePanel::new("Suggestions").row(
-            "cursor candidates",
-            if report.cursor_candidates.is_empty() {
-                "none".to_owned()
-            } else {
-                format!("{} (not selected)", report.cursor_candidates.join(", "))
-            },
-        ))
+        .push(
+            KeyValuePanel::new("Suggestions")
+                .row(
+                    "cursor",
+                    report.cursor.clone().unwrap_or_else(|| "none".to_owned()),
+                )
+                .row(
+                    "cursor candidates",
+                    if report.cursor_candidates.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        format!("{} (not selected)", report.cursor_candidates.join(", "))
+                    },
+                ),
+        )
         .blank_line()
         .push(field_table)
         .blank_line()
@@ -783,6 +896,17 @@ fn resource_toml(request: &AddResourceRequest) -> Result<String, CliError> {
             toml_string(&target.secret_ref)?,
             request.resource,
             toml_string(&target.table)?,
+        )),
+        AddRequestTarget::Rest(target) => Ok(format!(
+            "[source.{}]\nkind = \"rest\"\nbase_url = {}\negress_allowlist = [{}]\n\n[resource.{}]\npath = {}\nrecords = {}\ncursor = {{ field = {}, param = {}, ordering = \"best_effort\", lag = \"0ms\" }}\nwrite_disposition = \"append\"\ntrust = \"governed\"\n",
+            request.source,
+            toml_string(&target.base_url)?,
+            toml_string(&target.host)?,
+            request.resource,
+            toml_string(&target.path)?,
+            toml_string(&target.records)?,
+            toml_string(&target.cursor)?,
+            toml_string(&target.cursor_param)?,
         )),
     }
 }

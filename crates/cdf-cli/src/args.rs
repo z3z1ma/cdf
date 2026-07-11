@@ -77,6 +77,9 @@ pub struct AddArgs {
     pub resource_id: String,
     pub location: String,
     pub dry_run: bool,
+    pub records: Option<String>,
+    pub cursor: Option<String>,
+    pub cursor_param: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -385,6 +388,9 @@ fn parse_add(matches: &ArgMatches) -> Result<AddArgs, CliError> {
         resource_id: values[0].clone(),
         location: values[1].clone(),
         dry_run: matches.get_flag("dry_run"),
+        records: string_value(matches, "records"),
+        cursor: string_value(matches, "cursor"),
+        cursor_param: string_value(matches, "cursor_param"),
     })
 }
 
@@ -806,7 +812,10 @@ pub(crate) fn cli_command() -> ClapCommand {
         .subcommand(
             cmd("add")
                 .arg(values_arg("values").value_names(["RESOURCE_ID", "URL_OR_PATH"]))
-                .arg(flag("dry_run", "dry-run")),
+                .arg(flag("dry_run", "dry-run"))
+                .arg(option("records", "records", "SELECTOR"))
+                .arg(option("cursor", "cursor", "FIELD"))
+                .arg(option("cursor_param", "cursor-param", "PARAM")),
         )
         .subcommand(
             cmd("validate")

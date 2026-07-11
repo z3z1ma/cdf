@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
 Depends-On: .10x/decisions/data-onramp-source-identity-preview-disposition.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/tickets/2026-07-08-p2-ws-a-discovery-compiler-stage.md, .10x/tickets/2026-07-08-p2-ws-b-schema-reconciliation-arrow-vocabulary.md, .10x/tickets/2026-07-08-p2-ws-d-file-source-globs-manifest-compression.md
 
@@ -39,6 +39,7 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 - 2026-07-09: H3 closed as `.10x/tickets/done/2026-07-09-p2-ws-h3-adhoc-parquet-run.md` with evidence `.10x/evidence/2026-07-09-p2-h3-a9-integration.md` and review `.10x/reviews/2026-07-09-p2-h3-a9-integration-review.md`. Local/stable-HTTP(S) single-Parquet ad-hoc execution now persists a safe stable resource and uses the ordinary evidence spine; broader source kinds and same-package destination-preserving resume remain outside the child.
 - 2026-07-10: E6 promoted deterministic S1 to covered: `cdf add` over HTTP now pins and immediately runs with zero typed fields through package, receipt, and checkpoint. The public TLC add also succeeded and inferred all 19 columns; the upstream GET later returned 403 independently of CDF. Remaining WS-H scope is Postgres/REST add and the quickstart/docs session.
 - 2026-07-10: H4 closed with `.10x/evidence/2026-07-10-p2-h4-postgres-add-s4.md` and `.10x/reviews/2026-07-10-p2-h4-postgres-add-s4-review.md`. Postgres direct-DSN add now preserves the secret boundary, pins catalog discovery, presents cursor candidates without guessing semantics, and supports plan/preview/run after explicit cursor selection. S4 is covered. Remaining WS-H scope is REST add and quickstart/docs closure.
+- 2026-07-10: H5 closed as `.10x/tickets/done/2026-07-10-p2-ws-h5-rest-add.md`. Public REST add now requires selector/cursor/parameter semantics together, derives a safe endpoint origin/path and allowlist, samples and pins through the generic REST discovery transport, and generates a plan-ready schema-free resource. Remaining WS-H scope is the TLC quickstart and recorded documentation session.
 
 ## Blockers
 

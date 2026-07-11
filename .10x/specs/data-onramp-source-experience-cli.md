@@ -24,6 +24,8 @@ Identifier normalization MUST run automatically at plan time. `namecase-v1`, des
 
 `cdf add <id> <url|path|dsn>` MUST probe, infer, pin, and write complete resource configuration. `--dry-run` prints the configuration. Interactive refinements MAY be added, but flag equivalents are required for automation. Key suggestions are advisory and only from evidence.
 
+When adding a REST endpoint, `cdf add` MUST require the record selector, cursor field, and cursor query parameter together. It MUST NOT guess API record shape or incremental semantics. The generated resource MUST use best-effort cursor ordering unless stronger ordering is explicitly established later, pin the bounded sample through the ordinary discovery path, and keep authentication/query secrets out of the endpoint URL and generated configuration.
+
 Ad-hoc mode MUST synthesize a real resource under `.cdf/adhoc/`, pin discovery, plan, package, commit, and gate through the normal pipeline. It MUST print the `cdf add` command that would make the resource permanent.
 
 Diagnostics MUST name the command being run, the failing resource id, the safe file/source location where known, and a concrete remediation. Type mismatches MUST name the observed and constraint types and only recommend fixes exposed by Tier 0. URL query values MUST be stripped before rendering. Generic "fix the project" messages are not enough for P2 source-experience failures.
