@@ -12,6 +12,7 @@ members = [
     "crates/cdf-postgres",
     "crates/cdf-source-postgres",
     "crates/cdf-source-rest",
+    "crates/cdf-source-files",
     "crates/cdf-declarative",
     "crates/cdf-python",
     "crates/cdf-wasm",

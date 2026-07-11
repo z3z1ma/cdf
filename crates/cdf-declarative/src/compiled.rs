@@ -26,16 +26,16 @@ use cdf_kernel::{
     TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
 use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
+use cdf_source_files::{
+    FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
+    FileRuntimeDependencies, FileTransportResource, file_partitions_for_plan, open_file_resource,
+    open_file_resource_preview,
+};
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::{RestResourcePlan, RestSourceDriver, cursor_pushdown_value};
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
-use crate::file_runtime::{
-    FileRuntimeDependencies, file_partitions_for_plan, open_file_resource,
-    open_file_resource_preview,
-};
-use crate::file_transport::{FileIdentityMetadata, FileTransportResource};
 use crate::sql_runtime::{
     sql_capabilities_for, sql_partition_for_plan, sql_predicate_fidelity_for,
 };
@@ -170,19 +170,6 @@ pub struct SqlResourcePlan {
     pub connection: SecretUri,
     pub query: Option<String>,
     pub table: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileResourcePlan {
-    pub source: String,
-    pub root: String,
-    pub glob: String,
-    pub format: FileFormatDeclaration,
-    pub format_declared: bool,
-    pub compression: FileCompressionDeclaration,
-    pub auth: Option<AuthScheme>,
-    pub credentials: Option<SecretUri>,
-    pub allowlist: EgressAllowlist,
 }
 
 pub fn compile_document(document: &DeclarativeDocument) -> Result<Vec<CompiledResource>> {

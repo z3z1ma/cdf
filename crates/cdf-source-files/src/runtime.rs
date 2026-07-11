@@ -21,18 +21,19 @@ use cdf_formats::{
 };
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    BatchStream, BoxFuture, CdfError, EffectiveSchemaRuntime, PLAN_SCHEMA_OBSERVATION_BINDING_KEY,
-    PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId, PartitionPlan, QueryableResource,
-    ResourceDescriptor, ResourceId, ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey,
-    SourcePosition,
+    BatchStream, BoxFuture, CdfError, DeliveryGuarantee, EffectiveSchemaRuntime,
+    PLAN_SCHEMA_OBSERVATION_BINDING_KEY, PLAN_SCHEMA_OBSERVATION_ID_KEY, PartitionId,
+    PartitionPlan, PlanId, QueryableResource, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, ScanPlan, ScanRequest, ScopeKey, SourcePosition, TypePolicyAllowances,
+    WriteDisposition,
 };
 use futures_util::stream;
 use sha2::{Digest, Sha256};
 
 use crate::{
-    ByteRange, CompiledResource, CompiledResourcePlan, FileCompressionDeclaration,
-    FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan, FileTransport,
-    FileTransportFacade, FileTransportLocation, FileTransportResource,
+    ByteRange, FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata,
+    FileResourcePlan, FileTransport, FileTransportFacade, FileTransportLocation,
+    FileTransportResource,
 };
 
 #[derive(Clone)]
@@ -264,49 +265,44 @@ impl fmt::Debug for FileRuntimeDependencies {
 
 #[derive(Clone, Debug)]
 pub struct FileResource {
-    compiled: CompiledResource,
+    descriptor: ResourceDescriptor,
+    schema: SchemaRef,
+    capabilities: ResourceCapabilities,
+    plan: FileResourcePlan,
+    type_policy_allowances: TypePolicyAllowances,
+    effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     dependencies: FileRuntimeDependencies,
 }
 
 impl FileResource {
-    pub fn new(compiled: CompiledResource, dependencies: FileRuntimeDependencies) -> Result<Self> {
-        if !matches!(compiled.plan(), CompiledResourcePlan::Files(_)) {
-            return Err(CdfError::contract(
-                "only compiled file resources can be opened with file runtime dependencies",
-            ));
-        }
+    pub fn new(
+        descriptor: ResourceDescriptor,
+        schema: SchemaRef,
+        capabilities: ResourceCapabilities,
+        plan: FileResourcePlan,
+        type_policy_allowances: TypePolicyAllowances,
+        effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+        dependencies: FileRuntimeDependencies,
+    ) -> Result<Self> {
         Ok(Self {
-            compiled,
+            descriptor,
+            schema,
+            capabilities,
+            plan,
+            type_policy_allowances,
+            effective_schema_runtime,
             dependencies,
         })
     }
 
-    pub fn compiled(&self) -> &CompiledResource {
-        &self.compiled
-    }
-
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
-        if !matches!(self.compiled.plan(), CompiledResourcePlan::Files(_)) {
-            return Err(CdfError::contract(
-                "only compiled file resources can be opened by FileResource",
-            ));
-        }
         Ok(())
     }
 
     pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        let descriptor = self.compiled.descriptor().clone();
-        let schema = self.compiled.schema();
-        let plan = match self.compiled.plan() {
-            CompiledResourcePlan::Files(plan) => plan.clone(),
-            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
-                return Box::pin(async {
-                    Err(CdfError::contract(
-                        "only compiled file resources can be previewed by FileResource",
-                    ))
-                });
-            }
-        };
+        let descriptor = self.descriptor.clone();
+        let schema = Arc::clone(&self.schema);
+        let plan = self.plan.clone();
         let dependencies = self.dependencies.clone();
         open_file_resource_with_dependencies(
             &descriptor,
@@ -314,28 +310,18 @@ impl FileResource {
             &plan,
             partition,
             dependencies,
-            self.compiled.type_policy_allowances(),
+            self.type_policy_allowances,
         )
-    }
-}
-
-impl CompiledResource {
-    pub fn into_file_resource(self, dependencies: FileRuntimeDependencies) -> Result<FileResource> {
-        FileResource::new(self, dependencies)
-    }
-
-    pub fn to_file_resource(&self, dependencies: FileRuntimeDependencies) -> Result<FileResource> {
-        FileResource::new(self.clone(), dependencies)
     }
 }
 
 impl ResourceStream for FileResource {
     fn descriptor(&self) -> &ResourceDescriptor {
-        self.compiled.descriptor()
+        &self.descriptor
     }
 
     fn schema(&self) -> SchemaRef {
-        self.compiled.schema()
+        Arc::clone(&self.schema)
     }
 
     fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -343,47 +329,32 @@ impl ResourceStream for FileResource {
     }
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
-        self.compiled.type_policy_allowances()
+        self.type_policy_allowances
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        if request.resource_id != self.compiled.descriptor().resource_id {
+        if request.resource_id != self.descriptor.resource_id {
             return Err(CdfError::contract(format!(
                 "scan request resource `{}` does not match compiled file resource `{}`",
-                request.resource_id,
-                self.compiled.descriptor().resource_id
+                request.resource_id, self.descriptor.resource_id
             )));
         }
-        let CompiledResourcePlan::Files(plan) = self.compiled.plan() else {
-            return Err(CdfError::contract(
-                "only compiled file resources can be planned by FileResource",
-            ));
-        };
         self.dependencies.with_transport(|transport| {
-            file_partitions_for_plan_with_transport(self.compiled.descriptor(), plan, transport)
+            file_partitions_for_plan_with_transport(&self.descriptor, &self.plan, transport)
         })
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        let descriptor = self.compiled.descriptor().clone();
-        let schema = self.compiled.schema();
-        let plan = match self.compiled.plan() {
-            CompiledResourcePlan::Files(plan) => plan.clone(),
-            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
-                return Box::pin(async {
-                    Err(CdfError::contract(
-                        "only compiled file resources can be opened by FileResource",
-                    ))
-                });
-            }
-        };
+        let descriptor = self.descriptor.clone();
+        let schema = Arc::clone(&self.schema);
+        let plan = self.plan.clone();
         open_file_resource_with_dependencies(
             &descriptor,
             schema,
             &plan,
             partition,
             self.dependencies.clone(),
-            self.compiled.type_policy_allowances(),
+            self.type_policy_allowances,
         )
     }
 
@@ -391,22 +362,13 @@ impl ResourceStream for FileResource {
         &self,
         partition: &PartitionPlan,
     ) -> BoxFuture<'_, Result<Option<cdf_kernel::PartitionAttestation>>> {
-        let descriptor = self.compiled.descriptor().clone();
-        let plan = match self.compiled.plan() {
-            CompiledResourcePlan::Files(plan) => plan.clone(),
-            CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
-                return Box::pin(async {
-                    Err(CdfError::contract(
-                        "only compiled file resources can attest file partitions",
-                    ))
-                });
-            }
-        };
+        let descriptor = self.descriptor.clone();
+        let plan = self.plan.clone();
         let partition = partition.clone();
         let dependencies = self.dependencies.clone();
         let discovery_budget = self
-            .compiled
-            .effective_schema_runtime()
+            .effective_schema_runtime
+            .as_ref()
             .and_then(|runtime| runtime.discovery_executor_budget.clone());
         Box::pin(async move {
             let resolved = dependencies.with_transport(|transport| {
@@ -458,18 +420,36 @@ impl ResourceStream for FileResource {
     }
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
-        self.compiled.effective_schema_runtime()
+        self.effective_schema_runtime.as_ref()
     }
 }
 
 impl QueryableResource for FileResource {
     fn capabilities(&self) -> &cdf_kernel::ResourceCapabilities {
-        self.compiled.capabilities()
+        &self.capabilities
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
         let partitions = self.plan_partitions(request)?;
-        self.compiled.negotiate_with_partitions(request, partitions)
+        Ok(ScanPlan {
+            plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
+            request: request.clone(),
+            partitions,
+            pushed_predicates: Vec::new(),
+            unsupported_predicates: request.filters.clone(),
+            estimated_rows: None,
+            estimated_bytes: None,
+            delivery_guarantee: delivery_guarantee(&self.descriptor),
+        })
+    }
+}
+
+fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
+    match descriptor.write_disposition {
+        WriteDisposition::Append => DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
+        WriteDisposition::Merge => DeliveryGuarantee::EffectivelyOncePerKey,
+        WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
     }
 }
 
@@ -549,7 +529,7 @@ impl CompressionSignal {
     }
 }
 
-pub(crate) fn file_partitions_for_plan(
+pub fn file_partitions_for_plan(
     descriptor: &ResourceDescriptor,
     plan: &FileResourcePlan,
 ) -> Result<Vec<PartitionPlan>> {
@@ -574,7 +554,7 @@ pub(crate) fn file_partitions_for_plan_with_transport(
         .collect()
 }
 
-pub(crate) fn open_file_resource(
+pub fn open_file_resource(
     descriptor: &ResourceDescriptor,
     declared_schema: SchemaRef,
     plan: &FileResourcePlan,
@@ -591,7 +571,7 @@ pub(crate) fn open_file_resource(
     )
 }
 
-pub(crate) fn open_file_resource_preview(
+pub fn open_file_resource_preview(
     descriptor: &ResourceDescriptor,
     declared_schema: SchemaRef,
     plan: &FileResourcePlan,

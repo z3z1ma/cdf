@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 
 use cdf_kernel::{CdfError, Result};
+use cdf_source_files::{FileCompressionDeclaration, FileFormatDeclaration};
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize};
 
@@ -273,25 +274,6 @@ impl FieldTypeDeclaration {
 pub struct SampleDeclaration {
     #[serde(default)]
     pub fields: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FileFormatDeclaration {
-    Csv,
-    Json,
-    Ndjson,
-    Parquet,
-    ArrowIpc,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum FileCompressionDeclaration {
-    Auto,
-    None,
-    Gzip,
-    Zstd,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]

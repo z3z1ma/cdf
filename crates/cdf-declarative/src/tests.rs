@@ -2414,14 +2414,15 @@ glob = "events.parquet"
 write_disposition = "append"
 trust = "governed"
 "#;
-    let resource = compile_document(&parse_toml(input).unwrap())
+    let compiled = compile_document(&parse_toml(input).unwrap())
         .unwrap()
-        .remove(0)
+        .remove(0);
+    let resource = compiled
         .to_file_resource(FileRuntimeDependencies::new(transport.clone()))
         .unwrap();
 
     let partitions = resource
-        .plan_partitions(&scan_request_for(resource.compiled()))
+        .plan_partitions(&scan_request_for(&compiled))
         .unwrap();
     assert_eq!(partitions.len(), 1);
     assert_eq!(partitions[0].metadata["format"], "parquet");
@@ -2504,7 +2505,7 @@ fn file_partition_attestation_rejects_identity_change_after_planning() {
         .to_file_resource(FileRuntimeDependencies::local())
         .unwrap();
     let partition = resource
-        .plan_partitions(&scan_request_for(resource.compiled()))
+        .plan_partitions(&scan_request_for(&compiled))
         .unwrap()
         .remove(0);
 
