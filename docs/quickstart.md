@@ -1,217 +1,162 @@
-# Quickstart
+# Quickstart: NYC taxi data to DuckDB
 
-This quickstart starts from a clean checkout, builds the current `cdf` binary,
-creates a local scaffold, runs one file resource into DuckDB, inspects system
-history, freezes the contract, replays the package from a clean replay ledger,
-and then points at the conformance-owned proof for crash/resume and drift
-quarantine.
+This path starts with a public Parquet file, lets CDF discover and pin its schema, loads it into DuckDB, expands to a monthly file set with manifest incrementality, and shows how drift and replay remain evidence-preserving.
 
 ## Prerequisites
 
-- A checkout of this repository.
-- The pinned Rust toolchain available through `cargo`.
-- Local commands run from the repository root.
+- A checkout of this repository and its pinned Rust toolchain.
+- Network access to the NYC Taxi & Limousine Commission public dataset.
+- Commands below run from the repository root.
 
-Generated command reference pages are not available yet; WS6B owns them:
-[`2026-07-08-p1-product-ws6b-generated-reference-freshness.md`](../.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md).
-The command snippets below were checked against the current parser/help surface.
-
-## Build the CLI
+Build the CLI once:
 
 ```bash
 cargo build -p cdf-cli --locked
 export CDF="$PWD/target/debug/cdf"
 ```
 
-Expected:
-
-```text
-Finished `dev` profile ...
-```
-
-## Create a local project
+## 1. Create a project
 
 ```bash
 WORKDIR="$(mktemp -d)"
-"$CDF" init "$WORKDIR" --name docs_quickstart
-printf '%s\n' \
-  '{"id":1,"updated_at":1}' \
-  '{"id":2,"updated_at":2}' \
-  > "$WORKDIR/data/events.ndjson"
+"$CDF" init "$WORKDIR" --name tlc_quickstart
+cd "$WORKDIR"
 ```
 
-Expected output is abbreviated because the temporary path differs:
+The project defaults to local SQLite state, local packages, and DuckDB. `cdf init` does not contact a source or create destination/state files.
 
-```text
-initialized CDF project docs_quickstart at ...: created cdf.toml, README.md, resources, resources/files.toml, data; replaced none; skipped none
-```
-
-`cdf init` currently creates `README.md`, `cdf.toml`, `resources/files.toml`,
-and `data/`. It does not create `.cdf/`, packages, checkpoints, destination
-files, lockfiles, or data files.
-
-## Validate
+## 2. Add January with no typed schema
 
 ```bash
-"$CDF" --project "$WORKDIR" validate
+"$CDF" add tlc.yellow \
+  https://d37ci6vzurychx.cloudfront.net/trip-data/yellow_tripdata_2024-01.parquet
 ```
 
-Expected:
+`cdf add` performs bounded Parquet-footer discovery, normalizes source field names, writes `resources/tlc.toml`, stores a hash-addressed snapshot under `.cdf/schemas/`, and references it from `cdf.lock`. It does not download Parquet data pages or write a package, destination, or checkpoint.
 
-```text
-validated project docs_quickstart env dev: 1 declarative resource(s), 0 external resource(s), 0 secret reference(s)
-```
-
-## Plan
-
-`cdf plan local.events` can derive a default target from the resource id. This
-quickstart passes an explicit target so the later replay output is stable.
+Inspect what was pinned:
 
 ```bash
-"$CDF" --project "$WORKDIR" plan local.events --target local_events
+"$CDF" schema show tlc.yellow
+"$CDF" plan tlc.yellow
 ```
 
-Expected:
+The plan should report one file partition. Fields such as `VendorID` are planned as normalized destination identifiers while retaining `cdf:source_name = "VendorID"` evidence.
 
-```text
-plan local.events to local_events: 1 partition(s), 0 pushed predicate(s), 0 inexact, 0 unsupported, 1 migration preview item(s), guarantee effectively_once_per_package
-```
-
-Planning does not write package bytes. The plan output is intentionally shorter
-than the final generated reference and renderer work planned under WS3/WS6B.
-
-## Run
-
-`cdf run local.events` can derive a default pipeline, target, package id, and
-checkpoint id. This quickstart pins them so the package path and state commands
-are deterministic.
+Run it:
 
 ```bash
-"$CDF" --project "$WORKDIR" run \
-  --resource local.events \
-  --pipeline local.events \
-  --target local_events \
-  --package-id quickstart-001 \
-  --checkpoint-id quickstart-cp-001
+"$CDF" run tlc.yellow
 ```
 
-Expected output includes a generated run id and package hash:
+The successful run panel identifies the package, verified destination receipt, and committed checkpoint. CDF advances file state only after that receipt crosses the commit gate.
 
-```text
-ran resource local.events as run run-... into package sha256:... for target local_events; checkpoint quickstart-cp-001 committed after destination receipt verification, crossing the commit gate
-```
-
-This command creates local runtime artifacts under `$WORKDIR/.cdf/`.
-
-## Query System History
-
-`cdf sql` currently queries CDF local system history mounted from packages and
-the SQLite checkpoint store. It is not a direct SQL prompt into the destination
-table.
+If the public CDN denies a request, verify the same URL with another HTTP client. CDF reports an upstream authorization/transport failure rather than treating it as schema drift. The deterministic S1 fixture is always available with:
 
 ```bash
-"$CDF" --project "$WORKDIR" sql \
-  'select package_id, status, segment_count, receipt_count from packages order by package_id'
-
-"$CDF" --project "$WORKDIR" sql \
-  'select checkpoint_id, status, is_head from checkpoints order by sequence'
+cargo test -p cdf-cli p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields --locked
 ```
 
-Expected:
+## 3. Expand to every 2024 month
 
-```text
-sql returned 1 row(s) from local system history
-sql returned 1 row(s) from local system history
+Open `resources/tlc.toml` and change only the resource glob:
+
+```toml
+[resource.yellow]
+glob = "yellow_tripdata_2024-*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
 ```
 
-## Inspect Package and State
+The generated `[source.tlc]` block already points at the public `trip-data` prefix and contains the host egress allowlist.
+
+Refresh the intentional schema authority and review its diff:
 
 ```bash
-"$CDF" --project "$WORKDIR" inspect package "$WORKDIR/.cdf/packages/quickstart-001"
-"$CDF" --project "$WORKDIR" state history --pipeline local.events --resource local.events
+"$CDF" schema diff tlc.yellow
+"$CDF" schema pin tlc.yellow
+"$CDF" plan tlc.yellow
+"$CDF" run tlc.yellow
 ```
 
-Expected:
-
-```text
-package sha256:... status checkpointed
-1 checkpoint(s)
-```
-
-## Freeze and Test the Contract
+The plan has one logical partition per matched month. CDF keeps those identities separate even when a future executor packs small files into shared worker tasks. After the run:
 
 ```bash
-"$CDF" --project "$WORKDIR" contract freeze local.events
-"$CDF" --project "$WORKDIR" contract test local.events
+"$CDF" state show tlc.yellow
 ```
 
-Expected:
+The state view summarizes the committed `FileManifest`. Running the same command again is a fast no-op. If a new matching month appears, only that new or changed identity is planned and committed.
 
-```text
-froze 1 contract snapshot(s) in cdf.lock
-contract test: 1 passed, 0 drifted
+The deterministic multi-file/no-op/new-file proof is:
+
+```bash
+cargo test -p cdf-cli p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop --locked
 ```
 
-`contract freeze` and `contract test` prove schema/policy/program drift against
-`cdf.lock`; they do not themselves execute row fixtures or write quarantine
-artifacts. Drift quarantine is implemented and verified through conformance, as
-shown below.
+## 4. What happens when a later file drifts
 
-## Replay From a Clean Ledger
+The pinned snapshot does not mutate silently. Every current file is reconciled against the baseline and the resource contract:
 
-For this quickstart, replay the package from a second clean project/ledger into
-a second local DuckDB database.
+- lossless width changes compile into recorded coercion verdicts;
+- compatible evolution produces a separately identified effective schema;
+- incompatible fields/files produce typed quarantine evidence naming the file, field, physical type, expected type, rule, and remediation;
+- a quarantined file identity is marked processed only after its quarantine package receives a verified destination receipt.
+
+The run remains successful when policy admits quarantine; it does not collapse into a decoder stack trace. Review current authority with:
+
+```bash
+"$CDF" schema diff tlc.yellow
+"$CDF" inspect resources
+```
+
+To exercise the incompatible-month rendering without depending on mutable public data:
+
+```bash
+cargo test -p cdf-cli governed_evolve_quarantines_incompatible_file_with_exact_arrow_field_evidence --locked
+```
+
+Refresh the baseline only after reviewing the diff:
+
+```bash
+"$CDF" schema pin tlc.yellow
+```
+
+## 5. Replay a package without source contact
+
+List package identities and choose the package to replay:
+
+```bash
+"$CDF" package ls
+```
+
+Replay into a clean local project/ledger so the original checkpoint identity does not collide:
 
 ```bash
 REPLAY_WORKDIR="$(mktemp -d)"
-"$CDF" init "$REPLAY_WORKDIR" --name docs_quickstart_replay
-
+"$CDF" init "$REPLAY_WORKDIR" --name tlc_replay
 "$CDF" --project "$REPLAY_WORKDIR" replay package \
-  "$WORKDIR/.cdf/packages/quickstart-001" \
+  "$WORKDIR/.cdf/packages/<package-id>" \
   --to duckdb://.cdf/replay.duckdb
-
-"$CDF" --project "$REPLAY_WORKDIR" state history \
-  --pipeline local.events \
-  --resource local.events
 ```
 
-Expected:
+Replay verifies the stored package and manifest, writes through the destination protocol, records a new receipt, and commits the package's checkpoint delta without contacting the TLC source.
 
-```text
-initialized CDF project docs_quickstart_replay at ...
-replayed package sha256:... into destination duckdb target local_events; receipt ... duplicate=false no_op=false; checkpoint quickstart-cp-001 status committed; package status checkpointed
-1 checkpoint(s)
-```
+## 6. Verify the complete P2 contract
 
-Current same-ledger replay of this exact package would collide on the checkpoint
-id. The conformance MVP harness proves duplicate/no-op destination replay using
-the lower artifact replay API where checkpoint id reuse does not obscure the
-idempotency assertion.
-
-## Crash/Resume and Drift Quarantine Proof
-
-The public CLI does not expose a test-only crash flag. The current deterministic
-proof for crash/resume, package replay, duplicate replay, and drift quarantine is
-the conformance-owned MVP fixture:
+The P2 registry and conformance-owned laws cover all eight data-onramp golden paths. Run them with:
 
 ```bash
-cargo test -p cdf-conformance mvp_acceptance_demo --locked
+cargo test -p cdf-conformance p2_ --locked
 ```
 
-Expected:
+Run every source-owned fixture named by that registry with the workspace suite:
 
-```text
-test mvp_acceptance_demo::mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift ... ok
+```bash
+cargo test --workspace --locked
 ```
 
-That fixture uses a GitHub-Issues-shaped REST resource without live network
-dependency, simulates a crash after destination receipt verification and before
-checkpoint commit, runs `cdf resume` without new source contact, replays into a
-second DuckDB database, and composes the DuckDB drift-quarantine proof. The
-public runnable example projects are owned by
-[WS6C](../.10x/tickets/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md).
-
-## Clean Up
+Clean up when finished:
 
 ```bash
 rm -rf "$WORKDIR" "$REPLAY_WORKDIR"

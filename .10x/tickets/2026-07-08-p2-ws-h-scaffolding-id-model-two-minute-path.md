@@ -40,6 +40,7 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 - 2026-07-10: E6 promoted deterministic S1 to covered: `cdf add` over HTTP now pins and immediately runs with zero typed fields through package, receipt, and checkpoint. The public TLC add also succeeded and inferred all 19 columns; the upstream GET later returned 403 independently of CDF. Remaining WS-H scope is Postgres/REST add and the quickstart/docs session.
 - 2026-07-10: H4 closed with `.10x/evidence/2026-07-10-p2-h4-postgres-add-s4.md` and `.10x/reviews/2026-07-10-p2-h4-postgres-add-s4-review.md`. Postgres direct-DSN add now preserves the secret boundary, pins catalog discovery, presents cursor candidates without guessing semantics, and supports plan/preview/run after explicit cursor selection. S4 is covered. Remaining WS-H scope is REST add and quickstart/docs closure.
 - 2026-07-10: H5 closed as `.10x/tickets/done/2026-07-10-p2-ws-h5-rest-add.md`. Public REST add now requires selector/cursor/parameter semantics together, derives a safe endpoint origin/path and allowlist, samples and pins through the generic REST discovery transport, and generates a plan-ready schema-free resource. Remaining WS-H scope is the TLC quickstart and recorded documentation session.
+- 2026-07-10: H6 closed as `.10x/tickets/done/2026-07-10-p2-ws-h6-tlc-quickstart.md`. The canonical quickstart now walks public TLC S1, monthly-manifest S2, typed drift S6, and source-free replay, with exact source-owned regression commands verified in this session.
 
 ## Blockers
 

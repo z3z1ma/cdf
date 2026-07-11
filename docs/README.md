@@ -3,8 +3,9 @@
 This tree is the in-repository documentation surface for CDF operators and
 contributors.
 
-- [Quickstart](quickstart.md) gives a first local run from a clean checkout and
-  calls out which deeper proof points are currently conformance-owned.
+- [Quickstart](quickstart.md) loads public NYC TLC Parquet into DuckDB, expands
+  to an incremental monthly manifest, explains governed drift, and replays a
+  verified package without source contact.
 - [Architecture](architecture.md) gives the short map and links to the book and
   active specs for the full contract.
 - [Operators](operators/README.md) contains scoped operational guides for
