@@ -1,0 +1,226 @@
+{
+  "schema_version": 1,
+  "datasets": [
+    {
+      "id": "nyc_tlc_yellow_2024",
+      "description": "Full-year 2024 NYC TLC yellow taxi Parquet files",
+      "schema_ref": "nyc-tlc-yellow-v2024",
+      "expected_rows": null,
+      "expected_logical_bytes": null,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "NYC Taxi and Limousine Commission trip record data",
+        "version": "yellow-2024-01..12",
+        "license": "NYC Open Data terms",
+        "license_url": "https://opendata.cityofnewyork.us/overview/#termsofuse"
+      },
+      "recipe": {
+        "kind": "remote_files",
+        "base_url": "https://d37ci6vzurychx.cloudfront.net/trip-data/",
+        "object_template": "yellow_tripdata_2024-{01..12}.parquet",
+        "immutable_identity": "monthly object generation (etag/checksum pinned by acquisition manifest)"
+      }
+    },
+    {
+      "id": "tpch_sf10",
+      "description": "TPC-H scale factor 10 generated as Parquet and CSV",
+      "schema_ref": "tpch-2.18.0",
+      "expected_rows": 86586082,
+      "expected_logical_bytes": null,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "TPC-H dbgen",
+        "version": "2.18.0",
+        "license": "TPC benchmark fair-use terms",
+        "license_url": "https://www.tpc.org/tpc_documents_current_versions/current_specifications5.asp"
+      },
+      "recipe": {
+        "kind": "tpch",
+        "generator": "dbgen-compatible deterministic generator",
+        "generator_version": "2.18.0",
+        "scale_factor": 10,
+        "seed": 20260711,
+        "formats": ["parquet", "csv"],
+        "chunk_bytes": 8388608,
+        "delivery": "streaming"
+      }
+    },
+    {
+      "id": "tpch_sf100",
+      "description": "TPC-H scale factor 100 generated as Parquet and CSV",
+      "schema_ref": "tpch-2.18.0",
+      "expected_rows": 866037932,
+      "expected_logical_bytes": null,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "TPC-H dbgen",
+        "version": "2.18.0",
+        "license": "TPC benchmark fair-use terms",
+        "license_url": "https://www.tpc.org/tpc_documents_current_versions/current_specifications5.asp"
+      },
+      "recipe": {
+        "kind": "tpch",
+        "generator": "dbgen-compatible deterministic generator",
+        "generator_version": "2.18.0",
+        "scale_factor": 100,
+        "seed": 20260711,
+        "formats": ["parquet", "csv"],
+        "chunk_bytes": 8388608,
+        "delivery": "streaming"
+      }
+    },
+    {
+      "id": "json_wide_10g",
+      "description": "Deterministic wide NDJSON throughput input",
+      "schema_ref": "synthetic-json-wide-v1",
+      "expected_rows": null,
+      "expected_logical_bytes": 10737418240,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "cdf-benchmarks generator",
+        "version": "synthetic-json-v1",
+        "license": "CDF project license",
+        "license_url": null
+      },
+      "recipe": {
+        "kind": "synthetic_json",
+        "generator_version": "synthetic-json-v1",
+        "seed": 20260711,
+        "shape": "wide",
+        "logical_bytes": 10737418240,
+        "chunk_bytes": 8388608,
+        "delivery": "streaming"
+      }
+    },
+    {
+      "id": "json_nested_10g",
+      "description": "Deterministic deeply nested NDJSON contract input",
+      "schema_ref": "synthetic-json-nested-v1",
+      "expected_rows": null,
+      "expected_logical_bytes": 10737418240,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "cdf-benchmarks generator",
+        "version": "synthetic-json-v1",
+        "license": "CDF project license",
+        "license_url": null
+      },
+      "recipe": {
+        "kind": "synthetic_json",
+        "generator_version": "synthetic-json-v1",
+        "seed": 20260712,
+        "shape": "nested",
+        "logical_bytes": 10737418240,
+        "chunk_bytes": 8388608,
+        "delivery": "streaming"
+      }
+    },
+    {
+      "id": "json_dirty_10g",
+      "description": "Deterministic malformed and quarantine-heavy NDJSON input",
+      "schema_ref": "synthetic-json-dirty-v1",
+      "expected_rows": null,
+      "expected_logical_bytes": 10737418240,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "cdf-benchmarks generator",
+        "version": "synthetic-json-v1",
+        "license": "CDF project license",
+        "license_url": null
+      },
+      "recipe": {
+        "kind": "synthetic_json",
+        "generator_version": "synthetic-json-v1",
+        "seed": 20260713,
+        "shape": "dirty",
+        "logical_bytes": 10737418240,
+        "chunk_bytes": 8388608,
+        "delivery": "streaming"
+      }
+    },
+    {
+      "id": "json_schema_varying_10g",
+      "description": "Deterministic schema-varying NDJSON input",
+      "schema_ref": "synthetic-json-schema-varying-v1",
+      "expected_rows": null,
+      "expected_logical_bytes": 10737418240,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "cdf-benchmarks generator",
+        "version": "synthetic-json-v1",
+        "license": "CDF project license",
+        "license_url": null
+      },
+      "recipe": {
+        "kind": "synthetic_json",
+        "generator_version": "synthetic-json-v1",
+        "seed": 20260714,
+        "shape": "schema_varying",
+        "logical_bytes": 10737418240,
+        "chunk_bytes": 8388608,
+        "delivery": "streaming"
+      }
+    },
+    {
+      "id": "constant_memory_100g",
+      "description": "Generated 100 GiB constant-memory stress stream",
+      "schema_ref": "constant-memory-v1",
+      "expected_rows": 419430400,
+      "expected_logical_bytes": 107374182400,
+      "expected_physical_bytes": 107374182400,
+      "provenance": {
+        "source": "cdf-benchmarks generator",
+        "version": "constant-memory-v1",
+        "license": "CDF project license",
+        "license_url": null
+      },
+      "recipe": {
+        "kind": "synthetic_stream",
+        "generator_version": "constant-memory-v1",
+        "seed": 20260711,
+        "logical_bytes": 107374182400,
+        "record_bytes": 256,
+        "chunk_bytes": 8388608,
+        "delivery": "streaming"
+      }
+    }
+  ],
+  "workloads": [
+    {
+      "id": "tlc_parquet_to_package",
+      "dataset_id": "nyc_tlc_yellow_2024",
+      "operation": "CDF source decode through verified package finalization",
+      "timed_region": {
+        "version": 1,
+        "includes": ["source reads", "decode", "validation", "package encode", "hash", "finalize"],
+        "excludes": ["dataset acquisition", "destination commit"]
+      },
+      "logical_byte_counter": {"name": "decoded_arrow_bytes", "method": "sum batch logical bytes"},
+      "physical_byte_counter": {"name": "source_bytes", "method": "transport/file byte counter"}
+    },
+    {
+      "id": "tpch_csv_to_package",
+      "dataset_id": "tpch_sf10",
+      "operation": "CDF CSV decode through verified package finalization",
+      "timed_region": {
+        "version": 1,
+        "includes": ["source reads", "decode", "validation", "package encode", "hash", "finalize"],
+        "excludes": ["dataset generation", "destination commit"]
+      },
+      "logical_byte_counter": {"name": "decoded_arrow_bytes", "method": "sum batch logical bytes"},
+      "physical_byte_counter": {"name": "source_bytes", "method": "transport/file byte counter"}
+    },
+    {
+      "id": "constant_memory_stress",
+      "dataset_id": "constant_memory_100g",
+      "operation": "Generated source through verified destination/checkpoint completion",
+      "timed_region": {
+        "version": 1,
+        "includes": ["source generation in measured child", "pipeline", "package", "destination", "checkpoint"],
+        "excludes": ["runner setup", "report serialization"]
+      },
+      "logical_byte_counter": {"name": "generated_bytes", "method": "deterministic generator counter"},
+      "physical_byte_counter": {"name": "persisted_bytes", "method": "artifact and destination writer receipts"}
+    }
+  ]
+}

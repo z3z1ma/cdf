@@ -2,12 +2,15 @@ use std::error::Error;
 
 mod catalog;
 mod fixtures;
+mod lab;
 mod matrix;
 mod resource;
 mod runners;
 
 pub use catalog::{FixtureCatalog, FixtureSpec, fixture_catalog, fixture_spec};
+pub use cdf_package::canonical_json_bytes;
 pub use fixtures::write_all_local_fixture_formats;
+pub use lab::*;
 pub use matrix::{
     BenchmarkSuite, CaseDefinition, CaseOutcome, CoverageCell, MetricClass, benchmark_cases,
     cases_for, coverage_matrix,

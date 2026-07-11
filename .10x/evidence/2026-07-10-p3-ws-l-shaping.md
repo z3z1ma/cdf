@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-10
 Updated: 2026-07-10
-Relates-To: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-10-p3-ws-l1-catalog-report-schema.md, .10x/tickets/2026-07-10-p3-ws-l2-phase-telemetry.md, .10x/tickets/2026-07-10-p3-ws-l3-macro-roofline-runners.md, .10x/tickets/2026-07-10-p3-ws-l4-ci-envelope-generation.md, .10x/tickets/2026-07-10-p3-ws-l5-preoptimization-baseline.md
+Relates-To: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/done/2026-07-10-p3-ws-l1-catalog-report-schema.md, .10x/tickets/2026-07-10-p3-ws-l2-phase-telemetry.md, .10x/tickets/2026-07-10-p3-ws-l3-macro-roofline-runners.md, .10x/tickets/2026-07-10-p3-ws-l4-ci-envelope-generation.md, .10x/tickets/2026-07-10-p3-ws-l5-preoptimization-baseline.md
 
 # P3 WS-L shaping evidence
 

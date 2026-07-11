@@ -1,5 +1,8 @@
 use cdf_benchmarks::{
-    BenchmarkSuite, MetricClass, benchmark_cases, cases_for, coverage_matrix, fixture_spec,
+    BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkSuite, Capability, DatasetRecipe, GeneratorDelivery,
+    IoMode, MetricClass, ObservationStatus, benchmark_cases, canonical_json_bytes,
+    canonical_sha256, cases_for, coverage_matrix, dataset_catalog, fixture_spec,
+    import_legacy_trend, report_fixture, validate_dataset_catalog, validate_report,
     write_all_local_fixture_formats,
 };
 
@@ -97,4 +100,121 @@ fn coverage_matrix_records_executable_and_deferred_cells() {
             .iter()
             .any(|cell| { cell.area == "native_polars_style" && cell.status == "deferred" })
     );
+}
+
+#[test]
+fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
+    let catalog = dataset_catalog().unwrap();
+    for required in [
+        "nyc_tlc_yellow_2024",
+        "tpch_sf10",
+        "tpch_sf100",
+        "json_wide_10g",
+        "json_nested_10g",
+        "json_dirty_10g",
+        "json_schema_varying_10g",
+        "constant_memory_100g",
+    ] {
+        assert!(
+            catalog
+                .datasets
+                .iter()
+                .any(|dataset| dataset.id == required)
+        );
+    }
+    assert!(catalog.datasets.iter().all(|dataset| {
+        !dataset.schema_ref.is_empty()
+            && !dataset.provenance.version.is_empty()
+            && !dataset.provenance.license.is_empty()
+    }));
+    assert!(catalog.datasets.iter().any(|dataset| {
+        matches!(
+            dataset.recipe,
+            DatasetRecipe::SyntheticStream {
+                delivery: GeneratorDelivery::Streaming,
+                logical_bytes: 107_374_182_400,
+                chunk_bytes: 8_388_608,
+                ..
+            }
+        )
+    }));
+    assert!(catalog.workloads.iter().all(|workload| {
+        !workload.timed_region.includes.is_empty()
+            && !workload.logical_byte_counter.method.is_empty()
+            && !workload.physical_byte_counter.method.is_empty()
+    }));
+
+    let canonical = canonical_json_bytes(&catalog).unwrap();
+    assert!(canonical.starts_with(b"{\"datasets\":"));
+    assert_eq!(
+        canonical,
+        canonical_json_bytes(&dataset_catalog().unwrap()).unwrap()
+    );
+    assert_eq!(
+        canonical_sha256(&catalog).unwrap(),
+        "sha256:dae7f48ee019980f9d8dce30755d1ab8a25e36b807e00757073e78936500ae73"
+    );
+}
+
+#[test]
+fn p3_report_fixture_is_deterministic_sanitized_and_explicit() {
+    let report = report_fixture().unwrap();
+    assert_eq!(report.schema_version, BENCHMARK_REPORT_SCHEMA_VERSION);
+    assert!(!report.host.cpu_label.contains('/'));
+    assert!(matches!(
+        report.host.effective_cpu,
+        Capability::Supported { .. }
+    ));
+    assert!(matches!(
+        report.host.effective_memory_bytes,
+        Capability::Unavailable { .. }
+    ));
+    assert!(report.observations.iter().any(|observation| {
+        matches!(observation.status, ObservationStatus::Observed)
+            && observation.summary.as_ref().unwrap().sample_count == 3
+            && observation.comparability.io_mode == IoMode::Warm
+    }));
+    assert!(report.observations.iter().any(|observation| {
+        matches!(observation.status, ObservationStatus::Unavailable { .. })
+            && observation.samples.is_empty()
+            && observation.summary.is_none()
+    }));
+    assert_eq!(
+        canonical_json_bytes(&report).unwrap(),
+        canonical_json_bytes(&report_fixture().unwrap()).unwrap()
+    );
+    assert_eq!(
+        canonical_sha256(&report).unwrap(),
+        "sha256:24a9156bdd8e34d3a608e314f32b246e28501722015d7dc57d1c62dc3750c2d3"
+    );
+}
+
+#[test]
+fn p3_catalog_and_report_fail_closed_when_incomparable_or_malformed() {
+    let mut catalog = dataset_catalog().unwrap();
+    catalog.workloads[0].dataset_id = "missing".to_owned();
+    assert!(validate_dataset_catalog(&catalog).is_err());
+
+    let mut report = report_fixture().unwrap();
+    report.observations[0]
+        .summary
+        .as_mut()
+        .unwrap()
+        .sample_count = 99;
+    assert!(validate_report(&report).is_err());
+
+    let mut report = report_fixture().unwrap();
+    report.host.cpu_label = "/Users/alex/private-host".to_owned();
+    assert!(validate_report(&report).is_err());
+}
+
+#[test]
+fn legacy_trends_load_only_as_incomparable_imports() {
+    let legacy = br#"{"observed_at_ms":1,"suite":"smoke","label":"trend.old","metric_class":"trend_only","elapsed_ns":10,"rows":1,"bytes":8}"#;
+    let imported = import_legacy_trend(legacy).unwrap();
+    assert_eq!(imported.record.label, "trend.old");
+    assert!(matches!(
+        imported.status,
+        ObservationStatus::Inconclusive { .. }
+    ));
 }

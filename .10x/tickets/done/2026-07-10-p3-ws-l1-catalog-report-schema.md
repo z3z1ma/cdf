@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
@@ -31,6 +31,11 @@ No new runtime telemetry, benchmark execution, reference runners, CI thresholds,
 ## Blockers
 
 None.
+
+## Progress and notes
+
+- 2026-07-11: Implemented versioned P3 dataset/workload/catalog and host/capability/observation/report types plus committed TLC, TPC-H SF10/SF100, wide/nested/dirty/schema-varying JSON, constant-memory, and observed/unavailable report fixtures. Legacy trend records import only as inconclusive.
+- 2026-07-11: Closure evidence is `.10x/evidence/2026-07-11-p3-l1-catalog-report-schema.md`; adversarial review is `.10x/reviews/2026-07-11-p3-l1-catalog-report-schema-review.md` (pass). Seven focused tests, all-target clippy with warnings denied, formatting, and diff checks passed. No large dataset, benchmark result, runtime telemetry, or performance claim was produced.
 
 ## References
 

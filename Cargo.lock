@@ -703,9 +703,11 @@ dependencies = [
  "duckdb",
  "futures-executor",
  "futures-util",
+ "hex",
  "parquet",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tempfile",
 ]
 
