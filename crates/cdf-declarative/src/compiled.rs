@@ -27,6 +27,7 @@ use cdf_kernel::{
 };
 use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
 use cdf_source_postgres::PostgresSourceDriver;
+use cdf_source_rest::{RestResourcePlan, cursor_pushdown_value};
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
@@ -35,12 +36,10 @@ use crate::file_runtime::{
     open_file_resource_preview,
 };
 use crate::file_transport::{FileIdentityMetadata, FileTransportResource};
-use crate::rest_runtime::{
-    CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA, cursor_pushdown_value,
-};
 use crate::sql_runtime::{
     sql_capabilities_for, sql_partition_for_plan, sql_predicate_fidelity_for,
 };
+use cdf_source_rest::{CURSOR_QUERY_PARAM_METADATA, CURSOR_QUERY_VALUE_METADATA};
 
 #[derive(Clone, Debug)]
 pub struct LocalParquetSchemaProbe {
@@ -162,23 +161,6 @@ pub enum CompiledResourcePlan {
     Rest(Box<RestResourcePlan>),
     Sql(SqlResourcePlan),
     Files(FileResourcePlan),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RestResourcePlan {
-    pub source: String,
-    pub base_url: String,
-    pub path: String,
-    pub params: BTreeMap<String, String>,
-    pub record_selector: String,
-    pub pagination: Option<PaginationConfig>,
-    pub auth: Option<AuthScheme>,
-    pub rate_limit: RateLimitPolicy,
-    pub respect_headers: Vec<String>,
-    pub allowlist: EgressAllowlist,
-    pub cursor_param: Option<String>,
-    pub cursor_filter_fidelity: PushdownFidelity,
-    pub records_transform: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

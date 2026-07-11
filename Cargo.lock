@@ -825,6 +825,7 @@ dependencies = [
  "cdf-package",
  "cdf-runtime",
  "cdf-source-postgres",
+ "cdf-source-rest",
  "flate2",
  "futures-executor",
  "futures-util",
@@ -1098,6 +1099,19 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "cdf-source-rest"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-schema 59.1.0",
+ "cdf-formats",
+ "cdf-http",
+ "cdf-kernel",
+ "futures-util",
+ "serde_json",
 ]
 
 [[package]]

@@ -13,17 +13,19 @@ use cdf_http::{
     SecretUri, send_with_policy,
 };
 use cdf_kernel::{
-    Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue, PartitionPlan,
-    PreContractResidualCandidate, QueryableResource, ResourceDescriptor, ResourceStream, Result,
-    ScanPlan, ScanRequest, SchemaHash, SchemaSource, SourcePosition, source_name,
+    Batch, BatchId, BatchStream, BoxFuture, CdfError, CursorPosition, CursorValue,
+    DeliveryGuarantee, PartitionId, PartitionPlan, PlanId, PreContractResidualCandidate,
+    PushdownFidelity, PushedPredicate, QueryableResource, ResourceCapabilities, ResourceDescriptor,
+    ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, SourcePosition,
+    TypePolicyAllowances, WriteDisposition, source_name,
 };
 use futures_util::stream;
 use serde_json::{Map, Value};
 
-use crate::{CompiledResource, CompiledResourcePlan, RestResourcePlan};
+use crate::RestResourcePlan;
 
-pub(crate) const CURSOR_QUERY_PARAM_METADATA: &str = "cursor_query_param";
-pub(crate) const CURSOR_QUERY_VALUE_METADATA: &str = "cursor_query_value";
+pub const CURSOR_QUERY_PARAM_METADATA: &str = "cursor_query_param";
+pub const CURSOR_QUERY_VALUE_METADATA: &str = "cursor_query_value";
 
 #[derive(Clone)]
 pub struct RestRuntimeDependencies {
@@ -76,7 +78,11 @@ impl fmt::Debug for RestRuntimeDependencies {
 
 #[derive(Clone, Debug)]
 pub struct RestResource {
-    compiled: CompiledResource,
+    descriptor: ResourceDescriptor,
+    schema: SchemaRef,
+    capabilities: ResourceCapabilities,
+    plan: RestResourcePlan,
+    type_policy_allowances: TypePolicyAllowances,
     dependencies: RestRuntimeDependencies,
 }
 
@@ -87,34 +93,31 @@ pub struct RestSampleSchemaDiscovery {
 }
 
 impl RestResource {
-    pub fn new(compiled: CompiledResource, dependencies: RestRuntimeDependencies) -> Result<Self> {
-        if !matches!(compiled.plan(), CompiledResourcePlan::Rest(_)) {
-            return Err(CdfError::contract(
-                "only compiled REST resources can be opened with REST runtime dependencies",
-            ));
-        }
+    pub fn new(
+        descriptor: ResourceDescriptor,
+        schema: SchemaRef,
+        capabilities: ResourceCapabilities,
+        plan: RestResourcePlan,
+        type_policy_allowances: TypePolicyAllowances,
+        dependencies: RestRuntimeDependencies,
+    ) -> Result<Self> {
         Ok(Self {
-            compiled,
+            descriptor,
+            schema,
+            capabilities,
+            plan,
+            type_policy_allowances,
             dependencies,
         })
     }
 
-    pub fn compiled(&self) -> &CompiledResource {
-        &self.compiled
-    }
-
     pub fn validate_runtime_dependencies(&self) -> Result<()> {
-        let CompiledResourcePlan::Rest(plan) = self.compiled.plan() else {
-            return Err(CdfError::contract(
-                "only compiled REST resources can be opened by RestResource",
-            ));
-        };
-        if plan.auth.is_some() && self.dependencies.secret_provider.is_none() {
+        if self.plan.auth.is_some() && self.dependencies.secret_provider.is_none() {
             return Err(CdfError::auth(
                 "REST resource auth requires an explicit SecretProvider runtime dependency",
             ));
         }
-        if let Some(auth) = &plan.auth {
+        if let Some(auth) = &self.plan.auth {
             let provider = self
                 .dependencies
                 .secret_provider
@@ -142,23 +145,13 @@ fn auth_secret_uri(auth: &AuthScheme) -> &SecretUri {
     }
 }
 
-impl CompiledResource {
-    pub fn into_rest_resource(self, dependencies: RestRuntimeDependencies) -> Result<RestResource> {
-        RestResource::new(self, dependencies)
-    }
-
-    pub fn to_rest_resource(&self, dependencies: RestRuntimeDependencies) -> Result<RestResource> {
-        RestResource::new(self.clone(), dependencies)
-    }
-}
-
 impl ResourceStream for RestResource {
     fn descriptor(&self) -> &ResourceDescriptor {
-        self.compiled.descriptor()
+        &self.descriptor
     }
 
     fn schema(&self) -> SchemaRef {
-        self.compiled.schema()
+        Arc::clone(&self.schema)
     }
 
     fn validate_runtime_dependencies(&self) -> Result<()> {
@@ -166,26 +159,17 @@ impl ResourceStream for RestResource {
     }
 
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
-        self.compiled.type_policy_allowances()
+        self.type_policy_allowances
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
-        self.compiled.plan_partitions(request)
+        rest_partition(&self.descriptor, &self.plan, request).map(|partition| vec![partition])
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        let descriptor = self.compiled.descriptor().clone();
-        let schema = self.compiled.schema();
-        let plan = match self.compiled.plan() {
-            CompiledResourcePlan::Rest(plan) => (**plan).clone(),
-            CompiledResourcePlan::Sql(_) | CompiledResourcePlan::Files(_) => {
-                return Box::pin(async {
-                    Err(CdfError::contract(
-                        "only compiled REST resources can be opened by RestResource",
-                    ))
-                });
-            }
-        };
+        let descriptor = self.descriptor.clone();
+        let schema = Arc::clone(&self.schema);
+        let plan = self.plan.clone();
         let dependencies = self.dependencies.clone();
 
         Box::pin(async move {
@@ -197,15 +181,38 @@ impl ResourceStream for RestResource {
 
 impl QueryableResource for RestResource {
     fn capabilities(&self) -> &cdf_kernel::ResourceCapabilities {
-        self.compiled.capabilities()
+        &self.capabilities
     }
 
     fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
-        self.compiled.negotiate(request)
+        let partition = rest_partition(&self.descriptor, &self.plan, request)?;
+        let mut pushed_predicates = Vec::new();
+        let mut unsupported_predicates = Vec::new();
+        for predicate in &request.filters {
+            if cursor_pushdown_value(&self.descriptor, &self.plan, &predicate.expression).is_some()
+            {
+                pushed_predicates.push(PushedPredicate {
+                    predicate: predicate.clone(),
+                    fidelity: self.plan.cursor_filter_fidelity.clone(),
+                });
+            } else {
+                unsupported_predicates.push(predicate.clone());
+            }
+        }
+        Ok(ScanPlan {
+            plan_id: PlanId::new(format!("plan-{}", self.descriptor.resource_id))?,
+            request: request.clone(),
+            partitions: vec![partition],
+            pushed_predicates,
+            unsupported_predicates,
+            estimated_rows: None,
+            estimated_bytes: None,
+            delivery_guarantee: delivery_guarantee(&self.descriptor),
+        })
     }
 }
 
-pub(crate) fn cursor_pushdown_value(
+pub fn cursor_pushdown_value(
     descriptor: &ResourceDescriptor,
     plan: &RestResourcePlan,
     expression: &str,
@@ -228,6 +235,55 @@ pub(crate) fn cursor_pushdown_value(
         }
     }
     None
+}
+
+pub fn rest_partition(
+    descriptor: &ResourceDescriptor,
+    plan: &RestResourcePlan,
+    request: &ScanRequest,
+) -> Result<PartitionPlan> {
+    if request.resource_id != descriptor.resource_id {
+        return Err(CdfError::contract(format!(
+            "scan request resource `{}` does not match REST resource `{}`",
+            request.resource_id, descriptor.resource_id
+        )));
+    }
+    let mut metadata = BTreeMap::from([
+        ("kind".to_owned(), "rest".to_owned()),
+        ("path".to_owned(), plan.path.clone()),
+        ("resource_id".to_owned(), descriptor.resource_id.to_string()),
+    ]);
+    if let Some(pagination) = &plan.pagination {
+        metadata.insert("pagination".to_owned(), pagination.kind().to_string());
+    }
+    if let Some(cursor) = &descriptor.cursor {
+        metadata.insert("cursor_field".to_owned(), cursor.field.clone());
+    }
+    if let Some(cursor_param) = &plan.cursor_param
+        && plan.cursor_filter_fidelity != PushdownFidelity::Unsupported
+        && let Some(value) = request
+            .filters
+            .iter()
+            .find_map(|predicate| cursor_pushdown_value(descriptor, plan, &predicate.expression))
+    {
+        metadata.insert(CURSOR_QUERY_PARAM_METADATA.to_owned(), cursor_param.clone());
+        metadata.insert(CURSOR_QUERY_VALUE_METADATA.to_owned(), value);
+    }
+    Ok(PartitionPlan {
+        partition_id: PartitionId::new("rest")?,
+        scope: descriptor.state_scope.clone(),
+        start_position: None,
+        metadata,
+    })
+}
+
+fn delivery_guarantee(descriptor: &ResourceDescriptor) -> DeliveryGuarantee {
+    match descriptor.write_disposition {
+        WriteDisposition::Append => DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        WriteDisposition::Replace => DeliveryGuarantee::EffectivelyOncePerTarget,
+        WriteDisposition::Merge => DeliveryGuarantee::EffectivelyOncePerKey,
+        WriteDisposition::CdcApply => DeliveryGuarantee::EffectivelyOncePerPosition,
+    }
 }
 
 fn normalize_predicate_literal(value: &str) -> Option<String> {
@@ -353,39 +409,18 @@ fn execute_rest(
 }
 
 pub fn discover_rest_sample_schema(
-    resource: &CompiledResource,
+    descriptor: &ResourceDescriptor,
+    plan: &RestResourcePlan,
+    partition: &PartitionPlan,
     transport: &mut dyn HttpTransport,
     secret_provider: &dyn SecretProvider,
 ) -> Result<RestSampleSchemaDiscovery> {
-    let descriptor = resource.descriptor();
-    let CompiledResourcePlan::Rest(plan) = resource.plan() else {
-        return Err(CdfError::contract(
-            "only compiled REST resources can be sampled for REST schema discovery",
-        ));
-    };
-    let partition = resource
-        .plan_partitions(&ScanRequest {
-            resource_id: descriptor.resource_id.clone(),
-            projection: None,
-            filters: Vec::new(),
-            limit: None,
-            order_by: Vec::new(),
-            scope: descriptor.state_scope.clone(),
-        })?
-        .into_iter()
-        .next()
-        .ok_or_else(|| {
-            CdfError::contract(format!(
-                "REST discovery for resource `{}` expected one REST partition",
-                descriptor.resource_id
-            ))
-        })?;
-    validate_partition(descriptor, plan, &partition)?;
+    validate_partition(descriptor, plan, partition)?;
 
     let mut auth_session = plan.auth.clone().map(AuthSession::new);
     let mut retry_budget = RetryBudget::new(RetryPolicy::default());
     let mut limiter = RateLimiter::new(plan.rate_limit.clone(), 0);
-    let base_request_url = build_request_url(plan, &partition)?;
+    let base_request_url = build_request_url(plan, partition)?;
     let paginator = plan.pagination.clone().map(Paginator::new);
     let url = match &paginator {
         Some(paginator) => paginator.first_request(&base_request_url).url,

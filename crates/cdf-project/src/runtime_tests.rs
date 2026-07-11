@@ -2209,7 +2209,7 @@ fn run_rest_project(root: &Path, run_id: &str) -> (ProjectRunReport, RecordingTr
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(resource.compiled(), package_id),
+        plan: live_plan(&compiled, package_id),
         package_root,
         state_store_path: state_path,
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -3914,7 +3914,7 @@ fn general_project_run_executes_rest_with_discovered_snapshot_hash() {
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(resource.compiled(), package_id),
+        plan: live_plan(&compiled, package_id),
         package_root: temp.path().join(".cdf/packages"),
         state_store_path: state_path,
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -4384,7 +4384,7 @@ fn general_project_run_rejects_rest_missing_secret_provider_before_writes() {
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(resource.compiled(), package_id),
+        plan: live_plan(&compiled, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -4427,7 +4427,7 @@ fn general_project_run_rejects_rest_missing_secret_value_before_writes() {
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(resource.compiled(), package_id),
+        plan: live_plan(&compiled, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -4468,7 +4468,7 @@ fn general_project_run_rejects_rest_without_cursor_before_writes() {
 
     let error = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(resource.compiled(), package_id),
+        plan: live_plan(&compiled, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
@@ -4524,7 +4524,7 @@ fn general_project_run_window_closes_inexact_numeric_rest_cursor() {
 
     let report = futures_executor::block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::rest(&resource),
-        plan: live_plan(resource.compiled(), package_id),
+        plan: live_plan(&compiled, package_id),
         package_root: package_root.clone(),
         state_store_path: state_path.clone(),
         pipeline_id: PipelineId::new("pipeline-live").unwrap(),
