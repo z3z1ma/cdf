@@ -22,6 +22,8 @@ Format detection MUST use extension plus magic-byte confirmation. Explicit forma
 
 Remote transports MUST use one file facade for `file://` and implicit local files, `https://`, `s3://`, `gs://`, and `az://`. Secret references, egress allowlists, ranged reads, streaming reads, and spool decisions belong to the facade. HTTP(S) glob support is limited to ratified template/range enumeration and must not pretend arbitrary web servers support list operations.
 
+P3 generation binding, streaming/paged I/O, connection/range control, spool/cache, and overlap mechanics MUST follow `.10x/specs/remote-local-io-overlap.md` without changing this source-selection/state contract.
+
 Per-file schema variance MUST produce contract verdicts. In `evolve`, compatible file schemas union with recorded widenings. In `freeze`, incompatible files or rows quarantine with source position and remediation. Unclassified mixed-schema crashes are not acceptable P2 behavior.
 
 Multi-file file resources MUST be discoverable and pinnable as one resource. Discovery MUST retain deterministic per-file content/schema provenance and MUST NOT reject a resource merely because more than one file matched. A single-file fast path MAY optimize the one-entry case only if it is the same aggregation abstraction and produces equivalent evidence.
