@@ -32,6 +32,7 @@ cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
 cdf-project = { path = "../cdf-project" }
 cdf-runtime = { path = "../cdf-runtime" }
+cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-python = { path = "../cdf-python" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-executor = "0.3.32"

@@ -2870,6 +2870,19 @@ fn sql_negotiate_pushes_filters_exactly() {
         .unwrap()
         .remove(0);
     let predicate_id = PredicateId::new("p1").unwrap();
+    let source_plan = resource
+        .source_plan()
+        .expect("neutral Postgres source plan");
+    assert_eq!(source_plan.driver.driver_id.as_str(), "postgres");
+    assert_eq!(
+        source_plan
+            .execution_capabilities
+            .blocking_lane
+            .as_ref()
+            .unwrap()
+            .lane_id,
+        "postgres-source.sync"
+    );
     let request = ScanRequest {
         resource_id: resource.descriptor().resource_id.clone(),
         projection: Some(vec!["id".to_owned()]),
@@ -3050,26 +3063,14 @@ fn sql_runtime_fails_closed_for_query_and_non_postgres_dialect() {
 
     let non_postgres =
         SQL_RUNTIME_EXAMPLE.replace(r#"dialect = "postgres""#, r#"dialect = "sqlite""#);
-    let non_postgres_resource = compile_document(&parse_toml(&non_postgres).unwrap())
-        .unwrap()
-        .remove(0);
-    let error = non_postgres_resource
-        .to_sql_resource(SqlRuntimeDependencies::new())
-        .unwrap_err();
+    let error = compile_document(&parse_toml(&non_postgres).unwrap()).unwrap_err();
     assert!(error.to_string().contains("dialect `postgres`"));
 }
 
 #[test]
 fn sql_runtime_rejects_malformed_table_and_empty_declared_schema() {
     let malformed = SQL_RUNTIME_EXAMPLE.replace(r#"table = "public.orders""#, r#"table = "a.b.c""#);
-    let malformed_resource = compile_document(&parse_toml(&malformed).unwrap())
-        .unwrap()
-        .remove(0);
-    assert!(
-        malformed_resource
-            .to_sql_resource(SqlRuntimeDependencies::new())
-            .is_err()
-    );
+    assert!(compile_document(&parse_toml(&malformed).unwrap()).is_err());
 
     let empty_schema = r#"
 [source.warehouse]

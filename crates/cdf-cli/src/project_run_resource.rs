@@ -4,6 +4,7 @@ use cdf_declarative::{
 };
 use cdf_kernel::QueryableResource;
 use cdf_project::{ProjectRunSource, ResourceSourceKind, TrustPreset};
+use std::sync::Arc;
 
 use crate::{context::ProjectContext, http_transport::ReqwestHttpTransport, output::CliError};
 
@@ -13,14 +14,18 @@ pub(crate) struct PreparedRuntimeResourceForCli {
 }
 
 pub(crate) struct CliProjectRunSource {
-    resource: Box<dyn QueryableResource>,
+    resource: Arc<dyn QueryableResource>,
 }
 
 impl CliProjectRunSource {
     fn new(resource: impl QueryableResource + 'static) -> Self {
         Self {
-            resource: Box::new(resource),
+            resource: Arc::new(resource),
         }
+    }
+
+    fn from_shared(resource: Arc<dyn QueryableResource>) -> Self {
+        Self { resource }
     }
 
     pub(crate) fn as_project_resource(&self) -> ProjectRunSource<'_> {
@@ -162,6 +167,15 @@ pub(crate) fn build_project_run_resource(
             ))
         }
         CompiledResourcePlan::Sql(_) => {
+            if let (Some(plan), Some(execution)) = (resource.source_plan(), execution) {
+                let registry = crate::source_registry::builtin_source_registry()?;
+                let secrets = context.secret_provider();
+                let resolution =
+                    cdf_runtime::SourceResolutionContext::new(&context.root, &secrets, execution);
+                return Ok(CliProjectRunSource::from_shared(
+                    registry.resolve(plan, &resolution)?,
+                ));
+            }
             let dependencies =
                 SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
             Ok(CliProjectRunSource::new(

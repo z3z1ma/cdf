@@ -30,6 +30,7 @@ mod resume_command;
 mod run_command;
 mod scan_command;
 mod schema_command;
+mod source_registry;
 mod sql_command;
 mod state_command;
 mod status_command;

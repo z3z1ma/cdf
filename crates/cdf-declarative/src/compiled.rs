@@ -25,6 +25,8 @@ use cdf_kernel::{
     ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind,
     TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
+use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
+use cdf_source_postgres::PostgresSourceDriver;
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
@@ -68,6 +70,7 @@ pub struct CompiledResource {
     schema: SchemaRef,
     capabilities: ResourceCapabilities,
     plan: CompiledResourcePlan,
+    source_plan: Option<CompiledSourcePlan>,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     schema_discovery_sample_files: Option<u64>,
     type_policy_allowances: TypePolicyAllowances,
@@ -92,6 +95,10 @@ impl CompiledResource {
 
     pub fn plan(&self) -> &CompiledResourcePlan {
         &self.plan
+    }
+
+    pub fn source_plan(&self) -> Option<&CompiledSourcePlan> {
+        self.source_plan.as_ref()
     }
 
     pub fn schema_discovery_sample_files(&self) -> Option<u64> {
@@ -125,8 +132,12 @@ impl CompiledResource {
         schema: SchemaRef,
     ) -> Self {
         let mut resource = self.clone();
-        resource.descriptor.schema_source = schema_source;
-        resource.schema = schema;
+        resource.descriptor.schema_source = schema_source.clone();
+        resource.schema = Arc::clone(&schema);
+        if let Some(plan) = &mut resource.source_plan {
+            plan.descriptor.schema_source = schema_source;
+            plan.schema = schema.as_ref().clone();
+        }
         resource
     }
 
@@ -137,7 +148,10 @@ impl CompiledResource {
     ) -> Result<Self> {
         runtime.validate_for_resource(&self.descriptor)?;
         let mut resource = self.clone();
-        resource.schema = schema;
+        resource.schema = Arc::clone(&schema);
+        if let Some(plan) = &mut resource.source_plan {
+            plan.schema = schema.as_ref().clone();
+        }
         resource.effective_schema_runtime = Some(runtime);
         Ok(resource)
     }
@@ -689,6 +703,7 @@ fn compile_resource(
         )?),
     };
     let capabilities = capabilities_for(&descriptor, &plan);
+    let source_plan = compile_neutral_source_plan(source, resource, &descriptor, &schema)?;
 
     Ok(CompiledResource {
         descriptor,
@@ -697,6 +712,7 @@ fn compile_resource(
         schema: Arc::new(schema),
         capabilities,
         plan,
+        source_plan,
         effective_schema_runtime: None,
         schema_discovery_sample_files: resource.sample_files,
         type_policy_allowances: resource
@@ -708,6 +724,45 @@ fn compile_resource(
             })
             .unwrap_or_default(),
     })
+}
+
+fn compile_neutral_source_plan(
+    source: &SourceDeclaration,
+    resource: &ResourceDeclaration,
+    descriptor: &ResourceDescriptor,
+    schema: &Schema,
+) -> Result<Option<CompiledSourcePlan>> {
+    let SourceDeclaration::Sql(sql) = source else {
+        return Ok(None);
+    };
+    let Some(table) = &resource.table else {
+        return Ok(None);
+    };
+    let mut registry = SourceRegistry::new();
+    registry.register(PostgresSourceDriver::new()?)?;
+    registry
+        .compile(SourceCompileRequest {
+            source_kind: "sql".to_owned(),
+            source_options: BTreeMap::from([
+                (
+                    "connection".to_owned(),
+                    serde_json::Value::String(sql.connection.clone()),
+                ),
+                (
+                    "dialect".to_owned(),
+                    serde_json::Value::String(
+                        sql.dialect.clone().unwrap_or_else(|| "postgres".to_owned()),
+                    ),
+                ),
+            ]),
+            resource_options: BTreeMap::from([(
+                "table".to_owned(),
+                serde_json::Value::String(table.clone()),
+            )]),
+            descriptor: descriptor.clone(),
+            schema: schema.clone(),
+        })
+        .map(Some)
 }
 
 fn compile_deduplication(
