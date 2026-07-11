@@ -76,7 +76,7 @@ jobs:
       - name: Exercise bridge and product spine
         env:
           PYO3_PYTHON: python
-          CDF_PYTHON_FIXTURE_HASH_OUTPUT: target/python-fixture-hash-${{ matrix.kind }}.txt
+          CDF_PYTHON_FIXTURE_HASH_OUTPUT: ${{ github.workspace }}/target/python-fixture-hash-${{ matrix.kind }}.txt
         run: |
           cargo test -p cdf-python --locked concurrency_semantics_are_identical_for_fixture_hashes
           cargo test -p cdf-python --locked imported_dlt_decorators_map_selected_resources_and_skip_the_rest
