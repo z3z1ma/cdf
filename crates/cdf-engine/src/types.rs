@@ -36,6 +36,8 @@ pub enum PlanBoundedness {
 pub struct EnginePlan {
     pub scan: ScanPlan,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition_schedule: Option<cdf_runtime::CanonicalPartitionSchedule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effective_schema_evidence: Option<EffectiveSchemaPlanEvidence>,
     pub final_projection: Option<Vec<String>>,
     pub residual_predicates: Vec<ScanPredicate>,
@@ -53,6 +55,15 @@ pub struct EnginePlan {
 }
 
 impl EnginePlan {
+    pub fn bind_partition_schedule(
+        mut self,
+        source: &cdf_runtime::CompiledSourcePlan,
+    ) -> Result<Self> {
+        let schedule = cdf_runtime::CanonicalPartitionSchedule::compile(source, &self.scan)?;
+        self.explain.partition_schedule = Some(schedule.clone());
+        self.partition_schedule = Some(schedule);
+        Ok(self)
+    }
     pub fn effective_schema_evidence(&self) -> Option<&EffectiveSchemaPlanEvidence> {
         self.effective_schema_evidence.as_ref()
     }
@@ -224,6 +235,8 @@ pub struct ExplainData {
     pub inexact_predicates: Vec<PredicateExplain>,
     pub unsupported_predicates: Vec<PredicateExplain>,
     pub partitions: Vec<PartitionExplain>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub partition_schedule: Option<cdf_runtime::CanonicalPartitionSchedule>,
     pub estimates: EstimateExplain,
     pub delivery_guarantee: DeliveryGuarantee,
     pub boundedness: PlanBoundedness,

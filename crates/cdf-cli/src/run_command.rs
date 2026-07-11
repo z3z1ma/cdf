@@ -86,7 +86,7 @@ pub(crate) fn run(
     })?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
     let plan = build_engine_plan_for_resource(
-        prepared.resource.as_queryable(),
+        &prepared.resource,
         &ScanArgs {
             resource_id: explicit.resource_id.clone(),
             destination_uri: None,

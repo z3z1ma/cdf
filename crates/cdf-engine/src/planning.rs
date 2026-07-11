@@ -152,6 +152,7 @@ impl Planner {
 
         Ok(EnginePlan {
             scan,
+            partition_schedule: None,
             effective_schema_evidence: None,
             final_projection,
             residual_predicates,
@@ -525,6 +526,7 @@ fn explain_data(
                 metadata: partition.metadata.clone(),
             })
             .collect(),
+        partition_schedule: None,
         estimates: EstimateExplain {
             support: estimate_support,
             rows: scan.estimated_rows,

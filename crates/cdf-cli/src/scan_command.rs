@@ -64,11 +64,8 @@ pub(crate) fn plan_or_explain(
     let resolved =
         resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
-    let plan = build_engine_plan_for_resource(
-        prepared.resource.as_queryable(),
-        &args,
-        identifier_policy.as_ref(),
-    )?;
+    let plan =
+        build_engine_plan_for_resource(&prepared.resource, &args, identifier_policy.as_ref())?;
     let report = scan_report(
         &context,
         prepared.resource.as_queryable(),
@@ -102,11 +99,8 @@ pub(crate) fn preview(
         "preview",
     )?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
-    let plan = build_engine_plan_for_resource(
-        prepared.resource.as_queryable(),
-        &args,
-        identifier_policy.as_ref(),
-    )?;
+    let plan =
+        build_engine_plan_for_resource(&prepared.resource, &args, identifier_policy.as_ref())?;
     match preview_resource_report(&prepared.resource, &plan, prepared.schema_snapshot, host) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
@@ -288,10 +282,11 @@ pub(crate) fn prepare_discover_resource_for_cli(
 }
 
 pub(crate) fn build_engine_plan_for_resource(
-    resource: &dyn QueryableResource,
+    source: &crate::project_run_resource::CliProjectRunSource,
     args: &ScanArgs,
     identifier_policy: Option<&IdentifierPolicy>,
 ) -> Result<EnginePlan, CliError> {
+    let resource = source.as_queryable();
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     let allowances = resource.type_policy_allowances();
@@ -312,9 +307,15 @@ pub(crate) fn build_engine_plan_for_resource(
             .clone()
             .unwrap_or_else(|| format!("cli-{}", resource.descriptor().resource_id)),
     };
-    Planner::new()
+    let plan = Planner::new()
         .plan_tier_b(resource, input)
-        .map_err(CliError::from)
+        .map_err(CliError::from)?;
+    match source.source_plan() {
+        Some(source_plan) => plan
+            .bind_partition_schedule(source_plan)
+            .map_err(CliError::from),
+        None => Ok(plan),
+    }
 }
 
 fn scan_request(

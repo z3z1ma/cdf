@@ -12,17 +12,25 @@ pub(crate) struct PreparedRuntimeResourceForCli {
 
 pub(crate) struct CliProjectRunSource {
     resource: Arc<dyn QueryableResource>,
+    source_plan: Option<cdf_runtime::CompiledSourcePlan>,
 }
 
 impl CliProjectRunSource {
     fn new(resource: impl QueryableResource + 'static) -> Self {
         Self {
             resource: Arc::new(resource),
+            source_plan: None,
         }
     }
 
-    fn from_shared(resource: Arc<dyn QueryableResource>) -> Self {
-        Self { resource }
+    fn from_shared(
+        resource: Arc<dyn QueryableResource>,
+        source_plan: cdf_runtime::CompiledSourcePlan,
+    ) -> Self {
+        Self {
+            resource,
+            source_plan: Some(source_plan),
+        }
     }
 
     pub(crate) fn as_project_resource(&self) -> ProjectRunSource<'_> {
@@ -31,6 +39,10 @@ impl CliProjectRunSource {
 
     pub(crate) fn as_queryable(&self) -> &dyn QueryableResource {
         self.resource.as_ref()
+    }
+
+    pub(crate) fn source_plan(&self) -> Option<&cdf_runtime::CompiledSourcePlan> {
+        self.source_plan.as_ref()
     }
 }
 
@@ -169,6 +181,7 @@ pub(crate) fn build_project_run_resource(
         cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution);
     Ok(CliProjectRunSource::from_shared(
         registry.resolve(plan, &resolution)?,
+        plan.clone(),
     ))
 }
 
