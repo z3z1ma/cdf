@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-09
 Updated: 2026-07-09
-Relates-To: .10x/tickets/done/2026-07-09-p2-ws-b7-rest-observed-reconciliation.md, .10x/tickets/done/2026-07-09-p2-ws-f2-s7-key-disposition-experience.md, .10x/tickets/2026-07-09-p2-ws-g2-type-mismatch-diagnostics.md
+Relates-To: .10x/tickets/done/2026-07-09-p2-ws-b7-rest-observed-reconciliation.md, .10x/tickets/done/2026-07-09-p2-ws-f2-s7-key-disposition-experience.md, .10x/tickets/done/2026-07-09-p2-ws-g2-type-mismatch-diagnostics.md
 
 # P2 B7 and F2 integration evidence
 

@@ -109,6 +109,10 @@ impl ResourceStream for SqlResource {
         self.compiled.schema()
     }
 
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.compiled.type_policy_allowances()
+    }
+
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
         self.compiled.plan_partitions(request)
     }

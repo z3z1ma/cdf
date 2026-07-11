@@ -18,13 +18,13 @@ Identifier normalization MUST run automatically at plan time. `namecase-v1`, des
 
 `cdf preview` MUST share resource resolution, transport/listing, decode, discovery, schema reconciliation, and normalization with `cdf run`, while remaining no-write and bounded. Preview MUST implement `preview-balanced-stratified-v1` from `.10x/decisions/preview-global-budget-and-payload-selection.md`: default global limits are 500 rendered rows, 64 MiB decoded input admitted to contract processing, and 64 admitted batches; deterministic `stratified-hash-v1` selects payload partitions; fair-share quotas prevent an early partition from consuming the batch budget; and other planned partitions are metadata-attested where exact authority exists and reported as payload-uninspected. Preview output MUST disclose limits, policy/selector versions, membership, partial inspection, and the distinction between decoded input and rendered output bytes.
 
-`cdf validate --deep` MUST run the compiler front end without extraction or destination writes: resolve globs, count/list where safe, probe discovery, reconcile schema, normalize identifiers, check destination sheet compatibility, and emit source-specific diagnostics.
+`cdf validate --deep` MUST run the compiler front end without extraction or destination writes: resolve globs, count/list where safe, probe discovery, reconcile schema, normalize identifiers, check destination sheet compatibility, and emit source-specific diagnostics. Diagnostics MUST carry a stable code and severity. Physical schema incompatibilities are errors; row-local JSON-family mismatches that the governing contract can quarantine are warnings because bounded discovery is not exhaustive validation.
 
 `cdf add <id> <url|path|dsn>` MUST probe, infer, pin, and write complete resource configuration. `--dry-run` prints the configuration. Interactive refinements MAY be added, but flag equivalents are required for automation. Key suggestions are advisory and only from evidence.
 
 Ad-hoc mode MUST synthesize a real resource under `.cdf/adhoc/`, pin discovery, plan, package, commit, and gate through the normal pipeline. It MUST print the `cdf add` command that would make the resource permanent.
 
-Diagnostics MUST name the command being run, the failing resource id, the file/source location where known, and a concrete remediation. Generic "fix the project" messages are not enough for P2 source-experience failures.
+Diagnostics MUST name the command being run, the failing resource id, the safe file/source location where known, and a concrete remediation. Type mismatches MUST name the observed and constraint types and only recommend fixes exposed by Tier 0. URL query values MUST be stripped before rendering. Generic "fix the project" messages are not enough for P2 source-experience failures.
 
 ## Acceptance criteria
 

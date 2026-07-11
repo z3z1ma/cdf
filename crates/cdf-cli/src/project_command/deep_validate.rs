@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
+use cdf_contract::{
+    ContractPolicy, ObservedSchema, compile_resource_validation_program, reconcile_schema,
+};
 use cdf_declarative::{CompiledResource, CompiledResourcePlan};
 use cdf_engine::{EnginePlanInput, PlanBoundedness, Planner};
 use cdf_kernel::{ResourceDescriptor, ResourceStream, ScanRequest, SchemaSource};
@@ -64,7 +66,7 @@ fn deep_validate_resource(
 ) -> DeepValidateResourceReport {
     let mut diagnostics = Vec::new();
     let mut working_resource = resource.clone();
-    let partition_report = partition_check(resource, &mut diagnostics);
+    let partition_report = partition_check(context, resource, &mut diagnostics);
     let discovery = discovery_check(context, resource, &mut diagnostics);
     if let Some(discovery) = &discovery.discovery {
         working_resource = resource.with_schema_source_and_schema(
@@ -74,6 +76,7 @@ fn deep_validate_resource(
             Arc::clone(&discovery.normalized_schema),
         );
     }
+    physical_schema_reconciliation_check(context, resource, &mut diagnostics);
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);
     let normalization = normalization_check(&working_resource, &mut diagnostics);
     let destination = destination_check(context, &working_resource, &mut diagnostics);
@@ -107,11 +110,22 @@ fn deep_validate_resource(
 }
 
 fn partition_check(
+    context: &ProjectContext,
     resource: &CompiledResource,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) -> DeepValidatePartitionReport {
     let request = deep_scan_request(resource.descriptor());
-    match request.and_then(|request| resource.plan_partitions(&request)) {
+    let partitions = request.and_then(|request| match resource.plan() {
+        CompiledResourcePlan::Files(_) => resource
+            .to_file_resource(crate::project_run_resource::file_runtime_dependencies(
+                context,
+            )?)?
+            .plan_partitions(&request),
+        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
+            resource.plan_partitions(&request)
+        }
+    });
+    match partitions {
         Ok(partitions) => DeepValidatePartitionReport {
             status: "ok".to_owned(),
             count: partitions.len(),
@@ -195,7 +209,95 @@ fn discover_for_deep_validate(
             &mut transport,
         );
     }
+    if matches!(resource.plan(), CompiledResourcePlan::Files(_)) {
+        return Ok(
+            cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
+                resource,
+                &secret_provider,
+                crate::project_run_resource::file_runtime_dependencies(context)?,
+                cdf_project::SchemaDiscoveryExecutionOptions::default(),
+            )?
+            .discovery,
+        );
+    }
     cdf_project::discover_resource_schema(resource, &secret_provider)
+}
+
+fn physical_schema_reconciliation_check(
+    context: &ProjectContext,
+    resource: &CompiledResource,
+    diagnostics: &mut Vec<DeepValidateDiagnostic>,
+) {
+    let CompiledResourcePlan::Files(plan) = resource.plan() else {
+        return;
+    };
+    if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+        return;
+    }
+    let probe = resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema());
+    let discovery = discover_for_deep_validate(context, &probe);
+    let observed = match discovery {
+        Ok(discovery) => discovery.normalized_schema,
+        Err(error) => {
+            diagnostics.push(diagnostic(
+                "error",
+                "physical_schema_probe",
+                format!(
+                    "resource `{}` at {}: {}",
+                    resource.descriptor().resource_id,
+                    safe_file_location(&plan.root, &plan.glob),
+                    redact_uri_userinfo(&error.message)
+                ),
+                "Fix the unreadable or malformed source before plan/run; schema mismatches that decode successfully remain governed verdicts.",
+            ));
+            return;
+        }
+    };
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let allowances = resource.type_policy_allowances();
+    policy.types.coerce_types = allowances.coerce_types;
+    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    if let Err(error) =
+        reconcile_schema(observed.as_ref(), resource.schema().as_ref(), &policy.types)
+    {
+        let row_local = matches!(
+            plan.format,
+            cdf_declarative::FileFormatDeclaration::Json
+                | cdf_declarative::FileFormatDeclaration::Ndjson
+        );
+        diagnostics.push(diagnostic(
+            if row_local { "warning" } else { "error" },
+            if row_local {
+                "row_local_schema_mismatch"
+            } else {
+                "schema_reconciliation"
+            },
+            format!(
+                "resource `{}` at {}: {}",
+                resource.descriptor().resource_id,
+                safe_file_location(&plan.root, &plan.glob),
+                error.message
+            ),
+            if row_local {
+                "Rows outside the declaration will quarantine; add fields, widen types, or explicitly enable the named type allowance."
+            } else {
+                "Widen the declaration or explicitly enable the named type allowance; lossy and parse coercions remain opt-in."
+            },
+        ));
+    }
+}
+
+fn safe_file_location(root: &str, glob: &str) -> String {
+    let joined = format!(
+        "{}/{}",
+        root.trim_end_matches('/'),
+        glob.trim_start_matches('/')
+    );
+    let without_fragment = joined.split('#').next().unwrap_or(&joined);
+    match without_fragment.split_once('?') {
+        Some((path, _)) => format!("{path}?<redacted>"),
+        None => without_fragment.to_owned(),
+    }
 }
 
 fn validation_program_check(
@@ -203,7 +305,10 @@ fn validation_program_check(
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) -> DeepValidateCheckReport {
     let observed = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let allowances = resource.type_policy_allowances();
+    policy.types.coerce_types = allowances.coerce_types;
+    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
     match compile_resource_validation_program(&policy, &observed, resource.descriptor()) {
         Ok(program) => DeepValidateCheckReport {
             status: "ok".to_owned(),
@@ -299,6 +404,9 @@ fn destination_check(
         }
     };
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let allowances = resource.type_policy_allowances();
+    policy.types.coerce_types = allowances.coerce_types;
+    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
     if let Some(identifier_policy) = identifier_policy {
         policy.normalization.identifier = identifier_policy;
     }
@@ -399,6 +507,7 @@ fn diagnostic(
     DeepValidateDiagnostic {
         severity: severity.to_owned(),
         check: check.to_owned(),
+        code: format!("CDF-DEEP-{}", check.replace('_', "-").to_ascii_uppercase()),
         message: message.into(),
         remediation: remediation.to_owned(),
     }
@@ -528,6 +637,7 @@ impl DeepValidateDestinationReport {
 struct DeepValidateDiagnostic {
     severity: String,
     check: String,
+    code: String,
     message: String,
     remediation: String,
 }
@@ -630,4 +740,20 @@ fn document(report: &DeepValidateReport) -> RenderDocument {
         } else {
             "cdf inspect resources"
         }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_file_location;
+
+    #[test]
+    fn safe_file_location_removes_every_query_value_and_fragment() {
+        assert_eq!(
+            safe_file_location(
+                "https://example.test/data?X-Amz-Signature=secret&ordinary=value#fragment",
+                "events.parquet"
+            ),
+            "https://example.test/data?<redacted>"
+        );
+    }
 }

@@ -23,7 +23,7 @@ use cdf_kernel::{
     PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate, QueryableResource,
     ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
     ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind, TrustLevel,
-    WriteDisposition, with_cdf_metadata,
+    TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
 use sha2::{Digest, Sha256};
 
@@ -70,6 +70,7 @@ pub struct CompiledResource {
     plan: CompiledResourcePlan,
     effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     schema_discovery_sample_files: Option<u64>,
+    type_policy_allowances: TypePolicyAllowances,
 }
 
 impl CompiledResource {
@@ -97,6 +98,10 @@ impl CompiledResource {
         self.schema_discovery_sample_files
     }
 
+    pub fn type_policy_allowances(&self) -> TypePolicyAllowances {
+        self.type_policy_allowances
+    }
+
     pub fn open_preview(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
         match &self.plan {
             CompiledResourcePlan::Files(plan) => open_file_resource_preview(
@@ -104,6 +109,7 @@ impl CompiledResource {
                 Arc::clone(&self.schema),
                 plan,
                 partition,
+                self.type_policy_allowances,
             ),
             CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Box::pin(async {
                 Err(CdfError::internal(
@@ -493,9 +499,13 @@ impl ResourceStream for CompiledResource {
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
         match &self.plan {
-            CompiledResourcePlan::Files(plan) => {
-                open_file_resource(&self.descriptor, Arc::clone(&self.schema), plan, partition)
-            }
+            CompiledResourcePlan::Files(plan) => open_file_resource(
+                &self.descriptor,
+                Arc::clone(&self.schema),
+                plan,
+                partition,
+                self.type_policy_allowances,
+            ),
             CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Box::pin(async {
                 Err(CdfError::internal(
                     "declarative resource execution is outside the MVP compiler crate",
@@ -506,6 +516,10 @@ impl ResourceStream for CompiledResource {
 
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         self.effective_schema_runtime.as_ref()
+    }
+
+    fn type_policy_allowances(&self) -> TypePolicyAllowances {
+        self.type_policy_allowances
     }
 }
 
@@ -671,6 +685,14 @@ fn compile_resource(
         plan,
         effective_schema_runtime: None,
         schema_discovery_sample_files: resource.sample_files,
+        type_policy_allowances: resource
+            .types
+            .as_ref()
+            .map(|types| TypePolicyAllowances {
+                coerce_types: types.coerce_types,
+                allow_lossy_mapping: types.allow_lossy_mapping,
+            })
+            .unwrap_or_default(),
     })
 }
 

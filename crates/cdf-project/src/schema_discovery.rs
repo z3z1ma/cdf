@@ -876,7 +876,7 @@ fn discover_binary_resource_schema(
         )));
     }
 
-    let contract = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let contract = contract_policy_for_resource(resource);
     let (effective_schema, terminal_quarantines) = if options.runtime_effective_schema {
         let baseline = options.verified_baseline().ok_or_else(|| {
             CdfError::contract(
@@ -951,9 +951,7 @@ fn discover_binary_resource_schema(
         selector: selection.selector.clone(),
         budget: options.budget.clone(),
         normalizer_version: NORMALIZER_NAMECASE_V1.to_owned(),
-        policy_version: crate::internal::semantic_hash(&ContractPolicy::for_trust(
-            resource.descriptor().trust_level.clone(),
-        ))?,
+        policy_version: crate::internal::semantic_hash(&contract_policy_for_resource(resource))?,
         candidates: manifest_candidates,
     })?;
     let artifact = SchemaSnapshotArtifact::new_with_discovery_manifest(
@@ -1078,6 +1076,14 @@ fn discover_binary_resource_schema(
         discovery_manifest: Some(manifest),
         effective_schema_runtime,
     })
+}
+
+fn contract_policy_for_resource(resource: &CompiledResource) -> ContractPolicy {
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let allowances = resource.type_policy_allowances();
+    policy.types.coerce_types = allowances.coerce_types;
+    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    policy
 }
 
 fn probe_binary_candidate(

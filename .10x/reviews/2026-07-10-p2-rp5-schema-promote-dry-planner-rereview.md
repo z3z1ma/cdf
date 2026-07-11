@@ -23,7 +23,7 @@ The repaired RP5 typed planner, version-3 promotion snapshot artifact, verified-
 - Pass: fresh discovery remains distinct from residual runtime evidence, stale pins and policy hashes fail closed, destination mappings use the shared specificity/ambiguity resolver, and coercion verdicts remain serialized total decisions.
 - Pass: human output now exposes fresh content identity, source names, coercion verdicts, affected packages and address examples, per-target sheet/receipt/package/path/evidence facts, migrations, conflicts, all write flags, execution preconditions, and exact recovery command. JSON retains the complete typed report.
 - Pass: the command has no execution flag or mutating planner branch. The CLI integration fixture proves byte-identical project state across repeated JSON/human dry plans and invalid, unknown-path, and stale-pin cases; the report declares snapshot, lockfile, package, destination, checkpoint, lease, and ledger writes false.
-- Pass with recorded limit: the full planner does not claim a reachable lossy allowance. Current compiled trust policy remains fail-closed; the helper proves classification only. The future Tier-0 authority surface is explicitly owned by `.10x/tickets/2026-07-09-p2-ws-g2-type-mismatch-diagnostics.md` under `.10x/knowledge/type-policy-authority.md`.
+- Pass with recorded limit: the full planner did not claim a reachable lossy allowance at the reviewed revision. The later Tier-0 authority surface is owned by `.10x/tickets/done/2026-07-09-p2-ws-g2-type-mismatch-diagnostics.md` under `.10x/knowledge/type-policy-authority.md`.
 
 ## Verification performed
 

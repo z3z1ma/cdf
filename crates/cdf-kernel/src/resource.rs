@@ -957,6 +957,15 @@ pub trait ResourceStream {
     fn effective_schema_runtime(&self) -> Option<&EffectiveSchemaRuntime> {
         None
     }
+    fn type_policy_allowances(&self) -> TypePolicyAllowances {
+        TypePolicyAllowances::default()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TypePolicyAllowances {
+    pub coerce_types: bool,
+    pub allow_lossy_mapping: bool,
 }
 
 pub trait QueryableResource: ResourceStream {

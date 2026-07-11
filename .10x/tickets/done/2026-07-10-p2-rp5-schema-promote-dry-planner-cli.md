@@ -47,4 +47,4 @@ No `--execute`, correction writes, lease acquisition, lockfile mutation, or GC c
 
 ## Blockers
 
-None for the RP5 dry-planner scope. A full-planner positive `LossyAllowed` case remains separately owned by `.10x/tickets/2026-07-09-p2-ws-g2-type-mismatch-diagnostics.md`; `.10x/knowledge/type-policy-authority.md` requires that future allowance to be compiled into identity rather than injected at runtime. RP5 proves helper-level classification and full-planner fail-closed behavior without claiming the currently unreachable positive branch.
+None for the RP5 dry-planner scope. The Tier-0 authority surface was subsequently delivered by `.10x/tickets/done/2026-07-09-p2-ws-g2-type-mismatch-diagnostics.md`; `.10x/knowledge/type-policy-authority.md` requires that allowance to be compiled into identity rather than injected at runtime. RP5 proves helper-level classification and fail-closed behavior for resources without that explicit authority.

@@ -12,11 +12,12 @@ use std::{
 };
 
 use arrow_schema::SchemaRef;
+use cdf_contract::{ContractPolicy, TypePolicy};
 use cdf_formats::{
     CsvOptions, FileCompression, FileFormat, FileSource, JsonOptions, RangeChunkReader,
     ReadOptions, read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema,
-    read_file_source, read_file_source_with_declared_schema, read_parquet_range_source,
-    read_parquet_range_source_with_declared_schema,
+    read_file_source, read_file_source_with_declared_schema_and_type_policy,
+    read_parquet_range_source, read_parquet_range_source_with_declared_schema_and_type_policy,
 };
 use cdf_http::SecretProvider;
 use cdf_kernel::{
@@ -307,7 +308,14 @@ impl FileResource {
             }
         };
         let dependencies = self.dependencies.clone();
-        open_file_resource_with_dependencies(&descriptor, schema, &plan, partition, dependencies)
+        open_file_resource_with_dependencies(
+            &descriptor,
+            schema,
+            &plan,
+            partition,
+            dependencies,
+            self.compiled.type_policy_allowances(),
+        )
     }
 }
 
@@ -328,6 +336,10 @@ impl ResourceStream for FileResource {
 
     fn schema(&self) -> SchemaRef {
         self.compiled.schema()
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.compiled.type_policy_allowances()
     }
 
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
@@ -367,6 +379,7 @@ impl ResourceStream for FileResource {
             &plan,
             partition,
             self.dependencies.clone(),
+            self.compiled.type_policy_allowances(),
         )
     }
 
@@ -562,6 +575,7 @@ pub(crate) fn open_file_resource(
     declared_schema: SchemaRef,
     plan: &FileResourcePlan,
     partition: PartitionPlan,
+    allowances: cdf_kernel::TypePolicyAllowances,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     open_file_resource_with_dependencies(
         descriptor,
@@ -569,6 +583,7 @@ pub(crate) fn open_file_resource(
         plan,
         partition,
         FileRuntimeDependencies::local(),
+        allowances,
     )
 }
 
@@ -577,6 +592,7 @@ pub(crate) fn open_file_resource_preview(
     declared_schema: SchemaRef,
     plan: &FileResourcePlan,
     partition: PartitionPlan,
+    allowances: cdf_kernel::TypePolicyAllowances,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     open_file_resource_with_dependencies(
         descriptor,
@@ -584,6 +600,7 @@ pub(crate) fn open_file_resource_preview(
         plan,
         partition,
         FileRuntimeDependencies::local(),
+        allowances,
     )
 }
 
@@ -593,6 +610,7 @@ fn open_file_resource_with_dependencies(
     plan: &FileResourcePlan,
     partition: PartitionPlan,
     dependencies: FileRuntimeDependencies,
+    allowances: cdf_kernel::TypePolicyAllowances,
 ) -> BoxFuture<'static, Result<BatchStream>> {
     let descriptor = descriptor.clone();
     let declared_schema = declared_schema.clone();
@@ -602,13 +620,16 @@ fn open_file_resource_with_dependencies(
             validate_partition(&descriptor, &plan, &partition, transport)
         })?;
         let options = ReadOptions::new(descriptor.resource_id.clone(), partition.partition_id);
+        let mut type_policy = ContractPolicy::default().types;
+        type_policy.coerce_types = allowances.coerce_types;
+        type_policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
         let read = read_file_match(
             &resolved,
             &plan.format,
             options,
             declared_schema,
-            dependencies.transport(),
-            dependencies.max_spool_bytes(),
+            &dependencies,
+            &type_policy,
         )?;
         Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
     })
@@ -627,8 +648,8 @@ fn read_file_match(
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     declared_schema: SchemaRef,
-    transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
-    max_spool_bytes: u64,
+    dependencies: &FileRuntimeDependencies,
+    type_policy: &TypePolicy,
 ) -> Result<cdf_formats::FormatRead> {
     match &resolved.open {
         ResolvedFileOpen::LocalPath(path) => read_file_path(
@@ -637,6 +658,7 @@ fn read_file_match(
             declaration,
             options,
             declared_schema,
+            type_policy,
         ),
         ResolvedFileOpen::Transport(resource) => read_transport_file(
             resource.clone(),
@@ -644,8 +666,8 @@ fn read_file_match(
             declaration,
             options,
             declared_schema,
-            transport,
-            max_spool_bytes,
+            dependencies,
+            type_policy,
         ),
     }
 }
@@ -656,6 +678,7 @@ fn read_file_path(
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
 ) -> Result<cdf_formats::FormatRead> {
     if compression != FileCompression::None
         && matches!(declaration, FileFormatDeclaration::ArrowIpc)
@@ -673,7 +696,14 @@ fn read_file_path(
         FileFormatDeclaration::ArrowIpc => read_arrow_ipc_file_path(path, &options),
         _ => {
             let format = compile_format(declaration)?;
-            read_non_ipc_file_path(path, format, compression, options, declared_schema)
+            read_non_ipc_file_path(
+                path,
+                format,
+                compression,
+                options,
+                declared_schema,
+                type_policy,
+            )
         }
     }?;
     Ok(read)
@@ -685,10 +715,11 @@ fn read_non_ipc_file_path(
     compression: FileCompression,
     options: ReadOptions,
     declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
 ) -> Result<cdf_formats::FormatRead> {
     let source = FileSource::new(path, format, options).with_compression(compression);
     if uses_declared_file_schema(&source.format, &declared_schema) {
-        read_file_source_with_declared_schema(&source, declared_schema)
+        read_file_source_with_declared_schema_and_type_policy(&source, declared_schema, type_policy)
     } else {
         read_file_source(&source)
     }
@@ -700,8 +731,8 @@ fn read_transport_file(
     declaration: &FileFormatDeclaration,
     options: ReadOptions,
     declared_schema: SchemaRef,
-    transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
-    max_spool_bytes: u64,
+    dependencies: &FileRuntimeDependencies,
+    type_policy: &TypePolicy,
 ) -> Result<cdf_formats::FormatRead> {
     let scope = ScopeKey::File {
         path: resolved.path_text.clone(),
@@ -716,12 +747,14 @@ fn read_transport_file(
         }],
     }));
     if declaration == &FileFormatDeclaration::Parquet {
-        let range_reader = transport_range_reader(transport, resource, resolved.size_bytes);
+        let range_reader =
+            transport_range_reader(dependencies.transport(), resource, resolved.size_bytes);
         return if uses_declared_file_schema(&FileFormat::Parquet, &declared_schema) {
-            read_parquet_range_source_with_declared_schema(
+            read_parquet_range_source_with_declared_schema_and_type_policy(
                 range_reader,
                 &options,
                 declared_schema,
+                type_policy,
                 scope,
                 position,
             )
@@ -736,13 +769,19 @@ fn read_transport_file(
     }
     // 10x: this bounded compatibility spool preserves the transport/evidence boundary until
     // P3's channel-based format runtime consumes the sequential reader directly.
-    let spool = spool_transport_file(&transport, &resource, resolved.size_bytes, max_spool_bytes)?;
+    let spool = spool_transport_file(
+        &dependencies.transport(),
+        &resource,
+        resolved.size_bytes,
+        dependencies.max_spool_bytes(),
+    )?;
     let mut read = read_file_path(
         spool.path(),
         resolved.compression.mode,
         declaration,
         options,
         declared_schema,
+        type_policy,
     )?;
     read.descriptor.state_scope = scope;
     for batch in &mut read.batches {
@@ -2295,8 +2334,10 @@ mod tests {
         ))
         .unwrap();
         let facade = FileTransportFacade::new().with_object_store("s3://acme-events", store);
-        let transport: Arc<Mutex<Box<dyn FileTransport + Send>>> =
-            Arc::new(Mutex::new(Box::new(facade)));
+        let dependencies = FileRuntimeDependencies::new(facade)
+            .with_max_spool_bytes(encoded.len() as u64)
+            .unwrap();
+        let transport = dependencies.transport();
         let plan = FileResourcePlan {
             source: "events".to_owned(),
             root: "s3://acme-events/prod".to_owned(),
@@ -2317,13 +2358,14 @@ mod tests {
         assert_eq!(resolved[0].compression.mode, FileCompression::Gzip);
         let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
         let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
+        let type_policy = ContractPolicy::default().types;
         let read = read_file_match(
             &resolved[0],
             &plan.format,
             options.clone(),
             declared.clone(),
-            Arc::clone(&transport),
-            encoded.len() as u64,
+            &dependencies,
+            &type_policy,
         )
         .unwrap();
         assert_eq!(
@@ -2343,8 +2385,16 @@ mod tests {
             "s3://acme-events/prod/2026/events.ndjson.gz"
         );
 
-        let error = read_file_match(&resolved[0], &plan.format, options, declared, transport, 1)
-            .unwrap_err();
+        let constrained = dependencies.with_max_spool_bytes(1).unwrap();
+        let error = read_file_match(
+            &resolved[0],
+            &plan.format,
+            options,
+            declared,
+            &constrained,
+            &type_policy,
+        )
+        .unwrap_err();
         assert!(error.message.contains("disk budget"));
         assert!(error.message.contains(&encoded.len().to_string()));
     }

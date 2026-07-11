@@ -1,6 +1,6 @@
-Status: blocked
+Status: done
 Created: 2026-07-09
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-ws-g-source-diagnostics-deep-validate.md
 Depends-On: .10x/tickets/done/2026-07-09-p2-ws-g1-source-diagnostics-and-deep-validate-foundation.md, .10x/tickets/done/2026-07-09-p2-ws-b6-json-family-observed-reconciliation.md, .10x/specs/data-onramp-source-experience-cli.md, .10x/specs/cli-error-experience-catalog.md
 
@@ -33,9 +33,9 @@ Cloud-specific errors, future compression/format-detection diagnostics, Python/W
 
 - 2026-07-09: Opened after G1 established the deep-validation doorway and B6 made reconciliation decisions exact; the remaining gap is preserving that specificity through CLI command/error rendering.
 - 2026-07-09: Read-only preflight found the current deep-validation check compares the constraint schema to itself and plan does no physical reconciliation. Structured reconciliation errors and bounded Parquet footer probes already exist, but JSON inspection is currently unbounded, row-local JSON gates have no ratified warning representation, and Tier-0 resource declarations cannot express the `coerce_types` / `allow_lossy_mapping` fixes named by the reconciler. No implementation was started. The preflight also identified a required source-location redactor that removes every query value rather than relying on secret-looking parameter names.
+- 2026-07-10: Ratified the blocked semantics in `.10x/decisions/deep-validation-sampling-warnings-and-type-allowances.md` and updated both governing P2 specifications. Tier-0 type allowances now compile into resource runtime policy and the validation program; deep validation resolves production transports, probes physical schemas, distinguishes fatal decode/probe failures from governed row-local schema warnings, emits stable codes, and redacts all URL query values.
+- 2026-07-10: Acceptance evidence is `.10x/evidence/2026-07-10-p2-g2-deep-type-diagnostics.md`; adversarial review is `.10x/reviews/2026-07-10-p2-g2-deep-type-diagnostics-review.md`. The review's significant malformed-input downgrade finding was repaired and regression-tested before closure.
 
 ## Blockers
 
-- Ratify the JSON/NDJSON compiler-probe bound. Recommended contract: stop at the first of 4,096 records or 8 MiB of decoded input and record both limits plus actual sampled counts.
-- Ratify row-local mismatch rendering. Recommended contract: `cdf validate --deep` emits typed warnings for quarantinable row-local mismatches; plan/preview/run keep them as governed non-fatal outcomes.
-- Ratify the Tier-0 override surface for existing type-policy fields. Recommended contract: optional `[resource.<name>.types]` / `types = { coerce_types = ..., allow_lossy_mapping = ... }`; both allowances remain `false` unless explicitly written, while non-allowance fidelity fields may continue to derive from the governing contract.
+None.

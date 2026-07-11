@@ -278,6 +278,9 @@ pub(crate) fn build_engine_plan_for_resource(
 ) -> Result<EnginePlan, CliError> {
     let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    let allowances = resource.type_policy_allowances();
+    policy.types.coerce_types = allowances.coerce_types;
+    policy.types.allow_lossy_mapping = allowances.allow_lossy_mapping;
     if let Some(identifier_policy) = identifier_policy {
         policy.normalization.identifier = identifier_policy.clone();
     }

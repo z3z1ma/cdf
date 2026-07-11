@@ -105,6 +105,15 @@ pub struct ResourceDeclaration {
     pub freshness: Option<FreshnessDeclaration>,
     pub schema: Option<SchemaDeclaration>,
     pub sample: Option<SampleDeclaration>,
+    pub types: Option<TypePolicyDeclaration>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct TypePolicyDeclaration {
+    #[serde(default)]
+    pub coerce_types: bool,
+    #[serde(default)]
+    pub allow_lossy_mapping: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

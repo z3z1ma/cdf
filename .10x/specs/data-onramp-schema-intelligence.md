@@ -18,7 +18,7 @@ Discovery probes MUST be bounded and source-specific:
 
 - Parquet: footer/schema metadata through ranged reads when remote.
 - Arrow IPC: schema block.
-- CSV, JSON, NDJSON: bounded sampling.
+- CSV, JSON, NDJSON: bounded sampling. JSON-family probes MUST stop at the first of 4,096 records or 8 MiB of admitted input by default, record configured and observed coverage, and MUST NOT represent sampled evidence as exhaustive row conformance.
 - SQL: catalogs such as `information_schema`.
 - REST: one recorded sample page plus declared cursor policy.
 
@@ -35,6 +35,10 @@ Discovery MUST NOT silently mutate a pinned schema during run. Drift against a p
 Schema reconciliation MUST be centralized. Format readers MUST feed observed physical schema facts into one reconciliation stage. Declared schemas and hints constrain, project, and annotate observed schema; they do not replace reality.
 
 Automatic widening MUST be lossless and recorded in the validation program. Lossy casts require `allow_lossy_mapping`. String parsing into dates, timestamps, decimals, or other semantic types is opt-in through `coerce_types`; default inference of decimal-looking strings remains `utf8` plus suggestion.
+
+Tier-0 resources MAY declare `types = { coerce_types = <bool>, allow_lossy_mapping = <bool> }`. Both allowances MUST default to `false`, MUST compile into resource runtime policy and the serialized validation program, and MUST apply identically in discovery reconciliation, deep validation, preview, plan, and run.
+
+Row-local mismatches found by sampled JSON-family probes that the governing contract can quarantine MUST be represented as warning verdicts rather than compiler failures. Runtime contract evaluation remains authoritative for all rows and MUST preserve quarantined or residual values as evidence.
 
 Declarative field types MUST cover Arrow's closed vocabulary from `VISION.md` Chapter 7, including decimal128/256 with precision and scale, nested list/struct/map, all integer widths, floats, date/time/timestamp/duration, utf8/binary large variants, and nullability/source metadata.
 

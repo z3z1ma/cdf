@@ -1749,6 +1749,53 @@ schema = {{ fields = [{{ name = "payload", type = "utf8" }}] }}
 }
 
 #[test]
+fn tier_zero_type_allowances_compile_explicitly_and_default_closed() {
+    let configured = parse_toml(
+        r#"
+[source.local]
+kind = "files"
+root = "/tmp"
+
+[resource.events]
+glob = "events.ndjson"
+format = "ndjson"
+trust = "governed"
+types = { coerce_types = true, allow_lossy_mapping = true }
+schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
+"#,
+    )
+    .unwrap();
+    let configured = compile_document(&configured).unwrap().remove(0);
+    assert_eq!(
+        configured.type_policy_allowances(),
+        cdf_kernel::TypePolicyAllowances {
+            coerce_types: true,
+            allow_lossy_mapping: true,
+        }
+    );
+
+    let closed = parse_toml(
+        r#"
+[source.local]
+kind = "files"
+root = "/tmp"
+
+[resource.events]
+glob = "events.ndjson"
+format = "ndjson"
+trust = "governed"
+schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
+"#,
+    )
+    .unwrap();
+    let closed = compile_document(&closed).unwrap().remove(0);
+    assert_eq!(
+        closed.type_policy_allowances(),
+        cdf_kernel::TypePolicyAllowances::default()
+    );
+}
+
+#[test]
 fn disposition_merge_requires_explicit_merge_key_with_remediation() {
     let input = r#"
 [source.local]

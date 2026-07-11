@@ -371,6 +371,24 @@ pub fn read_parquet_range_source_with_declared_schema(
     )
 }
 
+pub fn read_parquet_range_source_with_declared_schema_and_type_policy(
+    reader: RangeChunkReader,
+    options: &ReadOptions,
+    declared_schema: SchemaRef,
+    type_policy: &TypePolicy,
+    scope: ScopeKey,
+    position: Option<SourcePosition>,
+) -> Result<FormatRead> {
+    read_parquet_chunk_reader_with_declared_schema_and_scope(
+        reader,
+        options,
+        declared_schema,
+        type_policy,
+        scope,
+        position,
+    )
+}
+
 pub fn infer_ndjson_observed_schema(
     bytes: &[u8],
     json_options: &JsonOptions,

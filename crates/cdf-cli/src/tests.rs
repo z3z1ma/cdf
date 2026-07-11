@@ -834,6 +834,169 @@ fn validate_deep_inferred_binary_mismatch_names_all_signals_without_writes() {
 }
 
 #[test]
+fn validate_deep_names_physical_and_constraint_types_and_honors_explicit_allowance() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "vendors.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [{ name = "VendorID", type = "int8", nullable = false }] }
+"#,
+    )
+    .unwrap();
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+
+    let denied = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+    assert_eq!(denied.exit_code, 3, "{}", denied.stderr);
+    let denied_json = stderr_or_stdout_json(&denied.stdout);
+    let messages = denied_json["result"]["resources"][0]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|diagnostic| diagnostic["message"].as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(messages.contains("resource `local.events`"), "{messages}");
+    assert!(messages.contains("vendors.parquet"), "{messages}");
+    assert!(messages.contains("VendorID"), "{messages}");
+    assert!(messages.contains("Int32"), "{messages}");
+    assert!(messages.contains("Int8"), "{messages}");
+    assert!(messages.contains("allow_lossy_mapping"), "{messages}");
+    assert_no_schema_discovery_writes(&project);
+
+    let path = project.root.join("resources/files.toml");
+    let allowed = fs::read_to_string(&path).unwrap().replace(
+        "trust = \"governed\"",
+        "trust = \"governed\"\ntypes = { allow_lossy_mapping = true }",
+    );
+    fs::write(path, allowed).unwrap();
+    let allowed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+    assert_eq!(allowed.exit_code, 0, "{}{}", allowed.stdout, allowed.stderr);
+    assert_no_schema_discovery_writes(&project);
+}
+
+#[test]
+fn validate_deep_reports_json_row_mismatch_as_governed_warning() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        b"{\"id\":1,\"updated_at\":1}\n{\"id\":\"bad\",\"updated_at\":2}\n",
+    )
+    .unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+
+    assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let diagnostics = json["result"]["resources"][0]["diagnostics"]
+        .as_array()
+        .unwrap();
+    let mismatch = diagnostics
+        .iter()
+        .find(|diagnostic| {
+            diagnostic["check"]
+                .as_str()
+                .is_some_and(|code| code.starts_with("row_local_schema_"))
+        })
+        .unwrap_or_else(|| panic!("expected typed row-local warning, got {diagnostics:#?}"));
+    assert_eq!(mismatch["severity"], "warning");
+    assert_eq!(mismatch["code"], "CDF-DEEP-ROW-LOCAL-SCHEMA-MISMATCH");
+    assert!(mismatch["message"].as_str().unwrap().contains("id"));
+    assert_no_schema_discovery_writes(&project);
+}
+
+#[test]
+fn validate_deep_rejects_malformed_json_probe_instead_of_downgrading_it() {
+    let project = TestProject::new();
+    fs::write(project.root.join("data/events.ndjson"), b"{not-json}\n").unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "validate",
+        "--deep",
+    ]);
+
+    assert_eq!(result.exit_code, 3, "{}{}", result.stdout, result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let diagnostics = json["result"]["resources"][0]["diagnostics"]
+        .as_array()
+        .unwrap();
+    let probe = diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic["check"] == "physical_schema_probe")
+        .unwrap_or_else(|| panic!("expected physical probe failure, got {diagnostics:#?}"));
+    assert_eq!(probe["severity"], "error");
+    assert_no_schema_discovery_writes(&project);
+}
+
+#[test]
+fn tier_zero_coerce_types_applies_to_actual_file_execution() {
+    let project = TestProject::new();
+    let resource_path = project.root.join("resources/files.toml");
+    let resource = fs::read_to_string(&resource_path).unwrap().replace(
+        "trust = \"governed\"",
+        "trust = \"governed\"\ntypes = { coerce_types = true }",
+    );
+    fs::write(resource_path, resource).unwrap();
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        b"{\"id\":\"1\",\"updated_at\":\"1783296000000000\"}\n{\"id\":\"2\",\"updated_at\":\"1783296060000000\"}\n",
+    )
+    .unwrap();
+
+    let result = run_valid_run_args(
+        &project,
+        "pkg-tier-zero-coerce",
+        "checkpoint-tier-zero-coerce",
+    );
+
+    assert_eq!(result.exit_code, 0, "{}{}", result.stdout, result.stderr);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 2);
+    let connection = duckdb::Connection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let ids = connection
+        .prepare("SELECT id FROM events ORDER BY id")
+        .unwrap()
+        .query_map([], |row| row.get::<_, i64>(0))
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    assert_eq!(ids, vec![1, 2]);
+}
+
+#[test]
 fn remote_arrow_declared_schema_fails_plan_and_deep_validate_before_writes() {
     let project = TestProject::new();
     fs::write(
@@ -865,10 +1028,8 @@ schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
     assert_ne!(plan.exit_code, 0);
     let plan_json = stderr_or_stdout_json(&plan.stderr);
     let plan_message = plan_json["error"]["message"].as_str().unwrap();
-    assert!(plan_message.contains("HTTP(S) file resource `local.events`"));
-    assert!(plan_message.contains("only single-file Parquet"));
-    assert!(plan_message.contains("resolved format `arrow_ipc`"));
-    assert!(plan_message.contains("remote Arrow IPC remains excluded"));
+    assert!(plan_message.contains("remote file resource `local.events`"));
+    assert!(plan_message.contains("does not support Arrow IPC"));
     assert_eq!(project_tree_snapshot(&project.root), before);
 
     let deep = run([
@@ -889,10 +1050,8 @@ schema = { fields = [{ name = "id", type = "int64", nullable = false }] }
         .filter_map(|diagnostic| diagnostic["message"].as_str())
         .collect::<Vec<_>>()
         .join("\n");
-    assert!(deep_messages.contains("HTTP(S) file resource `local.events`"));
-    assert!(deep_messages.contains("only single-file Parquet"));
-    assert!(deep_messages.contains("resolved format `arrow_ipc`"));
-    assert!(deep_messages.contains("remote Arrow IPC remains excluded"));
+    assert!(deep_messages.contains("remote file resource `local.events`"));
+    assert!(deep_messages.contains("does not support Arrow IPC"));
     assert_eq!(project_tree_snapshot(&project.root), before);
 }
 
@@ -9653,22 +9812,23 @@ fn all_quarantine_run_commits_zero_segments_and_skips_exact_identity_until_chang
 }
 
 #[test]
-fn run_unsupported_discover_schema_resource_fails_before_writes() {
+fn run_ndjson_discover_schema_resource_autopins_and_commits() {
     let project = TestProject::new();
     write_discovered_schema_resource(&project);
 
     let result = run_valid_run_args(&project, "pkg-run-discovered", "checkpoint-run-discovered");
 
-    assert_eq!(result.exit_code, 3);
-    assert_no_run_writes(&project, "pkg-run-discovered");
-    assert!(!project.root.join(".cdf/schemas").exists());
-    let json = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(result.exit_code, 0, "{}", result.stderr);
+    assert!(project.root.join(".cdf/schemas").exists());
     assert!(
-        json["error"]["message"]
-            .as_str()
-            .unwrap()
-            .contains("unsupported schema discovery slice")
+        project
+            .root
+            .join(".cdf/packages/pkg-run-discovered/manifest.json")
+            .exists()
     );
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["resource_id"], "local.events");
+    assert!(project.root.join(".cdf/state.db").exists());
 }
 
 #[test]
