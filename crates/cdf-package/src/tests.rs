@@ -19,6 +19,32 @@ use cdf_kernel::{
     WriteDisposition, aggregate_processed_observation_positions,
 };
 
+#[cfg(unix)]
+#[test]
+fn finalization_does_not_reopen_registered_artifact_content() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::tempdir().unwrap();
+    let package_dir = directory.path().join("package");
+    let builder = PackageBuilder::create(&package_dir, "pkg-no-reread").unwrap();
+    builder
+        .write_identity_artifact("stats/receipt-backed.bin", b"registered")
+        .unwrap();
+    let artifact = package_dir.join("stats/receipt-backed.bin");
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let manifest = builder.finish().unwrap();
+
+    fs::set_permissions(&artifact, fs::Permissions::from_mode(0o600)).unwrap();
+    assert!(
+        manifest
+            .identity
+            .files
+            .iter()
+            .any(|entry| entry.path == "stats/receipt-backed.bin")
+    );
+}
+
 fn sample_batch() -> RecordBatch {
     sample_batch_values(vec![1, 2, 3], vec![Some("ada"), Some("grace"), None])
 }

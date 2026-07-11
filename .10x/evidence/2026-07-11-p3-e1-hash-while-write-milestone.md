@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-e1-hashing-artifact-sink.md, .10x/specs/package-io-hashing-durability.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-e1-hashing-artifact-sink.md, .10x/specs/package-io-hashing-durability.md
 
 # P3 E1 hash-while-write milestone
 
@@ -34,4 +34,8 @@ This supports exact receipt hashing, golden compatibility, cleanup on cancelled 
 
 ## Limits
 
-This milestone does not close E1. Boundary-specific injected failures for encoder finish, file sync, directory sync, and panic remain to be proven before closure. Trace remains an intentionally unregistered compatibility artifact and is hashed once at finalization; E2 owns its bounded sink. The current receipt cache is memory-resident and E2 owns the bounded append/spill-backed draft index and million-entry RSS law. The tiny baseline remains dominated by fixed durability costs and cannot establish device-roofline throughput or hashing's large-file wall fraction.
+After the initial milestone, permanent tests injected failures after encoder finish and before file sync, rename, and directory sync; cancellation and panic paths also exercised `Drop` cleanup. All returned no receipt and left no temporary partial. A directory-sync failure can leave the fully written renamed draft at its final path, but it returns no publication authority; this is the specified pre-manifest draft state. A Unix permission test made registered content unreadable before finalization and still completed, proving finalization used the receipt rather than reopening content.
+
+A corrected five-sample, alternating-order 256 MiB disk control applied the same flush, file sync, atomic rename, and directory sync protocol to plain and hashing writers. Median plain atomic publication was 155,997,750 ns; median hash-while-write publication was 151,944,792 ns (-2.60%). Hashing overhead was therefore not distinguishable from storage variance on this host and is below the 5% acceptance threshold in this cell. The earlier 7.30% one-shot result was rejected because its plain control omitted rename and directory sync.
+
+Trace remains an intentionally unregistered compatibility artifact and is hashed once at finalization; E2 owns its bounded sink. The current receipt cache is memory-resident and E2 owns the bounded append/spill-backed draft index and million-entry RSS law. The tiny baseline remains dominated by fixed durability costs and cannot establish device-roofline throughput.

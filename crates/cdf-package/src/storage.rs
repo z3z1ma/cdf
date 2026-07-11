@@ -82,6 +82,17 @@ struct AtomicArtifactSink {
     parent: PathBuf,
     writer: Option<HashingWriter<File>>,
     durability: ArtifactDurability,
+    #[cfg(test)]
+    fail_at: Option<PublishBoundary>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PublishBoundary {
+    EncoderFinish,
+    FileSync,
+    Rename,
+    DirectorySync,
 }
 
 impl AtomicArtifactSink {
@@ -98,7 +109,24 @@ impl AtomicArtifactSink {
             parent: parent.to_path_buf(),
             writer: Some(HashingWriter::new(file)),
             durability,
+            #[cfg(test)]
+            fail_at: None,
         })
+    }
+
+    #[cfg(test)]
+    fn inject_failure(&mut self, boundary: PublishBoundary) {
+        self.fail_at = Some(boundary);
+    }
+
+    #[cfg(test)]
+    fn check_failure(&self, boundary: PublishBoundary) -> Result<()> {
+        if self.fail_at == Some(boundary) {
+            return Err(CdfError::internal(format!(
+                "injected artifact publish failure at {boundary:?}"
+            )));
+        }
+        Ok(())
     }
 
     fn writer_mut(&mut self) -> Result<&mut HashingWriter<File>> {
@@ -116,10 +144,14 @@ impl AtomicArtifactSink {
             writer
                 .flush()
                 .map_err(|error| io_error(format!("flush {}", self.temp_path.display()), error))?;
+            #[cfg(test)]
+            self.check_failure(PublishBoundary::FileSync)?;
             writer
                 .inner
                 .sync_all()
                 .map_err(|error| io_error(format!("sync {}", self.temp_path.display()), error))?;
+            #[cfg(test)]
+            self.check_failure(PublishBoundary::Rename)?;
             fs::rename(&self.temp_path, &self.final_path).map_err(|error| {
                 io_error(
                     format!(
@@ -130,6 +162,8 @@ impl AtomicArtifactSink {
                     error,
                 )
             })?;
+            #[cfg(test)]
+            self.check_failure(PublishBoundary::DirectorySync)?;
             sync_directory(&self.parent)
         })();
         if let Err(error) = publish {
@@ -284,17 +318,7 @@ pub(crate) fn write_arrow_ipc_file(
 ) -> Result<IpcWriteReceipt> {
     let mut sink = AtomicArtifactSink::create(path, ArtifactDurability::SegmentPublish)?;
     let encode_started = std::time::Instant::now();
-    {
-        let options = IpcWriteOptions::default()
-            .try_with_compression(Some(CompressionType::LZ4_FRAME))
-            .map_err(CdfError::from)?;
-        let mut writer = FileWriter::try_new_with_options(sink.writer_mut()?, schema, options)
-            .map_err(CdfError::from)?;
-        for batch in batches {
-            writer.write(batch).map_err(CdfError::from)?;
-        }
-        writer.finish().map_err(CdfError::from)?;
-    }
+    encode_arrow_ipc(&mut sink, schema, batches)?;
     let encode_hash_duration_ns = duration_ns(encode_started, "IPC encode/hash")?;
     let publish_started = std::time::Instant::now();
     let artifact = sink.finish()?;
@@ -303,6 +327,22 @@ pub(crate) fn write_arrow_ipc_file(
         encode_hash_duration_ns,
         publish_duration_ns: duration_ns(publish_started, "IPC publish")?,
     })
+}
+
+fn encode_arrow_ipc(
+    sink: &mut AtomicArtifactSink,
+    schema: &arrow_schema::Schema,
+    batches: &[RecordBatch],
+) -> Result<()> {
+    let options = IpcWriteOptions::default()
+        .try_with_compression(Some(CompressionType::LZ4_FRAME))
+        .map_err(CdfError::from)?;
+    let mut writer = FileWriter::try_new_with_options(sink.writer_mut()?, schema, options)
+        .map_err(CdfError::from)?;
+    for batch in batches {
+        writer.write(batch).map_err(CdfError::from)?;
+    }
+    writer.finish().map_err(CdfError::from)
 }
 
 pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<WrittenArtifact> {
@@ -473,7 +513,10 @@ mod tests {
 
     use sha2::{Digest, Sha256};
 
-    use super::{ArtifactDurability, AtomicArtifactSink, HashingWriter, atomic_write};
+    use super::{
+        ArtifactDurability, AtomicArtifactSink, HashingWriter, PublishBoundary, atomic_write,
+        create_temp_sibling, encode_arrow_ipc, sync_directory,
+    };
 
     #[test]
     fn atomic_write_receipt_matches_published_bytes() {
@@ -523,6 +566,84 @@ mod tests {
     }
 
     #[test]
+    fn panic_while_writing_leaves_no_partial_artifact() {
+        let directory = tempfile::tempdir().unwrap();
+        let final_path = directory.path().join("panicked.bin");
+
+        let panic = std::panic::catch_unwind(|| {
+            let mut sink =
+                AtomicArtifactSink::create(&final_path, ArtifactDurability::SegmentPublish)
+                    .unwrap();
+            sink.writer_mut().unwrap().write_all(b"partial").unwrap();
+            panic!("injected writer panic");
+        });
+
+        assert!(panic.is_err());
+        assert!(!final_path.exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn encoder_failure_leaves_no_partial_artifact() {
+        use std::sync::Arc;
+
+        use arrow_array::{Int64Array, RecordBatch};
+        use arrow_schema::{DataType, Field, Schema};
+
+        let directory = tempfile::tempdir().unwrap();
+        let final_path = directory.path().join("bad.arrow");
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "value",
+            DataType::Int64,
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            Arc::clone(&schema),
+            vec![Arc::new(Int64Array::from(vec![1]))],
+        )
+        .unwrap();
+        let mut sink =
+            AtomicArtifactSink::create(&final_path, ArtifactDurability::SegmentPublish).unwrap();
+        sink.inject_failure(PublishBoundary::EncoderFinish);
+        encode_arrow_ipc(&mut sink, schema.as_ref(), &[batch]).unwrap();
+        assert!(sink.check_failure(PublishBoundary::EncoderFinish).is_err());
+        drop(sink);
+
+        assert!(!final_path.exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn injected_publish_boundaries_return_no_receipt() {
+        for boundary in [
+            PublishBoundary::FileSync,
+            PublishBoundary::Rename,
+            PublishBoundary::DirectorySync,
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let final_path = directory.path().join("artifact.bin");
+            let mut sink =
+                AtomicArtifactSink::create(&final_path, ArtifactDurability::SegmentPublish)
+                    .unwrap();
+            sink.writer_mut().unwrap().write_all(b"complete").unwrap();
+            sink.inject_failure(boundary);
+
+            assert!(sink.finish().is_err(), "boundary {boundary:?}");
+            let temp_count = fs::read_dir(directory.path())
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+                .count();
+            assert_eq!(temp_count, 0, "boundary {boundary:?}");
+            if boundary != PublishBoundary::DirectorySync {
+                assert!(!final_path.exists(), "boundary {boundary:?}");
+            } else {
+                assert_eq!(fs::read(final_path).unwrap(), b"complete");
+            }
+        }
+    }
+
+    #[test]
     #[ignore = "performance evidence; run in release mode"]
     fn hashing_writer_sha256_rate() {
         const CHUNK_BYTES: usize = 1024 * 1024;
@@ -549,6 +670,62 @@ mod tests {
             "sha256_rate_gib_s={gib_per_second:.3} bytes={} elapsed_ns={}",
             CHUNK_BYTES * CHUNKS,
             elapsed.as_nanos()
+        );
+    }
+
+    #[test]
+    #[ignore = "performance evidence; run in release mode"]
+    fn hashing_writer_disk_overhead() {
+        const CHUNK_BYTES: usize = 1024 * 1024;
+        const CHUNKS: usize = 256;
+        const SAMPLES: usize = 5;
+        let directory = tempfile::tempdir().unwrap();
+        let chunk = vec![0xa5; CHUNK_BYTES];
+        let plain_path = directory.path().join("plain.bin");
+        let hashed_path = directory.path().join("hashed.bin");
+        let mut plain_samples = Vec::with_capacity(SAMPLES);
+        let mut hashed_samples = Vec::with_capacity(SAMPLES);
+        for sample in 0..SAMPLES {
+            let run_plain = || {
+                let started = Instant::now();
+                let (temp_path, mut file) = create_temp_sibling(&plain_path).unwrap();
+                for _ in 0..CHUNKS {
+                    file.write_all(&chunk).unwrap();
+                }
+                file.flush().unwrap();
+                file.sync_all().unwrap();
+                fs::rename(temp_path, &plain_path).unwrap();
+                sync_directory(directory.path()).unwrap();
+                started.elapsed().as_nanos()
+            };
+            let run_hashed = || {
+                let started = Instant::now();
+                let mut sink =
+                    AtomicArtifactSink::create(&hashed_path, ArtifactDurability::SegmentPublish)
+                        .unwrap();
+                for _ in 0..CHUNKS {
+                    sink.writer_mut().unwrap().write_all(&chunk).unwrap();
+                }
+                let receipt = sink.finish().unwrap();
+                assert_eq!(receipt.byte_count, (CHUNK_BYTES * CHUNKS) as u64);
+                started.elapsed().as_nanos()
+            };
+            if sample % 2 == 0 {
+                plain_samples.push(run_plain());
+                hashed_samples.push(run_hashed());
+            } else {
+                hashed_samples.push(run_hashed());
+                plain_samples.push(run_plain());
+            }
+        }
+        plain_samples.sort_unstable();
+        hashed_samples.sort_unstable();
+        let plain_ns = plain_samples[SAMPLES / 2];
+        let hashed_ns = hashed_samples[SAMPLES / 2];
+        let overhead_percent = (hashed_ns as f64 - plain_ns as f64) * 100.0 / plain_ns as f64;
+        eprintln!(
+            "plain_atomic_median_ns={plain_ns} hash_atomic_median_ns={hashed_ns} hashing_overhead_percent={overhead_percent:.2} bytes_per_sample={} samples={SAMPLES}",
+            CHUNK_BYTES * CHUNKS,
         );
     }
 }

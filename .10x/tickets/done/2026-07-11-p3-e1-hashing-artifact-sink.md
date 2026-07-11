@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
@@ -40,3 +40,10 @@ Depends on L5 baseline.
 
 - 2026-07-11: Began the typed atomic artifact sink and writer-receipt migration for small identity bytes and Arrow IPC segments, preserving segment-publish durability while removing immediate post-write hash rereads.
 - 2026-07-11: Migrated IPC and small identity artifacts to hash-while-write receipts, added receipt-backed finalization for migrated artifacts, preserved intentional metadata rewrites, and added exact-hash plus failed/cancelled publication tests. Enabled and cargo-vet audited `sha2/asm`; measured 3.035 GiB/s versus 0.541 GiB/s software (5.61x). Evidence: `.10x/evidence/2026-07-11-p3-e1-hash-while-write-milestone.md`. E1 remains active for the complete boundary failpoint matrix and isolated large-payload hashing wall fraction.
+- 2026-07-11: Closed after encoder/file-sync/rename/directory-sync/cancel/panic failure coverage, unreadable-content no-reread proof, full package tests, strict clippy, unchanged fixed v1 golden, and a corrected five-sample atomic disk control with no measurable hashing penalty (-2.60% median, within variance). Review: `.10x/reviews/2026-07-11-p3-e1-hashing-artifact-sink-review.md`.
+
+## Retrospective
+
+- The first disk comparison overstated hashing overhead because its control lacked rename and directory sync; performance controls must preserve the complete durability protocol, not merely payload size.
+- Existing metadata writers intentionally rewrite a canonical path across phases. A receipt index must replace that path's prior receipt atomically; treating every rewrite as a duplicate breaks the package lifecycle.
+- Hardware acceleration must be measured rather than assumed from CPU features. The default `sha2` feature set did not activate ARM SHA instructions on this host.
