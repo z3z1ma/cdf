@@ -12,6 +12,10 @@ pub const SEGMENTATION_POLICY_VERSION: u16 = 1;
 pub const POSITION_ALGEBRA_VERSION: u16 = 1;
 pub const SEGMENT_ID_NAMESPACE: &str = "partition-segment-ordinal-v1";
 
+pub(crate) fn default_segmentation_policy() -> CanonicalSegmentationPolicy {
+    CanonicalSegmentationPolicy::p3_v1()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalSegmentationPolicy {
     pub version: u16,

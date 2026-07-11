@@ -458,6 +458,21 @@ fn engine_plan_deserialization_defaults_legacy_missing_write_disposition_to_appe
         .unwrap()
         .remove("schema_authority");
     plan_json.as_object_mut().unwrap().remove("output_schema");
+    for chain_name in ["operator_chain"] {
+        for operator in plan_json[chain_name].as_array_mut().unwrap() {
+            if operator["kind"] == "package_sink" {
+                operator.as_object_mut().unwrap().remove("segmentation");
+            }
+        }
+    }
+    for operator in plan_json["explain"]["operator_chain"]
+        .as_array_mut()
+        .unwrap()
+    {
+        if operator["kind"] == "package_sink" {
+            operator.as_object_mut().unwrap().remove("segmentation");
+        }
+    }
 
     let decoded: EnginePlan = serde_json::from_value(plan_json).unwrap();
 
@@ -465,6 +480,10 @@ fn engine_plan_deserialization_defaults_legacy_missing_write_disposition_to_appe
     assert!(decoded.effective_schema_evidence().is_none());
     assert!(decoded.schema_authority().is_err());
     assert!(decoded.output_arrow_schema().is_err());
+    assert_eq!(
+        decoded.segmentation_policy().unwrap(),
+        &CanonicalSegmentationPolicy::p3_v1()
+    );
     let temp = TempDir::new().unwrap();
     let error = block_on(execute_to_package(&decoded, &resource, temp.path())).unwrap_err();
     assert!(error.to_string().contains("verified schema authority"));
@@ -874,7 +893,9 @@ fn explain_and_operator_chain_carry_contract_package_details() {
     assert!(plan.operator_chain.iter().any(|operator| {
         matches!(
             operator,
-            OperatorNode::PackageSink { package_id } if package_id == "pkg-engine-test"
+            OperatorNode::PackageSink { package_id, segmentation }
+                if package_id == "pkg-engine-test"
+                    && segmentation == &CanonicalSegmentationPolicy::p3_v1()
         )
     }));
 }

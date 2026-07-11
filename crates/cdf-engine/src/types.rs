@@ -73,6 +73,26 @@ impl EnginePlan {
     pub fn effective_schema_hash(&self) -> Result<&SchemaHash> {
         Ok(&self.schema_authority()?.effective_schema_hash)
     }
+
+    pub fn segmentation_policy(&self) -> Result<&crate::CanonicalSegmentationPolicy> {
+        let mut policies = self
+            .operator_chain
+            .iter()
+            .filter_map(|operator| match operator {
+                OperatorNode::PackageSink { segmentation, .. } => Some(segmentation),
+                _ => None,
+            });
+        let policy = policies
+            .next()
+            .ok_or_else(|| CdfError::data("engine plan has no package segmentation policy"))?;
+        if policies.next().is_some() {
+            return Err(CdfError::data(
+                "engine plan has multiple package segmentation policies",
+            ));
+        }
+        policy.validate()?;
+        Ok(policy)
+    }
 }
 
 #[non_exhaustive]
@@ -188,6 +208,8 @@ pub enum OperatorNode {
     LineageExec,
     PackageSink {
         package_id: String,
+        #[serde(default = "crate::segmentation::default_segmentation_policy")]
+        segmentation: crate::CanonicalSegmentationPolicy,
     },
 }
 
