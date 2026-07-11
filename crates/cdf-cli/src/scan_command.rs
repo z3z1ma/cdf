@@ -68,10 +68,11 @@ pub(crate) fn plan_or_explain(
         build_engine_plan_for_resource(&prepared.resource, &args, identifier_policy.as_ref())?;
     let report = scan_report(
         &context,
-        prepared.resource.as_queryable(),
+        &prepared.resource,
         &plan,
         command,
         resolved,
+        execution,
         prepared.schema_snapshot,
     )?;
     CommandOutput::rendered(
@@ -367,19 +368,33 @@ fn parse_order_by(raw: &str) -> Result<OrderBy, CliError> {
 
 fn scan_report(
     context: &ProjectContext,
-    resource: &dyn QueryableResource,
+    resource: &CliProjectRunSource,
     plan: &EnginePlan,
     command: &'static str,
     resolved: EnvironmentDestination,
+    execution: &cdf_runtime::ExecutionServices,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
 ) -> Result<ScanPlanReport, CliError> {
-    let destination_plan = destination_plan_report(resolved, resource, plan, command)?;
+    let scheduler = resource
+        .source_plan()
+        .map(|source| {
+            cdf_runtime::resolve_runtime_scheduler(
+                plan.scan.partitions.len(),
+                &source.execution_capabilities,
+                &resolved.destination.runtime_capabilities(),
+                execution,
+                None,
+            )
+        })
+        .transpose()?;
+    let queryable = resource.as_queryable();
+    let destination_plan = destination_plan_report(resolved, queryable, plan, command)?;
     Ok(ScanPlanReport {
         project: context.config.project.name.clone(),
         environment: context.environment.name.clone(),
         resource_id: plan.scan.request.resource_id.to_string(),
         resource_schema: resource_schema_report(
-            resource,
+            queryable,
             &destination_plan.schema_hash,
             &plan.validation_program,
             plan.effective_schema_evidence(),
@@ -407,9 +422,9 @@ fn scan_report(
         delivery_guarantee: destination_plan.delivery_guarantee.guarantee.clone(),
         delivery_guarantee_detail: destination_plan.delivery_guarantee,
         state_advancement: StateAdvancementReport {
-            scope: serde_json::to_value(&resource.descriptor().state_scope)
+            scope: serde_json::to_value(&queryable.descriptor().state_scope)
                 .map_err(json_cli_error)?,
-            cursor: resource
+            cursor: queryable
                 .descriptor()
                 .cursor
                 .as_ref()
@@ -419,6 +434,7 @@ fn scan_report(
                     .to_owned(),
         },
         explain: plan.explain.clone(),
+        scheduler,
         package_id: plan.package_id.clone(),
         schema_snapshot,
     })
@@ -596,6 +612,21 @@ fn scan_report_document(
     let inexact = report.pushdown.inexact.len();
     let unsupported = report.pushdown.unsupported.len();
     let migrations = report.ddl_preview.migrations.len();
+    let scheduler_jobs = report
+        .scheduler
+        .as_ref()
+        .map(|scheduler| scheduler.effective_jobs.jobs.to_string())
+        .unwrap_or_else(|| "source-owned".to_owned());
+    let scheduler_limits = report
+        .scheduler
+        .as_ref()
+        .map(|scheduler| scheduler.effective_jobs.limiting_factors.join(", "))
+        .unwrap_or_else(|| "not declared".to_owned());
+    let scheduler_memory = report
+        .scheduler
+        .as_ref()
+        .map(|scheduler| humanize_bytes(scheduler.managed_memory_available_bytes))
+        .unwrap_or_else(|| "not declared".to_owned());
     let document = RenderDocument::new()
         .push(SectionRule::new())
         .push(StatusLine::new(
@@ -612,6 +643,9 @@ fn scan_report_document(
                 .row("environment", report.environment.clone())
                 .row("package", report.package_id.clone())
                 .row("partitions", report.will_fetch.partitions.len().to_string())
+                .row("effective jobs", scheduler_jobs)
+                .row("job ceiling", scheduler_limits)
+                .row("managed memory available", scheduler_memory)
                 .row(
                     "projection",
                     list_or_default(&report.will_fetch.projection, "all fields"),
@@ -925,6 +959,8 @@ struct ScanPlanReport {
     delivery_guarantee_detail: DeliveryGuaranteeReport,
     state_advancement: StateAdvancementReport,
     explain: cdf_engine::ExplainData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scheduler: Option<cdf_runtime::RuntimeSchedulerResolution>,
     package_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     schema_snapshot: Option<SchemaSnapshotActionReport>,

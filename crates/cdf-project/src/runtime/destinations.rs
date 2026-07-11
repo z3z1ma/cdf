@@ -129,6 +129,10 @@ impl ResolvedProjectDestination {
         self.runtime.secret_redaction()
     }
 
+    pub fn runtime_capabilities(&self) -> cdf_runtime::DestinationRuntimeCapabilities {
+        self.runtime.runtime_capabilities()
+    }
+
     pub(super) fn runtime_mut(&mut self) -> &mut dyn ProjectDestinationRuntime {
         self.runtime.as_mut()
     }

@@ -1766,6 +1766,17 @@ fn plan_json_exposes_pushdown_ddl_guarantee_and_state_advancement() {
     );
     assert_eq!(result["resource_schema"]["fields"][0]["name"], "id");
     assert_eq!(result["will_fetch"]["limit"], 5);
+    assert!(
+        result["scheduler"]["effective_jobs"]["jobs"]
+            .as_u64()
+            .is_some_and(|jobs| jobs >= 1)
+    );
+    assert!(
+        result["scheduler"]["managed_memory_available_bytes"]
+            .as_u64()
+            .is_some_and(|bytes| bytes > 0)
+    );
+    assert_eq!(result["scheduler"]["destination_writer_concurrency"], 1);
     assert_eq!(
         result["pushdown"]["unsupported"][0]["fidelity"],
         "unsupported"
@@ -1817,6 +1828,8 @@ fn plan_human_headless_render_uses_operator_panels() {
     for expected in [
         "OK plan local.events -> events",
         "Fetch",
+        "effective jobs",
+        "managed memory available",
         "Pushdown",
         "Destination",
         "Guarantee",

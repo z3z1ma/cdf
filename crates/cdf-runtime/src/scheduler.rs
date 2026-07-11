@@ -4,8 +4,9 @@ use cdf_kernel::{CdfError, PartitionPlan, Result, ScanPlan};
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CompiledSourcePlan, SourceExecutionCapabilities, SourceExecutorClass, SourceRetryGranularity,
-    artifact_hash,
+    CompiledSourcePlan, DestinationIngressMode, DestinationRuntimeCapabilities,
+    DestinationWriterModel, ExecutionServices, SourceExecutionCapabilities, SourceExecutorClass,
+    SourceRetryGranularity, artifact_hash,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -153,6 +154,69 @@ pub struct EffectiveJobsResolution {
     pub memory_jobs: u16,
     pub cpu_jobs: u16,
     pub limiting_factors: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RuntimeSchedulerResolution {
+    pub effective_jobs: EffectiveJobsResolution,
+    pub container_cpu_slots: u16,
+    pub managed_memory_available_bytes: u64,
+    pub source_maximum_concurrency: u16,
+    pub source_useful_concurrency: u16,
+    pub source_lane_concurrency: Option<u16>,
+    pub transport_connection_limit: Option<u16>,
+    pub destination_writer_concurrency: u16,
+    pub destination_in_flight_segments: Option<u16>,
+}
+
+pub fn resolve_runtime_scheduler(
+    partition_count: usize,
+    source: &SourceExecutionCapabilities,
+    destination: &DestinationRuntimeCapabilities,
+    execution: &ExecutionServices,
+    configured_jobs: Option<u16>,
+) -> Result<RuntimeSchedulerResolution> {
+    source.validate()?;
+    destination.validate()?;
+    let host = execution.capabilities();
+    let memory = execution.memory().snapshot();
+    let available_memory = memory.budget_bytes.saturating_sub(memory.current_bytes);
+    let destination_writer_concurrency = match destination.writer_model {
+        DestinationWriterModel::SingleWriter => 1,
+        DestinationWriterModel::ConcurrentSegments => {
+            destination.max_in_flight_segments.unwrap_or(u16::MAX)
+        }
+    };
+    let destination_in_flight_segments = (destination.ingress_mode
+        == DestinationIngressMode::StagedDurableSegments)
+        .then_some(destination.max_in_flight_segments)
+        .flatten();
+    // A destination writer is a separate bounded lane. It must not reduce
+    // upstream extraction/decode concurrency; channel backpressure joins the
+    // lanes without turning a single-writer destination into a one-core run.
+    let ceilings = AdmissionCeilings {
+        configured_jobs,
+        container_cpu_slots: host.logical_cpu_slots,
+        managed_memory_bytes: available_memory,
+        transport_connections: None,
+        destination_writers: None,
+        lane_concurrency: source
+            .blocking_lane
+            .as_ref()
+            .map(|lane| lane.maximum_concurrency),
+        scope_concurrency: None,
+    };
+    Ok(RuntimeSchedulerResolution {
+        effective_jobs: resolve_effective_jobs(partition_count, source, &ceilings)?,
+        container_cpu_slots: host.logical_cpu_slots,
+        managed_memory_available_bytes: available_memory,
+        source_maximum_concurrency: source.maximum_concurrency,
+        source_useful_concurrency: source.useful_concurrency,
+        source_lane_concurrency: ceilings.lane_concurrency,
+        transport_connection_limit: ceilings.transport_connections,
+        destination_writer_concurrency,
+        destination_in_flight_segments,
+    })
 }
 
 pub fn effective_container_cpu_slots(
@@ -338,6 +402,7 @@ pub struct AdmissionSnapshot {
     pub cpu_slots: u16,
     pub io_permits: u16,
     pub connection_permits: u16,
+    pub cancelled: bool,
 }
 
 pub struct FairAdmissionController {
@@ -349,6 +414,7 @@ pub struct FairAdmissionController {
     active_quotas: BTreeMap<String, u16>,
     snapshot: AdmissionSnapshot,
     next_id: u64,
+    cancelled: bool,
 }
 
 impl FairAdmissionController {
@@ -371,10 +437,16 @@ impl FairAdmissionController {
             active_quotas: BTreeMap::new(),
             snapshot: AdmissionSnapshot::default(),
             next_id: 1,
+            cancelled: false,
         })
     }
 
     pub fn enqueue(&mut self, request: AdmissionRequest) -> Result<()> {
+        if self.cancelled {
+            return Err(CdfError::internal(
+                "scheduler admission is cancelled; no new work may be queued",
+            ));
+        }
         request.validate()?;
         if request.memory_bytes > self.limits.memory_bytes
             || request.cpu_slots > self.limits.cpu_slots
@@ -398,7 +470,7 @@ impl FairAdmissionController {
     }
 
     pub fn try_admit_next(&mut self) -> Option<AdmissionPermit> {
-        if self.snapshot.active >= usize::from(self.limits.jobs) {
+        if self.cancelled || self.snapshot.active >= usize::from(self.limits.jobs) {
             return None;
         }
         let candidates = self.rotation.len();
@@ -474,6 +546,25 @@ impl FairAdmissionController {
 
     pub fn snapshot(&self) -> AdmissionSnapshot {
         self.snapshot.clone()
+    }
+
+    pub fn cancel(&mut self) -> Vec<AdmissionRequest> {
+        self.cancelled = true;
+        self.snapshot.cancelled = true;
+        let mut cancelled = self
+            .queues
+            .values_mut()
+            .flat_map(|queue| queue.drain(..))
+            .collect::<Vec<_>>();
+        cancelled.sort_by(|left, right| {
+            left.resource
+                .cmp(&right.resource)
+                .then(left.ordinal.cmp(&right.ordinal))
+        });
+        self.queues.clear();
+        self.rotation.clear();
+        self.snapshot.queued = 0;
+        cancelled
     }
 
     fn eligible(&self, request: &AdmissionRequest) -> bool {
@@ -646,5 +737,56 @@ mod tests {
         assert_eq!(independent.request.resource, "b");
         controller.release(active).unwrap();
         controller.release(independent).unwrap();
+    }
+
+    #[test]
+    fn cancellation_is_canonical_and_prevents_new_admission() {
+        let mut controller = FairAdmissionController::new(AdmissionLimits {
+            jobs: 2,
+            memory_bytes: 20,
+            cpu_slots: 2,
+            io_permits: 2,
+            connection_permits: 2,
+            quota_limits: BTreeMap::new(),
+        })
+        .unwrap();
+        controller.enqueue(request("z", 2, None)).unwrap();
+        controller.enqueue(request("a", 3, None)).unwrap();
+        controller.enqueue(request("a", 1, None)).unwrap();
+
+        let cancelled = controller.cancel();
+        assert_eq!(
+            cancelled
+                .iter()
+                .map(|request| (request.resource.as_str(), request.ordinal.get()))
+                .collect::<Vec<_>>(),
+            vec![("a", 1), ("a", 3), ("z", 2)]
+        );
+        assert!(controller.snapshot().cancelled);
+        assert_eq!(controller.snapshot().queued, 0);
+        assert!(controller.try_admit_next().is_none());
+        assert!(controller.enqueue(request("new", 0, None)).is_err());
+    }
+
+    #[test]
+    fn cancellation_preserves_active_permits_until_join_release() {
+        let mut controller = FairAdmissionController::new(AdmissionLimits {
+            jobs: 1,
+            memory_bytes: 10,
+            cpu_slots: 1,
+            io_permits: 1,
+            connection_permits: 1,
+            quota_limits: BTreeMap::new(),
+        })
+        .unwrap();
+        controller.enqueue(request("a", 0, None)).unwrap();
+        controller.enqueue(request("a", 1, None)).unwrap();
+        let active = controller.try_admit_next().unwrap();
+
+        assert_eq!(controller.cancel().len(), 1);
+        assert_eq!(controller.snapshot().active, 1);
+        controller.release(active).unwrap();
+        assert_eq!(controller.snapshot().active, 0);
+        assert!(controller.snapshot().cancelled);
     }
 }
