@@ -6004,6 +6004,115 @@ fn postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_
 }
 
 #[test]
+fn p2_s4_postgres_add_pins_private_secret_and_runs_discovered_table() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let Some(postgres) = LivePostgres::start() else {
+        return;
+    };
+    let table = postgres.table("orders_add");
+    postgres
+        .client()
+        .batch_execute(&format!(
+            "CREATE TABLE {} (id BIGSERIAL PRIMARY KEY, updated_at TIMESTAMP NOT NULL, amount BIGINT); INSERT INTO {} (updated_at, amount) VALUES (NOW(), 10), (NOW(), 20)",
+            table,
+            table,
+        ))
+        .unwrap();
+    let project = TestProject::new();
+    let source_url = postgres.url.replacen(
+        "postgresql://cdf@",
+        "postgresql://cdf:s4-private-password@",
+        1,
+    );
+    let location = format!("{}/{}", source_url.trim_end_matches('/'), table);
+
+    let dry = TestProject::new();
+    let dry_run = run([
+        "cdf",
+        "--json",
+        "--project",
+        dry.root_str(),
+        "add",
+        "warehouse.orders",
+        &location,
+        "--dry-run",
+    ]);
+    assert_eq!(dry_run.exit_code, 0, "{}", dry_run.stderr);
+    assert!(!dry.root.join("resources/warehouse.toml").exists());
+    assert!(!dry.root.join(".cdf/secrets").exists());
+    assert!(!dry.root.join("cdf.lock").exists());
+
+    let add = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "add",
+        "warehouse.orders",
+        &location,
+    ]);
+    assert_eq!(add.exit_code, 0, "{}", add.stderr);
+    assert_secret_absent(&add, "s4-private-password");
+    let report = stderr_or_stdout_json(&add.stdout);
+    assert_eq!(report["result"]["resource_id"], "warehouse.orders");
+    assert_eq!(report["result"]["schema_source"], "discovered");
+    assert!(
+        report["result"]["cursor_candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| candidate == "updated_at")
+    );
+    let resource = fs::read_to_string(project.root.join("resources/warehouse.toml")).unwrap();
+    assert!(resource.contains("connection = \"secret://file/.cdf/secrets/sources/warehouse.dsn\""));
+    assert!(resource.contains(&format!("table = \"{table}\"")));
+    assert!(!resource.contains("s4-private-password"));
+    let secret = project.root.join(".cdf/secrets/sources/warehouse.dsn");
+    assert_eq!(
+        fs::metadata(&secret).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    for command in ["plan", "preview"] {
+        let result = run([
+            "cdf",
+            "--json",
+            "--project",
+            project.root_str(),
+            command,
+            "warehouse.orders",
+        ]);
+        assert_eq!(result.exit_code, 0, "{command}: {}", result.stderr);
+    }
+    let resource_path = project.root.join("resources/warehouse.toml");
+    let with_cursor = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace(
+            "write_disposition = \"append\"",
+            "cursor = { field = \"updated_at\", ordering = \"exact\", lag = \"0ms\" }\nwrite_disposition = \"append\"",
+        );
+    fs::write(resource_path, with_cursor).unwrap();
+    let run_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "warehouse.orders",
+        "--package-id",
+        "p2-s4-postgres-add",
+        "--checkpoint-id",
+        "checkpoint-p2-s4-postgres-add",
+    ]);
+    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&run_result.stdout)["result"]["row_count"],
+        2
+    );
+}
+
+#[test]
 fn rest_discover_mode_plan_preview_run_autopins_through_file_secret_without_leaks() {
     let project = TestProject::new();
     fs::write(project.root.join("rest-token"), "rest-autopin-secret\n").unwrap();

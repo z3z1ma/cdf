@@ -30,7 +30,6 @@ use super::{
 enum CoverageStatus {
     Covered,
     Excluded,
-    Pending,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -102,13 +101,12 @@ const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S4",
         title: "Postgres table discovery with optional schema block and cursor candidates",
-        status: CoverageStatus::Pending,
-        rationale: "Postgres catalog discover/preview/run primitives are covered; cdf add, cursor-candidate suggestions, and final S4 conformance remain pending",
+        status: CoverageStatus::Covered,
+        rationale: "standalone local-Postgres conformance runs cdf add from a direct table DSN, persists only a private secret reference, pins catalog discovery, reports cursor suggestions without selecting one, then plans, previews, and runs after explicit cursor selection",
         tests: &[
-            "crates/cdf-cli/src/tests.rs::schema_discover_postgres_catalog_uses_project_secret_without_writes_or_secret_leak",
-            "crates/cdf-cli/src/tests.rs::postgres_discover_mode_plan_preview_run_autopins_through_file_secret_without_leaks",
+            "crates/cdf-cli/src/tests.rs::p2_s4_postgres_add_pins_private_secret_and_runs_discovered_table",
         ],
-        tickets: &[WS_A, WS_H, WS_I],
+        tickets: &[],
     },
     P2Scenario {
         id: "S5",
@@ -380,7 +378,6 @@ fn p2_data_onramp_scenario_matrix_records_s1_through_s8() {
                     scenario.id
                 );
             }
-            CoverageStatus::Pending => assert_active_tickets(scenario.id, scenario.tickets),
         }
     }
     for exclusion in P2_EXCLUSIONS {
@@ -401,7 +398,7 @@ fn p2_data_onramp_scenario_matrix_records_s1_through_s8() {
     assert_eq!(scenario("S1").status, CoverageStatus::Covered);
     assert_eq!(scenario("S2").status, CoverageStatus::Covered);
     assert_eq!(scenario("S3").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S4").status, CoverageStatus::Pending);
+    assert_eq!(scenario("S4").status, CoverageStatus::Covered);
     assert_eq!(scenario("S5").status, CoverageStatus::Covered);
     assert_eq!(scenario("S6").status, CoverageStatus::Covered);
     assert_eq!(scenario("S7").status, CoverageStatus::Covered);
@@ -477,8 +474,6 @@ fn p2_s5_s7_registry_names_standalone_conformance_without_other_promotions() {
     assert_eq!(s7.tests, &[standalone]);
     assert!(friction(17).closed_tests.contains(&standalone));
     assert!(friction(17).open_tickets.is_empty());
-
-    assert_eq!(scenario("S4").status, CoverageStatus::Pending);
 }
 
 #[test]

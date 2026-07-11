@@ -52,6 +52,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-10: E6 promoted S1 and S2 to covered with standalone production-path CLI tests. S1 performs add→pin→plan→run with no typed schema; S2 proves dated HTTP enumeration, preview/run partition parity, manifest initial load, unchanged no-op, and newly-present-month-only loading. S3/S4/S6/S8 remain pending.
 - 2026-07-10: Promoted S3 and S8 after extending the recursive object-store gzip fixture through the shared bounded preview path before full execution. S3 now combines remote recursive resolution/discovery/pin/preview/run/FileManifest proof with the existing shared drift-contract conformance. S8 now covers local multi-file, REST, Postgres, dated HTTP, and object-store compressed row formats. Only S4 and S6 remain pending.
 - 2026-07-10: G3 promoted S6 to covered. Typed quarantine verdicts now survive plan→project report→JSON/human rendering with exact file, field path, observed/effective types, rule, policy, and remediation while the run remains successful and evidence-preserving. Only S4 remains pending.
+- 2026-07-10: H4 promoted S4 to covered with deterministic local-Postgres add/discover/plan/preview/run conformance and private-secret evidence. All eight P2 golden paths are now marked covered; final WS-I work is the aggregate eighteen-friction reconciliation, full suite, and recorded closure evidence.
 
 ## Blockers
 

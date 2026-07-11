@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-ws-h-scaffolding-id-model-two-minute-path.md
@@ -21,3 +21,7 @@ Extend `cdf add` to direct Postgres table DSNs, persist direct credentials throu
 ## Blockers
 
 None.
+
+## Progress and notes
+
+- 2026-07-10: Direct Postgres table DSNs now compile through a distinct add target, use an in-memory secret provider for no-write discovery, persist only an owner-readable private secret file on committed add, pin catalog schema, and report integer/timestamp/date cursor candidates as unselected suggestions. The deterministic local-Postgres test covers dry-run, secret redaction/mode, add, plan, preview, explicit cursor selection, and run. Evidence is `.10x/evidence/2026-07-10-p2-h4-postgres-add-s4.md`; review is `.10x/reviews/2026-07-10-p2-h4-postgres-add-s4-review.md`.

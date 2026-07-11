@@ -1,5 +1,8 @@
 use std::{
     env, fs,
+    fs::OpenOptions,
+    io::Write,
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -8,6 +11,7 @@ use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, compile_document_with_project_root,
     parse_toml as parse_declarative_toml,
 };
+use cdf_http::{SecretProvider, SecretUri, SecretValue};
 use cdf_kernel::{CdfError, SchemaSource};
 use cdf_project::{
     LOCK_FILE_NAME, PROJECT_FILE_NAME, ResourceSchemaDiscoveryArtifacts, SchemaSnapshotArtifact,
@@ -35,7 +39,17 @@ pub(crate) fn add(cli: &Cli, args: AddArgs) -> Result<CommandOutput, CliError> {
     let proposed = build_proposed_resource(&context, &request)?;
     ensure_add_is_available(&context, &request, &proposed)?;
 
-    let artifacts = discover_for_add(&context, &proposed.resource)?;
+    let direct_secret = match &request.target {
+        AddRequestTarget::Postgres(target) => {
+            Some((target.secret_ref.as_str(), target.dsn.as_str()))
+        }
+        AddRequestTarget::File(_) => None,
+    };
+    let add_secrets = AddSecretProvider {
+        fallback: context.secret_provider(),
+        direct: direct_secret,
+    };
+    let artifacts = discover_for_add(&context, &proposed.resource, &add_secrets)?;
     let discovery = &artifacts.discovery;
     let pinned_resource = proposed.resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
@@ -122,6 +136,17 @@ fn ensure_add_is_available(
             error_catalog::PROJECT_IO,
         ));
     }
+    if let AddRequestTarget::Postgres(target) = &request.target
+        && context.root.join(&target.secret_path).exists()
+    {
+        return Err(CliError::usage_with(
+            format!(
+                "cdf add would overwrite private secret state for source `{}`",
+                request.source
+            ),
+            error_catalog::PROJECT_IO,
+        ));
+    }
     parse_cdf_toml(&proposed.project_toml)?;
     Ok(())
 }
@@ -129,6 +154,7 @@ fn ensure_add_is_available(
 fn discover_for_add(
     context: &ProjectContext,
     resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     match resource.plan() {
         CompiledResourcePlan::Files(plan)
@@ -137,7 +163,7 @@ fn discover_for_add(
             Ok(
                 cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                     resource,
-                    &context.secret_provider(),
+                    secret_provider,
                     file_runtime_dependencies(context)?,
                     Default::default(),
                 )?,
@@ -145,16 +171,35 @@ fn discover_for_add(
         }
         CompiledResourcePlan::Files(_) => Ok(cdf_project::discover_resource_schema_artifacts(
             resource,
-            &context.secret_provider(),
+            secret_provider,
             Default::default(),
         )?),
-        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
-            Err(CliError::not_supported(
-                "cdf add",
-                "REST, SQL, Python, and other source archetypes are excluded from H2",
-                ".10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md",
-            ))
+        CompiledResourcePlan::Sql(_) => Ok(cdf_project::discover_resource_schema_artifacts(
+            resource,
+            secret_provider,
+            Default::default(),
+        )?),
+        CompiledResourcePlan::Rest(_) => Err(CliError::not_supported(
+            "cdf add",
+            "REST, SQL, Python, and other source archetypes are excluded from H2",
+            ".10x/tickets/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md",
+        )),
+    }
+}
+
+struct AddSecretProvider<'a> {
+    fallback: cdf_project::DefaultSecretProvider,
+    direct: Option<(&'a str, &'a str)>,
+}
+
+impl SecretProvider for AddSecretProvider<'_> {
+    fn resolve(&self, uri: &SecretUri) -> cdf_kernel::Result<SecretValue> {
+        if let Some((reference, value)) = self.direct
+            && uri.as_str() == reference
+        {
+            return Ok(SecretValue::new(value));
         }
+        self.fallback.resolve(uri)
     }
 }
 
@@ -176,6 +221,39 @@ fn write_add_artifacts(
         Some(request.resource_id.as_str()),
     )?;
     let lock_toml = lock_to_toml(&lock)?;
+
+    if let AddRequestTarget::Postgres(target) = &request.target {
+        let path = context.root.join(&target.secret_path);
+        fs::create_dir_all(path.parent().expect("secret path has parent")).map_err(|error| {
+            CliError::mapped(
+                CdfError::contract(format!("create private source secret directory: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .map_err(|error| {
+                CliError::mapped(
+                    CdfError::contract(format!("create private source secret: {error}")),
+                    error_catalog::PROJECT_IO,
+                )
+            })?;
+        file.write_all(target.dsn.as_bytes()).map_err(|error| {
+            CliError::mapped(
+                CdfError::contract(format!("write private source secret: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+        file.sync_all().map_err(|error| {
+            CliError::mapped(
+                CdfError::contract(format!("sync private source secret: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
+    }
 
     write_schema_discovery_artifacts(&context.root, artifacts)?;
     fs::create_dir_all(request.config_path_abs.parent().ok_or_else(|| {
@@ -223,9 +301,7 @@ struct AddResourceRequest {
     resource_id: String,
     source: String,
     resource: String,
-    source_root: String,
-    display_source_root: String,
-    glob: String,
+    target: AddRequestTarget,
     config_path_rel: String,
     config_path_abs: PathBuf,
     dry_run: bool,
@@ -234,19 +310,82 @@ struct AddResourceRequest {
 impl AddResourceRequest {
     fn from_args(context: &ProjectContext, args: &AddArgs) -> Result<Self, CliError> {
         let (source, resource) = split_resource_id(&args.resource_id)?;
-        let target = AddTarget::from_location(context, &args.location)?;
+        let target = if args.location.starts_with("postgres://")
+            || args.location.starts_with("postgresql://")
+        {
+            AddRequestTarget::Postgres(PostgresAddTarget::from_dsn(&source, &args.location)?)
+        } else {
+            AddRequestTarget::File(AddTarget::from_location(context, &args.location)?)
+        };
         let config_path_rel = format!("resources/{source}.toml");
         let config_path_abs = context.root.join(&config_path_rel);
         Ok(Self {
             resource_id: args.resource_id.clone(),
             source,
             resource,
-            source_root: target.source_root,
-            display_source_root: target.display_source_root,
-            glob: target.glob,
+            target,
             config_path_rel,
             config_path_abs,
             dry_run: args.dry_run,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+enum AddRequestTarget {
+    File(AddTarget),
+    Postgres(PostgresAddTarget),
+}
+
+#[derive(Clone, Debug)]
+struct PostgresAddTarget {
+    dsn: String,
+    display_dsn: String,
+    table: String,
+    secret_path: String,
+    secret_ref: String,
+}
+
+impl PostgresAddTarget {
+    fn from_dsn(source: &str, dsn: &str) -> Result<Self, CliError> {
+        let mut parsed = reqwest::Url::parse(dsn).map_err(|error| {
+            CliError::usage_with(
+                format!("cdf add could not parse Postgres DSN: {error}"),
+                error_catalog::USAGE,
+            )
+        })?;
+        if parsed.scheme() != "postgres" && parsed.scheme() != "postgresql" {
+            return Err(CliError::usage_with(
+                "cdf add SQL source must use postgres:// or postgresql://",
+                error_catalog::USAGE,
+            ));
+        }
+        let mut segments = parsed
+            .path_segments()
+            .map(|segments| {
+                segments
+                    .filter(|segment| !segment.is_empty())
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if segments.len() < 2 {
+            return Err(CliError::usage_with(
+                "cdf add Postgres DSN must end with `/database/table`",
+                error_catalog::USAGE,
+            ));
+        }
+        let table = segments.pop().unwrap();
+        parsed.set_path(&format!("/{}", segments.join("/")));
+        let dsn = parsed.to_string();
+        let display_dsn = redact_url(&dsn);
+        let secret_path = format!(".cdf/secrets/sources/{source}.dsn");
+        Ok(Self {
+            dsn,
+            display_dsn,
+            table,
+            secret_ref: format!("secret://file/{secret_path}"),
+            secret_path,
         })
     }
 }
@@ -483,6 +622,7 @@ struct AddReport {
     write_disposition: &'static str,
     schema_source: &'static str,
     fields: Vec<AddFieldReport>,
+    cursor_candidates: Vec<String>,
     writes: AddWrites,
     next_command: String,
 }
@@ -495,6 +635,32 @@ impl AddReport {
         snapshot: &SchemaSnapshotArtifact,
     ) -> Self {
         let _ = proposed;
+        let (source_root, glob) = match &request.target {
+            AddRequestTarget::File(target) => {
+                (target.display_source_root.clone(), target.glob.clone())
+            }
+            AddRequestTarget::Postgres(target) => {
+                (target.display_dsn.clone(), target.table.clone())
+            }
+        };
+        let cursor_candidates = if matches!(&request.target, AddRequestTarget::Postgres(_)) {
+            snapshot
+                .schema
+                .fields
+                .iter()
+                .filter(|field| {
+                    matches!(
+                        field.data_type,
+                        SchemaSnapshotDataType::Int { .. }
+                            | SchemaSnapshotDataType::Timestamp { .. }
+                            | SchemaSnapshotDataType::Date { .. }
+                    )
+                })
+                .map(|field| field.name.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
         Self {
             project: context.root.display().to_string(),
             environment: context.environment.name.clone(),
@@ -504,8 +670,8 @@ impl AddReport {
             config_path: request.config_path_rel.clone(),
             schema_hash: snapshot.schema_hash.to_string(),
             schema_snapshot_path: snapshot.path.clone(),
-            source_root: request.display_source_root.clone(),
-            glob: request.glob.clone(),
+            source_root,
+            glob,
             write_disposition: "append",
             schema_source: "discovered",
             fields: snapshot
@@ -514,6 +680,7 @@ impl AddReport {
                 .iter()
                 .map(AddFieldReport::from_field)
                 .collect(),
+            cursor_candidates,
             writes: AddWrites {
                 resource_config: !request.dry_run,
                 project_config: !request.dry_run,
@@ -591,6 +758,14 @@ fn add_document(report: &AddReport) -> RenderDocument {
                 .row("schema", report.schema_hash.clone())
                 .row("snapshot", report.schema_snapshot_path.clone()),
         )
+        .push(KeyValuePanel::new("Suggestions").row(
+            "cursor candidates",
+            if report.cursor_candidates.is_empty() {
+                "none".to_owned()
+            } else {
+                format!("{} (not selected)", report.cursor_candidates.join(", "))
+            },
+        ))
         .blank_line()
         .push(field_table)
         .blank_line()
@@ -598,17 +773,18 @@ fn add_document(report: &AddReport) -> RenderDocument {
 }
 
 fn resource_toml(request: &AddResourceRequest) -> Result<String, CliError> {
-    parquet_resource_toml(
-        &request.source,
-        &request.resource,
-        &AddTarget {
-            source_root: request.source_root.clone(),
-            display_source_root: request.display_source_root.clone(),
-            glob: request.glob.clone(),
-            canonical_location: request.source_root.clone(),
-            is_http: looks_like_http_url(&request.source_root),
-        },
-    )
+    match &request.target {
+        AddRequestTarget::File(target) => {
+            parquet_resource_toml(&request.source, &request.resource, target)
+        }
+        AddRequestTarget::Postgres(target) => Ok(format!(
+            "[source.{}]\nkind = \"sql\"\nconnection = {}\n\n[resource.{}]\ntable = {}\nwrite_disposition = \"append\"\ntrust = \"governed\"\n",
+            request.source,
+            toml_string(&target.secret_ref)?,
+            request.resource,
+            toml_string(&target.table)?,
+        )),
+    }
 }
 
 pub(crate) fn parquet_resource_toml(
