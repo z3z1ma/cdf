@@ -2378,7 +2378,7 @@ fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
     assert!(spill.peak_bytes > 0);
     assert_eq!(spill.current_bytes, 0);
     let memory = services.memory().snapshot();
-    assert!(memory.peak_bytes >= 8 * 1024 * 1024);
+    assert!(memory.peak_bytes > 0);
     assert_eq!(memory.current_bytes, 0);
 }
 

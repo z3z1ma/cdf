@@ -1,6 +1,6 @@
 use std::{
     cmp::Ordering,
-    collections::BinaryHeap,
+    collections::{BinaryHeap, HashMap},
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Write},
     path::{Path, PathBuf},
@@ -15,6 +15,7 @@ use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
 const DEFAULT_SORT_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const MERGE_FAN_IN: u64 = 32;
 const MAX_KEY_BYTES: usize = 32 * 1024 * 1024;
+const FAST_PATH_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct PayloadMetadata {
@@ -216,6 +217,8 @@ pub(crate) struct ExternalDedupIndex {
     reservation: Arc<Mutex<SpillReservation>>,
     memory: Option<Arc<dyn MemoryCoordinator>>,
     memory_lease: Option<MemoryLease>,
+    fast_keys: Option<Vec<Vec<u8>>>,
+    fast_bytes: u64,
     input_rows: u64,
     sort_memory_bytes: usize,
     maximum_key_bytes: usize,
@@ -223,9 +226,14 @@ pub(crate) struct ExternalDedupIndex {
 }
 
 pub(crate) struct ExternalDedupDecisions {
-    reader: DecisionReader,
+    source: DecisionSource,
     pub summary: DedupIndexSummary,
     _index: ExternalDedupIndex,
+}
+
+enum DecisionSource {
+    File(DecisionReader),
+    Memory(std::vec::IntoIter<DedupDecision>),
 }
 
 impl ExternalDedupIndex {
@@ -262,12 +270,22 @@ impl ExternalDedupIndex {
             root.join("keys.unsorted"),
             Arc::clone(&reservation),
         )?);
+        let memory_lease = match &memory {
+            Some(memory) => memory.try_reserve(&ReservationRequest::new(
+                ConsumerKey::new("dedup-in-memory-index", MemoryClass::Validation)?,
+                1,
+            )?)?,
+            None => None,
+        };
+        let fast_keys = memory_lease.as_ref().map(|_| Vec::new());
         Ok(Self {
             root,
             keys: Some(keys),
             reservation,
             memory,
-            memory_lease: None,
+            memory_lease,
+            fast_keys,
+            fast_bytes: 0,
             input_rows: 0,
             sort_memory_bytes,
             maximum_key_bytes: 0,
@@ -275,20 +293,42 @@ impl ExternalDedupIndex {
         })
     }
 
+    #[cfg(test)]
     pub fn push_keys(&mut self, keys: &[Vec<u8>]) -> Result<()> {
-        let writer = self
-            .keys
-            .as_mut()
-            .ok_or_else(|| CdfError::internal("dedup key spool is already finalized"))?;
+        self.push_owned_keys(keys.iter().cloned())
+    }
+
+    pub fn push_owned_keys(&mut self, keys: impl IntoIterator<Item = Vec<u8>>) -> Result<()> {
         for key in keys {
             self.maximum_key_bytes = self.maximum_key_bytes.max(key.len());
-            write_key_record(
-                writer,
-                &KeyRecord {
-                    key: key.clone(),
+            let key_bytes = u64::try_from(key.len())
+                .map_err(|_| CdfError::data("dedup key length exceeds u64"))?
+                .saturating_add(96);
+            let next_fast_bytes = self.fast_bytes.saturating_add(key_bytes);
+            let retain_fast = next_fast_bytes <= FAST_PATH_MAX_BYTES
+                && self
+                    .memory_lease
+                    .as_ref()
+                    .is_some_and(|lease| lease.reconcile(next_fast_bytes.max(1)).is_ok());
+            if retain_fast {
+                self.fast_keys
+                    .as_mut()
+                    .expect("fast keys exist with their lease")
+                    .push(key);
+                self.fast_bytes = next_fast_bytes;
+            } else {
+                self.transition_fast_keys_to_spill()?;
+                let record = KeyRecord {
+                    key,
                     ordinal: self.input_rows,
-                },
-            )?;
+                };
+                write_key_record(
+                    self.keys.as_mut().ok_or_else(|| {
+                        CdfError::internal("dedup key spool is already finalized")
+                    })?,
+                    &record,
+                )?;
+            }
             self.input_rows = self
                 .input_rows
                 .checked_add(1)
@@ -297,7 +337,32 @@ impl ExternalDedupIndex {
         Ok(())
     }
 
+    fn transition_fast_keys_to_spill(&mut self) -> Result<()> {
+        let Some(keys) = self.fast_keys.take() else {
+            return Ok(());
+        };
+        let writer = self
+            .keys
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("dedup key spool is already finalized"))?;
+        for (ordinal, key) in keys.into_iter().enumerate() {
+            write_key_record(
+                writer,
+                &KeyRecord {
+                    key,
+                    ordinal: ordinal as u64,
+                },
+            )?;
+        }
+        self.memory_lease = None;
+        self.fast_bytes = 0;
+        Ok(())
+    }
+
     pub fn finish(mut self, keep: DedupKeepProgram) -> Result<ExternalDedupDecisions> {
+        if let Some(keys) = self.fast_keys.take() {
+            return self.finish_fast(keys, keep);
+        }
         let mut keys = self
             .keys
             .take()
@@ -331,12 +396,63 @@ impl ExternalDedupIndex {
         let spill_bytes = self.reservation.lock().unwrap().bytes();
         let reader = DecisionReader::open(&decisions)?;
         Ok(ExternalDedupDecisions {
-            reader,
+            source: DecisionSource::File(reader),
             summary: DedupIndexSummary {
                 input_rows: self.input_rows,
                 output_rows,
                 duplicate_key_count,
                 dropped_row_count,
+                spill_bytes,
+            },
+            _index: self,
+        })
+    }
+
+    fn finish_fast(
+        self,
+        keys: Vec<Vec<u8>>,
+        keep: DedupKeepProgram,
+    ) -> Result<ExternalDedupDecisions> {
+        let mut groups = HashMap::<&[u8], (u64, u64, u64)>::new();
+        for (ordinal, key) in keys.iter().enumerate() {
+            let ordinal = ordinal as u64;
+            groups
+                .entry(key.as_slice())
+                .and_modify(|group| {
+                    group.1 = ordinal;
+                    group.2 += 1;
+                })
+                .or_insert((ordinal, ordinal, 1));
+        }
+        let duplicate_key_count = groups.values().filter(|group| group.2 > 1).count() as u64;
+        if keep == DedupKeepProgram::Fail && duplicate_key_count > 0 {
+            return Err(CdfError::contract(
+                "dedup found a duplicate key; keep=fail aborts before package segment persistence",
+            ));
+        }
+        let mut decisions = Vec::with_capacity(keys.len());
+        for (ordinal, key) in keys.iter().enumerate() {
+            let group = groups
+                .get(key.as_slice())
+                .ok_or_else(|| CdfError::internal("dedup fast-path winner is missing"))?;
+            let kept_ordinal = match keep {
+                DedupKeepProgram::First | DedupKeepProgram::Fail => group.0,
+                DedupKeepProgram::Last => group.1,
+            };
+            decisions.push(DedupDecision {
+                ordinal: ordinal as u64,
+                kept_ordinal,
+            });
+        }
+        let output_rows = groups.len() as u64;
+        let spill_bytes = self.reservation.lock().unwrap().bytes();
+        Ok(ExternalDedupDecisions {
+            source: DecisionSource::Memory(decisions.into_iter()),
+            summary: DedupIndexSummary {
+                input_rows: self.input_rows,
+                output_rows,
+                duplicate_key_count,
+                dropped_row_count: self.input_rows.saturating_sub(output_rows),
                 spill_bytes,
             },
             _index: self,
@@ -569,7 +685,10 @@ impl ExternalDedupIndex {
 
 impl ExternalDedupDecisions {
     pub fn next(&mut self) -> Result<Option<DedupDecision>> {
-        self.reader.next()
+        match &mut self.source {
+            DecisionSource::File(reader) => reader.next(),
+            DecisionSource::Memory(decisions) => Ok(decisions.next()),
+        }
     }
 }
 
@@ -857,6 +976,7 @@ fn io_error(action: &str, path: &Path, error: std::io::Error) -> CdfError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{collections::HashMap, time::Instant};
 
     fn decisions(keep: DedupKeepProgram) -> (Vec<DedupDecision>, DedupIndexSummary) {
         let temp = tempfile::tempdir().unwrap();
@@ -939,5 +1059,201 @@ mod tests {
         index.push_keys(&[vec![7; 64]]).unwrap();
         assert!(index.finish(DedupKeepProgram::First).is_err());
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn external_index_matches_reference_across_chunking_and_skew() {
+        let mut seed = 0x5eed_u64;
+        let keys = (0..2_000)
+            .map(|row| {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                if row % 11 == 0 {
+                    vec![0; 256]
+                } else {
+                    (seed % 137).to_le_bytes().to_vec()
+                }
+            })
+            .collect::<Vec<_>>();
+        for keep in [DedupKeepProgram::First, DedupKeepProgram::Last] {
+            let expected = reference_decisions(&keys, keep.clone());
+            for chunk in [1, 3, 17, 257, 2_000] {
+                let temp = tempfile::tempdir().unwrap();
+                let budget: Arc<dyn SpillBudgetCoordinator> =
+                    Arc::new(cdf_runtime::FixedSpillBudget::new(64 * 1024 * 1024).unwrap());
+                let mut index = ExternalDedupIndex::create_with_sort_memory(
+                    temp.path().join("spill"),
+                    budget,
+                    None,
+                    4 * 1024,
+                )
+                .unwrap();
+                for keys in keys.chunks(chunk) {
+                    index.push_keys(keys).unwrap();
+                }
+                let mut actual = index.finish(keep.clone()).unwrap();
+                let mut decisions = Vec::new();
+                while let Some(decision) = actual.next().unwrap() {
+                    decisions.push(decision.kept_ordinal);
+                }
+                assert_eq!(decisions, expected, "chunk={chunk}, keep={keep:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn in_memory_pressure_transitions_losslessly_to_external_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let spill: Arc<dyn SpillBudgetCoordinator> =
+            Arc::new(cdf_runtime::FixedSpillBudget::new(128 * 1024 * 1024).unwrap());
+        let memory_impl = Arc::new(
+            cdf_memory::DeterministicMemoryCoordinator::new(
+                16 * 1024 * 1024,
+                std::collections::BTreeMap::new(),
+            )
+            .unwrap(),
+        );
+        let blocker = memory_impl
+            .try_reserve(
+                &ReservationRequest::new(
+                    ConsumerKey::new("test-blocker", MemoryClass::Control).unwrap(),
+                    15 * 1024 * 1024,
+                )
+                .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        let memory: Arc<dyn MemoryCoordinator> = memory_impl.clone();
+        let mut index = ExternalDedupIndex::create_with_sort_memory(
+            temp.path().join("spill"),
+            spill,
+            Some(memory),
+            8 * 1024 * 1024,
+        )
+        .unwrap();
+        let keys = (0..2_048)
+            .map(|row| {
+                let mut key = vec![u8::try_from(row % 251).unwrap(); 1024];
+                key.extend_from_slice(&(row as u64).to_le_bytes());
+                key
+            })
+            .collect::<Vec<_>>();
+        index.push_keys(&keys).unwrap();
+        drop(blocker);
+
+        let mut decisions = index.finish(DedupKeepProgram::First).unwrap();
+        let mut rows = 0_u64;
+        while let Some(decision) = decisions.next().unwrap() {
+            assert_eq!(decision.ordinal, decision.kept_ordinal);
+            rows += 1;
+        }
+        assert_eq!(rows, keys.len() as u64);
+        drop(decisions);
+        assert_eq!(memory_impl.snapshot().current_bytes, 0);
+        assert!(memory_impl.snapshot().peak_bytes >= 15 * 1024 * 1024);
+    }
+
+    #[test]
+    #[ignore = "release-mode A6 crossover benchmark"]
+    fn dedup_external_merge_crossover_benchmark() {
+        let cases = [
+            ("all_unique", benchmark_keys(250_000, |row| row as u64)),
+            (
+                "uniform_50pct",
+                benchmark_keys(250_000, |row| (row / 2) as u64),
+            ),
+            (
+                "high_skew",
+                benchmark_keys(250_000, |row| (row % 17) as u64),
+            ),
+            ("all_identical", benchmark_keys(250_000, |_| 1)),
+            (
+                "wide_composite",
+                (0..100_000)
+                    .map(|row| {
+                        let mut key = vec![u8::try_from(row % 251).unwrap(); 1024];
+                        key.extend_from_slice(&(row as u64).to_le_bytes());
+                        key
+                    })
+                    .collect(),
+            ),
+        ];
+        let mut reports = Vec::new();
+        for (name, keys) in cases {
+            let reference_started = Instant::now();
+            std::hint::black_box(reference_decisions(&keys, DedupKeepProgram::First));
+            let reference_ns = reference_started.elapsed().as_nanos();
+
+            let fast_temp = tempfile::tempdir().unwrap();
+            let fast_spill: Arc<dyn SpillBudgetCoordinator> =
+                Arc::new(cdf_runtime::FixedSpillBudget::new(4 * 1024 * 1024 * 1024).unwrap());
+            let fast_memory: Arc<dyn MemoryCoordinator> = Arc::new(
+                cdf_memory::DeterministicMemoryCoordinator::new(
+                    512 * 1024 * 1024,
+                    std::collections::BTreeMap::new(),
+                )
+                .unwrap(),
+            );
+            let fast_started = Instant::now();
+            let mut fast = ExternalDedupIndex::create(
+                fast_temp.path().join("spill"),
+                fast_spill,
+                Some(fast_memory),
+            )
+            .unwrap();
+            for chunk in keys.chunks(8_192) {
+                fast.push_keys(chunk).unwrap();
+            }
+            let mut fast_decisions = fast.finish(DedupKeepProgram::First).unwrap();
+            while fast_decisions.next().unwrap().is_some() {}
+            let fast_ns = fast_started.elapsed().as_nanos();
+
+            let temp = tempfile::tempdir().unwrap();
+            let budget: Arc<dyn SpillBudgetCoordinator> =
+                Arc::new(cdf_runtime::FixedSpillBudget::new(4 * 1024 * 1024 * 1024).unwrap());
+            let external_started = Instant::now();
+            let mut index =
+                ExternalDedupIndex::create(temp.path().join("spill"), budget, None).unwrap();
+            for chunk in keys.chunks(8_192) {
+                index.push_keys(chunk).unwrap();
+            }
+            let mut decisions = index.finish(DedupKeepProgram::First).unwrap();
+            while decisions.next().unwrap().is_some() {}
+            let external_ns = external_started.elapsed().as_nanos();
+            reports.push(serde_json::json!({
+                "case": name,
+                "rows": keys.len(),
+                "reference_hash_ns": reference_ns,
+                "accounted_fast_ns": fast_ns,
+                "external_merge_ns": external_ns,
+                "fast_over_reference": fast_ns as f64 / reference_ns as f64,
+                "external_over_reference": external_ns as f64 / reference_ns as f64,
+                "fast_spill_bytes": fast_decisions.summary.spill_bytes,
+                "spill_bytes": decisions.summary.spill_bytes,
+            }));
+        }
+        println!("{}", serde_json::to_string_pretty(&reports).unwrap());
+    }
+
+    fn benchmark_keys(rows: usize, value: impl Fn(usize) -> u64) -> Vec<Vec<u8>> {
+        (0..rows)
+            .map(|row| value(row).to_le_bytes().to_vec())
+            .collect()
+    }
+
+    fn reference_decisions(keys: &[Vec<u8>], keep: DedupKeepProgram) -> Vec<u64> {
+        let mut winners = HashMap::<&[u8], u64>::new();
+        for (ordinal, key) in keys.iter().enumerate() {
+            let ordinal = ordinal as u64;
+            match keep {
+                DedupKeepProgram::First => {
+                    winners.entry(key).or_insert(ordinal);
+                }
+                DedupKeepProgram::Last => {
+                    winners.insert(key, ordinal);
+                }
+                DedupKeepProgram::Fail => unreachable!(),
+            }
+        }
+        keys.iter().map(|key| winners[key.as_slice()]).collect()
     }
 }
