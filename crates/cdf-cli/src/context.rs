@@ -163,6 +163,26 @@ impl ProjectContext {
             || self.python_resource_mapping(id).is_some()
     }
 
+    pub fn resource_ids(&self) -> Vec<String> {
+        let mut ids = self
+            .resources
+            .iter()
+            .map(|resource| resource.descriptor().resource_id.to_string())
+            .chain(
+                self.config
+                    .resources
+                    .iter()
+                    .filter(|(_, mapping)| {
+                        matches!(mapping.source_kind(), ResourceSourceKind::Python { .. })
+                    })
+                    .map(|(id, _)| id.clone()),
+            )
+            .collect::<Vec<_>>();
+        ids.sort();
+        ids.dedup();
+        ids
+    }
+
     pub fn secret_provider(&self) -> DefaultSecretProvider {
         DefaultSecretProvider::new(
             EnvSecretProvider::process(),

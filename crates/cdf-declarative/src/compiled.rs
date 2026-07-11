@@ -493,6 +493,18 @@ impl ResourceStream for CompiledResource {
         Arc::clone(&self.schema)
     }
 
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        match self.plan() {
+            CompiledResourcePlan::Files(_) => Ok(()),
+            CompiledResourcePlan::Rest(_) => Err(CdfError::contract(
+                "cdf run local-file resource input supports only declarative local file resources; use RestResource for REST execution",
+            )),
+            CompiledResourcePlan::Sql(_) => Err(CdfError::contract(
+                "cdf run local-file resource input supports only declarative local file resources; use SqlResource for SQL execution",
+            )),
+        }
+    }
+
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
         partitions_for_plan(&self.descriptor, &self.schema, &self.plan, Some(request))
     }

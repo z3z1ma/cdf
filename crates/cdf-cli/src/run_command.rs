@@ -24,12 +24,9 @@ use crate::{
     error_catalog,
     output::{CliError, CommandOutput},
     progress::human_progress_sink,
-    project_run_resource::{build_project_run_resource, build_python_project_run_resource},
+    project_run_resource::prepare_runtime_resource_for_cli,
     reports::{AdhocRunReport, RunCliReport, RunDestinationReport},
-    scan_command::{
-        build_engine_plan_for_resource, default_target_for_resource,
-        prepare_discover_resource_for_cli,
-    },
+    scan_command::{build_engine_plan_for_resource, default_target_for_resource},
 };
 
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
@@ -68,18 +65,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         None
     };
     let explicit = resolved_run_args(args)?;
-    let (run_resource, schema_snapshot) =
-        match build_python_project_run_resource(&context, &explicit.resource_id)? {
-            Some(resource) => (resource, None),
-            None => {
-                let resource = context.resource(&explicit.resource_id)?;
-                let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
-                (
-                    build_project_run_resource(&context, &prepared.resource)?,
-                    prepared.schema_snapshot,
-                )
-            }
-        };
+    let prepared = prepare_runtime_resource_for_cli(&context, &explicit.resource_id, false)?;
     let state_store_path = context.state_store_path()?;
     let resolved = resolve_selected_destination(
         &context,
@@ -91,7 +77,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     })?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
     let plan = build_engine_plan_for_resource(
-        run_resource.as_queryable(),
+        prepared.resource.as_queryable(),
         &ScanArgs {
             resource_id: explicit.resource_id.clone(),
             destination_uri: None,
@@ -111,7 +97,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     let progress = human_progress_sink(cli.json, cli.no_color);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let report = match futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: run_resource.as_project_resource(),
+        resource: prepared.resource.as_project_resource(),
         plan,
         package_root: context.package_root(),
         state_store_path,
@@ -135,7 +121,8 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
             return Err(error);
         }
     };
-    let mut cli_report = RunCliReport::from_report(&report, destination_report, schema_snapshot);
+    let mut cli_report =
+        RunCliReport::from_report(&report, destination_report, prepared.schema_snapshot);
     if let Some(adhoc) = adhoc {
         cli_report = cli_report.with_adhoc(adhoc);
     }

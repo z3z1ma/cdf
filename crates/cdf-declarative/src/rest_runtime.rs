@@ -161,6 +161,10 @@ impl ResourceStream for RestResource {
         self.compiled.schema()
     }
 
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        RestResource::validate_runtime_dependencies(self)
+    }
+
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
         self.compiled.type_policy_allowances()
     }

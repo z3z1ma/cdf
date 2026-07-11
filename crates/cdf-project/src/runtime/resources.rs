@@ -1,18 +1,8 @@
-use super::{prelude::*, validation::validate_local_file_run_resource};
+use super::prelude::*;
 
 #[derive(Clone, Copy)]
 pub struct ProjectRunSource<'a> {
     resource: &'a dyn QueryableResource,
-    validation: ProjectRunSourceValidation<'a>,
-}
-
-#[derive(Clone, Copy)]
-enum ProjectRunSourceValidation<'a> {
-    LocalFile(&'a CompiledResource),
-    File(&'a FileResource),
-    Rest(&'a RestResource),
-    Sql(&'a SqlResource),
-    Prevalidated,
 }
 
 impl std::fmt::Debug for ProjectRunSource<'_> {
@@ -27,38 +17,23 @@ impl std::fmt::Debug for ProjectRunSource<'_> {
 
 impl<'a> ProjectRunSource<'a> {
     pub fn new(resource: &'a dyn QueryableResource) -> Self {
-        Self {
-            resource,
-            validation: ProjectRunSourceValidation::Prevalidated,
-        }
+        Self { resource }
     }
 
     pub fn local_file(resource: &'a CompiledResource) -> Self {
-        Self {
-            resource,
-            validation: ProjectRunSourceValidation::LocalFile(resource),
-        }
+        Self::new(resource)
     }
 
     pub fn file(resource: &'a FileResource) -> Self {
-        Self {
-            resource,
-            validation: ProjectRunSourceValidation::File(resource),
-        }
+        Self::new(resource)
     }
 
     pub fn rest(resource: &'a RestResource) -> Self {
-        Self {
-            resource,
-            validation: ProjectRunSourceValidation::Rest(resource),
-        }
+        Self::new(resource)
     }
 
     pub fn sql(resource: &'a SqlResource) -> Self {
-        Self {
-            resource,
-            validation: ProjectRunSourceValidation::Sql(resource),
-        }
+        Self::new(resource)
     }
 
     pub fn stream(self) -> &'a dyn ResourceStream {
@@ -78,15 +53,7 @@ impl<'a> ProjectRunSource<'a> {
     }
 
     pub fn validate_supported(self) -> Result<()> {
-        match self.validation {
-            ProjectRunSourceValidation::LocalFile(resource) => {
-                validate_local_file_run_resource(resource)
-            }
-            ProjectRunSourceValidation::File(resource) => resource.validate_runtime_dependencies(),
-            ProjectRunSourceValidation::Rest(resource) => resource.validate_runtime_dependencies(),
-            ProjectRunSourceValidation::Sql(resource) => resource.validate_runtime_dependencies(),
-            ProjectRunSourceValidation::Prevalidated => Ok(()),
-        }
+        self.resource.validate_runtime_dependencies()
     }
 }
 

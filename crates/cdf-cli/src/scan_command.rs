@@ -24,8 +24,7 @@ use crate::{
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     project_run_resource::{
-        CliProjectRunSource, build_project_run_resource, build_python_project_run_resource,
-        file_runtime_dependencies,
+        CliProjectRunSource, file_runtime_dependencies, prepare_runtime_resource_for_cli,
     },
     render::{
         RenderDocument,
@@ -55,44 +54,18 @@ pub(crate) fn plan_or_explain(
         !args.no_pin,
     )?;
     let target = scan_target(&args)?;
-    if let Some(runtime_resource) = build_python_project_run_resource(&context, &args.resource_id)?
-    {
-        let resolved =
-            resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
-        let identifier_policy = resolved.destination.column_identifier_policy()?;
-        let plan = build_engine_plan_for_resource(
-            runtime_resource.as_queryable(),
-            &args,
-            identifier_policy.as_ref(),
-        )?;
-        let report = scan_report(
-            &context,
-            runtime_resource.as_queryable(),
-            &plan,
-            command,
-            resolved,
-            None,
-        )?;
-        return CommandOutput::rendered(
-            command,
-            scan_report_document(command, &report, args.destination_uri.as_deref()),
-            report,
-        );
-    }
-    let resource = context.resource(&args.resource_id)?;
-    let prepared = prepare_discover_resource_for_cli(&context, resource, args.no_pin)?;
+    let prepared = prepare_runtime_resource_for_cli(&context, &args.resource_id, args.no_pin)?;
     let resolved =
         resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
-    let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
     let plan = build_engine_plan_for_resource(
-        runtime_resource.as_queryable(),
+        prepared.resource.as_queryable(),
         &args,
         identifier_policy.as_ref(),
     )?;
     let report = scan_report(
         &context,
-        &prepared.resource,
+        prepared.resource.as_queryable(),
         &plan,
         command,
         resolved,
@@ -108,26 +81,7 @@ pub(crate) fn plan_or_explain(
 pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
-    if let Some(runtime_resource) = build_python_project_run_resource(&context, &args.resource_id)?
-    {
-        let target = scan_target(&args)?;
-        let resolved = resolve_scan_destination(
-            &context,
-            &target,
-            args.destination_uri.as_deref(),
-            "preview",
-        )?;
-        let identifier_policy = resolved.destination.column_identifier_policy()?;
-        let plan = build_engine_plan_for_resource(
-            runtime_resource.as_queryable(),
-            &args,
-            identifier_policy.as_ref(),
-        )?;
-        let report = preview_resource_report(&runtime_resource, &plan, None)?;
-        return CommandOutput::rendered("preview", preview_document(&report), report);
-    }
-    let resource = context.resource(&args.resource_id)?;
-    let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
+    let prepared = prepare_runtime_resource_for_cli(&context, &args.resource_id, false)?;
     let target = scan_target(&args)?;
     let resolved = resolve_scan_destination(
         &context,
@@ -136,13 +90,12 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         "preview",
     )?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
-    let runtime_resource = build_project_run_resource(&context, &prepared.resource)?;
     let plan = build_engine_plan_for_resource(
-        runtime_resource.as_queryable(),
+        prepared.resource.as_queryable(),
         &args,
         identifier_policy.as_ref(),
     )?;
-    match preview_resource_report(&runtime_resource, &plan, prepared.schema_snapshot) {
+    match preview_resource_report(&prepared.resource, &plan, prepared.schema_snapshot) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
             "preview",

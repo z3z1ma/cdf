@@ -338,6 +338,10 @@ impl ResourceStream for FileResource {
         self.compiled.schema()
     }
 
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        FileResource::validate_runtime_dependencies(self)
+    }
+
     fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
         self.compiled.type_policy_allowances()
     }

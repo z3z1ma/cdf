@@ -12172,6 +12172,21 @@ fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
         .executable;
     write_python_frontdoor_project(&project, &interpreter, &marker);
 
+    let inspected = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "inspect",
+        "resource",
+        "events.raw",
+    ]);
+    assert_eq!(inspected.exit_code, 0, "stderr: {}", inspected.stderr);
+    let inspected = stderr_or_stdout_json(&inspected.stdout);
+    assert_eq!(inspected["result"]["source_name"], "events");
+    assert_eq!(inspected["result"]["resource_name"], "raw");
+    assert!(!marker.exists(), "inspect executed the Python row callable");
+
     let before = project_tree_snapshot(&project.root);
     let plan = run([
         "cdf",

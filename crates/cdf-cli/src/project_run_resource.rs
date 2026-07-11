@@ -1,41 +1,38 @@
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, FileResource, FileRuntimeDependencies,
-    FileTransportFacade, RestResource, RestRuntimeDependencies, SqlResource,
-    SqlRuntimeDependencies,
+    CompiledResource, CompiledResourcePlan, FileRuntimeDependencies, FileTransportFacade,
+    RestRuntimeDependencies, SqlRuntimeDependencies,
 };
 use cdf_kernel::QueryableResource;
 use cdf_project::{ProjectRunSource, ResourceSourceKind, TrustPreset};
 
 use crate::{context::ProjectContext, http_transport::ReqwestHttpTransport, output::CliError};
 
-pub(crate) enum CliProjectRunSource {
-    File(Box<FileResource>),
-    Rest(Box<RestResource>),
-    Sql(Box<SqlResource>),
-    Python(Box<cdf_python::PythonResource>),
+pub(crate) struct PreparedRuntimeResourceForCli {
+    pub(crate) resource: CliProjectRunSource,
+    pub(crate) schema_snapshot: Option<crate::reports::SchemaSnapshotActionReport>,
+}
+
+pub(crate) struct CliProjectRunSource {
+    resource: Box<dyn QueryableResource>,
 }
 
 impl CliProjectRunSource {
-    pub(crate) fn as_project_resource(&self) -> ProjectRunSource<'_> {
-        match self {
-            Self::File(resource) => ProjectRunSource::file(resource.as_ref()),
-            Self::Rest(resource) => ProjectRunSource::rest(resource.as_ref()),
-            Self::Sql(resource) => ProjectRunSource::sql(resource.as_ref()),
-            Self::Python(resource) => ProjectRunSource::new(resource.as_ref()),
+    fn new(resource: impl QueryableResource + 'static) -> Self {
+        Self {
+            resource: Box::new(resource),
         }
+    }
+
+    pub(crate) fn as_project_resource(&self) -> ProjectRunSource<'_> {
+        ProjectRunSource::new(self.resource.as_ref())
     }
 
     pub(crate) fn as_queryable(&self) -> &dyn QueryableResource {
-        match self {
-            Self::File(resource) => resource.as_ref(),
-            Self::Rest(resource) => resource.as_ref(),
-            Self::Sql(resource) => resource.as_ref(),
-            Self::Python(resource) => resource.as_ref(),
-        }
+        self.resource.as_ref()
     }
 }
 
-pub(crate) fn build_python_project_run_resource(
+fn build_python_project_run_resource(
     context: &ProjectContext,
     resource_id: &str,
 ) -> Result<Option<CliProjectRunSource>, CliError> {
@@ -89,7 +86,37 @@ pub(crate) fn build_python_project_run_resource(
         trust,
     )
     .map_err(python_resource_error)?;
-    Ok(Some(CliProjectRunSource::Python(Box::new(resource))))
+    Ok(Some(CliProjectRunSource::new(resource)))
+}
+
+pub(crate) fn build_project_resource_for_inspection(
+    context: &ProjectContext,
+    resource_id: &str,
+) -> Result<CliProjectRunSource, CliError> {
+    match build_python_project_run_resource(context, resource_id)? {
+        Some(resource) => Ok(resource),
+        None => build_project_run_resource(context, context.resource(resource_id)?),
+    }
+}
+
+pub(crate) fn prepare_runtime_resource_for_cli(
+    context: &ProjectContext,
+    resource_id: &str,
+    no_pin: bool,
+) -> Result<PreparedRuntimeResourceForCli, CliError> {
+    if let Some(resource) = build_python_project_run_resource(context, resource_id)? {
+        return Ok(PreparedRuntimeResourceForCli {
+            resource,
+            schema_snapshot: None,
+        });
+    }
+    let compiled = context.resource(resource_id)?;
+    let prepared =
+        crate::scan_command::prepare_discover_resource_for_cli(context, compiled, no_pin)?;
+    Ok(PreparedRuntimeResourceForCli {
+        resource: build_project_run_resource(context, &prepared.resource)?,
+        schema_snapshot: prepared.schema_snapshot,
+    })
 }
 
 fn trust_level(trust: &TrustPreset) -> cdf_kernel::TrustLevel {
@@ -115,22 +142,22 @@ pub(crate) fn build_project_run_resource(
     resource: &CompiledResource,
 ) -> Result<CliProjectRunSource, CliError> {
     match resource.plan() {
-        CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::File(Box::new(
+        CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::new(
             resource.to_file_resource(file_runtime_dependencies(context)?)?,
-        ))),
+        )),
         CompiledResourcePlan::Rest(_) => {
             let dependencies = RestRuntimeDependencies::new(ReqwestHttpTransport::new()?)
                 .with_secret_provider(context.secret_provider());
-            Ok(CliProjectRunSource::Rest(Box::new(
+            Ok(CliProjectRunSource::new(
                 resource.to_rest_resource(dependencies)?,
-            )))
+            ))
         }
         CompiledResourcePlan::Sql(_) => {
             let dependencies =
                 SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
-            Ok(CliProjectRunSource::Sql(Box::new(
+            Ok(CliProjectRunSource::new(
                 resource.to_sql_resource(dependencies)?,
-            )))
+            ))
         }
     }
 }

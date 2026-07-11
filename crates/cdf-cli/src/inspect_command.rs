@@ -46,25 +46,12 @@ pub(crate) fn inspect(cli: &Cli, args: InspectArgs) -> Result<CommandOutput, Cli
                     )
                 }
                 InspectNoun::Resource(id) => {
-                    let report = if let Some(resource) =
-                        crate::project_run_resource::build_python_project_run_resource(
+                    let resource =
+                        crate::project_run_resource::build_project_resource_for_inspection(
                             &context, &id,
-                        )? {
-                        ResourceSummary::from_queryable(
-                            resource.as_queryable(),
-                            "python",
-                            &id,
-                            Some(context.config.resources[&id].source.clone()),
-                            Some(id.clone()),
-                            Some("matched".to_owned()),
-                        )
-                    } else {
-                        let resource = context.resource(&id)?;
-                        ResourceSummary::from_resource(
-                            resource,
-                            context.resource_origin(resource.descriptor().resource_id.as_str()),
-                        )
-                    };
+                        )?;
+                    let report =
+                        ResourceSummary::from_context(&context, &id, resource.as_queryable());
                     CommandOutput::rendered(
                         "inspect resource",
                         inspect_resource_document(&report),
@@ -128,21 +115,31 @@ struct ResourceSummary {
 }
 
 impl ResourceSummary {
-    fn from_resource(
-        resource: &cdf_declarative::CompiledResource,
-        origin: Option<&cdf_project::ProjectResourceOrigin>,
+    fn from_context(
+        context: &ProjectContext,
+        id: &str,
+        resource: &dyn cdf_kernel::QueryableResource,
     ) -> Self {
+        let origin = context.resource_origin(id);
+        let mapping = context.config.resources.get(id);
+        let (default_source, default_resource) = id.split_once('.').unwrap_or((id, id));
         Self::from_queryable(
             resource,
             &origin
                 .map(|origin| origin.source_name.clone())
-                .unwrap_or_else(|| resource.source_name().to_owned()),
+                .unwrap_or_else(|| default_source.to_owned()),
             &origin
                 .map(|origin| origin.resource_name.clone())
-                .unwrap_or_else(|| resource.resource_name().to_owned()),
-            origin.and_then(|origin| origin.source_file.clone()),
-            origin.map(|origin| origin.mapping_pattern.clone()),
-            origin.map(|origin| origin.mapping_status.clone()),
+                .unwrap_or_else(|| default_resource.to_owned()),
+            origin
+                .and_then(|origin| origin.source_file.clone())
+                .or_else(|| mapping.map(|mapping| mapping.source.clone())),
+            origin
+                .map(|origin| origin.mapping_pattern.clone())
+                .or_else(|| mapping.map(|_| id.to_owned())),
+            origin
+                .map(|origin| origin.mapping_status.clone())
+                .or_else(|| mapping.map(|_| "matched".to_owned())),
         )
     }
 
@@ -168,29 +165,18 @@ impl ResourceSummary {
 
 fn resource_summaries(context: &ProjectContext) -> Result<Vec<ResourceSummary>, CliError> {
     let mut summaries = context
-        .resources
-        .iter()
-        .map(|resource| {
-            ResourceSummary::from_resource(
-                resource,
-                context.resource_origin(resource.descriptor().resource_id.as_str()),
-            )
-        })
-        .collect::<Vec<_>>();
-    for (id, mapping) in &context.config.resources {
-        if let Some(resource) =
-            crate::project_run_resource::build_python_project_run_resource(context, id)?
-        {
-            summaries.push(ResourceSummary::from_queryable(
+        .resource_ids()
+        .into_iter()
+        .map(|id| {
+            let resource =
+                crate::project_run_resource::build_project_resource_for_inspection(context, &id)?;
+            Ok(ResourceSummary::from_context(
+                context,
+                &id,
                 resource.as_queryable(),
-                "python",
-                id,
-                Some(mapping.source.clone()),
-                Some(id.clone()),
-                Some("matched".to_owned()),
-            ));
-        }
-    }
+            ))
+        })
+        .collect::<Result<Vec<_>, CliError>>()?;
     summaries.sort_by(|left, right| {
         left.descriptor
             .resource_id

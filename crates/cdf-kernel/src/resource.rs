@@ -951,6 +951,11 @@ impl EffectiveSchemaRuntime {
 pub trait ResourceStream {
     fn descriptor(&self) -> &ResourceDescriptor;
     fn schema(&self) -> SchemaRef;
+    /// Validates adapter-owned runtime dependencies before orchestration starts.
+    /// Generic orchestration calls this hook without knowing the source kind.
+    fn validate_runtime_dependencies(&self) -> Result<()> {
+        Ok(())
+    }
     fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>>;
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>>;
     /// Revalidates a planned observation without opening its payload and returns

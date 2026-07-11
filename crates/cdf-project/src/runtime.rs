@@ -45,9 +45,7 @@ mod prelude {
     };
 
     pub(super) use arrow_schema::Schema;
-    pub(super) use cdf_declarative::{
-        CompiledResource, CompiledResourcePlan, FileResource, RestResource, SqlResource,
-    };
+    pub(super) use cdf_declarative::{CompiledResource, FileResource, RestResource, SqlResource};
     pub(super) use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
     pub(super) use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};
     pub(super) use cdf_dest_postgres::{

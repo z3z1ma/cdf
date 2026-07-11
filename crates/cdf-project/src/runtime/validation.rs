@@ -63,18 +63,6 @@ fn validate_checkpointable_source_position(resource: ProjectRunSource<'_>) -> Re
     Ok(())
 }
 
-pub(super) fn validate_local_file_run_resource(resource: &CompiledResource) -> Result<()> {
-    match resource.plan() {
-        CompiledResourcePlan::Files(_) => Ok(()),
-        CompiledResourcePlan::Rest(_) => Err(CdfError::contract(
-            "cdf run local-file resource input supports only declarative local file resources; use RestResource for REST execution",
-        )),
-        CompiledResourcePlan::Sql(_) => Err(CdfError::contract(
-            "cdf run local-file resource input supports only declarative local file resources; use SqlResource for SQL execution",
-        )),
-    }
-}
-
 fn validate_run_plan(
     resource: &dyn ResourceStream,
     plan: &EnginePlan,
