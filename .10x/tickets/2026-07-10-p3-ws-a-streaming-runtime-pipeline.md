@@ -20,6 +20,9 @@ This workstream is a plan and requires bounded executable children for runtime o
 - `.10x/tickets/2026-07-11-p3-a4-injected-execution-host.md`
 - `.10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md`
 - `.10x/tickets/2026-07-11-p3-a6-spillable-package-dedup.md` (child of A5)
+- `.10x/tickets/2026-07-11-p3-a7-stream-policy-compilation.md`
+- `.10x/tickets/2026-07-11-p3-a8-drain-epoch-executor.md`
+- `.10x/tickets/2026-07-11-p3-a9-watermark-late-data-conformance.md`
 
 ## Acceptance criteria
 
@@ -29,10 +32,11 @@ This workstream is a plan and requires bounded executable children for runtime o
 - Pre-finalization destination work is staged ingress under non-identity attempt authority; only final verified package binding may publish target state and return a receipt.
 - Peak commit memory is bounded by segments and configured queues, not package size.
 - P1 progress and all crash-matrix rows remain green.
+- Drain-mode unbounded resources rotate deterministic frontier-closed packages, enforce typed watermarks/late-data verdicts, and gate every epoch independently.
 
 ## Explicit exclusions
 
-No distributed scheduler, semantic package change, or source/destination-specific orchestration branch.
+No distributed scheduler, resident supervisor, general windowing engine, semantic package bypass, or source/destination-specific orchestration branch.
 
 ## Blockers
 

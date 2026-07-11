@@ -32,6 +32,7 @@ No distributed scheduler in this ticket.
 - 2026-07-07: Blocked by the P0 structural-debt stop-line until Workstreams A, B, and C close. This ticket owns new CDC source archetypes and the resident streaming supervisor, both explicitly paused by the directive.
 - 2026-07-08: Workstream B closed. This ticket remains blocked by the P0 stop-line until Workstream C closes.
 - 2026-07-08: Workstream C closed at `.10x/tickets/done/2026-07-07-p0-workstream-c-spine-conformance-harness.md`; the A-C stop-line is lifted for new source-archetype and resident streaming-supervisor lanes. This ticket is open again, though broader P0 Workstreams E and F remain the current structural-debt priority.
+- 2026-07-11: P3 now owns the reusable kernel stream-policy artifacts, policy compilation, deterministic drain epoch executor, and watermark/late-data conformance through BX1 and A7–A9. This ticket retains concrete log CDC source archetypes, `cdc_apply`, and resident pause/drain/resume lifecycle and MUST consume the P3 epoch executor rather than introduce a second runtime/artifact path. Split this broad parent into executable children before implementation.
 
 ## Blockers
 

@@ -42,14 +42,14 @@ The concrete ledger, accounted-payload, admission, deadlock-prevention, and spil
 
 Batch size MUST be adaptive between configured floors and ceilings under `.10x/specs/canonical-segmentation-adaptive-batching.md`. Live execution microbatches MAY adjust based on downstream pressure and spill only when canonical package segmentation remains plan-deterministic. Replay uses recorded canonical segments and MUST NOT rederive pressure decisions.
 
-Every plan node MUST carry boundedness. Bounded plans run to completion. Unbounded plans MUST be illegal unless they declare checkpoint cadence, package rotation, and watermark strategy. MVP supports unbounded plans only in drain mode.
+Every plan node MUST carry the kernel-owned execution extent governed by `.10x/specs/stream-epochs-watermarks.md`. Bounded plans run to completion. Unbounded plans MUST be illegal unless they declare checkpoint cadence, package rotation, watermark/late-data strategy, partition aggregation/idleness, safe-frontier policy, and finite drain termination. P3 executes unbounded plans only in drain mode; the later resident supervisor schedules the same finite epoch executor.
 
 ## Acceptance criteria
 
 - Kernel public APIs expose no DataFusion, DuckDB, Python, or network types.
 - A dependency graph check can prove lower layers do not import upper layers.
 - Runtime tests demonstrate byte-bounded backpressure and clean failure under a small memory budget.
-- Boundedness policy rejects an unbounded plan without cadence, rotation, and watermark strategy.
+- Execution-extent policy rejects an unbounded plan without cadence, rotation, watermark/late-data, aggregation/idleness, safe-frontier, and finite drain-termination policy.
 
 ## Explicit exclusions
 

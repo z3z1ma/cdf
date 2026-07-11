@@ -78,6 +78,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-10: Opened from the user-ratified P3 directive. The performance target and measurement doctrine are active in `.10x/decisions/terabyte-scale-performance-envelope.md`; the lab contract is active in `.10x/specs/performance-lab-and-envelope.md`. This activation starts no optimization. WS-L remains the only workstream eligible to execute until its baseline evidence exists.
 - 2026-07-11: The user explicitly reprioritized enterprise performance ahead of CI/release stabilization while keeping CLI excellence active. Removed the stale whole-P1 closure dependency. WS-L is eligible immediately; P1 tails may proceed independently but may not optimize or otherwise mutate the pre-baseline P3 data plane.
 - 2026-07-11: The user expanded native input scope beyond the original Parquet/CSV/JSON envelope. `.10x/decisions/native-enterprise-format-catalog-v1.md` and `.10x/specs/native-enterprise-format-catalog.md` make the WS-B closeout catalog finite and testable; FX1 prevents those codecs from extending generic compiler/runtime match trees or one monolithic parser build domain.
+- 2026-07-11: VISION 6.5–6.6 are now explicitly owned within P3 drain mode. BX1 and A7–A9 move stream extent/watermark meaning into kernel artifacts, compile complete policies, execute finite frontier-closed epochs on the ordinary graph, and conformance-test late data/recovery/jobs invariance. Resident lifecycle and concrete CDC remain in the later supervisor ticket and must reuse this path.
 
 ## Blockers
 
