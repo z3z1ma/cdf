@@ -24,7 +24,8 @@ use crate::{
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     project_run_resource::{
-        CliProjectRunSource, build_project_run_resource, file_runtime_dependencies,
+        CliProjectRunSource, build_project_run_resource, build_python_project_run_resource,
+        file_runtime_dependencies,
     },
     render::{
         RenderDocument,
@@ -54,6 +55,30 @@ pub(crate) fn plan_or_explain(
         !args.no_pin,
     )?;
     let target = scan_target(&args)?;
+    if let Some(runtime_resource) = build_python_project_run_resource(&context, &args.resource_id)?
+    {
+        let resolved =
+            resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
+        let identifier_policy = resolved.destination.column_identifier_policy()?;
+        let plan = build_engine_plan_for_resource(
+            runtime_resource.as_queryable(),
+            &args,
+            identifier_policy.as_ref(),
+        )?;
+        let report = scan_report(
+            &context,
+            runtime_resource.as_queryable(),
+            &plan,
+            command,
+            resolved,
+            None,
+        )?;
+        return CommandOutput::rendered(
+            command,
+            scan_report_document(command, &report, args.destination_uri.as_deref()),
+            report,
+        );
+    }
     let resource = context.resource(&args.resource_id)?;
     let prepared = prepare_discover_resource_for_cli(&context, resource, args.no_pin)?;
     let resolved =
@@ -83,6 +108,24 @@ pub(crate) fn plan_or_explain(
 pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
+    if let Some(runtime_resource) = build_python_project_run_resource(&context, &args.resource_id)?
+    {
+        let target = scan_target(&args)?;
+        let resolved = resolve_scan_destination(
+            &context,
+            &target,
+            args.destination_uri.as_deref(),
+            "preview",
+        )?;
+        let identifier_policy = resolved.destination.column_identifier_policy()?;
+        let plan = build_engine_plan_for_resource(
+            runtime_resource.as_queryable(),
+            &args,
+            identifier_policy.as_ref(),
+        )?;
+        let report = preview_resource_report(&runtime_resource, &plan, None)?;
+        return CommandOutput::rendered("preview", preview_document(&report), report);
+    }
     let resource = context.resource(&args.resource_id)?;
     let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
     let target = scan_target(&args)?;
@@ -353,7 +396,7 @@ fn parse_order_by(raw: &str) -> Result<OrderBy, CliError> {
 
 fn scan_report(
     context: &ProjectContext,
-    resource: &CompiledResource,
+    resource: &dyn QueryableResource,
     plan: &EnginePlan,
     command: &'static str,
     resolved: EnvironmentDestination,
@@ -429,7 +472,7 @@ pub(crate) fn default_target_for_resource(resource_id: &str) -> String {
 
 fn destination_plan_report(
     resolved: EnvironmentDestination,
-    resource: &cdf_declarative::CompiledResource,
+    resource: &dyn QueryableResource,
     engine_plan: &EnginePlan,
     command: &'static str,
 ) -> Result<DestinationPlanReport, CliError> {
@@ -1044,7 +1087,7 @@ struct DestinationPlanReport {
 impl DestinationPlanReport {
     fn from_project(
         plan: cdf_project::ProjectDestinationCommitPlan,
-        resource: &cdf_declarative::CompiledResource,
+        resource: &dyn ResourceStream,
     ) -> cdf_kernel::Result<Self> {
         let guarantee = delivery_guarantee_report(
             &plan.commit_plan.delivery_guarantee,
@@ -1106,7 +1149,7 @@ impl DestinationPlanReport {
 }
 
 fn resource_schema_report(
-    resource: &cdf_declarative::CompiledResource,
+    resource: &dyn ResourceStream,
     schema_hash: &cdf_kernel::SchemaHash,
     program: &cdf_contract::ValidationProgram,
     effective: Option<&cdf_engine::EffectiveSchemaPlanEvidence>,
@@ -1161,7 +1204,7 @@ fn delivery_guarantee_report(
     disposition: &WriteDisposition,
     idempotency: &IdempotencySupport,
     sheet: &DestinationSheet,
-    resource: &cdf_declarative::CompiledResource,
+    resource: &dyn ResourceStream,
 ) -> cdf_kernel::Result<DeliveryGuaranteeReport> {
     if idempotency != &sheet.idempotency {
         return Err(CdfError::internal(format!(
@@ -1191,7 +1234,7 @@ fn derive_delivery_guarantee(
     disposition: &WriteDisposition,
     idempotency: &IdempotencySupport,
     sheet: &DestinationSheet,
-    resource: &cdf_declarative::CompiledResource,
+    resource: &dyn ResourceStream,
 ) -> DeliveryGuarantee {
     match disposition {
         WriteDisposition::Merge if !resource.descriptor().merge_key.is_empty() => {

@@ -10,6 +10,11 @@ from cdf_sdk import Context, Row, resource
     primary_key=("id",),
     cursor="updated_at",
     parallel=True,
+    schema={
+        "id": ("int64", False),
+        "title": "utf8",
+        "updated_at": ("timestamp(us, UTC)", False),
+    },
 )
 def issues(ctx: Context) -> Iterator[Row]:
     token = ctx.secrets.get("secret://env/GITHUB_TOKEN")

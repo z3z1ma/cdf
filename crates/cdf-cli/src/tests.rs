@@ -12164,6 +12164,148 @@ fn doctor_fails_old_python_interpreter_version() {
 }
 
 #[test]
+fn python_resource_plan_preview_run_and_replay_use_the_product_spine() {
+    let project = TestProject::new();
+    let marker = project.root.join("python-resource-executed");
+    let interpreter = cdf_python::attached_interpreter_report()
+        .unwrap()
+        .executable;
+    write_python_frontdoor_project(&project, &interpreter, &marker);
+
+    let before = project_tree_snapshot(&project.root);
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "events.raw",
+    ]);
+    assert_eq!(plan.exit_code, 0, "stderr: {}", plan.stderr);
+    assert_eq!(project_tree_snapshot(&project.root), before);
+    assert!(!marker.exists(), "plan executed the Python row callable");
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    assert_eq!(plan_json["result"]["resource_id"], "events.raw");
+    assert_eq!(
+        plan_json["result"]["will_fetch"]["partitions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "events.raw",
+    ]);
+    assert_eq!(preview.exit_code, 0, "stderr: {}", preview.stderr);
+    let preview_json = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_json["result"]["row_count"], 2);
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/python.duckdb").exists());
+    assert!(marker.is_file());
+    fs::remove_file(&marker).unwrap();
+
+    let run_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "events.raw",
+        "--package-id",
+        "pkg-python-frontdoor",
+        "--checkpoint-id",
+        "checkpoint-python-frontdoor",
+    ]);
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    let report = stderr_or_stdout_json(&run_result.stdout);
+    assert_eq!(report["result"]["row_count"], 2);
+    assert_eq!(report["result"]["checkpoint"]["status"], "committed");
+    assert_eq!(
+        report["result"]["ledger_events"]["kinds"]["destination_receipt_recorded"],
+        1
+    );
+    assert_eq!(report["result"]["writes"]["package"], true);
+    assert_eq!(report["result"]["writes"]["destination"], true);
+    assert_eq!(report["result"]["writes"]["checkpoint"], true);
+    let package = project.root.join(".cdf/packages/pkg-python-frontdoor");
+    assert!(package.join("manifest.json").is_file());
+    assert!(marker.is_file());
+
+    fs::write(
+        project.root.join("src/events.py"),
+        "raise RuntimeError('Python source must not execute during replay')\n",
+    )
+    .unwrap();
+    let replay_project = TestProject::new();
+    let replay = run([
+        "cdf",
+        "--json",
+        "--project",
+        replay_project.root_str(),
+        "replay",
+        "package",
+        package.to_str().unwrap(),
+        "--to",
+        "duckdb://.cdf/replayed-python.duckdb",
+        "--target",
+        "raw_replay",
+    ]);
+    assert_eq!(replay.exit_code, 0, "stderr: {}", replay.stderr);
+    assert!(
+        replay_project
+            .root
+            .join(".cdf/replayed-python.duckdb")
+            .is_file()
+    );
+}
+
+#[test]
+fn python_resource_errors_route_to_doctor_without_path_escape() {
+    let project = TestProject::new();
+    let interpreter = cdf_python::attached_interpreter_report()
+        .unwrap()
+        .executable;
+    write_python_frontdoor_project(
+        &project,
+        &interpreter,
+        &project.root.join("must-not-execute"),
+    );
+    let text = fs::read_to_string(project.root.join("cdf.toml"))
+        .unwrap()
+        .replace(
+            "python://src/events.py#raw_events",
+            "python://../events.py#raw_events",
+        );
+    fs::write(project.root.join("cdf.toml"), text).unwrap();
+
+    let result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "events.raw",
+    ]);
+    assert_eq!(result.exit_code, 3);
+    let error = stderr_or_stdout_json(&result.stderr);
+    assert_eq!(error["error"]["code"], "CDF-PYTHON-RESOURCE");
+    assert!(
+        error["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("cdf doctor")
+    );
+    assert!(!project.root.join("must-not-execute").exists());
+}
+
+#[test]
 fn doctor_passes_clean_duckdb_ledger_mirror_drift_check() {
     let project = TestProject::new();
     create_duckdb_doctor_fixture(&project, DoctorDriftFixtureMode::Clean);
@@ -15924,6 +16066,57 @@ fn write_python_resource_config_project(project: &TestProject, interpreter: &str
     text.push_str(&serde_json::to_string(interpreter).unwrap());
     text.push('\n');
     fs::write(project.root.join("cdf.toml"), text).unwrap();
+}
+
+fn write_python_frontdoor_project(project: &TestProject, interpreter: &Path, marker: &Path) {
+    fs::create_dir_all(project.root.join("src")).unwrap();
+    fs::write(
+        project.root.join("cdf.toml"),
+        format!(
+            r#"
+[project]
+name = "python_frontdoor"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/python.duckdb"
+
+[python]
+interpreter = {}
+
+[resources."events.raw"]
+source = "python://src/events.py#raw_events"
+trust = "governed"
+"#,
+            serde_json::to_string(interpreter.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("src/events.py"),
+        format!(
+            r#"
+def raw_events():
+    with open({}, "a", encoding="utf-8") as marker:
+        marker.write("called\n")
+    yield {{"id": 1, "name": "ada", "updated_at": 10}}
+    yield {{"id": 2, "name": "grace", "updated_at": 20}}
+
+raw_events.__cdf_resource__ = True
+raw_events.__cdf_primary_key__ = ()
+raw_events.__cdf_merge_key__ = ()
+raw_events.__cdf_cursor__ = "updated_at"
+raw_events.__cdf_parallel__ = False
+raw_events.__cdf_schema__ = (("id", "int64", False), ("name", "utf8", False), ("updated_at", "int64", False))
+raw_events.__cdf_write_disposition__ = "append"
+"#,
+            serde_json::to_string(marker.to_str().unwrap()).unwrap()
+        ),
+    )
+    .unwrap();
 }
 
 fn write_fake_interpreter(path: &Path, stdout: &str) {

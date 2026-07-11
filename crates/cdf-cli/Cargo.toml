@@ -29,6 +29,7 @@ cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
 cdf-project = { path = "../cdf-project" }
+cdf-python = { path = "../cdf-python" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-executor = "0.3.32"
 futures-util = "0.3.32"

@@ -99,6 +99,17 @@ pub(crate) const PROJECT_MERGE_KEY: ErrorMapping = ErrorMapping {
     }),
 };
 
+pub(crate) const PYTHON_RESOURCE: ErrorMapping = ErrorMapping {
+    code: "CDF-PYTHON-RESOURCE",
+    exit_code: 3,
+    remediation: Some(RemediationTemplate {
+        summary: "Repair the configured Python interpreter or resource target, then retry.",
+        steps: &[
+            "Run `cdf doctor` to verify the configured interpreter without executing resource code.",
+        ],
+    }),
+};
+
 pub(crate) const RESOURCE_NOT_COMPILED: ErrorMapping = ErrorMapping {
     code: "CDF-RESOURCE-NOT-COMPILED",
     exit_code: 3,
@@ -314,6 +325,7 @@ pub(crate) fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
         ("PROJECT_IO", PROJECT_IO),
         ("PROJECT_RESOURCE_MAPPING", PROJECT_RESOURCE_MAPPING),
         ("PROJECT_MERGE_KEY", PROJECT_MERGE_KEY),
+        ("PYTHON_RESOURCE", PYTHON_RESOURCE),
         ("RESOURCE_NOT_COMPILED", RESOURCE_NOT_COMPILED),
         ("CONTRACT_ARGUMENT", CONTRACT_ARGUMENT),
         ("CONTRACT_LOCKFILE", CONTRACT_LOCKFILE),

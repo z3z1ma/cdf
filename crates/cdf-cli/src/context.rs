@@ -10,8 +10,8 @@ use cdf_kernel::{CdfError, Result as CdfResult, SchemaSource};
 use cdf_project::{
     CdfLock, DefaultSecretProvider, EffectiveEnvironment, EnvSecretProvider,
     FileResourceSourceResolver, FileSecretProvider, LOCK_FILE_NAME, LockFileAuthority,
-    PROJECT_FILE_NAME, ProjectConfig, ProjectResourceOrigin, SchemaSnapshotStore, parse_cdf_toml,
-    parse_lock, read_lock_file_authority,
+    PROJECT_FILE_NAME, ProjectConfig, ProjectResource, ProjectResourceOrigin, ResourceSourceKind,
+    SchemaSnapshotStore, parse_cdf_toml, parse_lock, read_lock_file_authority,
 };
 use cdf_state_sqlite::SqliteCheckpointStore;
 use serde::Serialize;
@@ -149,6 +149,20 @@ impl ProjectContext {
             .map(|(_, origin)| origin)
     }
 
+    pub fn python_resource_mapping(&self, id: &str) -> Option<&ProjectResource> {
+        self.config
+            .resources
+            .get(id)
+            .filter(|mapping| matches!(mapping.source_kind(), ResourceSourceKind::Python { .. }))
+    }
+
+    pub fn has_resource(&self, id: &str) -> bool {
+        self.resources
+            .iter()
+            .any(|resource| resource.descriptor().resource_id.as_str() == id)
+            || self.python_resource_mapping(id).is_some()
+    }
+
     pub fn secret_provider(&self) -> DefaultSecretProvider {
         DefaultSecretProvider::new(
             EnvSecretProvider::process(),
@@ -184,7 +198,16 @@ impl ProjectContext {
             id,
             self.resources
                 .iter()
-                .map(|resource| resource.descriptor().resource_id.to_string()),
+                .map(|resource| resource.descriptor().resource_id.to_string())
+                .chain(
+                    self.config
+                        .resources
+                        .iter()
+                        .filter(|(_, mapping)| {
+                            matches!(mapping.source_kind(), ResourceSourceKind::Python { .. })
+                        })
+                        .map(|(id, _)| id.clone()),
+                ),
         )
     }
 
@@ -194,6 +217,7 @@ impl ProjectContext {
                 id,
                 &self.resources,
                 &self.resource_origins,
+                &self.config,
             )),
             error_catalog::RESOURCE_NOT_COMPILED,
         )
@@ -251,8 +275,9 @@ fn resource_not_compiled_message(
     id: &str,
     resources: &[CompiledResource],
     origins: &[ProjectResourceOrigin],
+    config: &ProjectConfig,
 ) -> String {
-    let compiled = resources
+    let mut compiled = resources
         .iter()
         .zip(origins)
         .map(|(resource, origin)| {
@@ -268,6 +293,17 @@ fn resource_not_compiled_message(
             )
         })
         .collect::<Vec<_>>();
+    compiled.extend(
+        config
+            .resources
+            .iter()
+            .filter(|(_, mapping)| {
+                matches!(mapping.source_kind(), ResourceSourceKind::Python { .. })
+            })
+            .map(|(id, mapping)| {
+                format!("`{id}` from {} (Python mapping matched)", mapping.source)
+            }),
+    );
     let compiled = if compiled.is_empty() {
         "none".to_owned()
     } else {

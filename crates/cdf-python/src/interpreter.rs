@@ -119,6 +119,24 @@ pub fn inspect_interpreter(py: Python<'_>) -> Result<InterpreterReport> {
     })
 }
 
+pub fn validate_attached_interpreter(
+    executable: PathBuf,
+    require_free_threaded: bool,
+) -> Result<InterpreterReport> {
+    let report = Python::attach(inspect_interpreter)?;
+    InterpreterRequirement {
+        executable: Some(executable),
+        require_free_threaded,
+        ..InterpreterRequirement::default()
+    }
+    .check(&report)?;
+    Ok(report)
+}
+
+pub fn attached_interpreter_report() -> Result<InterpreterReport> {
+    Python::attach(inspect_interpreter)
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PythonConcurrencyMode {

@@ -40,6 +40,8 @@ def resource(
     merge_key: Sequence[str] = (),
     cursor: str | None = None,
     parallel: bool = False,
+    schema: Mapping[str, str | tuple[str, bool]] | None = None,
+    write_disposition: str = "append",
 ) -> Callable[[R], R]: ...
 
 
@@ -52,6 +54,8 @@ def resource(
     merge_key: Sequence[str] = (),
     cursor: str | None = None,
     parallel: bool = False,
+    schema: Mapping[str, str | tuple[str, bool]] | None = None,
+    write_disposition: str = "append",
 ) -> R | Callable[[R], R]:
     def decorate(inner: R) -> R:
         setattr(inner, "__cdf_resource__", True)
@@ -60,6 +64,17 @@ def resource(
         setattr(inner, "__cdf_merge_key__", tuple(merge_key))
         setattr(inner, "__cdf_cursor__", cursor)
         setattr(inner, "__cdf_parallel__", parallel)
+        setattr(
+            inner,
+            "__cdf_schema__",
+            tuple(
+                (field, value, True)
+                if isinstance(value, str)
+                else (field, value[0], value[1])
+                for field, value in (schema or {}).items()
+            ),
+        )
+        setattr(inner, "__cdf_write_disposition__", write_disposition)
         return inner
 
     if func is not None:

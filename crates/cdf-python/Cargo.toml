@@ -13,6 +13,8 @@ arrow-schema = "59.1.0"
 cdf-formats = { path = "../cdf-formats" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-declarative = { path = "../cdf-declarative" }
+futures-util = "0.3.32"
 hex = "0.4.3"
 pyo3 = { version = "0.29.0", features = ["auto-initialize"] }
 pyo3-arrow = { version = "0.19.0", default-features = false }

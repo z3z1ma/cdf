@@ -24,7 +24,7 @@ use crate::{
     error_catalog,
     output::{CliError, CommandOutput},
     progress::human_progress_sink,
-    project_run_resource::build_project_run_resource,
+    project_run_resource::{build_project_run_resource, build_python_project_run_resource},
     reports::{AdhocRunReport, RunCliReport, RunDestinationReport},
     scan_command::{
         build_engine_plan_for_resource, default_target_for_resource,
@@ -52,11 +52,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
     })?;
     let mut context =
         ProjectContext::load_for_command("run", cli.project.as_ref(), cli.env.as_deref())?;
-    let adhoc = if context
-        .resources
-        .iter()
-        .any(|resource| resource.descriptor().resource_id.as_str() == requested)
-    {
+    let adhoc = if context.has_resource(&requested) {
         None
     } else if looks_like_adhoc_location(&requested) {
         if args.destination_uri.is_none() {
@@ -72,10 +68,18 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         None
     };
     let explicit = resolved_run_args(args)?;
-    let resource = context.resource(&explicit.resource_id)?;
-    let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
-    let resource = &prepared.resource;
-    let run_resource = build_project_run_resource(&context, resource)?;
+    let (run_resource, schema_snapshot) =
+        match build_python_project_run_resource(&context, &explicit.resource_id)? {
+            Some(resource) => (resource, None),
+            None => {
+                let resource = context.resource(&explicit.resource_id)?;
+                let prepared = prepare_discover_resource_for_cli(&context, resource, false)?;
+                (
+                    build_project_run_resource(&context, &prepared.resource)?,
+                    prepared.schema_snapshot,
+                )
+            }
+        };
     let state_store_path = context.state_store_path()?;
     let resolved = resolve_selected_destination(
         &context,
@@ -131,8 +135,7 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
             return Err(error);
         }
     };
-    let mut cli_report =
-        RunCliReport::from_report(&report, destination_report, prepared.schema_snapshot);
+    let mut cli_report = RunCliReport::from_report(&report, destination_report, schema_snapshot);
     if let Some(adhoc) = adhoc {
         cli_report = cli_report.with_adhoc(adhoc);
     }

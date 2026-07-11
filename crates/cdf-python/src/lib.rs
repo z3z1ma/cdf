@@ -34,6 +34,7 @@ mod context;
 mod dlt;
 mod internal;
 mod interpreter;
+mod resource;
 mod runtime;
 #[cfg(test)]
 mod tests;
@@ -43,4 +44,5 @@ pub use channel::*;
 pub use context::*;
 pub use dlt::*;
 pub use interpreter::*;
+pub use resource::*;
 pub use runtime::*;
