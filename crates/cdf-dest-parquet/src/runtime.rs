@@ -214,6 +214,7 @@ fn prepare_parquet_commit(
 fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
         ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
+        staged_ingress: None,
         writer_model: DestinationWriterModel::SingleWriter,
         max_in_flight_segments: Some(1),
         max_in_flight_bytes: None,

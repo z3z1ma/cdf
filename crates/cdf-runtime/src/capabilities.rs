@@ -41,6 +41,7 @@ pub enum DestinationWriterModel {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestinationRuntimeCapabilities {
     pub ingress_mode: DestinationIngressMode,
+    pub staged_ingress: Option<StagedIngressCapabilities>,
     pub writer_model: DestinationWriterModel,
     pub max_in_flight_segments: Option<u16>,
     pub max_in_flight_bytes: Option<u64>,
@@ -55,6 +56,7 @@ impl Default for DestinationRuntimeCapabilities {
     fn default() -> Self {
         Self {
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
+            staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,
             max_in_flight_segments: Some(1),
             max_in_flight_bytes: None,
@@ -64,6 +66,36 @@ impl Default for DestinationRuntimeCapabilities {
             replay_target_hint: None,
             replay_policy_values: BTreeMap::new(),
         }
+    }
+}
+
+impl DestinationRuntimeCapabilities {
+    pub fn validate(&self) -> Result<()> {
+        match (&self.ingress_mode, &self.staged_ingress) {
+            (DestinationIngressMode::FinalizedPackageOnly, None) => {}
+            (DestinationIngressMode::StagedDurableSegments, Some(staging)) => {
+                if !staging.abort_idempotent || !staging.lifecycle_cleanup {
+                    return Err(CdfError::contract(
+                        "staged ingress requires idempotent abort and lifecycle cleanup",
+                    ));
+                }
+                if self.max_in_flight_segments == Some(0)
+                    || self.max_in_flight_bytes == Some(0)
+                    || self.max_in_flight_segments.is_none()
+                    || self.max_in_flight_bytes.is_none()
+                {
+                    return Err(CdfError::contract(
+                        "staged ingress requires nonzero segment and byte bounds",
+                    ));
+                }
+            }
+            _ => {
+                return Err(CdfError::contract(
+                    "destination ingress mode and staged ingress declaration disagree",
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

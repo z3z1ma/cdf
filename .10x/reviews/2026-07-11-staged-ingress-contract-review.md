@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/decisions/destination-staged-ingress-final-package-binding.md, .10x/specs/streaming-destination-ingress.md, .10x/tickets/2026-07-11-p3-a1-staged-ingress-final-binding.md
+Target: .10x/decisions/destination-staged-ingress-final-package-binding.md, .10x/specs/streaming-destination-ingress.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md
 Verdict: pass
 
 # Staged ingress contract review

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
-Depends-On: .10x/tickets/2026-07-11-p3-a7-stream-policy-compilation.md, .10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/2026-07-11-p3-a1-staged-ingress-final-binding.md
+Depends-On: .10x/tickets/2026-07-11-p3-a7-stream-policy-compilation.md, .10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md
 
 # P3 A8: deterministic drain epoch executor
 

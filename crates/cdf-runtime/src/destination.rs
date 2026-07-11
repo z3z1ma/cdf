@@ -120,6 +120,23 @@ pub trait DestinationRuntime {
         DestinationRuntimeCapabilities::default()
     }
 
+    fn begin_staged_ingress(
+        &mut self,
+        _request: StagedIngressRequest,
+    ) -> Result<Box<dyn StagedIngressSession>> {
+        Err(CdfError::destination(format!(
+            "destination {} requires a finalized package before ingress",
+            self.describe().destination_id
+        )))
+    }
+
+    fn inspect_staged_ingress(
+        &mut self,
+        _attempt_id: &LoadAttemptId,
+    ) -> Result<Option<StagingSnapshot>> {
+        Ok(None)
+    }
+
     fn supported_dispositions(&self) -> &[WriteDisposition] {
         &self.protocol().sheet().supported_dispositions
     }

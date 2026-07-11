@@ -4,12 +4,14 @@ mod capabilities;
 mod context;
 mod destination;
 mod registry;
+mod staging;
 mod utilities;
 
 pub use capabilities::*;
 pub use context::*;
 pub use destination::*;
 pub use registry::*;
+pub use staging::*;
 pub use utilities::*;
 
 pub type ReceiptVerifiedHook<'a> = &'a dyn Fn(&cdf_kernel::Receipt) -> cdf_kernel::Result<()>;
@@ -37,6 +39,7 @@ mod prelude {
     pub(crate) use crate::capabilities::*;
     pub(crate) use crate::context::*;
     pub(crate) use crate::destination::*;
+    pub(crate) use crate::staging::*;
     pub(crate) use crate::utilities::*;
     pub(crate) use crate::{ReceiptVerifiedHook, RuntimeSecretProvider};
 }

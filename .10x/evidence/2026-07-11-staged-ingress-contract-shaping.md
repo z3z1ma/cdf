@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/destination-staged-ingress-final-package-binding.md, .10x/specs/streaming-destination-ingress.md, .10x/tickets/2026-07-11-p3-a1-staged-ingress-final-binding.md
+Relates-To: .10x/decisions/destination-staged-ingress-final-package-binding.md, .10x/specs/streaming-destination-ingress.md, .10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md
 
 # Staged ingress contract shaping evidence
 

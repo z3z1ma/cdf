@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
@@ -28,7 +28,15 @@ No Tokio channels, destination staging implementation, bulk encoding, memory led
 
 ## Blockers
 
-Depends on the pre-optimization baseline and DX1 neutral runtime extraction.
+None. The pre-optimization baseline and DX1 neutral runtime extraction are complete.
+
+## Progress and notes
+
+- 2026-07-11: Added the neutral staged-ingress capability, attempt authority, durable-segment reader/request/acknowledgement, recovery snapshot, session, and verified final-binding contracts in `cdf-runtime`.
+- 2026-07-11: Preserved finalized-package-only behavior as the default for DuckDB, Postgres, and Parquet; no destination-name branch entered the runtime contract.
+- 2026-07-11: Adversarial review found that attempt reattachment initially bound only the opaque attempt id. Hardened the contract with an immutable `StagingAttemptBinding` covering destination, target, disposition, schema, and plan authority; recovery now rejects authority mismatch.
+- 2026-07-11: Conformance proves staging acknowledgements cannot serialize package/receipt authority, exact ordered final identity matching, no receipt before binding, resumable reattachment, mismatched authority/segments, duplicate final package idempotency, repeated abort, and finalized-only failure.
+- 2026-07-11: Evidence is recorded in `.10x/evidence/2026-07-11-p3-a1-staged-ingress-final-binding.md`; closure review passes in `.10x/reviews/2026-07-11-p3-a1-staged-ingress-final-binding-review.md`.
 
 ## References
 

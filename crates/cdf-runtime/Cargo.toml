@@ -7,6 +7,7 @@ publish = false
 description = "Engine-neutral runtime contracts and extension registries for cdf."
 
 [dependencies]
+arrow-array = "59.1.0"
 arrow-schema = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-http = { path = "../cdf-http" }

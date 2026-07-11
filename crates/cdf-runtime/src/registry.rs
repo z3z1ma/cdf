@@ -83,7 +83,9 @@ impl DestinationRegistry {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<DestinationInspection> {
-        self.driver_for_uri(uri)?.inspect(uri, context)
+        let inspection = self.driver_for_uri(uri)?.inspect(uri, context)?;
+        inspection.runtime.validate()?;
+        Ok(inspection)
     }
 
     pub fn resolve(

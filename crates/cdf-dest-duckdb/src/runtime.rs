@@ -144,6 +144,7 @@ impl DestinationRuntime for DuckDbDestination {
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
         DestinationRuntimeCapabilities {
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
+            staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,
             max_in_flight_segments: Some(1),
             max_in_flight_bytes: None,
