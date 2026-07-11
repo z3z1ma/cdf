@@ -22,7 +22,9 @@ Layer 4, project and product, MUST contain `cdf.toml`, environments, lockfile ha
 
 ## Crate map
 
-The workspace SHOULD include crates corresponding to these responsibilities: `cdf-kernel`, lightweight neutral `cdf-memory` and `cdf-runtime` contracts, `cdf-engine`, `cdf-contract`, `cdf-package`, `cdf-state-sqlite`, `cdf-http`, `cdf-formats`, `cdf-declarative`, `cdf-python`, `cdf-wasm`, `cdf-subprocess`, `cdf-dest-duckdb`, `cdf-dest-parquet`, `cdf-dest-postgres`, `cdf-project`, `cdf-cli`, and `cdf-conformance`.
+The workspace SHOULD include crates corresponding to these responsibilities: `cdf-kernel`, lightweight neutral `cdf-memory` and `cdf-runtime` contracts, `cdf-engine`, `cdf-contract`, `cdf-package`, `cdf-state-sqlite`, `cdf-http`, dependency-isolated `cdf-source-*` and `cdf-format-*` drivers with lightweight composition facades, `cdf-declarative`, `cdf-python`, `cdf-wasm`, `cdf-subprocess`, `cdf-dest-duckdb`, `cdf-dest-parquet`, `cdf-dest-postgres`, `cdf-project`, `cdf-cli`, and `cdf-conformance`.
+
+Source config/plan/runtime ownership and extension dependency rules follow `.10x/specs/source-extension-runtime-contract.md`. `cdf-project` and generic CLI/runtime modules MUST NOT depend on concrete source or destination drivers.
 
 MVP implementation MAY stub or feature-gate post-MVP crates when a ticket explicitly scopes them, but public boundaries MUST leave the designed seam.
 

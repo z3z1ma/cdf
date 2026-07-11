@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/specs/data-onramp-file-sources-transports.md
+Depends-On: .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md, .10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md, .10x/specs/data-onramp-file-sources-transports.md
 
 # P3 WS-G: remote I/O overlap
 
