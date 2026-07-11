@@ -45,13 +45,6 @@ mod prelude {
 
     pub(super) use arrow_schema::Schema;
     pub(super) use cdf_declarative::{CompiledResource, FileResource, RestResource, SqlResource};
-    pub(super) use cdf_dest_duckdb::{DuckDbCommitRequest, DuckDbDestination};
-    pub(super) use cdf_dest_parquet::{ParquetCommitRequest, ParquetDestination};
-    pub(super) use cdf_dest_postgres::{
-        MergeDedupPolicy, PostgresColumn, PostgresCommitRequest, PostgresCorrectionCommitRequest,
-        PostgresCorrectionPlanInput, PostgresDestination, PostgresExistingTable,
-        PostgresIdentifier, PostgresLoadPlanInput, PostgresTarget, postgres_columns_for_schema,
-    };
     #[cfg(test)]
     pub(super) use cdf_engine::EngineRunOutputWithSegmentPositions;
     pub(super) use cdf_engine::{
@@ -60,9 +53,7 @@ mod prelude {
     };
     pub(super) use cdf_kernel::{
         CHECKPOINT_STATE_VERSION, CdfError, Checkpoint, CheckpointId, CheckpointStatus,
-        CheckpointStore, CursorOrderingClaim, CursorPosition, CursorValue,
-        DestinationCommitRequest, DestinationCorrectionCommitPlan,
-        DestinationCorrectionCommitRequest, DestinationId, DestinationProtocol,
+        CheckpointStore, CursorOrderingClaim, DestinationCommitRequest, DestinationId,
         EffectiveSchemaRuntime, FilePosition, IdempotencyToken, IncrementalShape, PackageHash,
         PartitionPlan, PipelineId, PlanId, QueryableResource, Receipt, ResourceCapabilities,
         ResourceDescriptor, ResourceId, ResourceStream, Result, RunEventAppend, RunEventDetails,

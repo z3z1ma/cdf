@@ -4654,8 +4654,8 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
     let resolution = cdf_project::ProjectResolutionContext::for_project_run(&project.root, &target)
         .with_environment_name("dev")
         .with_destination_policy(&policy);
-    let mut runtime = cdf_project::ProjectDestinationRegistry::with_builtin_drivers()
-        .unwrap()
+    let registry = crate::destination_registry::builtin_destination_registry().unwrap();
+    let mut runtime = registry
         .resolve("parquet://.cdf/parquet", &resolution)
         .unwrap();
     runtime.ensure_protocol_ready().unwrap();
@@ -13094,8 +13094,8 @@ fn state_migrate_initializes_sqlite_components_and_is_idempotent() {
     assert_eq!(first_components[0]["action"], "initialized");
     assert_eq!(first_components[1]["component"], "run_ledger");
     assert_eq!(first_components[1]["before_version"], Value::Null);
-    assert_eq!(first_components[1]["after_version"], 4);
-    assert_eq!(first_components[1]["target_version"], 4);
+    assert_eq!(first_components[1]["after_version"], 5);
+    assert_eq!(first_components[1]["target_version"], 5);
     assert_eq!(first_components[1]["applied"], true);
     assert_eq!(first_components[1]["action"], "initialized");
     assert_eq!(first_components[2]["component"], "scope_lease_store");

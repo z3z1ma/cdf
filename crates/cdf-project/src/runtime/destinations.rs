@@ -1,17 +1,5 @@
 use super::{prelude::*, types::ProjectReceiptSource};
 use cdf_contract::{IdentifierPolicy, identifier_policy_from_destination_rules};
-use cdf_kernel::{CapabilitySupport, DestinationSheet};
-
-mod duckdb;
-mod parquet;
-mod postgres;
-
-pub use duckdb::DuckDbProjectDestinationDriver;
-pub(crate) use duckdb::DuckDbProjectDestinationRuntime;
-pub(super) use parquet::FilesystemParquetProjectDestinationRuntime;
-pub use parquet::ParquetProjectDestinationDriver;
-pub use postgres::PostgresProjectDestinationDriver;
-pub(super) use postgres::PostgresProjectDestinationRuntime;
 
 pub use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome,
@@ -62,32 +50,35 @@ impl ResolvedProjectDestination {
         Self { target, runtime }
     }
 
+    #[cfg(test)]
     pub fn duckdb(database_path: impl AsRef<Path>, target: TargetName) -> Result<Self> {
         Ok(Self::new(
-            Box::new(DuckDbProjectDestinationRuntime::new(database_path)?),
+            Box::new(cdf_dest_duckdb::DuckDbDestination::new(database_path)?),
             target,
         ))
     }
 
+    #[cfg(test)]
     pub fn parquet_filesystem(root: impl AsRef<Path>, target: TargetName) -> Result<Self> {
         Ok(Self::new(
-            Box::new(FilesystemParquetProjectDestinationRuntime::new(
+            Box::new(cdf_dest_parquet::FilesystemParquetRuntime::new(
                 root.as_ref().to_path_buf(),
             )),
             target,
         ))
     }
 
+    #[cfg(test)]
     pub fn postgres(
         database_url: impl Into<String>,
-        target: PostgresTarget,
-        dedup: MergeDedupPolicy,
-        existing_table: Option<PostgresExistingTable>,
+        target: cdf_dest_postgres::PostgresTarget,
+        dedup: cdf_dest_postgres::MergeDedupPolicy,
+        existing_table: Option<cdf_dest_postgres::PostgresExistingTable>,
     ) -> Result<Self> {
         let target_name = TargetName::new(target.display_name())?;
-        let destination = PostgresDestination::connect(database_url)?;
+        let destination = cdf_dest_postgres::PostgresDestination::connect(database_url)?;
         Ok(Self::new(
-            Box::new(PostgresProjectDestinationRuntime::for_replay(
+            Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
                 &destination,
                 target,
                 dedup,
@@ -139,14 +130,23 @@ impl ResolvedProjectDestination {
 }
 
 pub fn resolve_project_run_destination(
+    registry: &ProjectDestinationRegistry,
     uri: &str,
     context: &ProjectResolutionContext<'_>,
 ) -> Result<ResolvedProjectDestination> {
-    let mut registry = ProjectDestinationRegistry::new();
-    registry.register(DuckDbProjectDestinationDriver)?;
-    registry.register(ParquetProjectDestinationDriver)?;
-    registry.register(PostgresProjectDestinationDriver)?;
-    let runtime = registry.resolve(uri, context)?;
+    let runtime = registry.resolve(uri, context).map_err(|mut error| {
+        if error
+            .message
+            .starts_with("no destination driver registered for URI scheme")
+        {
+            error.message = error.message.replacen(
+                "no destination driver registered",
+                "no project destination driver registered",
+                1,
+            );
+        }
+        error
+    })?;
     Ok(ResolvedProjectDestination::new(
         runtime,
         context.target()?.clone(),

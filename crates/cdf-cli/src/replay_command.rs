@@ -394,8 +394,12 @@ pub(crate) fn build_replay_destination(
         .with_environment_name(&context.environment.name)
         .with_destination_policy(destination_policy)
         .with_secret_provider(&secret_provider);
-    let destination =
-        resolve_project_run_destination(uri, &destination_context).map_err(|error| {
+    let registry =
+        crate::destination_registry::builtin_destination_registry().map_err(|error| {
+            replay_destination_resolution_error(context, args.destination_uri, error, uri)
+        })?;
+    let destination = resolve_project_run_destination(&registry, uri, &destination_context)
+        .map_err(|error| {
             replay_destination_resolution_error(context, args.destination_uri, error, uri)
         })?;
     let report = RunDestinationReport::from_project(&destination.describe(), destination.target());

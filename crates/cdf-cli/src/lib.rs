@@ -10,6 +10,7 @@ pub mod cli_artifacts;
 mod commands;
 mod context;
 mod contract_command;
+mod destination_registry;
 mod destination_uri;
 mod doctor_command;
 mod doctor_drift;

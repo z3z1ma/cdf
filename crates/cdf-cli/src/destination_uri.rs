@@ -5,6 +5,7 @@ use cdf_project::{
 
 use crate::{
     context::ProjectContext,
+    destination_registry::builtin_destination_registry,
     render::redaction::{redact_exact, redact_uri_userinfo},
     suggestions,
 };
@@ -38,7 +39,8 @@ pub(crate) fn resolve_selected_destination(
         .with_destination_policy(&context.environment.destination_policy)
         .with_secret_provider(&secret_provider);
     let uri = destination_uri.unwrap_or(context.environment.destination.as_str());
-    let destination = resolve_project_run_destination(uri, &destination_context)?;
+    let registry = builtin_destination_registry()?;
+    let destination = resolve_project_run_destination(&registry, uri, &destination_context)?;
     let secret_redaction = destination.secret_redaction().map(str::to_owned);
     Ok(EnvironmentDestination {
         destination,

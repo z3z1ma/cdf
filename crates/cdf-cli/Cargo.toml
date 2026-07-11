@@ -23,12 +23,14 @@ arrow-array = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
+cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
 cdf-project = { path = "../cdf-project" }
+cdf-runtime = { path = "../cdf-runtime" }
 cdf-python = { path = "../cdf-python" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 futures-executor = "0.3.32"
@@ -45,6 +47,5 @@ sha2 = "0.10.9"
 [dev-dependencies]
 arrow-ipc = "59.1.0"
 arrow-schema = "59.1.0"
-cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 duckdb = { version = "1.10504.0", features = ["bundled"] }
 postgres = "0.19"

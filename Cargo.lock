@@ -731,6 +731,7 @@ dependencies = [
  "cdf-package",
  "cdf-project",
  "cdf-python",
+ "cdf-runtime",
  "cdf-state-sqlite",
  "clap",
  "clap_complete",

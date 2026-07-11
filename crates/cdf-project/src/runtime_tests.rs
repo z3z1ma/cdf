@@ -59,18 +59,18 @@ use tracing::{
 };
 
 use crate::{
-    BackfillPlanRequest, DestinationReceiptReportingPolicy, DuckDbProjectDestinationRuntime,
-    FileManifestRunSummary, LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest,
-    PackageArtifactReplayRequest, PackageReplayHooks, PackageReplayStage,
-    PreparedDestinationCommit, PreparedPackageRecoveryRequest, PreparedPackageReplayRequest,
-    ProjectDestinationDescription, ProjectDestinationDriver, ProjectDestinationRegistry,
-    ProjectDestinationRuntime, ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport,
-    ProjectRunRequest, ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig,
-    RuntimeStage, TracingRunEventSink, backfill_pipeline_id, plan_backfill,
-    recover_package_from_artifacts, recover_package_with_runtime, recover_prepared_package,
-    replay_package_from_artifacts, replay_package_with_runtime, replay_prepared_package,
-    replay_prepared_package_with_stage_hook, run_local_file_to_duckdb_checkpoint, run_project,
-    run_project_with_telemetry, runtime::state_delta_from_run,
+    BackfillPlanRequest, DestinationReceiptReportingPolicy, FileManifestRunSummary,
+    LocalFileDuckDbRunRequest, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
+    PackageReplayHooks, PackageReplayStage, PreparedDestinationCommit,
+    PreparedPackageRecoveryRequest, PreparedPackageReplayRequest, ProjectDestinationDescription,
+    ProjectDestinationDriver, ProjectDestinationRegistry, ProjectDestinationRuntime,
+    ProjectReceiptSource, ProjectResolutionContext, ProjectRunReport, ProjectRunRequest,
+    ProjectRunSource, ResolvedProjectDestination, RunTelemetryConfig, RuntimeStage,
+    TracingRunEventSink, backfill_pipeline_id, plan_backfill, recover_package_from_artifacts,
+    recover_package_with_runtime, recover_prepared_package, replay_package_from_artifacts,
+    replay_package_with_runtime, replay_prepared_package, replay_prepared_package_with_stage_hook,
+    run_local_file_to_duckdb_checkpoint, run_project, run_project_with_telemetry,
+    runtime::state_delta_from_run,
 };
 
 const SCHEMA_HASH: &str = "schema-v1";
@@ -964,12 +964,7 @@ fn resolved_duckdb_destination(
     destination: &DuckDbDestination,
     target: TargetName,
 ) -> ResolvedProjectDestination {
-    ResolvedProjectDestination::new(
-        Box::new(DuckDbProjectDestinationRuntime::from_destination(
-            destination.clone(),
-        )),
-        target,
-    )
+    ResolvedProjectDestination::new(Box::new(destination.clone()), target)
 }
 
 #[derive(Clone)]
