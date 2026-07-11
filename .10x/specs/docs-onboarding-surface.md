@@ -8,7 +8,7 @@ Updated: 2026-07-08
 
 This specification governs CDF's in-repository documentation and onboarding surface for P1: quickstart, command reference, error catalog, operator guides, architecture overview, runnable examples, and init-scaffold links.
 
-It derives from `VISION.md` Chapters 18, 20, 22, and 23, `.10x/specs/project-cli-observability-security.md`, `.10x/specs/conformance-governance-roadmap.md`, `.10x/specs/versioning-lts-release-policy.md`, and `.10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md`.
+It derives from `VISION.md` Chapters 18, 20, 22, and 23, `.10x/specs/project-cli-observability-security.md`, `.10x/specs/conformance-governance-roadmap.md`, `.10x/specs/versioning-lts-release-policy.md`, and `.10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md`.
 
 ## Documentation topology
 

@@ -1,0 +1,15 @@
+[source.warehouse]
+kind = "sql"
+connection = "secret://file/postgres-dsn"
+dialect = "postgres"
+
+[resource.orders]
+table = "public.cdf_example_orders"
+cursor = { field = "updated_at", ordering = "exact", lag = "0ms" }
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "name", type = "string", nullable = true },
+  { name = "updated_at", type = "int64", nullable = false },
+] }

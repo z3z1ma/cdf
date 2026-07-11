@@ -1,0 +1,12 @@
+[project]
+name = "postgres_example"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/example.duckdb"
+
+[resources."warehouse.*"]
+source = "resources/warehouse.toml"

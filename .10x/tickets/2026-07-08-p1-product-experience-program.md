@@ -39,7 +39,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/tickets/done/2026-07-08-p1-product-ws3-rendering-system-design-language.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5-live-progress.md`
-- `.10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md`
 - `.10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md`
 - `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
 

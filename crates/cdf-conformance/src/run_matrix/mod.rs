@@ -1,6 +1,9 @@
 use cdf_kernel::WriteDisposition;
 use serde::{Deserialize, Serialize};
 
+#[cfg(test)]
+mod examples;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SourceArchetype {

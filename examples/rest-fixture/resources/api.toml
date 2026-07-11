@@ -1,0 +1,16 @@
+[source.api]
+kind = "rest"
+base_url = "http://127.0.0.1:8765"
+egress_allowlist = ["127.0.0.1"]
+
+[resource.events]
+path = "/events"
+records = "$.items"
+cursor = { field = "updated_at", param = "since", ordering = "exact", lag = "0ms" }
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+  { name = "name", type = "string", nullable = true },
+  { name = "updated_at", type = "int64", nullable = false },
+] }

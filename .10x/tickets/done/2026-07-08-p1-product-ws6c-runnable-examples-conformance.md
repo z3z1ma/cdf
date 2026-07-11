@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md
 Depends-On: .10x/specs/docs-onboarding-surface.md
 
 # P1 product WS6C: Runnable examples and conformance hooks
@@ -28,4 +28,8 @@ No external SaaS dependency. No new source archetype. No production Postgres pro
 
 ## Blockers
 
-None for fixture example creation. Postgres execution may depend on local harness availability in CI.
+None. Complete. The existing CI Postgres harness is reused.
+
+## Progress and notes
+
+- 2026-07-10: Added and executed the REST-fixture and Postgres example projects as living conformance tests. Evidence: `.10x/evidence/2026-07-10-p1-runnable-examples-docs-closure.md`; review: `.10x/reviews/2026-07-10-p1-runnable-examples-docs-closure-review.md`.

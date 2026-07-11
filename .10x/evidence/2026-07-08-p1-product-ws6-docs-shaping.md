@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md, .10x/specs/docs-onboarding-surface.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md, .10x/specs/docs-onboarding-surface.md
 
 # P1 WS6 docs onboarding shaping evidence
 
@@ -20,7 +20,7 @@ Existing authority constrains the work:
 
 Inspected:
 
-- `.10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md`.
 - `.10x/specs/project-cli-observability-security.md`.
 - Current absence of `docs/` and `examples/` source files.
 
@@ -29,12 +29,12 @@ Created:
 - `.10x/specs/docs-onboarding-surface.md`.
 - `.10x/tickets/done/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`.
 - `.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md`.
-- `.10x/tickets/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md`.
 - `.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
 
 Updated:
 
-- `.10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md`.
 
 ## What this supports or challenges
 

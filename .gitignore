@@ -1,5 +1,7 @@
 bin/
 target/
+examples/postgres/postgres-dsn
+examples/*/.cdf/
 
 mutants.out/
 

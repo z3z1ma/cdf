@@ -15,6 +15,8 @@ cargo build -p cdf-cli --locked
 export CDF="$PWD/target/debug/cdf"
 ```
 
+For deterministic local source examples, see [`examples/rest-fixture`](../examples/rest-fixture/README.md) and [`examples/postgres`](../examples/postgres/README.md). Both are executed by the conformance suite.
+
 ## 1. Create a project
 
 ```bash

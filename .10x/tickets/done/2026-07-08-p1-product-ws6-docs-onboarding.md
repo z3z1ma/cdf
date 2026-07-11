@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/conformance-governance-roadmap.md, .10x/tickets/done/2026-07-08-p1-product-ws2-command-grammar-redesign.md, .10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md
 
@@ -41,8 +41,12 @@ No external docs site requirement. No marketing page. No duplication of full `VI
 ## Progress and notes
 
 - 2026-07-08: Opened from P1 product directive. This lane may start immediately but has explicit closure dependencies on grammar and error-catalog generation.
-- 2026-07-08: Ratified `.10x/specs/docs-onboarding-surface.md` and split execution into `.10x/tickets/done/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`, `.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md`, `.10x/tickets/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md`, and `.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
+- 2026-07-08: Ratified `.10x/specs/docs-onboarding-surface.md` and split execution into `.10x/tickets/done/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`, `.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md`, `.10x/tickets/done/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md`, and `.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
 
 ## Blockers
 
-Closure depends on WS2 generated command definitions and WS4 generated error catalog.
+None. Complete.
+
+## Closure
+
+WS6B generated references and WS6C living examples completed the remaining parent outcomes. Aggregate documentation closure evidence/review: `.10x/evidence/2026-07-10-p1-runnable-examples-docs-closure.md` and `.10x/reviews/2026-07-10-p1-runnable-examples-docs-closure-review.md`.
