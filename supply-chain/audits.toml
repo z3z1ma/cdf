@@ -1,4 +1,8 @@
 
 # cargo-vet audits file
 
-[audits]
+[[audits.sha2-asm]]
+who = "CDF maintainers <maintainers@cdf.invalid>"
+criteria = "safe-to-deploy"
+version = "0.6.4"
+notes = "Reviewed no_std FFI wrapper, build script, and architecture assembly entry points. Safe wrappers pass fixed-size state/block references; assembly accesses only those fixed buffers and bounded stack frames. No runtime filesystem, network, environment, or allocator capability. Enabled for hardware SHA-256 after a measured 5.6x rate improvement on arm64."

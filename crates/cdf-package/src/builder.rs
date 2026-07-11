@@ -3,10 +3,9 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
-    time::Instant,
 };
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
 use arrow_schema::{DataType, Field, Schema};
@@ -23,9 +22,10 @@ use crate::{
     ops::update_package_status,
     quarantine::{QuarantineRecord, quarantine_records_to_parquet_bytes},
     storage::{
-        atomic_write, build_manifest, collect_identity_file_entries, create_layout,
-        file_entry_for_path, io_error, nested_artifact_path, normalize_artifact_path, package_path,
-        segment_relative_path, sync_directory, write_arrow_ipc_file, write_manifest_atomic,
+        ArtifactDurability, atomic_write, build_manifest, collect_identity_file_entries,
+        collect_identity_file_paths, create_layout, file_entry_for_path, io_error,
+        nested_artifact_path, normalize_artifact_path, package_path, segment_relative_path,
+        sync_directory, write_arrow_ipc_file, write_manifest_atomic,
     },
 };
 
@@ -34,6 +34,7 @@ pub struct PackageBuilder {
     package_dir: PathBuf,
     package_id: String,
     segments: Vec<SegmentDraft>,
+    written_artifacts: Mutex<BTreeMap<String, FileEntry>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +77,7 @@ impl PackageBuilder {
             package_dir,
             package_id,
             segments: Vec::new(),
+            written_artifacts: Mutex::new(BTreeMap::new()),
         })
     }
 
@@ -131,8 +133,23 @@ impl PackageBuilder {
     ) -> Result<FileEntry> {
         let relative_path = normalize_artifact_path(relative_path.as_ref())?;
         let path = package_path(&self.package_dir, &relative_path);
-        atomic_write(&path, bytes)?;
-        file_entry_for_path(&self.package_dir, &relative_path)
+        let mut written_artifacts = self
+            .written_artifacts
+            .lock()
+            .map_err(|_| CdfError::internal("package artifact receipt index lock is poisoned"))?;
+        let receipt = atomic_write(&path, bytes)?;
+        if receipt.path != path || receipt.durability != ArtifactDurability::PhaseMetadata {
+            return Err(CdfError::internal(format!(
+                "artifact writer returned an invalid receipt for {relative_path}"
+            )));
+        }
+        let entry = FileEntry {
+            path: relative_path,
+            byte_count: receipt.byte_count,
+            sha256: receipt.sha256,
+        };
+        written_artifacts.insert(entry.path.clone(), entry.clone());
+        Ok(entry)
     }
 
     pub fn write_stats_artifact(
@@ -262,19 +279,40 @@ impl PackageBuilder {
         }
 
         let relative_path = segment_relative_path(&segment_id)?;
+        if self
+            .segments
+            .iter()
+            .any(|draft| draft.segment_id == segment_id || draft.path == relative_path)
+        {
+            return Err(CdfError::data(format!(
+                "package segment is already registered: {}",
+                segment_id.as_str()
+            )));
+        }
         let path = package_path(&self.package_dir, &relative_path);
-        let encode_started = measure.then(Instant::now);
-        write_arrow_ipc_file(&path, schema.as_ref(), batches)?;
-        let encode_duration_ns = duration_ns(encode_started, "segment encode")?;
-
-        let persist_hash_started = measure.then(Instant::now);
-        let file_entry = file_entry_for_path(&self.package_dir, &relative_path)?;
+        let receipt = write_arrow_ipc_file(&path, schema.as_ref(), batches)?;
+        if receipt.artifact.path != path
+            || receipt.artifact.durability != ArtifactDurability::SegmentPublish
+        {
+            return Err(CdfError::internal(format!(
+                "segment writer returned an invalid receipt for {relative_path}"
+            )));
+        }
+        let file_entry = FileEntry {
+            path: relative_path.clone(),
+            byte_count: receipt.artifact.byte_count,
+            sha256: receipt.artifact.sha256.clone(),
+        };
+        self.written_artifacts
+            .lock()
+            .map_err(|_| CdfError::internal("package artifact receipt index lock is poisoned"))?
+            .insert(relative_path.clone(), file_entry);
         let segment = SegmentEntry {
             segment_id: segment_id.clone(),
             path: relative_path.clone(),
             row_count,
-            byte_count: file_entry.byte_count,
-            sha256: file_entry.sha256,
+            byte_count: receipt.artifact.byte_count,
+            sha256: receipt.artifact.sha256,
         };
         self.segments.push(SegmentDraft {
             segment_id,
@@ -283,8 +321,16 @@ impl PackageBuilder {
         });
         Ok(SegmentWriteMetrics {
             segment,
-            encode_duration_ns,
-            persist_hash_duration_ns: duration_ns(persist_hash_started, "segment persist/hash")?,
+            encode_duration_ns: if measure {
+                receipt.encode_hash_duration_ns
+            } else {
+                0
+            },
+            persist_hash_duration_ns: if measure {
+                receipt.publish_duration_ns
+            } else {
+                0
+            },
         })
     }
 
@@ -293,7 +339,27 @@ impl PackageBuilder {
     }
 
     pub fn finish_with_status(&self, status: PackageStatus) -> Result<PackageManifest> {
-        let files = collect_identity_file_entries(&self.package_dir)?;
+        let written_artifacts = self
+            .written_artifacts
+            .lock()
+            .map_err(|_| CdfError::internal("package artifact receipt index lock is poisoned"))?;
+        let mut files = Vec::new();
+        for relative_path in collect_identity_file_paths(&self.package_dir)? {
+            let path = package_path(&self.package_dir, &relative_path);
+            let byte_count = std::fs::metadata(&path)
+                .map_err(|error| io_error(format!("stat {}", path.display()), error))?
+                .len();
+            match written_artifacts.get(&relative_path) {
+                Some(entry) if entry.byte_count == byte_count => files.push(entry.clone()),
+                Some(entry) => {
+                    return Err(CdfError::data(format!(
+                        "identity artifact {relative_path} changed after its writer receipt: expected {} bytes, found {byte_count}",
+                        entry.byte_count
+                    )));
+                }
+                None => files.push(file_entry_for_path(&self.package_dir, &relative_path)?),
+            }
+        }
         let entries_by_path: BTreeMap<&str, &FileEntry> = files
             .iter()
             .map(|entry| (entry.path.as_str(), entry))
@@ -320,12 +386,4 @@ impl PackageBuilder {
         write_manifest_atomic(&self.package_dir, &manifest)?;
         Ok(manifest)
     }
-}
-
-fn duration_ns(started: Option<Instant>, label: &str) -> Result<u64> {
-    let Some(started) = started else {
-        return Ok(0);
-    };
-    u64::try_from(started.elapsed().as_nanos())
-        .map_err(|error| CdfError::internal(format!("{label} duration overflow: {error}")))
 }

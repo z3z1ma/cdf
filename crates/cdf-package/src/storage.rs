@@ -23,6 +23,135 @@ use crate::{
 };
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ArtifactDurability {
+    SegmentPublish,
+    PhaseMetadata,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct WrittenArtifact {
+    pub path: PathBuf,
+    pub byte_count: u64,
+    pub sha256: String,
+    pub durability: ArtifactDurability,
+}
+
+pub(crate) struct IpcWriteReceipt {
+    pub artifact: WrittenArtifact,
+    pub encode_hash_duration_ns: u64,
+    pub publish_duration_ns: u64,
+}
+
+struct HashingWriter<W> {
+    inner: W,
+    hasher: Sha256,
+    byte_count: u64,
+}
+
+impl<W> HashingWriter<W> {
+    fn new(inner: W) -> Self {
+        Self {
+            inner,
+            hasher: Sha256::new(),
+            byte_count: 0,
+        }
+    }
+}
+
+impl<W: Write> Write for HashingWriter<W> {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(bytes)?;
+        self.hasher.update(&bytes[..written]);
+        self.byte_count = self
+            .byte_count
+            .checked_add(written as u64)
+            .ok_or_else(|| std::io::Error::other("artifact byte count overflow"))?;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
+struct AtomicArtifactSink {
+    final_path: PathBuf,
+    temp_path: PathBuf,
+    parent: PathBuf,
+    writer: Option<HashingWriter<File>>,
+    durability: ArtifactDurability,
+}
+
+impl AtomicArtifactSink {
+    fn create(path: &Path, durability: ArtifactDurability) -> Result<Self> {
+        let parent = path.parent().ok_or_else(|| {
+            CdfError::internal(format!("path {} has no parent directory", path.display()))
+        })?;
+        fs::create_dir_all(parent)
+            .map_err(|error| io_error(format!("create {}", parent.display()), error))?;
+        let (temp_path, file) = create_temp_sibling(path)?;
+        Ok(Self {
+            final_path: path.to_path_buf(),
+            temp_path,
+            parent: parent.to_path_buf(),
+            writer: Some(HashingWriter::new(file)),
+            durability,
+        })
+    }
+
+    fn writer_mut(&mut self) -> Result<&mut HashingWriter<File>> {
+        self.writer
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("artifact sink is already finished"))
+    }
+
+    fn finish(mut self) -> Result<WrittenArtifact> {
+        let mut writer = self
+            .writer
+            .take()
+            .ok_or_else(|| CdfError::internal("artifact sink is already finished"))?;
+        let publish = (|| {
+            writer
+                .flush()
+                .map_err(|error| io_error(format!("flush {}", self.temp_path.display()), error))?;
+            writer
+                .inner
+                .sync_all()
+                .map_err(|error| io_error(format!("sync {}", self.temp_path.display()), error))?;
+            fs::rename(&self.temp_path, &self.final_path).map_err(|error| {
+                io_error(
+                    format!(
+                        "rename {} to {}",
+                        self.temp_path.display(),
+                        self.final_path.display()
+                    ),
+                    error,
+                )
+            })?;
+            sync_directory(&self.parent)
+        })();
+        if let Err(error) = publish {
+            let _ = fs::remove_file(&self.temp_path);
+            return Err(error);
+        }
+        Ok(WrittenArtifact {
+            path: self.final_path.clone(),
+            byte_count: writer.byte_count,
+            sha256: hex::encode(writer.hasher.finalize()),
+            durability: self.durability,
+        })
+    }
+}
+
+impl Drop for AtomicArtifactSink {
+    fn drop(&mut self) {
+        if self.writer.is_some() {
+            let _ = fs::remove_file(&self.temp_path);
+        }
+    }
+}
 pub(crate) fn create_layout(package_dir: &Path) -> Result<()> {
     fs::create_dir_all(package_dir)
         .map_err(|error| io_error(format!("create {}", package_dir.display()), error))?;
@@ -81,10 +210,17 @@ fn package_layout() -> Vec<String> {
 pub(crate) fn write_manifest_atomic(package_dir: &Path, manifest: &PackageManifest) -> Result<()> {
     let path = package_dir.join(MANIFEST_FILE);
     let bytes = canonical_json_bytes(manifest)?;
-    atomic_write(&path, &bytes)
+    atomic_write(&path, &bytes).map(|_| ())
 }
 
 pub(crate) fn collect_identity_file_entries(package_dir: &Path) -> Result<Vec<FileEntry>> {
+    collect_identity_file_paths(package_dir)?
+        .iter()
+        .map(|path| file_entry_for_path(package_dir, path))
+        .collect()
+}
+
+pub(crate) fn collect_identity_file_paths(package_dir: &Path) -> Result<Vec<String>> {
     let mut relative_paths = Vec::new();
     for directory in REQUIRED_DIRECTORIES {
         let directory_path = package_dir.join(directory);
@@ -99,10 +235,7 @@ pub(crate) fn collect_identity_file_entries(package_dir: &Path) -> Result<Vec<Fi
 
     relative_paths.retain(|path| is_identity_file(path));
     relative_paths.sort();
-    relative_paths
-        .iter()
-        .map(|path| file_entry_for_path(package_dir, path))
-        .collect()
+    Ok(relative_paths)
 }
 
 fn collect_files(package_dir: &Path, directory: &Path, files: &mut Vec<String>) -> Result<()> {
@@ -148,71 +281,41 @@ pub(crate) fn write_arrow_ipc_file(
     path: &Path,
     schema: &arrow_schema::Schema,
     batches: &[RecordBatch],
-) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        CdfError::internal(format!("path {} has no parent directory", path.display()))
-    })?;
-    fs::create_dir_all(parent)
-        .map_err(|error| io_error(format!("create {}", parent.display()), error))?;
-    let (tmp_path, mut file) = create_temp_sibling(path)?;
-    let write_result = (|| {
+) -> Result<IpcWriteReceipt> {
+    let mut sink = AtomicArtifactSink::create(path, ArtifactDurability::SegmentPublish)?;
+    let encode_started = std::time::Instant::now();
+    {
         let options = IpcWriteOptions::default()
             .try_with_compression(Some(CompressionType::LZ4_FRAME))
             .map_err(CdfError::from)?;
-        {
-            let mut writer = FileWriter::try_new_with_options(&mut file, schema, options)
-                .map_err(CdfError::from)?;
-            for batch in batches {
-                writer.write(batch).map_err(CdfError::from)?;
-            }
-            writer.finish().map_err(CdfError::from)?;
+        let mut writer = FileWriter::try_new_with_options(sink.writer_mut()?, schema, options)
+            .map_err(CdfError::from)?;
+        for batch in batches {
+            writer.write(batch).map_err(CdfError::from)?;
         }
-        file.sync_all()
-            .map_err(|error| io_error(format!("sync {}", tmp_path.display()), error))
-    })();
-
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(error);
+        writer.finish().map_err(CdfError::from)?;
     }
-
-    fs::rename(&tmp_path, path).map_err(|error| {
-        let _ = fs::remove_file(&tmp_path);
-        io_error(
-            format!("rename {} to {}", tmp_path.display(), path.display()),
-            error,
-        )
-    })?;
-    sync_directory(parent)
+    let encode_hash_duration_ns = duration_ns(encode_started, "IPC encode/hash")?;
+    let publish_started = std::time::Instant::now();
+    let artifact = sink.finish()?;
+    Ok(IpcWriteReceipt {
+        artifact,
+        encode_hash_duration_ns,
+        publish_duration_ns: duration_ns(publish_started, "IPC publish")?,
+    })
 }
 
-pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| {
-        CdfError::internal(format!("path {} has no parent directory", path.display()))
-    })?;
-    fs::create_dir_all(parent)
-        .map_err(|error| io_error(format!("create {}", parent.display()), error))?;
-    let (tmp_path, mut file) = create_temp_sibling(path)?;
-    let write_result = (|| {
-        file.write_all(bytes)
-            .map_err(|error| io_error(format!("write {}", tmp_path.display()), error))?;
-        file.sync_all()
-            .map_err(|error| io_error(format!("sync {}", tmp_path.display()), error))
-    })();
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<WrittenArtifact> {
+    let mut sink = AtomicArtifactSink::create(path, ArtifactDurability::PhaseMetadata)?;
+    sink.writer_mut()?
+        .write_all(bytes)
+        .map_err(|error| io_error(format!("write {}", path.display()), error))?;
+    sink.finish()
+}
 
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&tmp_path);
-        return Err(error);
-    }
-
-    fs::rename(&tmp_path, path).map_err(|error| {
-        let _ = fs::remove_file(&tmp_path);
-        io_error(
-            format!("rename {} to {}", tmp_path.display(), path.display()),
-            error,
-        )
-    })?;
-    sync_directory(parent)
+fn duration_ns(started: std::time::Instant, label: &str) -> Result<u64> {
+    u64::try_from(started.elapsed().as_nanos())
+        .map_err(|_| CdfError::internal(format!("{label} duration exceeds u64")))
 }
 
 fn create_temp_sibling(path: &Path) -> Result<(PathBuf, File)> {
@@ -362,4 +465,90 @@ pub(crate) fn segment_relative_path(segment_id: &SegmentId) -> Result<String> {
 
 pub(crate) fn io_error(context: impl Into<String>, error: std::io::Error) -> CdfError {
     CdfError::internal(format!("{}: {error}", context.into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io::Write, time::Instant};
+
+    use sha2::{Digest, Sha256};
+
+    use super::{ArtifactDurability, AtomicArtifactSink, HashingWriter, atomic_write};
+
+    #[test]
+    fn atomic_write_receipt_matches_published_bytes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("artifact.bin");
+        let bytes = b"receipt hashes exactly the installed bytes";
+
+        let receipt = atomic_write(&path, bytes).unwrap();
+
+        assert_eq!(receipt.path, path);
+        assert_eq!(receipt.byte_count, bytes.len() as u64);
+        assert_eq!(receipt.sha256, hex::encode(Sha256::digest(bytes)));
+        assert_eq!(receipt.durability, ArtifactDurability::PhaseMetadata);
+        assert_eq!(fs::read(receipt.path).unwrap(), bytes);
+    }
+
+    #[test]
+    fn failed_publish_removes_exclusive_temporary_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let final_path = directory.path().join("occupied");
+        fs::create_dir(&final_path).unwrap();
+        let mut sink =
+            AtomicArtifactSink::create(&final_path, ArtifactDurability::SegmentPublish).unwrap();
+        sink.writer_mut().unwrap().write_all(b"partial").unwrap();
+
+        assert!(sink.finish().is_err());
+        let names = fs::read_dir(directory.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(names, vec!["occupied"]);
+    }
+
+    #[test]
+    fn dropped_unfinished_sink_leaves_no_partial_artifact() {
+        let directory = tempfile::tempdir().unwrap();
+        let final_path = directory.path().join("cancelled.bin");
+        {
+            let mut sink =
+                AtomicArtifactSink::create(&final_path, ArtifactDurability::SegmentPublish)
+                    .unwrap();
+            sink.writer_mut().unwrap().write_all(b"partial").unwrap();
+        }
+
+        assert!(!final_path.exists());
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    #[ignore = "performance evidence; run in release mode"]
+    fn hashing_writer_sha256_rate() {
+        const CHUNK_BYTES: usize = 1024 * 1024;
+        const CHUNKS: usize = 512;
+        let chunk = vec![0x5a; CHUNK_BYTES];
+        let mut writer = HashingWriter::new(std::io::sink());
+        let started = Instant::now();
+        for _ in 0..CHUNKS {
+            writer.write_all(&chunk).unwrap();
+        }
+        let elapsed = started.elapsed();
+        let gib_per_second =
+            (CHUNK_BYTES * CHUNKS) as f64 / elapsed.as_secs_f64() / (1024.0 * 1024.0 * 1024.0);
+        assert_eq!(writer.byte_count, (CHUNK_BYTES * CHUNKS) as u64);
+        assert!(
+            writer
+                .hasher
+                .finalize()
+                .as_slice()
+                .iter()
+                .any(|byte| *byte != 0)
+        );
+        eprintln!(
+            "sha256_rate_gib_s={gib_per_second:.3} bytes={} elapsed_ns={}",
+            CHUNK_BYTES * CHUNKS,
+            elapsed.as_nanos()
+        );
+    }
 }
