@@ -36,6 +36,8 @@ Criterion microbenchmarks SHOULD isolate validation kernels, hashing, Arrow/fore
 
 Every machine report MUST be schema-versioned and carry a comparability key containing dataset/workload identity, timed-region policy, CDF revision, dependency/reference versions, host class, OS/toolchain, and warm/cold mode. Cell status MUST be one of observed, failed, timed out, unavailable, or inconclusive; non-observed cells MUST remain visible. Host fingerprints MUST omit usernames, hostnames, paths, and stable machine identifiers not required for comparison.
 
+Host facts and measurement methods MUST compose through `.10x/decisions/performance-lab-host-capability-boundary.md`. Workload runners MUST NOT contain platform command branches. Effective container quotas/affinity override advertised host capacity for comparison.
+
 ## Baselines and regressions
 
 Before any P3 runtime or decoder optimization lands, WS-L MUST record the current full baseline on a named host class. Missing scenarios MUST be recorded as failed/unavailable cells, not omitted.

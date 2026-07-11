@@ -14,6 +14,7 @@ Extend `cdf-benchmarks` with regeneration-grade dataset specifications for TLC, 
 
 - Catalog specs record source/generator version, immutable identity or seed, schema, rows, expected bytes where known, and provenance/license without committing large data.
 - Host fingerprint records CPU, logical/physical cores where available, memory, storage/device label, OS, Rust/CDF/dependency versions, and benchmark mode.
+- Host capability records are typed supported/unavailable/failed values, sanitized of host/user/path/device identity, and distinguish effective container quotas from advertised host capacity.
 - Result schema represents wall time, CPU time where available, rows, logical/physical bytes, throughput, peak RSS, spill, phase metrics, sample distribution, median/dispersion, roofline/reference identity, and bias labels.
 - Schema versioning and deterministic serialization tests fail closed on malformed or incomparable records.
 - Existing smoke/full/postgres benchmark cases remain loadable or migrate through an explicit compatibility test.
@@ -30,3 +31,8 @@ No new runtime telemetry, benchmark execution, reference runners, CI thresholds,
 ## Blockers
 
 None.
+
+## References
+
+- `.10x/decisions/performance-lab-host-capability-boundary.md`
+- `.10x/research/2026-07-11-performance-host-capability-inventory.md`

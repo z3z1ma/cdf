@@ -20,6 +20,7 @@ Build the repeatable macro runner with warm/cold modes and median-of-N sampling;
 - Profiling wrappers record exact command/tool versions and place artifacts under ignored output paths.
 - Macro cases run with process isolation where required for RSS/CPU/timeout observation; Criterion remains limited to microkernels.
 - Every workload records setup inclusion/exclusion and non-ambiguous logical/physical byte counters.
+- macOS, Linux/procfs, Linux/cgroup overlay, and portable-fallback providers remain behind one host capability interface; privileged methods are opt-in and missing tools produce unavailable cells.
 
 ## Evidence expectations
 
@@ -32,3 +33,8 @@ No CI regression policy or optimization of measured code.
 ## Blockers
 
 Depends on L1 report authority and L2 phase telemetry.
+
+## References
+
+- `.10x/decisions/performance-lab-host-capability-boundary.md`
+- `.10x/research/2026-07-11-performance-host-capability-inventory.md`
