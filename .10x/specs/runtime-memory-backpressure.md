@@ -12,6 +12,8 @@ This specification governs process/managed/spill budgets, shared DataFusion acco
 
 Every run MUST resolve one process RSS budget and one smaller managed-memory pool after versioned native/runtime headroom. The resolution MUST use effective cgroup/container constraints when present and MUST be plan/run evidence. Spill disk budget is separate and MUST be checked before writing.
 
+Process-tree enforcement, headroom calibration, OS/child/native observations, stress generation, and closure proof MUST follow `.10x/specs/constant-memory-proof.md`. A balanced ledger alone is not acceptance evidence.
+
 Every live CDF-owned data buffer and material operator state MUST have one named reservation in the shared pool through the neutral `cdf-memory` contract, including decode/decompression windows, Arrow payloads, transform scratch/output, validation/dedup state, queues, package encoding, quarantine buffers, remote staging, and destination staging. Extension crates MUST NOT depend on DataFusion memory types. Small control metadata MAY be aggregated by a named consumer but is never unaccounted.
 
 ## Accounted payload law

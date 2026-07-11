@@ -10,6 +10,13 @@ Depends-On: .10x/tickets/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/specs/p
 
 Make the memory law executable: generated 100 GB input under 2 GiB, peak-RSS assertion, spill observation, successful completion, too-small-budget clean failure, `cdf doctor` budget reporting, and P1 run-panel peak ledger rendering.
 
+## Activated children
+
+- `.10x/tickets/2026-07-11-p3-f1-budget-enforcement-headroom.md`
+- `.10x/tickets/2026-07-11-p3-f2-materialization-closure-audit.md`
+- `.10x/tickets/2026-07-11-p3-f3-stress-generators-laws.md`
+- `.10x/tickets/2026-07-11-p3-f4-one-tb-memory-closeout.md`
+
 ## Acceptance criteria
 
 - RSS remains within the ratified ceiling independent of input size.
@@ -20,3 +27,8 @@ Make the memory law executable: generated 100 GB input under 2 GiB, peak-RSS ass
 ## Blockers
 
 Blocked on WS-A ledger/spill and WS-L measurement protocol.
+
+## References
+
+- `.10x/decisions/process-tree-constant-memory-proof.md`
+- `.10x/specs/constant-memory-proof.md`
