@@ -1002,6 +1002,7 @@ dependencies = [
  "cdf-engine",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "cdf-runtime",
  "cdf-state-sqlite",

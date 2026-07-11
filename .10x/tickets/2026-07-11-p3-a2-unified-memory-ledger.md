@@ -38,6 +38,7 @@ None. L5 baseline/headroom evidence and DX1 are complete.
 - 2026-07-11: Focused conformance covers clone/drop/error reconciliation, weighted sub-cap wakeup, oversized minimum-working-set rejection, budget safety, report serialization, and a static no-DataFusion/Tokio/project/engine/destination/runtime dependency law.
 - 2026-07-11: Ratified calibrated `native-headroom-v1` in `.10x/decisions/runtime-native-headroom-policy-v1.md`. The ticket remains active for the DataFusion adapter, source working-set bridge, discovery migration, and external extension conformance.
 - 2026-07-11: Added the default engine-owned `DataFusionMemoryCoordinator`. CDF leases reserve from the same finite `MemoryPool` returned for DataFusion session installation; the coordinated pool observes DataFusion release and wakes CDF waiters. Focused tests prove cross-consumer competition, finite-pool enforcement, sub-cap reconciliation, and exact release.
+- 2026-07-11: Migrated multi-file schema discovery from a sequential loop with decorative limits to deterministic weighted execution. Probe I/O starts only after acquiring the `discovery.metadata` byte sub-cap; worker slots enforce `max_concurrent_probes`; injected coordinators join the run-wide pool; the default compiler coordinator enforces the recorded 64 MiB/file, 128 MiB concurrent, eight-probe policy. A permanent scheduler law proves eight small probes reach exactly two-way concurrency under a two-probe byte cap while retaining input order.
 
 ## References
 

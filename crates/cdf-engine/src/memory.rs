@@ -151,6 +151,14 @@ impl MemoryCoordinator for DataFusionMemoryCoordinator {
         let bytes = usize::try_from(request.bytes)
             .map_err(|_| CdfError::data("memory reservation exceeds platform usize"))?;
         let mut state = self.inner.state.lock().unwrap();
+        if let Some(tag) = &request.subcap
+            && !state.subcap_limits.contains_key(tag)
+        {
+            return Err(CdfError::contract(format!(
+                "memory sub-cap `{}` is not declared by the coordinator",
+                tag.as_str()
+            )));
+        }
         if request.bytes > state.snapshot.budget_bytes {
             return Err(CdfError::data(format!(
                 "memory working set {} bytes exceeds managed budget {} bytes",

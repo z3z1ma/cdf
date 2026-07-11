@@ -16,6 +16,7 @@ cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
 cdf-runtime = { path = "../cdf-runtime" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
@@ -25,13 +26,13 @@ serde_json = "1.0.150"
 sha2 = "0.10.9"
 toml = "1.1.2"
 tracing = "0.1.44"
+futures-executor = "0.3.32"
 
 [dev-dependencies]
 arrow-array = "59.1.0"
 arrow-ipc = "59.1.0"
 cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
 cdf-dest-parquet = { path = "../cdf-dest-parquet" }
-futures-executor = "0.3.32"
 flate2 = "1.1.9"
 object_store = "0.13.2"
 postgres = "0.19"

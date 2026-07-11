@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 
 use cdf_contract::{
@@ -27,6 +30,10 @@ use cdf_kernel::{
     PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest,
     SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource, ScopeKey,
     TerminalSchemaObservationQuarantine,
+};
+use cdf_memory::{
+    BudgetTag, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
+    ReservationRequest, reserve,
 };
 
 use crate::{
@@ -148,11 +155,24 @@ impl VerifiedSchemaBaseline {
 }
 
 #[non_exhaustive]
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct SchemaDiscoveryExecutionOptions {
     budget: DiscoveryExecutorBudget,
     verified_baseline: Option<VerifiedSchemaBaseline>,
     runtime_effective_schema: bool,
+    memory_coordinator: Option<Arc<dyn MemoryCoordinator>>,
+}
+
+impl std::fmt::Debug for SchemaDiscoveryExecutionOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SchemaDiscoveryExecutionOptions")
+            .field("budget", &self.budget)
+            .field("verified_baseline", &self.verified_baseline)
+            .field("runtime_effective_schema", &self.runtime_effective_schema)
+            .field("memory_coordinator", &self.memory_coordinator.is_some())
+            .finish()
+    }
 }
 
 impl SchemaDiscoveryExecutionOptions {
@@ -174,6 +194,11 @@ impl SchemaDiscoveryExecutionOptions {
 
     pub fn for_runtime_effective_schema(mut self) -> Self {
         self.runtime_effective_schema = true;
+        self
+    }
+
+    pub fn with_memory_coordinator(mut self, coordinator: Arc<dyn MemoryCoordinator>) -> Self {
+        self.memory_coordinator = Some(coordinator);
         self
     }
 
@@ -803,17 +828,34 @@ fn discover_binary_resource_schema(
             options.runtime_effective_schema || selection.selects(&candidate.location)
         })
         .collect::<Vec<_>>();
+    let weights = scheduled_candidates
+        .iter()
+        .map(|candidate| {
+            candidate
+                .size_bytes
+                .max(1)
+                .min(options.budget.max_metadata_bytes_per_file())
+        })
+        .collect::<Vec<_>>();
+    let probe_results = run_weighted_probe_jobs(
+        &weights,
+        &options.budget,
+        options.memory_coordinator.clone(),
+        |index| {
+            probe_binary_candidate(
+                resource,
+                adapter,
+                scheduled_candidates[index],
+                &options.budget,
+                file_dependencies,
+            )
+        },
+    )?;
     let mut probes = Vec::with_capacity(scheduled_candidates.len());
     let mut probe_reports = Vec::with_capacity(scheduled_candidates.len());
     let mut failed = false;
-    for candidate in scheduled_candidates {
-        match probe_binary_candidate(
-            resource,
-            adapter,
-            candidate,
-            &options.budget,
-            file_dependencies,
-        ) {
+    for (candidate, result) in scheduled_candidates.into_iter().zip(probe_results) {
+        match result {
             Ok(probe) => {
                 probe_reports.push(format!(
                     "{}: probed {} metadata bytes",
@@ -1077,6 +1119,80 @@ fn discover_binary_resource_schema(
         discovery_manifest: Some(manifest),
         effective_schema_runtime,
     })
+}
+
+fn run_weighted_probe_jobs<T, F>(
+    weights: &[u64],
+    budget: &DiscoveryExecutorBudget,
+    coordinator: Option<Arc<dyn MemoryCoordinator>>,
+    operation: F,
+) -> Result<Vec<T>>
+where
+    T: Send,
+    F: Fn(usize) -> T + Sync,
+{
+    if weights.is_empty() {
+        return Ok(Vec::new());
+    }
+    let tag = BudgetTag::new("discovery.metadata")?;
+    let coordinator = match coordinator {
+        Some(coordinator) => coordinator,
+        None => Arc::new(DeterministicMemoryCoordinator::new(
+            budget.max_total_in_flight_bytes(),
+            BTreeMap::from([(tag.clone(), budget.max_total_in_flight_bytes())]),
+        )?) as Arc<dyn MemoryCoordinator>,
+    };
+    let next = AtomicUsize::new(0);
+    let results = Mutex::new(Vec::with_capacity(weights.len()));
+    let worker_count = usize::try_from(budget.max_concurrent_probes())
+        .map_err(|_| CdfError::contract("discovery concurrency exceeds usize"))?
+        .min(weights.len());
+    std::thread::scope(|scope| -> Result<()> {
+        let mut handles = Vec::with_capacity(worker_count);
+        for _ in 0..worker_count {
+            let coordinator = Arc::clone(&coordinator);
+            let tag = tag.clone();
+            let operation = &operation;
+            let results = &results;
+            let next = &next;
+            handles.push(scope.spawn(move || -> Result<()> {
+                loop {
+                    let index = next.fetch_add(1, Ordering::Relaxed);
+                    let Some(weight) = weights.get(index).copied() else {
+                        return Ok(());
+                    };
+                    let request = ReservationRequest::new(
+                        ConsumerKey::new(
+                            format!("discovery-probe-{index}"),
+                            MemoryClass::Discovery,
+                        )?,
+                        weight,
+                    )?
+                    .with_subcap(tag.clone())
+                    .as_minimum_working_set();
+                    let lease =
+                        futures_executor::block_on(reserve(Arc::clone(&coordinator), request))?;
+                    let result = operation(index);
+                    drop(lease);
+                    results
+                        .lock()
+                        .map_err(|_| CdfError::internal("discovery result mutex was poisoned"))?
+                        .push((index, result));
+                }
+            }));
+        }
+        for handle in handles {
+            handle
+                .join()
+                .map_err(|_| CdfError::internal("discovery probe worker panicked"))??;
+        }
+        Ok(())
+    })?;
+    let mut results = results
+        .into_inner()
+        .map_err(|_| CdfError::internal("discovery result mutex was poisoned"))?;
+    results.sort_by_key(|(index, _)| *index);
+    Ok(results.into_iter().map(|(_, result)| result).collect())
 }
 
 fn contract_policy_for_resource(resource: &CompiledResource) -> ContractPolicy {
@@ -1917,11 +2033,17 @@ fn unsupported_discover_slice(
 
 #[cfg(test)]
 mod terminal_evidence_tests {
-    use std::sync::Arc;
+    use std::{
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+        time::Duration,
+    };
 
     use arrow_schema::{DataType, Field, Fields, Schema};
 
-    use super::canonical_field_at_path;
+    use super::{DiscoveryExecutorBudget, canonical_field_at_path, run_weighted_probe_jobs};
 
     fn nested_schema(children: Vec<Field>) -> Schema {
         Schema::new(vec![Field::new(
@@ -1952,5 +2074,22 @@ mod terminal_evidence_tests {
         let removed = canonical_field_at_path(&wide, &path).unwrap().unwrap();
         assert_eq!(removed, added);
         assert!(canonical_field_at_path(&narrow, &path).unwrap().is_none());
+    }
+
+    #[test]
+    fn weighted_discovery_scheduler_uses_parallel_slots_only_within_byte_cap() {
+        let active = AtomicUsize::new(0);
+        let peak = AtomicUsize::new(0);
+        let budget = DiscoveryExecutorBudget::new(64, 128, 8).unwrap();
+        let output = run_weighted_probe_jobs(&[64; 8], &budget, None, |index| {
+            let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+            peak.fetch_max(current, Ordering::SeqCst);
+            std::thread::sleep(Duration::from_millis(10));
+            active.fetch_sub(1, Ordering::SeqCst);
+            index
+        })
+        .unwrap();
+        assert_eq!(output, (0..8).collect::<Vec<_>>());
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
     }
 }

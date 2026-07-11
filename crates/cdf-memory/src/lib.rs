@@ -399,6 +399,14 @@ impl DeterministicMemoryCoordinator {
 impl MemoryCoordinator for DeterministicMemoryCoordinator {
     fn try_reserve(&self, request: &ReservationRequest) -> Result<Option<MemoryLease>> {
         let mut state = self.inner.state.lock().unwrap();
+        if let Some(tag) = &request.subcap
+            && !state.subcap_limits.contains_key(tag)
+        {
+            return Err(CdfError::contract(format!(
+                "memory sub-cap `{}` is not declared by the coordinator",
+                tag.as_str()
+            )));
+        }
         if request.bytes > state.snapshot.budget_bytes {
             return Err(CdfError::data(format!(
                 "memory working set {} bytes exceeds managed budget {} bytes",
@@ -482,6 +490,14 @@ impl LeaseAccount for DeterministicLeaseAccount {
             ));
         };
         let mut state = coordinator.state.lock().unwrap();
+        if let Some(tag) = &self.request.subcap
+            && !state.subcap_limits.contains_key(tag)
+        {
+            return Err(CdfError::contract(format!(
+                "memory sub-cap `{}` is not declared by the coordinator",
+                tag.as_str()
+            )));
+        }
         if new_bytes > current_bytes {
             let additional = new_bytes - current_bytes;
             let available = state
