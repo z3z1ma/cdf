@@ -184,6 +184,16 @@ pub struct BenchmarkObservation {
     pub summary: Option<MeasurementSummary>,
     pub reference: Option<ReferenceIdentity>,
     pub bias: Vec<BiasLabel>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measurement_provider: Option<MeasurementProviderIdentity>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MeasurementProviderIdentity {
+    pub method: String,
+    pub version: String,
+    pub observes_cpu_time: bool,
+    pub observes_peak_rss: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -308,6 +318,87 @@ pub fn canonical_sha256<T: Serialize>(value: &T) -> BenchResult<String> {
     Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
 }
 
+pub fn host_class(host: &HostFingerprint) -> BenchResult<String> {
+    let authority = (
+        &host.architecture,
+        &host.cpu_label,
+        host.advertised_logical_cores,
+        &host.advertised_physical_cores,
+        &host.advertised_memory_bytes,
+        &host.effective_cpu,
+        &host.effective_memory_bytes,
+        &host.storage,
+        &host.os,
+    );
+    let digest = canonical_sha256(&authority)?;
+    Ok(format!("host-class-{}", &digest[7..23]))
+}
+
+pub fn summarize_samples(samples: &[MeasurementSample]) -> BenchResult<MeasurementSummary> {
+    if samples.is_empty() || samples.iter().any(|sample| sample.wall_time_ns == 0) {
+        return Err(bench_error(
+            "measurement summary requires samples with positive wall time",
+        ));
+    }
+    let wall = samples
+        .iter()
+        .map(|sample| sample.wall_time_ns)
+        .collect::<Vec<_>>();
+    let median_wall_time_ns = median(wall.clone());
+    let median_absolute_deviation_ns = median(
+        wall.into_iter()
+            .map(|value| value.abs_diff(median_wall_time_ns))
+            .collect(),
+    );
+    let rate = |value: u64, duration_ns: u64| -> u64 {
+        u64::try_from(u128::from(value).saturating_mul(1_000_000_000) / u128::from(duration_ns))
+            .unwrap_or(u64::MAX)
+    };
+    Ok(MeasurementSummary {
+        sample_count: u32::try_from(samples.len())
+            .map_err(|error| bench_error(format!("sample count overflow: {error}")))?,
+        median_wall_time_ns,
+        median_absolute_deviation_ns,
+        median_rows_per_second: median(
+            samples
+                .iter()
+                .map(|sample| rate(sample.rows, sample.wall_time_ns))
+                .collect(),
+        ),
+        median_logical_bytes_per_second: median(
+            samples
+                .iter()
+                .map(|sample| rate(sample.logical_bytes, sample.wall_time_ns))
+                .collect(),
+        ),
+        median_physical_bytes_per_second: median(
+            samples
+                .iter()
+                .map(|sample| rate(sample.physical_bytes, sample.wall_time_ns))
+                .collect(),
+        ),
+        peak_rss_bytes: samples
+            .iter()
+            .filter_map(|sample| sample.peak_rss_bytes)
+            .max(),
+        spill_bytes: samples
+            .iter()
+            .map(|sample| sample.spill_bytes)
+            .max()
+            .unwrap_or(0),
+    })
+}
+
+fn median(mut values: Vec<u64>) -> u64 {
+    values.sort_unstable();
+    let middle = values.len() / 2;
+    if values.len().is_multiple_of(2) {
+        values[middle - 1].saturating_add(values[middle]) / 2
+    } else {
+        values[middle]
+    }
+}
+
 pub fn validate_dataset_catalog(catalog: &DatasetCatalog) -> BenchResult<()> {
     if catalog.schema_version != DATASET_CATALOG_SCHEMA_VERSION {
         return Err(bench_error(format!(
@@ -413,6 +504,11 @@ pub fn validate_report(report: &BenchmarkReport) -> BenchResult<()> {
                         "observed benchmark samples require positive wall_time_ns",
                     ));
                 }
+                if summary != &summarize_samples(&observation.samples)? {
+                    return Err(bench_error(
+                        "observed benchmark summary must be derived exactly from retained samples",
+                    ));
+                }
             }
             ObservationStatus::Failed { error } => {
                 require_text(error, "failure error")?;
@@ -434,6 +530,34 @@ pub fn validate_report(report: &BenchmarkReport) -> BenchResult<()> {
             return Err(bench_error(
                 "non-observed benchmark cells cannot contain samples or summary",
             ));
+        }
+        if let Some(reference) = &observation.reference {
+            for (value, label) in [
+                (&reference.kind, "reference kind"),
+                (&reference.name, "reference name"),
+                (&reference.version, "reference version"),
+                (&reference.semantic_work, "reference semantic_work"),
+            ] {
+                require_text(value, label)?;
+                reject_sensitive_identity(value, label)?;
+            }
+            if observation.bias.is_empty() {
+                return Err(bench_error(
+                    "reference observations require explicit semantic-work bias labels",
+                ));
+            }
+        }
+        for bias in &observation.bias {
+            require_text(&bias.code, "bias code")?;
+            require_text(&bias.description, "bias description")?;
+            reject_sensitive_identity(&bias.code, "bias code")?;
+            reject_sensitive_identity(&bias.description, "bias description")?;
+        }
+        if let Some(provider) = &observation.measurement_provider {
+            require_text(&provider.method, "measurement provider method")?;
+            require_text(&provider.version, "measurement provider version")?;
+            reject_sensitive_identity(&provider.method, "measurement provider method")?;
+            reject_sensitive_identity(&provider.version, "measurement provider version")?;
         }
     }
     Ok(())

@@ -1,0 +1,370 @@
+use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
+
+use cdf_benchmarks::{
+    BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkReport, BiasLabel, Capability, ChildCommand,
+    ChildObservationStatus, ComparabilityKey, ExternalFileFormat, HostCapabilityProvider,
+    HostProbeConfig, IoMode, MacroRunRequest, ObservationStatus, ProfileTool, ReferenceIdentity,
+    ReferenceWorkload, SystemHostProvider, ToolIdentity, discover_polars, fixture_spec, host_class,
+    plan_profile, polars_scan_command, run_macro_cell, run_reference, unavailable_reference_cell,
+    validate_report, write_all_local_fixture_formats,
+};
+
+fn provider() -> SystemHostProvider {
+    SystemHostProvider::new(HostProbeConfig {
+        cdf_version: env!("CARGO_PKG_VERSION").to_owned(),
+        dependency_versions: BTreeMap::from([
+            ("arrow".to_owned(), "59.1.0".to_owned()),
+            ("duckdb".to_owned(), "1.10504.0".to_owned()),
+        ]),
+        benchmark_profile: "test".to_owned(),
+        storage_target: std::env::current_dir().ok(),
+    })
+}
+
+fn command(args: &[&str]) -> ChildCommand {
+    ChildCommand {
+        program: PathBuf::from(env!("CARGO_BIN_EXE_cdf-p3-lab")),
+        args: args.iter().map(|value| (*value).to_owned()).collect(),
+        environment: BTreeMap::new(),
+        current_dir: None,
+    }
+}
+
+fn key(provider: &dyn HostCapabilityProvider, mode: IoMode) -> ComparabilityKey {
+    ComparabilityKey {
+        dataset_id: "fixture-medium".to_owned(),
+        workload_id: "sequential-read".to_owned(),
+        timed_region_version: 1,
+        cdf_revision: "fixture-revision".to_owned(),
+        dependency_tuple: "arrow59-duckdb1".to_owned(),
+        host_class: host_class(&provider.fingerprint().unwrap()).unwrap(),
+        os_toolchain: "fixture-rust1.96".to_owned(),
+        io_mode: mode,
+    }
+}
+
+#[test]
+fn isolated_macro_runner_retains_samples_and_derives_distribution() {
+    let temp = tempfile::tempdir().unwrap();
+    let input = temp.path().join("input.bin");
+    fs::write(&input, vec![0x5A; 512 * 1024]).unwrap();
+    let request_path = temp.path().join("request.json");
+    fs::write(
+        &request_path,
+        serde_json::to_vec(&ReferenceWorkload::SequentialRead {
+            path: input,
+            buffer_bytes: 64 * 1024,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let provider = provider();
+    let comparability = key(&provider, IoMode::Warm);
+    let observation = run_macro_cell(
+        &provider,
+        &MacroRunRequest {
+            expected_host_class: Some(comparability.host_class.clone()),
+            comparability,
+            sample_count: 3,
+            timeout: Duration::from_secs(5),
+            allow_privileged_cache_control: false,
+            command: command(&["reference-worker", request_path.to_str().unwrap()]),
+            reference: Some(ReferenceIdentity {
+                kind: "internal".to_owned(),
+                name: "sequential-read".to_owned(),
+                version: "v1".to_owned(),
+                semantic_work: "read every input byte".to_owned(),
+            }),
+            bias: vec![BiasLabel {
+                code: "omits_cdf_evidence".to_owned(),
+                description: "reference omits validation package receipt and checkpoint work"
+                    .to_owned(),
+            }],
+        },
+    )
+    .unwrap();
+
+    assert!(matches!(observation.status, ObservationStatus::Observed));
+    assert_eq!(observation.samples.len(), 3);
+    assert!(observation.samples.iter().all(|sample| {
+        sample.wall_time_ns > 0
+            && sample.logical_bytes == 512 * 1024
+            && sample.physical_bytes == 512 * 1024
+    }));
+    if cfg!(any(target_os = "macos", target_os = "linux"))
+        && PathBuf::from("/usr/bin/time").is_file()
+    {
+        assert!(
+            observation
+                .samples
+                .iter()
+                .all(|sample| sample.cpu_time_ns.is_some() && sample.peak_rss_bytes.is_some())
+        );
+    }
+    assert_eq!(observation.summary.as_ref().unwrap().sample_count, 3);
+    let report = BenchmarkReport {
+        schema_version: BENCHMARK_REPORT_SCHEMA_VERSION,
+        host: provider.fingerprint().unwrap(),
+        observations: vec![observation],
+    };
+    validate_report(&report).unwrap();
+}
+
+#[test]
+fn timeout_cold_cache_and_host_change_remain_visible_cells() {
+    let provider = provider();
+    let warm_key = key(&provider, IoMode::Warm);
+    let timed_out = run_macro_cell(
+        &provider,
+        &MacroRunRequest {
+            comparability: warm_key.clone(),
+            expected_host_class: Some(warm_key.host_class.clone()),
+            sample_count: 1,
+            timeout: Duration::from_millis(10),
+            allow_privileged_cache_control: false,
+            command: command(&["sleep-worker", "1000"]),
+            reference: None,
+            bias: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        timed_out.status,
+        ObservationStatus::TimedOut { .. }
+    ));
+
+    let cold = run_macro_cell(
+        &provider,
+        &MacroRunRequest {
+            comparability: key(&provider, IoMode::Cold),
+            expected_host_class: None,
+            sample_count: 1,
+            timeout: Duration::from_secs(1),
+            allow_privileged_cache_control: false,
+            command: command(&["sleep-worker", "0"]),
+            reference: None,
+            bias: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(cold.status, ObservationStatus::Unavailable { .. }));
+
+    let changed = run_macro_cell(
+        &provider,
+        &MacroRunRequest {
+            comparability: ComparabilityKey {
+                host_class: "different-host-class".to_owned(),
+                ..warm_key
+            },
+            expected_host_class: None,
+            sample_count: 1,
+            timeout: Duration::from_secs(1),
+            allow_privileged_cache_control: false,
+            command: command(&["sleep-worker", "0"]),
+            reference: None,
+            bias: Vec::new(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        changed.status,
+        ObservationStatus::Inconclusive { .. }
+    ));
+
+    let mut credential_command = command(&["sleep-worker", "0"]);
+    credential_command.environment.insert(
+        "DATABASE_PASSWORD".to_owned(),
+        "must-not-enter-report-input".to_owned(),
+    );
+    let error = run_macro_cell(
+        &provider,
+        &MacroRunRequest {
+            comparability: key(&provider, IoMode::Uncontrolled),
+            expected_host_class: None,
+            sample_count: 1,
+            timeout: Duration::from_secs(1),
+            allow_privileged_cache_control: false,
+            command: credential_command,
+            reference: None,
+            bias: Vec::new(),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("cannot embed credential"));
+}
+
+#[test]
+fn raw_arrow_duckdb_and_io_references_cross_check_fixture_rows_and_bytes() {
+    let temp = tempfile::tempdir().unwrap();
+    let spec = fixture_spec("medium").unwrap();
+    write_all_local_fixture_formats(temp.path(), &spec).unwrap();
+    for workload in [
+        ReferenceWorkload::ArrowParquet {
+            path: temp.path().join("orders.parquet"),
+            batch_rows: 1024,
+        },
+        ReferenceWorkload::ArrowCsv {
+            path: temp.path().join("orders.csv"),
+            batch_rows: 1024,
+            has_header: true,
+        },
+        ReferenceWorkload::ArrowNdjson {
+            path: temp.path().join("orders.ndjson"),
+            batch_rows: 1024,
+            infer_rows: spec.rows,
+        },
+        ReferenceWorkload::DuckDbParquet {
+            path: temp.path().join("orders.parquet"),
+        },
+    ] {
+        let measured = run_reference(&workload).unwrap();
+        assert_eq!(measured.rows, spec.rows as u64);
+        assert!(measured.logical_bytes > 0);
+        assert!(measured.physical_bytes > 0);
+    }
+
+    let write_path = temp.path().join("sequential.bin");
+    let written = run_reference(&ReferenceWorkload::SequentialWrite {
+        path: write_path.clone(),
+        logical_bytes: 2 * 1024 * 1024,
+        buffer_bytes: 64 * 1024,
+        sync: false,
+    })
+    .unwrap();
+    let read = run_reference(&ReferenceWorkload::SequentialRead {
+        path: write_path,
+        buffer_bytes: 64 * 1024,
+    })
+    .unwrap();
+    let copied = run_reference(&ReferenceWorkload::Memcpy {
+        logical_bytes: 2 * 1024 * 1024,
+        buffer_bytes: 64 * 1024,
+    })
+    .unwrap();
+    assert_eq!(written.physical_bytes, 2 * 1024 * 1024);
+    assert_eq!(read.logical_bytes, written.logical_bytes);
+    assert_eq!(copied.logical_bytes, written.logical_bytes);
+}
+
+struct ProfileProvider {
+    host: cdf_benchmarks::HostFingerprint,
+}
+
+impl HostCapabilityProvider for ProfileProvider {
+    fn fingerprint(&self) -> cdf_benchmarks::BenchResult<cdf_benchmarks::HostFingerprint> {
+        Ok(self.host.clone())
+    }
+
+    fn prepare_io_mode(
+        &self,
+        _mode: IoMode,
+        _allow_privileged: bool,
+    ) -> Capability<cdf_benchmarks::CachePreparation> {
+        unreachable!()
+    }
+
+    fn observe_child(
+        &self,
+        _command: &ChildCommand,
+        _timeout: Duration,
+    ) -> cdf_benchmarks::BenchResult<ChildObservationStatus> {
+        unreachable!()
+    }
+
+    fn discover_tool(&self, name: &str) -> Capability<ToolIdentity> {
+        Capability::Supported {
+            value: ToolIdentity {
+                name: name.to_owned(),
+                version: "fixture-version".to_owned(),
+                executable: name.to_owned(),
+            },
+            method: "fixture".to_owned(),
+            provider_version: "fixture-v1".to_owned(),
+        }
+    }
+
+    fn process_observer_identity(&self) -> cdf_benchmarks::MeasurementProviderIdentity {
+        cdf_benchmarks::MeasurementProviderIdentity {
+            method: "fixture".to_owned(),
+            version: "fixture-v1".to_owned(),
+            observes_cpu_time: false,
+            observes_peak_rss: false,
+        }
+    }
+}
+
+#[test]
+fn profiling_dry_run_records_exact_tool_command_and_ignored_artifact_path() {
+    let provider = ProfileProvider {
+        host: provider().fingerprint().unwrap(),
+    };
+    let root = tempfile::tempdir().unwrap();
+    let planned = plan_profile(
+        &provider,
+        ProfileTool::PerfStat,
+        &command(&["host"]),
+        root.path(),
+        "fixture-perf",
+    )
+    .unwrap();
+    let Capability::Supported { value, .. } = planned else {
+        panic!("fixture tool should be supported");
+    };
+    assert_eq!(value.tool_identity.version, "fixture-version");
+    assert!(value.command.iter().any(|part| part == "stat"));
+    assert!(
+        value
+            .artifact
+            .ends_with("target/cdf-benchmarks/profiles/fixture-perf.txt")
+    );
+}
+
+#[test]
+fn unavailable_external_reference_is_reported_instead_of_omitted() {
+    let provider = provider();
+    let observation = unavailable_reference_cell(
+        key(&provider, IoMode::Uncontrolled),
+        ReferenceIdentity {
+            kind: "external".to_owned(),
+            name: "polars".to_owned(),
+            version: "unavailable".to_owned(),
+            semantic_work: "scan only".to_owned(),
+        },
+        vec![BiasLabel {
+            code: "omits_cdf_evidence".to_owned(),
+            description: "reference omits package receipt and checkpoint work".to_owned(),
+        }],
+        Capability::Unavailable {
+            reason: "Polars executable is not installed".to_owned(),
+            method: "fixture".to_owned(),
+            provider_version: "fixture-v1".to_owned(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(
+        observation.status,
+        ObservationStatus::Unavailable { .. }
+    ));
+    assert!(observation.samples.is_empty());
+    assert!(observation.reference.is_some());
+}
+
+#[test]
+fn polars_stays_external_and_is_either_runnable_or_typed_unavailable() {
+    let provider = provider();
+    match discover_polars(&provider).unwrap() {
+        Capability::Supported { value, .. } => {
+            let command = polars_scan_command(
+                &value,
+                PathBuf::from("fixture.parquet"),
+                ExternalFileFormat::Parquet,
+            );
+            assert_eq!(command.program, PathBuf::from(value.executable));
+            assert!(command.args.iter().any(|argument| argument == "parquet"));
+        }
+        Capability::Unavailable { reason, .. } => {
+            assert!(reason.contains("Polars") || reason.contains("python3"));
+        }
+        Capability::Failed { error, .. } => panic!("unexpected Polars probe failure: {error}"),
+    }
+}

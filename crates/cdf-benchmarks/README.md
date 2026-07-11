@@ -1,10 +1,28 @@
 # CDF Baseline Benchmarks
 
-This crate is a private, opt-in benchmark harness. It does not publish performance claims and does not add CI hard gates.
+This crate is the private P3 performance lab. Raw reports are evidence inputs, not performance claims; CI comparison policy is owned separately from workload execution.
 
 Committed fixtures live in `fixtures/baseline-fixtures.json` as deterministic specs only. Generated CSV, JSON, NDJSON, Arrow IPC, Parquet, packages, DuckDB files, and trend output are created under temp directories or `target/`.
 
 ## Commands
+
+Build the isolated macro/reference worker and print a sanitized host fingerprint:
+
+```bash
+cargo build -p cdf-benchmarks --bin cdf-p3-lab --release --locked
+target/release/cdf-p3-lab host
+```
+
+`run-cell REQUEST.json` executes a schema-versioned macro cell with median-of-N sampling, timeout, explicit warm/cold/uncontrolled mode, child-process wall/CPU/RSS observation, reference identity, and bias labels. `reference-worker REQUEST.json` is the isolated worker for sequential read/write, memcpy, Arrow Parquet/CSV/NDJSON, and DuckDB Parquet references.
+
+Profiling plans record the exact detected tool/version, command, and ignored artifact path without requiring the tool in ordinary tests:
+
+```bash
+target/release/cdf-p3-lab profile-dry-run flamegraph cdf-package target/release/cdf --help
+target/release/cdf-p3-lab profile-dry-run perf-stat cdf-package target/release/cdf --help
+```
+
+Missing tools and non-opted-in privileged cold-cache control produce typed unavailable cells; they are never omitted or simulated.
 
 Smoke Criterion pass, intended local budget under 2 minutes:
 
@@ -56,7 +74,7 @@ Implemented cells:
 - Tiny startup, medium, and wide pipeline envelopes.
 - Native DuckDB-style local insert as an `ad_hoc` label.
 
-Excluded/deferred cells:
+Unavailable/deferred cells remain explicit report rows:
 
 - FileResource Arrow IPC file input is excluded because the public file runtime rejects declarative `arrow_ipc`; the harness uses the public Arrow IPC stream reader instead.
-- Native Polars comparison is excluded to avoid adding a heavy new dependency for a non-MVP comparison label.
+- Polars remains an externally isolated optional reference so it does not enter CDF's Cargo graph; missing executables produce an unavailable cell.
