@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
@@ -18,7 +18,7 @@ This workstream is a plan. Split dataset/report schema, macro/reference runners,
 - `.10x/tickets/done/2026-07-10-p3-ws-l2-phase-telemetry.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-l3-macro-roofline-runners.md`
 - `.10x/tickets/done/2026-07-10-p3-ws-l4-ci-envelope-generation.md`
-- `.10x/tickets/2026-07-10-p3-ws-l5-preoptimization-baseline.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md`
 - `.10x/tickets/done/2026-07-11-p3-l1-small-startup-catalog-followup.md`
 
 ## Acceptance criteria
@@ -48,7 +48,8 @@ No runtime, decoder, destination, hashing, parallelism, or memory optimization. 
 - 2026-07-11: L3 closed at `.10x/tickets/done/2026-07-10-p3-ws-l3-macro-roofline-runners.md` with isolated median-of-N execution, host/cache/process/tool capability providers, raw I/O/memcpy/Arrow/DuckDB references, external Polars, profiling plans, and pass fairness review. L4 can now consume authoritative reports.
 - 2026-07-11: L4 closed at `.10x/tickets/done/2026-07-10-p3-ws-l4-ci-envelope-generation.md` with strict comparable-authority regression policy, immutable evidence-backed baseline history, generated no-claim envelope freshness, lean dedicated performance CI, and pass reset/fairness review. L5 remains gated by the explicit L1 small/startup follow-up.
 - 2026-07-11: The L1 small/startup follow-up closed at `.10x/tickets/done/2026-07-11-p3-l1-small-startup-catalog-followup.md` with catalog schema v2, generator-bound tiny/medium recipes, distinct startup/throughput timed regions, aligned report identities, fixed hashes, and pass review. L5 is unblocked.
+- 2026-07-11: L5 closed at `.10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md`. The immutable host-labeled before picture, generated envelope, raw profile, explicit failed/unavailable cells, and triage reconciliation are recorded at `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`; fairness review `.10x/reviews/2026-07-11-p3-ws-l-baseline-fairness-review.md` passed. WS-A through WS-H may now activate against this baseline.
 
 ## Blockers
 
-None. L1 and L2 are bounded and eligible to execute immediately.
+None. Workstream complete.

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-10
 Updated: 2026-07-10
-Target: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
+Target: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md
 Verdict: pass
 
 # P3 WS-L shaping review

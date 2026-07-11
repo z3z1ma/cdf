@@ -189,7 +189,10 @@ fn baseline_install_is_content_addressed_evidence_backed_and_preserves_history()
 
 #[test]
 fn generated_envelope_matches_committed_golden() {
-    let report = report_fixture().unwrap();
+    let report: BenchmarkReport = serde_json::from_str(include_str!(
+        "../../../.10x/evidence/.storage/p3-baseline-macos-ef3d84f6.json"
+    ))
+    .unwrap();
     let spec: EnvelopeSpec =
         serde_json::from_str(include_str!("../fixtures/p3-envelope-spec.json")).unwrap();
     let generated = generate_envelope(&report, &spec).unwrap();

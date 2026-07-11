@@ -1,0 +1,1384 @@
+Analysis of sampling cdf-p3-lab (pid 3037) every 1 millisecond
+Process:         cdf-p3-lab [3037]
+Path:            /Users/USER/*/cdf-p3-lab
+Load Address:    0x102270000
+Identifier:      cdf-p3-lab
+Version:         0
+Code Type:       ARM64
+Platform:        macOS
+Parent Process:  codex [59818]
+Target Type:     live task
+
+Date/Time:       2026-07-11 09:45:48.949 -0700
+Launch Time:     2026-07-11 09:45:41.638 -0700
+OS Version:      macOS 26.5.1 (25F80)
+Report Version:  7
+Analysis Tool:   /usr/bin/sample
+
+Physical footprint:         7424K
+Physical footprint (peak):  7424K
+Idle exit:                  untracked
+----
+
+Call graph:
+    2105 Thread_74098090   DispatchQueue_1: com.apple.main-thread  (serial)
+      2105 start  (in dyld) + 6992  [0x18ccf7e00]
+        2105 main  (in cdf-p3-lab) + 52  [0x1022abec4]
+          2105 _RNvNtCscEX5ZwinSox_3std2rt19lang_start_internal  (in cdf-p3-lab) + 952  [0x106f1d110]
+            2105 std::rt::lang_start::_$u7b$$u7b$closure$u7d$$u7d$::h2ba66b5169ff767f  (in cdf-p3-lab) + 16  [0x1022b8a4c]
+              2105 std::sys::backtrace::__rust_begin_short_backtrace::hcab4aaaff2507b6b  (in cdf-p3-lab) + 12  [0x1022b9ff4]
+                2105 cdf_p3_lab::main::h146d3bf089baa632  (in cdf-p3-lab) + 20  [0x1022aa38c]
+                  2049 cdf_p3_lab::run::h0db9a917a5752f9c  (in cdf-p3-lab) + 6768  [0x1022a9468]
+                  + 2019 cdf_benchmarks::runners::run_prepared_file_to_package::h88e89e89cb48d8d9  (in cdf-p3-lab) + 1116  [0x1023be708]
+                  + ! 2019 futures_executor::local_pool::block_on::h350e149cb4139a67  (in cdf-p3-lab) + 88  [0x1023f9ba4]
+                  + !   2019 std::thread::local::LocalKey$LT$T$GT$::with::h229b537cf39bdf9e  (in cdf-p3-lab) + 180  [0x1023539c4]
+                  + !     468 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 3264  [0x102348ff0]
+                  + !     : 439 <deduplicated_symbol>  (in cdf-p3-lab) + 3824  [0x102326f48]
+                  + !     : | 439 cdf_engine::execution::write_output_batch::h4149f56c717e5be5  (in cdf-p3-lab) + 1304  [0x10414a6f4]
+                  + !     : |   321 cdf_package::builder::PackageBuilder::write_segment_inner::hb8a2f1ac9bc23842  (in cdf-p3-lab) + 740  [0x105db1c50]
+                  + !     : |   + 139 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 732  [0x105de1128]
+                  + !     : |   + ! 139 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   + !   139 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   + !     139 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   + 135 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 1144  [0x105de12c4]
+                  + !     : |   + ! 134 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     : |   + ! : 134 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   + ! :   134 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   + ! :     134 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   + ! 1 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 320  [0x105de0568]
+                  + !     : |   + !   1 close  (in libsystem_kernel.dylib) + 8  [0x18d0728f0]
+                  + !     : |   + 17 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 280  [0x105de0f64]
+                  + !     : |   + ! 17 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     : |   + !   17 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |   + !     17 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |   + !       17 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |   + !         17 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : |   + 17 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 908  [0x105de11d8]
+                  + !     : |   + ! 17 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     : |   + !   17 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     : |   + !     17 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     : |   + 6 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 668  [0x105de10e8]
+                  + !     : |   + ! 2 arrow_ipc::writer::FileWriter$LT$W$GT$::write::h3e392e96f4ed4e51  (in cdf-p3-lab) + 964  [0x105e2ca14]
+                  + !     : |   + ! : 2 arrow_ipc::writer::IpcDataGenerator::record_batch_to_bytes::h2440f36c1ed22d93  (in cdf-p3-lab) + 624  [0x106beb578]
+                  + !     : |   + ! :   2 arrow_ipc::writer::write_array_data::hde2b80e24193015b  (in cdf-p3-lab) + 752  [0x106bed3e4]
+                  + !     : |   + ! :     2 arrow_ipc::writer::encode_sink_buffer::h4f28e9fe44408695  (in cdf-p3-lab) + 140  [0x106bf02f8]
+                  + !     : |   + ! :       1 arrow_ipc::compression::CompressionCodec::compress_to_vec::h621088ce50110009  (in cdf-p3-lab) + 244  [0x106bfb90c]
+                  + !     : |   + ! :       | 1 _platform_memset  (in libsystem_platform.dylib) + 140  [0x18d0bf11c]
+                  + !     : |   + ! :       1 arrow_ipc::compression::CompressionCodec::compress_to_vec::h621088ce50110009  (in cdf-p3-lab) + 604  [0x106bfba74]
+                  + !     : |   + ! :         1 lz4_flex::frame::compress::FrameEncoder$LT$W$GT$::finish::hf900282870adad68  (in cdf-p3-lab) + 48  [0x106bf6c90]
+                  + !     : |   + ! :           1 lz4_flex::frame::compress::FrameEncoder$LT$W$GT$::write_block::ha1d0d5ea1902df4e  (in cdf-p3-lab) + 472  [0x106bf66f4]
+                  + !     : |   + ! :             1 lz4_flex::block::compress::compress_internal::h033bed549d646b9d  (in cdf-p3-lab) + 1296  [0x106bf5d24]
+                  + !     : |   + ! :               1 lz4_flex::block::compress::handle_last_literals::hff6e6edceb64f3bf  (in cdf-p3-lab) + 248  [0x106fe830c]
+                  + !     : |   + ! 2 arrow_ipc::writer::FileWriter$LT$W$GT$::write::h3e392e96f4ed4e51  (in cdf-p3-lab) + 1072  [0x105e2ca80]
+                  + !     : |   + ! : 1 arrow_ipc::writer::write_continuation::h6262da0e6e63f20f  (in cdf-p3-lab) + 120  [0x105e2be3c]
+                  + !     : |   + ! : | 1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + ! : |   1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + ! : 1 arrow_ipc::writer::write_continuation::h6262da0e6e63f20f  (in cdf-p3-lab) + 656  [0x105e2c054]
+                  + !     : |   + ! :   1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + ! :     1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + ! 1 arrow_ipc::writer::FileWriter$LT$W$GT$::write::h3e392e96f4ed4e51  (in cdf-p3-lab) + 1160  [0x105e2cad8]
+                  + !     : |   + ! : 1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     : |   + ! :   1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + ! :     1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + ! 1 arrow_ipc::writer::FileWriter$LT$W$GT$::write::h3e392e96f4ed4e51  (in cdf-p3-lab) + 1464  [0x105e2cc08]
+                  + !     : |   + !   1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     : |   + !     1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + !       1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + 4 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 408  [0x105de0fe4]
+                  + !     : |   + ! 3 arrow_ipc::writer::FileWriter$LT$W$GT$::try_new_with_options::h268383a20c944548  (in cdf-p3-lab) + 160  [0x105e2c258]
+                  + !     : |   + ! : 3 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + ! :   3 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + ! 1 arrow_ipc::writer::FileWriter$LT$W$GT$::try_new_with_options::h268383a20c944548  (in cdf-p3-lab) + 448  [0x105e2c378]
+                  + !     : |   + !   1 arrow_ipc::writer::write_message::h72ae3571bf294473  (in cdf-p3-lab) + 280  [0x105e2b8a8]
+                  + !     : |   + !     1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + !       1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + 2 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 704  [0x105de110c]
+                  + !     : |   + ! 1 arrow_ipc::writer::FileWriter$LT$W$GT$::finish::hce8871f4e8dfeb38  (in cdf-p3-lab) + 156  [0x105e2d3ac]
+                  + !     : |   + ! : 1 arrow_ipc::writer::write_continuation::h6262da0e6e63f20f  (in cdf-p3-lab) + 656  [0x105e2c054]
+                  + !     : |   + ! :   1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + ! :     1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + ! 1 arrow_ipc::writer::FileWriter$LT$W$GT$::finish::hce8871f4e8dfeb38  (in cdf-p3-lab) + 444  [0x105e2d4cc]
+                  + !     : |   + !   1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     : |   + !     1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   + !       1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   + 1 cdf_package::storage::write_arrow_ipc_file::hd07aef36e83b6843  (in cdf-p3-lab) + 1152  [0x105de12cc]
+                  + !     : |   +   1 close  (in libsystem_kernel.dylib) + 8  [0x18d0728f0]
+                  + !     : |   118 cdf_package::builder::PackageBuilder::write_segment_inner::hb8a2f1ac9bc23842  (in cdf-p3-lab) + 1024  [0x105db1d6c]
+                  + !     : |     115 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     : |     ! 115 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |     !   115 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |     !     115 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |     !       115 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : |     2 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 340  [0x105de0a7c]
+                  + !     : |     ! 1 sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab) + 6268  [0x106978f2c]
+                  + !     : |     ! 1 std::io::copy::stack_buffer_copy::h35eb7bd539286eaf  (in cdf-p3-lab) + 100  [0x105db4448]
+                  + !     : |     !   1 _RNvXsa_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io4Read8read_buf  (in cdf-p3-lab) + 52  [0x106f28a00]
+                  + !     : |     !     1 read  (in libsystem_kernel.dylib) + 0  [0x18d072914]
+                  + !     : |     1 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 796  [0x105de0c44]
+                  + !     : |       1 close  (in libsystem_kernel.dylib) + 8  [0x18d0728f0]
+                  + !     : 26 <deduplicated_symbol>  (in cdf-p3-lab) + 272  [0x102326168]
+                  + !     : | 26 _$LT$cdf_formats..resource..FileResource$u20$as$u20$cdf_kernel..resource..ResourceStream$GT$::open::_$u7b$$u7b$closure$u7d$$u7d$::hcf098fb07640e0e9  (in cdf-p3-lab) + 456  [0x1061ec70c]
+                  + !     : |   20 cdf_formats::readers::read_file_source::hf6afa43ae4a75f08  (in cdf-p3-lab) + 444  [0x1061b9088]
+                  + !     : |   + 17 cdf_formats::readers::read_ndjson_bytes_with_scope::h83cce61f2687334b  (in cdf-p3-lab) + 72  [0x1061bca6c]
+                  + !     : |   + ! 9 arrow_json::reader::schema::infer_json_schema::hb97142abbee35278  (in cdf-p3-lab) + 172  [0x1061fa0cc]
+                  + !     : |   + ! : 8 _$LT$arrow_json..reader..value_iter..ValueIter$LT$R$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::next::h742f95af198ecbed  (in cdf-p3-lab) + 140  [0x1061f19b4]
+                  + !     : |   + ! : | 8 serde_json::de::from_trait::hc60c75758c9abd09  (in cdf-p3-lab) + 68  [0x1061f1f14]
+                  + !     : |   + ! : |   4 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 2716  [0x1061f375c]
+                  + !     : |   + ! : |   + 3 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h33df1948e035a68a  (in cdf-p3-lab) + 940  [0x1061dd86c]
+                  + !     : |   + ! : |   + ! 3 alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::hea6ef1f0729172a9  (in cdf-p3-lab) + 92  [0x106fcd9fc]
+                  + !     : |   + ! : |   + !   3 _realloc  (in libsystem_malloc.dylib) + 452  [0x18cee2e90]
+                  + !     : |   + ! : |   + !     3 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x18cee2674]
+                  + !     : |   + ! : |   + !       1 xzm_realloc  (in libsystem_malloc.dylib) + 780  [0x18ced2e00]
+                  + !     : |   + ! : |   + !       : 1 _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 292  [0x18ced7ff8]
+                  + !     : |   + ! : |   + !       1 xzm_realloc  (in libsystem_malloc.dylib) + 852  [0x18ced2e48]
+                  + !     : |   + ! : |   + !       : 1 _platform_memmove  (in libsystem_platform.dylib) + 188  [0x18d0bf41c]
+                  + !     : |   + ! : |   + !       1 xzm_realloc  (in libsystem_malloc.dylib) + 264  [0x18ced2bfc]
+                  + !     : |   + ! : |   + 1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h33df1948e035a68a  (in cdf-p3-lab) + 1008  [0x1061dd8b0]
+                  + !     : |   + ! : |   +   1 hashbrown::raw::RawTable$LT$T$C$A$GT$::reserve_rehash::h4d7e2bcb186afb20  (in cdf-p3-lab) + 1008  [0x106fec91c]
+                  + !     : |   + ! : |   +     1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x18ced3484]
+                  + !     : |   + ! : |   +       1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x18d07210c]
+                  + !     : |   + ! : |   2 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 2432  [0x1061f3640]
+                  + !     : |   + ! : |   + 1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h33df1948e035a68a  (in cdf-p3-lab) + 60  [0x1061dd4fc]
+                  + !     : |   + ! : |   + ! 1 core::hash::BuildHasher::hash_one::h46f776439e242513  (in cdf-p3-lab) + 80  [0x1061ef600]
+                  + !     : |   + ! : |   + !   1 _$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::h4e8abc20ef026e61  (in cdf-p3-lab) + 12  [0x1061efd9c]
+                  + !     : |   + ! : |   + 1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h33df1948e035a68a  (in cdf-p3-lab) + 940  [0x1061dd86c]
+                  + !     : |   + ! : |   +   1 alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::hea6ef1f0729172a9  (in cdf-p3-lab) + 120  [0x106fcda18]
+                  + !     : |   + ! : |   +     1 <deduplicated_symbol>  (in libsystem_malloc.dylib) + 112  [0x18ced2144]
+                  + !     : |   + ! : |   2 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 2652  [0x1061f371c]
+                  + !     : |   + ! : |     1 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 1100  [0x1061f310c]
+                  + !     : |   + ! : |     ! 1 _$LT$serde_json..read..StrRead$u20$as$u20$serde_json..read..Read$GT$::parse_str::hf0de0efb52db6611  (in cdf-p3-lab) + 96  [0x106ed3848]
+                  + !     : |   + ! : |     !   1 serde_json::read::SliceRead::skip_to_escape::h39dbbfd39a03f30e  (in cdf-p3-lab) + 144  [0x106ed2bc8]
+                  + !     : |   + ! : |     1 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 1856  [0x1061f3400]
+                  + !     : |   + ! : |       1 _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 420  [0x18ced8078]
+                  + !     : |   + ! : 1 _$LT$arrow_json..reader..value_iter..ValueIter$LT$R$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::next::h742f95af198ecbed  (in cdf-p3-lab) + 80  [0x1061f1978]
+                  + !     : |   + ! :   1 std::io::append_to_string::h3c286419a7980c57  (in cdf-p3-lab) + 148  [0x1061f5f3c]
+                  + !     : |   + ! :     1 _RNvNtNtCsitGFVNq7Ifu_4core5slice6memchr14memchr_aligned  (in cdf-p3-lab) + 196  [0x106f3d248]
+                  + !     : |   + ! 6 arrow_json::reader::schema::infer_json_schema::hb97142abbee35278  (in cdf-p3-lab) + 256  [0x1061fa120]
+                  + !     : |   + ! : 6 arrow_json::reader::schema::collect_field_types_from_object::ha444485e91a9204b  (in cdf-p3-lab) + 156  [0x10634f7d4]
+                  + !     : |   + ! :   4 arrow_json::reader::schema::set_object_scalar_field_type::he34512e77a57ccbb  (in cdf-p3-lab) + 68  [0x10634f3d8]
+                  + !     : |   + ! :   | 4 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::get_index_of::h8533d7da2b90d3bb  (in cdf-p3-lab) + 76  [0x106371ae0]
+                  + !     : |   + ! :   |   2 core::hash::BuildHasher::hash_one::h33b4f72a186190aa  (in cdf-p3-lab) + 72  [0x10636fdb4]
+                  + !     : |   + ! :   |   + 2 _$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::hb420b8cda88b41d6  (in cdf-p3-lab) + 0,16  [0x106370554,0x106370564]
+                  + !     : |   + ! :   |   1 core::hash::BuildHasher::hash_one::h33b4f72a186190aa  (in cdf-p3-lab) + 96  [0x10636fdcc]
+                  + !     : |   + ! :   |   + 1 _$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::hb420b8cda88b41d6  (in cdf-p3-lab) + 12  [0x106370560]
+                  + !     : |   + ! :   |   1 core::hash::BuildHasher::hash_one::h33b4f72a186190aa  (in cdf-p3-lab) + 52  [0x10636fda0]
+                  + !     : |   + ! :   2 arrow_json::reader::schema::set_object_scalar_field_type::he34512e77a57ccbb  (in cdf-p3-lab) + 364  [0x10634f500]
+                  + !     : |   + ! :     1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::get_index_of::h8533d7da2b90d3bb  (in cdf-p3-lab) + 76  [0x106371ae0]
+                  + !     : |   + ! :     + 1 core::hash::BuildHasher::hash_one::h33b4f72a186190aa  (in cdf-p3-lab) + 72  [0x10636fdb4]
+                  + !     : |   + ! :     +   1 _$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::hb420b8cda88b41d6  (in cdf-p3-lab) + 344  [0x1063706ac]
+                  + !     : |   + ! :     1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::get_index_of::h8533d7da2b90d3bb  (in cdf-p3-lab) + 192  [0x106371b54]
+                  + !     : |   + ! :       1 _platform_memcmp  (in libsystem_platform.dylib) + 272  [0x18d0bd020]
+                  + !     : |   + ! 2 arrow_json::reader::schema::infer_json_schema::hb97142abbee35278  (in cdf-p3-lab) + 280  [0x1061fa138]
+                  + !     : |   + !   1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x18ced31cc]
+                  + !     : |   + !   | 1 _platform_memset  (in libsystem_platform.dylib) + 140  [0x18d0bf11c]
+                  + !     : |   + !   1 core::ptr::drop_in_place$LT$serde_json..value..Value$GT$::hae67af64cc43de7f  (in cdf-p3-lab) + 188  [0x1061fad30]
+                  + !     : |   + !     1 _$LT$alloc..vec..Vec$LT$T$C$A$GT$$u20$as$u20$core..ops..drop..Drop$GT$::drop::hd3020f62a85acb8c  (in cdf-p3-lab) + 72  [0x1061d6cc8]
+                  + !     : |   + !       1 _xzm_free  (in libsystem_malloc.dylib) + 28  [0x18ced3088]
+                  + !     : |   + 3 cdf_formats::readers::read_ndjson_bytes_with_scope::h83cce61f2687334b  (in cdf-p3-lab) + 572  [0x1061bcc60]
+                  + !     : |   +   3 core::iter::adapters::try_process::h719d558b499f81c8  (in cdf-p3-lab) + 40  [0x1061fcfb8]
+                  + !     : |   +     2 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h1e3ef4a0203c503f  (in cdf-p3-lab) + 348  [0x1061d72c8]
+                  + !     : |   +     : 2 _$LT$$RF$mut$u20$I$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::try_fold::h1eb6bd3419d8dd57  (in cdf-p3-lab) + 120  [0x1061ea0dc]
+                  + !     : |   +     :   2 arrow_json::reader::tape::TapeDecoder::decode::h41c2469ad76a1f67  (in cdf-p3-lab) + 512,2212  [0x106349ca8,0x10634a34c]
+                  + !     : |   +     1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h1e3ef4a0203c503f  (in cdf-p3-lab) + 76  [0x1061d71b8]
+                  + !     : |   +       1 _$LT$$RF$mut$u20$I$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::try_fold::h1eb6bd3419d8dd57  (in cdf-p3-lab) + 120  [0x1061ea0dc]
+                  + !     : |   +         1 arrow_json::reader::tape::TapeDecoder::decode::h41c2469ad76a1f67  (in cdf-p3-lab) + 5368  [0x10634afa0]
+                  + !     : |   +           1 _platform_memmove  (in libsystem_platform.dylib) + 452  [0x18d0bf524]
+                  + !     : |   5 cdf_formats::readers::read_file_source::hf6afa43ae4a75f08  (in cdf-p3-lab) + 80  [0x1061b8f1c]
+                  + !     : |   + 5 cdf_formats::readers::file_source_position::h1381169069b881d4  (in cdf-p3-lab) + 516  [0x1061ba570]
+                  + !     : |   +   5 sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab) + 480,1680,...  [0x106977890,0x106977d40,...]
+                  + !     : |   1 cdf_formats::readers::read_file_source::hf6afa43ae4a75f08  (in cdf-p3-lab) + 392  [0x1061b9054]
+                  + !     : |     1 cdf_formats::readers::read_file_source_bytes::h6e37a2c0e57af265  (in cdf-p3-lab) + 336  [0x1061baa48]
+                  + !     : |       1 _RNvNvNtCscEX5ZwinSox_3std2fs4read5inner  (in cdf-p3-lab) + 188  [0x106f25728]
+                  + !     : |         1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |           1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |             1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : 2 <deduplicated_symbol>  (in cdf-p3-lab) + 2768  [0x102326b28]
+                  + !     : | 1 cdf_engine::execution::apply_contract_exec::h934914b3bfe6c15a  (in cdf-p3-lab) + 7612  [0x10414caa4]
+                  + !     : | + 1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter_nested..SpecFromIterNested$LT$T$C$I$GT$$GT$::from_iter::h168d54d25556c60b  (in cdf-p3-lab) + 120  [0x104155488]
+                  + !     : | 1 cdf_engine::execution::apply_contract_exec::h934914b3bfe6c15a  (in cdf-p3-lab) + 8432  [0x10414cdd8]
+                  + !     : |   1 _$LT$alloc..collections..btree..map..BTreeMap$LT$K$C$V$C$A$GT$$u20$as$u20$core..ops..drop..Drop$GT$::drop::h75d2228efeeebf8e  (in cdf-p3-lab) + 172  [0x104182954]
+                  + !     : |     1 _xzm_free  (in libsystem_malloc.dylib) + 1240  [0x18ced3544]
+                  + !     : 1 <deduplicated_symbol>  (in cdf-p3-lab) + 4276  [0x10232710c]
+                  + !     :   1 cdf_engine::execution::PhaseMeasurements::start::h6df7261904c0eb3b  (in cdf-p3-lab) + 24  [0x10414a058]
+                  + !     :     1 _RNvMNtNtNtNtCscEX5ZwinSox_3std3sys3pal4unix4timeNtB2_8Timespec3now  (in cdf-p3-lab) + 24  [0x106f0b208]
+                  + !     :       1 clock_gettime  (in libsystem_c.dylib) + 60  [0x18cf52d60]
+                  + !     :         1 clock_gettime_nsec_np  (in libsystem_c.dylib) + 384  [0x18cf4515c]
+                  + !     :           1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x18d07210c]
+                  + !     398 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 11040  [0x10234ae50]
+                  + !     : 325 cdf_package::ops::update_package_status::h99fa8559196779d9  (in cdf-p3-lab) + 60  [0x105e0d508]
+                  + !     : | 324 cdf_package::ops::read_manifest::h58fc7cff0496b8d4  (in cdf-p3-lab) + 80  [0x105e0b724]
+                  + !     : | + 324 _RNvNvNtCscEX5ZwinSox_3std2fs4read5inner  (in cdf-p3-lab) + 188  [0x106f25728]
+                  + !     : | +   324 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : | +     324 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : | +       324 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : | 1 cdf_package::ops::read_manifest::h58fc7cff0496b8d4  (in cdf-p3-lab) + 332  [0x105e0b820]
+                  + !     : |   1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x18ced31cc]
+                  + !     : |     1 _platform_memset  (in libsystem_platform.dylib) + 160  [0x18d0bf130]
+                  + !     : 73 cdf_package::ops::update_package_status::h99fa8559196779d9  (in cdf-p3-lab) + 264  [0x105e0d5d4]
+                  + !     :   73 cdf_package::storage::write_manifest_atomic::h17253726ccad7960  (in cdf-p3-lab) + 92  [0x105de185c]
+                  + !     :     34 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :     + 34 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :     +   34 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :     +     34 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :     32 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :     + 31 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :     + ! 31 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :     + !   31 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :     + !     31 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :     + 1 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+                  + !     :     +   1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :     +     1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :     +       1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :     +         1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :     5 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :     + 5 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :     +   5 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :     +     5 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :     1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :     + 1 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :     +   1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :     +     1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :     +       1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :     +         1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :     1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     :       1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     :         1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     :           1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     156 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 340  [0x102348484]
+                  + !     : 76 cdf_package::builder::PackageBuilder::create::he055f4ec4a41844a  (in cdf-p3-lab) + 908  [0x10238446c]
+                  + !     : | 76 cdf_package::storage::write_manifest_atomic::h17253726ccad7960  (in cdf-p3-lab) + 92  [0x105de185c]
+                  + !     : |   33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     : |   + 29 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     : |   + ! 29 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   + !   29 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   + !     29 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   + 4 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+                  + !     : |   +   4 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |   +     4 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |   +       4 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |   +         4 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : |   28 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     : |   + 28 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   +   28 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   +     28 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   8 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     : |   + 8 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     : |   +   8 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     : |   +     8 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     : |   3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     : |   + 3 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     : |   +   3 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |   +     3 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |   +       3 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |   +         3 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : |   3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     : |   + 3 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     : |   +   3 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   +     3 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 700  [0x105ddf23c]
+                  + !     : |     1 close  (in libsystem_kernel.dylib) + 8  [0x18d0728f0]
+                  + !     : 64 cdf_package::builder::PackageBuilder::create::he055f4ec4a41844a  (in cdf-p3-lab) + 196  [0x1023841a4]
+                  + !     : | 34 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 1200  [0x105de0064]
+                  + !     : | + 34 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : | +   34 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : | +     34 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : | 8 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 1068  [0x105ddffe0]
+                  + !     : | + 8 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : | +   8 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : | +     8 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : | +       8 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : | 8 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 1320  [0x105de00dc]
+                  + !     : | + 7 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     : | + ! 7 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : | + !   7 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : | + !     7 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : | + 1 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+                  + !     : | +   1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : | +     1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : | +       1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : | +         1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : | 3 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 192  [0x105ddfc74]
+                  + !     : | + 3 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+                  + !     : | +   3 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+                  + !     : | 3 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 376  [0x105ddfd2c]
+                  + !     : | + 3 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+                  + !     : | +   3 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+                  + !     : | 3 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 468  [0x105ddfd88]
+                  + !     : | + 3 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+                  + !     : | +   3 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+                  + !     : | 2 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 68  [0x105ddfbf8]
+                  + !     : | + 2 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+                  + !     : | +   2 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+                  + !     : | 1 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 284  [0x105ddfcd0]
+                  + !     : | + 1 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+                  + !     : | +   1 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+                  + !     : | 1 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 560  [0x105ddfde4]
+                  + !     : | + 1 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+                  + !     : | +   1 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+                  + !     : | 1 cdf_package::storage::create_layout::hd414f45be976e3bb  (in cdf-p3-lab) + 652  [0x105ddfe40]
+                  + !     : |   1 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+                  + !     : |     1 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+                  + !     : 16 cdf_package::builder::PackageBuilder::create::he055f4ec4a41844a  (in cdf-p3-lab) + 240  [0x1023841d0]
+                  + !     :   3 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 536  [0x105de24b4]
+                  + !     :   + 2 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+                  + !     :   + ! 2 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+                  + !     :   + !   2 __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+                  + !     :   + !     2 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+                  + !     :   + !       2 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d072948]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :   +   1 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :   +     1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :   +       1 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :   +         1 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :   +           1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :   +             1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     :   3 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 932  [0x105de2640]
+                  + !     :   + 3 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+                  + !     :   +   3 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+                  + !     :   +     3 __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+                  + !     :   +       3 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+                  + !     :   +         3 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d072948]
+                  + !     :   2 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 272  [0x105de23ac]
+                  + !     :   + 2 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+                  + !     :   +   2 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+                  + !     :   +     2 __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+                  + !     :   +       2 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+                  + !     :   +         2 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d072948]
+                  + !     :   2 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 800  [0x105de25bc]
+                  + !     :   + 2 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+                  + !     :   +   2 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+                  + !     :   +     2 __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+                  + !     :   +       2 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+                  + !     :   +         2 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d072948]
+                  + !     :   2 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 1408  [0x105de281c]
+                  + !     :   + 2 core::iter::adapters::try_process::hd34aca2ca340a635  (in cdf-p3-lab) + 60  [0x105deae78]
+                  + !     :   +   2 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h58daeaaa885d09d4  (in cdf-p3-lab) + 108  [0x105e092a8]
+                  + !     :   +     2 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :   +       2 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   +         2 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   +           2 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   +             2 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   1 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 140  [0x105de2328]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+                  + !     :   +   1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+                  + !     :   +     1 __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+                  + !     :   +       1 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+                  + !     :   +         1 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d072948]
+                  + !     :   1 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 404  [0x105de2430]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :   +   1 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :   +     1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :   +       1 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :   +         1 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :   +           1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :   +             1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     :   1 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 668  [0x105de2538]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+                  + !     :   +   1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+                  + !     :   +     1 __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+                  + !     :   +       1 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+                  + !     :   +         1 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d072948]
+                  + !     :   1 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 1064  [0x105de26c4]
+                  + !     :     1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :       1 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :         1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :           1 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :             1 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :               1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :                 1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     97 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 1852  [0x102348a6c]
+                  + !     : 97 cdf_package::builder::PackageBuilder::write_json_artifact::h12a1afd102896ddc  (in cdf-p3-lab) + 92  [0x102382a8c]
+                  + !     :   80 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 148  [0x102383464]
+                  + !     :   | 36 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :   | + 36 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :   | +   36 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +     36 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +       36 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 31 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :   | + 31 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +   31 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +     31 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 5 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :   | + 5 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :   | +   5 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     5 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       5 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         5 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 5 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :   | + 5 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :   | +   5 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :   | +     5 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :   | 3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     :   |   3 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     :   |     3 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     :   |       3 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     :   17 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 180  [0x102383484]
+                  + !     :     17 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :       17 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :         17 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :           17 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :             17 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     97 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 10848  [0x10234ad90]
+                  + !     : 97 cdf_package::builder::PackageBuilder::write_lineage_artifact::hbf166f2ad54ab69a  (in cdf-p3-lab) + 116  [0x102383398]
+                  + !     :   86 cdf_package::builder::PackageBuilder::write_identity_artifact::h5e6e3285b5a1e70a  (in cdf-p3-lab) + 156  [0x1023835e8]
+                  + !     :   | 37 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :   | + 37 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +   37 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +     37 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 36 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :   | + 35 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :   | + ! 35 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | + !   35 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | + !     35 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | + 1 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+                  + !     :   | +   1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 7 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :   | + 7 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :   | +   7 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :   | +     7 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :   | 5 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :   | + 5 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :   | +   5 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     5 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       5 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         5 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     :   |   1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     :   |     1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     :   |       1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     :   11 cdf_package::builder::PackageBuilder::write_identity_artifact::h5e6e3285b5a1e70a  (in cdf-p3-lab) + 188  [0x102383608]
+                  + !     :     11 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :       11 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :         11 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :           11 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :             11 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     94 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 1636  [0x102348994]
+                  + !     : 84 cdf_package::ops::update_package_status::h99fa8559196779d9  (in cdf-p3-lab) + 264  [0x105e0d5d4]
+                  + !     : | 84 cdf_package::storage::write_manifest_atomic::h17253726ccad7960  (in cdf-p3-lab) + 92  [0x105de185c]
+                  + !     : |   38 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     : |   + 38 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     : |   +   38 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   +     38 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   +       38 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   34 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     : |   + 34 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   +   34 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   +     34 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   4 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     : |   + 4 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     : |   +   4 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |   +     4 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |   +       4 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |   +         4 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : |   4 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     : |   + 4 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     : |   +   4 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     : |   +     4 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     : |   3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     : |   + 3 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     : |   +   3 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     : |   +     3 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     : |   1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 700  [0x105ddf23c]
+                  + !     : |     1 close  (in libsystem_kernel.dylib) + 8  [0x18d0728f0]
+                  + !     : 10 cdf_package::ops::update_package_status::h99fa8559196779d9  (in cdf-p3-lab) + 60  [0x105e0d508]
+                  + !     :   10 cdf_package::ops::read_manifest::h58fc7cff0496b8d4  (in cdf-p3-lab) + 80  [0x105e0b724]
+                  + !     :     10 _RNvNvNtCscEX5ZwinSox_3std2fs4read5inner  (in cdf-p3-lab) + 188  [0x106f25728]
+                  + !     :       10 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :         10 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :           10 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     94 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 10048  [0x10234aa70]
+                  + !     : 94 cdf_package::builder::PackageBuilder::write_json_artifact::h9ccd0165a0a695c6  (in cdf-p3-lab) + 92  [0x102382d08]
+                  + !     :   78 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 148  [0x102383464]
+                  + !     :   | 33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :   | + 33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +   33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +     33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :   | + 30 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :   | + ! 30 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | + !   30 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | + !     30 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | + 3 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+                  + !     :   | +   3 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     3 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       3 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         3 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 9 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :   | + 8 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :   | + ! 8 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :   | + !   8 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :   | + 1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 88  [0x106f1f4a8]
+                  + !     :   | +   1 _RNvMs3_NtNtCsitGFVNq7Ifu_4core3ffi5c_strNtB5_4CStr19from_bytes_with_nul  (in cdf-p3-lab) + 40  [0x106f38d74]
+                  + !     :   | 2 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :   | + 2 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :   | +   2 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     2 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       2 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         2 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     :   |   1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     :   |     1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     :   |       1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     :   16 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 180  [0x102383484]
+                  + !     :     15 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :     + 15 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :     +   15 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :     +     15 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :     +       15 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :     1 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 56  [0x105de0960]
+                  + !     :       1 cdf_package::storage::package_path::h1914ef6722725119  (in cdf-p3-lab) + 64  [0x105ddf344]
+                  + !     :         1 _RNvMs16_NtCscEX5ZwinSox_3std4pathNtB6_4Path11to_path_buf  (in cdf-p3-lab) + 48  [0x106f0d5ac]
+                  + !     :           1 _xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib) + 312  [0x18ced800c]
+                  + !     92 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 10200  [0x10234ab08]
+                  + !     : 92 cdf_package::builder::PackageBuilder::write_stats_artifact::ha49630e4551395bb  (in cdf-p3-lab) + 116  [0x1023832ec]
+                  + !     :   77 cdf_package::builder::PackageBuilder::write_identity_artifact::h5e6e3285b5a1e70a  (in cdf-p3-lab) + 156  [0x1023835e8]
+                  + !     :   | 36 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :   | + 36 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +   36 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +     36 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :   | + 33 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :   | +   33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +     33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +       33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 6 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :   | + 6 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :   | +   6 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :   | +     6 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :   | 2 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :   |   2 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :   |     2 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   |       2 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   |         2 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   |           2 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   15 cdf_package::builder::PackageBuilder::write_identity_artifact::h5e6e3285b5a1e70a  (in cdf-p3-lab) + 188  [0x102383608]
+                  + !     :     14 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :     + 14 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :     +   14 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :     +     14 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :     +       14 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :     1 sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab) + 5304  [0x106978b68]
+                  + !     90 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 1960  [0x102348ad8]
+                  + !     : 90 cdf_package::builder::PackageBuilder::write_json_artifact::hfb8d790f133f5ddb  (in cdf-p3-lab) + 92  [0x102383200]
+                  + !     :   77 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 148  [0x102383464]
+                  + !     :   | 34 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :   | + 34 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +   34 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +     34 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 34 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :   | + 33 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :   | + ! 33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | + !   33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | + !     33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | + 1 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 320  [0x105de0568]
+                  + !     :   | +   1 close  (in libsystem_kernel.dylib) + 8  [0x18d0728f0]
+                  + !     :   | 5 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :   | + 5 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :   | +   5 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :   | +     5 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :   | 4 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :   |   4 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :   |     4 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   |       4 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   |         4 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   |           4 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   13 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 180  [0x102383484]
+                  + !     :     13 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :       13 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :         13 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :           13 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :             13 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     89 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 11364  [0x10234af94]
+                  + !     : 72 cdf_package::builder::PackageBuilder::finish_with_status::h0410beb244af46b0  (in cdf-p3-lab) + 1068  [0x105db1714]
+                  + !     : | 72 cdf_package::storage::write_manifest_atomic::h17253726ccad7960  (in cdf-p3-lab) + 92  [0x105de185c]
+                  + !     : |   32 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     : |   + 31 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     : |   + ! 31 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   + !   31 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   + !     31 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   + 1 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+                  + !     : |   +   1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |   +     1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |   +       1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |   +         1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : |   30 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     : |   + 30 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : |   +   30 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : |   +     30 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : |   7 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     : |   + 7 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     : |   +   7 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     : |   +     7 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     : |   3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     : |     3 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     : |       3 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |         3 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |           3 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |             3 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : 17 cdf_package::builder::PackageBuilder::finish_with_status::h0410beb244af46b0  (in cdf-p3-lab) + 68  [0x105db132c]
+                  + !     :   8 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 1408  [0x105de281c]
+                  + !     :   + 8 core::iter::adapters::try_process::hd34aca2ca340a635  (in cdf-p3-lab) + 60  [0x105deae78]
+                  + !     :   +   7 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h58daeaaa885d09d4  (in cdf-p3-lab) + 380  [0x105e093b8]
+                  + !     :   +   ! 4 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :   +   ! : 4 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   +   ! :   4 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   +   ! :     4 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   +   ! :       4 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   +   ! 2 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 340  [0x105de0a7c]
+                  + !     :   +   ! : 2 sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab) + 6804,7388  [0x106979144,0x10697938c]
+                  + !     :   +   ! 1 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 796  [0x105de0c44]
+                  + !     :   +   !   1 close  (in libsystem_kernel.dylib) + 8  [0x18d0728f0]
+                  + !     :   +   1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h58daeaaa885d09d4  (in cdf-p3-lab) + 108  [0x105e092a8]
+                  + !     :   +     1 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 340  [0x105de0a7c]
+                  + !     :   +       1 sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab) + 5272  [0x106978b48]
+                  + !     :   2 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 140  [0x105de2328]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :   + ! 1 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :   + !   1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :   + !     1 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :   + !       1 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :   + !         1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :   + !           1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 636  [0x105ddf880]
+                  + !     :   +   1 _RNvMsn_NtCsdBofyk9Yr2t_5alloc4syncINtB5_3ArcNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix12InnerReadDirE9drop_slowBO_  (in cdf-p3-lab) + 24  [0x106f1c010]
+                  + !     :   +     1 _RNvXsc_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_9DirStreamNtNtNtCsitGFVNq7Ifu_4core3ops4drop4Drop4drop  (in cdf-p3-lab) + 36  [0x106f28e38]
+                  + !     :   +       1 __close_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d073584]
+                  + !     :   2 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 800  [0x105de25bc]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+                  + !     :   + ! 1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+                  + !     :   + !   1 __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+                  + !     :   + !     1 open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+                  + !     :   + !       1 __open_nocancel  (in libsystem_kernel.dylib) + 8  [0x18d072948]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :   +   1 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :   +     1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :   +       1 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :   +         1 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :   +           1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :   +             1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     :   2 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 1064  [0x105de26c4]
+                  + !     :   + 2 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :   +   2 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :   +     2 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :   +       2 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :   +         2 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :   +           1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :   +           ! 1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     :   +           1 _readdir_unlocked  (in libsystem_c.dylib) + 328  [0x18cf95838]
+                  + !     :   1 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 220  [0x105de2378]
+                  + !     :   + 1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8metadata  (in cdf-p3-lab) + 140  [0x106f1f600]
+                  + !     :   +   1 stat  (in libsystem_kernel.dylib) + 8  [0x18d07d88c]
+                  + !     :   1 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 272  [0x105de23ac]
+                  + !     :   + 1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :   +   1 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :   +     1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :   +       1 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :   +         1 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :   +           1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :   +             1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     :   1 cdf_package::storage::collect_identity_file_entries::hf4d9b085fe451668  (in cdf-p3-lab) + 536  [0x105de24b4]
+                  + !     :     1 cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+                  + !     :       1 core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+                  + !     :         1 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+                  + !     :           1 _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+                  + !     :             1 readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+                  + !     :               1 _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+                  + !     :                 1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  + !     86 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 2064  [0x102348b40]
+                  + !     : 85 cdf_package::builder::PackageBuilder::write_json_artifact::hc00d9846af26963b  (in cdf-p3-lab) + 92  [0x102382eb0]
+                  + !     : | 76 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 148  [0x102383464]
+                  + !     : | + 33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     : | + ! 33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : | + !   33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : | + !     33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : | + 33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     : | + ! 33 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     : | + !   33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : | + !     33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : | + !       33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : | + 8 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     : | + ! 7 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     : | + ! : 7 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     : | + ! :   7 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     : | + ! 1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 0  [0x106f1f450]
+                  + !     : | + 2 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     : | +   2 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     : | +     2 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : | +       2 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : | +         2 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : | +           2 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : | 9 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 180  [0x102383484]
+                  + !     : |   9 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     : |     9 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : |       9 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : |         9 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : |           9 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : 1 cdf_package::builder::PackageBuilder::write_json_artifact::hc00d9846af26963b  (in cdf-p3-lab) + 52  [0x102382e88]
+                  + !     :   1 cdf_package::json::canonical_json_bytes::h2882480462aa9a79  (in cdf-p3-lab) + 40  [0x1023f7ec8]
+                  + !     :     1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..ValidationProgram$GT$::serialize::hadb3828f31809057  (in cdf-p3-lab) + 372  [0x102302dd8]
+                  + !     :       1 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::h8c704e2086cf24c5  (in cdf-p3-lab) + 328  [0x1023ee50c]
+                  + !     :         1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..SchemaVerdictRule$GT$::serialize::h12864daf1723f499  (in cdf-p3-lab) + 132  [0x102302be0]
+                  + !     :           1 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::hb8ac6c5d7692c7c3  (in cdf-p3-lab) + 160  [0x1023f1bec]
+                  + !     :             1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..SchemaChangeKind$GT$::serialize::h272f8d032e150fe3  (in cdf-p3-lab) + 164  [0x1023028d4]
+                  + !     86 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 9832  [0x10234a998]
+                  + !     : 86 cdf_package::builder::PackageBuilder::write_runtime_arrow_schema::h02981fb6bd3302e8  (in cdf-p3-lab) + 84  [0x105db22ec]
+                  + !     :   75 cdf_package::builder::PackageBuilder::write_identity_artifact::h6d2c265248b4f1bb  (in cdf-p3-lab) + 148  [0x105db2184]
+                  + !     :   | 36 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :   | + 33 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :   | + ! 33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | + !   33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | + !     33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | + 3 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+                  + !     :   | +   3 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     3 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       3 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         3 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :   | + 33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +   33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +     33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 4 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :   | + 4 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :   | +   4 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :   | +     4 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :   | 1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :   | + 1 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :   | +   1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     :   |   1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     :   |     1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     :   |       1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     :   11 cdf_package::builder::PackageBuilder::write_identity_artifact::h6d2c265248b4f1bb  (in cdf-p3-lab) + 184  [0x105db21a8]
+                  + !     :     11 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :       11 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :         11 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :           11 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :             11 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     85 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 7068  [0x102349ecc]
+                  + !     : 75 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 148  [0x102383464]
+                  + !     : | 35 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     : | + 35 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     : | +   35 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : | +     35 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : | +       35 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : | 34 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     : | + 34 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     : | +   34 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     : | +     34 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     : | 3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     : | + 3 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     : | +   3 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     : | +     3 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     : | +       3 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     : | +         3 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     : | 3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     : |   3 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     : |     3 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     : |       3 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     : 10 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 180  [0x102383484]
+                  + !     :   10 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :     10 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :       10 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :         10 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :           10 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     82 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 9708  [0x10234a91c]
+                  + !     : 82 cdf_package::builder::PackageBuilder::write_json_artifact::hecf44293fe9a4bf5  (in cdf-p3-lab) + 92  [0x10238312c]
+                  + !     :   72 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 148  [0x102383464]
+                  + !     :   | 34 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+                  + !     :   | + 34 cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+                  + !     :   | +   34 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +     34 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +       34 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 33 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+                  + !     :   | + 33 _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+                  + !     :   | +   33 fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+                  + !     :   | +     33 __fcntl  (in libsystem_kernel.dylib) + 8  [0x18d0728c4]
+                  + !     :   | 3 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+                  + !     :   | + 3 _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+                  + !     :   | +   3 rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+                  + !     :   | +     3 __rename  (in libsystem_kernel.dylib) + 8  [0x18d07588c]
+                  + !     :   | 1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+                  + !     :   | + 1 cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+                  + !     :   | +   1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :   | +     1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :   | +       1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :   | +         1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     :   | 1 cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+                  + !     :   |   1 std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+                  + !     :   |     1 _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+                  + !     :   |       1 write  (in libsystem_kernel.dylib) + 8  [0x18d075834]
+                  + !     :   10 cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 180  [0x102383484]
+                  + !     :     10 cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+                  + !     :       10 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !     :         10 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !     :           10 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !     :             10 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + !     4 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 7008  [0x102349e90]
+                  + !     : 3 cdf_package::json::canonical_json_bytes::h2882480462aa9a79  (in cdf-p3-lab) + 40  [0x1023f7ec8]
+                  + !     : | 2 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..ValidationProgram$GT$::serialize::hadb3828f31809057  (in cdf-p3-lab) + 400  [0x102302df4]
+                  + !     : | + 2 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::hac51b045b657c8b5  (in cdf-p3-lab) + 332  [0x1023f0418]
+                  + !     : | +   1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..ColumnProgram$GT$::serialize::hf2415220de30f6c1  (in cdf-p3-lab) + 188  [0x102301db0]
+                  + !     : | +   ! 1 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::ha9b01b66f9f6b37f  (in cdf-p3-lab) + 160  [0x1023efb48]
+                  + !     : | +   !   1 cdf_contract::schema::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..schema..ArrowType$GT$::serialize::h03fab9a7df2957bc  (in cdf-p3-lab) + 620  [0x1023ce890]
+                  + !     : | +   1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..ColumnProgram$GT$::serialize::hf2415220de30f6c1  (in cdf-p3-lab) + 216  [0x102301dcc]
+                  + !     : | +     1 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::hb840c7f5e69d5089  (in cdf-p3-lab) + 168  [0x1023f18ac]
+                  + !     : | +       1 _$LT$serde_json..value..ser..Serializer$u20$as$u20$serde_core..ser..Serializer$GT$::serialize_seq::h9f55864f8e89d3ed  (in cdf-p3-lab) + 0  [0x106ed709c]
+                  + !     : | 1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..ValidationProgram$GT$::serialize::hadb3828f31809057  (in cdf-p3-lab) + 344  [0x102302dbc]
+                  + !     : |   1 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::hd94e5f3c60a52c9e  (in cdf-p3-lab) + 192  [0x1023f3f98]
+                  + !     : |     1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..ResidualProgram$GT$::serialize::hbec5076aae4d0c2f  (in cdf-p3-lab) + 212  [0x102302188]
+                  + !     : |       1 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::he0163ab863ca9761  (in cdf-p3-lab) + 332  [0x1023f49cc]
+                  + !     : |         1 cdf_contract::program::_::_$LT$impl$u20$serde_core..ser..Serialize$u20$for$u20$cdf_contract..program..ResidualFieldProgram$GT$::serialize::hd23f786dee3c5b3e  (in cdf-p3-lab) + 160  [0x1023015a4]
+                  + !     : |           1 _$LT$serde_json..value..ser..SerializeMap$u20$as$u20$serde_core..ser..SerializeStruct$GT$::serialize_field::hcb0c5fb65dcdaa92  (in cdf-p3-lab) + 256  [0x1023f2c84]
+                  + !     : |             1 _malloc_zone_malloc  (in libsystem_malloc.dylib) + 12  [0x18cee2044]
+                  + !     : 1 cdf_package::json::canonical_json_bytes::h2882480462aa9a79  (in cdf-p3-lab) + 172  [0x1023f7f4c]
+                  + !     :   1 cdf_package::json::write_canonical_value::hb25395add932d367  (in cdf-p3-lab) + 852  [0x105dfa9f8]
+                  + !     :     1 cdf_package::json::write_canonical_value::hb25395add932d367  (in cdf-p3-lab) + 260  [0x105dfa7a8]
+                  + !     :       1 cdf_package::json::write_canonical_value::hb25395add932d367  (in cdf-p3-lab) + 944  [0x105dfaa54]
+                  + !     :         1 cdf_package::json::write_canonical_string::hfa133f14f0a00c7f  (in cdf-p3-lab) + 104  [0x105dfb038]
+                  + !     :           1 serde_json::ser::format_escaped_str::h28a4451c3682bd58  (in cdf-p3-lab) + 476  [0x105e236a0]
+                  + !     :             1 _platform_memmove  (in libsystem_platform.dylib) + 452  [0x18d0bf524]
+                  + !     1 cdf_engine::execution::execute_to_package_inner::_$u7b$$u7b$closure$u7d$$u7d$::h29f33f0ee673f3e4  (in cdf-p3-lab) + 10144  [0x10234aad0]
+                  + !       1 cdf_package::json::canonical_json_bytes::h046653b84a3fb6fd  (in cdf-p3-lab) + 172  [0x1023f7b80]
+                  + !         1 cdf_package::json::write_canonical_value::hb25395add932d367  (in cdf-p3-lab) + 852  [0x105dfa9f8]
+                  + !           1 cdf_package::json::write_canonical_value::hb25395add932d367  (in cdf-p3-lab) + 564  [0x105dfa8d8]
+                  + !             1 _$LT$serde_json..number..Number$u20$as$u20$core..fmt..Display$GT$::fmt::h9fd75adc628c494f  (in cdf-p3-lab) + 160  [0x106ed5fd0]
+                  + !               1 _RNvMsa_NtCsitGFVNq7Ifu_4core3fmtNtB5_9Formatter9write_str  (in cdf-p3-lab) + 0  [0x106f3b484]
+                  + 29 cdf_benchmarks::runners::run_prepared_file_to_package::h88e89e89cb48d8d9  (in cdf-p3-lab) + 840  [0x1023be5f4]
+                  + ! 29 cdf_formats::resource::FileResource::new::hcbba8f87d8e27acd  (in cdf-p3-lab) + 48  [0x1061e6cc0]
+                  + !   23 cdf_formats::readers::read_file_source::hf6afa43ae4a75f08  (in cdf-p3-lab) + 444  [0x1061b9088]
+                  + !   : 20 cdf_formats::readers::read_ndjson_bytes_with_scope::h83cce61f2687334b  (in cdf-p3-lab) + 72  [0x1061bca6c]
+                  + !   : | 11 arrow_json::reader::schema::infer_json_schema::hb97142abbee35278  (in cdf-p3-lab) + 172  [0x1061fa0cc]
+                  + !   : | + 10 _$LT$arrow_json..reader..value_iter..ValueIter$LT$R$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::next::h742f95af198ecbed  (in cdf-p3-lab) + 140  [0x1061f19b4]
+                  + !   : | + ! 10 serde_json::de::from_trait::hc60c75758c9abd09  (in cdf-p3-lab) + 68  [0x1061f1f14]
+                  + !   : | + !   5 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 2716  [0x1061f375c]
+                  + !   : | + !   : 3 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h33df1948e035a68a  (in cdf-p3-lab) + 1008  [0x1061dd8b0]
+                  + !   : | + !   : | 2 hashbrown::raw::RawTable$LT$T$C$A$GT$::reserve_rehash::h4d7e2bcb186afb20  (in cdf-p3-lab) + 1008  [0x106fec91c]
+                  + !   : | + !   : | + 1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x18ced3484]
+                  + !   : | + !   : | + ! 1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x18d07210c]
+                  + !   : | + !   : | + 1 _xzm_free  (in libsystem_malloc.dylib) + 684  [0x18ced3318]
+                  + !   : | + !   : | 1 hashbrown::raw::RawTable$LT$T$C$A$GT$::reserve_rehash::h4d7e2bcb186afb20  (in cdf-p3-lab) + 72  [0x106fec574]
+                  + !   : | + !   : 2 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h33df1948e035a68a  (in cdf-p3-lab) + 940  [0x1061dd86c]
+                  + !   : | + !   :   2 alloc::raw_vec::RawVecInner$LT$A$GT$::finish_grow::hea6ef1f0729172a9  (in cdf-p3-lab) + 92  [0x106fcd9fc]
+                  + !   : | + !   :     2 _realloc  (in libsystem_malloc.dylib) + 452  [0x18cee2e90]
+                  + !   : | + !   :       2 _malloc_zone_realloc  (in libsystem_malloc.dylib) + 148  [0x18cee2674]
+                  + !   : | + !   :         2 xzm_realloc  (in libsystem_malloc.dylib) + 876  [0x18ced2e60]
+                  + !   : | + !   :           1 _xzm_free  (in libsystem_malloc.dylib) + 352  [0x18ced31cc]
+                  + !   : | + !   :           + 1 _platform_memset  (in libsystem_platform.dylib) + 140  [0x18d0bf11c]
+                  + !   : | + !   :           1 _xzm_free  (in libsystem_malloc.dylib) + 684  [0x18ced3318]
+                  + !   : | + !   2 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 2540  [0x1061f36ac]
+                  + !   : | + !   : 2 serde_core::de::impls::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$alloc..string..String$GT$::deserialize::h80d53d8add55907f  (in cdf-p3-lab) + 152  [0x1061fa484]
+                  + !   : | + !   :   2 _platform_memmove  (in libsystem_platform.dylib) + 12,428  [0x18d0bf36c,0x18d0bf50c]
+                  + !   : | + !   1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h33df1948e035a68a  (in cdf-p3-lab) + 776  [0x1061dd7c8]
+                  + !   : | + !   1 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 2352  [0x1061f35f0]
+                  + !   : | + !   : 1 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 1164  [0x1061f314c]
+                  + !   : | + !   :   1 serde_json::de::Deserializer$LT$R$GT$::parse_integer::h09624b455ad58cfd  (in cdf-p3-lab) + 108  [0x1061f25cc]
+                  + !   : | + !   1 serde_json::value::de::_$LT$impl$u20$serde_core..de..Deserialize$u20$for$u20$serde_json..value..Value$GT$::deserialize::h4de6717cbb70e132  (in cdf-p3-lab) + 2588  [0x1061f36dc]
+                  + !   : | + 1 _$LT$arrow_json..reader..value_iter..ValueIter$LT$R$GT$$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::next::h742f95af198ecbed  (in cdf-p3-lab) + 12  [0x1061f1934]
+                  + !   : | 7 arrow_json::reader::schema::infer_json_schema::hb97142abbee35278  (in cdf-p3-lab) + 256  [0x1061fa120]
+                  + !   : | + 7 arrow_json::reader::schema::collect_field_types_from_object::ha444485e91a9204b  (in cdf-p3-lab) + 156  [0x10634f7d4]
+                  + !   : | +   2 arrow_json::reader::schema::set_object_scalar_field_type::he34512e77a57ccbb  (in cdf-p3-lab) + 68  [0x10634f3d8]
+                  + !   : | +   ! 2 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::get_index_of::h8533d7da2b90d3bb  (in cdf-p3-lab) + 76  [0x106371ae0]
+                  + !   : | +   !   1 core::hash::BuildHasher::hash_one::h33b4f72a186190aa  (in cdf-p3-lab) + 96  [0x10636fdcc]
+                  + !   : | +   !   : 1 _$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::hb420b8cda88b41d6  (in cdf-p3-lab) + 124  [0x1063705d0]
+                  + !   : | +   !   1 core::hash::BuildHasher::hash_one::h33b4f72a186190aa  (in cdf-p3-lab) + 280  [0x10636fe84]
+                  + !   : | +   2 arrow_json::reader::schema::set_object_scalar_field_type::he34512e77a57ccbb  (in cdf-p3-lab) + 364  [0x10634f500]
+                  + !   : | +   ! 1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::get_index_of::h8533d7da2b90d3bb  (in cdf-p3-lab) + 76  [0x106371ae0]
+                  + !   : | +   ! : 1 core::hash::BuildHasher::hash_one::h33b4f72a186190aa  (in cdf-p3-lab) + 60  [0x10636fda8]
+                  + !   : | +   ! 1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::get_index_of::h8533d7da2b90d3bb  (in cdf-p3-lab) + 116  [0x106371b08]
+                  + !   : | +   2 arrow_json::reader::schema::set_object_scalar_field_type::he34512e77a57ccbb  (in cdf-p3-lab) + 628  [0x10634f608]
+                  + !   : | +   ! 2 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::insert_full::h6db23921e87b5d82  (in cdf-p3-lab) + 328,600  [0x106371214,0x106371324]
+                  + !   : | +   1 indexmap::map::IndexMap$LT$K$C$V$C$S$GT$::get_index_of::h8533d7da2b90d3bb  (in cdf-p3-lab) + 368  [0x106371c04]
+                  + !   : | 2 arrow_json::reader::schema::infer_json_schema::hb97142abbee35278  (in cdf-p3-lab) + 280  [0x1061fa138]
+                  + !   : |   1 _xzm_free  (in libsystem_malloc.dylib) + 868  [0x18ced33d0]
+                  + !   : |   1 core::ptr::drop_in_place$LT$serde_json..value..Value$GT$::hae67af64cc43de7f  (in cdf-p3-lab) + 188  [0x1061fad30]
+                  + !   : |     1 _$LT$alloc..vec..Vec$LT$T$C$A$GT$$u20$as$u20$core..ops..drop..Drop$GT$::drop::hd3020f62a85acb8c  (in cdf-p3-lab) + 72  [0x1061d6cc8]
+                  + !   : |       1 _xzm_free  (in libsystem_malloc.dylib) + 1048  [0x18ced3484]
+                  + !   : |         1 mach_absolute_time  (in libsystem_kernel.dylib) + 108  [0x18d07210c]
+                  + !   : 3 cdf_formats::readers::read_ndjson_bytes_with_scope::h83cce61f2687334b  (in cdf-p3-lab) + 572  [0x1061bcc60]
+                  + !   :   3 core::iter::adapters::try_process::h719d558b499f81c8  (in cdf-p3-lab) + 40  [0x1061fcfb8]
+                  + !   :     3 _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h1e3ef4a0203c503f  (in cdf-p3-lab) + 348  [0x1061d72c8]
+                  + !   :       2 _$LT$$RF$mut$u20$I$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::try_fold::h1eb6bd3419d8dd57  (in cdf-p3-lab) + 120  [0x1061ea0dc]
+                  + !   :       + 2 arrow_json::reader::tape::TapeDecoder::decode::h41c2469ad76a1f67  (in cdf-p3-lab) + 640,2296  [0x106349d28,0x10634a3a0]
+                  + !   :       1 _$LT$$RF$mut$u20$I$u20$as$u20$core..iter..traits..iterator..Iterator$GT$::try_fold::h1eb6bd3419d8dd57  (in cdf-p3-lab) + 164  [0x1061ea108]
+                  + !   :         1 arrow_json::reader::Decoder::flush::h287a0c41f9033abf  (in cdf-p3-lab) + 660  [0x106359818]
+                  + !   :           1 _$LT$arrow_schema..datatype..DataType$u20$as$u20$core..clone..Clone$GT$::clone::hb8022ccdb4c05697  (in cdf-p3-lab) + 132  [0x10635bc9c]
+                  + !   6 cdf_formats::readers::read_file_source::hf6afa43ae4a75f08  (in cdf-p3-lab) + 80  [0x1061b8f1c]
+                  + !     4 cdf_formats::readers::file_source_position::h1381169069b881d4  (in cdf-p3-lab) + 516  [0x1061ba570]
+                  + !     | 3 sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab) + 5588,6060,...  [0x106978c84,0x106978e5c,...]
+                  + !     | 1 std::io::copy::stack_buffer_copy::h2f98b682a3f0da9e  (in cdf-p3-lab) + 404  [0x1061d96d0]
+                  + !     |   1 _RNvXsa_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io4Read8read_buf  (in cdf-p3-lab) + 52  [0x106f28a00]
+                  + !     |     1 read  (in libsystem_kernel.dylib) + 8  [0x18d07291c]
+                  + !     1 cdf_formats::readers::file_source_position::h1381169069b881d4  (in cdf-p3-lab) + 52  [0x1061ba3a0]
+                  + !     | 1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8metadata  (in cdf-p3-lab) + 140  [0x106f1f600]
+                  + !     |   1 stat  (in libsystem_kernel.dylib) + 8  [0x18d07d88c]
+                  + !     1 cdf_formats::readers::file_source_position::h1381169069b881d4  (in cdf-p3-lab) + 280  [0x1061ba484]
+                  + !       1 _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+                  + !         1 _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+                  + !           1 open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+                  + !             1 __open  (in libsystem_kernel.dylib) + 8  [0x18d072694]
+                  + 1 cdf_benchmarks::runners::run_prepared_file_to_package::h88e89e89cb48d8d9  (in cdf-p3-lab) + 1328  [0x1023be7dc]
+                  +   1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs8metadata  (in cdf-p3-lab) + 140  [0x106f1f600]
+                  +     1 stat  (in libsystem_kernel.dylib) + 8  [0x18d07d88c]
+                  53 cdf_p3_lab::run::h0db9a917a5752f9c  (in cdf-p3-lab) + 6840  [0x1022a94b0]
+                  + 53 core::ptr::drop_in_place$LT$tempfile..dir..TempDir$GT$::ha9ffcbd49accfba7  (in cdf-p3-lab) + 20  [0x1022aa848]
+                  +   53 _$LT$tempfile..dir..TempDir$u20$as$u20$core..ops..drop..Drop$GT$::drop::h1838725c40d458fe  (in cdf-p3-lab) + 28  [0x105e2ed50]
+                  +     52 _RNvNtNtCscEX5ZwinSox_3std3sys2fs14remove_dir_all  (in cdf-p3-lab) + 220  [0x106f1f2ec]
+                  +     ! 47 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 348  [0x106f233b4]
+                  +     ! : 41 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 348  [0x106f233b4]
+                  +     ! : | 20 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 436  [0x106f2340c]
+                  +     ! : | + 20 unlinkat  (in libsystem_kernel.dylib) + 16  [0x18d07bad0]
+                  +     ! : | +   20 __unlinkat  (in libsystem_kernel.dylib) + 8  [0x18d07baf4]
+                  +     ! : | 17 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 736  [0x106f23538]
+                  +     ! : | + 17 unlinkat  (in libsystem_kernel.dylib) + 16  [0x18d07bad0]
+                  +     ! : | +   17 __unlinkat  (in libsystem_kernel.dylib) + 8  [0x18d07baf4]
+                  +     ! : | 3 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 80  [0x106f232a8]
+                  +     ! : | + 3 openat  (in libsystem_kernel.dylib) + 76  [0x18d08e1d8]
+                  +     ! : | +   3 __openat  (in libsystem_kernel.dylib) + 8  [0x18d0735b0]
+                  +     ! : | 1 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 176  [0x106f23308]
+                  +     ! : |   1 fdopendir  (in libsystem_c.dylib) + 128  [0x18cf94e24]
+                  +     ! : |     1 __opendir_common  (in libsystem_c.dylib) + 332  [0x18cf4a814]
+                  +     ! : |       1 fstatfs  (in libsystem_kernel.dylib) + 8  [0x18d07d980]
+                  +     ! : 3 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 436  [0x106f2340c]
+                  +     ! : | 3 unlinkat  (in libsystem_kernel.dylib) + 16  [0x18d07bad0]
+                  +     ! : |   3 __unlinkat  (in libsystem_kernel.dylib) + 8  [0x18d07baf4]
+                  +     ! : 2 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 736  [0x106f23538]
+                  +     ! : | 2 unlinkat  (in libsystem_kernel.dylib) + 16  [0x18d07bad0]
+                  +     ! : |   2 __unlinkat  (in libsystem_kernel.dylib) + 8  [0x18d07baf4]
+                  +     ! : 1 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 176  [0x106f23308]
+                  +     ! :   1 fdopendir  (in libsystem_c.dylib) + 128  [0x18cf94e24]
+                  +     ! :     1 __opendir_common  (in libsystem_c.dylib) + 224  [0x18cf4a7a8]
+                  +     ! :       1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  +     ! 3 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 80  [0x106f232a8]
+                  +     ! : 3 openat  (in libsystem_kernel.dylib) + 76  [0x18d08e1d8]
+                  +     ! :   3 __openat  (in libsystem_kernel.dylib) + 8  [0x18d0735b0]
+                  +     ! 1 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 176  [0x106f23308]
+                  +     ! : 1 fdopendir  (in libsystem_c.dylib) + 128  [0x18cf94e24]
+                  +     ! :   1 __opendir_common  (in libsystem_c.dylib) + 224  [0x18cf4a7a8]
+                  +     ! :     1 __getdirentries64  (in libsystem_kernel.dylib) + 8  [0x18d0739c4]
+                  +     ! 1 _RNvNtNtNtNtCscEX5ZwinSox_3std3sys2fs4unix15remove_dir_impl24remove_dir_all_recursive  (in cdf-p3-lab) + 736  [0x106f23538]
+                  +     !   1 unlinkat  (in libsystem_kernel.dylib) + 16  [0x18d07bad0]
+                  +     !     1 __unlinkat  (in libsystem_kernel.dylib) + 8  [0x18d07baf4]
+                  +     1 _RNvNtNtCscEX5ZwinSox_3std3sys2fs14remove_dir_all  (in cdf-p3-lab) + 136  [0x106f1f298]
+                  +       1 lstat  (in libsystem_kernel.dylib) + 8  [0x18d07d860]
+                  3 cdf_p3_lab::run::h0db9a917a5752f9c  (in cdf-p3-lab) + 6644  [0x1022a93ec]
+                    3 tempfile::util::create_helper::hfc10b9894b8d137f  (in cdf-p3-lab) + 540  [0x1022b4b8c]
+                      3 tempfile::dir::imp::unix::create::haee1678b0da614f2  (in cdf-p3-lab) + 72  [0x105e2f1a8]
+                        3 _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 1100  [0x106f13010]
+                          3 mkdir  (in libsystem_kernel.dylib) + 8  [0x18d073788]
+
+Total number in stack (recursive counted multiple, when >=5):
+        38       _RNvMsi_NtNtNtCscEX5ZwinSox_3std3sys2fs4unixNtB5_4File6open_c  (in cdf-p3-lab) + 268  [0x106f19f50]
+        38       __open  (in libsystem_kernel.dylib) + 0  [0x18d07268c]
+        38       open  (in libsystem_kernel.dylib) + 64  [0x18d07d8f0]
+        35       _RNvMsl_NtCscEX5ZwinSox_3std2fsNtB5_11OpenOptions5__open  (in cdf-p3-lab) + 148  [0x106f1bc54]
+        30       _RNvMs2_NtCscEX5ZwinSox_3std2fsNtB5_4File8sync_all  (in cdf-p3-lab) + 40  [0x106f0f33c]
+        30       __fcntl  (in libsystem_kernel.dylib) + 0  [0x18d0728bc]
+        30       fcntl  (in libsystem_kernel.dylib) + 88  [0x18d07276c]
+        16       _RNvXsb_NtCscEX5ZwinSox_3std2fsNtB5_4FileNtNtB7_2io5Write5write  (in cdf-p3-lab) + 32  [0x106f28c3c]
+        16       write  (in libsystem_kernel.dylib) + 0  [0x18d07582c]
+        15       cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 216  [0x105de0500]
+        14       _RNvNtNtCscEX5ZwinSox_3std3sys2fs6rename  (in cdf-p3-lab) + 204  [0x106f1f51c]
+        14       __rename  (in libsystem_kernel.dylib) + 0  [0x18d075884]
+        14       cdf_package::storage::create_temp_sibling::h02be7695595d091e  (in cdf-p3-lab) + 476  [0x105de07a0]
+        14       rename  (in libsystem_kernel.dylib) + 16  [0x18d075868]
+        13       cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 268  [0x105ddf08c]
+        13       cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 416  [0x105ddf120]
+        13       cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 512  [0x105ddf180]
+        13       cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 692  [0x105ddf234]
+        12       cdf_package::storage::file_entry_for_path::hef937be416e989d6  (in cdf-p3-lab) + 108  [0x105de0994]
+        11       std::io::Write::write_all::h9de0bd2f21a36d9b  (in cdf-p3-lab) + 80  [0x105db48fc]
+        10       __getdirentries64  (in libsystem_kernel.dylib) + 0  [0x18d0739bc]
+        8       _$LT$alloc..vec..Vec$LT$T$GT$$u20$as$u20$alloc..vec..spec_from_iter..SpecFromIter$LT$T$C$I$GT$$GT$::from_iter::h334de0ff98dbc898  (in cdf-p3-lab) + 64  [0x105e08db4]
+        8       _RNvXsB_NtCscEX5ZwinSox_3std2fsNtB5_7ReadDirNtNtNtNtCsitGFVNq7Ifu_4core4iter6traits8iterator8Iterator4next  (in cdf-p3-lab) + 100  [0x106f27eb4]
+        8       _readdir_unlocked  (in libsystem_c.dylib) + 224  [0x18cf957d0]
+        8       cdf_package::storage::atomic_write::h90e3b80af48ae013  (in cdf-p3-lab) + 308  [0x105ddf0b4]
+        8       cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 212  [0x105ddf6d8]
+        8       core::iter::adapters::try_process::hab00ca28de8256f1  (in cdf-p3-lab) + 52  [0x105dead14]
+        8       mkdir  (in libsystem_kernel.dylib) + 0  [0x18d073780]
+        8       readdir_r  (in libsystem_c.dylib) + 72  [0x18cf9592c]
+        7       _RNvMsF_NtCscEX5ZwinSox_3std2fsNtB5_10DirBuilder7__create  (in cdf-p3-lab) + 812  [0x106f12ef0]
+        7       _RNvNtNtCscEX5ZwinSox_3std3sys2fs8read_dir  (in cdf-p3-lab) + 120  [0x106f1f714]
+        7       __open_nocancel  (in libsystem_kernel.dylib) + 0  [0x18d072940]
+        7       __opendir2  (in libsystem_c.dylib) + 44  [0x18cf94d50]
+        7       cdf_package::storage::collect_files::hbf5659f0f904f9f0  (in cdf-p3-lab) + 80  [0x105ddf654]
+        7       cdf_package::storage::sync_directory::hd988bf8d9e6116e0  (in cdf-p3-lab) + 84  [0x105de047c]
+        7       close  (in libsystem_kernel.dylib) + 0  [0x18d0728e8]
+        7       open$NOCANCEL  (in libsystem_kernel.dylib) + 64  [0x18d086c34]
+        6       cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 148  [0x102383464]
+        6       cdf_package::builder::PackageBuilder::write_identity_artifact::h08091b9e18496dd4  (in cdf-p3-lab) + 180  [0x102383484]
+        6       sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab) + 0  [0x1069776b0]
+        5       __unlinkat  (in libsystem_kernel.dylib) + 0  [0x18d07baec]
+        5       _xzm_free  (in libsystem_malloc.dylib) + 0  [0x18ced306c]
+        5       unlinkat  (in libsystem_kernel.dylib) + 16  [0x18d07bad0]
+
+Sort by top of stack, same collapsed (when >= 5):
+        __fcntl  (in libsystem_kernel.dylib)        1175
+        __open  (in libsystem_kernel.dylib)        642
+        __rename  (in libsystem_kernel.dylib)        88
+        __unlinkat  (in libsystem_kernel.dylib)        43
+        write  (in libsystem_kernel.dylib)        25
+        mkdir  (in libsystem_kernel.dylib)        17
+        sha2::sha256::compress256::hebe99fa6e9618c09  (in cdf-p3-lab)        13
+        __open_nocancel  (in libsystem_kernel.dylib)        12
+        __getdirentries64  (in libsystem_kernel.dylib)        10
+        close  (in libsystem_kernel.dylib)        7
+        __openat  (in libsystem_kernel.dylib)        6
+        _$LT$core..hash..sip..Hasher$LT$S$GT$$u20$as$u20$core..hash..Hasher$GT$::write::hb420b8cda88b41d6  (in cdf-p3-lab)        5
+        _platform_memmove  (in libsystem_platform.dylib)        5
+        _xzm_free  (in libsystem_malloc.dylib)        5
+
+Binary Images:
+       0x102270000 -        0x1081a0a27 +cdf-p3-lab (0) <436FF769-E825-33D9-ADD8-58E52328C5F0> /Users/*/cdf-p3-lab
+       0x18cc50000 -        0x18cca2b4b  libobjc.A.dylib (951.7) <FF1D8AE4-ABEF-35F1-A30A-1183B9CB414F> /usr/lib/libobjc.A.dylib
+       0x18cca3000 -        0x18ccd7d07  libdyld.dylib (1378) <B147D877-D0C2-388F-B38D-D3132E39905F> /usr/lib/system/libdyld.dylib
+       0x18ccd8000 -        0x18cd7e217  dyld (1.0.0 - 1378) <A237EF81-B68B-37BA-A165-92C965529534> /usr/lib/dyld
+       0x18cd7f000 -        0x18cd82228  libsystem_blocks.dylib (96) <CC947089-488D-316B-A9C7-46DEC0F73145> /usr/lib/system/libsystem_blocks.dylib
+       0x18cd83000 -        0x18cdd755f  libxpc.dylib (3102.120.13) <C40FCAE8-7A17-3D82-87CB-3DA4802ADEF1> /usr/lib/system/libxpc.dylib
+       0x18cdd8000 -        0x18cdf89ff  libsystem_trace.dylib (1861.120.4) <D0FABAB3-5AE7-3F10-8C62-60CBF5D70850> /usr/lib/system/libsystem_trace.dylib
+       0x18cdf9000 -        0x18cea75f7  libcorecrypto.dylib (1922.121.1) <A01A158D-6FE7-3B1C-A2C4-6BCB90D7314A> /usr/lib/system/libcorecrypto.dylib
+       0x18cea8000 -        0x18cef81d7  libsystem_malloc.dylib (812.100.31) <5FAE4807-4D2B-3A95-A63A-DD96D3DA11B4> /usr/lib/system/libsystem_malloc.dylib
+       0x18cef9000 -        0x18cf4023f  libdispatch.dylib (1542.100.32) <F071EFE4-299F-3089-ACC4-0025B8FFB52A> /usr/lib/system/libdispatch.dylib
+       0x18cf41000 -        0x18cf43ffb  libsystem_featureflags.dylib (103) <71FCFFBD-85F8-3365-AFE0-BECEA4369122> /usr/lib/system/libsystem_featureflags.dylib
+       0x18cf44000 -        0x18cfc4d9f  libsystem_c.dylib (1752.120.2) <694B7881-1BF3-3D0F-8F19-B50AE4E8EF8A> /usr/lib/system/libsystem_c.dylib
+       0x18cfc5000 -        0x18d055ae7  libc++.1.dylib (2100.43) <5013C0F8-84A9-3B56-9FEB-C353816A750F> /usr/lib/libc++.1.dylib
+       0x18d056000 -        0x18d07075f  libc++abi.dylib (2100.43) <E482D257-E5A0-3816-BD97-7B39342958DA> /usr/lib/libc++abi.dylib
+       0x18d071000 -        0x18d0ae2af  libsystem_kernel.dylib (12377.121.6) <CC1CF985-BC65-3725-809F-4C1E36B8F4BA> /usr/lib/system/libsystem_kernel.dylib
+       0x18d0af000 -        0x18d0bbb3b  libsystem_pthread.dylib (539.100.4) <4F33683C-18C8-39A1-800B-2E3BD43BCC13> /usr/lib/system/libsystem_pthread.dylib
+       0x18d0bc000 -        0x18d0c4963  libsystem_platform.dylib (375.120.2) <160FD864-8D15-36FC-9E97-9725388CFAFE> /usr/lib/system/libsystem_platform.dylib
+       0x18d0c5000 -        0x18d0f46eb  libsystem_info.dylib (600) <3D62F2D9-F516-31BF-83C7-E203D872300B> /usr/lib/system/libsystem_info.dylib
+       0x18d0f5000 -        0x18d65331f  com.apple.CoreFoundation (6.9 - 5026.5.4) <04E3598B-F226-3250-B3B2-CE938DD4DB7E> /System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation
+       0x18d654000 -        0x18d96ebff  com.apple.LaunchServices (1141.1 - 1141.1) <F32798D4-CA63-3935-B694-F45DAFFE5655> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/LaunchServices
+       0x18d96f000 -        0x18db579bf  com.apple.gpusw.MetalTools (1.0 - 1) <2C2180C9-E027-3712-BED5-73645D651BFD> /System/Library/PrivateFrameworks/MetalTools.framework/Versions/A/MetalTools
+       0x18db58000 -        0x18e3524bf  libBLAS.dylib (1551.100.26) <F078C775-D8DC-3C4D-879F-A9BB228DBE06> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib
+       0x18e353000 -        0x18e46235f  com.apple.Lexicon-framework (1.0 - 195.12) <16E3C45A-3C24-33D7-AD1C-1F6A215E57E7> /System/Library/PrivateFrameworks/Lexicon.framework/Versions/A/Lexicon
+       0x18e463000 -        0x18e5d0417  libSparse.dylib (184.80.2) <C479DB8D-CF22-336C-B455-0CF900D96647> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparse.dylib
+       0x18e5d1000 -        0x18e6640ff  com.apple.SystemConfiguration (1.21 - 1.21) <3E3C91CD-C9CE-3186-B49F-FBF3E6F1696B> /System/Library/Frameworks/SystemConfiguration.framework/Versions/A/SystemConfiguration
+       0x18e665000 -        0x18e69957b  libCRFSuite.dylib (55) <5220F98F-4B63-31DF-B1BA-F507F9441C35> /usr/lib/libCRFSuite.dylib
+       0x18e962000 -        0x18f94441f  com.apple.Foundation (6.9 - 5026.5.4) <49DD529F-1708-3767-997B-1A4639A07536> /System/Library/Frameworks/Foundation.framework/Versions/C/Foundation
+       0x18faf4000 -        0x18fc14cbf  com.apple.CoreDisplay (291.4 - 291.4) <C5ACFCC5-A8E3-3DA5-BEB8-F3F3B932BD63> /System/Library/Frameworks/CoreDisplay.framework/Versions/A/CoreDisplay
+       0x18fc15000 -        0x18ffd7c1f  com.apple.audio.AudioToolboxCore (1.0 - 1556.604) <868DF717-7563-39D0-95EB-19AB37629A5A> /System/Library/PrivateFrameworks/AudioToolboxCore.framework/Versions/A/AudioToolboxCore
+       0x18ffd8000 -        0x190200f1f  com.apple.CoreText (877.4.0.7 - 877.4.0.7) <F7410CD3-EF38-3134-868D-C8633BD5D7F7> /System/Library/Frameworks/CoreText.framework/Versions/A/CoreText
+       0x190201000 -        0x190996e7f  com.apple.audio.CoreAudio (5.0 - 5.0) <242B3E7E-7A94-33DA-9D5B-C6739557CEB9> /System/Library/Frameworks/CoreAudio.framework/Versions/A/CoreAudio
+       0x190997000 -        0x190db5aff  com.apple.security (7.0 - 61901.120.67) <8FDCF5BF-61B9-3D69-BF9E-D134D220B8D9> /System/Library/Frameworks/Security.framework/Versions/A/Security
+       0x190db6000 -        0x19108bd53  libicucore.A.dylib (76142.5.1.200) <EB0C6EA9-E934-3776-9FD1-AF5E473552AA> /usr/lib/libicucore.A.dylib
+       0x19108c000 -        0x191095e5f  libsystem_darwin.dylib (1752.120.2) <8858F025-745A-388E-9544-080781CC9A69> /usr/lib/system/libsystem_darwin.dylib
+       0x191096000 -        0x19138dcbf  com.apple.CoreServices.CarbonCore (1333 - 1333) <D5517285-3BB1-37C7-9ECA-B9E6D99DF7CF> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/CarbonCore.framework/Versions/A/CarbonCore
+       0x19138e000 -        0x1913cdc1b  com.apple.CoreServicesInternal (505 - 505) <0FBC8F4C-B825-381C-8728-762844E11392> /System/Library/PrivateFrameworks/CoreServicesInternal.framework/Versions/A/CoreServicesInternal
+       0x1913ce000 -        0x19140d1bf  com.apple.CSStore (1141.1 - 1141.1) <1E543EF0-6C96-389F-9B2A-9614B625D198> /System/Library/PrivateFrameworks/CoreServicesStore.framework/Versions/A/CoreServicesStore
+       0x19140e000 -        0x1914f625f  com.apple.framework.IOKit (2.0.2 - 100231.120.3) <13C5D661-B23A-3AD8-88BB-2DE56023B840> /System/Library/Frameworks/IOKit.framework/Versions/A/IOKit
+       0x1914f7000 -        0x1915091b6  libsystem_notify.dylib (348.120.4) <64D76451-1E0C-369B-A631-54DA3140E083> /usr/lib/system/libsystem_notify.dylib
+       0x192e43000 -        0x192e593ff  com.apple.UniformTypeIdentifiers (709 - 709) <D24AEC54-C332-3707-A7CC-BB0710F6D193> /System/Library/Frameworks/UniformTypeIdentifiers.framework/Versions/A/UniformTypeIdentifiers
+       0x193335000 -        0x19340d95f  libboringssl.dylib (532.120.8) <611779E1-4B3F-310E-B070-1062D4707AA4> /usr/lib/libboringssl.dylib
+       0x19340e000 -        0x1937c31df  com.apple.CFNetwork (1.0 - 3860.600.21) <96293549-E281-3713-8ABF-886F0F966951> /System/Library/Frameworks/CFNetwork.framework/Versions/A/CFNetwork
+       0x1937c4000 -        0x1937def7b  libsystem_networkextension.dylib (2226.121.1) <0331EE20-A1FB-3C0D-990A-F65939CFF505> /usr/lib/system/libsystem_networkextension.dylib
+       0x1937df000 -        0x1937e0067  libenergytrace.dylib (23) <E59503ED-FB38-3FBC-8999-83124D31645B> /usr/lib/libenergytrace.dylib
+       0x1937e1000 -        0x193860f3f  libMobileGestalt.dylib (1484.120.3) <FA923504-DDCB-3138-ACC5-FB1D38183C78> /usr/lib/libMobileGestalt.dylib
+       0x193861000 -        0x193878fdf  libsystem_asl.dylib (406) <F40838DF-2F15-3F62-970F-DEE25706BF1B> /usr/lib/system/libsystem_asl.dylib
+       0x193879000 -        0x19389c797  com.apple.TCC (1.0 - 1) <46AC4453-DB23-3C07-A0EB-A68277A24098> /System/Library/PrivateFrameworks/TCC.framework/Versions/A/TCC
+       0x19389d000 -        0x193e53bbf  com.apple.SkyLight (1.600.0 - 922.7) <6F1978A2-1B8A-3A44-903D-532EED7106EB> /System/Library/PrivateFrameworks/SkyLight.framework/Versions/A/SkyLight
+       0x193e54000 -        0x1945a903f  com.apple.CoreGraphics (2.0 - 1965.5.1) <3B96EADF-571C-3690-B5CE-7672B45CE859> /System/Library/Frameworks/CoreGraphics.framework/Versions/A/CoreGraphics
+       0x1945aa000 -        0x194751b8b  com.apple.ColorSync (4.13.0 - 3813.5.1) <24C07C0F-03C6-302B-9E54-5ED3A01B730E> /System/Library/Frameworks/ColorSync.framework/Versions/A/ColorSync
+       0x194ba6000 -        0x194f93f5f  com.apple.CoreData (120 - 1526) <0A6EBD87-B6D8-3CFB-88A9-A091CE155610> /System/Library/Frameworks/CoreData.framework/Versions/A/CoreData
+       0x194f94000 -        0x194fafd5f  com.apple.ProtocolBuffer (1 - 310.25.2.9.2) <52A2B4A4-4DB3-3FC3-B3F1-21E64D2F2003> /System/Library/PrivateFrameworks/ProtocolBuffer.framework/Versions/A/ProtocolBuffer
+       0x194fb0000 -        0x195198a2f  libsqlite3.dylib (382) <2197AD4A-E0F8-38FF-924C-D9A97343680F> /usr/lib/libsqlite3.dylib
+       0x19523b000 -        0x19532c49f  com.apple.BaseBoard (732.1.1 - 732.1.1) <03F3FD64-6BF3-326A-8004-C4EE9563571A> /System/Library/PrivateFrameworks/BaseBoard.framework/Versions/A/BaseBoard
+       0x19532d000 -        0x19539893f  com.apple.RunningBoardServices (1.0 - 1015.100.16) <0E844E62-6BFB-3446-85DC-61C0A6488511> /System/Library/PrivateFrameworks/RunningBoardServices.framework/Versions/A/RunningBoardServices
+       0x195399000 -        0x19540cc37  com.apple.AE (944 - 944) <0B347618-0BCF-3104-84B4-C0C0909E9C80> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/AE.framework/Versions/A/AE
+       0x19540d000 -        0x19541ed87  libdns_services.dylib (2881.120.11) <E8717AA2-B706-36BB-A8FF-7EB3E64E58D5> /usr/lib/libdns_services.dylib
+       0x19541f000 -        0x195427387  libsystem_symptoms.dylib (2169.120.7) <F5029F5C-1BF3-31C7-892E-BC8606AC829E> /usr/lib/system/libsystem_symptoms.dylib
+       0x195428000 -        0x196c4575f  com.apple.Network (1.0 - 5812.121.1) <C901F589-30E9-3847-B8FD-0DA14F3E8A09> /System/Library/Frameworks/Network.framework/Versions/A/Network
+       0x196c46000 -        0x196c75ddf  com.apple.analyticsd (1.0 - 1) <5F3582B5-C44E-3B5A-8C3D-E4DA63B8C6D8> /System/Library/PrivateFrameworks/CoreAnalytics.framework/Versions/A/CoreAnalytics
+       0x196c76000 -        0x196c778bb  libDiagnosticMessagesClient.dylib (113) <0770F750-6155-3991-9FDE-968CB42647DF> /usr/lib/libDiagnosticMessagesClient.dylib
+       0x196c78000 -        0x196ce433f  com.apple.spotlight.metadata.utilities (1.0 - 2418.5.9.101) <B4AB943C-5D50-3ADF-8175-4B56301C6DC3> /System/Library/PrivateFrameworks/MetadataUtilities.framework/Versions/A/MetadataUtilities
+       0x196ce5000 -        0x196d70b5f  com.apple.Metadata (26.5 - 2418.5.9.101) <E968E783-21CF-32A8-9C69-6C6870C36CDC> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/Metadata.framework/Versions/A/Metadata
+       0x196d71000 -        0x196d7a1eb  com.apple.DiskArbitration (2.7 - 2.7) <18127B89-B783-3D13-882D-4F601449EA8A> /System/Library/Frameworks/DiskArbitration.framework/Versions/A/DiskArbitration
+       0x196d7b000 -        0x19719f063  com.apple.vImage (8.1 - 632.120.2) <F2338A5A-848F-3745-9C95-92835FED69BC> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vImage.framework/Versions/A/vImage
+       0x1971a0000 -        0x1975b5cdf  com.apple.QuartzCore (1195.14.4 - 1195.14.4) <C57B87A6-283C-3588-87EF-145BBEE8E257> /System/Library/Frameworks/QuartzCore.framework/Versions/A/QuartzCore
+       0x1975b6000 -        0x1976074ff  libFontRegistry.dylib (408.4.0.1) <3480BBE1-4AE8-3066-BCB7-EAA15F37C64E> /System/Library/Frameworks/ApplicationServices.framework/Versions/A/Frameworks/ATS.framework/Versions/A/Resources/libFontRegistry.dylib
+       0x1978ce000 -        0x1978dbaff  com.apple.OpenDirectory (26.5 - 666.100.1) <96F04359-D02E-3990-B798-4FE4448067BE> /System/Library/Frameworks/OpenDirectory.framework/Versions/A/OpenDirectory
+       0x1978dc000 -        0x19790527f  com.apple.CFOpenDirectory (26.5 - 666.100.1) <270997B5-219E-3253-AFDD-619027EFDC6B> /System/Library/Frameworks/OpenDirectory.framework/Versions/A/Frameworks/CFOpenDirectory.framework/Versions/A/CFOpenDirectory
+       0x197906000 -        0x19791291b  com.apple.CoreServices.FSEvents (1413.100.6 - 1413.100.6) <7AA0D80A-3240-37B5-94D2-0C9B14103993> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/FSEvents.framework/Versions/A/FSEvents
+       0x197913000 -        0x19793c0df  com.apple.coreservices.SharedFileList (225 - 225) <997A2621-7998-38C3-B92C-7BD5A2A2B066> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SharedFileList.framework/Versions/A/SharedFileList
+       0x19793d000 -        0x19794008f  libapp_launch_measurement.dylib (17) <7760B2FE-B4E6-3244-B941-0A5277879853> /usr/lib/libapp_launch_measurement.dylib
+       0x197941000 -        0x1979899bf  com.apple.CoreAutoLayout (1.0 - 34) <A53A5066-0626-325A-BADA-9F438AE63BB2> /System/Library/PrivateFrameworks/CoreAutoLayout.framework/Versions/A/CoreAutoLayout
+       0x19798a000 -        0x197a7013b  libxml2.2.dylib (39.10) <F9320B7C-5B95-3777-B991-646318D41D0C> /usr/lib/libxml2.2.dylib
+       0x197a71000 -        0x197af185f  com.apple.CoreVideo (1.8 - 734.4) <8A36CB95-D65E-3838-8837-22FD9A7E3D9C> /System/Library/Frameworks/CoreVideo.framework/Versions/A/CoreVideo
+       0x197af2000 -        0x197af4f5f  com.apple.loginsupport (3.0 - 264.4.1) <867D855C-0CD1-32D3-9345-83E99EC84CB6> /System/Library/PrivateFrameworks/login.framework/Versions/A/Frameworks/loginsupport.framework/Versions/A/loginsupport
+       0x197b33000 -        0x197b5f65f  com.apple.UserManagement (1.0 - 1) <20A5542F-F968-33E9-ABEE-DF2829C727ED> /System/Library/PrivateFrameworks/UserManagement.framework/Versions/A/UserManagement
+       0x1996c3000 -        0x1996fb257  libsystem_containermanager.dylib (725.120.2) <518BE44D-AA31-31E6-B44B-A37AD5E47040> /usr/lib/system/libsystem_containermanager.dylib
+       0x1996fc000 -        0x19971825f  com.apple.IOSurface (393.5.7 - 393.5.7) <B572C01C-59C9-3A03-9EA2-899DE87F3702> /System/Library/Frameworks/IOSurface.framework/Versions/A/IOSurface
+       0x199719000 -        0x19972305f  com.apple.IOAccelerator (487.4.3 - 487.4.3) <1A671DA5-99DE-3CFC-83BF-2563BFA4E32F> /System/Library/PrivateFrameworks/IOAccelerator.framework/Versions/A/IOAccelerator
+       0x199724000 -        0x1999fdd5f  com.apple.Metal (373.2 - 373.2) <A5124C88-37B2-3F0D-94AC-B9A984420F0C> /System/Library/Frameworks/Metal.framework/Versions/A/Metal
+       0x1999fe000 -        0x199a2705f  com.apple.audio.caulk (1.0 - 214.600.10) <47E71130-9608-3D99-ACEB-DF5638BC08DF> /System/Library/PrivateFrameworks/caulk.framework/Versions/A/caulk
+       0x199a28000 -        0x199bc929f  com.apple.CoreMedia (1.0 - 3320.8.5.1) <A762A5D3-6049-3849-891B-5805936DAC48> /System/Library/Frameworks/CoreMedia.framework/Versions/A/CoreMedia
+       0x199bca000 -        0x199e9925f  libFontParser.dylib (435.4.0.2) <56AE3539-AFDA-3C4B-A32F-D6470E9C877B> /System/Library/PrivateFrameworks/FontServices.framework/libFontParser.dylib
+       0x19a1ef000 -        0x19a52e8df  com.apple.ImageIO (3.3.0 - 2784.5.4) <6018F9E4-A50C-31EC-A4D4-3591A6BA11EE> /System/Library/Frameworks/ImageIO.framework/Versions/A/ImageIO
+       0x19a52f000 -        0x19aa19f9f  com.apple.CoreImage (19.0.0 - 1592.120.2) <49179CFD-DE4F-3C89-9139-1FFCCABD1AC2> /System/Library/Frameworks/CoreImage.framework/Versions/A/CoreImage
+       0x19aa1a000 -        0x19aad3ddf  com.apple.MetalPerformanceShaders.MPSCore (1.0 - 1) <5ECFEA4E-D0ED-3809-AE36-F6A226913EC1> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSCore.framework/Versions/A/MPSCore
+       0x19aad4000 -        0x19aad85d7  libsystem_configuration.dylib (1405.120.5) <0F7BBC1C-3D50-3E59-A31F-E4672A80BCEB> /usr/lib/system/libsystem_configuration.dylib
+       0x19aad9000 -        0x19aadf8cf  libsystem_sandbox.dylib (2680.120.12) <EC3A75EA-44C0-3A0B-9BF7-71C117B0A9C6> /usr/lib/system/libsystem_sandbox.dylib
+       0x19aae0000 -        0x19aae117f  com.apple.AggregateDictionary (1.0 - 1) <9526ACB3-9F77-3C63-94E3-1F7FF9FFD848> /System/Library/PrivateFrameworks/AggregateDictionary.framework/Versions/A/AggregateDictionary
+       0x19aae2000 -        0x19aae64d3  com.apple.AppleSystemInfo (3.1.5 - 3.1.5) <1AF0471A-7CA4-363A-A88C-878F918559C3> /System/Library/PrivateFrameworks/AppleSystemInfo.framework/Versions/A/AppleSystemInfo
+       0x19aae7000 -        0x19aae846b  liblangid.dylib (140) <150F6708-1CA6-341A-A2A0-46CB1BA1A23C> /usr/lib/liblangid.dylib
+       0x19aae9000 -        0x19ac0845f  com.apple.CoreNLP (1.0 - 313) <50C546E9-E6E0-3E9F-9E7A-9473578D7433> /System/Library/PrivateFrameworks/CoreNLP.framework/Versions/A/CoreNLP
+       0x19ac09000 -        0x19ac0f91f  com.apple.LinguisticData (1.0 - 483.10) <88A7B02D-D5D3-3120-9D38-BCD3B8A1BC08> /System/Library/PrivateFrameworks/LinguisticData.framework/Versions/A/LinguisticData
+       0x19ac10000 -        0x19bc97bcf  libBNNS.dylib (1961.120.8) <27D26BDE-14F4-3EBC-9A1F-195C0F69EFB7> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBNNS.dylib
+       0x19bc98000 -        0x19bdd546f  libvDSP.dylib (1126.100.7) <81359684-F2CB-3A26-A032-265A85B354EB> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvDSP.dylib
+       0x19be0a000 -        0x19be43267  com.apple.IOMobileFramebuffer (343.0.0 - 343.0.0) <AD6AF1CD-4106-32CB-9512-A51BD8DAC459> /System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/Versions/A/IOMobileFramebuffer
+       0x19c03c000 -        0x19c0536df  com.apple.MobileKeyBag (2.0 - 1.0) <DD679B3D-7C31-3A73-AA3F-E38AE71F6082> /System/Library/PrivateFrameworks/MobileKeyBag.framework/Versions/A/MobileKeyBag
+       0x19c054000 -        0x19c0620ff  com.apple.AssertionServices (1.0 - 1015.100.16) <2AFED4E5-1BEF-3620-A118-13C2487C5E8A> /System/Library/PrivateFrameworks/AssertionServices.framework/Versions/A/AssertionServices
+       0x19c063000 -        0x19c0f5a9f  com.apple.securityfoundation (6.0 - 55293) <B186B3B6-62A5-3680-8FB4-1CC6DFB3D551> /System/Library/Frameworks/SecurityFoundation.framework/Versions/A/SecurityFoundation
+       0x19c0f6000 -        0x19c1272ff  com.apple.coreservices.BackgroundTaskManagement (1.0 - 104) <C8C301D5-8180-31EF-ACC6-F754D14E23AC> /System/Library/PrivateFrameworks/BackgroundTaskManagement.framework/Versions/A/BackgroundTaskManagement
+       0x19c133000 -        0x19c1361fb  libquarantine.dylib (196.120.2) <5849009B-ACA3-3796-94C4-BBDF8D300EBA> /usr/lib/system/libquarantine.dylib
+       0x19c137000 -        0x19c1422bf  libCheckFix.dylib (33) <60BF3A9B-F3E5-3AF0-ADE5-F86DEBD5CC5C> /usr/lib/libCheckFix.dylib
+       0x19c143000 -        0x19c15a7ab  libcoretls.dylib (187.100.3) <888DACFD-0135-3166-83EE-4E14D9A4A98B> /usr/lib/libcoretls.dylib
+       0x19c15b000 -        0x19c16c273  libbsm.0.dylib (90) <D82537E0-FE06-3158-BC46-D1073D1D4384> /usr/lib/libbsm.0.dylib
+       0x19c16d000 -        0x19c1cbc6b  libmecab.dylib (1121.5.1) <B8A7C8DB-0176-3E90-929C-238A56EF45B8> /usr/lib/libmecab.dylib
+       0x19c1cc000 -        0x19c1ce41b  libgermantok.dylib (31) <55193FF8-D101-3B4B-B6FB-01EA87FC3D37> /usr/lib/libgermantok.dylib
+       0x19c1cf000 -        0x19c1e2e3f  libLinearAlgebra.dylib (1551.100.26) <3849C130-9327-3672-88E1-B0E548F4EB82> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLinearAlgebra.dylib
+       0x19c1e3000 -        0x19c43917f  com.apple.MetalPerformanceShaders.MPSNeuralNetwork (1.0 - 1) <A8E8C36C-8F11-3ED5-B9B3-2810EDDD4D77> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSNeuralNetwork.framework/Versions/A/MPSNeuralNetwork
+       0x19c43a000 -        0x19c48e19f  com.apple.MetalPerformanceShaders.MPSRayIntersector (1.0 - 1) <FCB4E780-9954-345D-B82F-9D319958448E> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSRayIntersector.framework/Versions/A/MPSRayIntersector
+       0x19c622000 -        0x19c65357f  com.apple.MetalPerformanceShaders.MPSMatrix (1.0 - 1) <21591139-CD3C-36AB-8191-28193ACD17A7> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSMatrix.framework/Versions/A/MPSMatrix
+       0x19c654000 -        0x19c823cdf  com.apple.MetalPerformanceShaders.MPSNDArray (1.0 - 1) <1CBC037E-8038-32F6-880A-6F3825544713> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSNDArray.framework/Versions/A/MPSNDArray
+       0x19c824000 -        0x19c8b81df  com.apple.MetalPerformanceShaders.MPSImage (1.0 - 1) <35130CF5-F99D-3CED-9993-48AEE13ECA36> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSImage.framework/Versions/A/MPSImage
+       0x19c8b9000 -        0x19c8c44b3  com.apple.AppleFSCompression (174.100.2 - 1.0) <1B79BCD7-4B46-302B-8008-86CBD62FEB0A> /System/Library/PrivateFrameworks/AppleFSCompression.framework/Versions/A/AppleFSCompression
+       0x19c8c5000 -        0x19c8d10a3  libbz2.1.0.dylib (49) <928515D6-6108-3757-97F4-256F9F9CFBC8> /usr/lib/libbz2.1.0.dylib
+       0x19c8d2000 -        0x19c8d8d03  libsystem_coreservices.dylib (191.4.5) <9576143B-C303-35A3-BA63-1FD06EDA2BB1> /usr/lib/system/libsystem_coreservices.dylib
+       0x19c8d9000 -        0x19c90aadf  com.apple.CoreServices.OSServices (1141.1 - 1141.1) <F42F7727-9C73-3148-B41C-186607715B54> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/OSServices.framework/Versions/A/OSServices
+       0x19ce4e000 -        0x19ce5cd97  libz.1.dylib (100.120.1) <863BB312-F115-32B0-889F-D3B42857A7A6> /usr/lib/libz.1.dylib
+       0x19ce5d000 -        0x19ce9aa77  libsystem_m.dylib (3312.100.1) <A7E0863C-101A-31A0-922B-ED9B02626151> /usr/lib/system/libsystem_m.dylib
+       0x19ce9b000 -        0x19ce9bc9b  libcharset.1.dylib (115.120.2) <338A5252-594A-3AC5-B274-5AB3CE5820C6> /usr/lib/libcharset.1.dylib
+       0x19ce9c000 -        0x19ce9f527  libmacho.dylib (1378) <755441B4-C034-3E3A-8E3C-F424FBB28261> /usr/lib/system/libmacho.dylib
+       0x19cea0000 -        0x19ceb8dc3  libkxld.dylib (12377.121.6) <AC5F4062-6A0E-36D2-B06E-D6192FC77B7D> /usr/lib/system/libkxld.dylib
+       0x19ceb9000 -        0x19cec63a7  libcommonCrypto.dylib (600035) <CE357BB1-2D49-37CC-9FFE-D093936B1475> /usr/lib/system/libcommonCrypto.dylib
+       0x19cec7000 -        0x19ced0ca3  libunwind.dylib (2100.2) <FC8F0C4E-6FB0-3E27-ABEF-B0FA720CD5E4> /usr/lib/system/libunwind.dylib
+       0x19ced1000 -        0x19ced8349  liboah.dylib (367.9) <8651ED4F-6506-3788-B56B-32EE414A85CA> /usr/lib/liboah.dylib
+       0x19ced9000 -        0x19cee37ff  libcopyfile.dylib (240) <8ACFAC7A-88E9-3EF4-853F-A9140FF110E5> /usr/lib/system/libcopyfile.dylib
+       0x19cee4000 -        0x19cee7987  libcompiler_rt.dylib (103.3) <AA79151F-C19D-3C7C-92F8-B10F04D82C1C> /usr/lib/system/libcompiler_rt.dylib
+       0x19cee8000 -        0x19ceec78b  libsystem_collections.dylib (1752.120.2) <72DB5BE7-EF78-37D0-8AAD-53E37CFE4287> /usr/lib/system/libsystem_collections.dylib
+       0x19ceed000 -        0x19cef04cf  libsystem_secinit.dylib (168.100.7) <E525C566-CDA4-3D99-B12B-1615FD54A1F3> /usr/lib/system/libsystem_secinit.dylib
+       0x19cef1000 -        0x19cef3bf7  libremovefile.dylib (85.100.6) <635E661D-80A7-340D-A165-3F7D318FDFC9> /usr/lib/system/libremovefile.dylib
+       0x19cef4000 -        0x19cef4f27  libkeymgr.dylib (31) <8C08891A-DF1C-3DCC-AB64-4742FD6BE9BA> /usr/lib/system/libkeymgr.dylib
+       0x19cef5000 -        0x19cefde37  libsystem_dnssd.dylib (2881.120.11) <6F45DF3F-233B-3BC3-BA8C-B43E7DA884BF> /usr/lib/system/libsystem_dnssd.dylib
+       0x19cefe000 -        0x19cf0309b  libcache.dylib (95) <189B576E-6176-3F82-8FA4-5914B0BEAEE7> /usr/lib/system/libcache.dylib
+       0x19cf04000 -        0x19cf05ce3  libSystem.B.dylib (1356) <D65E4112-C151-3FF8-BEB7-4841436012D6> /usr/lib/libSystem.B.dylib
+       0x19cf06000 -        0x19cf07fcf  libfakelink.dylib (5) <C7FBDAB2-BA25-3B1B-924B-6CD5EB501D3D> /usr/lib/libfakelink.dylib
+       0x19cf08000 -        0x19cf08a33  com.apple.SoftLinking (1.0 - 71) <B47F8999-CDB3-308F-9129-E690590605D8> /System/Library/PrivateFrameworks/SoftLinking.framework/Versions/A/SoftLinking
+       0x19cf3e000 -        0x19cf452bb  libiconv.2.dylib (115.120.2) <7C02D8F4-1921-323C-9D3D-A5D9B0ACDD78> /usr/lib/libiconv.2.dylib
+       0x19cf59000 -        0x19d050edf  libarchive.2.dylib (167.120.3) <98ED60D0-2C5C-31A2-81BA-17C9C2312B7E> /usr/lib/libarchive.2.dylib
+       0x19d051000 -        0x19d0b685b  com.apple.SearchKit (1.4.2 - 1.4.2) <B73B7F8E-666B-33EA-AC89-9DE4F7C25835> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/SearchKit.framework/Versions/A/SearchKit
+       0x19d0b7000 -        0x19d0bf18f  libThaiTokenizer.dylib (28) <43BAB012-1CCE-3DDC-9832-3A93EF0BAD9C> /usr/lib/libThaiTokenizer.dylib
+       0x19d0c0000 -        0x19d0e3f37  com.apple.applesauce (1.0 - 17.7) <9F8F8959-64E3-3B88-BC05-20ACA5436052> /System/Library/PrivateFrameworks/AppleSauce.framework/Versions/A/AppleSauce
+       0x19d0e4000 -        0x19d0fc4ab  libapple_nghttp2.dylib (37.120.3) <7C8B8B14-EC40-3F5B-8265-8975D4D4E83B> /usr/lib/libapple_nghttp2.dylib
+       0x19d0fd000 -        0x19d123ac3  libSparseBLAS.dylib (1551.100.26) <EF675037-43BA-3616-8BEF-662BA272F3D7> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libSparseBLAS.dylib
+       0x19d124000 -        0x19d12563f  com.apple.MetalPerformanceShaders.MetalPerformanceShaders (1.0 - 1) <1FC17E05-127E-3222-B3A2-72912C49821C> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/MetalPerformanceShaders
+       0x19d126000 -        0x19d12bff7  libpam.2.dylib (35) <24C42EB6-FC23-3D66-A260-CAD78EF8637B> /usr/lib/libpam.2.dylib
+       0x19d12c000 -        0x19d200d97  libcompression.dylib (193.120.2) <F9FEA7C5-8DE1-3EE6-BFD3-E8B5698D73A6> /usr/lib/libcompression.dylib
+       0x19d201000 -        0x19d205267  libQuadrature.dylib (8) <A285FC62-DE15-317B-8451-619953D3660A> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libQuadrature.dylib
+       0x19d206000 -        0x19e3d694f  libLAPACK.dylib (1551.100.26) <7275296D-74F2-3020-B2C5-E2EA0E7A6F7A> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libLAPACK.dylib
+       0x19e3d7000 -        0x19e42d43f  com.apple.DictionaryServices (1.2 - 382) <1C33980B-2B1B-3374-8DFF-C0589BDA8D37> /System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/DictionaryServices.framework/Versions/A/DictionaryServices
+       0x19e42e000 -        0x19e44c4f7  liblzma.5.dylib (21) <9F5AA0F6-7C29-3699-8AA3-C7B56284D3F4> /usr/lib/liblzma.5.dylib
+       0x19e44d000 -        0x19e44e85f  libcoretls_cfhelpers.dylib (187.100.3) <236BD946-7627-367C-8150-FCC9297471E1> /usr/lib/libcoretls_cfhelpers.dylib
+       0x19e44f000 -        0x19e4c25c3  com.apple.APFS (2811.120.14 - 2811.120.14) <37C876CB-358E-3900-A8EF-93D70E577B7C> /System/Library/PrivateFrameworks/APFS.framework/Versions/A/APFS
+       0x19e4c3000 -        0x19e4d1693  libxar.1.dylib (503) <689E5ED9-2D46-3B4C-8942-B5A6D7495445> /usr/lib/libxar.1.dylib
+       0x19e4d2000 -        0x19e4d579b  libutil.dylib (73) <93D2F3FE-6001-3A87-BF89-3ECABFF334CE> /usr/lib/libutil.dylib
+       0x19e4d6000 -        0x19e500cdf  libxslt.1.dylib (21.13) <EABDBD76-C455-3D16-A1EE-4370F95E8D3E> /usr/lib/libxslt.1.dylib
+       0x19e509000 -        0x19e582587  libvMisc.dylib (1126.100.7) <73154851-2341-34B7-8214-625C9219A676> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libvMisc.dylib
+       0x19e583000 -        0x19e61245f  libate.dylib (3.0.9) <30643AB8-BA08-3222-9AD2-64248E503B89> /usr/lib/libate.dylib
+       0x19e61c000 -        0x19e62f1bf  com.apple.CrashReporterSupport (10.13 - 15140) <482F92F1-D855-36EC-8E3D-C084CFA61B27> /System/Library/PrivateFrameworks/CrashReporterSupport.framework/Versions/A/CrashReporterSupport
+       0x19e773000 -        0x19e7b3f9f  com.apple.pluginkit.framework (1.0 - 1) <6A017CC8-84D1-36E5-ADE4-2A2EDC08D67F> /System/Library/PrivateFrameworks/PlugInKit.framework/Versions/A/PlugInKit
+       0x19e82a000 -        0x19e8729ff  com.apple.AppleVAFramework (6.2.10 - 6.2.10) <6CFBB631-D1EF-3D92-AE69-6758E7BDE4C5> /System/Library/PrivateFrameworks/AppleVA.framework/Versions/A/AppleVA
+       0x19e873000 -        0x19e88dccf  libexpat.1.dylib (47) <B7EE1C84-0D24-3B3F-8A1F-94ADDCFE777C> /usr/lib/libexpat.1.dylib
+       0x19e88e000 -        0x19e897bd3  libheimdal-asn1.dylib (710.100.4) <AF872616-7404-3D91-BA6B-A723D4269665> /usr/lib/libheimdal-asn1.dylib
+       0x19e9b7000 -        0x19ea78edf  com.apple.MediaExperience (1.0 - 1) <507B3FE7-C5C1-30DB-935C-C478FF7B4096> /System/Library/PrivateFrameworks/MediaExperience.framework/Versions/A/MediaExperience
+       0x19eaa6000 -        0x19eab57ff  com.apple.GraphVisualizer (1.0 - 307) <6F1E4885-F5B7-3B50-9C33-044B6925A07F> /System/Library/PrivateFrameworks/GraphVisualizer.framework/Versions/A/GraphVisualizer
+       0x19eab6000 -        0x19eaf551f  com.apple.OTSVG (1.0 - 877.4.0.7) <666515E5-7CF8-349D-952E-EDD2210CF63D> /System/Library/PrivateFrameworks/OTSVG.framework/Versions/A/OTSVG
+       0x19eaf6000 -        0x19eb02c7f  com.apple.xpc.AppServerSupport (1.0 - 3102.120.13) <AB36D838-16DB-3974-ABEC-220B5026013E> /System/Library/PrivateFrameworks/AppServerSupport.framework/Versions/A/AppServerSupport
+       0x19eb03000 -        0x19eb09abf  libspindump.dylib (419.10) <5EAE94A8-4A96-3DBD-8FC6-DA684427813F> /usr/lib/libspindump.dylib
+       0x19eb0a000 -        0x19ebcadff  com.apple.Heimdal (4.0 - 2.0) <29B023E7-2213-362C-80BD-8A463A229936> /System/Library/PrivateFrameworks/Heimdal.framework/Versions/A/Heimdal
+       0x19ee99000 -        0x19eedd6ef  com.apple.AppleJPEG (1.0 - 1) <63F815E9-899E-3F5E-8837-43C168F606C6> /System/Library/PrivateFrameworks/AppleJPEG.framework/Versions/A/AppleJPEG
+       0x19eede000 -        0x19f09e92f  libJP2.dylib (2784.5.4) <A3392AA7-53EF-3B19-9A87-505CBACE40C2> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJP2.dylib
+       0x19f09f000 -        0x19f0a0e1f  com.apple.WatchdogClient.framework (1.0 - 333) <05DDF467-0A3F-3F3F-821F-3063D15BDDF6> /System/Library/PrivateFrameworks/WatchdogClient.framework/Versions/A/WatchdogClient
+       0x19f0a1000 -        0x19f0e6c1f  com.apple.MultitouchSupport.framework (9450.2 - 9450.2) <20C49E65-4FDC-3FA2-ADD2-8BD540F8849B> /System/Library/PrivateFrameworks/MultitouchSupport.framework/Versions/A/MultitouchSupport
+       0x19f0e7000 -        0x19f63d29f  com.apple.VideoToolbox (1.0 - 3320.8.5.1) <0B641B4E-092B-3EC7-A20E-B99157F4DDB7> /System/Library/Frameworks/VideoToolbox.framework/Versions/A/VideoToolbox
+       0x19f63e000 -        0x19f66320f  libAudioToolboxUtility.dylib (1556.604) <8679E444-23B4-3B9F-8D0A-18ACEED541C5> /usr/lib/libAudioToolboxUtility.dylib
+       0x19f664000 -        0x19f68e01f  libPng.dylib (2784.5.4) <42EE7A25-5004-3435-A453-0158C53A6C93> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libPng.dylib
+       0x19f68f000 -        0x19f6efa77  libTIFF.dylib (2784.5.4) <FC3ACF96-0841-360F-B36A-50A3B08AF198> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libTIFF.dylib
+       0x19f6f0000 -        0x19f70f257  com.apple.IOPresentment (67 - 67) <C9C0A630-F275-3ABE-BFE2-86ECE91F83CA> /System/Library/PrivateFrameworks/IOPresentment.framework/Versions/A/IOPresentment
+       0x19f710000 -        0x19f7147d3  com.apple.GPUWrangler (8.1.12 - 8.1.12) <1644240B-3D71-35E7-AC5B-2A69E6B29535> /System/Library/PrivateFrameworks/GPUWrangler.framework/Versions/A/GPUWrangler
+       0x19f715000 -        0x19f717913  libRadiance.dylib (2784.5.4) <86335ED6-B791-37F5-B57E-B6F9C50652D8> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libRadiance.dylib
+       0x19f718000 -        0x19f71d2f3  com.apple.DSExternalDisplay (3.1 - 380) <DDF7A5A5-72F8-3580-9FF6-2A02E4ADE864> /System/Library/PrivateFrameworks/DSExternalDisplay.framework/Versions/A/DSExternalDisplay
+       0x19f71e000 -        0x19f748baf  libJPEG.dylib (2784.5.4) <5B4F384D-EC75-3A03-BA74-A644FDF3F722> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libJPEG.dylib
+       0x19f777000 -        0x19f77c9fb  libGIF.dylib (2784.5.4) <D054410B-09D0-3856-B7CB-EEF320362B0B> /System/Library/Frameworks/ImageIO.framework/Versions/A/Resources/libGIF.dylib
+       0x19f77d000 -        0x19f78d19f  com.apple.CMCaptureCore (1.0 - 665.120.8) <95190CD1-3456-355B-9369-5604AA49C1F3> /System/Library/PrivateFrameworks/CMCaptureCore.framework/Versions/A/CMCaptureCore
+       0x1a0705000 -        0x1a077386f  libusrtcp.dylib (5812.121.1) <54F1B848-D6B1-3DB0-B640-FA6A86262C1D> /usr/lib/libusrtcp.dylib
+       0x1a0774000 -        0x1a0d157bf  libswiftCore.dylib (6.3.2 - 6.3.2.1.3) <7669D858-D332-36C7-9C6C-4564FFBEA8D2> /usr/lib/swift/libswiftCore.dylib
+       0x1a0dc9000 -        0x1a0e1e17f  libSessionUtility.dylib (398.601) <3D82E6A1-1D29-3274-84DD-BDF36B6F7962> /System/Library/PrivateFrameworks/AudioSession.framework/libSessionUtility.dylib
+       0x1a0e1f000 -        0x1a0ff3c3f  com.apple.audio.toolbox.AudioToolbox (1.14 - 1.14) <B0ED86EE-4A99-3D39-AFC1-BC3361F630D8> /System/Library/Frameworks/AudioToolbox.framework/Versions/A/AudioToolbox
+       0x1a0ff4000 -        0x1a1074b7f  com.apple.audio.AudioSession (1.0 - 398.601) <23137B46-437B-382A-BF06-17C82F58149B> /System/Library/PrivateFrameworks/AudioSession.framework/Versions/A/AudioSession
+       0x1a1075000 -        0x1a108e39f  libAudioStatistics.dylib (262.601) <9AD96BE7-444B-3641-9B75-8F4EE1A686BF> /usr/lib/libAudioStatistics.dylib
+       0x1a1105000 -        0x1a112119b  libresolv.9.dylib (96) <90D545B0-52B4-335D-A075-4A7B83C01FC8> /usr/lib/libresolv.9.dylib
+       0x1a1122000 -        0x1a11347e7  libsasl2.2.dylib (215) <28BFB13B-08D2-3705-A634-B4E888613489> /usr/lib/libsasl2.2.dylib
+       0x1a131d000 -        0x1a13fd337  libSMC.dylib (38) <CD66132B-7D67-36D2-82BC-FFFACBAAF05A> /usr/lib/libSMC.dylib
+       0x1a145d000 -        0x1a1469c17  com.apple.NetAuth (6.2 - 6.2) <F039515C-B344-37B5-B705-E58B48AD3C5D> /System/Library/PrivateFrameworks/NetAuth.framework/Versions/A/NetAuth
+       0x1a1478000 -        0x1a1485b1f  com.apple.perfdata (1.0 - 130) <63F6F6B4-A2A8-3647-BDEB-50508AE91B8F> /System/Library/PrivateFrameworks/perfdata.framework/Versions/A/perfdata
+       0x1a1486000 -        0x1a1493c9f  libperfcheck.dylib (46) <F900A796-0FF7-3195-85CF-80D62DF5C477> /usr/lib/libperfcheck.dylib
+       0x1a1494000 -        0x1a14a5187  com.apple.Kerberos (3.0 - 1) <D81F4821-8D01-394B-812B-657C3114A356> /System/Library/Frameworks/Kerberos.framework/Versions/A/Kerberos
+       0x1a14a6000 -        0x1a14f7aaf  com.apple.GSS (4.0 - 2.0) <9149B4E1-8502-3A93-9944-61323F4725E1> /System/Library/Frameworks/GSS.framework/Versions/A/GSS
+       0x1a14f8000 -        0x1a1508d6f  com.apple.CommonAuth (4.0 - 2.0) <B703DB83-34E2-3728-89DF-41421EC67747> /System/Library/PrivateFrameworks/CommonAuth.framework/Versions/A/CommonAuth
+       0x1a1509000 -        0x1a15ed01f  com.apple.MobileAssets (1.0 - 1837.121.1) <95D9C5B8-40A8-3F25-B1FC-C4468D133923> /System/Library/PrivateFrameworks/MobileAsset.framework/Versions/A/MobileAsset
+       0x1a1680000 -        0x1a168f160  com.apple.CorePhoneNumbers (1.0 - 1) <CF1CBC2C-A525-3C79-B709-D5C23B2CB33A> /System/Library/PrivateFrameworks/CorePhoneNumbers.framework/Versions/A/CorePhoneNumbers
+       0x1a326b000 -        0x1a335ea36  com.apple.combine (1.0 - 3023) <D757C287-429D-3F70-B903-C942A00F2DAA> /System/Library/Frameworks/Combine.framework/Versions/A/Combine
+       0x1a55ac000 -        0x1a55ac86f  com.apple.Accelerate.vecLib (3.11 - vecLib 3.11) <46556F2E-DD6B-3A4A-B2A3-4F844ED123EC> /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/vecLib
+       0x1a55d1000 -        0x1a55d198f  com.apple.CoreServices (1226 - 1226) <FF182FDE-8926-3DFB-8D12-C1258443F67F> /System/Library/Frameworks/CoreServices.framework/Versions/A/CoreServices
+       0x1a5850000 -        0x1a5850417  com.apple.Accelerate (1.11 - Accelerate 1.11) <1DF31AEA-3D8E-382D-9493-D74635AA1CD4> /System/Library/Frameworks/Accelerate.framework/Versions/A/Accelerate
+       0x1a674c000 -        0x1a675b5df  com.apple.SymptomDiagnosticReporter (1.0 - 411.120.4) <FF9F1A47-EE31-3182-9AA1-4D325D6DA8A0> /System/Library/PrivateFrameworks/SymptomDiagnosticReporter.framework/Versions/A/SymptomDiagnosticReporter
+       0x1a675c000 -        0x1a678a25f  com.apple.PowerLog (1.0 - 1) <BE05FF5C-4DE3-3B2C-B20F-BC5D46938816> /System/Library/PrivateFrameworks/PowerLog.framework/Versions/A/PowerLog
+       0x1a6798000 -        0x1a68496df  com.apple.DiscRecording (9.0.3 - 9030.4.5) <BCE71519-708B-3376-B013-2B691BD174AC> /System/Library/Frameworks/DiscRecording.framework/Versions/A/DiscRecording
+       0x1a684a000 -        0x1a687b137  com.apple.MediaKit (16 - 938) <A01852D0-D4E4-30EC-A47C-3B0AB6711F2F> /System/Library/PrivateFrameworks/MediaKit.framework/Versions/A/MediaKit
+       0x1a733d000 -        0x1a7353950  libswiftDispatch.dylib (1542.100.32) <460CFC58-0973-3A20-B504-A0A294C1E16D> /usr/lib/swift/libswiftDispatch.dylib
+       0x1a769e000 -        0x1a772ac3f  com.apple.BoardServices (1.0 - 732.1.1) <B4561AEC-EE52-3447-960B-4D2F2F3EF720> /System/Library/PrivateFrameworks/BoardServices.framework/Versions/A/BoardServices
+       0x1a776b000 -        0x1a777853f  com.apple.GraphicsServices (1.0 - 1.0) <4236E533-C3F8-340F-A462-F15D599395A8> /System/Library/PrivateFrameworks/GraphicsServices.framework/Versions/A/GraphicsServices
+       0x1a7a94000 -        0x1a7ab5e9f  com.apple.DebugSymbols (216 - 217) <13499229-A245-3C95-AC94-1DB8B274CF09> /System/Library/PrivateFrameworks/DebugSymbols.framework/Versions/A/DebugSymbols
+       0x1a7ab6000 -        0x1a7c12ddf  com.apple.CoreSymbolication (16.0 - 64575.53.2) <C2CC83D4-7E1C-3E78-AEC8-1ABDE74F9FAD> /System/Library/PrivateFrameworks/CoreSymbolication.framework/Versions/A/CoreSymbolication
+       0x1a7c13000 -        0x1a7c1d09f  com.apple.CoreTime (334.0.16.3 - 334.0.16.3) <FD342B51-EA5D-388C-9BAB-29F7670FE3FB> /System/Library/PrivateFrameworks/CoreTime.framework/Versions/A/CoreTime
+       0x1a956b000 -        0x1a95dd59f  com.apple.BackBoardServices (1.0 - 1.0) <DDC32AF8-8864-3DE0-A855-5283510925B9> /System/Library/PrivateFrameworks/BackBoardServices.framework/Versions/A/BackBoardServices
+       0x1a95de000 -        0x1a96194ef  com.apple.LDAPFramework (2.4.28 - 194.5) <53F32E19-D2E6-3256-9206-75B92E519199> /System/Library/Frameworks/LDAP.framework/Versions/A/LDAP
+       0x1a961a000 -        0x1a961b7b7  com.apple.TrustEvaluationAgent (2.0 - 38) <B2593AAA-A99A-30C1-A0FC-3315ACC16951> /System/Library/PrivateFrameworks/TrustEvaluationAgent.framework/Versions/A/TrustEvaluationAgent
+       0x1a9749000 -        0x1a980257f  com.apple.DiskImagesFramework (683.100.3 - 683.100.3) <C8288C8D-4483-3393-B249-E952FFAF1EBE> /System/Library/PrivateFrameworks/DiskImages.framework/Versions/A/DiskImages
+       0x1a9843000 -        0x1a98595bf  com.apple.RemoteServiceDiscovery (1.0 - 219.120.2) <CA4D9399-0E89-3014-92DD-B722678ED9F6> /System/Library/PrivateFrameworks/RemoteServiceDiscovery.framework/Versions/A/RemoteServiceDiscovery
+       0x1a985a000 -        0x1a986fc3f  com.apple.xpc.RemoteXPC (1.0 - 3102.120.13) <8CA8360A-FE67-33A5-AEE4-097AEE5B945C> /System/Library/PrivateFrameworks/RemoteXPC.framework/Versions/A/RemoteXPC
+       0x1a9904000 -        0x1a9984f43  libcurl.4.dylib (166.0.0.0.1) <2F97CC24-F631-37B1-83CA-54632BF597FE> /usr/lib/libcurl.4.dylib
+       0x1a998b000 -        0x1a99ce25f  com.apple.AppSupport (1.0.0 - 29) <7410CCEF-077F-37FF-B0B0-5D65B0D2F66C> /System/Library/PrivateFrameworks/AppSupport.framework/Versions/A/AppSupport
+       0x1a9c9f000 -        0x1a9ca1f3f  com.apple.InternationalTextSearch (1.0 - 1) <F227A966-D677-379F-BAEF-89DC18A81AB7> /System/Library/PrivateFrameworks/InternationalTextSearch.framework/Versions/A/InternationalTextSearch
+       0x1aa272000 -        0x1aa2723f7  libHeimdalProxy.dylib (88) <A963CA1C-050B-3E90-B2FF-D7989435DB5D> /System/Library/Frameworks/Kerberos.framework/Versions/A/Libraries/libHeimdalProxy.dylib
+       0x1aa29d000 -        0x1aa2bbb9f  com.apple.StreamingZip (1.0 - 1) <F297C9A4-AEDF-3553-B20E-CD7DFC54CC0B> /System/Library/PrivateFrameworks/StreamingZip.framework/Versions/A/StreamingZip
+       0x1aa315000 -        0x1aa3186bf  libswiftObjectiveC.dylib (951.7) <32C98979-0F18-3513-AFAB-2F5D2B9ED0B9> /usr/lib/swift/libswiftObjectiveC.dylib
+       0x1aa319000 -        0x1aa3366ff  libswiftos.dylib (1082) <49255E53-3F00-3F06-A64A-76A63C798956> /usr/lib/swift/libswiftos.dylib
+       0x1ab280000 -        0x1ab30e85f  com.apple.proactive.support.ProactiveSupport (1.0 - 418.1) <29BBA828-5852-3A0C-94D9-C03990CB86CA> /System/Library/PrivateFrameworks/ProactiveSupport.framework/Versions/A/ProactiveSupport
+       0x1ab40b000 -        0x1ab42f29f  com.apple.ASEProcessing (1.55.0 - 1.55.0) <9271A817-7C78-3210-8B0C-91A552667200> /System/Library/PrivateFrameworks/ASEProcessing.framework/Versions/A/ASEProcessing
+       0x1ac68e000 -        0x1ac75cc1f  com.apple.audio.midi.CoreMIDI (2.0 - 88) <F649A68B-864A-3F02-959A-69FD9980B29C> /System/Library/Frameworks/CoreMIDI.framework/Versions/A/CoreMIDI
+       0x1ad39c000 -        0x1ad3a075f  com.apple.IOSurfaceAccelerator (1.0.0 - 1.0.0) <70103161-0443-3F67-85D7-BD25455F271F> /System/Library/PrivateFrameworks/IOSurfaceAccelerator.framework/Versions/A/IOSurfaceAccelerator
+       0x1b2244000 -        0x1b22579ff  com.apple.HID (1.0 - 1) <E5C2582B-2B2A-3B7E-A473-DF40A707C4C8> /System/Library/PrivateFrameworks/HID.framework/Versions/A/HID
+       0x1b6cff000 -        0x1b6d0e1ff  com.apple.NetFS (6.0 - 4.0) <EC590F25-F5DD-35D6-A594-4BE577637264> /System/Library/Frameworks/NetFS.framework/Versions/A/NetFS
+       0x1b725a000 -        0x1b725c707  libswiftDarwin.dylib (377.120.8) <F2EED553-64EC-398C-98BA-32EFDFAE0FC3> /usr/lib/swift/libswiftDarwin.dylib
+       0x1b92ba000 -        0x1b93a34bf  libquic.dylib (5812.121.1) <18372066-7FBC-34AD-AD6B-A7D31A879F8D> /usr/lib/libquic.dylib
+       0x1b93af000 -        0x1b93d7eff  com.apple.private.SystemPolicy (1.0 - 1) <3B04FCE5-C2EF-3F95-94B5-C2E838F8F8F1> /System/Library/PrivateFrameworks/SystemPolicy.framework/Versions/A/SystemPolicy
+       0x1ba284000 -        0x1ba312bff  com.apple.LoggingSupport (1.0 - 1861.120.4) <2619A5F3-D97D-3946-B49A-5FA3164FB197> /System/Library/PrivateFrameworks/LoggingSupport.framework/Versions/A/LoggingSupport
+       0x1ba313000 -        0x1ba31facb  com.apple.MallocStackLogging (1.0 - 65000) <782A39D3-C9FD-3E0B-B8FB-26E5D749BE57> /System/Library/PrivateFrameworks/MallocStackLogging.framework/Versions/A/MallocStackLogging
+       0x1ba345000 -        0x1ba39db3f  libmis.dylib (463.100.17) <B0F26447-E3DF-33C0-AF33-1109BD0701EA> /usr/lib/libmis.dylib
+       0x1ba39e000 -        0x1ba3a1c5f  com.apple.gpusw.GPURawCounter (34 - 34) <A0191D2E-4C57-30F7-A206-78FB4188D01E> /System/Library/PrivateFrameworks/GPURawCounter.framework/Versions/A/GPURawCounter
+       0x1ba3a2000 -        0x1ba3c187f  libswiftCoreAudio.dylib (411.601) <23AF0BE1-B688-3E32-90BB-920D0C00036A> /usr/lib/swift/libswiftCoreAudio.dylib
+       0x1ba3c2000 -        0x1ba3c8327  libswiftCoreFoundation.dylib (2411) <4C233FFB-F11A-34AA-9515-74C21E8EE968> /usr/lib/swift/libswiftCoreFoundation.dylib
+       0x1ba3d5000 -        0x1ba421843  libswiftXPC.dylib (128.120.2) <0AA69D52-271B-38E0-A156-8BD7F73A4C9C> /usr/lib/swift/libswiftXPC.dylib
+       0x1ba423000 -        0x1ba4238a3  libswiftIOKit.dylib (1) <D47B9CC1-B622-31ED-8957-FA79ED1718CE> /usr/lib/swift/libswiftIOKit.dylib
+       0x1bc450000 -        0x1bc4892c7  libbootpolicy.dylib (289.100.5) <53AF23CF-CBCF-35E7-A3D6-1C4742A617AD> /usr/lib/libbootpolicy.dylib
+       0x1bdf14000 -        0x1bdf2b88b  libswiftsimd.dylib (23) <C949C0B7-988E-3352-9778-3568FC2BC4EA> /usr/lib/swift/libswiftsimd.dylib
+       0x1bf639000 -        0x1bf64237f  com.apple.IOAccelMemoryInfo (1.0 - 1) <3DFF5F1E-C080-3C9D-A8C5-3C56854BD24D> /System/Library/PrivateFrameworks/IOAccelMemoryInfo.framework/Versions/A/IOAccelMemoryInfo
+       0x1c0cfc000 -        0x1c0d050be  libswiftCoreMIDI.dylib (6) <68160211-1089-3958-A8A1-3E8B3C389499> /usr/lib/swift/libswiftCoreMIDI.dylib
+       0x1c14e8000 -        0x1c14eebbf  com.apple.MSUDataAccessor (1.0 - 1) <B73070EE-3FE8-354E-A3BB-84894636D3BA> /System/Library/PrivateFrameworks/MSUDataAccessor.framework/Versions/A/MSUDataAccessor
+       0x1c1910000 -        0x1c1972a5f  com.apple.SoftwareUpdateCoreSupport (1.0 - 1) <34E714DF-AC10-3E52-862E-7FD8AE96EFA7> /System/Library/PrivateFrameworks/SoftwareUpdateCoreSupport.framework/Versions/A/SoftwareUpdateCoreSupport
+       0x1c5434000 -        0x1c548b23f  com.apple.biome.BiomeFoundation (1.0 - 209.18) <6F0943D8-345B-328C-8A5E-8D10B3BC3CC3> /System/Library/PrivateFrameworks/BiomeFoundation.framework/Versions/A/BiomeFoundation
+       0x1c8363000 -        0x1c8370a1f  libswiftMetal.dylib (373.2) <16B01E1B-6BDD-3C6B-9A8B-495C3B661B9B> /usr/lib/swift/libswiftMetal.dylib
+       0x1c8371000 -        0x1c8377e05  libswiftCompression.dylib (11) <5EA10BB9-2198-33D7-811A-BE5EAE0A2EED> /usr/lib/swift/libswiftCompression.dylib
+       0x1c92a2000 -        0x1c934cd5f  libFDR.dylib (1499.100.48) <62340EBF-17DB-3393-9653-003A30263E5D> /usr/lib/libFDR.dylib
+       0x1c93ce000 -        0x1c9998e9f  com.apple.biome.BiomeStreams (1.0 - 209.18) <B05E6A84-BC87-3977-B790-2391073FF393> /System/Library/PrivateFrameworks/BiomeStreams.framework/Versions/A/BiomeStreams
+       0x1c9e6c000 -        0x1c9e808ff  com.apple.SoftwareUpdateCoreConnect (1.0 - 1) <8B5F0FE6-EFC0-32B3-8414-6E67E97CCD87> /System/Library/PrivateFrameworks/SoftwareUpdateCoreConnect.framework/Versions/A/SoftwareUpdateCoreConnect
+       0x1cc2bd000 -        0x1cc327c1f  com.apple.osanalytics.OSAnalytics (1.0 - 1) <D3398082-B264-37E9-B546-1BB0DE974E81> /System/Library/PrivateFrameworks/OSAnalytics.framework/Versions/A/OSAnalytics
+       0x1cd757000 -        0x1cd758f9f  libswiftQuartzCore.dylib (5) <481AAE69-579E-3DF4-B1F0-113E54B8EAA9> /usr/lib/swift/libswiftQuartzCore.dylib
+       0x1cdb4a000 -        0x1cdb4f8e7  com.apple.kperf (1.0 - 1) <23264FF1-B323-3B46-893D-42378F45FE8A> /System/Library/PrivateFrameworks/kperf.framework/Versions/A/kperf
+       0x1cdc61000 -        0x1cdc6663f  com.apple.MobileSystemServices (1.0 - 1) <05D57959-6BE2-3FFE-A842-09A3FA930624> /System/Library/PrivateFrameworks/MobileSystemServices.framework/Versions/A/MobileSystemServices
+       0x1cf252000 -        0x1cf27429f  libamsupport.dylib (434.120.4) <C01C56CE-81B4-308E-A1BE-07C445941133> /usr/lib/libamsupport.dylib
+       0x1cf650000 -        0x1cf6b00bf  com.apple.biome.BiomePubSub (1.0 - 209.18) <5BA2374F-9154-3DC4-A761-D3C6E167F148> /System/Library/PrivateFrameworks/BiomePubSub.framework/Versions/A/BiomePubSub
+       0x1cf6b1000 -        0x1cf6f3fff  com.apple.biome.BiomeStorage (1.0 - 209.18) <A69679B4-A9DF-39B0-B361-F116246BB7D7> /System/Library/PrivateFrameworks/BiomeStorage.framework/Versions/A/BiomeStorage
+       0x1d21ea000 -        0x1d21f913f  libswiftUniformTypeIdentifiers.dylib (877.5.1) <BD304D00-8CE3-3528-914A-DBAD4831A95E> /usr/lib/swift/libswiftUniformTypeIdentifiers.dylib
+       0x1d21fa000 -        0x1d22bfa9b  libswiftAccelerate.dylib (77.100.2) <4A2ADA9C-22FB-307F-AA1E-1D85F1579BCF> /usr/lib/swift/libswiftAccelerate.dylib
+       0x1d2414000 -        0x1d242511f  libpartition2_dynamic.dylib (3476.120.8.0.2) <B57303C4-A549-35C8-9857-DEAC6891A79D> /usr/lib/libpartition2_dynamic.dylib
+       0x1d2981000 -        0x1d298bfdf  com.apple.AFKUser (1.0 - 1) <51F853F3-E890-3D4D-A00D-12C7869B9B22> /System/Library/PrivateFrameworks/AFKUser.framework/Versions/A/AFKUser
+       0x1d6375000 -        0x1d63d675f  libswiftCoreMedia.dylib (3320.8.5.1) <1FA37857-B3AE-320D-A11A-675B3739BA08> /usr/lib/swift/libswiftCoreMedia.dylib
+       0x1d7b28000 -        0x1d7b29bbf  libswiftOSLog.dylib (10) <964AB4ED-4361-33BF-949F-C7DE591C5EBE> /usr/lib/swift/libswiftOSLog.dylib
+       0x1dbbf7000 -        0x1dbd03d5f  com.apple.Symbolication (16.0 - 64575.70.1) <1BAEF090-27B4-316B-8C9F-E891180781AE> /System/Library/PrivateFrameworks/Symbolication.framework/Versions/A/Symbolication
+       0x1e0239000 -        0x1e02493df  com.apple.OSLog (1.0 - 1861.120.4) <68746C62-44B2-377E-BB29-B0B4A6A92B5F> /System/Library/Frameworks/OSLog.framework/Versions/A/OSLog
+       0x1e054b000 -        0x1e065c75f  com.apple.InternalSwiftProtobuf (1.0 - 1.26.0) <41595ABE-4110-3482-8DA3-839277732E08> /System/Library/PrivateFrameworks/InternalSwiftProtobuf.framework/Versions/A/InternalSwiftProtobuf
+       0x1e0722000 -        0x1e072d0bf  com.apple.HIDDisplay (1.0 - 1) <E74DCF87-47C7-326B-A77B-1CBB94583B79> /System/Library/PrivateFrameworks/HIDDisplay.framework/Versions/A/HIDDisplay
+       0x1e8714000 -        0x1e8714af3  com.apple.FeatureFlags (1.0 - 103) <9F17EE22-3F47-3F98-A9B9-1C46372AEE83> /System/Library/PrivateFrameworks/FeatureFlags.framework/Versions/A/FeatureFlags
+       0x1f1e27000 -        0x1f1e295bf  com.apple.ConfigProfileHelper (18.0 - 1800) <097D7995-F903-3DA6-91D6-31952FBB2D32> /System/Library/PrivateFrameworks/ConfigProfileHelper.framework/Versions/A/ConfigProfileHelper
+       0x23258e000 -        0x2325952a3  libCoreFSCache.dylib (352.1) <6B2BF8F5-A992-3C28-9BCE-CDC8E4D40E78> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCoreFSCache.dylib
+       0x232596000 -        0x23259b947  libCoreVMClient.dylib (352.1) <5E0DFF0A-81BA-36FB-9AD5-E3494D15B2CA> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCoreVMClient.dylib
+       0x23259c000 -        0x2325ac2b7  com.apple.opengl (23.1.1 - 23.1.1) <E473AA13-611E-32CB-A676-213173E3AA9E> /System/Library/Frameworks/OpenGL.framework/Versions/A/OpenGL
+       0x2325ad000 -        0x2325af7bf  libCVMSPluginSupport.dylib (23.1.1) <B2CF6AE8-6BAA-3374-BF7E-311343B0104D> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libCVMSPluginSupport.dylib
+       0x2325b0000 -        0x2325b84ff  libGFXShared.dylib (23.1.1) <C699C599-0DD8-302A-A96F-3C50B9BD5BC7> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGFXShared.dylib
+       0x2325b9000 -        0x2325ec54b  libGLImage.dylib (23.1.1) <FC8B70C2-0EAE-303D-AF43-459CA7FB4B15> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLImage.dylib
+       0x2325ed000 -        0x2326265bf  libGLU.dylib (23.1.1) <04FFC1B1-DD4D-3355-8EBD-FEA62D339822> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGLU.dylib
+       0x23277d000 -        0x232786bc7  libGL.dylib (23.1.1) <110554B2-60B8-39FE-B33B-27CE9F4E5F05> /System/Library/Frameworks/OpenGL.framework/Versions/A/Libraries/libGL.dylib
+       0x234618000 -        0x23478bf1f  com.apple.ExtensionFoundation (97 - 97) <A3567BE3-4AA2-3554-81AE-FE7EF41E535B> /System/Library/Frameworks/ExtensionFoundation.framework/Versions/A/ExtensionFoundation
+       0x2359fc000 -        0x235a3ea1f  com.apple.LightweightCodeRequirements (1.0 - 1) <DB4F053F-0498-30C7-B2B9-697925B9F03B> /System/Library/Frameworks/LightweightCodeRequirements.framework/Versions/A/LightweightCodeRequirements
+       0x236862000 -        0x2368801ff  com.apple.MPSBenchmarkLoop (1.0 - 1) <A8171300-A2FE-39A3-8166-5ED347A9CD56> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSBenchmarkLoop.framework/Versions/A/MPSBenchmarkLoop
+       0x236881000 -        0x236894e7f  com.apple.MPSFunctions (1.0 - 1) <C50883F0-037D-3888-BC83-5DC5EEE82345> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSFunctions.framework/Versions/A/MPSFunctions
+       0x236895000 -        0x23689a53f  com.apple.MPSHost (1.0 - 1) <7A6AC05D-88B2-31A8-A0A7-F876BF0451B1> /System/Library/Frameworks/MetalPerformanceShaders.framework/Versions/A/Frameworks/MPSHost.framework/Versions/A/MPSHost
+       0x239b42000 -        0x239cae4bf  com.apple.SwiftData (1.0 - 135) <69089200-C33B-348E-8E66-8C5954BCF335> /System/Library/Frameworks/SwiftData.framework/Versions/A/SwiftData
+       0x24078f000 -        0x2407a3abf  com.apple.AppleDeviceQuerySupport (1.0 - 408.120.3) <B517FF44-3D3C-333E-BA06-5BF7F91B6D7E> /System/Library/PrivateFrameworks/AppleDeviceQuerySupport.framework/Versions/A/AppleDeviceQuerySupport
+       0x240f1f000 -        0x240f9a1d6  com.apple.AppleKeyStore (1.0 - 1.0) <0DE316FC-3C90-3738-8C19-A74D6E247698> /System/Library/PrivateFrameworks/AppleKeyStore.framework/Versions/A/AppleKeyStore
+       0x2418c6000 -        0x2418de9df  com.apple.private.AppleMobileFileIntegrity-fmk (1.0 - 1) <9B11DD7D-75DD-3784-945A-411BAED10953> /System/Library/PrivateFrameworks/AppleMobileFileIntegrity.framework/Versions/A/AppleMobileFileIntegrity
+       0x241dd8000 -        0x241dea799  com.apple.AtomicsInternal (1.1.0 - 5026.5.5) <5BFF8B6A-704D-3822-804F-ED870A72A295> /System/Library/PrivateFrameworks/AtomicsInternal.framework/Versions/A/AtomicsInternal
+       0x241ea7000 -        0x241ec9dff  com.apple.imgaudio.AudioAnalytics (1.0 - 1) <8B4F7F16-1296-3152-A4E2-A360ACAE9622> /System/Library/PrivateFrameworks/AudioAnalytics.framework/Versions/A/AudioAnalytics
+       0x24250b000 -        0x2425537df  com.apple.BackBoardHIDEventFoundation (1.0 - 1) <0F0C872C-C531-3898-95BF-3BF1817C87FC> /System/Library/PrivateFrameworks/BackBoardHIDEventFoundation.framework/Versions/A/BackBoardHIDEventFoundation
+       0x2425ec000 -        0x2426058df  com.apple.biome.BiomeDSL (1.0 - 209.18) <F43D5A2A-4470-3827-8CCD-3E7AAA76242E> /System/Library/PrivateFrameworks/BiomeDSL.framework/Versions/A/BiomeDSL
+       0x242606000 -        0x242eb819f  com.apple.BiomeLibrary (274.57) <9C4145CD-3C99-35D4-930E-8F0BA4D34596> /System/Library/PrivateFrameworks/BiomeLibrary.framework/Versions/A/BiomeLibrary
+       0x242eb9000 -        0x242ebeb5f  com.apple.biome.BiomeSync (1.0 - 209.18) <BD7C9096-8861-331A-BBD3-FC18BE64D611> /System/Library/PrivateFrameworks/BiomeSync.framework/Versions/A/BiomeSync
+       0x2444ef000 -        0x2445878bf  com.apple.biome.CascadeSets (1.0 - 209.18) <137A490E-E366-31C3-A126-FDB5550738F7> /System/Library/PrivateFrameworks/CascadeSets.framework/Versions/A/CascadeSets
+       0x24593f000 -        0x245a7d4ee  com.apple.CollectionsInternal (1.2.0 - 5026.5.5) <9691DBE8-E342-36B5-8BC3-65954843303A> /System/Library/PrivateFrameworks/CollectionsInternal.framework/Versions/A/CollectionsInternal
+       0x24cfe8000 -        0x24cffb49f  com.apple.DeviceRecovery (1.0 - 1) <785D04A0-C0D8-3364-BDA5-560381C6553E> /System/Library/PrivateFrameworks/DeviceRecovery.framework/Versions/A/DeviceRecovery
+       0x24f286000 -        0x24f2892ff  com.apple.FontServices (1.0 - 1) <A46AB82E-AF94-37A8-A8D8-48B6689934EB> /System/Library/PrivateFrameworks/FontServices.framework/Versions/A/FontServices
+       0x24f28a000 -        0x24f379e2f  libXTFontStaticRegistryData.dylib (335.4.0.6) <9092FEA3-2DFB-32A9-BEFB-01B43E166C48> /System/Library/PrivateFrameworks/FontServices.framework/libXTFontStaticRegistryData.dylib
+       0x24f37b000 -        0x24f387c9f  com.apple.FramePacing (1.0 - 1) <0CEB865C-17EB-3C26-B9C0-CE3689942DB2> /System/Library/PrivateFrameworks/FramePacing.framework/Versions/A/FramePacing
+       0x2504a9000 -        0x2504aef07  libGPUCompilerUtils.dylib (32023.884) <C4FEB8D0-1E65-3664-8CBE-0FFAB464AABC> /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/libGPUCompilerUtils.dylib
+       0x25491c000 -        0x25495b797  libllvm-flatbuffers.dylib (32023.884) <DA37B086-97F7-3DC1-AA07-442AECCB1666> /System/Library/PrivateFrameworks/GPUCompiler.framework/Versions/32023/Libraries/libllvm-flatbuffers.dylib
+       0x25c23a000 -        0x25c3432df  com.apple.InstalledContentLibrary (1.0 - 1.0) <AEEEDDBF-FCD1-3251-B0E9-940CE296B1E1> /System/Library/PrivateFrameworks/InstalledContentLibrary.framework/Versions/A/InstalledContentLibrary
+       0x25ec65000 -        0x25f433cbf  com.apple.IntelligencePlatformLibrary (274.57) <A1865439-B63E-3211-A2C4-DAE7F7D25698> /System/Library/PrivateFrameworks/IntelligencePlatformLibrary.framework/Versions/A/IntelligencePlatformLibrary
+       0x260d15000 -        0x2613ab923  com.apple.MIL (3520.4 - 3520.4.1) <43AB1D6B-D19B-3115-A2C0-25DF31A5786E> /System/Library/PrivateFrameworks/MIL.framework/Versions/A/MIL
+       0x265f21000 -        0x265f82abf  com.apple.MessageSecurity (1.0 - 195.121.2) <0BAED8A7-51DE-39EE-9686-893CE0916B1B> /System/Library/PrivateFrameworks/MessageSecurity.framework/Versions/A/MessageSecurity
+       0x26af82000 -        0x26afabb1f  com.apple.OSEligibility (319.121.1) <5C282C8D-F611-3A3F-B0C2-A9F376FE029F> /System/Library/PrivateFrameworks/OSEligibility.framework/Versions/A/OSEligibility
+       0x26bc0e000 -        0x26bd2685f  com.apple.ParsingInternal (0.0.1 - 5026.5.5) <7FD0C201-E1CC-3F69-AD54-681B3CD37313> /System/Library/PrivateFrameworks/ParsingInternal.framework/Versions/A/ParsingInternal
+       0x26f0bb000 -        0x26f0dce1f  com.apple.accessibility.PhotosensitivityProcessing (1.0 - 1) <EA136E97-3E2F-371B-A65D-A0BD5E1898D8> /System/Library/PrivateFrameworks/PhotosensitivityProcessing.framework/Versions/A/PhotosensitivityProcessing
+       0x26f4cf000 -        0x26f50ba3c  com.apple.PoirotSQLite (1.0 - 1) <F6CD54D6-1342-3624-9949-5690E8135D66> /System/Library/PrivateFrameworks/PoirotSQLite.framework/Versions/A/PoirotSQLite
+       0x26f50c000 -        0x26f57925f  com.apple.PoirotSchematizer (1.0 - 1) <31B04A5B-1569-37D6-B5E3-22CA260A9A41> /System/Library/PrivateFrameworks/PoirotSchematizer.framework/Versions/A/PoirotSchematizer
+       0x26f57a000 -        0x26f5afbff  com.apple.PoirotUDFs (1.0 - 1) <257AE39F-8DAA-36F7-A806-1A38920A0131> /System/Library/PrivateFrameworks/PoirotUDFs.framework/Versions/A/PoirotUDFs
+       0x270748000 -        0x27088411f  com.apple.ProDisplayLibrary (10.4.28 - 10.4.28) <C91E3E87-39F7-3515-8D68-33537486959D> /System/Library/PrivateFrameworks/ProDisplayLibrary.framework/Versions/A/ProDisplayLibrary
+       0x27183e000 -        0x2718464df  com.apple.ReflectionInternal (1.0.0 - 5026.5.5) <EA5C8DB0-0187-3AB8-80B0-5AC888E8CDB1> /System/Library/PrivateFrameworks/ReflectionInternal.framework/Versions/A/ReflectionInternal
+       0x272791000 -        0x2727a49d7  com.apple.RuntimeInternal (1.0.0 - 5026.5.5) <04ADBC99-92B0-32EE-98A8-A4D73DCCCE6C> /System/Library/PrivateFrameworks/RuntimeInternal.framework/Versions/A/RuntimeInternal
+       0x2729e3000 -        0x272a50abf  com.apple.SILManager (53.19 - 53.19) <4D5E48C2-F64C-3E12-B831-9D3BAE05317F> /System/Library/PrivateFrameworks/SILManager.framework/Versions/A/SILManager
+       0x27debe000 -        0x27deea4a1  com.apple.security.SwiftASN1Internal (1.0 - 1) <B9F3D5F5-9880-3CFB-B799-1A2DE78AD70B> /System/Library/PrivateFrameworks/SwiftASN1Internal.framework/Versions/A/SwiftASN1Internal
+       0x281311000 -        0x28134d1df  com.apple.tightbeam (1.0 - 483.100.88) <AC90942B-457E-3814-959B-85EFAACBCA58> /System/Library/PrivateFrameworks/Tightbeam.framework/Versions/A/Tightbeam
+       0x285a81000 -        0x285a822cf  com.apple.VideoToolboxParavirtualizationSupport (64.4.7 - 64.4.7) <C881C3D9-A5B6-36D5-B11A-4EE6D037DD24> /System/Library/PrivateFrameworks/VideoToolboxParavirtualizationSupport.framework/Versions/A/VideoToolboxParavirtualizationSupport
+       0x28fce8000 -        0x28fd8235f  libAppleArchive.dylib (450.100.4) <0FBEE8ED-BE69-3AC5-AC4E-6C28EEC29CF6> /usr/lib/libAppleArchive.dylib
+       0x28fe3d000 -        0x28fe4745f  libCoreEntitlements.dylib (80.100.6) <C9580199-FB51-35A3-AFCE-D4B3464E6E23> /usr/lib/libCoreEntitlements.dylib
+       0x290133000 -        0x29013a87f  libReverseProxyDevice.dylib (104.120.1.0.1) <37A5DD0C-9615-3BBD-8A88-0451A406D25F> /usr/lib/libReverseProxyDevice.dylib
+       0x29013b000 -        0x290142349  libRosetta.dylib (367.9) <8651ED4F-6506-3788-B56B-32EE414A85CA> /usr/lib/libRosetta.dylib
+       0x2901aa000 -        0x2901b33ff  libTLE.dylib (80.100.6) <207A2987-1BD0-3E47-B72C-E81934A6C74C> /usr/lib/libTLE.dylib
+       0x2909af000 -        0x290ac0b17  libcrypto.46.dylib (109.100.2) <F9685724-6622-3592-8336-B3811B583E83> /usr/lib/libcrypto.46.dylib
+       0x290bfb000 -        0x290c17762  libhvf.dylib (11) <43426C58-BE90-3643-9103-B9EE4A06A18A> /usr/lib/libhvf.dylib
+       0x29154e000 -        0x291586527  libssl.48.dylib (109.100.2) <83762FDF-B375-3BB1-B568-854F8F11CF89> /usr/lib/libssl.48.dylib
+       0x2915c1000 -        0x2915ef16f  libswiftPrespecialized.dylib (0) <1CC9F48A-BC65-37E0-88A5-260C70D14A8F> /usr/lib/libswiftPrespecialized.dylib
+       0x29188b000 -        0x29189d043  libswiftDistributed.dylib (6.3.2 - 6.3.2.1.3) <67A11C98-0E0D-3DF8-846F-34276C54ECF3> /usr/lib/swift/libswiftDistributed.dylib
+       0x2918b4000 -        0x2918c3ebc  libswiftObservation.dylib (6.3.2 - 6.3.2.1.3) <CE9EF53F-E72B-32EC-A1F9-8EBE59A4F1BA> /usr/lib/swift/libswiftObservation.dylib
+       0x2919f0000 -        0x291a038ef  libswiftSynchronization.dylib (6.3.2 - 6.3.2.1.3) <1A965373-0DB6-3B50-BE38-52C30D67A090> /usr/lib/swift/libswiftSynchronization.dylib
+       0x291a04000 -        0x291a1ce60  libswiftSystem.dylib (75) <A4F80949-97A7-3A1A-A340-45D2D7A5AB89> /usr/lib/swift/libswiftSystem.dylib
+       0x291a1e000 -        0x291a3479f  libswiftVideoToolbox.dylib (3320.8.5.1) <3C381F76-0925-338E-BEDA-2ECB42333EBC> /usr/lib/swift/libswiftVideoToolbox.dylib
+       0x291a36000 -        0x291a36669  libswift_Builtin_float.dylib (6.3.2.1.3) <15ED1E36-16BC-327E-8FAA-9130DE11923C> /usr/lib/swift/libswift_Builtin_float.dylib
+       0x291a37000 -        0x291ac2095  libswift_Concurrency.dylib (6.3.2 - 6.3.2.1.3) <E3545AA1-FF13-3698-8657-91BB23002DF9> /usr/lib/swift/libswift_Concurrency.dylib
+       0x291ac3000 -        0x291ac5f83  libswift_DarwinFoundation1.dylib (377.120.8) <2601FA08-2913-3370-89B6-C67DC05AC892> /usr/lib/swift/libswift_DarwinFoundation1.dylib
+       0x291ac6000 -        0x291ac6eeb  libswift_DarwinFoundation2.dylib (377.120.8) <38242BFE-54C8-3838-AE88-0083F7328580> /usr/lib/swift/libswift_DarwinFoundation2.dylib
+       0x291ac7000 -        0x291ac77a7  libswift_DarwinFoundation3.dylib (377.120.8) <6CFBAAE9-7293-3A51-83B9-E3988230EAC2> /usr/lib/swift/libswift_DarwinFoundation3.dylib
+       0x291ac8000 -        0x291b6649f  libswift_RegexParser.dylib (6.3.2 - 6.3.2.1.3) <2FED4499-861B-37B8-8C94-5ABC7FD49726> /usr/lib/swift/libswift_RegexParser.dylib
+       0x291b67000 -        0x291bf30cd  libswift_StringProcessing.dylib (6.3.2 - 6.3.2.1.3) <13999576-EB4F-3A0D-874F-A95AD5D7F296> /usr/lib/swift/libswift_StringProcessing.dylib
+       0x291d58000 -        0x291d5ba4b  libsystem_darwindirectory.dylib (122) <CF277A2C-C818-3F16-8B3F-3C7B39FCD164> /usr/lib/system/libsystem_darwindirectory.dylib
+       0x291d5c000 -        0x291d655d3  libsystem_eligibility.dylib (319.121.1) <DDAC0531-0262-3DDC-8EC8-80EB9438847A> /usr/lib/system/libsystem_eligibility.dylib
+       0x291d66000 -        0x291d6d88b  libsystem_sanitizers.dylib (26.1) <44C4234F-8B2D-38D3-A774-B4B3C75AF3A7> /usr/lib/system/libsystem_sanitizers.dylib
+       0x291d6e000 -        0x291d6ebb7  libsystem_trial.dylib (474.2.18.2) <68C583BA-AFF5-3916-86AE-6E38BFEF98D6> /usr/lib/system/libsystem_trial.dylib

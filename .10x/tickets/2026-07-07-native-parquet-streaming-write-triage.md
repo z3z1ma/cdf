@@ -56,6 +56,7 @@ No canonical package format change, no Parquet-only replay, no archive lifecycle
 
 - 2026-07-07: Opened from performance discussion. The target architecture is native Arrow/DataFusion Parquet; this ticket asks whether the current native paths are streaming enough to preserve that advantage.
 - 2026-07-11: P3 audit confirmed full-batch/package buffering. D1 defines the bounded destination path, D4 owns streaming row-group/multipart Parquet output, and D5/F4 own semantic/throughput/1 TB closeout. This triage owns no implementation and remains open until D4/D5 attach memory and ≥60%-roofline evidence.
+- 2026-07-11: WS-L measured the prepared tiny-package Parquet destination at 0.210 MiB/s median with setup bias, recorded in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`. D4/D5/F4 own the large-file streaming, roofline, and constant-memory proof.
 
 ## Blockers
 

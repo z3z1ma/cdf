@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md
-Depends-On: .10x/tickets/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/specs/constant-memory-proof.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/specs/constant-memory-proof.md
 
 # P3 F1: process-tree enforcement and headroom calibration
 

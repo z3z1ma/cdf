@@ -62,6 +62,7 @@ No live API benchmark, no selector-language expansion, no streaming parser imple
 
 - 2026-07-07: Opened from performance discussion. Expected default: REST is usually API-bound, but high-volume deterministic JSON fixtures should prove whether `serde_json::Value` plus cloning is good enough.
 - 2026-07-11: P3 audit confirmed DOM/value materialization in JSON/REST hot paths. B5 owns tape/streaming JSON codecs and REST CPU-pool decode, G3 owns download/decode overlap, and B13/F2 own cross-format and materialization closure. This triage owns no implementation and remains open until those children record ≥3x/current and aggregate-throughput evidence with fail-closed parity.
+- 2026-07-11: WS-L measured CDF NDJSON-to-package at 0.750 MiB/s versus 80.06 MiB/s for raw arrow-rs on identical rows and physical bytes (`0.009x`), recorded in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`. B5/G3/B13 own decode isolation and the required before/after evidence.
 
 ## Blockers
 

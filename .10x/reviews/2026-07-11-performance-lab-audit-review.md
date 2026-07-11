@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Target: .10x/research/2026-07-11-performance-lab-current-state-audit.md, .10x/specs/performance-lab-and-envelope.md, .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
+Target: .10x/research/2026-07-11-performance-lab-current-state-audit.md, .10x/specs/performance-lab-and-envelope.md, .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md
 Verdict: pass
 
 # Performance lab current-state audit review

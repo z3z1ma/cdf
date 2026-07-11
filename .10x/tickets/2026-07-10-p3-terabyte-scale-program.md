@@ -39,7 +39,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 
 ## Workstreams
 
-- `.10x/tickets/2026-07-10-p3-ws-l-performance-lab.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md`
 - `.10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md`
 - `.10x/tickets/2026-07-10-p3-ws-b-format-decode-engines.md`
 - `.10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md`
@@ -89,7 +89,8 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-11: WS-H is split through IX1 and H1–H5. Python/subprocess must become incremental implementations of one neutral foreign-stream contract with falsifiable copy/memory/cancellation semantics; WASM remains a prospective interface/cost model in P3, with no invented runtime claim.
 - 2026-07-11: The future distribution seam is now executable architecture rather than prose: WX1 defines a canonical operational partition task/result capsule and C5 proves direct-local versus serialize/reconstruct isolated-worker equivalence. P3 still ships no remote scheduler/framework adapter.
 - 2026-07-11: Envelope ownership audit found the ≥1 GB/s/core validation target had no implementation child while the current evaluator is per-rule/per-row scalar. WS-V now owns engine-neutral vector kernels, bitmap verdict algebra, graph integration, scalar differential proof, and the target closeout.
+- 2026-07-11: WS-L completed before any P3 data-plane optimization. The immutable report and honest failing envelope are recorded at `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`; WS-A now owns the exclusive runtime-spine migration window, while crate-bounded WS-B/WS-D/WS-E work remains eligible only where it does not cross that frozen surface.
 
 ## Blockers
 
-WS-L is unblocked. Later P3 workstreams are intentionally blocked until WS-L records the before picture.
+None at program level. Workstream dependencies and the WS-A runtime-spine freeze govern sequencing.

@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/specs/vectorized-contract-validation.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/specs/vectorized-contract-validation.md
 
 # P3 WS-V: vectorized contract validation
 

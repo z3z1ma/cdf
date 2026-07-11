@@ -64,6 +64,7 @@ No destination API change, no streaming reader implementation, no receipt schema
 
 - 2026-07-07: Opened from performance discussion. The expected risk is peak memory and duplicate IPC readback when packages are immediately committed after being written.
 - 2026-07-11: P3 source/architecture audit confirmed whole-package destination materialization. A1/A5 establish durable-segment streaming and final binding; D1–D5 implement/verify bulk destination consumers; F2 audits residual collections. This triage owns no implementation and remains open only until those children attach before/after memory/receipt/crash evidence and the P3 closeout moves it terminal.
+- 2026-07-11: WS-L separately measured materialized package build, DuckDB commit, and Parquet commit and preserved their tiny-fixture/setup bias in `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`. A1/A5/D1-D5/F2 own bounded streaming and receipt/crash before/after proof.
 
 ## Blockers
 

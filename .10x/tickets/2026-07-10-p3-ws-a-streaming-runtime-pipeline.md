@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/specs/architecture-layering-runtime.md, .10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md, .10x/tickets/2026-07-07-batch-sizing-segment-coalescing-triage.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/specs/architecture-layering-runtime.md, .10x/tickets/2026-07-07-streaming-package-to-destination-commit-triage.md, .10x/tickets/2026-07-07-batch-sizing-segment-coalescing-triage.md
 
 # P3 WS-A: streaming runtime pipeline
 

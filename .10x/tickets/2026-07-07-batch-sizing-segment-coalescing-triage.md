@@ -63,6 +63,7 @@ No batch-size configuration surface, no engine coalescing implementation, no pac
 
 - 2026-07-07: Opened from performance discussion. The suspected performance risk is not Arrow itself, but pathological batch/segment granularity amplifying otherwise reasonable fixed costs.
 - 2026-07-11: P3 source audit confirmed the hypothesis: formats default to 1,024 rows, REST follows page size, and engine execution writes one global encounter-order segment per accepted batch. Ratified the adaptive-microbatch/canonical-segment split and assigned implementation to `.10x/tickets/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md`. This triage remains open until WS-L supplies measurements and A3 records the before/after closure evidence.
+- 2026-07-11: WS-L baseline evidence at `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md` measures high fixed segment/durability cost on the tiny NDJSON path but does not isolate a batch-size curve. A3 remains the implementation and before/after owner; this record remains its evidence checklist.
 
 ## Blockers
 

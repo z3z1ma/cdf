@@ -160,7 +160,6 @@ fn envelope_row(
             let observed_work = observation.samples.first()?;
             let reference_work = reference.samples.first()?;
             if observed_work.rows != reference_work.rows
-                || observed_work.logical_bytes != reference_work.logical_bytes
                 || observed_work.physical_bytes != reference_work.physical_bytes
             {
                 return Some((

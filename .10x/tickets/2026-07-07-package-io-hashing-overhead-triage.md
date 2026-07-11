@@ -63,6 +63,7 @@ No package format change, no hash weakening, no removal of atomic writes, no rem
 
 - 2026-07-07: Opened from performance discussion. The package boundary is likely CDF's most intentional overhead versus raw DataFusion/DuckDB/Polars, so it needs quantified tradeoff notes before optimization work.
 - 2026-07-11: P3 audit confirmed immediate segment rereads plus final rereads and high-frequency durability work. E1–E4 own hash-while-write receipts, streaming manifest/durability, verification/replay I/O, and the ≤5%/roofline closeout. This triage owns no implementation and remains open until E4 records the measured disposition.
+- 2026-07-11: WS-L measured package build at 0.235 MiB/s median and retained a real sample profile whose dominant captured subtree is segment persistence with file/directory synchronization. See `.10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md`; E1-E4 own the isolated before/after and ≤5% closeout.
 
 ## Blockers
 

@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-11
-Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
+Parent: .10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md
 Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l1-catalog-report-schema.md, .10x/tickets/done/2026-07-10-p3-ws-l2-phase-telemetry.md
 
 # P3 WS-L3: macro, roofline, and reference runners

@@ -29,4 +29,4 @@ Permanent matrix output, million-event and end-to-end benchmark artifacts, canon
 ## References
 
 - `.10x/specs/performance-lab-and-envelope.md`
-- `.10x/tickets/2026-07-10-p3-ws-l-performance-lab.md`
+- `.10x/tickets/done/2026-07-10-p3-ws-l-performance-lab.md`

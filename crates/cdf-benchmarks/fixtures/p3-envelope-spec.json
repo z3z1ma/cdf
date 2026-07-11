@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
   "title": "CDF Terabyte-Scale Performance Envelope",
-  "evidence_status": "PRE-BASELINE TEST FIXTURE — no performance claim is authorized until P3 L5 replaces this document from recorded evidence.",
-  "evidence_record": null,
+  "evidence_status": "PRE-OPTIMIZATION BASELINE — failures and unavailable cells are intentional evidence, not green performance claims.",
+  "evidence_record": ".10x/evidence/2026-07-11-p3-l5-preoptimization-baseline.md",
   "targets": [
     {"workload_id": "tlc_parquet_to_package", "label": "Parquet file/glob → package", "target": "≥0.7× raw Arrow; ≥1.5 GB/s", "reference_workload_id": "raw_arrow_parquet"},
     {"workload_id": "tpch_csv_to_package", "label": "CSV → package", "target": "≥0.6× raw Arrow; ≥400 MB/s", "reference_workload_id": "raw_arrow_csv"},
@@ -15,5 +15,7 @@
     {"workload_id": "tlc_e2e_duckdb", "label": "Full-year TLC HTTPS → DuckDB", "target": "≤1.5× download + native ingest", "reference_workload_id": "tlc_download_duckdb_native"},
     {"workload_id": "constant_memory_stress", "label": "1 TB synthetic → Parquet", "target": "default budget; stable RSS; linear scaling", "reference_workload_id": null}
   ],
-  "profile_links": {}
+  "profile_links": {
+    "json_ndjson_to_package": ["../.10x/evidence/.storage/p3-baseline-cdf-ndjson-sample.txt"]
+  }
 }
