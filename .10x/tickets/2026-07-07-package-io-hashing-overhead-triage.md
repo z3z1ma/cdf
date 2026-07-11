@@ -62,6 +62,7 @@ No package format change, no hash weakening, no removal of atomic writes, no rem
 ## Progress and notes
 
 - 2026-07-07: Opened from performance discussion. The package boundary is likely CDF's most intentional overhead versus raw DataFusion/DuckDB/Polars, so it needs quantified tradeoff notes before optimization work.
+- 2026-07-11: P3 audit confirmed immediate segment rereads plus final rereads and high-frequency durability work. E1–E4 own hash-while-write receipts, streaming manifest/durability, verification/replay I/O, and the ≤5%/roofline closeout. This triage owns no implementation and remains open until E4 records the measured disposition.
 
 ## Blockers
 

@@ -64,6 +64,7 @@ No engine rewrite, no Tokio runtime adoption, no worker pool, no distributed sch
 ## Progress and notes
 
 - 2026-07-07: Opened from performance discussion. The concern is a likely throughput ceiling from sequential local partition execution, but the first step is validating whether current workloads are actually partition-rich and whether deterministic packages can stay stable.
+- 2026-07-11: P3 audit confirmed sequential execution and ratified canonical-frontier scheduling. C1–C4 own admission, fan-out/reorder, engine/FFI integration, and jobs/scaling invariance; WX1/C5 preserve the future distributed worker seam without adding a remote scheduler. This triage owns no implementation and remains open until C4/C5 record scaling and byte-identity evidence.
 
 ## Blockers
 

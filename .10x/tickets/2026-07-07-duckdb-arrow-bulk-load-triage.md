@@ -60,6 +60,7 @@ No DuckDB destination rewrite, no unsafe FFI, no type mapping change, no ICU pol
 ## Progress and notes
 
 - 2026-07-07: Opened from performance discussion. DuckDB comparison is likely unfair to CDF until the destination uses a native-ish bulk path or the row-materialization cost is proven negligible.
+- 2026-07-11: P3 audit confirmed scalar appender ingestion and shaped schema-planned driver-owned bulk paths. D1 owns the neutral contract, D2 owns measured Arrow/vtab selection and fallback, and D5 owns guarantee/conformance/throughput closeout. This triage owns no implementation and remains open until D2/D5 attach the measured API choice and ≥1M rows/s/≥5x evidence.
 
 ## Blockers
 
