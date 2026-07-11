@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
+Parent: .10x/tickets/done/2026-07-10-p2-residual-schema-promotion-program.md
 Depends-On: .10x/tickets/done/2026-07-10-p2-rp1-residual-envelope-codec.md, .10x/tickets/done/2026-07-10-p2-rp3-correction-capabilities-row-provenance.md, .10x/tickets/done/2026-07-10-p2-rp4-schema-scope-lease-lock-cas.md, .10x/tickets/done/2026-07-10-p2-ws-a10g-explicit-sampled-binary-discovery.md
 
 # P2 RP5 schema promote dry planner and CLI

@@ -88,4 +88,4 @@ This ticket does not add Arrow IPC stream framing, Parquet/IPC row decoding chan
 
 ## Blockers
 
-None. Child dependencies govern execution order. The residual/promotion execution graph is owned separately by `.10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md`.
+None. Child dependencies govern execution order. The residual/promotion execution graph is owned separately by `.10x/tickets/done/2026-07-10-p2-residual-schema-promotion-program.md`.

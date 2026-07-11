@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
+Parent: .10x/tickets/done/2026-07-10-p2-residual-schema-promotion-program.md
 Depends-On: .10x/specs/residual-variant-capture.md, .10x/tickets/done/2026-07-08-p1-e4-variant-capture-evolution-event.md
 
 # P2 RP1 canonical residual envelope codec

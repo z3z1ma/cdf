@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
+Parent: .10x/tickets/done/2026-07-10-p2-residual-schema-promotion-program.md
 Depends-On: .10x/specs/schema-promotion-corrections.md, .10x/specs/destination-receipts-guarantees.md
 
 # P2 RP3 destination correction capabilities and row provenance

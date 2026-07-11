@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-data-onramp-program.md
@@ -54,6 +54,7 @@ No implicit promotion, arbitrary user UPDATE SQL, indefinite retention, inferred
 - 2026-07-10: RP6 and RP7 closed with shared parent evidence/review at `.10x/evidence/2026-07-10-p2-a10g-rp6-rp7-integration.md` and `.10x/reviews/2026-07-10-p2-a10g-rp6-rp7-integration-review.md`. The kernel/contract now owns one batched correction session, exact residual value authority, operation digest/evidence, canonical Receipt/checkpoint compatibility, and exact-address residual readback. Postgres and DuckDB truthfully implement persisted/targetable provenance plus atomic in-place correction; append remains keyless. A10g also closed, so RP5 and RP8 are now independently executable; RP9 waits for both.
 - 2026-07-10: RP8 closed with evidence `.10x/evidence/2026-07-10-p2-rp8-parquet-correction-sidecars.md` and pass review `.10x/reviews/2026-07-10-p2-rp8-parquet-correction-sidecars-review.md`. Parquet now implements immutable, content-addressed addressed correction sidecars through the canonical receipt protocol, keeps base objects unchanged, proves both pre-receipt crash boundaries and idempotent replay, and exposes rematerialization only as a non-executable CAS-gated plan. RP9 now waits only for RP5.
 - 2026-07-10: RP5 closed with evidence `.10x/evidence/2026-07-10-p2-rp5-schema-promote-dry-planner.md`, retained fail review `.10x/reviews/2026-07-10-p2-rp5-schema-promote-dry-planner-review.md`, and resolving pass review `.10x/reviews/2026-07-10-p2-rp5-schema-promote-dry-planner-rereview.md`. The no-write planner is transport-neutral, preserves exact package/receipt/target/path authority, emits a materializable typed version-3 promotion snapshot, and renders complete human/JSON evidence. RP9 is now unblocked; the separately owned Tier-0 lossy-policy surface remains fail-closed.
+- 2026-07-10: RP9 and RP10 closed the complete execution and conformance graph. Final integrated evidence is `.10x/evidence/2026-07-10-p2-rp9c-promotion-command-conformance.md` and `.10x/evidence/2026-07-10-p2-rp10-residual-promotion-conformance.md`; final severity-focused reviews pass at `.10x/reviews/2026-07-10-p2-rp9c-promotion-command-review.md` and `.10x/reviews/2026-07-10-p2-rp10-residual-promotion-review.md`. All children are terminal and the parent acceptance criteria are satisfied.
 
 ## Blockers
 
