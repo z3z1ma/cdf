@@ -12,6 +12,8 @@ This specification governs the compile-time/runtime boundary for adding destinat
 
 `cdf-runtime` MUST depend on no DataFusion implementation, concrete destination, engine, or product crate and MUST expose no concrete driver type. `cdf-project` MUST depend on `cdf-runtime` and MUST NOT depend on `cdf-dest-*`. Destination crates MAY depend on `cdf-runtime` and lightweight `cdf-memory` to implement driver/runtime and accounted-ingress traits without inheriting the DataFusion build graph.
 
+Destination runtimes MUST receive run-scoped executor, cancellation, memory, telemetry, and blocking-lane services through the injected host contract in `.10x/specs/execution-host-structured-runtime.md`. They MUST NOT construct an async runtime, call a blocking executor around async work, or make generic orchestration identify a concrete destination to schedule it.
+
 The CLI MUST construct the first-party registry in one composition module. Generic CLI commands MUST resolve, inspect, plan, run, replay, resume, and doctor destinations through that registry. A concrete destination reference outside composition or an adapter-specific diagnostic module is a stop-line finding.
 
 ## Driver contract

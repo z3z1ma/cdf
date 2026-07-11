@@ -28,7 +28,7 @@ MVP implementation MAY stub or feature-gate post-MVP crates when a ticket explic
 
 ## Runtime behavior
 
-cdf MUST use Tokio multi-threaded execution with distinct resource classes for I/O, CPU-heavy work, and bounded blocking/FFI pools. Blocking DuckDB and Python work MUST be confined to bounded blocking pools.
+cdf's standalone host MUST use Tokio multi-threaded control/I/O execution with distinct resource classes for I/O, CPU-heavy work, and bounded blocking/FFI pools. Runtime ownership, injection, structured concurrency, and executor-neutral extension boundaries are governed by `.10x/specs/execution-host-structured-runtime.md`. Blocking DuckDB and Python work MUST be confined to declared bounded lanes. Library and extension contracts MUST NOT expose Tokio or construct private runtimes.
 
 Every channel carrying batch data MUST be byte-bounded using batch byte accounting, not merely message-count-bounded. Backpressure MUST propagate from slow destinations toward resources. Resources that cannot pause MUST declare that fact; plans for those resources MUST require spill policy.
 
