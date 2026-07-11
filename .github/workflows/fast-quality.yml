@@ -95,9 +95,12 @@ jobs:
 
       - name: Source-only secret scan
         run: |
+          source_tree="$(mktemp -d)"
+          trap 'rm -rf "$source_tree"' EXIT
+          git archive --format=tar HEAD | tar -xf - -C "$source_tree"
           gitleaks detect \
             --no-git \
-            --source . \
+            --source "$source_tree" \
             --no-banner \
             --redact \
             --report-format json \
