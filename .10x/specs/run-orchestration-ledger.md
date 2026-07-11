@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-11
 
 # Run orchestration and ledger
 
@@ -57,10 +57,10 @@ Given a selected environment, resource set, destination, checkpoint store, packa
 1. The runtime MUST append `run_started`.
 2. The runtime MUST plan resource scans and destination commits before source writes where the needed lower-layer planning APIs exist, then append `plan_recorded`.
 3. For each resource/scope transition, the runtime MUST read the current checkpoint head and package input checkpoint artifact.
-4. The runtime MUST execute `ResourceStream` partitions into a package with state-delta and destination-commit preimage artifacts before finalizing package identity.
+4. The runtime MUST execute `ResourceStream` partitions into a package with state-delta and destination-commit preimage artifacts before finalizing package identity. When the compiled destination capability permits staged ingress, durable hash-complete segments MAY be staged under non-identity attempt authority during this step; this is not final target publication and cannot produce a receipt.
 5. The runtime MUST append `package_finalized` with package path and hash after package finalization.
-6. The runtime MUST propose the checkpoint before destination mutation when a state delta is present and append `checkpoint_proposed`.
-7. The runtime MUST feed package segments incrementally through a destination `CommitSession` and append `destination_receipt_recorded` only after a durable receipt exists.
+6. The runtime MUST propose the checkpoint before final target publication when a state delta is present and append `checkpoint_proposed`.
+7. The runtime MUST either bind verified staged segments to the finalized package or feed finalized package segments incrementally through a destination `CommitSession`, then append `destination_receipt_recorded` only after a durable receipt exists.
 8. The runtime MUST verify the destination receipt through the destination protocol before calling `CheckpointStore::commit`.
 9. The runtime MUST call `CheckpointStore::commit(checkpoint_id, receipt)` as the only state advancement path and append `checkpoint_committed` after it succeeds.
 10. The runtime MUST update package status to checkpointed after checkpoint commit and append `package_status_updated`.

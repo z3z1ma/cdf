@@ -32,6 +32,8 @@ cdf's standalone host MUST use Tokio multi-threaded control/I/O execution with d
 
 Every channel carrying batch data MUST be byte-bounded using batch byte accounting, not merely message-count-bounded. Backpressure MUST propagate from slow destinations toward resources. Resources that cannot pause MUST declare that fact; plans for those resources MUST require spill policy.
 
+Graph compilation, stateless fusion, ownership-transfer edges, stateful barriers, bounded evidence metadata, and the durable segment handoff are governed by `.10x/specs/streaming-operator-graph.md`. Logical plan nodes do not imply a task or channel per node.
+
 cdf MUST maintain one memory accounting story by extending DataFusion's `MemoryPool` accounting to package builders, adapter decode buffers, destination staging, and other cdf buffers. Budget exhaustion MUST attempt, in order: early segment flush, backpressure, spill, clean failure. Surprise OOM is not an accepted behavior.
 
 The concrete ledger, accounted-payload, admission, deadlock-prevention, and spill contract is `.10x/specs/runtime-memory-backpressure.md`. Stage-local counters or message-count channel bounds MUST NOT compete with that authority.
