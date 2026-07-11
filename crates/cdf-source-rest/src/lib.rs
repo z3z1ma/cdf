@@ -5,6 +5,7 @@ use std::collections::BTreeMap;
 use cdf_http::{AuthScheme, EgressAllowlist, PaginationConfig, RateLimitPolicy};
 use cdf_kernel::PushdownFidelity;
 
+mod driver;
 mod runtime;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,4 +25,5 @@ pub struct RestResourcePlan {
     pub records_transform: Option<String>,
 }
 
+pub use driver::RestSourceDriver;
 pub use runtime::*;

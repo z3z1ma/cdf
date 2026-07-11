@@ -740,6 +740,7 @@ dependencies = [
  "cdf-python",
  "cdf-runtime",
  "cdf-source-postgres",
+ "cdf-source-rest",
  "cdf-state-sqlite",
  "clap",
  "clap_complete",
@@ -1110,7 +1111,9 @@ dependencies = [
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-runtime",
  "futures-util",
+ "serde",
  "serde_json",
 ]
 

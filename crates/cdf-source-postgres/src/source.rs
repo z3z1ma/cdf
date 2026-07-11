@@ -37,6 +37,7 @@ pub struct PostgresTableResource {
     database_url: String,
     capabilities: ResourceCapabilities,
     execution: Option<ExecutionServices>,
+    type_policy_allowances: cdf_kernel::TypePolicyAllowances,
 }
 
 impl PostgresTableResource {
@@ -61,11 +62,17 @@ impl PostgresTableResource {
             database_url,
             capabilities,
             execution: None,
+            type_policy_allowances: Default::default(),
         })
     }
 
     pub fn with_execution(mut self, execution: ExecutionServices) -> Self {
         self.execution = Some(execution);
+        self
+    }
+
+    pub fn with_type_policy(mut self, allowances: cdf_kernel::TypePolicyAllowances) -> Self {
+        self.type_policy_allowances = allowances;
         self
     }
 }
@@ -100,6 +107,10 @@ impl ResourceStream for PostgresTableResource {
             &self.target,
             request,
         )?])
+    }
+
+    fn type_policy_allowances(&self) -> cdf_kernel::TypePolicyAllowances {
+        self.type_policy_allowances
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {

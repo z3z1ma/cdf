@@ -68,6 +68,21 @@ fn book_rest_example_parses_and_negotiates_inexact_cursor_pushdown() {
         resource.capabilities().filters.default_fidelity,
         PushdownFidelity::Inexact
     );
+    let source_plan = resource.source_plan().expect("neutral REST source plan");
+    assert_eq!(source_plan.driver.driver_id.as_str(), "rest");
+    assert_eq!(
+        source_plan
+            .execution_capabilities
+            .blocking_lane
+            .as_ref()
+            .unwrap()
+            .lane_id,
+        "rest-source.sync"
+    );
+    assert_eq!(
+        source_plan.type_policy_allowances,
+        resource.type_policy_allowances()
+    );
 
     let CompiledResourcePlan::Rest(plan) = resource.plan() else {
         panic!("book example must compile as REST");

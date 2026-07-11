@@ -613,6 +613,7 @@ impl SourceDriver for MockSourceDriver {
                 telemetry_version: "v1".to_owned(),
             },
             request.schema,
+            request.type_policy_allowances,
             serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
             serde_json::json!({"partitions": 2}),
         )
@@ -766,6 +767,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             resource_options: BTreeMap::new(),
             descriptor: resource_descriptor,
             schema: Schema::empty(),
+            type_policy_allowances: Default::default(),
         })
         .unwrap();
     assert_eq!(
@@ -783,9 +785,9 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     let memory: Arc<dyn cdf_memory::MemoryCoordinator> =
         Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
     let services = ExecutionServices::new(Arc::new(NoopSourceHost { memory })).unwrap();
-    let secrets = NoopSecretProvider;
+    let secrets: Arc<dyn cdf_http::SecretProvider + Send + Sync> = Arc::new(NoopSecretProvider);
     let root = tempfile::tempdir().unwrap();
-    let context = SourceResolutionContext::new(root.path(), &secrets, &services);
+    let context = SourceResolutionContext::new(root.path(), secrets, &services);
     let resource = registry.resolve(&plan, &context).unwrap();
     assert_eq!(resource.descriptor().resource_id.as_str(), "mock.events");
 

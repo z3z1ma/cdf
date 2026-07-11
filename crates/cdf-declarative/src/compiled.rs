@@ -27,7 +27,7 @@ use cdf_kernel::{
 };
 use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
 use cdf_source_postgres::PostgresSourceDriver;
-use cdf_source_rest::{RestResourcePlan, cursor_pushdown_value};
+use cdf_source_rest::{RestResourcePlan, RestSourceDriver, cursor_pushdown_value};
 use sha2::{Digest, Sha256};
 
 use crate::declarations::*;
@@ -685,7 +685,21 @@ fn compile_resource(
         )?),
     };
     let capabilities = capabilities_for(&descriptor, &plan);
-    let source_plan = compile_neutral_source_plan(source, resource, &descriptor, &schema)?;
+    let type_policy_allowances = resource
+        .types
+        .as_ref()
+        .map(|types| TypePolicyAllowances {
+            coerce_types: types.coerce_types,
+            allow_lossy_mapping: types.allow_lossy_mapping,
+        })
+        .unwrap_or_default();
+    let source_plan = compile_neutral_source_plan(
+        source,
+        resource,
+        &descriptor,
+        &schema,
+        type_policy_allowances,
+    )?;
 
     Ok(CompiledResource {
         descriptor,
@@ -697,14 +711,7 @@ fn compile_resource(
         source_plan,
         effective_schema_runtime: None,
         schema_discovery_sample_files: resource.sample_files,
-        type_policy_allowances: resource
-            .types
-            .as_ref()
-            .map(|types| TypePolicyAllowances {
-                coerce_types: types.coerce_types,
-                allow_lossy_mapping: types.allow_lossy_mapping,
-            })
-            .unwrap_or_default(),
+        type_policy_allowances,
     })
 }
 
@@ -713,38 +720,132 @@ fn compile_neutral_source_plan(
     resource: &ResourceDeclaration,
     descriptor: &ResourceDescriptor,
     schema: &Schema,
+    type_policy_allowances: TypePolicyAllowances,
 ) -> Result<Option<CompiledSourcePlan>> {
-    let SourceDeclaration::Sql(sql) = source else {
-        return Ok(None);
-    };
-    let Some(table) = &resource.table else {
-        return Ok(None);
-    };
     let mut registry = SourceRegistry::new();
-    registry.register(PostgresSourceDriver::new()?)?;
-    registry
-        .compile(SourceCompileRequest {
-            source_kind: "sql".to_owned(),
-            source_options: BTreeMap::from([
+    let request = match source {
+        SourceDeclaration::Sql(sql) => {
+            let Some(table) = &resource.table else {
+                return Ok(None);
+            };
+            registry.register(PostgresSourceDriver::new()?)?;
+            SourceCompileRequest {
+                source_kind: "sql".to_owned(),
+                source_options: BTreeMap::from([
+                    (
+                        "connection".to_owned(),
+                        serde_json::Value::String(sql.connection.clone()),
+                    ),
+                    (
+                        "dialect".to_owned(),
+                        serde_json::Value::String(
+                            sql.dialect.clone().unwrap_or_else(|| "postgres".to_owned()),
+                        ),
+                    ),
+                ]),
+                resource_options: BTreeMap::from([(
+                    "table".to_owned(),
+                    serde_json::Value::String(table.clone()),
+                )]),
+                descriptor: descriptor.clone(),
+                schema: schema.clone(),
+                type_policy_allowances,
+            }
+        }
+        SourceDeclaration::Rest(rest) => {
+            registry.register(RestSourceDriver::new(|| {
+                Err(CdfError::internal(
+                    "compile-only REST driver transport factory was invoked",
+                ))
+            })?)?;
+            let mut source_options = BTreeMap::from([
                 (
-                    "connection".to_owned(),
-                    serde_json::Value::String(sql.connection.clone()),
-                ),
-                (
-                    "dialect".to_owned(),
+                    "source_name".to_owned(),
                     serde_json::Value::String(
-                        sql.dialect.clone().unwrap_or_else(|| "postgres".to_owned()),
+                        descriptor
+                            .resource_id
+                            .as_str()
+                            .split_once('.')
+                            .map(|(source, _)| source)
+                            .unwrap_or(descriptor.resource_id.as_str())
+                            .to_owned(),
                     ),
                 ),
-            ]),
-            resource_options: BTreeMap::from([(
-                "table".to_owned(),
-                serde_json::Value::String(table.clone()),
-            )]),
-            descriptor: descriptor.clone(),
-            schema: schema.clone(),
-        })
-        .map(Some)
+                (
+                    "base_url".to_owned(),
+                    serde_json::Value::String(rest.base_url.clone()),
+                ),
+                (
+                    "egress_allowlist".to_owned(),
+                    json_value(&rest.egress_allowlist)?,
+                ),
+            ]);
+            if let Some(auth) = &rest.auth {
+                source_options.insert("auth".to_owned(), json_value(auth)?);
+            }
+            if let Some(rate_limit) = &rest.rate_limit {
+                source_options.insert("rate_limit".to_owned(), json_value(rate_limit)?);
+            }
+            let mut resource_options = BTreeMap::from([
+                (
+                    "path".to_owned(),
+                    serde_json::Value::String(resource.path.clone().unwrap_or_default()),
+                ),
+                (
+                    "records".to_owned(),
+                    serde_json::Value::String(resource.records.clone().unwrap_or_default()),
+                ),
+                ("params".to_owned(), json_value(&resource.params)?),
+                (
+                    "cursor_filter_fidelity".to_owned(),
+                    serde_json::Value::String(
+                        resource
+                            .cursor
+                            .as_ref()
+                            .and_then(|cursor| cursor.filter_fidelity.as_ref())
+                            .map(|fidelity| match fidelity {
+                                FilterFidelityDeclaration::Exact => "exact",
+                                FilterFidelityDeclaration::Inexact => "inexact",
+                                FilterFidelityDeclaration::Unsupported => "unsupported",
+                            })
+                            .unwrap_or("inexact")
+                            .to_owned(),
+                    ),
+                ),
+            ]);
+            if let Some(paginate) = &resource.paginate {
+                resource_options.insert("paginate".to_owned(), json_value(paginate)?);
+            }
+            if let Some(transform) = &resource.records_transform {
+                resource_options.insert(
+                    "records_transform".to_owned(),
+                    serde_json::Value::String(transform.clone()),
+                );
+            }
+            if let Some(param) = resource
+                .cursor
+                .as_ref()
+                .and_then(|cursor| cursor.param.clone())
+            {
+                resource_options
+                    .insert("cursor_param".to_owned(), serde_json::Value::String(param));
+            }
+            SourceCompileRequest {
+                source_kind: "rest".to_owned(),
+                source_options,
+                resource_options,
+                descriptor: descriptor.clone(),
+                schema: schema.clone(),
+                type_policy_allowances,
+            }
+        }
+        SourceDeclaration::Files(_) => return Ok(None),
+    };
+    registry.compile(request).map(Some)
+}
+
+fn json_value(value: &impl serde::Serialize) -> Result<serde_json::Value> {
+    serde_json::to_value(value).map_err(|error| CdfError::internal(error.to_string()))
 }
 
 fn compile_deduplication(

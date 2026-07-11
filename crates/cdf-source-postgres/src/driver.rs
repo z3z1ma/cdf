@@ -72,6 +72,7 @@ impl SourceDriver for PostgresSourceDriver {
             capabilities,
             execution_capabilities(),
             request.schema,
+            request.type_policy_allowances,
             serde_json::json!({
                 "connection": connection.as_str(),
                 "dialect": "postgres",
@@ -101,6 +102,7 @@ impl SourceDriver for PostgresSourceDriver {
             Arc::new(plan.schema.clone()),
             target,
         )?
+        .with_type_policy(plan.type_policy_allowances)
         .with_execution(context.execution().clone());
         Ok(Arc::new(resource))
     }
@@ -219,6 +221,7 @@ mod tests {
                 )]),
                 descriptor: descriptor(),
                 schema: Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+                type_policy_allowances: Default::default(),
             })
             .unwrap();
 
@@ -255,6 +258,7 @@ mod tests {
                 )]),
                 descriptor: descriptor(),
                 schema: Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+                type_policy_allowances: Default::default(),
             })
             .unwrap_err();
         assert!(error.to_string().contains("unknown field `unexpected`"));

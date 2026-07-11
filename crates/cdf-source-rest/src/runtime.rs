@@ -19,6 +19,7 @@ use cdf_kernel::{
     ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, SourcePosition,
     TypePolicyAllowances, WriteDisposition, source_name,
 };
+use cdf_runtime::ExecutionServices;
 use futures_util::stream;
 use serde_json::{Map, Value};
 
@@ -33,15 +34,21 @@ pub struct RestRuntimeDependencies {
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     auth_refresh: Option<Arc<Mutex<Box<dyn AuthRefreshHook + Send>>>>,
     retry_policy: RetryPolicy,
+    execution: Option<ExecutionServices>,
 }
 
 impl RestRuntimeDependencies {
     pub fn new(transport: impl HttpTransport + Send + 'static) -> Self {
+        Self::from_boxed_transport(Box::new(transport))
+    }
+
+    pub fn from_boxed_transport(transport: Box<dyn HttpTransport + Send>) -> Self {
         Self {
-            transport: Arc::new(Mutex::new(Box::new(transport))),
+            transport: Arc::new(Mutex::new(transport)),
             secret_provider: None,
             auth_refresh: None,
             retry_policy: RetryPolicy::default(),
+            execution: None,
         }
     }
 
@@ -50,6 +57,19 @@ impl RestRuntimeDependencies {
         provider: impl SecretProvider + Send + Sync + 'static,
     ) -> Self {
         self.secret_provider = Some(Arc::new(provider));
+        self
+    }
+
+    pub fn with_shared_secret_provider(
+        mut self,
+        provider: Arc<dyn SecretProvider + Send + Sync>,
+    ) -> Self {
+        self.secret_provider = Some(provider);
+        self
+    }
+
+    pub fn with_execution_services(mut self, execution: ExecutionServices) -> Self {
+        self.execution = Some(execution);
         self
     }
 
@@ -72,6 +92,7 @@ impl fmt::Debug for RestRuntimeDependencies {
             .field("secret_provider", &self.secret_provider.is_some())
             .field("auth_refresh", &self.auth_refresh.is_some())
             .field("retry_policy", &self.retry_policy)
+            .field("managed_execution", &self.execution.is_some())
             .finish()
     }
 }
@@ -173,7 +194,13 @@ impl ResourceStream for RestResource {
         let dependencies = self.dependencies.clone();
 
         Box::pin(async move {
-            let batches = execute_rest(&descriptor, schema, &plan, &partition, dependencies)?;
+            let execution = dependencies.execution.clone();
+            let batches = match execution {
+                Some(execution) => execution.run_blocking("rest-source.sync", move || {
+                    execute_rest(&descriptor, schema, &plan, &partition, dependencies)
+                })?,
+                None => execute_rest(&descriptor, schema, &plan, &partition, dependencies)?,
+            };
             Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream)
         })
     }

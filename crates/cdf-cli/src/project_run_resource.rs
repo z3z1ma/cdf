@@ -155,6 +155,15 @@ pub(crate) fn build_project_run_resource(
     resource: &CompiledResource,
     execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<CliProjectRunSource, CliError> {
+    if let (Some(plan), Some(execution)) = (resource.source_plan(), execution) {
+        let registry = crate::source_registry::builtin_source_registry()?;
+        let secrets = context.secret_provider();
+        let resolution =
+            cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution);
+        return Ok(CliProjectRunSource::from_shared(
+            registry.resolve(plan, &resolution)?,
+        ));
+    }
     match resource.plan() {
         CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::new(
             resource.to_file_resource(file_runtime_dependencies(context, execution)?)?,
@@ -167,15 +176,6 @@ pub(crate) fn build_project_run_resource(
             ))
         }
         CompiledResourcePlan::Sql(_) => {
-            if let (Some(plan), Some(execution)) = (resource.source_plan(), execution) {
-                let registry = crate::source_registry::builtin_source_registry()?;
-                let secrets = context.secret_provider();
-                let resolution =
-                    cdf_runtime::SourceResolutionContext::new(&context.root, &secrets, execution);
-                return Ok(CliProjectRunSource::from_shared(
-                    registry.resolve(plan, &resolution)?,
-                ));
-            }
             let dependencies =
                 SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
             Ok(CliProjectRunSource::new(

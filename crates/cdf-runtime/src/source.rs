@@ -4,6 +4,7 @@ use arrow_schema::Schema;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
     CdfError, ErrorKind, QueryableResource, ResourceCapabilities, ResourceDescriptor, Result,
+    TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
@@ -157,6 +158,7 @@ pub struct SourceCompileRequest {
     pub resource_options: BTreeMap<String, serde_json::Value>,
     pub descriptor: ResourceDescriptor,
     pub schema: Schema,
+    pub type_policy_allowances: TypePolicyAllowances,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -166,6 +168,7 @@ pub struct CompiledSourcePlan {
     pub resource_capabilities: ResourceCapabilities,
     pub execution_capabilities: SourceExecutionCapabilities,
     pub schema: Schema,
+    pub type_policy_allowances: TypePolicyAllowances,
     pub redacted_options: serde_json::Value,
     pub redacted_options_hash: String,
     pub physical_plan: serde_json::Value,
@@ -179,6 +182,7 @@ impl CompiledSourcePlan {
         resource_capabilities: ResourceCapabilities,
         execution_capabilities: SourceExecutionCapabilities,
         schema: Schema,
+        type_policy_allowances: TypePolicyAllowances,
         redacted_options: serde_json::Value,
         physical_plan: serde_json::Value,
     ) -> Result<Self> {
@@ -192,6 +196,7 @@ impl CompiledSourcePlan {
             resource_capabilities,
             execution_capabilities,
             schema,
+            type_policy_allowances,
             redacted_options,
             redacted_options_hash,
             physical_plan,
@@ -216,14 +221,14 @@ impl CompiledSourcePlan {
 #[derive(Clone)]
 pub struct SourceResolutionContext<'a> {
     project_root: &'a Path,
-    secret_provider: &'a dyn SecretProvider,
+    secret_provider: Arc<dyn SecretProvider + Send + Sync>,
     execution: &'a ExecutionServices,
 }
 
 impl<'a> SourceResolutionContext<'a> {
     pub fn new(
         project_root: &'a Path,
-        secret_provider: &'a dyn SecretProvider,
+        secret_provider: Arc<dyn SecretProvider + Send + Sync>,
         execution: &'a ExecutionServices,
     ) -> Self {
         Self {
@@ -237,8 +242,8 @@ impl<'a> SourceResolutionContext<'a> {
         self.project_root
     }
 
-    pub fn secret_provider(&self) -> &'a dyn SecretProvider {
-        self.secret_provider
+    pub fn secret_provider(&self) -> &Arc<dyn SecretProvider + Send + Sync> {
+        &self.secret_provider
     }
 
     pub fn execution(&self) -> &'a ExecutionServices {
