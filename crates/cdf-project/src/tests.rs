@@ -1487,6 +1487,16 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
     let runtime = prepared.resource.to_file_resource(dependencies).unwrap();
     let plan = live_plan_for_stream(&runtime, "pkg-cloud-ndjson");
     assert_eq!(plan.scan.partitions.len(), 1);
+    let preview = futures_executor::block_on(cdf_engine::preview_resource(
+        &plan,
+        &runtime,
+        cdf_engine::EnginePreviewLimits::default(),
+    ))
+    .unwrap();
+    assert_eq!(preview.row_count, 500);
+    assert_eq!(preview.fields, vec!["id", "kind", "_cdf_variant"]);
+    assert_eq!(preview.planned_partition_count, 1);
+    assert_eq!(preview.payload_opened_partition_count, 1);
     let stream = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
     let batches = futures_executor::block_on_stream(stream)
         .collect::<Result<Vec<_>>>()

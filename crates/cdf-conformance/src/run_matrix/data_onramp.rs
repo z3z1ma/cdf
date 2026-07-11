@@ -91,13 +91,13 @@ const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S3",
         title: "S3 compressed NDJSON recursive glob with transparent gzip and drift governed by contract policy",
-        status: CoverageStatus::Pending,
-        rationale: "local gzip/zstd NDJSON decode and drift quarantine are covered primitives; S3 transport, recursive remote globs, remote compression, and per-file variance conformance remain pending",
+        status: CoverageStatus::Covered,
+        rationale: "the object-store fixture recursively resolves, bounded-discovers, pins, previews, streams gzip NDJSON, preserves remote FileManifest identity, and executes 10,000 rows; drift quarantine remains covered by the shared file-contract conformance",
         tests: &[
-            "crates/cdf-declarative/src/tests.rs::file_runtime_auto_compression_decodes_gzip_and_zstd_ndjson",
+            "crates/cdf-project/src/tests.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
             "crates/cdf-conformance/src/live_run/drift_quarantine/mod.rs::drift_quarantine_duckdb_conformance_asserts_unsupported_mirror_exclusion",
         ],
-        tickets: &[WS_D, WS_E, WS_I],
+        tickets: &[],
     },
     P2Scenario {
         id: "S4",
@@ -147,8 +147,8 @@ const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S8",
         title: "Preview/run parity per source archetype",
-        status: CoverageStatus::Pending,
-        rationale: "the shared engine preview front end now covers local multi-file plus REST and Postgres fixtures with the ratified global payload bound/selector, compatible evolution, residual-row reporting, and terminal file quarantine; HTTP-template/cloud cells remain pending",
+        status: CoverageStatus::Covered,
+        rationale: "the shared preview engine covers local multi-file, REST, Postgres, dated HTTP Parquet, and recursive object-store gzip NDJSON through the same partition, discovery, reconciliation, normalization, and bounded payload paths used by run",
         tests: &[
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_preview_run_parity_law_covers_supported_archetypes",
             "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
@@ -157,8 +157,10 @@ const P2_SCENARIOS: &[P2Scenario] = &[
             "crates/cdf-cli/src/tests.rs::sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_source_replay",
             "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
             "crates/cdf-project/src/tests.rs::sampled_probe_budget_failure_does_not_substitute_an_unselected_candidate",
+            "crates/cdf-cli/src/tests.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
+            "crates/cdf-project/src/tests.rs::object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport",
         ],
-        tickets: &[WS_A, WS_B, WS_C, WS_D, WS_E, WS_I],
+        tickets: &[],
     },
 ];
 
@@ -398,12 +400,12 @@ fn p2_data_onramp_scenario_matrix_records_s1_through_s8() {
 
     assert_eq!(scenario("S1").status, CoverageStatus::Covered);
     assert_eq!(scenario("S2").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S3").status, CoverageStatus::Pending);
+    assert_eq!(scenario("S3").status, CoverageStatus::Covered);
     assert_eq!(scenario("S4").status, CoverageStatus::Pending);
     assert_eq!(scenario("S5").status, CoverageStatus::Covered);
     assert_eq!(scenario("S6").status, CoverageStatus::Pending);
     assert_eq!(scenario("S7").status, CoverageStatus::Covered);
-    assert_eq!(scenario("S8").status, CoverageStatus::Pending);
+    assert_eq!(scenario("S8").status, CoverageStatus::Covered);
 }
 
 #[test]
@@ -476,7 +478,7 @@ fn p2_s5_s7_registry_names_standalone_conformance_without_other_promotions() {
     assert!(friction(17).closed_tests.contains(&standalone));
     assert!(friction(17).open_tickets.is_empty());
 
-    for pending in ["S3", "S4", "S6", "S8"] {
+    for pending in ["S4", "S6"] {
         assert_eq!(scenario(pending).status, CoverageStatus::Pending);
     }
 }
