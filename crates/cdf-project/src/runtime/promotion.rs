@@ -49,6 +49,7 @@ pub enum SchemaPromotionExecutionFailpoint {
     AfterCorrectionPackages,
     AfterDestinationReceipt,
     AfterTargetCheckpoint,
+    AfterTargetCheckpointIndex(usize),
     AfterLockPublication,
     AfterPublicationEvent,
 }
@@ -249,7 +250,7 @@ where
             )?);
         }
     } else {
-        for package in packages {
+        for (target_index, package) in packages.into_iter().enumerate() {
             request.settlement_store.assert_current(lease)?;
             let destination = take_destination(
                 &mut request.destinations,
@@ -270,6 +271,10 @@ where
             fail_if(
                 request.failpoint,
                 SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint,
+            )?;
+            fail_if(
+                request.failpoint,
+                SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(target_index),
             )?;
             targets.push(SchemaPromotionExecutionTargetReport {
                 destination: package.artifact.destination_id.to_string(),

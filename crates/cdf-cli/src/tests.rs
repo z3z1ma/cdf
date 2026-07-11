@@ -3402,6 +3402,53 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         &old_hash,
     );
 
+    let dry = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
+    let plan: SchemaPromotionPlanReport =
+        serde_json::from_value(stderr_or_stdout_json(&dry.stdout)["result"].clone()).unwrap();
+    let context = crate::context::ProjectContext::load(Some(&project.root), None).unwrap();
+    let destinations = plan
+        .targets
+        .iter()
+        .map(|target| {
+            crate::destination_uri::resolve_environment_destination(
+                &context,
+                &TargetName::new(target.target.clone()).unwrap(),
+            )
+            .unwrap()
+            .destination
+        })
+        .collect();
+    let store = SqlitePromotionSettlementStore::open(context.state_store_path().unwrap()).unwrap();
+    let failure = execute_schema_promotion(SchemaPromotionExecutionRequest {
+        project_root: &context.root,
+        package_root: &context.package_root(),
+        resource: context.resource("local.events").unwrap(),
+        lock: context.lock.as_ref().unwrap(),
+        lock_authority: context.lock_authority.as_ref().unwrap(),
+        dry_plan: &plan,
+        destinations,
+        pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
+        lease_owner: LeaseOwnerId::new("multi-target-crash").unwrap(),
+        lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
+        settlement_store: &store,
+        failpoint: Some(SchemaPromotionExecutionFailpoint::AfterTargetCheckpointIndex(1)),
+    })
+    .unwrap_err();
+    assert!(failure.message.contains("schema promotion failpoint"));
+    drop(store);
+    drop(context);
+    fs::remove_dir_all(project.root.join(".cdf/packages/pkg-promote-a")).unwrap();
+    fs::remove_dir_all(project.root.join(".cdf/packages/pkg-promote-z")).unwrap();
+
     let executed = run([
         "cdf",
         "--json",
@@ -3410,10 +3457,13 @@ fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publica
         "schema",
         "promote",
         "local.events",
+        "--type",
+        "/score=Int64",
         "--execute",
     ]);
     assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
     let report = stderr_or_stdout_json(&executed.stdout)["result"].clone();
+    assert_eq!(report["resumed"], true);
     let targets = report["targets"].as_array().unwrap();
     assert_eq!(targets.len(), 2);
     assert_eq!(targets[0]["target"], "a_events");
