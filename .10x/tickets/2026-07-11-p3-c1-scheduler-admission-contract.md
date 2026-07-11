@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
-Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/deterministic-parallel-scheduler.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l5-preoptimization-baseline.md, .10x/decisions/scheduler-source-boundary-readiness.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/deterministic-parallel-scheduler.md
 
 # P3 C1: scheduler capabilities and hierarchical admission
 
@@ -28,7 +28,7 @@ No production partition fan-out/reorder or distributed scheduling.
 
 ## Blockers
 
-Depends on L5, SX1, A2, and A4.
+L5, A2, and A4 are complete. The scheduler-facing subset of SX1 is evidenced and ratified in `.10x/decisions/scheduler-source-boundary-readiness.md`; SX1 remains open for compiler/discovery/product hooks that are outside C1.
 
 ## References
 
