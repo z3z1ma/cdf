@@ -39,12 +39,32 @@ pub(crate) async fn run_local_file_to_duckdb_checkpoint(
 }
 
 pub async fn run_project(request: ProjectRunRequest<'_>) -> Result<ProjectRunReport> {
-    run_project_with_telemetry(request, RunTelemetryConfig::disabled()).await
+    run_project_with_context(request, RunTelemetryConfig::disabled(), None).await
+}
+
+pub async fn run_project_with_services(
+    request: ProjectRunRequest<'_>,
+    services: &ExecutionServices,
+) -> Result<ProjectRunReport> {
+    run_project_with_context(
+        request,
+        RunTelemetryConfig::disabled(),
+        Some(services.clone()),
+    )
+    .await
 }
 
 pub async fn run_project_with_telemetry(
     request: ProjectRunRequest<'_>,
     telemetry: RunTelemetryConfig,
+) -> Result<ProjectRunReport> {
+    run_project_with_context(request, telemetry, None).await
+}
+
+async fn run_project_with_context(
+    request: ProjectRunRequest<'_>,
+    telemetry: RunTelemetryConfig,
+    services: Option<ExecutionServices>,
 ) -> Result<ProjectRunReport> {
     let mut request = request;
     validate_project_run_request(&mut request)?;
@@ -101,6 +121,7 @@ pub async fn run_project_with_telemetry(
         recorder: &recorder,
         after_receipt_verified,
         schema_hash,
+        services,
     };
     match run_project_inner(execution).await {
         Ok(report) => Ok(report),
@@ -143,6 +164,7 @@ struct ProjectRunExecution<'a> {
     recorder: &'a ProjectRunRecorder<'a>,
     after_receipt_verified: Option<ReceiptVerifiedHook<'a>>,
     schema_hash: SchemaHash,
+    services: Option<ExecutionServices>,
 }
 
 async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<ProjectRunReport> {
@@ -207,7 +229,8 @@ async fn run_project_inner(execution: ProjectRunExecution<'_>) -> Result<Project
         &execution.package_dir,
         &write_package_pre_finalize_artifacts,
         EngineExecutionOptions::default()
-            .with_phase_metrics(execution.recorder.phase_telemetry_enabled()),
+            .with_phase_metrics(execution.recorder.phase_telemetry_enabled())
+            .with_optional_execution_services(execution.services.clone()),
     )
     .await?;
 

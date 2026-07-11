@@ -733,6 +733,7 @@ dependencies = [
  "cdf-engine",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "cdf-project",
  "cdf-python",

@@ -7772,6 +7772,8 @@ fn run_human_output_mentions_receipt_verified_commit_gate() {
 fn run_human_rich_render_uses_checkpoint_gate_panel() {
     let project = TestProject::new();
     let cli = test_cli(&project);
+    let (host, services) =
+        cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024).unwrap();
     let output = crate::run_command::run(
         &cli,
         crate::args::RunArgs {
@@ -7783,6 +7785,8 @@ fn run_human_rich_render_uses_checkpoint_gate_panel() {
             checkpoint_id: Some("checkpoint-run-rich".to_owned()),
             loop_mode: false,
         },
+        host.as_ref(),
+        &services,
     )
     .unwrap();
     let result = render_rich(output);

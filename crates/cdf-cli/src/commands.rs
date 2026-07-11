@@ -38,7 +38,11 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Validate(args) => crate::project_command::validate(&cli, args),
         Command::Plan(args) => crate::scan_command::plan_or_explain(&cli, args, "plan"),
         Command::Explain(args) => crate::scan_command::plan_or_explain(&cli, args, "explain"),
-        Command::Run(args) => crate::run_command::run(&cli, args),
+        Command::Run(args) => {
+            let managed = cdf_memory_budget()?;
+            let (host, services) = cdf_engine::StandaloneExecutionHost::default_services(managed)?;
+            crate::run_command::run(&cli, args, host.as_ref(), &services)
+        }
         Command::Preview(args) => crate::scan_command::preview(&cli, args),
         Command::Sql(args) => crate::sql_command::sql(&cli, args),
         Command::Inspect(args) => crate::inspect_command::inspect(&cli, args),
@@ -53,6 +57,22 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Doctor => crate::doctor_command::doctor(&cli),
         Command::Status => crate::status_command::status(&cli),
     }
+}
+
+fn cdf_memory_budget() -> Result<u64, CliError> {
+    let default_authority = cdf_memory::DEFAULT_PROCESS_BUDGET_BYTES;
+    let effective_authority = std::fs::read_to_string("/sys/fs/cgroup/memory.max")
+        .ok()
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(default_authority);
+    let resolution = cdf_memory::resolve_memory_budget(
+        None,
+        effective_authority,
+        64 * 1024 * 1024,
+        8 * 1024 * 1024 * 1024,
+    )?;
+    Ok(resolution.managed_pool_bytes)
 }
 
 pub(crate) fn output<T: Serialize>(

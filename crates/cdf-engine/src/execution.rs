@@ -27,6 +27,7 @@ use cdf_kernel::{
     StratifiedHashBoundedIdentity, StratifiedHashCandidate, StratifiedHashIdentityStrength,
     TerminalSchemaObservationQuarantine, WriteDisposition, semantic, source_name,
 };
+use cdf_memory::{ConsumerKey, MemoryClass, MemoryCoordinator, ReservationRequest};
 use cdf_package::{PackageBuilder, PackageStatus, QuarantineObservedValue, QuarantineRecord};
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
@@ -746,6 +747,7 @@ struct OutputWriteState<'a> {
     output_schema: &'a mut Option<SchemaArtifact>,
     expected_schema: &'a Schema,
     phase_measurements: &'a mut PhaseMeasurements,
+    memory: Option<&'a Arc<dyn MemoryCoordinator>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -797,11 +799,16 @@ pub async fn execute_to_package<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    Ok(
-        execute_to_package_inner(None, plan, resource, package_dir, None, false)
-            .await?
-            .output,
+    Ok(execute_to_package_inner(
+        None,
+        plan,
+        resource,
+        package_dir,
+        None,
+        EngineExecutionOptions::default(),
     )
+    .await?
+    .output)
 }
 
 pub async fn execute_to_package_with_run_id<R>(
@@ -820,7 +827,7 @@ where
         resource,
         package_dir,
         None,
-        false,
+        EngineExecutionOptions::default(),
     )
     .instrument(package_execution_span(&trace_context))
     .await?
@@ -835,7 +842,15 @@ pub async fn execute_to_package_with_segment_positions<R>(
 where
     R: ResourceStream + ?Sized,
 {
-    execute_to_package_inner(None, plan, resource, package_dir, None, false).await
+    execute_to_package_inner(
+        None,
+        plan,
+        resource,
+        package_dir,
+        None,
+        EngineExecutionOptions::default(),
+    )
+    .await
 }
 
 pub async fn execute_to_package_with_segment_positions_and_pre_finalize<R>(
@@ -854,7 +869,7 @@ where
         resource,
         package_dir,
         Some(pre_finalize),
-        options.phase_metrics,
+        options,
     )
     .await
 }
@@ -865,7 +880,7 @@ async fn execute_to_package_inner<R>(
     resource: &R,
     package_dir: impl AsRef<Path>,
     pre_finalize: Option<&PackagePreFinalizeHook<'_>>,
-    phase_telemetry_enabled: bool,
+    options: EngineExecutionOptions,
 ) -> Result<EngineRunOutputWithSegmentPositions>
 where
     R: ResourceStream + ?Sized,
@@ -921,7 +936,11 @@ where
         || (plan.write_disposition == WriteDisposition::Merge
             && validation_program.has_keyed_dedup_rule());
     let mut pending_dedup_batches = Vec::new();
-    let mut phase_measurements = PhaseMeasurements::new(phase_telemetry_enabled);
+    let mut phase_measurements = PhaseMeasurements::new(options.phase_metrics);
+    let memory = options
+        .services
+        .as_ref()
+        .map(cdf_runtime::ExecutionServices::memory);
     let segmentation_policy = plan.segmentation_policy()?.clone();
 
     for (partition_ordinal, partition) in plan.scan.partitions.clone().into_iter().enumerate() {
@@ -1203,6 +1222,7 @@ where
                         output_schema: &mut output_schema,
                         expected_schema: runtime_output_schema.as_ref(),
                         phase_measurements: &mut phase_measurements,
+                        memory: memory.as_ref(),
                     },
                 )?;
             }
@@ -1217,6 +1237,7 @@ where
                     output_schema: &mut output_schema,
                     expected_schema: runtime_output_schema.as_ref(),
                     phase_measurements: &mut phase_measurements,
+                    memory: memory.as_ref(),
                 },
             )?;
             Ok::<_, CdfError>((fully_processed, observed_positions))
@@ -1272,6 +1293,7 @@ where
                 output_schema: &mut output_schema,
                 expected_schema: runtime_output_schema.as_ref(),
                 phase_measurements: &mut phase_measurements,
+                memory: memory.as_ref(),
             },
         )?;
     }
@@ -1655,6 +1677,26 @@ fn persist_canonical_segments(
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
     for canonical in canonical_segments {
+        let _memory_lease = match state.memory {
+            Some(memory) => {
+                let bytes = canonical
+                    .retained_bytes
+                    .max(1)
+                    .checked_mul(2)
+                    .ok_or_else(|| CdfError::data("canonical concat working set overflow"))?;
+                let request = ReservationRequest::new(
+                    ConsumerKey::new("canonical-segment-concat", MemoryClass::Package)?,
+                    bytes,
+                )?
+                .as_minimum_working_set();
+                Some(memory.try_reserve(&request)?.ok_or_else(|| {
+                    CdfError::data(format!(
+                        "canonical segment requires {bytes} bytes for retained input and concat output but the shared memory budget is exhausted; reduce jobs or raise the memory budget"
+                    ))
+                })?)
+            }
+            None => None,
+        };
         let schema = canonical
             .batches
             .first()

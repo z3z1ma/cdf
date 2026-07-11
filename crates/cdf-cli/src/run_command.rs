@@ -10,7 +10,8 @@ use cdf_declarative::{
 };
 use cdf_kernel::{CdfError, CheckpointId, PipelineId, RunEventSink, SchemaSource, TargetName};
 use cdf_project::{
-    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunRequest, SchemaSnapshotStore, run_project,
+    LOCK_FILE_NAME, ProjectResourceOrigin, ProjectRunRequest, SchemaSnapshotStore,
+    run_project_with_services,
 };
 use sha2::{Digest, Sha256};
 
@@ -31,7 +32,12 @@ use crate::{
 
 pub(crate) const DEFAULT_RUN_PIPELINE_ID: &str = "cdf-run";
 
-pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn run(
+    cli: &Cli,
+    args: RunArgs,
+    host: &cdf_engine::StandaloneExecutionHost,
+    services: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     if args.loop_mode {
         return Err(CliError::not_supported_with(
             "run --loop",
@@ -96,20 +102,24 @@ pub(crate) fn run(cli: &Cli, args: RunArgs) -> Result<CommandOutput, CliError> {
         RunDestinationReport::from_project(&destination.describe(), destination.target());
     let progress = human_progress_sink(cli.json, cli.no_color);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
-    let report = match futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: prepared.resource.as_project_resource(),
-        plan,
-        package_root: context.package_root(),
-        state_store_path,
-        pipeline_id: explicit.pipeline_id.clone(),
-        package_id: explicit.package_id.clone(),
-        checkpoint_id: explicit.checkpoint_id.clone(),
-        destination,
-        run_id: None,
-        event_sink,
-        after_receipt_verified: None,
-    }))
-    .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))
+    let report = match host
+        .block_on_root(run_project_with_services(
+            ProjectRunRequest {
+                resource: prepared.resource.as_project_resource(),
+                plan,
+                package_root: context.package_root(),
+                state_store_path,
+                pipeline_id: explicit.pipeline_id.clone(),
+                package_id: explicit.package_id.clone(),
+                checkpoint_id: explicit.checkpoint_id.clone(),
+                destination,
+                run_id: None,
+                event_sink,
+                after_receipt_verified: None,
+            },
+            services,
+        ))
+        .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))
     {
         Ok(report) => report,
         Err(error) => {

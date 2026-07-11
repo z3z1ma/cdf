@@ -14,7 +14,7 @@ mod validation;
 
 pub use destinations::*;
 pub use hooks::{ReceiptVerifiedHook, RuntimeStage, RuntimeStageHook};
-pub use orchestration::{run_project, run_project_with_telemetry};
+pub use orchestration::{run_project, run_project_with_services, run_project_with_telemetry};
 pub use planning::*;
 pub use promotion::*;
 pub use replay::{
@@ -65,5 +65,6 @@ mod prelude {
         DestinationCommitPlanPreimage, PackageReader, PackageReplayInputs, PackageStatus,
         ReplayView, SegmentEntry, StateDeltaPreimage,
     };
+    pub(super) use cdf_runtime::ExecutionServices;
     pub(super) use cdf_state_sqlite::{RunLedgerSnapshot, SqliteCheckpointStore, SqliteRunLedger};
 }

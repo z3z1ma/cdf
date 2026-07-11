@@ -338,14 +338,28 @@ impl EngineRunOutputWithSegmentPositions {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct EngineExecutionOptions {
     pub(crate) phase_metrics: bool,
+    pub(crate) services: Option<cdf_runtime::ExecutionServices>,
 }
 
 impl EngineExecutionOptions {
     pub const fn with_phase_metrics(mut self, enabled: bool) -> Self {
         self.phase_metrics = enabled;
+        self
+    }
+
+    pub fn with_execution_services(mut self, services: cdf_runtime::ExecutionServices) -> Self {
+        self.services = Some(services);
+        self
+    }
+
+    pub fn with_optional_execution_services(
+        mut self,
+        services: Option<cdf_runtime::ExecutionServices>,
+    ) -> Self {
+        self.services = services;
         self
     }
 }

@@ -177,6 +177,40 @@ pub struct StandaloneExecutionHost {
 }
 
 impl StandaloneExecutionHost {
+    pub fn default_services(
+        managed_budget_bytes: u64,
+    ) -> Result<(Arc<Self>, cdf_runtime::ExecutionServices)> {
+        let limit = usize::try_from(managed_budget_bytes)
+            .map_err(|_| CdfError::contract("managed memory budget exceeds platform usize"))?;
+        let pool: Arc<dyn datafusion::execution::memory_pool::MemoryPool> = Arc::new(
+            datafusion::execution::memory_pool::GreedyMemoryPool::new(limit),
+        );
+        let discovery = cdf_memory::BudgetTag::new("discovery.metadata")?;
+        let memory = Arc::new(crate::DataFusionMemoryCoordinator::new(
+            pool,
+            BTreeMap::from([(discovery, (128 * 1024 * 1024_u64).min(managed_budget_bytes))]),
+        )?);
+        let logical = std::thread::available_parallelism()
+            .map(|value| value.get())
+            .unwrap_or(1)
+            .min(usize::from(u16::MAX));
+        let host = Arc::new(Self::new(
+            ExecutionHostCapabilities {
+                logical_cpu_slots: u16::try_from(logical).unwrap_or(u16::MAX),
+                io_workers: u16::try_from(logical.min(4)).unwrap_or(1),
+                blocking_lanes: Vec::new(),
+            },
+            memory,
+        )?);
+        let host_contract: Arc<dyn ExecutionHost> = host.clone();
+        let services = cdf_runtime::ExecutionServices::new(host_contract)?;
+        Ok((host, services))
+    }
+
+    pub fn block_on_root<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
     pub fn new(
         capabilities: ExecutionHostCapabilities,
         memory: Arc<dyn MemoryCoordinator>,
@@ -263,6 +297,15 @@ struct StandaloneTaskScope {
     report: TaskScopeReport,
 }
 
+impl Drop for StandaloneTaskScope {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+        for task in &self.io {
+            task.abort();
+        }
+    }
+}
+
 impl ExecutionTaskScope for StandaloneTaskScope {
     fn cancellation(&self) -> RunCancellation {
         self.cancellation.clone()
@@ -306,6 +349,9 @@ impl ExecutionTaskScope for StandaloneTaskScope {
         Box::pin(async move {
             let mut first_error = None;
             for task in self.io.drain(..) {
+                if self.cancellation.is_cancelled() {
+                    task.abort();
+                }
                 match task.await {
                     Ok(Ok(())) => self.report.completed += 1,
                     Ok(Err(error)) => {
@@ -353,7 +399,7 @@ impl ExecutionTaskScope for StandaloneTaskScope {
             }
             match first_error {
                 Some(error) => Err(error),
-                None => Ok(self.report),
+                None => Ok(std::mem::take(&mut self.report)),
             }
         })
     }
