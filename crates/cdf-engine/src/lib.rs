@@ -1,6 +1,7 @@
 #![doc = "Planning and execution boundary for cdf."]
 
 mod execution;
+mod memory;
 mod output_schema;
 mod planning;
 mod predicates;
@@ -16,6 +17,7 @@ pub use execution::{
     execute_to_package_with_segment_positions_and_pre_finalize, normalize_record_batch,
     preview_partition_selector_candidate, preview_resource,
 };
+pub use memory::DataFusionMemoryCoordinator;
 pub use planning::{
     CDF_NATIVE_RESOURCE_ADAPTER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,
     validate_plan_schema_authority,

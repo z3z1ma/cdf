@@ -13,6 +13,7 @@ arrow-select = "59.1.0"
 datafusion = { git = "https://github.com/apache/datafusion.git", rev = "7ff7278edc1bf7446303bff51e5883a38414bbdf", default-features = false }
 cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
 futures-util = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }

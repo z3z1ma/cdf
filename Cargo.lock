@@ -900,6 +900,7 @@ dependencies = [
  "arrow-select 59.1.0",
  "cdf-contract",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "datafusion",
  "futures-executor",

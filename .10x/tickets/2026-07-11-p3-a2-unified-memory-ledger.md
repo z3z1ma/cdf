@@ -37,6 +37,7 @@ None. L5 baseline/headroom evidence and DX1 are complete.
 - 2026-07-11: Created the implementation-neutral `cdf-memory` crate with typed consumers/classes/sub-caps, shared RAII leases, accounted Arrow/byte envelopes, weighted async admission, deterministic coordinator, JSON-reportable current/peak/wait/flush/spill telemetry, and process/headroom/managed budget resolution.
 - 2026-07-11: Focused conformance covers clone/drop/error reconciliation, weighted sub-cap wakeup, oversized minimum-working-set rejection, budget safety, report serialization, and a static no-DataFusion/Tokio/project/engine/destination/runtime dependency law.
 - 2026-07-11: Ratified calibrated `native-headroom-v1` in `.10x/decisions/runtime-native-headroom-policy-v1.md`. The ticket remains active for the DataFusion adapter, source working-set bridge, discovery migration, and external extension conformance.
+- 2026-07-11: Added the default engine-owned `DataFusionMemoryCoordinator`. CDF leases reserve from the same finite `MemoryPool` returned for DataFusion session installation; the coordinated pool observes DataFusion release and wakes CDF waiters. Focused tests prove cross-consumer competition, finite-pool enforcement, sub-cap reconciliation, and exact release.
 
 ## References
 
