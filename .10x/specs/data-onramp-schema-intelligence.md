@@ -12,6 +12,8 @@ This specification governs P2 schema discovery, schema snapshots, hints, declare
 
 Resources MUST support three schema modes: declared, hints, and discover. Discover mode MUST produce a pinned schema snapshot before package-producing execution. Hints mode MUST run discovery and apply user hints as constraints or projection, not as a competing physical truth.
 
+Tier-0 selects an explicit non-default mode with `schema_mode = "declared|hints|discover"`. Omitted mode remains backward compatible: a schema block means declared and no schema block means discover. `hints` requires a schema block, compiles that block's hash as hint authority, discovers physical reality, reconciles it through the shared type policy, and pins the reconciled snapshot while retaining `SchemaSource::Hints` identity. Explicit discover with a schema block is invalid because hints is the unambiguous form.
+
 Schema snapshots MUST be Arrow schemas with metadata, serialized at `.cdf/schemas/<resource>@<hash>.json`, referenced from `cdf.lock`, and stamped into plan/package evidence. Snapshot hashes MUST be deterministic for unchanged source content and unchanged CDF schema serialization.
 
 Discovery probes MUST be bounded and source-specific:

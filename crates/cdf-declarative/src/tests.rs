@@ -2041,6 +2041,55 @@ fn declarative_schema_rejects_post_normalization_collisions_with_hint() {
     assert!(message.contains("add an explicit rename"));
 }
 
+#[test]
+fn schema_mode_hints_requires_declared_constraints() {
+    let error = compile_document(
+        &parse_toml(
+            r#"
+[source.local]
+kind = "files"
+root = "."
+
+[resource.events]
+glob = "*.parquet"
+schema_mode = "hints"
+"#,
+        )
+        .unwrap(),
+    )
+    .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("schema_mode = \"hints\" requires a schema block")
+    );
+}
+
+#[test]
+fn schema_mode_discover_rejects_competing_declared_schema() {
+    let error = compile_document(
+        &parse_toml(
+            r#"
+[source.local]
+kind = "files"
+root = "."
+
+[resource.events]
+glob = "*.parquet"
+schema_mode = "discover"
+schema = { fields = [{ name = "id", type = "int64" }] }
+"#,
+        )
+        .unwrap(),
+    )
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("schema_mode = \"discover\" cannot carry a schema block"));
+    assert!(message.contains("use hints to constrain discovery"));
+}
+
 fn compile_local_file_schema_resource(
     resource_name: &str,
     glob: &str,

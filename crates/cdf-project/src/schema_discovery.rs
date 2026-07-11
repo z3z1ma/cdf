@@ -21,11 +21,12 @@ use cdf_declarative::{
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
-    CdfError, DiscoveryCoverageEvidence, DiscoveryExecutorBudgetEvidence,
-    EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence,
-    EffectiveSchemaRuntime, PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result,
-    ScanRequest, SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy,
-    SchemaSource, ScopeKey, TerminalSchemaObservationQuarantine,
+    CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
+    DiscoveryCoverageEvidence, DiscoveryExecutorBudgetEvidence, EffectiveSchemaCatalogEntry,
+    EffectiveSchemaEvidence, EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime,
+    PartitionId, PartitionPlan, ResourceDescriptor, ResourceStream, Result, ScanRequest,
+    SchemaHash, SchemaObservationFieldQuarantine, SchemaObservationPolicy, SchemaSource, ScopeKey,
+    TerminalSchemaObservationQuarantine,
 };
 
 use crate::{
@@ -1620,7 +1621,7 @@ pub fn prepare_local_parquet_discover_resource(
     project_root: impl AsRef<Path>,
     resource: &CompiledResource,
 ) -> Result<PreparedDiscoveredResource> {
-    if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
         return Ok(PreparedDiscoveredResource {
             resource: resource.clone(),
             discovery: None,
@@ -1640,7 +1641,7 @@ pub fn prepare_discover_resource(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
 ) -> Result<PreparedDiscoveredResource> {
-    if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
         return Ok(PreparedDiscoveredResource {
             resource: resource.clone(),
             discovery: None,
@@ -1658,7 +1659,7 @@ pub fn prepare_discover_resource_with_file_dependencies(
     secret_provider: &dyn SecretProvider,
     file_dependencies: FileRuntimeDependencies,
 ) -> Result<PreparedDiscoveredResource> {
-    if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
         return Ok(PreparedDiscoveredResource {
             resource: resource.clone(),
             discovery: None,
@@ -1680,7 +1681,7 @@ pub fn prepare_discover_resource_with_rest_transport(
     secret_provider: &dyn SecretProvider,
     rest_transport: &mut dyn HttpTransport,
 ) -> Result<PreparedDiscoveredResource> {
-    if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+    if !schema_source_needs_pin(&resource.descriptor().schema_source) {
         return Ok(PreparedDiscoveredResource {
             resource: resource.clone(),
             discovery: None,
@@ -1702,10 +1703,80 @@ pub fn prepare_discover_resource_with_rest_transport(
 fn prepare_discovered_schema(
     project_root: impl AsRef<Path>,
     resource: &CompiledResource,
-    artifacts: ResourceSchemaDiscoveryArtifacts,
+    mut artifacts: ResourceSchemaDiscoveryArtifacts,
 ) -> Result<PreparedDiscoveredResource> {
+    let (resource, discovery) = apply_discovered_schema_constraints(resource, artifacts.discovery)?;
+    artifacts.discovery = discovery.clone();
     write_schema_discovery_artifacts(project_root, &artifacts)?;
-    Ok(apply_discovered_schema(resource, artifacts.discovery))
+    Ok(PreparedDiscoveredResource {
+        resource,
+        discovery: Some(discovery),
+    })
+}
+
+fn schema_source_needs_pin(source: &SchemaSource) -> bool {
+    matches!(
+        source,
+        SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
+    )
+}
+
+pub fn apply_discovered_schema_constraints(
+    resource: &CompiledResource,
+    mut discovery: ResourceSchemaDiscovery,
+) -> Result<(CompiledResource, ResourceSchemaDiscovery)> {
+    let SchemaSource::Hints {
+        source,
+        hints_hash,
+        snapshot: None,
+    } = &resource.descriptor().schema_source
+    else {
+        let prepared = apply_discovered_schema(resource, discovery.clone());
+        return Ok((prepared.resource, discovery));
+    };
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone()).types;
+    let allowances = resource.type_policy_allowances();
+    policy.coerce_types = allowances.coerce_types;
+    policy.allow_lossy_mapping = allowances.allow_lossy_mapping;
+    let reconciled = reconcile_schema(
+        discovery.normalized_schema.as_ref(),
+        resource.schema().as_ref(),
+        &policy,
+    )?;
+    let schema = Arc::new(reconciled.schema);
+    let old = &discovery.snapshot.artifact;
+    let artifact = match old.discovery_manifest_reference()? {
+        Some(manifest) => {
+            let mut metadata = old.metadata.clone();
+            metadata.remove(DISCOVERY_MANIFEST_HASH_METADATA_KEY);
+            metadata.remove(DISCOVERY_MANIFEST_PATH_METADATA_KEY);
+            SchemaSnapshotArtifact::new_with_discovery_manifest(
+                &resource.descriptor().resource_id,
+                schema.as_ref(),
+                metadata,
+                manifest,
+            )?
+        }
+        None => SchemaSnapshotArtifact::new(
+            &resource.descriptor().resource_id,
+            schema.as_ref(),
+            old.metadata.clone(),
+        )?,
+    };
+    discovery.normalized_schema = Arc::clone(&schema);
+    discovery.snapshot.artifact = artifact.clone();
+    discovery.snapshot.reference = artifact.reference();
+    Ok((
+        resource.with_schema_source_and_schema(
+            SchemaSource::Hints {
+                source: source.clone(),
+                hints_hash: hints_hash.clone(),
+                snapshot: Some(artifact.reference()),
+            },
+            schema,
+        ),
+        discovery,
+    ))
 }
 
 pub fn write_schema_discovery_artifacts(
@@ -1799,7 +1870,10 @@ fn same_effective_fields(left: &arrow_schema::Schema, right: &arrow_schema::Sche
 }
 
 fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {
-    if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
+    if matches!(
+        resource.descriptor().schema_source,
+        SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
+    ) {
         return Ok(());
     }
     Err(CdfError::contract(format!(

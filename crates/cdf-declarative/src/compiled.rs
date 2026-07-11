@@ -726,12 +726,30 @@ fn compile_schema_source(
     resource_id: &str,
     resource: &ResourceDeclaration,
 ) -> Result<SchemaSource> {
-    match &resource.schema {
-        Some(schema) => Ok(SchemaSource::Declared {
-            schema_hash: schema_hash(schema)?,
+    match (resource.schema_mode, &resource.schema) {
+        (Some(crate::SchemaModeDeclaration::Hints), Some(schema)) => Ok(SchemaSource::Hints {
             source: format!("declarative:{resource_id}"),
+            hints_hash: Some(schema_hash(schema)?),
+            snapshot: None,
         }),
-        None => Ok(SchemaSource::Discover),
+        (Some(crate::SchemaModeDeclaration::Hints), None) => Err(CdfError::contract(format!(
+            "resource `{resource_id}` schema_mode = \"hints\" requires a schema block"
+        ))),
+        (Some(crate::SchemaModeDeclaration::Declared), None) => Err(CdfError::contract(format!(
+            "resource `{resource_id}` schema_mode = \"declared\" requires a schema block"
+        ))),
+        (Some(crate::SchemaModeDeclaration::Discover), Some(_)) => {
+            Err(CdfError::contract(format!(
+                "resource `{resource_id}` schema_mode = \"discover\" cannot carry a schema block; use hints to constrain discovery"
+            )))
+        }
+        (Some(crate::SchemaModeDeclaration::Declared) | None, Some(schema)) => {
+            Ok(SchemaSource::Declared {
+                schema_hash: schema_hash(schema)?,
+                source: format!("declarative:{resource_id}"),
+            })
+        }
+        (Some(crate::SchemaModeDeclaration::Discover) | None, None) => Ok(SchemaSource::Discover),
     }
 }
 

@@ -52,6 +52,7 @@ This ticket does not implement file manifest incrementality, remote transport cr
 - 2026-07-09: A8 closed as `.10x/tickets/done/2026-07-09-p2-ws-a8-autopin-lockfile-no-pin.md` with `.10x/evidence/2026-07-09-p2-a8-b6-i3-integration.md` and `.10x/reviews/2026-07-09-p2-a8-b6-i3-integration-review.md`. First-use discovery now pins durably, existing pins are authoritative for ordinary commands, and `--no-pin` is write-free inspection. Hints and remaining source-archetype discovery stay open.
 - 2026-07-09: A10 semantics are ratified by `.10x/decisions/multi-file-discovery-aggregation-and-budget.md`; the parent is open with executable A10a/A10b foundation lanes and dependent A10c-f integration/conformance children.
 - 2026-07-10: A10d closed with immutable-baseline/effective-schema runtime authority and per-observation package evidence. `.10x/decisions/effective-schema-runtime-authority.md` keeps the kernel/engine seam source-neutral and plan-level; incompatible observation quarantine remains A10e, explicit sampling remains A10g, and final multi-file conformance remains A10f.
+- 2026-07-10: A11 closed as `.10x/tickets/done/2026-07-10-p2-ws-a11-hints-schema-mode.md`. Tier-0 now exposes explicit `declared`, `hints`, and `discover` modes; Hints shares bounded discovery, multi-file identity, reconciliation, pinning, and execution rather than creating a format-specific path.
 
 ## Blockers
 

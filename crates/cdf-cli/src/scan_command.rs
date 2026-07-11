@@ -163,7 +163,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
     };
     if !matches!(
         probe_resource.descriptor().schema_source,
-        SchemaSource::Discover
+        SchemaSource::Discover | SchemaSource::Hints { snapshot: None, .. }
     ) {
         return Ok(PreparedDiscoveryForCli {
             resource: resource.clone(),
@@ -180,7 +180,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         }
         None => cdf_project::SchemaDiscoveryExecutionOptions::new(),
     };
-    let artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
+    let mut artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
     {
         cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
             &probe_resource,
@@ -201,14 +201,17 @@ pub(crate) fn prepare_discover_resource_for_cli(
     } else {
         cdf_project::discover_resource_schema_artifacts(&probe_resource, &secret_provider, options)?
     };
-    let discovery = artifacts.discovery.clone();
+    let (prepared_resource, discovery) = cdf_project::apply_discovered_schema_constraints(
+        &probe_resource,
+        artifacts.discovery.clone(),
+    )?;
+    artifacts.discovery = discovery.clone();
     let discovery_coverage = artifacts
         .discovery_manifest
         .as_ref()
         .map(DiscoveryCoverageReport::from_manifest);
     let artifact = discovery.snapshot.artifact.clone();
     let outcome = if no_pin { "inspection_only" } else { "added" };
-    let prepared = cdf_project::apply_discovered_schema(&probe_resource, discovery);
     let (snapshot_written, lockfile_written) = if no_pin {
         (false, false)
     } else {
@@ -217,7 +220,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
             &context.resources,
             context.lock.as_ref(),
             &context.environment.destination,
-            &prepared.resource,
+            &prepared_resource,
         )?;
         let encoded = cdf_project::lock_to_toml(&updated_lock)?;
         let snapshot_written =
@@ -235,18 +238,18 @@ pub(crate) fn prepare_discover_resource_for_cli(
         (snapshot_written, lockfile_written)
     };
     let (prepared_resource, discovery_coverage) = if !no_pin {
-        let prepared = if matches!(prepared.resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
+        let prepared = if matches!(prepared_resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
         {
             cdf_project::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
                 &context.root,
-                &prepared.resource,
+                &prepared_resource,
                 &secret_provider,
                 file_runtime_dependencies(context)?,
             )?
         } else {
             cdf_project::prepare_pinned_resource_effective_schema_artifacts(
                 &context.root,
-                &prepared.resource,
+                &prepared_resource,
                 &secret_provider,
             )?
         };
@@ -256,7 +259,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         let (resource, _) = prepared.into_parts();
         (resource, discovery)
     } else {
-        (prepared.resource, discovery_coverage)
+        (prepared_resource, discovery_coverage)
     };
     Ok(PreparedDiscoveryForCli {
         resource: prepared_resource,

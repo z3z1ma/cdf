@@ -104,8 +104,17 @@ pub struct ResourceDeclaration {
     pub partition: Option<PartitionDeclaration>,
     pub freshness: Option<FreshnessDeclaration>,
     pub schema: Option<SchemaDeclaration>,
+    pub schema_mode: Option<SchemaModeDeclaration>,
     pub sample: Option<SampleDeclaration>,
     pub types: Option<TypePolicyDeclaration>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SchemaModeDeclaration {
+    Declared,
+    Hints,
+    Discover,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

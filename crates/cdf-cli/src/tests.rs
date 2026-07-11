@@ -3044,6 +3044,55 @@ schema = { fields = [
 }
 
 #[test]
+fn hints_schema_discovers_pins_and_constrains_observed_parquet() {
+    let project = TestProject::new();
+    write_vendor_parquet(&project.root.join("data/vendors.parquet"));
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "data"
+
+[resource.events]
+glob = "vendors.parquet"
+format = "parquet"
+schema_mode = "hints"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "VendorID", type = "int64", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "local.events",
+    ]);
+    assert_eq!(plan.exit_code, 0, "{}", plan.stderr);
+    let plan_json = stderr_or_stdout_json(&plan.stdout);
+    assert_eq!(plan_json["result"]["schema_snapshot"]["outcome"], "added");
+    let lock = parse_lock(&fs::read_to_string(project.root.join("cdf.lock")).unwrap()).unwrap();
+    assert!(lock.resources["local.events"].schema_snapshot.is_some());
+
+    let run_result = run_valid_run_args(&project, "pkg-hints-parquet", "checkpoint-hints-parquet");
+    assert_eq!(run_result.exit_code, 0, "{}", run_result.stderr);
+    let reader = PackageReader::open(project.root.join(".cdf/packages/pkg-hints-parquet")).unwrap();
+    let batches = reader.read_all_segments().unwrap();
+    assert_eq!(
+        batches[0].1[0].schema().field(0).data_type(),
+        &DataType::Int64
+    );
+    assert_eq!(batches[0].1[0].schema().field(0).name(), "vendor_id");
+}
+
+#[test]
 fn schema_discover_rest_reports_sample_schema_without_project_writes_or_secret_leak() {
     let project = TestProject::new();
     fs::write(project.root.join("rest-token"), "rest-schema-secret\n").unwrap();
