@@ -9,6 +9,7 @@ use std::{
 
 use cdf_contract::DedupKeepProgram;
 use cdf_kernel::{CdfError, Result, SourcePosition};
+use cdf_memory::{ConsumerKey, MemoryClass, MemoryCoordinator, MemoryLease, ReservationRequest};
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
 
 const DEFAULT_SORT_MEMORY_BYTES: usize = 8 * 1024 * 1024;
@@ -213,8 +214,12 @@ pub(crate) struct ExternalDedupIndex {
     root: PathBuf,
     keys: Option<BufWriter<BudgetedFile>>,
     reservation: Arc<Mutex<SpillReservation>>,
+    memory: Option<Arc<dyn MemoryCoordinator>>,
+    memory_lease: Option<MemoryLease>,
     input_rows: u64,
     sort_memory_bytes: usize,
+    maximum_key_bytes: usize,
+    merge_fan_in: u64,
 }
 
 pub(crate) struct ExternalDedupDecisions {
@@ -224,13 +229,18 @@ pub(crate) struct ExternalDedupDecisions {
 }
 
 impl ExternalDedupIndex {
-    pub fn create(root: impl AsRef<Path>, budget: Arc<dyn SpillBudgetCoordinator>) -> Result<Self> {
-        Self::create_with_sort_memory(root, budget, DEFAULT_SORT_MEMORY_BYTES)
+    pub fn create(
+        root: impl AsRef<Path>,
+        budget: Arc<dyn SpillBudgetCoordinator>,
+        memory: Option<Arc<dyn MemoryCoordinator>>,
+    ) -> Result<Self> {
+        Self::create_with_sort_memory(root, budget, memory, DEFAULT_SORT_MEMORY_BYTES)
     }
 
     fn create_with_sort_memory(
         root: impl AsRef<Path>,
         budget: Arc<dyn SpillBudgetCoordinator>,
+        memory: Option<Arc<dyn MemoryCoordinator>>,
         sort_memory_bytes: usize,
     ) -> Result<Self> {
         if sort_memory_bytes == 0 {
@@ -256,8 +266,12 @@ impl ExternalDedupIndex {
             root,
             keys: Some(keys),
             reservation,
+            memory,
+            memory_lease: None,
             input_rows: 0,
             sort_memory_bytes,
+            maximum_key_bytes: 0,
+            merge_fan_in: MERGE_FAN_IN,
         })
     }
 
@@ -267,6 +281,7 @@ impl ExternalDedupIndex {
             .as_mut()
             .ok_or_else(|| CdfError::internal("dedup key spool is already finalized"))?;
         for key in keys {
+            self.maximum_key_bytes = self.maximum_key_bytes.max(key.len());
             write_key_record(
                 writer,
                 &KeyRecord {
@@ -290,6 +305,7 @@ impl ExternalDedupIndex {
         keys.flush()
             .map_err(|error| io_error("flush dedup key spool", self.root.as_path(), error))?;
         drop(keys);
+        self.reserve_sort_working_set()?;
         let (level, count) = self.create_key_runs()?;
         let sorted_keys = if count == 0 {
             let path = self.root.join("keys-empty.sorted");
@@ -327,6 +343,31 @@ impl ExternalDedupIndex {
         })
     }
 
+    fn reserve_sort_working_set(&mut self) -> Result<()> {
+        let maximum_key_bytes = self.maximum_key_bytes.max(1);
+        let working_set = self
+            .sort_memory_bytes
+            .max(maximum_key_bytes.saturating_mul(2))
+            .saturating_add(64 * 1024);
+        self.merge_fan_in = MERGE_FAN_IN
+            .min(u64::try_from((working_set / maximum_key_bytes).max(2)).unwrap_or(MERGE_FAN_IN));
+        if let Some(memory) = &self.memory {
+            let bytes = u64::try_from(working_set)
+                .map_err(|_| CdfError::data("dedup sort working set exceeds u64"))?;
+            let request = ReservationRequest::new(
+                ConsumerKey::new("dedup-external-sort", MemoryClass::Validation)?,
+                bytes,
+            )?
+            .as_minimum_working_set();
+            self.memory_lease = Some(memory.try_reserve(&request)?.ok_or_else(|| {
+                CdfError::data(format!(
+                    "dedup external sort requires {bytes} bytes for its largest encoded key and merge heap but the shared memory budget is exhausted; reduce jobs or raise the memory budget"
+                ))
+            })?);
+        }
+        Ok(())
+    }
+
     fn create_key_runs(&self) -> Result<(u32, u64)> {
         let mut reader = KeyReader::open(&self.root.join("keys.unsorted"))?;
         let mut run = 0_u64;
@@ -358,10 +399,10 @@ impl ExternalDedupIndex {
 
     fn merge_key_levels(&self, mut level: u32, mut count: u64) -> Result<PathBuf> {
         while count > 1 {
-            let next_count = count.div_ceil(MERGE_FAN_IN);
+            let next_count = count.div_ceil(self.merge_fan_in);
             for output in 0..next_count {
-                let start = output * MERGE_FAN_IN;
-                let end = (start + MERGE_FAN_IN).min(count);
+                let start = output * self.merge_fan_in;
+                let end = (start + self.merge_fan_in).min(count);
                 let inputs = (start..end)
                     .map(|run| self.key_run_path(level, run))
                     .collect::<Vec<_>>();
@@ -497,10 +538,10 @@ impl ExternalDedupIndex {
 
     fn merge_decision_levels(&self, mut level: u32, mut count: u64) -> Result<PathBuf> {
         while count > 1 {
-            let next_count = count.div_ceil(MERGE_FAN_IN);
+            let next_count = count.div_ceil(self.merge_fan_in);
             for output in 0..next_count {
-                let start = output * MERGE_FAN_IN;
-                let end = (start + MERGE_FAN_IN).min(count);
+                let start = output * self.merge_fan_in;
+                let end = (start + self.merge_fan_in).min(count);
                 let inputs = (start..end)
                     .map(|run| self.decision_run_path(level, run))
                     .collect::<Vec<_>>();
@@ -821,9 +862,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let budget: Arc<dyn SpillBudgetCoordinator> =
             Arc::new(cdf_runtime::FixedSpillBudget::new(16 * 1024 * 1024).unwrap());
-        let mut index =
-            ExternalDedupIndex::create_with_sort_memory(temp.path().join("spill"), budget, 48)
-                .unwrap();
+        let mut index = ExternalDedupIndex::create_with_sort_memory(
+            temp.path().join("spill"),
+            budget,
+            None,
+            48,
+        )
+        .unwrap();
         index
             .push_keys(&[
                 b"b".to_vec(),
@@ -870,9 +915,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let budget: Arc<dyn SpillBudgetCoordinator> =
             Arc::new(cdf_runtime::FixedSpillBudget::new(1024 * 1024).unwrap());
-        let mut index =
-            ExternalDedupIndex::create_with_sort_memory(temp.path().join("spill"), budget, 32)
-                .unwrap();
+        let mut index = ExternalDedupIndex::create_with_sort_memory(
+            temp.path().join("spill"),
+            budget,
+            None,
+            32,
+        )
+        .unwrap();
         index
             .push_keys(&[b"same".to_vec(), b"same".to_vec()])
             .unwrap();
@@ -885,7 +934,8 @@ mod tests {
         let root = temp.path().join("spill");
         let budget: Arc<dyn SpillBudgetCoordinator> =
             Arc::new(cdf_runtime::FixedSpillBudget::new(32).unwrap());
-        let mut index = ExternalDedupIndex::create_with_sort_memory(&root, budget, 16).unwrap();
+        let mut index =
+            ExternalDedupIndex::create_with_sort_memory(&root, budget, None, 16).unwrap();
         index.push_keys(&[vec![7; 64]]).unwrap();
         assert!(index.finish(DedupKeepProgram::First).is_err());
         assert!(!root.exists());

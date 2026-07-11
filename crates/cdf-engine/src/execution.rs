@@ -1032,6 +1032,7 @@ where
                 let index = crate::dedup_spill::ExternalDedupIndex::create(
                     builder.package_dir().join(".dedup-spill"),
                     services.spill(),
+                    Some(services.memory()),
                 )?;
                 let payload = crate::dedup_spill::DedupPayloadSpool::create(
                     builder.package_dir().join(".dedup-payload"),
