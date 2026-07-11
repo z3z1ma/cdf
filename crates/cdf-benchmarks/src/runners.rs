@@ -11,8 +11,14 @@ use cdf_declarative::{
     RestRuntimeDependencies, compile_document, compile_document_with_project_root, parse_toml,
 };
 use cdf_dest_postgres::{MergeDedupPolicy, PostgresTarget};
-use cdf_engine::{EnginePlanInput, PlanBoundedness, Planner, execute_to_package};
-use cdf_formats::{FileResource, FileSource, ReadOptions, read_arrow_ipc_stream, schema_hash};
+use cdf_engine::{
+    EngineExecutionOptions, EnginePackageDraft, EnginePlanInput, PlanBoundedness, Planner,
+    execute_to_package, execute_to_package_with_segment_positions_and_pre_finalize,
+};
+use cdf_formats::{
+    CsvOptions, FileFormat, FileResource, FileSource, JsonOptions, ReadOptions,
+    read_arrow_ipc_stream, schema_hash,
+};
 use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CursorPosition, CursorValue, PartitionId,
     PipelineId, PredicateId, ResourceId, ResourceStream, RunId, ScanPredicate, ScanRequest,
@@ -31,9 +37,10 @@ use datafusion::prelude::{SessionContext, col, lit};
 use duckdb::{Connection, appender_params_from_iter, types::Value};
 use futures_executor::block_on;
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 
 use crate::{
-    BenchResult, bench_error,
+    BenchResult, PhaseMetric, WorkerMeasurement, bench_error,
     catalog::{FixtureSpec, fixture_spec, validate_spec},
     fixtures::{
         active_for_id, arrow_filter_project, arrow_ipc_stream_bytes, category_for_id,
@@ -55,6 +62,93 @@ struct WorkMetric {
 
 struct PackageFixture {
     package_dir: PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PreparedFileFormat {
+    Csv,
+    Json,
+    Ndjson,
+    Parquet,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreparedFilePackageWorkload {
+    pub fixture_name: String,
+    pub source_path: PathBuf,
+    pub package_dir: PathBuf,
+    pub format: PreparedFileFormat,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LegacyCaseWorkload {
+    pub case_label: String,
+    pub output_root: PathBuf,
+}
+
+pub fn run_legacy_case_workload(request: &LegacyCaseWorkload) -> BenchResult<WorkerMeasurement> {
+    let case = crate::benchmark_cases()
+        .iter()
+        .find(|case| case.label == request.case_label)
+        .ok_or_else(|| {
+            bench_error(format!(
+                "unknown legacy benchmark case `{}`",
+                request.case_label
+            ))
+        })?;
+    let output = run_case(case, &request.output_root)?;
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows: output.rows,
+        logical_bytes: output.bytes,
+        physical_bytes: output.bytes,
+        spill_bytes: 0,
+        phases: Vec::new(),
+    })
+}
+
+pub fn run_prepared_file_to_package(
+    request: &PreparedFilePackageWorkload,
+) -> BenchResult<WorkerMeasurement> {
+    let spec = fixture_spec(&request.fixture_name)?;
+    validate_spec(&spec)?;
+    let format = match request.format {
+        PreparedFileFormat::Csv => FileFormat::Csv(CsvOptions::default()),
+        PreparedFileFormat::Json => FileFormat::Json(JsonOptions::default()),
+        PreparedFileFormat::Ndjson => FileFormat::Ndjson(JsonOptions::default()),
+        PreparedFileFormat::Parquet => FileFormat::Parquet,
+    };
+    let options = ReadOptions::new(
+        ResourceId::new("bench.prepared")?,
+        PartitionId::new("prepared-file")?,
+    )
+    .with_batch_size(spec.batch_size)?;
+    let resource = FileResource::new(FileSource::new(&request.source_path, format, options))?;
+    let pre_finalize = |_builder: &PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let output = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &identity_engine_plan(&resource, "pkg-p3-prepared")?,
+        &resource,
+        &request.package_dir,
+        &pre_finalize,
+        EngineExecutionOptions::default().with_phase_metrics(true),
+    ))?;
+    Ok(WorkerMeasurement {
+        timed_wall_time_ns: None,
+        rows: output.output.profile.output_rows,
+        logical_bytes: output.output.profile.output_bytes,
+        physical_bytes: fs::metadata(&request.source_path)?.len(),
+        spill_bytes: 0,
+        phases: output
+            .phase_metrics
+            .into_iter()
+            .map(|metric| PhaseMetric {
+                phase: metric.phase.as_str().to_owned(),
+                duration_ns: metric.duration_ns,
+                bytes: metric.output_bytes.max(metric.input_bytes),
+            })
+            .collect(),
+    })
 }
 
 pub fn run_case(case: &CaseDefinition, root: &Path) -> BenchResult<CaseOutcome> {
@@ -417,6 +511,35 @@ fn engine_plan<R: ResourceStream + ?Sized>(
                     resource_id: resource.descriptor().resource_id.clone(),
                     projection,
                     filters,
+                    limit: None,
+                    order_by: Vec::new(),
+                    scope: resource.descriptor().state_scope.clone(),
+                },
+                validation_program,
+                boundedness: PlanBoundedness::Bounded,
+                package_id: package_id.to_owned(),
+            },
+        )
+        .map_err(Into::into)
+}
+
+fn identity_engine_plan<R: ResourceStream + ?Sized>(
+    resource: &R,
+    package_id: &str,
+) -> BenchResult<cdf_engine::EnginePlan> {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_validation_program(
+        &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
+        &observed_schema,
+    )?;
+    Planner::new()
+        .plan_tier_a(
+            resource,
+            EnginePlanInput {
+                request: ScanRequest {
+                    resource_id: resource.descriptor().resource_id.clone(),
+                    projection: None,
+                    filters: Vec::new(),
                     limit: None,
                     order_by: Vec::new(),
                     scope: resource.descriptor().state_scope.clone(),

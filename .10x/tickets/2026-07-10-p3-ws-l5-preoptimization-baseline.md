@@ -1,8 +1,8 @@
-Status: open
+Status: active
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
-Depends-On: .10x/tickets/2026-07-10-p3-ws-l4-ci-envelope-generation.md
+Depends-On: .10x/tickets/done/2026-07-10-p3-ws-l4-ci-envelope-generation.md, .10x/tickets/done/2026-07-11-p3-l1-small-startup-catalog-followup.md
 
 # P3 WS-L5: pre-optimization baseline and stop-line release
 
@@ -26,3 +26,7 @@ Complete machine reports, generated envelope, tool/version inventory, raw profil
 ## Blockers
 
 Depends on L1-L4. Later P3 implementation remains blocked until this ticket and WS-L are done.
+
+## Progress and notes
+
+- 2026-07-11: Activated after L1-L4 and the small/startup catalog repair. Baseline execution will use prepared-input isolated workers and real L2 phase telemetry; legacy Criterion labels are compatibility data, not baseline authority. Enterprise rows that cannot run on the current data plane/host will remain explicit failed or unavailable cells.

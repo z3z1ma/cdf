@@ -2,9 +2,11 @@ use std::{collections::BTreeMap, fs, path::Path};
 
 use cdf_benchmarks::{
     BenchmarkReport, ChildCommand, EnvelopeSpec, HostCapabilityProvider, HostProbeConfig,
-    MacroRunSpec, ProfileTool, ReferenceWorkload, SystemHostProvider, canonical_json_bytes,
-    compare_reports, comparison_fails, generate_envelope, host_class, install_baseline,
-    plan_profile, run_reference,
+    LegacyCaseWorkload, MacroRunSpec, PreoptimizationBaselineConfig, PreparedFilePackageWorkload,
+    ProfileTool, ReferenceWorkload, SystemHostProvider, canonical_json_bytes, compare_reports,
+    comparison_fails, generate_envelope, host_class, install_baseline, plan_profile,
+    run_legacy_case_workload, run_preoptimization_baseline, run_prepared_file_to_package,
+    run_reference,
 };
 
 fn main() {
@@ -25,6 +27,29 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
             write_stdout(&canonical_json_bytes(&measurement)?)
         }
+        [command, request] if command == "cdf-file-package-worker" => {
+            let mut workload: PreparedFilePackageWorkload =
+                serde_json::from_slice(&fs::read(request)?)?;
+            fs::create_dir_all(&workload.package_dir)?;
+            let package_root = tempfile::tempdir_in(&workload.package_dir)?;
+            workload.package_dir = package_root.path().join("package");
+            let started = std::time::Instant::now();
+            let mut measurement = run_prepared_file_to_package(&workload)?;
+            measurement.timed_wall_time_ns =
+                Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            write_stdout(&canonical_json_bytes(&measurement)?)
+        }
+        [command, request] if command == "legacy-case-worker" => {
+            let mut workload: LegacyCaseWorkload = serde_json::from_slice(&fs::read(request)?)?;
+            fs::create_dir_all(&workload.output_root)?;
+            let output_root = tempfile::tempdir_in(&workload.output_root)?;
+            workload.output_root = output_root.path().to_path_buf();
+            let started = std::time::Instant::now();
+            let mut measurement = run_legacy_case_workload(&workload)?;
+            measurement.timed_wall_time_ns =
+                Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
+            write_stdout(&canonical_json_bytes(&measurement)?)
+        }
         [command] if command == "host" => {
             let provider = provider();
             write_stdout(&canonical_json_bytes(&provider.fingerprint()?)?)
@@ -35,6 +60,28 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         [command, request] if command == "run-cell" => {
             let spec: MacroRunSpec = serde_json::from_slice(&fs::read(request)?)?;
             write_stdout(&canonical_json_bytes(&spec.execute(&provider())?)?)
+        }
+        [
+            command,
+            output_root,
+            revision,
+            dependencies,
+            toolchain,
+            samples,
+        ] if command == "baseline-run" => {
+            let report = run_preoptimization_baseline(
+                &provider(),
+                &PreoptimizationBaselineConfig {
+                    worker_executable: std::env::current_exe()?,
+                    output_root: Path::new(output_root).to_path_buf(),
+                    cdf_revision: revision.to_owned(),
+                    dependency_tuple: dependencies.to_owned(),
+                    os_toolchain: toolchain.to_owned(),
+                    sample_count: samples.parse()?,
+                    timeout: std::time::Duration::from_secs(60),
+                },
+            )?;
+            write_stdout(&canonical_json_bytes(&report)?)
         }
         [command, baseline, current] if command == "compare" => {
             let baseline: BenchmarkReport = serde_json::from_slice(&fs::read(baseline)?)?;

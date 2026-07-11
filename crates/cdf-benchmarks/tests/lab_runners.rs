@@ -3,10 +3,11 @@ use std::{collections::BTreeMap, fs, path::PathBuf, time::Duration};
 use cdf_benchmarks::{
     BENCHMARK_REPORT_SCHEMA_VERSION, BenchmarkReport, BiasLabel, Capability, ChildCommand,
     ChildObservationStatus, ComparabilityKey, ExternalFileFormat, HostCapabilityProvider,
-    HostProbeConfig, IoMode, MacroRunRequest, ObservationStatus, ProfileTool, ReferenceIdentity,
+    HostProbeConfig, IoMode, MacroRunRequest, ObservationStatus, PreoptimizationBaselineConfig,
+    PreparedFileFormat, PreparedFilePackageWorkload, ProfileTool, ReferenceIdentity,
     ReferenceWorkload, SystemHostProvider, ToolIdentity, discover_polars, fixture_spec, host_class,
-    plan_profile, polars_scan_command, run_macro_cell, run_reference, unavailable_reference_cell,
-    validate_report, write_all_local_fixture_formats,
+    plan_profile, polars_scan_command, run_macro_cell, run_preoptimization_baseline, run_reference,
+    unavailable_reference_cell, validate_report, write_all_local_fixture_formats,
 };
 
 fn provider() -> SystemHostProvider {
@@ -244,6 +245,109 @@ fn raw_arrow_duckdb_and_io_references_cross_check_fixture_rows_and_bytes() {
     assert_eq!(written.physical_bytes, 2 * 1024 * 1024);
     assert_eq!(read.logical_bytes, written.logical_bytes);
     assert_eq!(copied.logical_bytes, written.logical_bytes);
+}
+
+#[test]
+fn prepared_cdf_worker_emits_real_phase_breakdown_without_timing_fixture_setup() {
+    let temp = tempfile::tempdir().unwrap();
+    let spec = fixture_spec("medium").unwrap();
+    write_all_local_fixture_formats(temp.path(), &spec).unwrap();
+    let request_path = temp.path().join("cdf-worker.json");
+    fs::write(
+        &request_path,
+        serde_json::to_vec(&PreparedFilePackageWorkload {
+            fixture_name: "medium".to_owned(),
+            source_path: temp.path().join("orders.ndjson"),
+            package_dir: temp.path().join("packages"),
+            format: PreparedFileFormat::Ndjson,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let provider = provider();
+    let observation = run_macro_cell(
+        &provider,
+        &MacroRunRequest {
+            comparability: key(&provider, IoMode::Warm),
+            expected_host_class: None,
+            sample_count: 3,
+            timeout: Duration::from_secs(15),
+            allow_privileged_cache_control: false,
+            command: command(&["cdf-file-package-worker", request_path.to_str().unwrap()]),
+            reference: None,
+            bias: vec![BiasLabel {
+                code: "includes_cdf_evidence".to_owned(),
+                description: "includes validation package hashing and finalization".to_owned(),
+            }],
+        },
+    )
+    .unwrap();
+    assert!(matches!(observation.status, ObservationStatus::Observed));
+    assert_eq!(observation.samples.len(), 3);
+    assert!(observation.samples.iter().all(|sample| {
+        sample.rows == spec.rows as u64
+            && sample.physical_bytes > 0
+            && sample.phases.iter().any(|phase| phase.phase == "decode")
+            && sample
+                .phases
+                .iter()
+                .any(|phase| phase.phase == "package_finalize")
+    }));
+}
+
+#[test]
+fn preoptimization_baseline_covers_every_target_and_retains_phases() {
+    let temp = tempfile::tempdir().unwrap();
+    let provider = provider();
+    let report = run_preoptimization_baseline(
+        &provider,
+        &PreoptimizationBaselineConfig {
+            worker_executable: PathBuf::from(env!("CARGO_BIN_EXE_cdf-p3-lab")),
+            output_root: temp.path().join("baseline"),
+            cdf_revision: "fixture-revision".to_owned(),
+            dependency_tuple: "arrow59-duckdb1".to_owned(),
+            os_toolchain: "fixture-rust1.96".to_owned(),
+            sample_count: 3,
+            timeout: Duration::from_secs(30),
+        },
+    )
+    .unwrap();
+    validate_report(&report).unwrap();
+    for workload in [
+        "tlc_parquet_to_package",
+        "tpch_csv_to_package",
+        "json_ndjson_to_package",
+        "validation_kernel",
+        "package_build",
+        "duckdb_commit",
+        "postgres_commit",
+        "parquet_destination",
+        "tlc_e2e_duckdb",
+        "constant_memory_stress",
+    ] {
+        assert!(
+            report
+                .observations
+                .iter()
+                .any(|observation| observation.comparability.workload_id == workload),
+            "missing {workload}"
+        );
+    }
+    let cdf = report
+        .observations
+        .iter()
+        .find(|observation| observation.comparability.workload_id == "json_ndjson_to_package")
+        .unwrap();
+    assert!(matches!(cdf.status, ObservationStatus::Observed));
+    assert_eq!(cdf.samples.len(), 3);
+    assert!(cdf.samples.iter().all(|sample| {
+        sample.peak_rss_bytes.is_some()
+            && sample.phases.iter().any(|phase| phase.phase == "decode")
+            && sample
+                .phases
+                .iter()
+                .any(|phase| phase.phase == "persist_hash")
+    }));
 }
 
 struct ProfileProvider {

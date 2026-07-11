@@ -1,5 +1,6 @@
 use std::error::Error;
 
+mod baseline;
 mod catalog;
 mod comparison;
 mod envelope;
@@ -13,6 +14,7 @@ mod references;
 mod resource;
 mod runners;
 
+pub use baseline::{PreoptimizationBaselineConfig, run_preoptimization_baseline};
 pub use catalog::{FixtureCatalog, FixtureSpec, fixture_catalog, fixture_spec};
 pub use cdf_package::canonical_json_bytes;
 pub use comparison::*;
@@ -29,7 +31,10 @@ pub use profiling::{ProfilePlan, ProfileTool, plan_profile};
 pub use references::{
     ExternalFileFormat, ReferenceWorkload, discover_polars, polars_scan_command, run_reference,
 };
-pub use runners::run_case;
+pub use runners::{
+    LegacyCaseWorkload, PreparedFileFormat, PreparedFilePackageWorkload, run_case,
+    run_legacy_case_workload, run_prepared_file_to_package,
+};
 
 pub type BenchResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 
