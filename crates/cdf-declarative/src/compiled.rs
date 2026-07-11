@@ -1,3 +1,4 @@
+use std::sync::atomic::Ordering;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Component, Path, PathBuf},
@@ -284,6 +285,18 @@ pub fn discover_transport_parquet_schema(
     resource: FileTransportResource,
     dependencies: &FileRuntimeDependencies,
 ) -> Result<LocalParquetSchemaProbe> {
+    let probe = discover_transport_parquet_schema_bounded(resource, dependencies, None)?;
+    Ok(LocalParquetSchemaProbe {
+        schema: probe.schema,
+        source_identity: probe.source_identity,
+    })
+}
+
+pub fn discover_transport_parquet_schema_bounded(
+    resource: FileTransportResource,
+    dependencies: &FileRuntimeDependencies,
+    max_metadata_bytes: impl Into<Option<u64>>,
+) -> Result<BoundedLocalParquetSchemaProbe> {
     let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
         CdfError::data(format!(
@@ -291,14 +304,22 @@ pub fn discover_transport_parquet_schema(
             metadata.location
         ))
     })?;
-    let range_reader = dependencies.range_reader(resource, size_bytes);
+    let max_metadata_bytes = max_metadata_bytes.into();
+    let (range_reader, bytes_read) = match max_metadata_bytes {
+        Some(max_bytes) => dependencies.bounded_range_reader(resource, size_bytes, max_bytes),
+        None => (
+            dependencies.range_reader(resource, size_bytes),
+            Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        ),
+    };
     let discovery =
         cdf_formats::discover_parquet_schema_from_chunk_reader(&range_reader, size_bytes, None)?;
     let mut source_identity = discovery.source_identity.cache_evidence();
     append_transport_source_identity(&mut source_identity, metadata);
-    Ok(LocalParquetSchemaProbe {
+    Ok(BoundedLocalParquetSchemaProbe {
         schema: discovery.schema,
         source_identity,
+        probe_bytes_read: bytes_read.load(Ordering::Relaxed),
     })
 }
 

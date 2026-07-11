@@ -4,7 +4,10 @@ use std::{
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
     time::UNIX_EPOCH,
 };
 
@@ -74,6 +77,43 @@ impl FileRuntimeDependencies {
         size_bytes: u64,
     ) -> RangeChunkReader {
         transport_range_reader(self.transport(), resource, size_bytes)
+    }
+
+    pub fn bounded_range_reader(
+        &self,
+        resource: FileTransportResource,
+        size_bytes: u64,
+        max_bytes: u64,
+    ) -> (RangeChunkReader, Arc<AtomicU64>) {
+        let bytes_read = Arc::new(AtomicU64::new(0));
+        let counter = Arc::clone(&bytes_read);
+        let transport = self.transport();
+        let reader = RangeChunkReader::new(size_bytes, move |start, length| {
+            let length = u64::try_from(length).map_err(|error| {
+                CdfError::internal(format!("range length conversion failed: {error}"))
+            })?;
+            counter
+                .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                    current.checked_add(length).filter(|total| *total <= max_bytes)
+                })
+                .map_err(|current| {
+                    CdfError::data(format!(
+                        "remote schema metadata probe exceeded its {max_bytes}-byte per-file budget after {current} bytes"
+                    ))
+                })?;
+            let range = ByteRange::new(start, length)?;
+            let mut transport = transport.lock().map_err(|_| {
+                CdfError::internal("file runtime transport dependency mutex was poisoned")
+            })?;
+            match transport.read_range(&resource, range) {
+                Ok(bytes) => Ok(bytes),
+                Err(error) => {
+                    counter.fetch_sub(length, Ordering::Relaxed);
+                    Err(error)
+                }
+            }
+        });
+        (reader, bytes_read)
     }
 }
 
@@ -993,20 +1033,23 @@ fn resolve_http_file_match(
     transport: &mut dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
     reject_remote_compression(resource_id, plan)?;
-    validate_http_single_file_glob(resource_id, plan)?;
     validate_http_format_support(resource_id, plan)?;
-    let url = join_http_root_and_glob(&plan.root, &plan.glob);
-    let resource = FileTransportResource {
-        location: FileTransportLocation::HttpUrl { url: url.clone() },
-        egress_allowlist: plan.allowlist.clone(),
-        auth: plan.auth.clone(),
-        credentials: plan.credentials.clone(),
-    };
-    let metadata = transport.metadata(&resource)?;
-    let format = resolve_transport_format(resource_id, plan, transport, &resource, &metadata)?;
-    Ok(vec![resolved_transport_file_match(
-        resource, metadata, format,
-    )?])
+    let globs = expand_http_glob(resource_id, &plan.glob)?;
+    let mut matches = Vec::with_capacity(globs.len());
+    for glob in globs {
+        let url = join_http_root_and_glob(&plan.root, &glob);
+        let resource = FileTransportResource {
+            location: FileTransportLocation::HttpUrl { url },
+            egress_allowlist: plan.allowlist.clone(),
+            auth: plan.auth.clone(),
+            credentials: plan.credentials.clone(),
+        };
+        let metadata = transport.metadata(&resource)?;
+        let format = resolve_transport_format(resource_id, plan, transport, &resource, &metadata)?;
+        matches.push(resolved_transport_file_match(resource, metadata, format)?);
+    }
+    matches.sort_by(|left, right| left.path_text.cmp(&right.path_text));
+    Ok(matches)
 }
 
 fn no_file_matches_error(resource_id: &ResourceId, plan: &FileResourcePlan) -> CdfError {
@@ -1772,18 +1815,89 @@ fn transport_range_reader(
     })
 }
 
-fn validate_http_single_file_glob(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
-    let components = pattern_components(&plan.glob)?;
+fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>> {
+    let components = pattern_components(glob)?;
     if components
         .iter()
         .any(|component| component == "**" || has_wildcards(component))
     {
         return Err(CdfError::contract(format!(
-            "HTTP(S) file resource `{resource_id}` supports only an explicit single-file glob in this slice; glob `{}` needs a later template/range enumerator",
-            plan.glob
+            "HTTP(S) file resource `{resource_id}` cannot enumerate unbounded glob `{glob}` because HTTP has no LIST operation; use an explicit file or a finite numeric template such as `{{01..12}}`"
         )));
     }
-    Ok(())
+    let Some(open) = glob.find('{') else {
+        if glob.contains('}') {
+            return Err(CdfError::contract(format!(
+                "HTTP(S) file resource `{resource_id}` has an unmatched `}}` in glob `{glob}`"
+            )));
+        }
+        return Ok(vec![glob.to_owned()]);
+    };
+    let close = glob[open + 1..]
+        .find('}')
+        .map(|offset| open + 1 + offset)
+        .ok_or_else(|| {
+            CdfError::contract(format!(
+                "HTTP(S) file resource `{resource_id}` has an unmatched `{{` in glob `{glob}`"
+            ))
+        })?;
+    if glob[close + 1..].contains('{')
+        || glob[close + 1..].contains('}')
+        || glob[..open].contains('}')
+    {
+        return Err(CdfError::contract(format!(
+            "HTTP(S) file resource `{resource_id}` supports one numeric range template per glob; got `{glob}`"
+        )));
+    }
+    let range = &glob[open + 1..close];
+    let (start_text, end_text) = range.split_once("..").ok_or_else(|| {
+        CdfError::contract(format!(
+            "HTTP(S) file resource `{resource_id}` template `{{{range}}}` must be an inclusive numeric range such as `{{01..12}}`"
+        ))
+    })?;
+    if start_text.is_empty()
+        || end_text.is_empty()
+        || !start_text.bytes().all(|byte| byte.is_ascii_digit())
+        || !end_text.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return Err(CdfError::contract(format!(
+            "HTTP(S) file resource `{resource_id}` template `{{{range}}}` must contain decimal integers"
+        )));
+    }
+    let start = start_text.parse::<u64>().map_err(|error| {
+        CdfError::contract(format!(
+            "invalid HTTP template start `{start_text}`: {error}"
+        ))
+    })?;
+    let end = end_text.parse::<u64>().map_err(|error| {
+        CdfError::contract(format!("invalid HTTP template end `{end_text}`: {error}"))
+    })?;
+    if start > end {
+        return Err(CdfError::contract(format!(
+            "HTTP(S) file resource `{resource_id}` template start {start} exceeds end {end}"
+        )));
+    }
+    let count = end - start + 1;
+    if count > 1_000_000 {
+        return Err(CdfError::contract(format!(
+            "HTTP(S) file resource `{resource_id}` template expands to {count} files; split it into ranges of at most 1000000 files"
+        )));
+    }
+    let width = if start_text.starts_with('0') || end_text.starts_with('0') {
+        start_text.len().max(end_text.len())
+    } else {
+        0
+    };
+    let mut expanded = Vec::with_capacity(count as usize);
+    for value in start..=end {
+        let value = if width == 0 {
+            value.to_string()
+        } else {
+            format!("{value:0width$}")
+        };
+        expanded.push(format!("{}{}{}", &glob[..open], value, &glob[close + 1..]));
+    }
+    Ok(expanded)
 }
 
 fn validate_http_format_support(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
@@ -1963,5 +2077,21 @@ mod tests {
             ]
         );
         assert!(matches.iter().all(|file| file.etag.is_some()));
+    }
+
+    #[test]
+    fn http_numeric_template_expands_finitely_and_preserves_width() {
+        let resource_id = ResourceId::new("tlc.yellow").unwrap();
+        assert_eq!(
+            expand_http_glob(&resource_id, "yellow_tripdata_2024-{01..03}.parquet").unwrap(),
+            vec![
+                "yellow_tripdata_2024-01.parquet",
+                "yellow_tripdata_2024-02.parquet",
+                "yellow_tripdata_2024-03.parquet",
+            ]
+        );
+        let error = expand_http_glob(&resource_id, "yellow_tripdata_2024-*.parquet").unwrap_err();
+        assert!(error.message.contains("HTTP has no LIST operation"));
+        assert!(error.message.contains("{01..12}"));
     }
 }

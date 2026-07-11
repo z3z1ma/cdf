@@ -34,6 +34,7 @@ use cdf_kernel::{
     TypeMappingFidelity, WriteDisposition, source_name,
 };
 use cdf_state_sqlite::InMemoryScopeLeaseStore;
+use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
 const BOOK_PROJECT: &str = r#"
 [project]
@@ -1318,7 +1319,7 @@ fn http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts() {
     let discovery = discover_resource_schema_with_file_dependencies(
         &resource,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
-        dependencies,
+        dependencies.clone(),
     )
     .unwrap();
 
@@ -1355,6 +1356,139 @@ fn http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts() {
     let requests = transport.requests();
     assert_only_bounded_http_file_gets(&requests);
     assert_http_file_gets_download_less_than_fixture(&requests, parquet.len());
+}
+
+#[test]
+fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
+    let temp = tempfile::tempdir().unwrap();
+    write_object_store_discover_project(temp.path());
+    let store = Arc::new(InMemory::new());
+    let first = vendor_parquet_bytes();
+    let second_schema = Arc::new(Schema::new(vec![
+        Field::new("VendorID", DataType::Int32, false),
+        Field::new("fare_amount", DataType::Int64, true),
+    ]));
+    let second_batch = RecordBatch::try_new(
+        second_schema,
+        vec![
+            Arc::new(Int32Array::from(vec![1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![Some(10), None])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let second = cdf_package::transcode_record_batches_to_parquet_bytes(&[second_batch]).unwrap();
+    for (path, bytes) in [
+        ("trip-data/2024/01.parquet", first),
+        ("trip-data/2024/02.parquet", second),
+    ] {
+        futures_executor::block_on(store.put(&ObjectPath::from(path), PutPayload::from(bytes)))
+            .unwrap();
+    }
+    let dependencies = FileRuntimeDependencies::new(
+        FileTransportFacade::new().with_object_store("s3://tlc", store),
+    );
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_resource_schema_with_file_dependencies_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    let field_names = artifacts
+        .discovery
+        .normalized_schema
+        .fields()
+        .iter()
+        .map(|field| field.name().as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(field_names, vec!["vendor_id", "fare_amount"]);
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["transport"],
+        "remote"
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["matched_files"],
+        "2"
+    );
+    let manifest = artifacts.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.candidates.len(), 2);
+    assert!(manifest.candidates.iter().all(|candidate| {
+        candidate.participation == DiscoveryParticipation::Probed
+            && candidate
+                .canonical_location
+                .starts_with("s3://tlc/trip-data/2024/")
+    }));
+
+    write_schema_discovery_artifacts(temp.path(), &artifacts).unwrap();
+    let pinned = apply_discovered_schema(&resource, artifacts.discovery.clone());
+    let prepared = prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
+        temp.path(),
+        &pinned.resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies,
+    )
+    .unwrap();
+    assert_eq!(prepared.discovery_manifest().unwrap().candidates.len(), 2);
+    assert!(prepared.resource().effective_schema_runtime().is_some());
+}
+
+#[test]
+fn http_numeric_template_discovers_and_plans_every_file() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    let resource_path = temp.path().join("resources/files.toml");
+    let resource_toml = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace("vendors.parquet", "yellow_tripdata_2024-{01..03}.parquet");
+    fs::write(resource_path, resource_toml).unwrap();
+    let parquet = vendor_parquet_bytes();
+    let transport = RecordingHttpFileTransport::new(parquet);
+    let dependencies = http_file_dependencies(transport.clone());
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_resource_schema_with_file_dependencies_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 3);
+
+    let runtime = resource.to_file_resource(dependencies).unwrap();
+    let partitions = runtime
+        .plan_partitions(&ScanRequest {
+            resource_id: resource.descriptor().resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: resource.descriptor().state_scope.clone(),
+        })
+        .unwrap();
+    assert_eq!(partitions.len(), 3);
+    assert_eq!(
+        partitions
+            .iter()
+            .map(|partition| partition.metadata["path"].as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "https://data.example.test/trip-data/yellow_tripdata_2024-01.parquet",
+            "https://data.example.test/trip-data/yellow_tripdata_2024-02.parquet",
+            "https://data.example.test/trip-data/yellow_tripdata_2024-03.parquet",
+        ]
+    );
+    assert_eq!(
+        transport
+            .requests()
+            .iter()
+            .filter(|request| request.method == HttpMethod::Head)
+            .count(),
+        9
+    );
 }
 
 #[test]
@@ -2618,6 +2752,43 @@ write_disposition = "append"
 trust = "governed"
 "#
         ),
+    )
+    .unwrap();
+}
+
+fn write_object_store_discover_project(root: &Path) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "cloud_files"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."remote.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        r#"
+[source.remote]
+kind = "files"
+root = "s3://tlc/trip-data"
+
+[resource.events]
+glob = "2024/**/*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#,
     )
     .unwrap();
 }

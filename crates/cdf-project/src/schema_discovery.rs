@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::Path,
+    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -13,8 +13,8 @@ use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
     FileTransportLocation, FileTransportResource, discover_local_arrow_ipc_schema_bounded,
     discover_local_parquet_schema_bounded, discover_rest_sample_schema,
-    discover_transport_parquet_schema, local_file_discovery_candidates, physical_arrow_schema_hash,
-    postgres_table_target_for_sql_plan,
+    discover_transport_parquet_schema_bounded, local_file_discovery_candidates,
+    physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
 };
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
@@ -303,11 +303,38 @@ pub fn prepare_pinned_resource_effective_schema_artifacts(
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
 ) -> Result<PreparedEffectiveSchemaResource> {
+    prepare_pinned_resource_effective_schema_artifacts_inner(
+        project_root,
+        resource,
+        secret_provider,
+        None,
+    )
+}
+
+pub fn prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
+    project_root: &Path,
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    file_dependencies: FileRuntimeDependencies,
+) -> Result<PreparedEffectiveSchemaResource> {
+    prepare_pinned_resource_effective_schema_artifacts_inner(
+        project_root,
+        resource,
+        secret_provider,
+        Some(file_dependencies),
+    )
+}
+
+fn prepare_pinned_resource_effective_schema_artifacts_inner(
+    project_root: &Path,
+    resource: &CompiledResource,
+    secret_provider: &dyn SecretProvider,
+    file_dependencies: Option<FileRuntimeDependencies>,
+) -> Result<PreparedEffectiveSchemaResource> {
     let should_observe = matches!(
         resource.plan(),
         CompiledResourcePlan::Files(plan)
-            if !is_http_root(&plan.root)
-                && matches!(
+            if matches!(
                     plan.format,
                     FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
                 )
@@ -331,12 +358,15 @@ pub fn prepare_pinned_resource_effective_schema_artifacts(
         SchemaSnapshotStore::new(project_root).read_with_verified_baseline(snapshot)?;
     let probe_resource =
         resource.with_schema_source_and_schema(SchemaSource::Discover, baseline.schema().clone());
-    let artifacts = discover_resource_schema_artifacts(
+    let options = SchemaDiscoveryExecutionOptions::new()
+        .with_verified_baseline(baseline.clone())
+        .for_runtime_effective_schema();
+    let artifacts = discover_resource_schema_artifacts_inner(
         &probe_resource,
         secret_provider,
-        SchemaDiscoveryExecutionOptions::new()
-            .with_verified_baseline(baseline.clone())
-            .for_runtime_effective_schema(),
+        None,
+        file_dependencies,
+        options,
     )?;
     let prepared = apply_effective_discovered_schema(resource, &artifacts, &baseline)?;
     Ok(PreparedEffectiveSchemaResource {
@@ -354,7 +384,7 @@ fn discover_resource_schema_artifacts_inner(
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
     ensure_discover_schema_mode(resource)?;
     match resource.plan() {
-        CompiledResourcePlan::Files(plan) if !is_http_root(&plan.root) => {
+        CompiledResourcePlan::Files(plan) if !is_remote_file_root(&plan.root) => {
             discover_local_binary_resource_schema(resource, plan, options)
         }
         CompiledResourcePlan::Files(plan) => match plan.format {
@@ -363,19 +393,7 @@ fn discover_resource_schema_artifacts_inner(
                 "remote Arrow IPC discovery is excluded; use a local Arrow IPC file resource",
             )),
             FileFormatDeclaration::Parquet => {
-                let discovery = discover_parquet_resource_schema(resource, file_dependencies)?;
-                Ok(ResourceSchemaDiscoveryArtifacts {
-                    discovery: ResourceSchemaDiscovery {
-                        normalized_schema: Arc::clone(&discovery.normalized_schema),
-                        snapshot: DiscoveredSchemaSnapshot {
-                            artifact: discovery.snapshot.artifact,
-                            reference: discovery.snapshot.reference,
-                            source_identity: discovery.snapshot.source_identity,
-                        },
-                    },
-                    discovery_manifest: None,
-                    effective_schema_runtime: None,
-                })
+                discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
             }
             ref format => Err(unsupported_discover_slice(
                 resource.descriptor(),
@@ -403,6 +421,79 @@ fn discover_resource_schema_artifacts_inner(
     }
 }
 
+fn discover_remote_binary_resource_schema(
+    resource: &CompiledResource,
+    plan: &cdf_declarative::FileResourcePlan,
+    file_dependencies: Option<FileRuntimeDependencies>,
+    options: SchemaDiscoveryExecutionOptions,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    let dependencies = file_dependencies.ok_or_else(|| {
+        unsupported_discover_slice(
+            resource.descriptor(),
+            "remote binary discovery requires explicit file transport dependencies",
+        )
+    })?;
+    let runtime = resource.to_file_resource(dependencies.clone())?;
+    let partitions = runtime.plan_partitions(&discovery_scan_request(resource.descriptor())?)?;
+    let mut candidates = Vec::with_capacity(partitions.len());
+    for partition in partitions {
+        let location = partition.metadata.get("path").cloned().ok_or_else(|| {
+            CdfError::internal("remote file discovery partition omitted path metadata")
+        })?;
+        let size_bytes = partition
+            .metadata
+            .get("bytes")
+            .ok_or_else(|| CdfError::internal("remote file discovery partition omitted bytes"))?
+            .parse::<u64>()
+            .map_err(|error| CdfError::data(format!("invalid remote file size: {error}")))?;
+        let modified_at_ms = partition
+            .metadata
+            .get("modified_ms")
+            .map(|value| {
+                value.parse::<i64>().map_err(|error| {
+                    CdfError::data(format!("invalid remote file modification time: {error}"))
+                })
+            })
+            .transpose()?;
+        let transport_resource = if is_http_root(&location) {
+            FileTransportResource {
+                location: FileTransportLocation::HttpUrl {
+                    url: location.clone(),
+                },
+                egress_allowlist: plan.allowlist.clone(),
+                auth: plan.auth.clone(),
+                credentials: plan.credentials.clone(),
+            }
+        } else {
+            let mut request = FileTransportResource::object_store_url(location.clone())
+                .with_egress_allowlist(plan.allowlist.clone());
+            if let Some(credentials) = &plan.credentials {
+                request = request.with_credentials(credentials.clone());
+            }
+            request
+        };
+        candidates.push(BinaryDiscoveryCandidate {
+            location,
+            size_bytes,
+            modified_at_ms,
+            compression: partition
+                .metadata
+                .get("compression")
+                .cloned()
+                .unwrap_or_else(|| "none".to_owned()),
+            source: BinaryDiscoveryCandidateSource::Transport(transport_resource),
+        });
+    }
+    discover_binary_resource_schema(
+        resource,
+        options,
+        LocalBinaryDiscoveryAdapter::Parquet,
+        candidates,
+        Some(&dependencies),
+        "remote",
+    )
+}
+
 #[derive(Clone, Debug)]
 struct LocalBinaryProbe {
     location: String,
@@ -413,6 +504,40 @@ struct LocalBinaryProbe {
     probe_bytes: u64,
     schema: arrow_schema::SchemaRef,
     source_identity: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug)]
+struct BinaryDiscoveryCandidate {
+    location: String,
+    size_bytes: u64,
+    modified_at_ms: Option<i64>,
+    compression: String,
+    source: BinaryDiscoveryCandidateSource,
+}
+
+#[derive(Clone, Debug)]
+enum BinaryDiscoveryCandidateSource {
+    Local {
+        path: PathBuf,
+        selection_bytes_read: u64,
+    },
+    Transport(FileTransportResource),
+}
+
+impl BinaryDiscoveryCandidate {
+    fn from_local(candidate: cdf_declarative::LocalFileDiscoveryCandidate) -> Self {
+        let modified_at_ms = candidate.modified_at_ms();
+        Self {
+            location: candidate.relative_path,
+            size_bytes: candidate.size_bytes,
+            modified_at_ms,
+            compression: candidate.compression,
+            source: BinaryDiscoveryCandidateSource::Local {
+                path: candidate.path,
+                selection_bytes_read: candidate.selection_bytes_read,
+            },
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -435,26 +560,55 @@ impl LocalBinaryDiscoveryAdapter {
 
     fn probe(
         self,
-        candidate: &cdf_declarative::LocalFileDiscoveryCandidate,
+        candidate: &BinaryDiscoveryCandidate,
         budget: &DiscoveryExecutorBudget,
+        file_dependencies: Option<&FileRuntimeDependencies>,
     ) -> Result<(arrow_schema::SchemaRef, BTreeMap<String, String>, u64)> {
-        match self {
-            Self::Parquet => {
+        match (self, &candidate.source) {
+            (
+                Self::Parquet,
+                BinaryDiscoveryCandidateSource::Local {
+                    path,
+                    selection_bytes_read,
+                },
+            ) => {
                 let probe = discover_local_parquet_schema_bounded(
-                    &candidate.path,
-                    candidate.selection_bytes_read,
+                    path,
+                    *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
-            Self::ArrowIpc => {
+            (
+                Self::ArrowIpc,
+                BinaryDiscoveryCandidateSource::Local {
+                    path,
+                    selection_bytes_read,
+                },
+            ) => {
                 let probe = discover_local_arrow_ipc_schema_bounded(
-                    &candidate.path,
-                    candidate.selection_bytes_read,
+                    path,
+                    *selection_bytes_read,
                     budget.max_metadata_bytes_per_file(),
                 )?;
                 Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
             }
+            (Self::Parquet, BinaryDiscoveryCandidateSource::Transport(resource)) => {
+                let dependencies = file_dependencies.ok_or_else(|| {
+                    CdfError::contract(
+                        "remote Parquet discovery requires file transport dependencies",
+                    )
+                })?;
+                let probe = discover_transport_parquet_schema_bounded(
+                    resource.clone(),
+                    dependencies,
+                    budget.max_metadata_bytes_per_file(),
+                )?;
+                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
+            }
+            (Self::ArrowIpc, BinaryDiscoveryCandidateSource::Transport(_)) => Err(
+                CdfError::contract("remote Arrow IPC discovery is not implemented"),
+            ),
         }
     }
 
@@ -486,24 +640,36 @@ fn discover_local_binary_resource_schema(
     plan: &cdf_declarative::FileResourcePlan,
     options: SchemaDiscoveryExecutionOptions,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    let adapter = LocalBinaryDiscoveryAdapter::for_format(resource, &plan.format)?;
+    let candidates = local_file_discovery_candidates(&resource.descriptor().resource_id, plan)?
+        .into_iter()
+        .map(BinaryDiscoveryCandidate::from_local)
+        .collect::<Vec<_>>();
+    discover_binary_resource_schema(resource, options, adapter, candidates, None, "local")
+}
+
+fn discover_binary_resource_schema(
+    resource: &CompiledResource,
+    options: SchemaDiscoveryExecutionOptions,
+    adapter: LocalBinaryDiscoveryAdapter,
+    candidates: Vec<BinaryDiscoveryCandidate>,
+    file_dependencies: Option<&FileRuntimeDependencies>,
+    transport_label: &str,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
     ensure_discover_schema_mode(resource)?;
     let baseline_schema_hash =
         options.verified_baseline_hash_for(&resource.descriptor().resource_id)?;
-    let adapter = LocalBinaryDiscoveryAdapter::for_format(resource, &plan.format)?;
-    let candidates = local_file_discovery_candidates(&resource.descriptor().resource_id, plan)?;
     if candidates.is_empty() {
         return Err(CdfError::data(format!(
-            "local binary discovery for resource `{}` matched no files under `{}` for glob `{}`",
-            resource.descriptor().resource_id,
-            plan.root,
-            plan.glob
+            "{transport_label} binary discovery for resource `{}` matched no files",
+            resource.descriptor().resource_id
         )));
     }
 
     let selector_candidates = candidates
         .iter()
         .map(|candidate| DiscoverySelectorCandidate {
-            canonical_location: candidate.relative_path.clone(),
+            canonical_location: candidate.location.clone(),
             identity: selector_candidate_identity(candidate),
         })
         .collect::<Vec<_>>();
@@ -520,14 +686,20 @@ fn discover_local_binary_resource_schema(
     let scheduled_candidates = candidates
         .iter()
         .filter(|candidate| {
-            options.runtime_effective_schema || selection.selects(&candidate.relative_path)
+            options.runtime_effective_schema || selection.selects(&candidate.location)
         })
         .collect::<Vec<_>>();
     let mut probes = Vec::with_capacity(scheduled_candidates.len());
     let mut probe_reports = Vec::with_capacity(scheduled_candidates.len());
     let mut failed = false;
     for candidate in scheduled_candidates {
-        match probe_local_binary_candidate(resource, adapter, candidate, &options.budget) {
+        match probe_binary_candidate(
+            resource,
+            adapter,
+            candidate,
+            &options.budget,
+            file_dependencies,
+        ) {
             Ok(probe) => {
                 probe_reports.push(format!(
                     "{}: probed {} metadata bytes",
@@ -537,13 +709,13 @@ fn discover_local_binary_resource_schema(
             }
             Err(error) => {
                 failed = true;
-                probe_reports.push(format!("{}: failed: {}", candidate.relative_path, error));
+                probe_reports.push(format!("{}: failed: {}", candidate.location, error));
             }
         }
     }
     if failed {
         return Err(CdfError::data(format!(
-            "{coverage_label} local binary discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
+            "{coverage_label} {transport_label} binary discovery failed for resource `{}` after evaluating every selected candidate without substitution: {}",
             resource.descriptor().resource_id,
             probe_reports.join("; ")
         )));
@@ -616,16 +788,16 @@ fn discover_local_binary_resource_schema(
     let manifest_candidates = candidates
         .iter()
         .map(|candidate| {
-            if !selection.selects(&candidate.relative_path) {
+            if !selection.selects(&candidate.location) {
                 return Ok(unprobed_manifest_candidate(candidate));
             }
             let probe = probes
                 .iter()
-                .find(|probe| probe.location == candidate.relative_path)
+                .find(|probe| probe.location == candidate.location)
                 .ok_or_else(|| {
                     CdfError::internal(format!(
                         "selected discovery candidate `{}` was not probed",
-                        candidate.relative_path
+                        candidate.location
                     ))
                 })?;
             let verdict = file_aggregate
@@ -675,14 +847,14 @@ fn discover_local_binary_resource_schema(
     let total_probe_bytes = selected_probes.iter().try_fold(0_u64, |total, probe| {
         total.checked_add(probe.probe_bytes).ok_or_else(|| {
             CdfError::data(format!(
-                "{coverage_label} local binary discovery metadata byte accounting overflowed for resource `{}` while adding `{}`; reduce the matched file set or probe budget",
+                "{coverage_label} {transport_label} binary discovery metadata byte accounting overflowed for resource `{}` while adding `{}`; reduce the matched file set or probe budget",
                 resource.descriptor().resource_id,
                 probe.location
             ))
         })
     })?;
     let mut source_identity = BTreeMap::from([
-        ("transport".to_owned(), "local".to_owned()),
+        ("transport".to_owned(), transport_label.to_owned()),
         ("coverage".to_owned(), coverage_label.to_owned()),
         ("matched_files".to_owned(), candidates.len().to_string()),
         (
@@ -790,11 +962,12 @@ fn discover_local_binary_resource_schema(
     })
 }
 
-fn probe_local_binary_candidate(
+fn probe_binary_candidate(
     resource: &CompiledResource,
     adapter: LocalBinaryDiscoveryAdapter,
-    candidate: &cdf_declarative::LocalFileDiscoveryCandidate,
+    candidate: &BinaryDiscoveryCandidate,
     budget: &DiscoveryExecutorBudget,
+    file_dependencies: Option<&FileRuntimeDependencies>,
 ) -> Result<LocalBinaryProbe> {
     if candidate.compression != "none" {
         return Err(unsupported_discover_slice(
@@ -804,14 +977,15 @@ fn probe_local_binary_candidate(
             ),
         ));
     }
-    let (schema, source_identity, probe_bytes) = adapter.probe(candidate, budget)?;
+    let (schema, source_identity, probe_bytes) =
+        adapter.probe(candidate, budget, file_dependencies)?;
     let modified_at_ms = source_identity
         .get("modified_unix_millis")
         .map(|value| {
             value.parse::<i64>().map_err(|error| {
                 CdfError::data(format!(
                     "invalid modification time `{value}` for `{}`: {error}",
-                    candidate.relative_path
+                    candidate.location
                 ))
             })
         })
@@ -823,7 +997,7 @@ fn probe_local_binary_candidate(
         .cloned()
         .unwrap_or_else(|| physical_schema_hash.to_string());
     Ok(LocalBinaryProbe {
-        location: candidate.relative_path.clone(),
+        location: candidate.location.clone(),
         size_bytes: candidate.size_bytes,
         modified_at_ms,
         bounded_identity_value: fingerprint,
@@ -1066,23 +1240,19 @@ fn manifest_candidate(
     })
 }
 
-fn selector_candidate_identity(
-    candidate: &cdf_declarative::LocalFileDiscoveryCandidate,
-) -> DiscoveryBoundedIdentity {
+fn selector_candidate_identity(candidate: &BinaryDiscoveryCandidate) -> DiscoveryBoundedIdentity {
     DiscoveryBoundedIdentity {
         size_bytes: Some(candidate.size_bytes),
-        modified_at_ms: candidate.modified_at_ms(),
+        modified_at_ms: candidate.modified_at_ms,
         value: None,
         strength: DiscoveryIdentityStrength::Unavailable,
     }
 }
 
-fn unprobed_manifest_candidate(
-    candidate: &cdf_declarative::LocalFileDiscoveryCandidate,
-) -> DiscoveryCandidateEvidence {
+fn unprobed_manifest_candidate(candidate: &BinaryDiscoveryCandidate) -> DiscoveryCandidateEvidence {
     DiscoveryCandidateEvidence {
         transport: "file".to_owned(),
-        canonical_location: candidate.relative_path.clone(),
+        canonical_location: candidate.location.clone(),
         identity: selector_candidate_identity(candidate),
         participation: DiscoveryParticipation::Unprobed,
         metadata_variance: Vec::new(),
@@ -1143,30 +1313,6 @@ fn aggregate_file_report(verdict: &AggregateFileSchemaVerdict) -> String {
         coerced,
         verdict.fields.len()
     )
-}
-
-fn discover_parquet_resource_schema(
-    resource: &CompiledResource,
-    file_dependencies: Option<FileRuntimeDependencies>,
-) -> Result<LocalParquetSchemaDiscovery> {
-    match resource.plan() {
-        CompiledResourcePlan::Files(plan) if is_http_root(&plan.root) => {
-            let dependencies = file_dependencies.ok_or_else(|| {
-                unsupported_discover_slice(
-                    resource.descriptor(),
-                    "HTTP(S) Parquet discovery requires explicit file transport dependencies",
-                )
-            })?;
-            discover_http_parquet_resource_schema(resource, dependencies)
-        }
-        CompiledResourcePlan::Files(_) => Err(unsupported_discover_slice(
-            resource.descriptor(),
-            "local Parquet discovery must use the resource-level exhaustive discovery API",
-        )),
-        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => Err(
-            unsupported_discover_slice(resource.descriptor(), "resource is not a file resource"),
-        ),
-    }
 }
 
 #[deprecated(
@@ -1235,63 +1381,6 @@ pub fn discover_local_parquet_resource_schema(
 
     Ok(LocalParquetSchemaDiscovery {
         normalized_schema: discovery.normalized_schema,
-        snapshot,
-        partition,
-    })
-}
-
-fn discover_http_parquet_resource_schema(
-    resource: &CompiledResource,
-    dependencies: FileRuntimeDependencies,
-) -> Result<LocalParquetSchemaDiscovery> {
-    ensure_discover_schema_mode(resource)?;
-    let (plan, partition) = single_http_parquet_partition(resource, &dependencies)?;
-    let url = partition.metadata.get("path").cloned().ok_or_else(|| {
-        CdfError::contract(format!(
-            "HTTP(S) Parquet discovery for resource `{}` expected file partition URL metadata",
-            resource.descriptor().resource_id
-        ))
-    })?;
-    let resource_request = FileTransportResource {
-        location: FileTransportLocation::HttpUrl { url },
-        egress_allowlist: plan.allowlist.clone(),
-        auth: plan.auth.clone(),
-        credentials: plan.credentials.clone(),
-    };
-    let mut probe = discover_transport_parquet_schema(resource_request, &dependencies)?;
-    let normalized = normalize_arrow_schema(probe.schema.as_ref(), &IdentifierPolicy::default())?;
-    let normalized = Arc::new(normalized);
-    let metadata = BTreeMap::from([
-        (
-            "probe".to_owned(),
-            SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER.to_owned(),
-        ),
-        (
-            "format".to_owned(),
-            SCHEMA_DISCOVERY_FORMAT_PARQUET.to_owned(),
-        ),
-        ("source_kind".to_owned(), "files".to_owned()),
-        (
-            "cdf:normalizer".to_owned(),
-            NORMALIZER_NAMECASE_V1.to_owned(),
-        ),
-    ]);
-    let artifact = SchemaSnapshotArtifact::new(
-        &resource.descriptor().resource_id,
-        normalized.as_ref(),
-        metadata,
-    )?;
-    probe
-        .source_identity
-        .insert("transport".to_owned(), "https".to_owned());
-    let snapshot = DiscoveredParquetSchemaSnapshot {
-        reference: artifact.reference(),
-        artifact,
-        source_identity: probe.source_identity,
-    };
-
-    Ok(LocalParquetSchemaDiscovery {
-        normalized_schema: normalized,
         snapshot,
         partition,
     })
@@ -1580,50 +1669,15 @@ fn ensure_discover_schema_mode(resource: &CompiledResource) -> Result<()> {
     )))
 }
 
-fn single_http_parquet_partition<'a>(
-    resource: &'a CompiledResource,
-    dependencies: &FileRuntimeDependencies,
-) -> Result<(&'a cdf_declarative::FileResourcePlan, PartitionPlan)> {
-    let plan = match resource.plan() {
-        CompiledResourcePlan::Files(plan) => plan,
-        CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
-            return Err(unsupported_discover_slice(
-                resource.descriptor(),
-                "HTTP(S) Parquet discovery only supports file resources",
-            ));
-        }
-    };
-    if plan.format != FileFormatDeclaration::Parquet {
-        return Err(unsupported_discover_slice(
-            resource.descriptor(),
-            format!(
-                "only HTTP(S) single-file Parquet discovery is implemented in this slice; resource uses format = {:?}",
-                plan.format
-            ),
-        ));
-    }
-    let runtime = resource.to_file_resource(dependencies.clone())?;
-    let partitions = runtime.plan_partitions(&discovery_scan_request(resource.descriptor())?)?;
-    match partitions.as_slice() {
-        [partition] => Ok((plan, partition.clone())),
-        [] => Err(CdfError::data(format!(
-            "HTTP(S) Parquet discovery for resource `{}` matched no file for `{}` and glob `{}`",
-            resource.descriptor().resource_id,
-            plan.root,
-            plan.glob
-        ))),
-        _ => Err(CdfError::contract(format!(
-            "multi-file HTTP(S) Parquet discovery is unsupported for resource `{}`; glob `{}` under `{}` resolved to {} files",
-            resource.descriptor().resource_id,
-            plan.glob,
-            plan.root,
-            partitions.len()
-        ))),
-    }
-}
-
 fn is_http_root(root: &str) -> bool {
     root.starts_with("http://") || root.starts_with("https://")
+}
+
+fn is_remote_file_root(root: &str) -> bool {
+    is_http_root(root)
+        || root.starts_with("s3://")
+        || root.starts_with("gs://")
+        || root.starts_with("az://")
 }
 
 fn discovery_scan_request(descriptor: &ResourceDescriptor) -> Result<ScanRequest> {

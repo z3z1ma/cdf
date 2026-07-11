@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
@@ -38,6 +38,9 @@ Targeted crate tests, workspace check/clippy, generated schema verification, adv
 ## Progress and notes
 
 - 2026-07-10: User granted autonomous ratification authority. Selected the shared `object_store` facade and finite HTTP range grammar described by the governing decision.
+- 2026-07-10: Added S3/GCS/Azure resolution behind `FileTransport`, secret-ref provider options, pre-network egress enforcement, recursive cloud glob partitioning, bounded remote Parquet footer probes, and finite width-preserving HTTP numeric templates.
+- 2026-07-10: Refactored resource discovery so local and remote binary candidates share selection, schema aggregation, normalization, manifest generation, quarantine classification, and effective-schema runtime evidence. Remote pinned resources now re-observe through injected transport dependencies.
+- 2026-07-10: Acceptance evidence is `.10x/evidence/2026-07-10-p2-ws-e3-cloud-object-stores.md`; adversarial review is `.10x/reviews/2026-07-10-p2-ws-e3-cloud-object-stores-review.md`.
 
 ## Blockers
 

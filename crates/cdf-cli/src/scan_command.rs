@@ -119,11 +119,21 @@ pub(crate) fn prepare_discover_resource_for_cli(
     if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
         && !no_pin
     {
-        let prepared = cdf_project::prepare_pinned_resource_effective_schema_artifacts(
-            &context.root,
-            resource,
-            &context.secret_provider(),
-        )?;
+        let prepared = if matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
+        {
+            cdf_project::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
+                &context.root,
+                resource,
+                &context.secret_provider(),
+                file_runtime_dependencies(context)?,
+            )?
+        } else {
+            cdf_project::prepare_pinned_resource_effective_schema_artifacts(
+                &context.root,
+                resource,
+                &context.secret_provider(),
+            )?
+        };
         let discovery = prepared
             .discovery_manifest()
             .map(DiscoveryCoverageReport::from_manifest);
@@ -170,7 +180,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         }
         None => cdf_project::SchemaDiscoveryExecutionOptions::new(),
     };
-    let artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
+    let artifacts = if matches!(probe_resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
     {
         cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
             &probe_resource,
@@ -225,11 +235,21 @@ pub(crate) fn prepare_discover_resource_for_cli(
         (snapshot_written, lockfile_written)
     };
     let (prepared_resource, discovery_coverage) = if !no_pin {
-        let prepared = cdf_project::prepare_pinned_resource_effective_schema_artifacts(
-            &context.root,
-            &prepared.resource,
-            &secret_provider,
-        )?;
+        let prepared = if matches!(prepared.resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
+        {
+            cdf_project::prepare_pinned_resource_effective_schema_with_file_dependencies_artifacts(
+                &context.root,
+                &prepared.resource,
+                &secret_provider,
+                file_runtime_dependencies(context)?,
+            )?
+        } else {
+            cdf_project::prepare_pinned_resource_effective_schema_artifacts(
+                &context.root,
+                &prepared.resource,
+                &secret_provider,
+            )?
+        };
         let discovery = prepared
             .discovery_manifest()
             .map(DiscoveryCoverageReport::from_manifest);
@@ -538,8 +558,12 @@ fn lower_runtime_missing(error: &CdfError) -> bool {
         .contains("execution is outside the MVP compiler crate")
 }
 
-fn is_http_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
-    plan.root.starts_with("http://") || plan.root.starts_with("https://")
+fn is_remote_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
+    plan.root.starts_with("http://")
+        || plan.root.starts_with("https://")
+        || plan.root.starts_with("s3://")
+        || plan.root.starts_with("gs://")
+        || plan.root.starts_with("az://")
 }
 
 fn scan_report_document(
