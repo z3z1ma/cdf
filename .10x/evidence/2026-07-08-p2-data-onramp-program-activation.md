@@ -45,7 +45,7 @@ Inspected governing and adjacent records:
 - `.10x/specs/project-cli-observability-security.md`.
 - `.10x/specs/conformance-governance-roadmap.md`.
 - `.10x/decisions/source-decode-type-drift-quarantine.md`.
-- `.10x/decisions/preview-one-batch-sampling-semantics.md`.
+- `.10x/decisions/superseded/preview-one-batch-sampling-semantics.md`.
 - `.10x/tickets/2026-07-05-implement-cdf-system.md`.
 
 Inspected source anchors for the P2 diagnosis:

@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Target: .10x/specs/versioning-lts-release-policy.md, .10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md, .10x/tickets/2026-07-08-p1-product-ws8b-release-artifact-workflow.md, .10x/tickets/2026-07-08-p1-product-ws8c-changelog-installer-channel.md
+Target: .10x/specs/versioning-lts-release-policy.md, .10x/tickets/done/2026-07-08-p1-product-ws8a-ci-quality-workflows.md, .10x/tickets/done/2026-07-08-p1-product-ws8b-release-artifact-workflow.md, .10x/tickets/done/2026-07-08-p1-product-ws8c-changelog-installer-channel.md
 Verdict: pass
 
 # P1 WS8 release shaping review

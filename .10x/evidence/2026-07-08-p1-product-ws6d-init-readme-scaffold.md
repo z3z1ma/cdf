@@ -22,7 +22,7 @@ create a README.
 
 Inspected governing records and implementation before editing:
 
-- `.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
 - `.10x/specs/docs-onboarding-surface.md`.
 - `.10x/tickets/done/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`.
 - `.10x/decisions/cdf-init-local-scaffold-defaults.md`.

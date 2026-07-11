@@ -2,7 +2,7 @@ Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/done/2026-07-08-p2-ws-e-remote-transports.md
-Depends-On: .10x/tickets/done/2026-07-08-p2-ws-e1-file-transport-facade.md, .10x/tickets/done/2026-07-08-p2-ws-e2-http-file-transport.md
+Depends-On: .10x/tickets/done/2026-07-08-p2-ws-e1-file-transport-facade-local-http.md, .10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md
 
 # P2 WS-E3 — Cloud object stores and finite HTTP templates
 
@@ -28,7 +28,7 @@ Complete the shared file-transport facade for S3, GCS, and Azure; preserve secre
 ## References
 
 - `.10x/decisions/object-store-credentials-and-http-enumeration.md`
-- `.10x/specs/file-source-execution.md`
+- `.10x/specs/data-onramp-file-sources-transports.md`
 - `VISION.md` §§8.2, 8.6, 17.2
 
 ## Evidence expectations

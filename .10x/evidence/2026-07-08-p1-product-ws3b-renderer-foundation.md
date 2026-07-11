@@ -36,7 +36,7 @@ Foundational snapshot-style tests added:
 
 Inspected before editing:
 
-- `.10x/tickets/2026-07-08-p1-product-ws3b-renderer-foundation.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md`.
 - `.10x/decisions/cli-design-language-and-renderer.md`.
 - `.10x/specs/project-cli-observability-security.md`.
 - `.10x/specs/cli-live-progress.md`.
