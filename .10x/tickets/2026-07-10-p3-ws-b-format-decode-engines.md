@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-07-rest-json-to-arrow-performance-triage.md
+Depends-On: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-fx1-native-format-extension-boundary.md, .10x/tickets/2026-07-07-rest-json-to-arrow-performance-triage.md
 
 # P3 WS-B: format decode engines
 
@@ -10,7 +10,7 @@ Depends-On: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/202
 
 Make each source format stream into Arrow efficiently: row-group-parallel Parquet with pushdown, chunk-parallel CSV where safe, tape-based JSON/NDJSON, streamed gzip/zstd windows, and REST CPU-pool page decode. Preserve fail-closed decoding, P2 schema reconciliation, residual capture, and deterministic partition output.
 
-Split by format and shared decompression seam before implementation. Any `simd-json` evaluation is research/dependency-gate work, not an assumed addition.
+Split by codec and shared byte-transform seam before implementation. Every codec implements `.10x/specs/native-format-codec-runtime.md`; no new format may extend the current enum/match architecture. Any parser/decompression dependency is research/dependency-gate work, not an assumed addition.
 
 ## Acceptance criteria
 
@@ -21,4 +21,4 @@ Split by format and shared decompression seam before implementation. Any `simd-j
 
 ## Blockers
 
-Blocked until WS-L baseline evidence exists.
+Blocked until WS-L baseline evidence and the FX1 format-driver boundary exist.

@@ -35,6 +35,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - Every optimization requires same-harness before/after evidence. Correctness mechanisms are optimized, never disabled to meet a target.
 - New dependencies follow cargo-vet/deny and the pinned-tuple policy. `unsafe` requires a focused active decision, safety comment, and fuzz target.
 - Source and destination performance behavior belongs behind shared runtime traits and capability sheets. No ticket-local concrete-source/destination branch may enter generic orchestration.
+- Native format performance and behavior belong behind the registry/byte-source contract in `.10x/specs/native-format-codec-runtime.md`; adding a codec MUST NOT extend generic compiler/runtime match trees or force unrelated parser build domains.
 
 ## Workstreams
 
