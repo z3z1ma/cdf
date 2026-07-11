@@ -48,6 +48,7 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 - `.10x/tickets/2026-07-10-p3-ws-f-constant-memory-guarantee.md`
 - `.10x/tickets/2026-07-10-p3-ws-g-remote-io-overlap.md`
 - `.10x/tickets/2026-07-10-p3-ws-h-interop-boundaries.md`
+- `.10x/tickets/2026-07-11-p3-ws-v-vectorized-validation.md`
 
 ## Sequencing
 
@@ -81,6 +82,7 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 - 2026-07-11: VISION 6.5–6.6 are now explicitly owned within P3 drain mode. BX1 and A7–A9 move stream extent/watermark meaning into kernel artifacts, compile complete policies, execute finite frontier-closed epochs on the ordinary graph, and conformance-test late data/recovery/jobs invariance. Resident lifecycle and concrete CDC remain in the later supervisor ticket and must reuse this path.
 - 2026-07-11: WS-H is split through IX1 and H1–H5. Python/subprocess must become incremental implementations of one neutral foreign-stream contract with falsifiable copy/memory/cancellation semantics; WASM remains a prospective interface/cost model in P3, with no invented runtime claim.
 - 2026-07-11: The future distribution seam is now executable architecture rather than prose: WX1 defines a canonical operational partition task/result capsule and C5 proves direct-local versus serialize/reconstruct isolated-worker equivalence. P3 still ships no remote scheduler/framework adapter.
+- 2026-07-11: Envelope ownership audit found the ≥1 GB/s/core validation target had no implementation child while the current evaluator is per-rule/per-row scalar. WS-V now owns engine-neutral vector kernels, bitmap verdict algebra, graph integration, scalar differential proof, and the target closeout.
 
 ## Blockers
 

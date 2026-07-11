@@ -24,6 +24,8 @@ Pre-contract quarantine, residual candidates/decisions, contract verdicts, varia
 
 Schema reconciliation, projection/coercion, contract evaluation, residual/variant handling, normalization, and compatible transforms SHOULD run as one fused CPU kernel when they share an executor/lane and no stateful/durable boundary intervenes. Fusion MUST preserve individual plan/verdict identities and produce identical accepted rows, quarantine, lineage, and package bytes to an unfused conformance execution.
 
+Contract evaluation MUST consume the engine-neutral vector masks/outcomes from `.10x/specs/vectorized-contract-validation.md`; graph fusion cannot redefine rule meaning or reintroduce a scalar accepted-row hot path.
+
 Channels/queues MUST exist only at useful ownership or concurrency boundaries and MUST be byte-accounted through the unified ledger. Queue item-count limits MAY defend metadata cardinality but do not replace byte accounting. Concurrency is admitted through the injected execution host and cannot exceed memory, CPU, source, destination, ordering, or single-writer capabilities.
 
 ## Stateful barriers and ordering
