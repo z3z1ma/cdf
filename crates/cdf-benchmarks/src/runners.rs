@@ -452,7 +452,15 @@ schema = { fields = [
     )?;
     let resource = compile_document_with_project_root(&document, &project_root)?.remove(0);
     let package_id = "pkg-startup-benchmark";
-    let plan = engine_plan(&resource, package_id)?;
+    let destination = ResolvedProjectDestination::duckdb(
+        project_root.join(".cdf/dev.duckdb"),
+        TargetName::new("events")?,
+    )?;
+    let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
+    if let Some(identifier) = destination.column_identifier_policy()? {
+        policy.normalization.identifier = identifier;
+    }
+    let plan = engine_plan_with_policy(&resource, package_id, &policy)?;
     let report = block_on(run_project(ProjectRunRequest {
         resource: ProjectRunSource::local_file(&resource),
         plan,
@@ -461,10 +469,7 @@ schema = { fields = [
         pipeline_id: PipelineId::new("pipeline-startup-benchmark")?,
         package_id: package_id.to_owned(),
         checkpoint_id: CheckpointId::new("checkpoint-startup-benchmark")?,
-        destination: ResolvedProjectDestination::duckdb(
-            project_root.join(".cdf/dev.duckdb"),
-            TargetName::new("events")?,
-        )?,
+        destination,
         run_id: Some(RunId::new("run-startup-benchmark")?),
         event_sink: None,
         after_receipt_verified: None,
@@ -485,11 +490,20 @@ fn engine_plan<R: ResourceStream + ?Sized>(
     resource: &R,
     package_id: &str,
 ) -> BenchResult<cdf_engine::EnginePlan> {
-    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
-    let validation_program = compile_validation_program(
+    engine_plan_with_policy(
+        resource,
+        package_id,
         &ContractPolicy::for_trust(resource.descriptor().trust_level.clone()),
-        &observed_schema,
-    )?;
+    )
+}
+
+fn engine_plan_with_policy<R: ResourceStream + ?Sized>(
+    resource: &R,
+    package_id: &str,
+    policy: &ContractPolicy,
+) -> BenchResult<cdf_engine::EnginePlan> {
+    let observed_schema = ObservedSchema::from_arrow(resource.schema().as_ref());
+    let validation_program = compile_validation_program(policy, &observed_schema)?;
     let projection = if resource.schema().field_with_name("category").is_ok() {
         Some(vec!["id".to_owned(), "category".to_owned()])
     } else {
