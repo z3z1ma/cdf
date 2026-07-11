@@ -1,8 +1,7 @@
 use std::{
     env, fs,
-    fs::OpenOptions,
+    fs::File,
     io::Write,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -237,17 +236,12 @@ fn write_add_artifacts(
                 error_catalog::PROJECT_IO,
             )
         })?;
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(&path)
-            .map_err(|error| {
-                CliError::mapped(
-                    CdfError::contract(format!("create private source secret: {error}")),
-                    error_catalog::PROJECT_IO,
-                )
-            })?;
+        let mut file = open_private_source_secret(&path).map_err(|error| {
+            CliError::mapped(
+                CdfError::contract(format!("create private source secret: {error}")),
+                error_catalog::PROJECT_IO,
+            )
+        })?;
         file.write_all(target.dsn.as_bytes()).map_err(|error| {
             CliError::mapped(
                 CdfError::contract(format!("write private source secret: {error}")),
@@ -301,6 +295,25 @@ fn write_add_artifacts(
     )
     .map_err(|error| CliError::mapped(error, error_catalog::PROJECT_IO))?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn open_private_source_secret(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_private_source_secret(_path: &Path) -> std::io::Result<File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "direct DSN persistence requires an owner-only file-permission implementation on this platform; configure the source with an existing secret reference",
+    ))
 }
 
 #[derive(Clone, Debug)]
