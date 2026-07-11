@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Target: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
+Target: .10x/tickets/done/2026-07-08-p1-product-ws5-live-progress.md
 Verdict: pass
 
 # P1 WS5 live progress shaping review
@@ -14,7 +14,7 @@ The WS5 shaping records:
 - `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
-- `.10x/tickets/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
 - `.10x/evidence/2026-07-08-p1-product-ws5-live-progress-shaping.md`
 
 ## Findings

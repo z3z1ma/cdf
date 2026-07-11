@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Target: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
+Target: .10x/tickets/done/2026-07-08-p1-product-ws1-runtime-event-spine.md
 Verdict: pass
 
 # P1 WS1 remaining event-spine shaping review
@@ -13,9 +13,9 @@ The WS1 remaining-shape records:
 - `.10x/specs/runtime-event-spine.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
-- `.10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1e-tracing-bridge.md`
-- `.10x/tickets/2026-07-08-p1-product-ws1f-event-spine-evidence-gate.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1f-event-spine-evidence-gate.md`
 - `.10x/evidence/2026-07-08-p1-product-ws1-remaining-event-spine-shaping.md`
 
 ## Findings

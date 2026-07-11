@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md, .10x/specs/cli-live-progress.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws5-live-progress.md, .10x/specs/cli-live-progress.md
 
 # P1 WS5 live progress shaping evidence
 
@@ -25,7 +25,7 @@ Read the WS5 parent, WS1A done ticket, renderer decision, run event source, proj
 - `.10x/tickets/done/2026-07-08-p1-product-ws5a-progress-sink-renderer-foundation.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md`
-- `.10x/tickets/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws5d-progress-evidence-gate.md`
 
 ## What this supports or challenges
 

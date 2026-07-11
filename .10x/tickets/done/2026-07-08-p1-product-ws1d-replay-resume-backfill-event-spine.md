@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws1-runtime-event-spine.md
 Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md, .10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md
 
 # P1 product WS1D: Replay, resume, and backfill event spine
@@ -31,7 +31,8 @@ Do not implement human progress rendering; WS5 consumes this. Do not change repl
 ## Progress and notes
 
 - 2026-07-08: Split from WS1 because WS1A excluded broader replay/resume/backfill event plumbing.
+- 2026-07-10: Verified the shared replay/resume/backfill sink paths and recorded aggregate evidence/review in `.10x/evidence/2026-07-10-p1-event-progress-aggregate-closure.md` and `.10x/reviews/2026-07-10-p1-event-progress-aggregate-closure-review.md`.
 
 ## Blockers
 
-None.
+None. Complete.

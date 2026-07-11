@@ -8,7 +8,7 @@ Updated: 2026-07-08
 
 This specification governs the runtime event spine used by the run ledger, live CLI progress, tracing, conformance observations, replay, resume, and backfill. It refines `.10x/specs/run-orchestration-ledger.md` for product-facing event publication without changing checkpoint authority.
 
-It derives from `VISION.md` decisions D-19 and D-21; `.10x/specs/project-cli-observability-security.md`; `.10x/specs/run-orchestration-ledger.md`; `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md`; and `.10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md`.
+It derives from `VISION.md` decisions D-19 and D-21; `.10x/specs/project-cli-observability-security.md`; `.10x/specs/run-orchestration-ledger.md`; `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md`; and `.10x/tickets/done/2026-07-08-p1-product-ws1-runtime-event-spine.md`.
 
 ## Behavior
 

@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
-Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md, .10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1e-tracing-bridge.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws1-runtime-event-spine.md
+Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md, .10x/tickets/done/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1e-tracing-bridge.md
 
 # P1 product WS1F: Event spine evidence gate
 
@@ -31,7 +31,8 @@ Do not implement new product behavior except to repair WS1 evidence findings. CL
 ## Progress and notes
 
 - 2026-07-08: Split from WS1 to keep final evidence closure separate from event-spine implementation slices.
+- 2026-07-10: Aggregate ordering, failure, backpressure, redaction, ledger, tracing, and command-path evidence recorded in `.10x/evidence/2026-07-10-p1-event-progress-aggregate-closure.md`; adversarial review passed in `.10x/reviews/2026-07-10-p1-event-progress-aggregate-closure-review.md`.
 
 ## Blockers
 
-Blocked until WS1D and WS1E land.
+None. Complete.

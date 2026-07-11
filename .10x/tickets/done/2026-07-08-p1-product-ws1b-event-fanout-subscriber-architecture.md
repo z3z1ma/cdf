@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-product-ws1-runtime-event-spine.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws1-runtime-event-spine.md
 Depends-On: .10x/specs/runtime-event-spine.md, .10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md
 
 # P1 product WS1B: Event fanout subscriber architecture

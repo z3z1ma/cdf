@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-08
 Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws5-live-progress.md
 Depends-On: .10x/specs/cli-live-progress.md, .10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md, .10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/done/2026-07-08-p1-product-ws2c-product-grammar-semantics.md
 
 # P1 product WS5A: Progress sink and renderer foundation

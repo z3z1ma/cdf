@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/specs/run-orchestration-ledger.md, .10x/specs/project-cli-observability-security.md, .10x/specs/runtime-event-spine.md
 
@@ -17,9 +17,9 @@ This workstream is broad enough to split before implementation if needed. The fi
 - `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1b-event-fanout-subscriber-architecture.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1c-event-lifecycle-payload-breadth.md`
-- `.10x/tickets/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1d-replay-resume-backfill-event-spine.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws1e-tracing-bridge.md`
-- `.10x/tickets/2026-07-08-p1-product-ws1f-event-spine-evidence-gate.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws1f-event-spine-evidence-gate.md`
 
 ## Required outcomes
 
@@ -51,7 +51,8 @@ No CLI spinner/progress UI in this workstream except test doubles. No OTLP expor
 - 2026-07-08: Split executable child `.10x/tickets/done/2026-07-08-p1-product-ws1a-run-event-sink-foundation.md` for the shared event DTOs plus non-blocking live sink accepted by `ProjectRunRequest`.
 - 2026-07-08: Shaped remaining event-spine work in `.10x/specs/runtime-event-spine.md` and child tickets WS1B-WS1F. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws1-remaining-event-spine-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws1-remaining-event-spine-shaping-review.md`.
 - 2026-07-08: WS1E tracing bridge closed in `.10x/tickets/done/2026-07-08-p1-product-ws1e-tracing-bridge.md`.
+- 2026-07-10: WS1D convergence and WS1F aggregate evidence gate closed. Aggregate evidence/review: `.10x/evidence/2026-07-10-p1-event-progress-aggregate-closure.md` and `.10x/reviews/2026-07-10-p1-event-progress-aggregate-closure-review.md`.
 
 ## Blockers
 
-None.
+None. Complete.

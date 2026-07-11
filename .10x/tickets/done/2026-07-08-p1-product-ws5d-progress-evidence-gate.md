@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
-Parent: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws5-live-progress.md
 Depends-On: .10x/specs/cli-live-progress.md, .10x/tickets/done/2026-07-08-p1-product-ws5b-run-replay-resume-progress.md, .10x/tickets/done/2026-07-08-p1-product-ws5c-backfill-multi-resource-progress.md
 
 # P1 product WS5D: Progress evidence gate
@@ -31,7 +31,8 @@ Do not implement new progress behavior except to repair findings in the already 
 ## Progress and notes
 
 - 2026-07-08: Split from WS5 to keep evidence closure separate from command wiring.
+- 2026-07-10: Deterministic rich/headless equivalents, chaos/failure, redaction, and migration evidence reconciled in `.10x/evidence/2026-07-10-p1-event-progress-aggregate-closure.md`; review passed in `.10x/reviews/2026-07-10-p1-event-progress-aggregate-closure-review.md`.
 
 ## Blockers
 
-Blocked until WS5B and WS5C land.
+None. Complete.

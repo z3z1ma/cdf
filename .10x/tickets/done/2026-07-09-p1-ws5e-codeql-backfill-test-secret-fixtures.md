@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-09
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws5-live-progress.md
 Depends-On: .10x/evidence/2026-07-09-p2-ws-b1-declarative-arrow-type-vocabulary.md
 
 # P1 WS5E CodeQL backfill test secret fixtures
