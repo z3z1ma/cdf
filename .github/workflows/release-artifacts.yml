@@ -77,9 +77,47 @@ jobs:
           fi
           echo "crates.io publication disabled"
 
+  cli-artifacts:
+    name: Canonical CLI artifacts
+    needs: metadata
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install Python archive runtime
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-cli-artifacts
+
+      - name: Check generated CLI artifact freshness
+        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir crates/cdf-cli/generated --check
+
+      - name: Generate canonical CLI artifacts
+        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir target/generated
+
+      - name: Upload canonical CLI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cdf-${{ needs.metadata.outputs.version }}-cli-artifacts
+          path: target/generated
+          if-no-files-found: error
+
   build:
     name: Build ${{ matrix.target }}
-    needs: metadata
+    needs:
+      - metadata
+      - cli-artifacts
     strategy:
       fail-fast: false
       matrix:
@@ -125,17 +163,15 @@ jobs:
         shell: bash
         run: tools/verify-release-metadata.sh "${{ needs.metadata.outputs.version }}"
 
-      - name: Check generated CLI artifact freshness
-        shell: bash
-        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir crates/cdf-cli/generated --check
-
-      - name: Generate CLI artifacts
-        shell: bash
-        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir target/generated
-
       - name: Build cdf
         shell: bash
         run: cargo build -p cdf-cli --release --locked --target "${{ matrix.target }}"
+
+      - name: Download canonical CLI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: cdf-${{ needs.metadata.outputs.version }}-cli-artifacts
+          path: target/generated
 
       - name: Package release artifact
         shell: bash
