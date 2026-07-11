@@ -3370,6 +3370,103 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
 }
 
 #[test]
+fn sampled_pin_captures_unseen_field_then_fresh_discovery_promotes_without_source_replay() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    set_file_resource_sample_files(&project, 2);
+    write_vendor_parquet(&project.root.join("data/a.parquet"));
+    write_vendor_score_parquet(&project.root.join("data/middle.parquet"));
+    write_vendor_parquet(&project.root.join("data/z.parquet"));
+
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    assert_eq!(
+        stderr_or_stdout_json(&pin.stdout)["result"]["discovery"]["coverage"],
+        "sampled"
+    );
+    let loaded = run_valid_run_args(
+        &project,
+        "pkg-sampled-residual-promotion",
+        "checkpoint-sampled-residual-promotion",
+    );
+    assert_eq!(loaded.exit_code, 0, "{}", loaded.stderr);
+    let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT count(*) FROM events WHERE _cdf_variant IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        2
+    );
+    drop(connection);
+
+    let resource_path = project.root.join("resources/files.toml");
+    let resource = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace("sample_files = 2", "sample_files = 3");
+    fs::write(resource_path, resource).unwrap();
+    let dry = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+    ]);
+    assert_eq!(dry.exit_code, 0, "{}", dry.stderr);
+    let dry_report = stderr_or_stdout_json(&dry.stdout);
+    assert_eq!(dry_report["result"]["executable"], true);
+    assert_eq!(dry_report["result"]["paths"][0]["path"], "/score");
+
+    let promoted = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--execute",
+    ]);
+    assert_eq!(promoted.exit_code, 0, "{}", promoted.stderr);
+    let report = stderr_or_stdout_json(&promoted.stdout);
+    assert_eq!(report["result"]["phase"], "complete");
+    let connection = DuckConnection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let promoted_rows = connection
+        .prepare("SELECT score, _cdf_variant FROM events ORDER BY _cdf_row, vendor_id")
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, Option<i64>>(0)?,
+                row.get::<_, Option<String>>(1)?,
+            ))
+        })
+        .unwrap()
+        .map(|row| row.unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        promoted_rows
+            .iter()
+            .filter(|(score, _)| score.is_some())
+            .count(),
+        2
+    );
+    assert!(promoted_rows.iter().all(|(_, residual)| residual.is_none()));
+}
+
+#[test]
 fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publication() {
     let project = TestProject::new();
     write_parquet_discover_resource(&project, "*.parquet");

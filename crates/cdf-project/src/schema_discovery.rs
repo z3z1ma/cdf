@@ -7,7 +7,7 @@ use std::{
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
     ContractPolicy, IdentifierPolicy, NORMALIZER_NAMECASE_V1, RuleOutcome, SchemaEvolutionMode,
-    normalize_arrow_schema, plan_aggregate_arrow_schema_join,
+    normalize_arrow_schema, plan_aggregate_arrow_schema_join, reconcile_schema,
 };
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
@@ -598,7 +598,7 @@ fn discover_local_binary_resource_schema(
                 "runtime effective-schema discovery requires a verified baseline snapshot",
             )
         })?;
-        classify_runtime_schema_observations(&probes, baseline, &contract.schema.mode)?
+        classify_runtime_schema_observations(&probes, baseline, &contract)?
     } else {
         (
             normalize_arrow_schema(&file_aggregate.schema, &IdentifierPolicy::default())?,
@@ -837,15 +837,17 @@ fn probe_local_binary_candidate(
 fn classify_runtime_schema_observations(
     probes: &[LocalBinaryProbe],
     baseline: &VerifiedSchemaBaseline,
-    mode: &SchemaEvolutionMode,
+    contract: &ContractPolicy,
 ) -> Result<(
     arrow_schema::Schema,
     Vec<TerminalSchemaObservationQuarantine>,
 )> {
-    let mut effective = baseline.schema().as_ref().clone();
+    let effective = baseline.schema().as_ref().clone();
+    let mut physical_type_policy = contract.types.clone();
+    physical_type_policy.coerce_types = false;
     let mut quarantines = Vec::new();
     for probe in probes {
-        if matches!(mode, SchemaEvolutionMode::Freeze)
+        if matches!(&contract.schema.mode, SchemaEvolutionMode::Freeze)
             && baseline.contains_baseline_observation_schema(&probe.physical_schema_hash)
         {
             continue;
@@ -854,16 +856,18 @@ fn classify_runtime_schema_observations(
             AggregateSchemaCandidate::new("__cdf_verified_effective__", effective.clone()),
             AggregateSchemaCandidate::new(probe.location.clone(), probe.schema.as_ref().clone()),
         ])?;
-        let freeze_deviation = if matches!(mode, SchemaEvolutionMode::Freeze) {
+        let freeze_deviation = if matches!(&contract.schema.mode, SchemaEvolutionMode::Freeze) {
             let joined = normalize_arrow_schema(&report.schema, &IdentifierPolicy::default())?;
             !same_effective_fields(&joined, baseline.schema().as_ref())
         } else {
             false
         };
-        if report.is_compatible() && !freeze_deviation {
-            if matches!(mode, SchemaEvolutionMode::Evolve) {
-                effective = report.schema;
-            }
+        let constrained = reconcile_schema(
+            probe.schema.as_ref(),
+            baseline.schema().as_ref(),
+            &physical_type_policy,
+        );
+        if constrained.is_ok() && !freeze_deviation {
             continue;
         }
 
@@ -904,7 +908,7 @@ fn classify_runtime_schema_observations(
                 .cmp(&schema_observation_scope_sort_key(right.scope()))
         });
         fields.dedup();
-        let (rule_id, policy, remediation) = match mode {
+        let (rule_id, policy, remediation) = match &contract.schema.mode {
             SchemaEvolutionMode::Freeze => (
                 "schema-observation:freeze-deviation",
                 SchemaObservationPolicy::Freeze,
@@ -926,12 +930,7 @@ fn classify_runtime_schema_observations(
             fields,
         )?);
     }
-    let effective = match mode {
-        SchemaEvolutionMode::Freeze => baseline.schema().as_ref().clone(),
-        SchemaEvolutionMode::Evolve => {
-            normalize_arrow_schema(&effective, &IdentifierPolicy::default())?
-        }
-    };
+    let effective = baseline.schema().as_ref().clone();
     Ok((effective, quarantines))
 }
 
