@@ -16,9 +16,9 @@ use cdf_kernel::{
     FileManifest, FilePosition, ForeignState, IdempotencyToken, LeaseOwnerId, LogPosition,
     MigrationRecord, PROMOTION_PUBLICATION_EVENT_VERSION, PackageHash, PageToken, PartitionId,
     PipelineId, PlanId, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
-    Receipt, ReceiptId, ResourceId, RewindRequest, RunId, SchemaHash, ScopeKey, ScopeLeaseStore,
-    SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause,
-    WriteDisposition,
+    PromotionSettlementStore, Receipt, ReceiptId, ResourceId, RewindRequest, RunId, SchemaHash,
+    ScopeKey, ScopeLeaseStore, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment,
+    TargetName, VerifyClause, WriteDisposition,
 };
 use rusqlite::params;
 use tempfile::tempdir;
@@ -1404,6 +1404,90 @@ fn sqlite_promotion_publication_is_append_only_idempotent_authority() {
     assert_eq!(
         reopened.promotion_publication(&promotion_id).unwrap(),
         Some(event)
+    );
+}
+
+#[test]
+fn sqlite_promotion_settlement_fences_checkpoint_and_publication_inside_transactions() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("settlement.db");
+    let clock = Arc::new(ManualScopeLeaseClock::new(1_000));
+    let store = SqlitePromotionSettlementStore::open_with_clock(&path, clock.clone()).unwrap();
+    let scope = ScopeKey::SchemaContract {
+        contract: ContractRef::new("orders-contract").unwrap(),
+    };
+    let owner_a = LeaseOwnerId::new("owner-a").unwrap();
+    let lease_a = store.acquire(scope.clone(), owner_a, 100).unwrap();
+    let delta = delta_for(
+        "promotion-checkpoint",
+        None,
+        pipeline_id(),
+        resource_id(),
+        scope.clone(),
+        cursor_position(10),
+        "package-promotion",
+    );
+    let receipt = receipt(&delta);
+    store.propose(delta.clone()).unwrap();
+
+    clock.set(1_100);
+    assert!(
+        store
+            .commit_promotion_checkpoint(&lease_a, &delta.checkpoint_id, receipt.clone())
+            .is_err()
+    );
+    assert_eq!(
+        store
+            .history(&delta.pipeline_id, &delta.resource_id, &scope)
+            .unwrap()[0]
+            .status,
+        CheckpointStatus::Proposed
+    );
+
+    let lease_b = store
+        .acquire(scope.clone(), LeaseOwnerId::new("owner-b").unwrap(), 100)
+        .unwrap();
+    let committed = store
+        .commit_promotion_checkpoint(&lease_b, &delta.checkpoint_id, receipt.clone())
+        .unwrap();
+    assert_eq!(committed.status, CheckpointStatus::Committed);
+
+    let event = PromotionPublicationEvent {
+        version: PROMOTION_PUBLICATION_EVENT_VERSION,
+        promotion_id: PromotionId::new("promotion-fenced").unwrap(),
+        resource_id: resource_id(),
+        old_schema_hash: SchemaHash::new("sha256:old").unwrap(),
+        new_schema_hash: SchemaHash::new("sha256:new").unwrap(),
+        installed_lock_sha256: "sha256:lock".to_owned(),
+        targets: vec![PromotionPublicationTarget {
+            destination_id: receipt.destination.clone(),
+            target: receipt.target.clone(),
+            correction_package_hash: receipt.package_hash.clone(),
+            receipt_id: receipt.receipt_id.clone(),
+            checkpoint_id: delta.checkpoint_id.clone(),
+        }],
+        published_at_ms: 1_101,
+    };
+    clock.set(1_200);
+    assert!(store.publish_promotion(&lease_b, event.clone()).is_err());
+    assert!(
+        store
+            .promotion_publication(&event.promotion_id)
+            .unwrap()
+            .is_none()
+    );
+
+    let lease_c = store
+        .acquire(scope, LeaseOwnerId::new("owner-c").unwrap(), 100)
+        .unwrap();
+    assert_eq!(
+        store.publish_promotion(&lease_c, event.clone()).unwrap(),
+        event
+    );
+    clock.set(2_000);
+    assert_eq!(
+        store.publish_promotion(&lease_c, event.clone()).unwrap(),
+        event
     );
 }
 

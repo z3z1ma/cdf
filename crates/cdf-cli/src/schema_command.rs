@@ -13,7 +13,7 @@ use cdf_project::{
     load_resumable_schema_promotion, lock_to_toml, parse_lock,
     pin_schema_snapshot_in_project_lockfile, write_schema_discovery_artifacts,
 };
-use cdf_state_sqlite::{SqliteCheckpointStore, SqliteRunLedger, SqliteScopeLeaseStore};
+use cdf_state_sqlite::SqlitePromotionSettlementStore;
 use serde::Serialize;
 
 use crate::{
@@ -168,9 +168,7 @@ fn execute_promotion(
     }
 
     let state_path = context.state_store_path()?;
-    let lease_store = SqliteScopeLeaseStore::open(&state_path)?;
-    let checkpoint_store = SqliteCheckpointStore::open(&state_path)?;
-    let run_ledger = SqliteRunLedger::open(&state_path)?;
+    let settlement_store = SqlitePromotionSettlementStore::open(&state_path)?;
     let result = execute_schema_promotion(SchemaPromotionExecutionRequest {
         project_root: &context.root,
         package_root: &context.package_root(),
@@ -182,9 +180,7 @@ fn execute_promotion(
         pipeline_id: PipelineId::new("cdf-schema-promotion")?,
         lease_owner: LeaseOwnerId::new(format!("schema-promote:{}", report.promotion_id))?,
         lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
-        lease_store: &lease_store,
-        checkpoint_store: &checkpoint_store,
-        run_ledger: &run_ledger,
+        settlement_store: &settlement_store,
         failpoint: None,
     })
     .map_err(|mut error| {

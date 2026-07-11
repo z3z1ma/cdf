@@ -12,7 +12,7 @@ What is the smallest source- and destination-neutral typed store API that can ma
 
 This was a read-only substrate preflight. It inspected:
 
-- `.10x/tickets/2026-07-10-p2-rp9b-atomically-fenced-promotion-settlement.md`;
+- `.10x/tickets/done/2026-07-10-p2-rp9b-atomically-fenced-promotion-settlement.md`;
 - `.10x/specs/schema-promotion-corrections.md`, especially the required checkpoint -> exact lock CAS -> publication order and recovery boundaries;
 - `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-independent-review.md`, `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-recovery-gc-review.md`, and `.10x/reviews/2026-07-10-p2-rp9a-promotion-artifact-recovery-independent-review.md`;
 - kernel `CheckpointStore`, `ScopeLeaseStore`, `ScopeLease`, `FencingToken`, `PromotionPublicationEvent`, and `PromotionPublicationTarget` types;

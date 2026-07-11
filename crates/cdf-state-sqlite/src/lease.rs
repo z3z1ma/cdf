@@ -359,7 +359,7 @@ fn stale_error(scope: &ScopeKey) -> CdfError {
     ))
 }
 
-struct SystemScopeLeaseClock;
+pub(crate) struct SystemScopeLeaseClock;
 
 impl ScopeLeaseClock for SystemScopeLeaseClock {
     fn now_ms(&self) -> Result<i64> {

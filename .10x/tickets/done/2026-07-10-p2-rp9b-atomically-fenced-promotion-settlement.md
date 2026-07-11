@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
@@ -32,7 +32,9 @@ No distributed 2PC, destination rollback after receipt, remote lease store, cros
 
 - 2026-07-10: Opened from the TOCTOU finding in `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-independent-review.md`. Destination settlement is intentionally allowed to complete after lease expiry; checkpoint/lock/publication authority is not.
 - 2026-07-10: Read-only substrate preflight completed in `.10x/research/2026-07-10-rp9b-atomic-settlement-preflight.md`. The smallest sound boundary is one aggregate `PromotionSettlementStore: CheckpointStore + ScopeLeaseStore` over a single consistency domain, with separately atomic fenced checkpoint-commit and publication-append operations; exact filesystem lock CAS remains between them. Existing SQLite tables suffice without a data-schema migration. RP9B remains open and dependent on RP9A.
+- 2026-07-10: Activated after RP9A closure and implemented the preflight seam. Kernel now exposes additive `PromotionSettlementStore`; SQLite supplies one path-bound aggregate whose protected checkpoint commit and publication insert each verify exact scope/owner/token/release/expiry inside the same `BEGIN IMMEDIATE` transaction. Promotion execution accepts only this aggregate, while exact fenced lock CAS remains between the two database mutations. Equal committed checkpoints/publications are observation-only idempotent reads; conflicting authority fails closed.
+- 2026-07-10: Closed with `.10x/evidence/2026-07-10-p2-rp9b-atomic-settlement.md` and `.10x/reviews/2026-07-10-p2-rp9b-atomic-settlement-review.md`. Full state 36/36, project 163/163, and CLI 255/255 suites pass; strict affected Clippy and kernel semver 196/196 pass. Retrospective: fence validity is a storage mutation precondition, never evidence supplied by a caller-side check. The typed aggregate prevents promotion from accidentally composing state handles from different databases and is implementable by future transactional remote stores.
 
 ## Blockers
 
-Depends on RP9A's exact persisted recovery authority.
+None.

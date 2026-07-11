@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
-Depends-On: .10x/tickets/done/2026-07-10-p2-rp9a-promotion-artifact-recovery-authority.md, .10x/tickets/2026-07-10-p2-rp9b-atomically-fenced-promotion-settlement.md, .10x/tickets/done/2026-07-10-parquet-promotion-identifier-policy.md
+Depends-On: .10x/tickets/done/2026-07-10-p2-rp9a-promotion-artifact-recovery-authority.md, .10x/tickets/done/2026-07-10-p2-rp9b-atomically-fenced-promotion-settlement.md, .10x/tickets/done/2026-07-10-parquet-promotion-identifier-policy.md
 
 # RP9C promotion command, concurrency, and cross-destination conformance
 

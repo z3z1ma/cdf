@@ -42,7 +42,7 @@ use cdf_project::{
 };
 use cdf_state_sqlite::{
     RunEventAppend, RunEventDetails, RunEventKind, RunEventValue, SecretReference,
-    SqliteCheckpointStore, SqliteRunLedger, SqliteScopeLeaseStore,
+    SqliteCheckpointStore, SqlitePromotionSettlementStore, SqliteRunLedger,
 };
 use duckdb::Connection as DuckConnection;
 use postgres::{Client, NoTls};
@@ -3418,8 +3418,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
                 .unwrap()
                 .destination;
         let state_path = context.state_store_path().unwrap();
-        let lease_store = SqliteScopeLeaseStore::open(&state_path).unwrap();
-        let checkpoint_store = SqliteCheckpointStore::open(&state_path).unwrap();
+        let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
         let error = execute_schema_promotion(SchemaPromotionExecutionRequest {
             project_root: &context.root,
@@ -3432,9 +3431,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new(format!("crash-{failpoint:?}")).unwrap(),
             lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
-            lease_store: &lease_store,
-            checkpoint_store: &checkpoint_store,
-            run_ledger: &run_ledger,
+            settlement_store: &settlement_store,
             failpoint: Some(failpoint),
         })
         .unwrap_err();
@@ -3443,8 +3440,7 @@ fn schema_promote_execute_recovers_every_persisted_crash_boundary() {
             "{failpoint:?}: {error}"
         );
         drop(run_ledger);
-        drop(checkpoint_store);
-        drop(lease_store);
+        drop(settlement_store);
         drop(context);
 
         if failpoint != SchemaPromotionExecutionFailpoint::AfterStagedArtifacts {
@@ -3535,8 +3531,7 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
                 .unwrap()
                 .destination;
         let state_path = context.state_store_path().unwrap();
-        let lease_store = SqliteScopeLeaseStore::open(&state_path).unwrap();
-        let checkpoint_store = SqliteCheckpointStore::open(&state_path).unwrap();
+        let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
         let failpoint = if tamper_correction_package {
             SchemaPromotionExecutionFailpoint::AfterCorrectionPackages
@@ -3554,15 +3549,12 @@ fn schema_promote_rejects_tampered_staged_and_correction_authority_before_mutati
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new("tamper-fixture").unwrap(),
             lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
-            lease_store: &lease_store,
-            checkpoint_store: &checkpoint_store,
-            run_ledger: &run_ledger,
+            settlement_store: &settlement_store,
             failpoint: Some(failpoint),
         })
         .unwrap_err();
         drop(run_ledger);
-        drop(checkpoint_store);
-        drop(lease_store);
+        drop(settlement_store);
         drop(context);
 
         if tamper_correction_package {
@@ -3665,8 +3657,7 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
         .unwrap()
         .destination;
     let state_path = context.state_store_path().unwrap();
-    let lease_store = SqliteScopeLeaseStore::open(&state_path).unwrap();
-    let checkpoint_store = SqliteCheckpointStore::open(&state_path).unwrap();
+    let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
     let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
     let mut divergent_lock = context.lock.as_ref().unwrap().clone();
     divergent_lock.normalizer = "divergent-caller-projection".to_owned();
@@ -3683,9 +3674,7 @@ fn schema_promote_api_rejects_divergent_caller_lock_before_mutation() {
         pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
         lease_owner: LeaseOwnerId::new("divergent-lock-fixture").unwrap(),
         lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
-        lease_store: &lease_store,
-        checkpoint_store: &checkpoint_store,
-        run_ledger: &run_ledger,
+        settlement_store: &settlement_store,
         failpoint: None,
     })
     .unwrap_err();
@@ -3756,8 +3745,7 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
                 .unwrap()
                 .destination;
         let state_path = context.state_store_path().unwrap();
-        let lease_store = SqliteScopeLeaseStore::open(&state_path).unwrap();
-        let checkpoint_store = SqliteCheckpointStore::open(&state_path).unwrap();
+        let settlement_store = SqlitePromotionSettlementStore::open(&state_path).unwrap();
         let run_ledger = SqliteRunLedger::open(&state_path).unwrap();
         execute_schema_promotion(SchemaPromotionExecutionRequest {
             project_root: &context.root,
@@ -3770,15 +3758,12 @@ fn schema_promote_rejects_semantically_rebuilt_correction_packages_without_sourc
             pipeline_id: PipelineId::new("cdf-schema-promotion").unwrap(),
             lease_owner: LeaseOwnerId::new("semantic-repackage-fixture").unwrap(),
             lease_duration_ms: DEFAULT_SCHEMA_PROMOTION_LEASE_DURATION_MS,
-            lease_store: &lease_store,
-            checkpoint_store: &checkpoint_store,
-            run_ledger: &run_ledger,
+            settlement_store: &settlement_store,
             failpoint: Some(SchemaPromotionExecutionFailpoint::AfterCorrectionPackages),
         })
         .unwrap_err();
         drop(run_ledger);
-        drop(checkpoint_store);
-        drop(lease_store);
+        drop(settlement_store);
         drop(context);
 
         let correction = fs::read_dir(project.root.join(".cdf/packages"))

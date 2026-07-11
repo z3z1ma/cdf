@@ -1,6 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{LeaseOwnerId, Result, ScopeKey};
+use crate::{
+    Checkpoint, CheckpointId, CheckpointStore, LeaseOwnerId, PromotionId,
+    PromotionPublicationEvent, Receipt, Result, ScopeKey,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -51,4 +54,28 @@ pub trait ScopeLeaseStore: Send + Sync {
 
 pub trait ScopeLeaseClock: Send + Sync {
     fn now_ms(&self) -> Result<i64>;
+}
+
+/// Atomically advances promotion state under the same authoritative scope lease.
+///
+/// Implementations must check the lease and perform each protected mutation in one
+/// consistency-domain transaction. A caller-side `assert_current` is not sufficient.
+pub trait PromotionSettlementStore: CheckpointStore + ScopeLeaseStore {
+    fn promotion_publication(
+        &self,
+        promotion_id: &PromotionId,
+    ) -> Result<Option<PromotionPublicationEvent>>;
+
+    fn commit_promotion_checkpoint(
+        &self,
+        lease: &ScopeLease,
+        checkpoint_id: &CheckpointId,
+        receipt: Receipt,
+    ) -> Result<Checkpoint>;
+
+    fn publish_promotion(
+        &self,
+        lease: &ScopeLease,
+        event: PromotionPublicationEvent,
+    ) -> Result<PromotionPublicationEvent>;
 }

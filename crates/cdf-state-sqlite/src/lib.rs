@@ -4,6 +4,7 @@ mod in_memory;
 mod lease;
 mod migration;
 mod run_ledger;
+mod settlement;
 mod sqlite;
 mod support;
 
@@ -20,4 +21,5 @@ pub use migration::{
     migrate_sqlite_state,
 };
 pub use run_ledger::{RunLedgerSnapshot, RunRecord, SqliteRunLedger};
+pub use settlement::SqlitePromotionSettlementStore;
 pub use sqlite::SqliteCheckpointStore;

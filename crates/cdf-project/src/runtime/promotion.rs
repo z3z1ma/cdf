@@ -20,14 +20,13 @@ use cdf_kernel::{
     DestinationCorrectionCommitRequest, DestinationCorrectionOperation, DestinationCorrectionPlan,
     DestinationId, IdempotencyToken, LeaseOwnerId, PROMOTION_PUBLICATION_EVENT_VERSION,
     PackageHash, PipelineId, PromotionId, PromotionPublicationEvent, PromotionPublicationTarget,
-    Receipt, ResourceId, SchemaHash, ScopeKey, ScopeLease, ScopeLeaseStore, SourcePosition,
-    StateDelta, StateSegment, TargetName,
+    PromotionSettlementStore, Receipt, ResourceId, SchemaHash, ScopeKey, ScopeLease,
+    SourcePosition, StateDelta, StateSegment, TargetName,
 };
 use cdf_package::{
     DestinationCommitPlanPreimage, MANIFEST_FILE, PackageBuilder, PackageReader, PackageStatus,
     StateDeltaPreimage,
 };
-use cdf_state_sqlite::SqliteRunLedger;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -143,10 +142,9 @@ struct SchemaPromotionCorrectionTargetAuthority {
     paths: Vec<SchemaPromotionCorrectionPathAuthority>,
 }
 
-pub struct SchemaPromotionExecutionRequest<'a, LeaseStore, StateStore>
+pub struct SchemaPromotionExecutionRequest<'a, Store>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     pub project_root: &'a Path,
     pub package_root: &'a Path,
@@ -158,28 +156,25 @@ where
     pub pipeline_id: PipelineId,
     pub lease_owner: LeaseOwnerId,
     pub lease_duration_ms: u64,
-    pub lease_store: &'a LeaseStore,
-    pub checkpoint_store: &'a StateStore,
-    pub run_ledger: &'a SqliteRunLedger,
+    pub settlement_store: &'a Store,
     pub failpoint: Option<SchemaPromotionExecutionFailpoint>,
 }
 
-pub fn execute_schema_promotion<LeaseStore, StateStore>(
-    mut request: SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+pub fn execute_schema_promotion<Store>(
+    mut request: SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<SchemaPromotionExecutionReport>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     validate_execution_request(&request)?;
     let scope = promotion_scope(request.resource);
-    let lease = request.lease_store.acquire(
+    let lease = request.settlement_store.acquire(
         scope,
         request.lease_owner.clone(),
         request.lease_duration_ms,
     )?;
     let result = execute_under_lease(&mut request, &lease);
-    let release = request.lease_store.release(&lease);
+    let release = request.settlement_store.release(&lease);
     match (result, release) {
         (Ok(report), Ok(())) => Ok(report),
         (Ok(_), Err(error)) => Err(error),
@@ -187,15 +182,14 @@ where
     }
 }
 
-fn execute_under_lease<LeaseStore, StateStore>(
-    request: &mut SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn execute_under_lease<Store>(
+    request: &mut SchemaPromotionExecutionRequest<'_, Store>,
     lease: &ScopeLease,
 ) -> cdf_kernel::Result<SchemaPromotionExecutionReport>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
-    request.lease_store.assert_current(lease)?;
+    request.settlement_store.assert_current(lease)?;
     let staged_path = request
         .project_root
         .join(promotion_plan_relative_path(&PromotionId::new(
@@ -215,7 +209,7 @@ where
     )?;
 
     if let Some(publication) = request
-        .run_ledger
+        .settlement_store
         .promotion_publication(&staged.promotion_id)?
     {
         let installed_lock = read_lock_file_authority(request.project_root.join(LOCK_FILE_NAME))?;
@@ -228,7 +222,7 @@ where
             )?;
             let receipt = verify_stored_correction_receipt(destination, package)?;
             verified_targets.push(committed_target_report(
-                request.checkpoint_store,
+                request.settlement_store,
                 package,
                 &receipt,
             )?);
@@ -249,14 +243,14 @@ where
             )?;
             let receipt = verify_stored_correction_receipt(destination, package)?;
             targets.push(committed_target_report(
-                request.checkpoint_store,
+                request.settlement_store,
                 package,
                 &receipt,
             )?);
         }
     } else {
         for package in packages {
-            request.lease_store.assert_current(lease)?;
+            request.settlement_store.assert_current(lease)?;
             let destination = take_destination(
                 &mut request.destinations,
                 &package.artifact.destination_id,
@@ -267,9 +261,12 @@ where
                 request.failpoint,
                 SchemaPromotionExecutionFailpoint::AfterDestinationReceipt,
             )?;
-            request.lease_store.assert_current(lease)?;
-            let checkpoint =
-                settle_promotion_checkpoint(request.checkpoint_store, &package, receipt.clone())?;
+            let checkpoint = settle_promotion_checkpoint(
+                request.settlement_store,
+                lease,
+                &package,
+                receipt.clone(),
+            )?;
             fail_if(
                 request.failpoint,
                 SchemaPromotionExecutionFailpoint::AfterTargetCheckpoint,
@@ -285,14 +282,13 @@ where
         }
     }
 
-    request.lease_store.assert_current(lease)?;
+    request.settlement_store.assert_current(lease)?;
     let installed_lock = publish_lock(request, lease, &staged)?;
     fail_if(
         request.failpoint,
         SchemaPromotionExecutionFailpoint::AfterLockPublication,
     )?;
-    request.lease_store.assert_current(lease)?;
-    let publication = publish_event(request, &installed_lock, &targets)?;
+    let publication = publish_event(request, lease, &installed_lock, &targets)?;
     fail_if(
         request.failpoint,
         SchemaPromotionExecutionFailpoint::AfterPublicationEvent,
@@ -323,12 +319,11 @@ where
     })
 }
 
-fn validate_execution_request<LeaseStore, StateStore>(
-    request: &SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn validate_execution_request<Store>(
+    request: &SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<()>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     if !request.dry_plan.executable || !request.dry_plan.conflicts.is_empty() {
         return Err(cdf_kernel::CdfError::contract(
@@ -374,12 +369,11 @@ fn parse_lock_authority(bytes: &[u8]) -> cdf_kernel::Result<CdfLock> {
     )
 }
 
-fn verify_input_authority<LeaseStore, StateStore>(
-    request: &SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn verify_input_authority<Store>(
+    request: &SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<bool>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     let lock_path = request.project_root.join(LOCK_FILE_NAME);
     let current = read_lock_file_authority(&lock_path)?;
@@ -419,12 +413,11 @@ where
     Ok(false)
 }
 
-fn stage_execution_artifacts<LeaseStore, StateStore>(
-    request: &SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn stage_execution_artifacts<Store>(
+    request: &SchemaPromotionExecutionRequest<'_, Store>,
 ) -> cdf_kernel::Result<SchemaPromotionExecutionPlanArtifact>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     let promotion_id = PromotionId::new(request.dry_plan.promotion_id.clone())?;
     let artifact = SchemaPromotionExecutionPlanArtifact {
@@ -494,19 +487,18 @@ struct PreparedCorrectionPackage {
     state_delta: StateDelta,
 }
 
-fn build_or_load_correction_packages<LeaseStore, StateStore>(
-    request: &mut SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn build_or_load_correction_packages<Store>(
+    request: &mut SchemaPromotionExecutionRequest<'_, Store>,
     staged: &SchemaPromotionExecutionPlanArtifact,
 ) -> cdf_kernel::Result<Vec<PreparedCorrectionPackage>>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     let validation_program =
         promotion_validation_program(request.project_root, request.resource, staged)?;
     let scope = promotion_scope(request.resource);
     let head = request
-        .checkpoint_store
+        .settlement_store
         .head(&request.pipeline_id, &staged.resource_id, &scope)?;
     let correction_directories = staged
         .dry_plan
@@ -751,16 +743,15 @@ fn verify_source_package_receipts(
     Ok(())
 }
 
-fn correction_package_artifact<LeaseStore, StateStore>(
-    request: &SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn correction_package_artifact<Store>(
+    request: &SchemaPromotionExecutionRequest<'_, Store>,
     staged: &SchemaPromotionExecutionPlanArtifact,
     target: &SchemaPromotionTargetReport,
     validation_program: &cdf_contract::ValidationProgram,
     package_index: &BTreeMap<String, PathBuf>,
 ) -> cdf_kernel::Result<SchemaPromotionCorrectionPackageArtifact>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     let strategy = target.strategy.ok_or_else(|| {
         cdf_kernel::CdfError::contract("promotion target has no selected correction strategy")
@@ -1483,12 +1474,13 @@ fn committed_target_report<StateStore: CheckpointStore>(
     })
 }
 
-fn settle_promotion_checkpoint<StateStore: CheckpointStore>(
-    checkpoint_store: &StateStore,
+fn settle_promotion_checkpoint<Store: PromotionSettlementStore>(
+    settlement_store: &Store,
+    lease: &ScopeLease,
     package: &PreparedCorrectionPackage,
     receipt: Receipt,
 ) -> cdf_kernel::Result<cdf_kernel::Checkpoint> {
-    let existing = checkpoint_store
+    let existing = settlement_store
         .history(
             &package.state_delta.pipeline_id,
             &package.state_delta.resource_id,
@@ -1511,19 +1503,18 @@ fn settle_promotion_checkpoint<StateStore: CheckpointStore>(
                 "promotion checkpoint is terminal but not committed",
             ));
         }
-        None => checkpoint_store.propose(package.state_delta.clone())?,
+        None => settlement_store.propose(package.state_delta.clone())?,
     };
-    checkpoint_store.commit(&proposed.delta.checkpoint_id, receipt)
+    settlement_store.commit_promotion_checkpoint(lease, &proposed.delta.checkpoint_id, receipt)
 }
 
-fn publish_lock<LeaseStore, StateStore>(
-    request: &SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn publish_lock<Store>(
+    request: &SchemaPromotionExecutionRequest<'_, Store>,
     lease: &ScopeLease,
     staged: &SchemaPromotionExecutionPlanArtifact,
 ) -> cdf_kernel::Result<LockFileAuthority>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     let lock_path = request.project_root.join(LOCK_FILE_NAME);
     let snapshot = staged
@@ -1561,25 +1552,25 @@ where
         lock_path,
         &staged.old_lock_authority,
         replacement.as_bytes(),
-        request.lease_store,
+        request.settlement_store,
         lease,
     )?
     .installed)
 }
 
-fn publish_event<LeaseStore, StateStore>(
-    request: &SchemaPromotionExecutionRequest<'_, LeaseStore, StateStore>,
+fn publish_event<Store>(
+    request: &SchemaPromotionExecutionRequest<'_, Store>,
+    lease: &ScopeLease,
     installed_lock: &LockFileAuthority,
     targets: &[SchemaPromotionExecutionTargetReport],
 ) -> cdf_kernel::Result<PromotionPublicationEvent>
 where
-    LeaseStore: ScopeLeaseStore,
-    StateStore: CheckpointStore,
+    Store: PromotionSettlementStore,
 {
     let target_events = publication_targets(targets)?;
-    request
-        .run_ledger
-        .publish_promotion(PromotionPublicationEvent {
+    request.settlement_store.publish_promotion(
+        lease,
+        PromotionPublicationEvent {
             version: PROMOTION_PUBLICATION_EVENT_VERSION,
             promotion_id: PromotionId::new(request.dry_plan.promotion_id.clone())?,
             resource_id: request.resource.descriptor().resource_id.clone(),
@@ -1594,7 +1585,8 @@ where
             installed_lock_sha256: installed_lock.sha256.clone(),
             targets: target_events,
             published_at_ms: now_ms()?,
-        })
+        },
+    )
 }
 
 fn publication_targets(

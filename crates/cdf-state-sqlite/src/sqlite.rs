@@ -67,7 +67,7 @@ impl SqliteCheckpointStore {
         self.conn.lock().map_err(lock_error)
     }
 
-    fn fetch_by_id_tx(
+    pub(crate) fn fetch_by_id_tx(
         tx: &Transaction<'_>,
         checkpoint_id: &CheckpointId,
     ) -> Result<Option<Checkpoint>> {
@@ -163,37 +163,7 @@ impl CheckpointStore for SqliteCheckpointStore {
     fn commit(&self, checkpoint_id: &CheckpointId, receipt: Receipt) -> Result<Checkpoint> {
         let mut conn = self.lock_conn()?;
         let tx = conn.transaction().map_err(sqlite_error)?;
-        let checkpoint = Self::fetch_by_id_tx(&tx, checkpoint_id)?
-            .ok_or_else(|| missing_checkpoint(checkpoint_id))?;
-        if checkpoint.status != CheckpointStatus::Proposed {
-            return Err(CdfError::contract(format!(
-                "checkpoint {checkpoint_id} is not proposed"
-            )));
-        }
-        verify_receipt(&receipt, &checkpoint.delta)?;
-
-        let scope_json = encode_json(&checkpoint.delta.scope)?;
-        tx.execute(
-            "UPDATE cdf_checkpoints SET is_head = 0 WHERE pipeline_id = ? AND resource_id = ? AND scope_json = ? AND is_head = 1",
-            params![
-                checkpoint.delta.pipeline_id.as_str(),
-                checkpoint.delta.resource_id.as_str(),
-                scope_json,
-            ],
-        )
-        .map_err(sqlite_error)?;
-        tx.execute(
-            "UPDATE cdf_checkpoints SET status = 'committed', receipt_id = ?, receipt_json = ?, is_head = 1, committed_at_ms = ? WHERE checkpoint_id = ? AND status = 'proposed'",
-            params![
-                receipt.receipt_id.as_str(),
-                encode_json(&receipt)?,
-                receipt.committed_at_ms,
-                checkpoint_id.as_str(),
-            ],
-        )
-        .map_err(sqlite_error)?;
-        let committed = Self::fetch_by_id_tx(&tx, checkpoint_id)?
-            .ok_or_else(|| missing_checkpoint(checkpoint_id))?;
+        let committed = commit_checkpoint_tx(&tx, checkpoint_id, &receipt)?;
         tx.commit().map_err(sqlite_error)?;
         Ok(committed)
     }
@@ -327,6 +297,52 @@ impl CheckpointStore for SqliteCheckpointStore {
             packages_ahead,
         })
     }
+}
+
+pub(crate) fn commit_checkpoint_tx(
+    tx: &Transaction<'_>,
+    checkpoint_id: &CheckpointId,
+    receipt: &Receipt,
+) -> Result<Checkpoint> {
+    let checkpoint = SqliteCheckpointStore::fetch_by_id_tx(tx, checkpoint_id)?
+        .ok_or_else(|| missing_checkpoint(checkpoint_id))?;
+    if checkpoint.status == CheckpointStatus::Committed {
+        if checkpoint.receipt.as_ref() == Some(receipt) {
+            return Ok(checkpoint);
+        }
+        return Err(CdfError::contract(format!(
+            "checkpoint {checkpoint_id} is committed with conflicting receipt authority"
+        )));
+    }
+    if checkpoint.status != CheckpointStatus::Proposed {
+        return Err(CdfError::contract(format!(
+            "checkpoint {checkpoint_id} is not proposed"
+        )));
+    }
+    verify_receipt(receipt, &checkpoint.delta)?;
+
+    let scope_json = encode_json(&checkpoint.delta.scope)?;
+    tx.execute(
+        "UPDATE cdf_checkpoints SET is_head = 0 WHERE pipeline_id = ? AND resource_id = ? AND scope_json = ? AND is_head = 1",
+        params![
+            checkpoint.delta.pipeline_id.as_str(),
+            checkpoint.delta.resource_id.as_str(),
+            scope_json,
+        ],
+    )
+    .map_err(sqlite_error)?;
+    tx.execute(
+        "UPDATE cdf_checkpoints SET status = 'committed', receipt_id = ?, receipt_json = ?, is_head = 1, committed_at_ms = ? WHERE checkpoint_id = ? AND status = 'proposed'",
+        params![
+            receipt.receipt_id.as_str(),
+            encode_json(receipt)?,
+            receipt.committed_at_ms,
+            checkpoint_id.as_str(),
+        ],
+    )
+    .map_err(sqlite_error)?;
+    SqliteCheckpointStore::fetch_by_id_tx(tx, checkpoint_id)?
+        .ok_or_else(|| missing_checkpoint(checkpoint_id))
 }
 
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {
