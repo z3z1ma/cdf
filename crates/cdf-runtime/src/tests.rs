@@ -890,3 +890,39 @@ fn manifest_has_no_upward_or_concrete_dependencies() {
         );
     }
 }
+
+#[test]
+fn execution_host_capabilities_validate_generic_cpu_and_blocking_lanes() {
+    let capabilities = ExecutionHostCapabilities {
+        logical_cpu_slots: 8,
+        io_workers: 2,
+        blocking_lanes: vec![BlockingLaneSpec {
+            lane_id: "native-affine".to_owned(),
+            maximum_concurrency: 1,
+            cpu_slot_cost: 2,
+            native_internal_parallelism: 2,
+            affinity: LaneAffinity::Pinned,
+            interruption: InterruptionSafety::CooperativeOnly,
+        }],
+    };
+    capabilities.validate().unwrap();
+    let encoded = serde_json::to_string(&capabilities).unwrap();
+    assert!(!encoded.contains("duckdb"));
+    assert!(!encoded.contains("python"));
+    assert!(!encoded.contains("tokio"));
+
+    let mut duplicate = capabilities.clone();
+    duplicate
+        .blocking_lanes
+        .push(duplicate.blocking_lanes[0].clone());
+    assert!(duplicate.validate().is_err());
+    assert!(
+        CpuTaskSpec {
+            task_kind: "decode".to_owned(),
+            cpu_slot_cost: 0,
+            native_internal_parallelism: 1,
+        }
+        .validate()
+        .is_err()
+    );
+}

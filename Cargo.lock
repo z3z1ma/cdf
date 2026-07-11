@@ -1048,6 +1048,7 @@ dependencies = [
  "cdf-contract",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "hex",
  "serde",

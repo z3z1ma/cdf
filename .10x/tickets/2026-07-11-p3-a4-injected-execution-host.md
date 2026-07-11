@@ -30,7 +30,11 @@ No full decode-to-destination channels, production partition fan-out, adaptive s
 
 ## Blockers
 
-Depends on L5, DX1, and A2.
+None. L5, DX1, and A2 are complete.
+
+## Progress and notes
+
+- 2026-07-11: Added the neutral `ExecutionHost`/`ExecutionServices`/run-scope contract in `cdf-runtime`, with structured I/O, CPU, and blocking submissions; cooperative cancellation/join; CPU/native-parallelism cost declarations; affinity/interruption-safe blocking lanes; shared memory access; and report telemetry. The serialized capability model contains no Tokio/DataFusion/DuckDB/Python/destination identity and the runtime dependency gate remains clean.
 
 ## References
 

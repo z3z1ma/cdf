@@ -3,6 +3,7 @@
 mod capabilities;
 mod context;
 mod destination;
+mod execution_host;
 mod registry;
 mod staging;
 mod utilities;
@@ -10,6 +11,7 @@ mod utilities;
 pub use capabilities::*;
 pub use context::*;
 pub use destination::*;
+pub use execution_host::*;
 pub use registry::*;
 pub use staging::*;
 pub use utilities::*;
