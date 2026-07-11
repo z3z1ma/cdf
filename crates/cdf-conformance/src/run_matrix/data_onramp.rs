@@ -71,29 +71,22 @@ const P2_SCENARIOS: &[P2Scenario] = &[
     P2Scenario {
         id: "S1",
         title: "Public HTTPS Parquet single file, zero typed schema fields, through cdf add and run",
-        status: CoverageStatus::Pending,
-        rationale: "deterministic HTTPS Parquet discovery/run and cdf add are covered primitives; the public TLC first-attempt flow and recorded live session remain pending",
+        status: CoverageStatus::Covered,
+        rationale: "deterministic HTTP Parquet conformance runs cdf add, pins the ranged-footer schema, plans, and commits through the ordinary package/receipt/checkpoint path with zero typed fields; public TLC remains separately recorded live evidence",
         tests: &[
-            "crates/cdf-project/src/tests.rs::http_parquet_schema_discovery_uses_bounded_ranges_without_artifacts",
-            "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
-            "crates/cdf-cli/src/tests.rs::add_http_parquet_pins_schema_with_bounded_fixture_requests",
+            "crates/cdf-cli/src/tests.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
         ],
-        tickets: &[WS_E, WS_H, WS_I],
+        tickets: &[],
     },
     P2Scenario {
         id: "S2",
         title: "Public HTTPS Parquet monthly glob with default FileManifest incrementality and no-change no-op rerun",
-        status: CoverageStatus::Pending,
-        rationale: "local deterministic fixtures cover partition-per-file planning, exact manifest incrementality, changed-only and no-op reruns, and multi-file preview/run traversal; HTTP template enumeration and the public monthly-file cell remain pending",
+        status: CoverageStatus::Covered,
+        rationale: "deterministic production HTTP conformance expands the canonical year-month glob, skips typed 404 absences, previews the exact partition set, loads present months, performs a no-change no-op, and loads only a newly present month",
         tests: &[
-            "crates/cdf-declarative/src/tests.rs::file_glob_plans_deterministic_partition_per_match",
-            "crates/cdf-project/src/runtime_tests.rs::file_manifest_append_run_skips_unchanged_files_and_loads_only_changes",
-            "crates/cdf-conformance/src/run_matrix/data_onramp.rs::p2_s8_multifile_preview_traverses_the_same_planned_partitions_as_run",
-            "crates/cdf-cli/src/tests.rs::run_multi_file_parquet_evolves_from_immutable_pinned_baseline_with_exact_observations",
-            "crates/cdf-project/src/discovery_manifest.rs::stratified_hash_selector_large_set_is_executor_budget_independent",
-            "crates/cdf-project/src/tests.rs::exhaustive_local_parquet_discovery_budget_and_incompatibility_fail_without_artifacts",
+            "crates/cdf-cli/src/tests.rs::p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop",
         ],
-        tickets: &[WS_D, WS_E, WS_I],
+        tickets: &[],
     },
     P2Scenario {
         id: "S3",
@@ -346,7 +339,7 @@ const P2_FRICTIONS: &[P2FrictionRow] = &[
             "crates/cdf-formats/src/tests.rs::declared_parquet_int32_declared_int64_materializes_lossless_widening",
             "crates/cdf-cli/src/tests.rs::run_local_parquet_discover_autopins_and_commits_pinned_schema",
             "crates/cdf-project/src/tests.rs::http_parquet_auto_pin_plan_preview_and_run_use_file_runtime",
-            "crates/cdf-cli/src/tests.rs::add_http_parquet_pins_schema_with_bounded_fixture_requests",
+            "crates/cdf-cli/src/tests.rs::p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields",
         ],
         open_tickets: &[WS_D, WS_E, WS_H, WS_I],
     },
@@ -403,8 +396,8 @@ fn p2_data_onramp_scenario_matrix_records_s1_through_s8() {
         );
     }
 
-    assert_eq!(scenario("S1").status, CoverageStatus::Pending);
-    assert_eq!(scenario("S2").status, CoverageStatus::Pending);
+    assert_eq!(scenario("S1").status, CoverageStatus::Covered);
+    assert_eq!(scenario("S2").status, CoverageStatus::Covered);
     assert_eq!(scenario("S3").status, CoverageStatus::Pending);
     assert_eq!(scenario("S4").status, CoverageStatus::Pending);
     assert_eq!(scenario("S5").status, CoverageStatus::Covered);
@@ -483,7 +476,7 @@ fn p2_s5_s7_registry_names_standalone_conformance_without_other_promotions() {
     assert!(friction(17).closed_tests.contains(&standalone));
     assert!(friction(17).open_tickets.is_empty());
 
-    for pending in ["S1", "S2", "S3", "S4", "S6", "S8"] {
+    for pending in ["S3", "S4", "S6", "S8"] {
         assert_eq!(scenario(pending).status, CoverageStatus::Pending);
     }
 }

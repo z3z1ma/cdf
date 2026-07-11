@@ -1216,7 +1216,9 @@ fn resolve_http_file_match(
             auth: plan.auth.clone(),
             credentials: plan.credentials.clone(),
         };
-        let metadata = transport.metadata(&resource)?;
+        let Some(metadata) = transport.metadata_if_exists(&resource)? else {
+            continue;
+        };
         let compression = resolve_transport_compression(plan, transport, &resource, &metadata)?;
         let format = resolve_transport_format(
             resource_id,
@@ -1234,7 +1236,11 @@ fn resolve_http_file_match(
         )?);
     }
     matches.sort_by(|left, right| left.path_text.cmp(&right.path_text));
-    Ok(matches)
+    if matches.is_empty() {
+        Err(no_file_matches_error(resource_id, plan))
+    } else {
+        Ok(matches)
+    }
 }
 
 fn no_file_matches_error(resource_id: &ResourceId, plan: &FileResourcePlan) -> CdfError {
@@ -2042,6 +2048,9 @@ fn transport_range_reader(
 }
 
 fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>> {
+    if let Some(months) = expand_http_year_month_glob(glob) {
+        return Ok(months);
+    }
     let components = pattern_components(glob)?;
     if components
         .iter()
@@ -2124,6 +2133,28 @@ fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>>
         expanded.push(format!("{}{}{}", &glob[..open], value, &glob[close + 1..]));
     }
     Ok(expanded)
+}
+
+fn expand_http_year_month_glob(glob: &str) -> Option<Vec<String>> {
+    if glob.matches('*').count() != 1
+        || glob.contains("**")
+        || glob.contains('?')
+        || glob.contains('[')
+        || glob.contains(']')
+    {
+        return None;
+    }
+    let star = glob.find('*')?;
+    let prefix = &glob[..star];
+    let year = prefix.strip_suffix('-')?.rsplit(['/', '_', '-']).next()?;
+    if year.len() != 4 || !year.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(
+        (1..=12)
+            .map(|month| format!("{}{:02}{}", prefix, month, &glob[star + 1..]))
+            .collect(),
+    )
 }
 
 fn validate_http_format_support(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
@@ -2317,9 +2348,14 @@ mod tests {
                 "yellow_tripdata_2024-03.parquet",
             ]
         );
-        let error = expand_http_glob(&resource_id, "yellow_tripdata_2024-*.parquet").unwrap_err();
+        assert_eq!(
+            expand_http_glob(&resource_id, "yellow_tripdata_2024-*.parquet").unwrap(),
+            (1..=12)
+                .map(|month| format!("yellow_tripdata_2024-{month:02}.parquet"))
+                .collect::<Vec<_>>()
+        );
+        let error = expand_http_glob(&resource_id, "yellow_tripdata_*.parquet").unwrap_err();
         assert!(error.message.contains("HTTP has no LIST operation"));
-        assert!(error.message.contains("{01..12}"));
     }
 
     #[test]

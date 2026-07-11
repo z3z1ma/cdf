@@ -49,6 +49,7 @@ This ticket does not require cloud credentials in every push CI run; fixture-bac
 - 2026-07-09: I4 closed as `.10x/tickets/done/2026-07-09-p2-ws-i4-s5-s7-standalone-conformance.md` with `.10x/evidence/2026-07-09-p2-c3-i4-integration.md` and `.10x/reviews/2026-07-09-p2-c3-i4-integration-review.md`. S5 and S7 are now standalone deterministic conformance scenarios and the only promoted P2 rows; S1-S4/S6/S8 remain pending.
 - 2026-07-10: A10f completed the shared `preview-balanced-stratified-v1` front end, deterministic global payload selection, truthful bounded evidence, and local file/REST/Postgres parity fixtures. S8 remains pending only for its unimplemented HTTP-template/cloud archetype cells; WS-I consumes A10f as downstream conformance authority rather than blocking A10f closure.
 - 2026-07-09: I5 closed as `.10x/tickets/done/2026-07-09-p2-ws-i5-recorded-http-request-capture-race.md` with `.10x/evidence/2026-07-09-p2-d5-i5-integration.md` and `.10x/reviews/2026-07-09-p2-d5-i5-integration-review.md`. The S5 recorded server now captures complete bounded headers, uses bounded response writes, and surfaces worker failures without teardown panics. Final parallel workspace nextest passed 809/809 without weakening S5.
+- 2026-07-10: E6 promoted S1 and S2 to covered with standalone production-path CLI tests. S1 performs add→pin→plan→run with no typed schema; S2 proves dated HTTP enumeration, preview/run partition parity, manifest initial load, unchanged no-op, and newly-present-month-only loading. S3/S4/S6/S8 remain pending.
 
 ## Blockers
 

@@ -1209,11 +1209,11 @@ fn add_local_parquet_dry_run_writes_nothing() {
 }
 
 #[test]
-fn add_http_parquet_pins_schema_with_bounded_fixture_requests() {
+fn p2_s1_add_http_parquet_pins_and_runs_with_zero_typed_fields() {
     let project = TestProject::new();
     write_vendor_parquet(&project.root.join("data/yellow.parquet"));
     let parquet = fs::read(project.root.join("data/yellow.parquet")).unwrap();
-    let (base_url, requests) = serve_parquet_file(parquet, 64);
+    let (base_url, requests) = serve_parquet_file(parquet, 256);
     let url = format!("{base_url}/yellow.parquet");
 
     let result = run([
@@ -1278,6 +1278,29 @@ fn add_http_parquet_pins_schema_with_bounded_fixture_requests() {
         false
     );
 
+    let run_result = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "remote.yellow",
+        "--package-id",
+        "p2-s1-http-parquet",
+        "--checkpoint-id",
+        "checkpoint-p2-s1-http-parquet",
+    ]);
+    assert_eq!(run_result.exit_code, 0, "stderr: {}", run_result.stderr);
+    let run_report = stderr_or_stdout_json(&run_result.stdout);
+    assert_eq!(run_report["result"]["resource_id"], "remote.yellow");
+    assert_eq!(run_report["result"]["row_count"], 2);
+    assert!(
+        project
+            .root
+            .join(".cdf/packages/p2-s1-http-parquet/manifest.json")
+            .is_file()
+    );
+
     let requests = requests.lock().unwrap();
     assert!(
         requests
@@ -1292,6 +1315,125 @@ fn add_http_parquet_pins_schema_with_bounded_fixture_requests() {
         ),
         "expected bounded range GET request, got {requests:?}"
     );
+}
+
+#[test]
+fn p2_s2_http_month_glob_is_incremental_and_no_change_is_a_noop() {
+    let project = TestProject::new();
+    let files = BTreeMap::from([
+        (
+            "/yellow_tripdata_2024-01.parquet".to_owned(),
+            vendor_parquet_bytes(&[1, 2]),
+        ),
+        (
+            "/yellow_tripdata_2024-02.parquet".to_owned(),
+            vendor_parquet_bytes(&[3, 4]),
+        ),
+    ]);
+    let (base_url, files, _) = serve_parquet_files(files, 2_000);
+    fs::write(
+        project.root.join("resources/tlc.toml"),
+        format!(
+            r#"
+[source.tlc]
+kind = "files"
+root = "{base_url}"
+egress_allowlist = ["127.0.0.1"]
+
+[resource.yellow]
+glob = "yellow_tripdata_2024-*.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#
+        ),
+    )
+    .unwrap();
+    let project_path = project.root.join("cdf.toml");
+    let mut project_toml = fs::read_to_string(&project_path).unwrap();
+    project_toml.push_str("\n[resources.\"tlc.yellow\"]\nsource = \"resources/tlc.toml\"\n");
+    fs::write(project_path, project_toml).unwrap();
+
+    let plan = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "plan",
+        "tlc.yellow",
+    ]);
+    assert_eq!(plan.exit_code, 0, "{}", plan.stderr);
+    let before_preview = project_tree_snapshot(&project.root);
+    let preview = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "preview",
+        "tlc.yellow",
+    ]);
+    assert_eq!(preview.exit_code, 0, "{}", preview.stderr);
+    let preview_report = stderr_or_stdout_json(&preview.stdout);
+    assert_eq!(preview_report["result"]["planned_partition_count"], 2);
+    assert_eq!(preview_report["result"]["row_count"], 4);
+    assert_eq!(project_tree_snapshot(&project.root), before_preview);
+
+    let first = run_http_monthly_resource(&project, "p2-s2-first", "checkpoint-p2-s2-first");
+    assert_eq!(first.exit_code, 0, "{}", first.stderr);
+    let first_report = stderr_or_stdout_json(&first.stdout);
+    assert_eq!(first_report["result"]["row_count"], 4);
+    assert_eq!(
+        first_report["result"]["file_manifest"]["changed_file_count"],
+        2
+    );
+
+    let unchanged =
+        run_http_monthly_resource(&project, "p2-s2-unchanged", "checkpoint-p2-s2-unchanged");
+    assert_eq!(unchanged.exit_code, 0, "{}", unchanged.stderr);
+    let unchanged_report = stderr_or_stdout_json(&unchanged.stdout);
+    assert_eq!(unchanged_report["result"]["row_count"], 0);
+    assert_eq!(
+        unchanged_report["result"]["file_manifest"]["changed_file_count"],
+        0
+    );
+    assert!(!project.root.join(".cdf/packages/p2-s2-unchanged").exists());
+
+    files.lock().unwrap().insert(
+        "/yellow_tripdata_2024-03.parquet".to_owned(),
+        vendor_parquet_bytes(&[5, 6]),
+    );
+    let third = run_http_monthly_resource(&project, "p2-s2-third", "checkpoint-p2-s2-third");
+    assert_eq!(third.exit_code, 0, "{}", third.stderr);
+    let third_report = stderr_or_stdout_json(&third.stdout);
+    assert_eq!(third_report["result"]["row_count"], 2);
+    assert_eq!(
+        third_report["result"]["file_manifest"]["changed_file_count"],
+        1
+    );
+    let connection = duckdb::Connection::open(project.root.join(".cdf/dev.duckdb")).unwrap();
+    let total: i64 = connection
+        .query_row("SELECT COUNT(*) FROM yellow", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(total, 6);
+}
+
+fn run_http_monthly_resource(
+    project: &TestProject,
+    package_id: &str,
+    checkpoint_id: &str,
+) -> crate::InvocationResult {
+    run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "run",
+        "tlc.yellow",
+        "--package-id",
+        package_id,
+        "--checkpoint-id",
+        checkpoint_id,
+    ])
 }
 
 #[test]
@@ -13898,11 +14040,14 @@ fn write_arrow_ipc_source(project: &TestProject, filename: &str, batch: RecordBa
 }
 
 fn write_vendor_parquet(path: &Path) {
+    fs::write(path, vendor_parquet_bytes(&[1, 2])).unwrap();
+}
+
+fn vendor_parquet_bytes(values: &[i32]) -> Vec<u8> {
     let fields = vec![Field::new("VendorID", DataType::Int32, false)];
-    let values: ArrayRef = Arc::new(Int32Array::from_iter_values([1_i32, 2_i32]));
+    let values: ArrayRef = Arc::new(Int32Array::from_iter_values(values.iter().copied()));
     let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), vec![values]).unwrap();
-    let bytes = cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap();
-    fs::write(path, bytes).unwrap();
+    cdf_package::transcode_record_batches_to_parquet_bytes(&[batch]).unwrap()
 }
 
 fn write_string_vendor_parquet(path: &Path) {
@@ -14770,6 +14915,68 @@ fn serve_parquet_file(bytes: Vec<u8>, max_requests: usize) -> (String, Arc<Mutex
         }
     });
     (format!("http://{address}"), requests)
+}
+
+type ServedParquetFiles = Arc<Mutex<BTreeMap<String, Vec<u8>>>>;
+
+fn serve_parquet_files(
+    initial: BTreeMap<String, Vec<u8>>,
+    max_requests: usize,
+) -> (String, ServedParquetFiles, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let files = Arc::new(Mutex::new(initial));
+    let thread_files = Arc::clone(&files);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let thread_requests = Arc::clone(&requests);
+    thread::spawn(move || {
+        for _ in 0..max_requests {
+            let Ok((mut stream, _)) = listener.accept() else {
+                break;
+            };
+            let mut request = [0_u8; 8192];
+            let bytes_read = stream.read(&mut request).unwrap_or(0);
+            let request_text = String::from_utf8_lossy(&request[..bytes_read]).into_owned();
+            thread_requests.lock().unwrap().push(request_text.clone());
+            let mut request_line = request_text
+                .lines()
+                .next()
+                .unwrap_or("GET / HTTP/1.1")
+                .split_whitespace();
+            let method = request_line.next().unwrap_or("GET");
+            let path = request_line.next().unwrap_or("/");
+            let bytes = thread_files.lock().unwrap().get(path).cloned();
+            let range = request_text.lines().find_map(parse_range_header);
+            let response = match (method, bytes, range) {
+                (_, None, _) => b"HTTP/1.1 404 Not Found\r\ncontent-length: 0\r\nconnection: close\r\n\r\n".to_vec(),
+                ("HEAD", Some(bytes), _) => format!(
+                    "HTTP/1.1 200 OK\r\ncontent-length: {}\r\naccept-ranges: bytes\r\netag: \"{}\"\r\nconnection: close\r\n\r\n",
+                    bytes.len(), path
+                ).into_bytes(),
+                (_, Some(bytes), Some((start, end))) => {
+                    let end = end.min(bytes.len().saturating_sub(1));
+                    let body = &bytes[start..=end];
+                    let mut response = format!(
+                        "HTTP/1.1 206 Partial Content\r\ncontent-length: {}\r\ncontent-range: bytes {start}-{end}/{}\r\naccept-ranges: bytes\r\netag: \"{}\"\r\nconnection: close\r\n\r\n",
+                        body.len(), bytes.len(), path
+                    ).into_bytes();
+                    response.extend_from_slice(body);
+                    response
+                }
+                (_, Some(bytes), None) => {
+                    let mut response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-length: {}\r\naccept-ranges: bytes\r\netag: \"{}\"\r\nconnection: close\r\n\r\n",
+                        bytes.len(), path
+                    ).into_bytes();
+                    response.extend_from_slice(&bytes);
+                    response
+                }
+            };
+            stream.write_all(&response).unwrap();
+            stream.flush().unwrap();
+        }
+    });
+    (format!("http://{address}"), files, requests)
 }
 
 fn parse_range_header(line: &str) -> Option<(usize, usize)> {

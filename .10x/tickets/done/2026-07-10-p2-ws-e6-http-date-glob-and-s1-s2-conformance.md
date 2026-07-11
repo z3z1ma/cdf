@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p2-ws-e-remote-transports.md
@@ -34,3 +34,5 @@ None for deterministic implementation. Public evidence depends on upstream avail
 ## Progress and notes
 
 - 2026-07-10: Opened from the remaining S1/S2 gap. The finite date heuristic is deliberately compiler-visible and transport-neutral: enumeration produces candidates; existence is decided by a typed optional metadata operation, not message matching.
+- 2026-07-10: Implemented the typed optional metadata operation, finite year-month wildcard expansion, exact 404 absence handling, deterministic S1 add/run, and deterministic S2 preview/initial-load/no-op/new-month-only execution. Evidence is `.10x/evidence/2026-07-10-p2-e6-http-date-glob-s1-s2.md`; review is `.10x/reviews/2026-07-10-p2-e6-http-date-glob-s1-s2-review.md`.
+- 2026-07-10: Public TLC `cdf add` succeeded through ranged footer discovery and inferred/pinned 19 fields in 0.3 seconds. The subsequent public GET failed because the upstream CloudFront endpoint returned HTTP 403 to both CDF and independent curl GET/range requests while cached HEAD remained 200; deterministic fixture conformance remains green and the external availability limit is recorded rather than hidden.

@@ -1,7 +1,7 @@
 use super::*;
 use crate::internal::*;
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -1566,6 +1566,46 @@ fn http_numeric_template_discovers_and_plans_every_file() {
 }
 
 #[test]
+fn http_year_month_glob_skips_absent_candidates_without_hiding_other_failures() {
+    let temp = tempfile::tempdir().unwrap();
+    write_http_discover_project(temp.path(), "");
+    let resource_path = temp.path().join("resources/files.toml");
+    let resource_toml = fs::read_to_string(&resource_path)
+        .unwrap()
+        .replace("vendors.parquet", "yellow_tripdata_2024-*.parquet");
+    fs::write(resource_path, resource_toml).unwrap();
+    let missing = (3..=12).map(|month| {
+        format!("https://data.example.test/trip-data/yellow_tripdata_2024-{month:02}.parquet")
+    });
+    let transport = RecordingHttpFileTransport::with_missing(vendor_parquet_bytes(), missing);
+    let dependencies = http_file_dependencies(transport.clone());
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_resource_schema_with_file_dependencies_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 2);
+    let runtime = resource.to_file_resource(dependencies).unwrap();
+    let partitions = runtime
+        .plan_partitions(&ScanRequest {
+            resource_id: resource.descriptor().resource_id.clone(),
+            projection: None,
+            filters: Vec::new(),
+            limit: None,
+            order_by: Vec::new(),
+            scope: resource.descriptor().state_scope.clone(),
+        })
+        .unwrap();
+    assert_eq!(partitions.len(), 2);
+    assert!(partitions[0].metadata["path"].ends_with("2024-01.parquet"));
+    assert!(partitions[1].metadata["path"].ends_with("2024-02.parquet"));
+}
+
+#[test]
 fn http_parquet_auto_pin_plan_preview_and_run_use_file_runtime() {
     let temp = tempfile::tempdir().unwrap();
     let parquet = vendor_parquet_bytes();
@@ -2796,6 +2836,7 @@ struct RecordingHttpFileTransportState {
     requests: Vec<HttpFileRequest>,
     body: Vec<u8>,
     etag: String,
+    missing: BTreeSet<String>,
 }
 
 impl RecordingHttpFileTransport {
@@ -2805,8 +2846,15 @@ impl RecordingHttpFileTransport {
                 requests: Vec::new(),
                 body,
                 etag: "\"fixture-etag\"".to_owned(),
+                missing: BTreeSet::new(),
             })),
         }
+    }
+
+    fn with_missing(body: Vec<u8>, missing: impl IntoIterator<Item = String>) -> Self {
+        let transport = Self::new(body);
+        transport.state.lock().unwrap().missing.extend(missing);
+        transport
     }
 
     fn requests(&self) -> Vec<HttpFileRequest> {
@@ -2819,6 +2867,9 @@ impl HttpFileTransport for RecordingHttpFileTransport {
         let mut state = self.state.lock().unwrap();
         state.requests.push(request.clone());
         match request.method {
+            HttpMethod::Head if state.missing.contains(&request.url) => {
+                Ok(HttpFileResponse::new(404))
+            }
             HttpMethod::Head => Ok(HttpFileResponse::new(200)
                 .with_header("Content-Length", state.body.len().to_string())
                 .with_header("ETag", state.etag.clone())

@@ -221,6 +221,12 @@ impl ByteRange {
 
 pub trait FileTransport {
     fn metadata(&mut self, resource: &FileTransportResource) -> Result<FileIdentityMetadata>;
+    fn metadata_if_exists(
+        &mut self,
+        resource: &FileTransportResource,
+    ) -> Result<Option<FileIdentityMetadata>> {
+        self.metadata(resource).map(Some)
+    }
     fn read_range(&mut self, resource: &FileTransportResource, range: ByteRange)
     -> Result<Vec<u8>>;
     fn list(&mut self, resource: &FileTransportResource) -> Result<Vec<FileIdentityMetadata>>;
@@ -390,6 +396,16 @@ impl FileTransport for FileTransportFacade {
         }
     }
 
+    fn metadata_if_exists(
+        &mut self,
+        resource: &FileTransportResource,
+    ) -> Result<Option<FileIdentityMetadata>> {
+        match &resource.location {
+            FileTransportLocation::HttpUrl { url } => self.http_metadata_if_exists(resource, url),
+            _ => self.metadata(resource).map(Some),
+        }
+    }
+
     fn read_range(
         &mut self,
         resource: &FileTransportResource,
@@ -419,6 +435,23 @@ impl FileTransport for FileTransportFacade {
 }
 
 impl FileTransportFacade {
+    fn http_metadata_if_exists(
+        &mut self,
+        resource: &FileTransportResource,
+        url: &str,
+    ) -> Result<Option<FileIdentityMetadata>> {
+        validate_http_file_url(url)?;
+        self.reject_unimplemented_auth(resource)?;
+        let request = HttpFileRequest::new(HttpMethod::Head, url.to_owned());
+        resource.egress_allowlist.check(&policy_request(&request))?;
+        let response = self.http_transport()?.send(request)?;
+        if response.status == 404 {
+            return Ok(None);
+        }
+        ensure_http_success(HttpMethod::Head, &response)?;
+        Ok(Some(http_identity(url, &response)?))
+    }
+
     fn object_store_metadata(
         &self,
         resource: &FileTransportResource,
@@ -538,13 +571,7 @@ impl FileTransportFacade {
         resource.egress_allowlist.check(&policy_request(&request))?;
         let response = self.http_transport()?.send(request)?;
         ensure_http_success(HttpMethod::Head, &response)?;
-        Ok(FileIdentityMetadata {
-            location: url.to_owned(),
-            size_bytes: optional_u64_header(&response.headers, "content-length")?,
-            checksum: None,
-            etag: header_value(&response.headers, "etag").map(str::to_owned),
-            modified: header_value(&response.headers, "last-modified").map(str::to_owned),
-        })
+        http_identity(url, &response)
     }
 
     fn read_http_range(
@@ -804,6 +831,16 @@ fn ensure_http_success(method: HttpMethod, response: &HttpFileResponse) -> Resul
     }
 }
 
+fn http_identity(url: &str, response: &HttpFileResponse) -> Result<FileIdentityMetadata> {
+    Ok(FileIdentityMetadata {
+        location: url.to_owned(),
+        size_bytes: optional_u64_header(&response.headers, "content-length")?,
+        checksum: None,
+        etag: header_value(&response.headers, "etag").map(str::to_owned),
+        modified: header_value(&response.headers, "last-modified").map(str::to_owned),
+    })
+}
+
 fn optional_u64_header(headers: &HeaderMap, name: &str) -> Result<Option<u64>> {
     header_value(headers, name)
         .map(|value| {
@@ -996,6 +1033,21 @@ mod tests {
             requests[1].headers.get("range").map(String::as_str),
             Some("bytes=100-103")
         );
+    }
+
+    #[test]
+    fn file_transport_http_optional_metadata_treats_only_404_as_absent() {
+        let client = RecordingHttpFileTransport::new([
+            HttpFileResponse::new(404),
+            HttpFileResponse::new(403),
+        ]);
+        let resource = FileTransportResource::http_url("https://data.example.org/missing.parquet")
+            .with_egress_allowlist(EgressAllowlist::from_hosts(["data.example.org"]));
+        let mut transport = FileTransportFacade::new().with_http_transport(client);
+
+        assert_eq!(transport.metadata_if_exists(&resource).unwrap(), None);
+        let forbidden = transport.metadata_if_exists(&resource).unwrap_err();
+        assert_eq!(forbidden.kind, ErrorKind::Auth);
     }
 
     #[test]

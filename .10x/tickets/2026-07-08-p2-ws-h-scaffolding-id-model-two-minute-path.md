@@ -37,6 +37,7 @@ This ticket does not implement the lower-level discovery, file, or schema reconc
 - 2026-07-09: E2 closed in `.10x/tickets/done/2026-07-09-p2-ws-e2-http-file-runtime-and-discovery.md`, unblocking H2 for local and deterministic HTTPS single-file Parquet.
 - 2026-07-09: H2 closed in `.10x/tickets/done/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md` with evidence `.10x/evidence/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet.md` and review `.10x/reviews/2026-07-09-p2-ws-h2-cdf-add-single-file-parquet-review.md`. The first `cdf add` product doorway now covers local and deterministic HTTPS single-file Parquet; remaining WS-H scope is Postgres/REST add, ad-hoc mode, docs quickstart, public TLC S1/S2, and the recorded session.
 - 2026-07-09: H3 closed as `.10x/tickets/done/2026-07-09-p2-ws-h3-adhoc-parquet-run.md` with evidence `.10x/evidence/2026-07-09-p2-h3-a9-integration.md` and review `.10x/reviews/2026-07-09-p2-h3-a9-integration-review.md`. Local/stable-HTTP(S) single-Parquet ad-hoc execution now persists a safe stable resource and uses the ordinary evidence spine; broader source kinds and same-package destination-preserving resume remain outside the child.
+- 2026-07-10: E6 promoted deterministic S1 to covered: `cdf add` over HTTP now pins and immediately runs with zero typed fields through package, receipt, and checkpoint. The public TLC add also succeeded and inferred all 19 columns; the upstream GET later returned 403 independently of CDF. Remaining WS-H scope is Postgres/REST add and the quickstart/docs session.
 
 ## Blockers
 
