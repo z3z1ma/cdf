@@ -840,6 +840,7 @@ dependencies = [
  "cdf-contract",
  "cdf-kernel",
  "cdf-package",
+ "cdf-runtime",
  "duckdb",
  "serde",
  "serde_json",
@@ -856,6 +857,7 @@ dependencies = [
  "cdf-contract",
  "cdf-kernel",
  "cdf-package",
+ "cdf-runtime",
  "hex",
  "object_store",
  "parquet",
@@ -874,8 +876,10 @@ dependencies = [
  "arrow-schema 59.1.0",
  "cdf-conformance",
  "cdf-contract",
+ "cdf-http",
  "cdf-kernel",
  "cdf-package",
+ "cdf-runtime",
  "futures-executor",
  "futures-util",
  "hex",
@@ -1030,8 +1034,10 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-package",
+ "hex",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

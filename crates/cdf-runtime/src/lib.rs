@@ -27,8 +27,9 @@ mod prelude {
     pub(crate) use cdf_kernel::{
         CapabilitySupport, CdfError, CommitPlan, DestinationCommitRequest,
         DestinationCorrectionCommitPlan, DestinationCorrectionCommitRequest, DestinationId,
-        DestinationProtocol, DestinationSheet, Receipt, ReceiptVerification, ResourceStream,
-        Result, SchemaHash, StateDelta, TargetName, WriteDisposition,
+        DestinationProtocol, DestinationSheet, DestinationSheetArtifact, Receipt,
+        ReceiptVerification, ResourceStream, Result, SchemaHash, StateDelta, TargetName,
+        WriteDisposition,
     };
     pub(crate) use cdf_package::{PackageReader, PackageReplayInputs};
     pub(crate) use serde::{Deserialize, Serialize};

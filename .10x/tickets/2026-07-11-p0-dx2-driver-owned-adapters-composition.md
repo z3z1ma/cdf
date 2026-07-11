@@ -19,4 +19,8 @@ Move DuckDB, Parquet, and Postgres runtime driver adapters into their destinatio
 
 ## Blockers
 
-Depends on DX1.
+None. DX1 is complete.
+
+## Progress and notes
+
+- 2026-07-11: Added driver-owned runtime adapters to DuckDB, Parquet, and Postgres crates against `cdf-runtime`, including typed no-mutation inspection, package-aware preparation, correction/replay behavior, secret/policy resolution, and explicit current bulk/ingress/concurrency declarations. The existing destination suites passed 21 DuckDB, 27 Parquet, and 40 Postgres tests. Project-side compatibility adapters remain active until the next tranche injects the CLI registry and removes concrete project dependencies.

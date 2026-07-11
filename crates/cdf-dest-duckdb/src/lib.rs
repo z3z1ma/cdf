@@ -58,6 +58,7 @@ mod package;
 mod planning;
 mod receipts;
 mod rows;
+mod runtime;
 mod sheet;
 mod sql;
 mod table;
@@ -65,3 +66,4 @@ mod table;
 mod tests;
 
 pub use api::*;
+pub use runtime::DuckDbRuntimeDriver;

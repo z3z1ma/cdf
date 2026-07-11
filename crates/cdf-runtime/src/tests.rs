@@ -90,14 +90,18 @@ impl DestinationDriver for MockDriver {
         _context: &DestinationResolutionContext<'_>,
     ) -> Result<DestinationInspection> {
         let sheet = mock_sheet(self.destination);
+        let sheet_artifact = DestinationSheetArtifact::new(
+            sheet.clone(),
+            cdf_kernel::DestinationProtocolCapabilities::default(),
+        )?;
         Ok(DestinationInspection {
             description: DestinationDescription::new(
                 sheet.destination.clone(),
                 self.schemes,
                 self.destination,
             ),
-            sheet,
-            sheet_artifact_hash: format!("sha256:{}", self.destination),
+            sheet_artifact_hash: artifact_hash(&sheet_artifact)?,
+            sheet_artifact,
             runtime: DestinationRuntimeCapabilities {
                 ingress_mode: DestinationIngressMode::StagedDurableSegments,
                 writer_model: DestinationWriterModel::ConcurrentSegments,

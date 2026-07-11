@@ -43,6 +43,7 @@ mod corrections;
 mod manifest;
 mod package;
 mod receipts;
+mod runtime;
 mod sheet;
 mod store;
 #[cfg(test)]
@@ -52,3 +53,4 @@ pub use api::*;
 pub use corrections::{
     ParquetVersionedRematerializationPlan, ParquetVersionedRematerializationRequest,
 };
+pub use runtime::{FilesystemParquetRuntime, ParquetRuntimeDriver};

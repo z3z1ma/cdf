@@ -1,5 +1,13 @@
 use crate::prelude::*;
 
+use serde::Serialize;
+use sha2::{Digest, Sha256};
+
+pub fn artifact_hash(value: &impl Serialize) -> Result<String> {
+    let bytes = serde_json::to_vec(value).map_err(|error| CdfError::internal(error.to_string()))?;
+    Ok(format!("sha256:{}", hex::encode(Sha256::digest(bytes))))
+}
+
 pub fn reject_unexpected_pending_context(
     prepared: &PreparedDestinationCommit,
     destination: &str,

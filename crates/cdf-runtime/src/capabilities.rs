@@ -70,7 +70,7 @@ pub struct DestinationHealthProbe {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DestinationInspection {
     pub description: DestinationDescription,
-    pub sheet: DestinationSheet,
+    pub sheet_artifact: DestinationSheetArtifact,
     pub sheet_artifact_hash: String,
     pub runtime: DestinationRuntimeCapabilities,
     pub health_probes: Vec<DestinationHealthProbe>,

@@ -43,6 +43,7 @@ mod mirrors;
 mod package;
 mod plan;
 mod rows;
+mod runtime;
 mod sheet;
 mod source;
 #[cfg(test)]
@@ -58,5 +59,6 @@ pub use correction::*;
 pub use identifiers::*;
 pub use plan::*;
 pub use rows::{postgres_columns_for_schema, postgres_type_for_arrow};
+pub use runtime::{PostgresRuntime, PostgresRuntimeDriver, validate_replay_target};
 pub use sheet::*;
 pub use source::*;
