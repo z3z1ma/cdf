@@ -32,6 +32,8 @@ Package-order dedup and any future package-global operator MUST declare an order
 
 Parallel outputs MUST enter a memory-accounted reorder boundary keyed only by plan partition ordinal and local deterministic sequence. Reorder pressure backpressures faster partitions. Scheduler completion order cannot determine canonical segments, evidence order, source positions, or package identity.
 
+Scheduler admission, nested unit ordinals, canonical limit/speculation, retry/attestation, and scope serialization MUST follow `.10x/specs/deterministic-parallel-scheduler.md`.
+
 ## Package and destination boundary
 
 Canonical segment assembly emits bounded segment contents to a writer that encodes, persists atomically, and calculates SHA-256 while writing. A segment becomes eligible for downstream handoff only after durable bytes and identity are complete.

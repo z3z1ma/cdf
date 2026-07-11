@@ -10,6 +10,13 @@ Depends-On: .10x/tickets/2026-07-11-p0-sx1-source-extension-boundary.md, .10x/ti
 
 Execute logical file, row-group, window, and other safe partitions concurrently under `--jobs` and the memory ledger. Fix partition-to-segment assignment at plan time, preserve source rate/scope constraints, serialize single-writer destinations where required, and make output hashes invariant to scheduling.
 
+## Activated children
+
+- `.10x/tickets/2026-07-11-p3-c1-scheduler-admission-contract.md`
+- `.10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md`
+- `.10x/tickets/2026-07-11-p3-c3-engine-ffi-parallel-integration.md`
+- `.10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md`
+
 ## Acceptance criteria
 
 - `--jobs 1` and `--jobs N` produce identical manifest hashes for every permanent fixture.
@@ -20,3 +27,8 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 ## Blockers
 
 Blocked on the source extension/capability boundary, injected execution host, canonical segmentation, memory ledger, and WS-L baseline.
+
+## References
+
+- `.10x/decisions/canonical-frontier-parallel-scheduling.md`
+- `.10x/specs/deterministic-parallel-scheduler.md`
