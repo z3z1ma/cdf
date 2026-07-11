@@ -99,6 +99,7 @@ pub struct ResourceDeclaration {
     pub merge_key: Option<Vec<String>>,
     pub cursor: Option<CursorDeclaration>,
     pub write_disposition: Option<WriteDispositionDeclaration>,
+    pub deduplicate: Option<DeduplicationDeclaration>,
     pub contract: Option<String>,
     pub trust: Option<TrustDeclaration>,
     pub partition: Option<PartitionDeclaration>,
@@ -107,6 +108,12 @@ pub struct ResourceDeclaration {
     pub schema_mode: Option<SchemaModeDeclaration>,
     pub sample: Option<SampleDeclaration>,
     pub types: Option<TypePolicyDeclaration>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DeduplicationDeclaration {
+    ExactRow,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

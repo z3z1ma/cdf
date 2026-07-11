@@ -1633,6 +1633,7 @@ mod tests {
             merge_key: vec!["id".to_owned()],
             cursor,
             write_disposition: WriteDisposition::Merge,
+            deduplication: None,
             contract: Some(ContractRef::new("orders").unwrap()),
             state_scope: ScopeKey::Resource,
             freshness: None,

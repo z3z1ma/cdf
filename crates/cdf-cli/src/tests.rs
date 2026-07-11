@@ -5093,6 +5093,47 @@ fn keyless_append_file_validate_plan_preview_run_has_no_key_nudge() {
 }
 
 #[test]
+fn keyless_append_exact_row_dedup_is_explicit_and_evidence_preserving() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("resources/files.toml"),
+        RESOURCE.replace("primary_key = [\"id\"]\n", "deduplicate = \"exact_row\"\n"),
+    )
+    .unwrap();
+    fs::write(
+        project.root.join("data/events.ndjson"),
+        concat!(
+            "{\"id\":1,\"updated_at\":1783296000000000}\n",
+            "{\"id\":1,\"updated_at\":1783296000000000}\n",
+            "{\"id\":1,\"updated_at\":1783296060000000}\n"
+        ),
+    )
+    .unwrap();
+
+    let result = run_valid_run_args(
+        &project,
+        "pkg-keyless-exact-row-dedup",
+        "checkpoint-keyless-exact-row-dedup",
+    );
+
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert_no_key_nudge(&result);
+    let json = stderr_or_stdout_json(&result.stdout);
+    assert_eq!(json["result"]["row_count"], 2);
+    let reader = PackageReader::open(
+        project
+            .root
+            .join(".cdf/packages/pkg-keyless-exact-row-dedup"),
+    )
+    .unwrap();
+    let summary = reader.read_dedup_summary_json().unwrap().unwrap();
+    assert_eq!(summary["input_rows"], 3);
+    assert_eq!(summary["output_rows"], 2);
+    assert_eq!(summary["dropped_row_count"], 1);
+    assert_eq!(summary["keep"], "first");
+}
+
+#[test]
 fn keyless_append_rest_validate_plan_preview_run_has_no_key_nudge() {
     let project = TestProject::new();
     fs::write(project.root.join("rest-token"), "keyless-rest-token\n").unwrap();

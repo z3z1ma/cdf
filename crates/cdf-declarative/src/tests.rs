@@ -21,10 +21,10 @@ use cdf_http::{
     SecretUri, SecretValue,
 };
 use cdf_kernel::{
-    CdfError, CursorOrderingClaim, CursorValue, DeliveryGuarantee, ErrorKind, IncrementalShape,
-    PartitionId, PredicateId, PushdownFidelity, QueryableResource, ResourceStream, ScanPredicate,
-    ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection, SourcePosition,
-    WriteDisposition, physical_type, source_name,
+    CdfError, CursorOrderingClaim, CursorValue, DeduplicationSpec, DeliveryGuarantee, ErrorKind,
+    IncrementalShape, PartitionId, PredicateId, PushdownFidelity, QueryableResource,
+    ResourceStream, ScanPredicate, ScanRequest, SchemaHash, SchemaSource, ScopeKey, SortDirection,
+    SourcePosition, WriteDisposition, physical_type, source_name,
 };
 use futures_util::StreamExt;
 use tempfile::TempDir;
@@ -2088,6 +2088,61 @@ schema = { fields = [{ name = "id", type = "int64" }] }
     let message = error.to_string();
     assert!(message.contains("schema_mode = \"discover\" cannot carry a schema block"));
     assert!(message.contains("use hints to constrain discovery"));
+}
+
+#[test]
+fn exact_row_dedup_is_explicit_keyless_append_semantics() {
+    let resource = compile_document(
+        &parse_toml(
+            r#"
+[source.local]
+kind = "files"
+root = "."
+
+[resource.events]
+glob = "*.ndjson"
+format = "ndjson"
+write_disposition = "append"
+deduplicate = "exact_row"
+trust = "governed"
+schema = { fields = [{ name = "id", type = "int64" }] }
+"#,
+        )
+        .unwrap(),
+    )
+    .unwrap()
+    .remove(0);
+
+    assert!(resource.descriptor().primary_key.is_empty());
+    assert!(resource.descriptor().merge_key.is_empty());
+    assert_eq!(
+        resource.descriptor().deduplication,
+        Some(DeduplicationSpec::ExactRow)
+    );
+}
+
+#[test]
+fn exact_row_dedup_rejects_non_append_dispositions() {
+    let error = compile_document(
+        &parse_toml(
+            r#"
+[source.local]
+kind = "files"
+root = "."
+
+[resource.events]
+glob = "*.ndjson"
+write_disposition = "replace"
+deduplicate = "exact_row"
+"#,
+        )
+        .unwrap(),
+    )
+    .unwrap_err();
+
+    let message = error.to_string();
+    assert!(message.contains("valid only with append"));
+    assert!(message.contains("remove deduplicate"));
 }
 
 fn compile_local_file_schema_resource(

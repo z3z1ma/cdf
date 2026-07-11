@@ -860,6 +860,7 @@ fn artifact_values_serde_round_trip() {
             lag_tolerance_ms: 60_000,
         }),
         write_disposition: WriteDisposition::Merge,
+        deduplication: None,
         contract: Some(ContractRef::new("orders-contract").unwrap()),
         state_scope: ScopeKey::Partition {
             partition_id: PartitionId::new("p0").unwrap(),
@@ -1175,6 +1176,7 @@ fn segment_and_processed_observation_paths_share_file_manifest_aggregation_autho
         merge_key: Vec::new(),
         cursor: None,
         write_disposition: WriteDisposition::Append,
+        deduplication: None,
         contract: None,
         state_scope: ScopeKey::Resource,
         freshness: None,

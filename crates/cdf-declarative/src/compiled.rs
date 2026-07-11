@@ -18,12 +18,12 @@ use cdf_http::{
 };
 use cdf_kernel::{
     BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CdfError, ContractRef,
-    CursorOrderingClaim, CursorSpec, DeliveryGuarantee, EffectiveSchemaRuntime, EstimateSupport,
-    FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId, PartitionPlan,
-    PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate, QueryableResource,
-    ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, Result,
-    ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind, TrustLevel,
-    TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
+    CursorOrderingClaim, CursorSpec, DeduplicationSpec, DeliveryGuarantee, EffectiveSchemaRuntime,
+    EstimateSupport, FilterCapabilities, FreshnessSpec, IncrementalShape, PartitionId,
+    PartitionPlan, PartitioningCapabilities, PlanId, PushdownFidelity, PushedPredicate,
+    QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor, ResourceId,
+    ResourceStream, Result, ScanPlan, ScanRequest, SchemaHash, SchemaSource, ScopeKey, ScopeKind,
+    TrustLevel, TypePolicyAllowances, WriteDisposition, with_cdf_metadata,
 };
 use sha2::{Digest, Sha256};
 
@@ -633,6 +633,7 @@ fn compile_resource(
     let schema_source = compile_schema_source(&resource_id, resource)?;
     let cursor = compile_cursor(resource.cursor.as_ref())?;
     let write_disposition = compile_write_disposition(resource)?;
+    let deduplication = compile_deduplication(&resource_id, resource, &write_disposition)?;
     let merge_key = compile_merge_key(&resource_id, resource, &write_disposition)?;
     validate_fields(name, resource)?;
     let trust_level = compile_trust(resource)?;
@@ -648,6 +649,7 @@ fn compile_resource(
         merge_key,
         cursor,
         write_disposition,
+        deduplication,
         contract,
         state_scope: state_scope(resource)?,
         freshness: match &resource.freshness {
@@ -694,6 +696,22 @@ fn compile_resource(
             })
             .unwrap_or_default(),
     })
+}
+
+fn compile_deduplication(
+    resource_id: &str,
+    resource: &ResourceDeclaration,
+    write_disposition: &WriteDisposition,
+) -> Result<Option<DeduplicationSpec>> {
+    match (resource.deduplicate, write_disposition) {
+        (None, _) => Ok(None),
+        (Some(DeduplicationDeclaration::ExactRow), WriteDisposition::Append) => {
+            Ok(Some(DeduplicationSpec::ExactRow))
+        }
+        (Some(DeduplicationDeclaration::ExactRow), _) => Err(CdfError::contract(format!(
+            "resource `{resource_id}` deduplicate = \"exact_row\" is valid only with append; remove deduplicate or set write_disposition = \"append\""
+        ))),
+    }
 }
 
 fn compile_schema(resource: &ResourceDeclaration) -> Result<Schema> {

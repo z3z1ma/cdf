@@ -239,7 +239,7 @@ fn package_order_dedup_fail_aborts_on_duplicate_key() {
 }
 
 #[test]
-fn package_order_dedup_fails_closed_on_null_key_value() {
+fn package_order_dedup_treats_null_as_a_typed_identity_value() {
     let schema = Schema::new(vec![Field::new("id", DataType::Int64, true)]);
     let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
     policy.rows.rules = vec![RowRule::Dedup {
@@ -250,13 +250,22 @@ fn package_order_dedup_fails_closed_on_null_key_value() {
         compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
     let batch = RecordBatch::try_new(
         Arc::new(schema),
-        vec![Arc::new(Int64Array::from(vec![Some(1), None])) as ArrayRef],
+        vec![Arc::new(Int64Array::from(vec![None, Some(1), None])) as ArrayRef],
     )
     .unwrap();
 
-    let error = evaluate_package_order_dedup(&program, &[batch]).unwrap_err();
+    let evaluation = evaluate_package_order_dedup(&program, &[batch])
+        .unwrap()
+        .unwrap();
 
-    assert!(error.to_string().contains("found NULL key"));
+    assert_eq!(evaluation.summary.input_rows, 3);
+    assert_eq!(evaluation.summary.output_rows, 2);
+    assert_eq!(evaluation.summary.dropped_row_count, 1);
+    assert_eq!(evaluation.summary.dropped_rows[0].package_row_ordinal, 0);
+    assert_eq!(
+        evaluation.summary.dropped_rows[0].kept_package_row_ordinal,
+        2
+    );
 }
 
 #[test]

@@ -21,10 +21,18 @@ pub struct ResourceDescriptor {
     pub merge_key: Vec<String>,
     pub cursor: Option<CursorSpec>,
     pub write_disposition: WriteDisposition,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deduplication: Option<DeduplicationSpec>,
     pub contract: Option<ContractRef>,
     pub state_scope: ScopeKey,
     pub freshness: Option<FreshnessSpec>,
     pub trust_level: TrustLevel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeduplicationSpec {
+    ExactRow,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

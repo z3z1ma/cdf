@@ -103,9 +103,24 @@ impl ValidationProgram {
     }
 
     pub fn has_dedup_rule(&self) -> bool {
+        self.row_rules.iter().any(|rule| {
+            matches!(
+                rule.predicate,
+                RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. }
+            )
+        })
+    }
+
+    pub fn has_keyed_dedup_rule(&self) -> bool {
         self.row_rules
             .iter()
             .any(|rule| matches!(rule.predicate, RowRulePredicate::Dedup { .. }))
+    }
+
+    pub fn has_exact_row_dedup_rule(&self) -> bool {
+        self.row_rules
+            .iter()
+            .any(|rule| matches!(rule.predicate, RowRulePredicate::ExactRowDedup { .. }))
     }
 }
 
@@ -175,6 +190,10 @@ pub enum RowRulePredicate {
         max_age_ms: u64,
     },
     Dedup {
+        keys: Vec<String>,
+        keep: DedupKeepProgram,
+    },
+    ExactRowDedup {
         keys: Vec<String>,
         keep: DedupKeepProgram,
     },

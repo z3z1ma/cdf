@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 
 use arrow_schema::{DataType, Field, TimeUnit};
 use cdf_kernel::{
-    CdfError, ResourceDescriptor, Result, TypeMapping, TypeMappingFidelity, semantic,
+    CdfError, DeduplicationSpec, ResourceDescriptor, Result, TypeMapping, TypeMappingFidelity,
+    semantic,
 };
 use serde::{Deserialize, Serialize};
 
@@ -109,6 +110,38 @@ pub fn bind_validation_program_to_resource(
     mut program: ValidationProgram,
     descriptor: &ResourceDescriptor,
 ) -> Result<ValidationProgram> {
+    if matches!(descriptor.deduplication, Some(DeduplicationSpec::ExactRow)) {
+        if program.has_keyed_dedup_rule() {
+            return Err(CdfError::contract(
+                "resource exact-row deduplication conflicts with a contract dedup rule",
+            ));
+        }
+        if !program.has_exact_row_dedup_rule() {
+            let keys = program
+                .column_programs
+                .iter()
+                .map(|column| column.output_name.clone())
+                .collect::<Vec<_>>();
+            if keys.is_empty() {
+                return Err(CdfError::contract(
+                    "resource exact-row deduplication requires at least one schema field",
+                ));
+            }
+            program.row_rules.push(RowRuleProgram {
+                rule_id: format!("row-rule-{:04}-dedup", program.row_rules.len()),
+                predicate: RowRulePredicate::ExactRowDedup {
+                    keys,
+                    keep: DedupKeepProgram::First,
+                },
+                missing_column: MissingColumnBehavior::Error,
+            });
+            if let Some(residual) = &mut program.residual {
+                for field in &mut residual.fields {
+                    field.control_critical = true;
+                }
+            }
+        }
+    }
     let controls = descriptor
         .primary_key
         .iter()
@@ -197,7 +230,9 @@ fn residual_program(
             | RowRulePredicate::Range { column, .. }
             | RowRulePredicate::Regex { column, .. }
             | RowRulePredicate::Freshness { column, .. } => vec![column.as_str()],
-            RowRulePredicate::Dedup { keys, .. } => keys.iter().map(String::as_str).collect(),
+            RowRulePredicate::Dedup { keys, .. } | RowRulePredicate::ExactRowDedup { keys, .. } => {
+                keys.iter().map(String::as_str).collect()
+            }
         })
         .collect::<BTreeSet<_>>();
     ResidualProgram {
@@ -578,7 +613,7 @@ fn row_rule_kind(predicate: &RowRulePredicate) -> &'static str {
         RowRulePredicate::Range { .. } => "range",
         RowRulePredicate::Regex { .. } => "regex",
         RowRulePredicate::Freshness { .. } => "freshness",
-        RowRulePredicate::Dedup { .. } => "dedup",
+        RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. } => "dedup",
     }
 }
 

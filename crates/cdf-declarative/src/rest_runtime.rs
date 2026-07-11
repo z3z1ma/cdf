@@ -1548,6 +1548,7 @@ mod tests {
                 lag_tolerance_ms: 0,
             }),
             write_disposition: cdf_kernel::WriteDisposition::Append,
+            deduplication: None,
             contract: None,
             state_scope: cdf_kernel::ScopeKey::Resource,
             freshness: None,

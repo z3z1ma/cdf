@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 
 # Data onramp source experience and CLI
 
@@ -15,6 +15,8 @@ The compiled resource id MUST be `<source>.<resource>` for new declarative proje
 Identifier normalization MUST run automatically at plan time. `namecase-v1`, destination sheet identifier rules, and `cdf:source_name` metadata populate the planned destination schema. Source-name overrides exist only to resolve ambiguity or intentional rename policy.
 
 `append` MUST be the default write disposition and MUST require no key. `merge` MUST require an explicit merge identity. Plan-time merge-key errors MUST name the missing field and the two fixes: add `merge_key`, or stay append.
+
+`deduplicate = "exact_row"` MAY be declared only for append resources. It MUST compare the complete typed Arrow row, including null and nested values, retain the first occurrence in deterministic package order, and serialize its decision and dropped-row provenance into package evidence. It MUST remain package-scoped and MUST NOT imply cross-package or effectively-once key semantics.
 
 `cdf preview` MUST share resource resolution, transport/listing, decode, discovery, schema reconciliation, and normalization with `cdf run`, while remaining no-write and bounded. Preview MUST implement `preview-balanced-stratified-v1` from `.10x/decisions/preview-global-budget-and-payload-selection.md`: default global limits are 500 rendered rows, 64 MiB decoded input admitted to contract processing, and 64 admitted batches; deterministic `stratified-hash-v1` selects payload partitions; fair-share quotas prevent an early partition from consuming the batch budget; and other planned partitions are metadata-attested where exact authority exists and reported as payload-uninspected. Preview output MUST disclose limits, policy/selector versions, membership, partial inspection, and the distinction between decoded input and rendered output bytes.
 

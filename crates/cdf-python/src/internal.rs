@@ -58,6 +58,7 @@ pub(crate) fn descriptor_for(
         merge_key: Vec::new(),
         cursor: None,
         write_disposition: WriteDisposition::Append,
+        deduplication: None,
         contract: None,
         state_scope,
         freshness: None,

@@ -17,12 +17,12 @@ use arrow_schema::{DataType, Field, Schema, SchemaRef, TimeUnit};
 use cdf_contract::{
     ContractPolicy, DedupKeep, FieldCoercionDecision, NestedDataPolicy, ObservedSchema,
     RESIDUAL_ENCODING_METADATA_KEY, RESIDUAL_ENCODING_NAME, RowRule, SchemaEvolutionMode,
-    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_validation_program,
-    reconcile_schema,
+    VARIANT_COLUMN_NAME, VARIANT_SEMANTIC_TAG, VerdictAction, compile_resource_validation_program,
+    compile_validation_program, reconcile_schema,
 };
 use cdf_kernel::{
     BackpressureSupport, Batch, BatchHeader, BatchId, BatchStream, CapabilitySupport, ContractRef,
-    DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash,
+    DeduplicationSpec, DeliveryGuarantee, DiscoveryExecutorBudgetEvidence, DiscoveryManifestHash,
     DiscoveryManifestReference, EffectiveSchemaCatalogEntry, EffectiveSchemaEvidence,
     EffectiveSchemaObservationEvidence, EffectiveSchemaRuntime, EstimateSupport, FileManifest,
     FilePosition, FilterCapabilities, FreshnessSpec, IncrementalShape,
@@ -2246,6 +2246,40 @@ fn append_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary() 
 }
 
 #[test]
+fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
+    let mut resource = MockResource::tier_a(vec![batch_for_partition(
+        "batch-append-exact-row-dedup",
+        "part-0",
+        vec![1, 1, 1],
+        vec!["same", "same", "different"],
+        vec![true, true, true],
+    )])
+    .with_write_disposition(WriteDisposition::Append);
+    resource.descriptor.deduplication = Some(DeduplicationSpec::ExactRow);
+    let mut input = plan_input(vec![], None, None, PlanBoundedness::Bounded);
+    input.validation_program = compile_resource_validation_program(
+        &ContractPolicy::for_trust(TrustLevel::Governed),
+        &ObservedSchema::from_arrow(sample_schema().as_ref()),
+        resource.descriptor(),
+    )
+    .unwrap();
+    let plan = Planner::new().plan_tier_a(&resource, input).unwrap();
+    let temp = TempDir::new().unwrap();
+    let output = block_on(execute_to_package(&plan, &resource, temp.path())).unwrap();
+
+    assert_eq!(output.profile.output_rows, 2);
+    let reader = cdf_package::PackageReader::open(temp.path()).unwrap();
+    let batches = reader.read_segment(&output.segments[0].segment_id).unwrap();
+    assert_eq!(batch_i32s(&batches[0], "id"), vec![1, 1]);
+    assert_eq!(batch_strings(&batches, "name"), vec!["same", "different"]);
+    let summary = reader.read_dedup_summary_json().unwrap().unwrap();
+    assert_eq!(summary["keep"], "first");
+    assert_eq!(summary["input_rows"], 3);
+    assert_eq!(summary["output_rows"], 2);
+    assert_eq!(summary["dropped_row_count"], 1);
+}
+
+#[test]
 fn replace_plan_with_compiled_dedup_rule_does_not_change_rows_or_write_summary() {
     let resource = MockResource::tier_a(vec![batch_for_partition(
         "batch-replace-dedup",
@@ -3214,6 +3248,7 @@ fn descriptor() -> ResourceDescriptor {
         merge_key: vec!["id".to_owned()],
         cursor: None,
         write_disposition: WriteDisposition::Merge,
+        deduplication: None,
         contract: Some(ContractRef::new("contract-orders").unwrap()),
         state_scope: ScopeKey::Resource,
         freshness: Some(FreshnessSpec { max_age_ms: 60_000 }),

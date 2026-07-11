@@ -6,6 +6,7 @@ use arrow_array::{
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
 };
+use arrow_row::{OwnedRow, RowConverter, SortField};
 use arrow_schema::{DataType, TimeUnit};
 use cdf_kernel::{CdfError, Result, SourcePosition, source_name};
 use regex::Regex;
@@ -210,23 +211,31 @@ pub fn evaluate_package_order_dedup(
         .iter()
         .map(|batch| vec![false; batch.num_rows()])
         .collect::<Vec<_>>();
-    let mut groups = HashMap::<Vec<String>, Vec<PackageRowRef>>::new();
+    let mut groups = HashMap::<OwnedRow, Vec<PackageRowRef>>::new();
     let mut package_row_ordinal = 0_u64;
+    let mut row_converter = None;
 
     for (batch_index, batch) in batches.iter().enumerate() {
         validate_covered_batch_schema(program, batch)?;
         let columns = dedup_columns(program, batch, rule, keys)?;
+        let arrays = columns
+            .iter()
+            .map(|column| arrow_array::make_array(column.array.to_data()))
+            .collect::<Vec<_>>();
+        if row_converter.is_none() {
+            row_converter = Some(RowConverter::new(
+                arrays
+                    .iter()
+                    .map(|array| SortField::new(array.data_type().clone()))
+                    .collect(),
+            )?);
+        }
+        let converter = row_converter
+            .as_ref()
+            .ok_or_else(|| CdfError::internal("dedup row converter was not initialized"))?;
+        let rows = converter.convert_columns(&arrays)?;
         for row_index in 0..batch.num_rows() {
-            let mut key = Vec::with_capacity(columns.len());
-            for (key_name, column) in keys.iter().zip(columns.iter()) {
-                let Some(value) = scalar_string(column.array, row_index)? else {
-                    return Err(CdfError::contract(format!(
-                        "dedup row rule {:?} found NULL key {key_name:?} at package row {}; dedup fails closed before destination mutation",
-                        rule.rule_id, package_row_ordinal
-                    )));
-                };
-                key.push(value);
-            }
+            let key = rows.row(row_index).owned();
             if matches!(keep, DedupKeepProgram::Fail) && groups.contains_key(&key) {
                 return Err(CdfError::contract(format!(
                     "dedup row rule {:?} found duplicate key at package row {}; keep=fail aborts before destination mutation",
@@ -315,10 +324,12 @@ struct PackageRowRef {
 }
 
 fn single_dedup_rule(program: &ValidationProgram) -> Result<Option<&RowRuleProgram>> {
-    let mut rules = program
-        .row_rules
-        .iter()
-        .filter(|rule| matches!(rule.predicate, RowRulePredicate::Dedup { .. }));
+    let mut rules = program.row_rules.iter().filter(|rule| {
+        matches!(
+            rule.predicate,
+            RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. }
+        )
+    });
     let first = rules.next();
     if let Some(second) = rules.next() {
         return Err(CdfError::contract(format!(
@@ -332,7 +343,9 @@ fn single_dedup_rule(program: &ValidationProgram) -> Result<Option<&RowRuleProgr
 
 fn dedup_rule_parts(rule: &RowRuleProgram) -> Result<(&[String], &DedupKeepProgram)> {
     match &rule.predicate {
-        RowRulePredicate::Dedup { keys, keep } => Ok((keys, keep)),
+        RowRulePredicate::Dedup { keys, keep } | RowRulePredicate::ExactRowDedup { keys, keep } => {
+            Ok((keys, keep))
+        }
         _ => Err(CdfError::internal(
             "dedup rule helper called on non-dedup rule",
         )),
@@ -418,7 +431,9 @@ impl<'a> RuleEvaluation<'a> {
                     },
                 )
             }
-            RowRulePredicate::Dedup { .. } => return Ok(None),
+            RowRulePredicate::Dedup { .. } | RowRulePredicate::ExactRowDedup { .. } => {
+                return Ok(None);
+            }
         };
         let Some(column) = resolve_column(program, batch, column_name)? else {
             return match rule.missing_column {

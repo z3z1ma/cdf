@@ -50,6 +50,7 @@ impl MemoryResource {
             merge_key: vec!["id".to_owned()],
             cursor: None,
             write_disposition: WriteDisposition::Append,
+            deduplication: None,
             contract: None,
             state_scope: ScopeKey::Resource,
             freshness: None,

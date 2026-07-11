@@ -886,6 +886,7 @@ fn build_output_with_pre_contract_evidence(
         merge_key: Vec::new(),
         cursor: None,
         write_disposition: WriteDisposition::Append,
+        deduplication: None,
         contract: None,
         state_scope: scope,
         freshness: None,

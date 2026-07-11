@@ -10,6 +10,7 @@ description = "Schema contract compilation boundary for cdf."
 arrow-array = "59.1.0"
 arrow-buffer = "59.1.0"
 arrow-schema = "59.1.0"
+arrow-row = "59.1.0"
 arrow-select = "59.1.0"
 base64 = "0.22.1"
 cdf-kernel = { path = "../cdf-kernel" }

@@ -498,6 +498,7 @@ impl BackfillMockResource {
                     lag_tolerance_ms: 0,
                 }),
                 write_disposition: WriteDisposition::Append,
+                deduplication: None,
                 contract: None,
                 state_scope: ScopeKey::Resource,
                 freshness: None,

@@ -842,8 +842,9 @@ where
     let mut terminal_quarantines = Vec::new();
     let mut observation_attestations = BTreeMap::<String, PartitionAttestation>::new();
     let mut residual_decisions = Vec::new();
-    let apply_merge_dedup =
-        plan.write_disposition == WriteDisposition::Merge && validation_program.has_dedup_rule();
+    let apply_package_dedup = validation_program.has_exact_row_dedup_rule()
+        || (plan.write_disposition == WriteDisposition::Merge
+            && validation_program.has_keyed_dedup_rule());
     let mut pending_dedup_batches = Vec::new();
 
     for partition in plan.scan.partitions.clone() {
@@ -1040,7 +1041,7 @@ where
                 if output.num_rows() == 0 {
                     continue;
                 }
-                if apply_merge_dedup {
+                if apply_package_dedup {
                     pending_dedup_batches.push(PendingDedupBatch {
                         accepted: output,
                         variant_values,
@@ -1103,7 +1104,7 @@ where
         }
     }
 
-    if apply_merge_dedup {
+    if apply_package_dedup {
         apply_dedup_and_write_pending_batches(
             &mut builder,
             &validation_program,

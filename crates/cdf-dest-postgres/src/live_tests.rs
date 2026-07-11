@@ -930,6 +930,7 @@ fn postgres_source_descriptor() -> ResourceDescriptor {
             lag_tolerance_ms: 0,
         }),
         write_disposition: WriteDisposition::Merge,
+        deduplication: None,
         contract: Some(ContractRef::new("orders").unwrap()),
         state_scope: ScopeKey::Resource,
         freshness: None,
