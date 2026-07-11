@@ -730,6 +730,10 @@ mod tests {
                     "futures_executor::block_on",
                     ".block_on(",
                     "OnceLock<tokio::runtime::Runtime",
+                    "std::thread::spawn",
+                    "thread::spawn",
+                    "rayon::ThreadPoolBuilder",
+                    "rayon::ThreadPool",
                 ] {
                     if production.contains(forbidden) {
                         violations.push(format!("{} contains {forbidden}", path.display()));
@@ -746,7 +750,7 @@ mod tests {
         visit(&workspace.join("crates"), &mut violations);
         assert!(
             violations.is_empty(),
-            "production runtimes/blocking executors must be owned by the standalone host:\n{}",
+            "production runtimes, pools, and blocking executors must be owned by the standalone host:\n{}",
             violations.join("\n")
         );
     }
