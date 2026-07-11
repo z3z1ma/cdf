@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md
 Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/specs/versioning-lts-release-policy.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md
 
 # P1 product WS7C: Python interpreter CI matrix
@@ -31,6 +31,7 @@ Do not implement Python resource run/plan/preview product behavior. Do not chang
 ## Progress and notes
 
 - 2026-07-08: Split from WS7 parent. This is a CI/evidence lane and can proceed in parallel with WS7A/WS7B if workflow ownership is coordinated with WS8A.
+- 2026-07-10: Closed by `daff44b6`. The strict 3.14/3.14t workflow runs bridge, product, dlt, and doctor gates, uploads deterministic fixture hashes, and requires byte identity in a dependent job. Local GIL substitute evidence and the hosted-run limit are recorded in `.10x/evidence/2026-07-10-p1-python-front-door-closure.md`.
 
 ## Blockers
 

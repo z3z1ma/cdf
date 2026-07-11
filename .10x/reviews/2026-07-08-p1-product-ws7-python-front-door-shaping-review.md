@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Target: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
+Target: .10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md
 Verdict: pass
 
 # P1 WS7 Python front-door shaping review
@@ -11,10 +11,10 @@ Verdict: pass
 The WS7 shaping records:
 
 - `.10x/specs/python-front-door-product-surface.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7b-python-run-spine.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7d-dlt-ga-gap-integration.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7b-python-run-spine.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7d-dlt-ga-gap-integration.md`
 - `.10x/evidence/2026-07-08-p1-product-ws7-python-front-door-shaping.md`
 
 ## Findings

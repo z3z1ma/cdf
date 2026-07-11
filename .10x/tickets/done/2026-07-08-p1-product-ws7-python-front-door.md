@@ -1,6 +1,6 @@
-Status: active
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-experience-program.md
 Depends-On: .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/specs/resource-authoring-planning-batches.md, .10x/specs/python-front-door-product-surface.md
 
@@ -20,10 +20,10 @@ Make `python://` resources runnable through the product surface, not only throug
 
 ## Child tickets
 
-- `.10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7b-python-run-spine.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7d-dlt-ga-gap-integration.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7b-python-run-spine.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7d-dlt-ga-gap-integration.md`
 
 ## Acceptance criteria
 
@@ -44,6 +44,7 @@ No use of Python as the execution substrate. No weakening of secret redaction or
 
 - 2026-07-08: Opened from P1 product directive. The Python bridge exists; this workstream opens the product doorway.
 - 2026-07-08: Shaped the Python product surface in `.10x/specs/python-front-door-product-surface.md` and split implementation into WS7A-WS7D child tickets. Shaping evidence recorded in `.10x/evidence/2026-07-08-p1-product-ws7-python-front-door-shaping.md`; shaping review recorded in `.10x/reviews/2026-07-08-p1-product-ws7-python-front-door-shaping-review.md`.
+- 2026-07-10: WS7A-WS7D closed. Aggregate evidence: `.10x/evidence/2026-07-10-p1-python-front-door-closure.md`. Adversarial architecture review: `.10x/reviews/2026-07-10-p1-python-front-door-closure-review.md`. The review's closed-enum finding was repaired before closure, and Python now participates in the permanent four-source destination matrix.
 
 ## Blockers
 

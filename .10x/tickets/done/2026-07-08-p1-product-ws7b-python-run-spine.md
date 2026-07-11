@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
-Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md, .10x/tickets/done/2026-07-07-run-spine-implementation-program.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md
+Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/done/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md, .10x/tickets/done/2026-07-07-run-spine-implementation-program.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
 
 # P1 product WS7B: Python resources through the run spine
 
@@ -33,7 +33,8 @@ Do not implement plan/preview behavior unless WS7A left an explicitly recorded b
 ## Progress and notes
 
 - 2026-07-08: Split from WS7 parent. This child depends on WS7A so run execution starts from a resolved, product-visible Python resource rather than a private bridge test.
+- 2026-07-10: Closed by `edc8468e`, `fa1b8092`, and `02420904`. Python enters `run_project` as a trait object; the destination matrix proves 8 supported Python cells plus the sheet-backed Parquet merge exclusion, including package/receipt/checkpoint/replay/duplicate assertions. Source replacement before replay proves artifact-only execution; generic finalized-package resume tests cover the same source-independent package protocol. Evidence and review are recorded in the parent closure records.
 
 ## Blockers
 
-Blocked until `.10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md` is done.
+None. WS7A and the general run spine are closed.

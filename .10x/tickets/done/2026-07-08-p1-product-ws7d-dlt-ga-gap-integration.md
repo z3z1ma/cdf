@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
-Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/done/2026-07-05-dlt-shim-preview.md, .10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md
+Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/done/2026-07-05-dlt-shim-preview.md, .10x/tickets/done/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md
 
 # P1 product WS7D: dlt GA gap integration
 
@@ -31,7 +31,8 @@ Do not delegate destination commits to dlt. Do not implement non-dlt Python reso
 ## Progress and notes
 
 - 2026-07-08: Split from WS7 parent. The existing `.10x/tickets/done/2026-07-05-dlt-shim-preview.md` proves preview shim mechanics but explicitly excludes full GA parity.
+- 2026-07-10: Closed by `daff44b6`. A real import of `cdf_sdk.dlt` decorators maps keys, incremental ordering/lag, dispositions, contract hints, selected/skipped resources, scoped state, batches, and migration compatibility data. CDF remains the sole destination/package/checkpoint owner.
 
 ## Blockers
 
-Blocked on `.10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md` for product-level preview wiring. It may still perform read-only investigation before that dependency closes.
+None. The product preview and run spine are closed.

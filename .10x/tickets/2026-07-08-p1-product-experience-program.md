@@ -40,7 +40,7 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/tickets/done/2026-07-08-p1-product-ws4-error-experience-catalog.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws5-live-progress.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md`
 - `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
 
 ## Sequencing
@@ -83,6 +83,7 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
 - 2026-07-08: User reiterated that the current human CLI output is the weakest product surface and that hand-authored docs should not continue to outrun the renderer/live-progress/error experience. After the already-scoped WS6D init README scaffold, prioritize WS3 renderer foundation and WS5 prerequisites over additional prose-only docs work; generated docs remain tied to WS2/WS4 freshness.
 - 2026-07-08: WS1B, WS1C, and WS1E closed, giving the runtime event spine durable fanout, lifecycle/payload breadth, and tracing bridge coverage. WS2B, WS2C, and WS2D closed, giving the clap parser foundation, product grammar semantics, and generated completion/man/help artifacts. WS3B, WS3C, WS3D, and WS3E closed, migrating command output to the renderer and adding the raw-output migration gate. WS8B closed, adding the reproducible release artifact workflow.
 - 2026-07-10: The user elevated source/destination extension architecture to a P0 closure invariant. Remaining P1 integration and parent closure reviews use `.10x/knowledge/source-destination-extension-invariant.md`; product convenience cannot bypass the generic registry/trait/capability/conformance boundaries.
+- 2026-07-10: WS7 Python front door closed with aggregate evidence and adversarial review. The initial closed source enum was removed before closure; Python now enters the generic resource trait and the permanent destination matrix.
 
 ## Blockers
 

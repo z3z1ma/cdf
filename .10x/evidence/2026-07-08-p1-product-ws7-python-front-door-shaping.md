@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md, .10x/specs/python-front-door-product-surface.md
+Relates-To: .10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md, .10x/specs/python-front-door-product-surface.md
 
 # P1 WS7 Python front-door shaping evidence
 
@@ -29,10 +29,10 @@ Source inspection found:
 Read the WS7 parent, governing specs, done Python/dlt/doctor tickets, relevant source owner files, and the P1 parent. Then wrote:
 
 - `.10x/specs/python-front-door-product-surface.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7b-python-run-spine.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
-- `.10x/tickets/2026-07-08-p1-product-ws7d-dlt-ga-gap-integration.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7a-python-resource-resolution-plan-preview.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7b-python-run-spine.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7c-python-interpreter-ci-matrix.md`
+- `.10x/tickets/done/2026-07-08-p1-product-ws7d-dlt-ga-gap-integration.md`
 
 ## What this supports or challenges
 

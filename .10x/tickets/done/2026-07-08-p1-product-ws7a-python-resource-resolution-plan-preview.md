@@ -1,7 +1,7 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-09
-Parent: .10x/tickets/2026-07-08-p1-product-ws7-python-front-door.md
+Updated: 2026-07-10
+Parent: .10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md
 Depends-On: .10x/specs/python-front-door-product-surface.md, .10x/tickets/done/2026-07-05-python-sdk-bridge.md, .10x/tickets/done/2026-07-06-python-doctor-interpreter-probe.md, .10x/tickets/done/2026-07-07-cli-preview-resource-breadth.md
 
 # P1 product WS7A: Python resource resolution, plan, and preview
@@ -32,6 +32,7 @@ Do not implement package-producing `cdf run` for Python resources. Do not add dl
 ## Progress and notes
 
 - 2026-07-08: Split from WS7 parent after the Python front-door product spec was created. Current source recognizes `ResourceSourceKind::Python`, but the CLI run/plan/preview builders are still centered on compiled declarative resources.
+- 2026-07-10: Closed by `edc8468e` and the trait-boundary repair `fa1b8092`. Inspect/plan resolve descriptor and schema metadata without invoking the row callable; preview emits one batch and asserts no package, destination, checkpoint, or ledger writes. Missing interpreter and path-escape paths use `CDF-PYTHON-RESOURCE` and `cdf doctor`. Evidence: `.10x/evidence/2026-07-10-p1-python-front-door-closure.md`; review: `.10x/reviews/2026-07-10-p1-python-front-door-closure-review.md`.
 
 ## Blockers
 
