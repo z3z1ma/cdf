@@ -1394,7 +1394,9 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
             .unwrap();
     }
     let dependencies = FileRuntimeDependencies::new(
-        FileTransportFacade::new().with_object_store("s3://tlc", store),
+        FileTransportFacade::new()
+            .with_object_store("s3://tlc", store)
+            .with_execution_services(test_execution_services()),
     );
     let resource = compile_single_project_resource(temp.path());
 
@@ -1462,7 +1464,9 @@ fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() 
     ))
     .unwrap();
     let dependencies = FileRuntimeDependencies::new(
-        FileTransportFacade::new().with_object_store("s3://acme-events", store),
+        FileTransportFacade::new()
+            .with_object_store("s3://acme-events", store)
+            .with_execution_services(test_execution_services()),
     );
     let resource = compile_single_project_resource(temp.path());
 

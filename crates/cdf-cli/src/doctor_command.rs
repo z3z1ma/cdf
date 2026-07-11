@@ -114,7 +114,7 @@ fn file_transport_checks(context: &ProjectContext) -> Vec<DoctorCheck> {
     if remote_resources.is_empty() {
         return Vec::new();
     }
-    let dependencies = match crate::project_run_resource::file_runtime_dependencies(context) {
+    let dependencies = match crate::project_run_resource::file_runtime_dependencies(context, None) {
         Ok(dependencies) => dependencies,
         Err(error) => {
             return vec![DoctorCheck::failed(

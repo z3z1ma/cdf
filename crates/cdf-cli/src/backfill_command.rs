@@ -54,18 +54,18 @@ pub(crate) fn backfill(
         return CommandOutput::rendered("backfill", report.render_document(), report);
     }
 
-    let run_resource = build_project_run_resource(&context, resource)?;
+    let (host, services) = execution.ok_or_else(|| {
+        CliError::from(CdfError::internal(
+            "backfill execution host was not provided",
+        ))
+    })?;
+    let run_resource = build_project_run_resource(&context, resource, Some(services))?;
     let source = run_resource.as_project_resource();
     source.validate_supported().map_err(CliError::from)?;
     let pipeline_id = backfill_pipeline_id()?;
     let progress = human_progress_sink(cli.json, cli.no_color);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let mut reports = Vec::with_capacity(plan.slices.len());
-    let (host, services) = execution.ok_or_else(|| {
-        CliError::from(CdfError::internal(
-            "backfill execution host was not provided",
-        ))
-    })?;
     for slice in &plan.slices {
         let report = execute_slice(
             &context,

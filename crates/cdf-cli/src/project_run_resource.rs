@@ -95,7 +95,7 @@ pub(crate) fn build_project_resource_for_inspection(
 ) -> Result<CliProjectRunSource, CliError> {
     match build_python_project_run_resource(context, resource_id)? {
         Some(resource) => Ok(resource),
-        None => build_project_run_resource(context, context.resource(resource_id)?),
+        None => build_project_run_resource(context, context.resource(resource_id)?, None),
     }
 }
 
@@ -103,6 +103,7 @@ pub(crate) fn prepare_runtime_resource_for_cli(
     context: &ProjectContext,
     resource_id: &str,
     no_pin: bool,
+    execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
     if let Some(resource) = build_python_project_run_resource(context, resource_id)? {
         return Ok(PreparedRuntimeResourceForCli {
@@ -111,10 +112,11 @@ pub(crate) fn prepare_runtime_resource_for_cli(
         });
     }
     let compiled = context.resource(resource_id)?;
-    let prepared =
-        crate::scan_command::prepare_discover_resource_for_cli(context, compiled, no_pin)?;
+    let prepared = crate::scan_command::prepare_discover_resource_for_cli(
+        context, compiled, no_pin, execution,
+    )?;
     Ok(PreparedRuntimeResourceForCli {
-        resource: build_project_run_resource(context, &prepared.resource)?,
+        resource: build_project_run_resource(context, &prepared.resource, execution)?,
         schema_snapshot: prepared.schema_snapshot,
     })
 }
@@ -140,10 +142,11 @@ fn python_resource_error(mut error: cdf_kernel::CdfError) -> CliError {
 pub(crate) fn build_project_run_resource(
     context: &ProjectContext,
     resource: &CompiledResource,
+    execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<CliProjectRunSource, CliError> {
     match resource.plan() {
         CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::new(
-            resource.to_file_resource(file_runtime_dependencies(context)?)?,
+            resource.to_file_resource(file_runtime_dependencies(context, execution)?)?,
         )),
         CompiledResourcePlan::Rest(_) => {
             let dependencies = RestRuntimeDependencies::new(ReqwestHttpTransport::new()?)
@@ -164,9 +167,13 @@ pub(crate) fn build_project_run_resource(
 
 pub(crate) fn file_runtime_dependencies(
     context: &ProjectContext,
+    execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<FileRuntimeDependencies, CliError> {
-    let facade = FileTransportFacade::new()
+    let mut facade = FileTransportFacade::new()
         .with_http_transport(ReqwestHttpTransport::new()?)
         .with_secret_provider(context.secret_provider());
+    if let Some(execution) = execution {
+        facade = facade.with_execution_services(execution.clone());
+    }
     Ok(FileRuntimeDependencies::new(facade))
 }

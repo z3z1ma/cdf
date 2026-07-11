@@ -30,3 +30,16 @@ pub use rest_runtime::{
     RestResource, RestRuntimeDependencies, RestSampleSchemaDiscovery, discover_rest_sample_schema,
 };
 pub use sql_runtime::{SqlResource, SqlRuntimeDependencies, postgres_table_target_for_sql_plan};
+
+#[cfg(test)]
+pub(crate) fn test_execution_services() -> cdf_runtime::ExecutionServices {
+    static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
+        std::sync::OnceLock::new();
+    SERVICES
+        .get_or_init(|| {
+            cdf_engine::StandaloneExecutionHost::default_services(128 * 1024 * 1024)
+                .expect("declarative test execution host")
+                .1
+        })
+        .clone()
+}

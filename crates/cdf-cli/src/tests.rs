@@ -1827,6 +1827,8 @@ fn plan_human_headless_render_uses_operator_panels() {
 fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
     let project = TestProject::new();
     let cli = test_cli(&project);
+    let (_, services) =
+        cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
     let output = crate::scan_command::plan_or_explain(
         &cli,
         crate::args::ScanArgs {
@@ -1841,6 +1843,7 @@ fn plan_human_rich_render_uses_glyphs_color_and_operator_panels() {
             no_pin: false,
         },
         "plan",
+        &services,
     )
     .unwrap();
     let result = render_rich(output);

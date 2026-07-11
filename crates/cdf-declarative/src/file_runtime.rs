@@ -2312,7 +2312,9 @@ mod tests {
             ))
             .unwrap();
         }
-        let mut transport = FileTransportFacade::new().with_object_store("s3://acme-events", store);
+        let mut transport = FileTransportFacade::new()
+            .with_object_store("s3://acme-events", store)
+            .with_execution_services(crate::test_execution_services());
         let plan = FileResourcePlan {
             source: "events".to_owned(),
             root: "s3://acme-events/prod".to_owned(),
@@ -2373,7 +2375,9 @@ mod tests {
             PutPayload::from(encoded.clone()),
         ))
         .unwrap();
-        let facade = FileTransportFacade::new().with_object_store("s3://acme-events", store);
+        let facade = FileTransportFacade::new()
+            .with_object_store("s3://acme-events", store)
+            .with_execution_services(crate::test_execution_services());
         let dependencies = FileRuntimeDependencies::new(facade)
             .with_max_spool_bytes(encoded.len() as u64)
             .unwrap();

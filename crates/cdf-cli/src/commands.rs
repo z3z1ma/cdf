@@ -36,17 +36,25 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::Init(args) => crate::project_command::init(args),
         Command::Add(args) => crate::add_command::add(&cli, args),
         Command::Validate(args) => crate::project_command::validate(&cli, args),
-        Command::Plan(args) => crate::scan_command::plan_or_explain(&cli, args, "plan"),
-        Command::Explain(args) => crate::scan_command::plan_or_explain(&cli, args, "explain"),
+        Command::Plan(args) => {
+            let (_, services) =
+                cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
+            crate::scan_command::plan_or_explain(&cli, args, "plan", &services)
+        }
+        Command::Explain(args) => {
+            let (_, services) =
+                cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
+            crate::scan_command::plan_or_explain(&cli, args, "explain", &services)
+        }
         Command::Run(args) => {
             let managed = cdf_memory_budget()?;
             let (host, services) = cdf_engine::StandaloneExecutionHost::default_services(managed)?;
             crate::run_command::run(&cli, args, host.as_ref(), &services)
         }
         Command::Preview(args) => {
-            let (host, _) =
+            let (host, services) =
                 cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
-            crate::scan_command::preview(&cli, args, host.as_ref())
+            crate::scan_command::preview(&cli, args, host.as_ref(), &services)
         }
         Command::Sql(args) => crate::sql_command::sql(&cli, args),
         Command::Inspect(args) => crate::inspect_command::inspect(&cli, args),

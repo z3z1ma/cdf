@@ -375,7 +375,7 @@ fn discover_artifacts_for_cli_resource(
             cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                 resource,
                 &secret_provider,
-                file_runtime_dependencies(context)?,
+                file_runtime_dependencies(context, None)?,
                 options,
             )?,
         );

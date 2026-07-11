@@ -118,7 +118,7 @@ fn partition_check(
     let partitions = request.and_then(|request| match resource.plan() {
         CompiledResourcePlan::Files(_) => resource
             .to_file_resource(crate::project_run_resource::file_runtime_dependencies(
-                context,
+                context, None,
             )?)?
             .plan_partitions(&request),
         CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
@@ -214,7 +214,7 @@ fn discover_for_deep_validate(
             cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                 resource,
                 &secret_provider,
-                crate::project_run_resource::file_runtime_dependencies(context)?,
+                crate::project_run_resource::file_runtime_dependencies(context, None)?,
                 cdf_project::SchemaDiscoveryExecutionOptions::default(),
             )?
             .discovery,

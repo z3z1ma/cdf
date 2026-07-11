@@ -46,6 +46,7 @@ pub(crate) fn plan_or_explain(
     cli: &Cli,
     args: ScanArgs,
     command: &'static str,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load_for_command_with_locked_snapshots(
         command,
@@ -54,7 +55,12 @@ pub(crate) fn plan_or_explain(
         !args.no_pin,
     )?;
     let target = scan_target(&args)?;
-    let prepared = prepare_runtime_resource_for_cli(&context, &args.resource_id, args.no_pin)?;
+    let prepared = prepare_runtime_resource_for_cli(
+        &context,
+        &args.resource_id,
+        args.no_pin,
+        Some(execution),
+    )?;
     let resolved =
         resolve_scan_destination(&context, &target, args.destination_uri.as_deref(), command)?;
     let identifier_policy = resolved.destination.column_identifier_policy()?;
@@ -82,10 +88,12 @@ pub(crate) fn preview(
     cli: &Cli,
     args: ScanArgs,
     host: &cdf_engine::StandaloneExecutionHost,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
-    let prepared = prepare_runtime_resource_for_cli(&context, &args.resource_id, false)?;
+    let prepared =
+        prepare_runtime_resource_for_cli(&context, &args.resource_id, false, Some(execution))?;
     let target = scan_target(&args)?;
     let resolved = resolve_scan_destination(
         &context,
@@ -115,6 +123,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
     context: &ProjectContext,
     resource: &CompiledResource,
     no_pin: bool,
+    execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<PreparedDiscoveryForCli, CliError> {
     if let SchemaSource::Discovered { snapshot } = &resource.descriptor().schema_source
         && !no_pin
@@ -125,7 +134,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
                 &context.root,
                 resource,
                 &context.secret_provider(),
-                file_runtime_dependencies(context)?,
+                file_runtime_dependencies(context, execution)?,
             )?
         } else {
             cdf_project::prepare_pinned_resource_effective_schema_artifacts(
@@ -185,7 +194,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
         cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
             &probe_resource,
             &secret_provider,
-            file_runtime_dependencies(context)?,
+            file_runtime_dependencies(context, execution)?,
             options,
         )?
     } else if matches!(probe_resource.plan(), CompiledResourcePlan::Rest(_)) {
@@ -248,7 +257,7 @@ pub(crate) fn prepare_discover_resource_for_cli(
                 &context.root,
                 &prepared_resource,
                 &secret_provider,
-                file_runtime_dependencies(context)?,
+                file_runtime_dependencies(context, execution)?,
             )?
         } else {
             cdf_project::prepare_pinned_resource_effective_schema_artifacts(

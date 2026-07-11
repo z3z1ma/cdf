@@ -72,7 +72,8 @@ pub(crate) fn run(
         None
     };
     let explicit = resolved_run_args(args)?;
-    let prepared = prepare_runtime_resource_for_cli(&context, &explicit.resource_id, false)?;
+    let prepared =
+        prepare_runtime_resource_for_cli(&context, &explicit.resource_id, false, Some(services))?;
     let state_store_path = context.state_store_path()?;
     let resolved = resolve_selected_destination_with_services(
         &context,
