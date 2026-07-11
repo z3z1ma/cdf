@@ -15,6 +15,8 @@ use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
 use crate::{BenchResult, bench_error, catalog::FixtureSpec, matrix::LocalFormat};
 
+pub const LEGACY_FIXTURE_GENERATOR_VERSION: &str = "legacy-orders-generator-v1";
+
 pub fn write_all_local_fixture_formats(
     root: &Path,
     spec: &FixtureSpec,

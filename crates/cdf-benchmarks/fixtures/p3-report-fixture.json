@@ -19,8 +19,8 @@
   "observations": [
     {
       "comparability": {
-        "dataset_id": "legacy-medium",
-        "workload_id": "cdf-file-to-package-ndjson",
+        "dataset_id": "legacy_medium_throughput",
+        "workload_id": "legacy_medium_ndjson_package",
         "timed_region_version": 1,
         "cdf_revision": "fixture-revision",
         "dependency_tuple": "arrow59-datafusion7ff7278",

@@ -6,7 +6,7 @@ This document is generated from the machine report; edit its inputs, not this fi
 
 ## Evidence authority
 
-- Report: `sha256:24a9156bdd8e34d3a608e314f32b246e28501722015d7dc57d1c62dc3750c2d3`
+- Report: `sha256:ec1c1216b0c68e6167fc32b6e26804190608f52def93f9f69187eb68d1b345f1`
 - Host class: `host-class-a370b3a8008eeef0`
 - Host: aarch64 / 18 logical cores / macos fixture / Rust 1.96.1
 - Effective CPU: supported via fixture: 18 logical, quota unbounded, affinity 18
@@ -30,7 +30,7 @@ This document is generated from the machine report; edit its inputs, not this fi
 
 ## Bias and unavailable evidence
 
-- `cdf-file-to-package-ndjson` (warm): observed; bias: includes_evidence: CDF includes validation, package hashing, and finalization
+- `legacy_medium_ndjson_package` (warm): observed; bias: includes_evidence: CDF includes validation, package hashing, and finalization
 - `tlc_polars_reference` (uncontrolled): unavailable: Polars executable is not installed; bias: omits_cdf_evidence: Reference scan omits package, receipt, and checkpoint work
 
 ## Profiles

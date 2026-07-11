@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
@@ -28,3 +28,9 @@ Updated catalog fixture/hash tests and focused review against `.10x/specs/perfor
 ## Blockers
 
 None. This is a discovered closure gap in L1 and must close before L5 records the baseline.
+
+## Progress and notes
+
+- 2026-07-11: Activated. The existing recipe vocabulary cannot truthfully identify the deterministic legacy Arrow/file fixture generator, so catalog schema v2 will add a bounded benchmark-fixture recipe rather than overload the synthetic stream recipe.
+- 2026-07-11: Added catalog schema v2 `benchmark_fixture` authority tied directly to baseline fixture catalog v1 and generator version, with exact tiny/medium rows, batch sizes, and byte ceilings. Added separate startup end-to-end and prepared medium NDJSON/package workloads with exact timed-region and byte-counter semantics.
+- 2026-07-11: Aligned the report fixture's medium dataset/workload identities to the catalog. New canonical hashes are recorded in `.10x/evidence/2026-07-11-p3-l1-small-startup-catalog.md`; focused review `.10x/reviews/2026-07-11-p3-l1-small-startup-catalog-review.md` passes.

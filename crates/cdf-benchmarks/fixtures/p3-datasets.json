@@ -1,6 +1,52 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "datasets": [
+    {
+      "id": "legacy_tiny_startup",
+      "description": "Eight-row deterministic fixture that exposes process, compile, package, destination, and checkpoint startup overhead",
+      "schema_ref": "legacy-orders-v1",
+      "expected_rows": 8,
+      "expected_logical_bytes": null,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "cdf-benchmarks baseline fixture catalog",
+        "version": "baseline-fixtures-v1",
+        "license": "CDF project license",
+        "license_url": null
+      },
+      "recipe": {
+        "kind": "benchmark_fixture",
+        "fixture_catalog_version": 1,
+        "fixture_name": "tiny",
+        "generator_version": "legacy-orders-generator-v1",
+        "rows": 8,
+        "batch_rows": 8,
+        "max_generated_bytes": 1048576
+      }
+    },
+    {
+      "id": "legacy_medium_throughput",
+      "description": "2,048-row deterministic fixture for separating bounded fixture throughput from tiny startup overhead",
+      "schema_ref": "legacy-orders-v1",
+      "expected_rows": 2048,
+      "expected_logical_bytes": null,
+      "expected_physical_bytes": null,
+      "provenance": {
+        "source": "cdf-benchmarks baseline fixture catalog",
+        "version": "baseline-fixtures-v1",
+        "license": "CDF project license",
+        "license_url": null
+      },
+      "recipe": {
+        "kind": "benchmark_fixture",
+        "fixture_catalog_version": 1,
+        "fixture_name": "medium",
+        "generator_version": "legacy-orders-generator-v1",
+        "rows": 2048,
+        "batch_rows": 512,
+        "max_generated_bytes": 8388608
+      }
+    },
     {
       "id": "nyc_tlc_yellow_2024",
       "description": "Full-year 2024 NYC TLC yellow taxi Parquet files",
@@ -186,6 +232,30 @@
     }
   ],
   "workloads": [
+    {
+      "id": "legacy_tiny_startup_e2e",
+      "dataset_id": "legacy_tiny_startup",
+      "operation": "Isolated CDF process startup through DuckDB receipt and committed checkpoint",
+      "timed_region": {
+        "version": 1,
+        "includes": ["child process startup", "fixture generation", "project compile", "source decode", "validation", "package", "DuckDB destination", "receipt", "checkpoint"],
+        "excludes": ["macro request serialization", "report serialization"]
+      },
+      "logical_byte_counter": {"name": "decoded_arrow_bytes", "method": "sum engine output logical bytes"},
+      "physical_byte_counter": {"name": "source_and_package_bytes", "method": "fixture file bytes plus package identity file bytes"}
+    },
+    {
+      "id": "legacy_medium_ndjson_package",
+      "dataset_id": "legacy_medium_throughput",
+      "operation": "Prepared medium NDJSON source read through verified package finalization",
+      "timed_region": {
+        "version": 1,
+        "includes": ["source reads", "NDJSON decode", "validation", "package encode", "hash", "finalize"],
+        "excludes": ["child process startup", "fixture generation", "destination commit", "report serialization"]
+      },
+      "logical_byte_counter": {"name": "decoded_arrow_bytes", "method": "sum engine output logical bytes"},
+      "physical_byte_counter": {"name": "source_bytes", "method": "prepared NDJSON file metadata length"}
+    },
     {
       "id": "tlc_parquet_to_package",
       "dataset_id": "nyc_tlc_yellow_2024",

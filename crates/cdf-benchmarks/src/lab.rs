@@ -5,7 +5,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{BenchResult, bench_error};
 
-pub const DATASET_CATALOG_SCHEMA_VERSION: u16 = 1;
+pub const DATASET_CATALOG_SCHEMA_VERSION: u16 = 2;
 pub const BENCHMARK_REPORT_SCHEMA_VERSION: u16 = 1;
 pub const MAX_GENERATOR_CHUNK_BYTES: u64 = 64 * 1024 * 1024;
 
@@ -39,6 +39,14 @@ pub struct DatasetProvenance {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum DatasetRecipe {
+    BenchmarkFixture {
+        fixture_catalog_version: u16,
+        fixture_name: String,
+        generator_version: String,
+        rows: u64,
+        batch_rows: u64,
+        max_generated_bytes: u64,
+    },
     RemoteFiles {
         base_url: String,
         object_template: String,
@@ -574,6 +582,39 @@ pub fn validate_report(report: &BenchmarkReport) -> BenchResult<()> {
 
 fn validate_recipe(dataset_id: &str, recipe: &DatasetRecipe) -> BenchResult<()> {
     match recipe {
+        DatasetRecipe::BenchmarkFixture {
+            fixture_catalog_version,
+            fixture_name,
+            generator_version,
+            rows,
+            batch_rows,
+            max_generated_bytes,
+        } => {
+            require_text(fixture_name, "benchmark fixture name")?;
+            require_text(generator_version, "benchmark fixture generator version")?;
+            if *fixture_catalog_version == 0
+                || *rows == 0
+                || *batch_rows == 0
+                || batch_rows > rows
+                || *max_generated_bytes == 0
+                || *max_generated_bytes > MAX_GENERATOR_CHUNK_BYTES
+            {
+                return Err(bench_error(format!(
+                    "dataset `{dataset_id}` benchmark fixture requires positive bounded catalog rows batches and bytes"
+                )));
+            }
+            let catalog = crate::fixture_catalog()?;
+            let fixture = crate::fixture_spec(fixture_name)?;
+            if *fixture_catalog_version != catalog.schema_version
+                || *generator_version != crate::fixtures::LEGACY_FIXTURE_GENERATOR_VERSION
+                || *rows != fixture.rows as u64
+                || *batch_rows != fixture.batch_size as u64
+            {
+                return Err(bench_error(format!(
+                    "dataset `{dataset_id}` benchmark fixture recipe does not match its generator authority"
+                )));
+            }
+        }
         DatasetRecipe::RemoteFiles {
             base_url,
             object_template,

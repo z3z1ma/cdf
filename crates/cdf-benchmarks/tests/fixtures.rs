@@ -19,9 +19,19 @@ fn generated_local_fixtures_are_deterministic_from_committed_specs() {
         first_files.keys().collect::<Vec<_>>(),
         second_files.keys().collect::<Vec<_>>()
     );
+    assert!(
+        first_files
+            .values()
+            .all(|bytes| bytes.len() <= 8 * 1024 * 1024)
+    );
     for (name, first_bytes) in first_files {
         assert_eq!(first_bytes, second_files[&name], "fixture {name} drifted");
     }
+
+    let tiny = fixture_spec("tiny").unwrap();
+    let tiny_root = tempfile::tempdir().unwrap();
+    let tiny_files = write_all_local_fixture_formats(tiny_root.path(), &tiny).unwrap();
+    assert!(tiny_files.values().all(|bytes| bytes.len() <= 1024 * 1024));
 }
 
 #[test]
@@ -106,6 +116,8 @@ fn coverage_matrix_records_executable_and_deferred_cells() {
 fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
     let catalog = dataset_catalog().unwrap();
     for required in [
+        "legacy_tiny_startup",
+        "legacy_medium_throughput",
         "nyc_tlc_yellow_2024",
         "tpch_sf10",
         "tpch_sf100",
@@ -138,6 +150,27 @@ fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
             }
         )
     }));
+    assert!(catalog.datasets.iter().any(|dataset| {
+        matches!(
+            dataset.recipe,
+            DatasetRecipe::BenchmarkFixture {
+                fixture_catalog_version: 1,
+                ref fixture_name,
+                rows: 8,
+                batch_rows: 8,
+                max_generated_bytes: 1_048_576,
+                ..
+            } if fixture_name == "tiny"
+        )
+    }));
+    for required in ["legacy_tiny_startup_e2e", "legacy_medium_ndjson_package"] {
+        assert!(
+            catalog
+                .workloads
+                .iter()
+                .any(|workload| workload.id == required)
+        );
+    }
     assert!(catalog.workloads.iter().all(|workload| {
         !workload.timed_region.includes.is_empty()
             && !workload.logical_byte_counter.method.is_empty()
@@ -152,7 +185,7 @@ fn p3_dataset_catalog_is_regeneration_grade_and_bounded() {
     );
     assert_eq!(
         canonical_sha256(&catalog).unwrap(),
-        "sha256:dae7f48ee019980f9d8dce30755d1ab8a25e36b807e00757073e78936500ae73"
+        "sha256:a795621b04fbbaf27706554c844cd2766abe6e8777f0eb29a7caa631ce2ffa98"
     );
 }
 
@@ -185,7 +218,7 @@ fn p3_report_fixture_is_deterministic_sanitized_and_explicit() {
     );
     assert_eq!(
         canonical_sha256(&report).unwrap(),
-        "sha256:24a9156bdd8e34d3a608e314f32b246e28501722015d7dc57d1c62dc3750c2d3"
+        "sha256:ec1c1216b0c68e6167fc32b6e26804190608f52def93f9f69187eb68d1b345f1"
     );
 }
 
