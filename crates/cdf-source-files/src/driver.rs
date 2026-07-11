@@ -248,6 +248,7 @@ fn execution_capabilities() -> SourceExecutionCapabilities {
         idempotent_reads: true,
         reopenable: true,
         resumable: true,
+        speculative_safe: true,
         retry_granularity: SourceRetryGranularity::Partition,
         retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
         attestation: SourceAttestationStrength::ImmutableContent,

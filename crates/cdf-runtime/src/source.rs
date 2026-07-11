@@ -97,6 +97,7 @@ pub struct SourceExecutionCapabilities {
     pub idempotent_reads: bool,
     pub reopenable: bool,
     pub resumable: bool,
+    pub speculative_safe: bool,
     pub retry_granularity: SourceRetryGranularity,
     pub retryable_errors: Vec<ErrorKind>,
     pub attestation: SourceAttestationStrength,
@@ -140,6 +141,20 @@ impl SourceExecutionCapabilities {
         {
             return Err(CdfError::contract(
                 "source retry requires idempotent and reopenable reads",
+            ));
+        }
+        if self.speculative_safe
+            && (!self.idempotent_reads
+                || !self.reopenable
+                || self.attestation == SourceAttestationStrength::None)
+        {
+            return Err(CdfError::contract(
+                "speculative source execution requires idempotent reopenable reads with attestation",
+            ));
+        }
+        if self.resumable && !self.reopenable {
+            return Err(CdfError::contract(
+                "resumable source execution requires reopenable reads",
             ));
         }
         if self.rate_limit_per_second == Some(0) {

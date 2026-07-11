@@ -35,3 +35,9 @@ L5, A2, and A4 are complete. The scheduler-facing subset of SX1 is evidenced and
 - `.10x/decisions/canonical-frontier-parallel-scheduling.md`
 - `.10x/research/2026-07-11-deterministic-parallel-scheduler-audit.md`
 - `.10x/specs/deterministic-parallel-scheduler.md`
+
+## Progress and notes
+
+- 2026-07-11: Added serializable canonical partition/unit ordinals and `CanonicalPartitionSchedule::compile`, which validates source/scan authority, rejects duplicate partition ids, derives per-partition immutable identity hashes from driver/physical/partition authority, and records working-set/executor/retry/speculation/order semantics.
+- 2026-07-11: Added container CPU authority parsing and auto-jobs resolution joining partition count, user ceiling, source maximum/useful concurrency, CPU/native slot cost, managed memory, transport connections, destination writers, blocking lane, and checkpoint scope. A single working set larger than managed memory fails cleanly with remediation.
+- 2026-07-11: Added deterministic fair hierarchical admission for jobs, memory, CPU, I/O, connections, shared quota authority, and exclusive scope leases. Round-robin resource queues remain work-conserving around blocked heads; typed permits prevent double release. Production fan-out remains explicitly outside C1.

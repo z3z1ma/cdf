@@ -1,0 +1,650 @@
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
+
+use cdf_kernel::{CdfError, PartitionPlan, Result, ScanPlan};
+use serde::{Deserialize, Serialize};
+
+use crate::{
+    CompiledSourcePlan, SourceExecutionCapabilities, SourceExecutorClass, SourceRetryGranularity,
+    artifact_hash,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CanonicalPartitionOrdinal(u32);
+
+impl CanonicalPartitionOrdinal {
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct CanonicalUnitOrdinal(u32);
+
+impl CanonicalUnitOrdinal {
+    pub fn new(value: u32) -> Self {
+        Self(value)
+    }
+
+    pub fn get(self) -> u32 {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduledPartition {
+    pub ordinal: CanonicalPartitionOrdinal,
+    pub partition: PartitionPlan,
+    pub immutable_identity_hash: String,
+    pub minimum_working_set_bytes: u64,
+    pub maximum_working_set_bytes: u64,
+    pub executor_class: SourceExecutorClass,
+    pub retry_granularity: SourceRetryGranularity,
+    pub independently_retryable: bool,
+    pub speculative_safe: bool,
+    pub canonical_order: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CanonicalPartitionSchedule {
+    pub plan_id: String,
+    pub partitions: Vec<ScheduledPartition>,
+}
+
+impl CanonicalPartitionSchedule {
+    pub fn compile(source: &CompiledSourcePlan, scan: &ScanPlan) -> Result<Self> {
+        source.validate()?;
+        if source.descriptor.resource_id != scan.request.resource_id {
+            return Err(CdfError::contract(
+                "source plan and scan plan resource ids do not match",
+            ));
+        }
+        let mut partition_ids = BTreeSet::new();
+        let minimum_working_set_bytes = source
+            .execution_capabilities
+            .minimum_poll_bytes
+            .checked_add(source.execution_capabilities.minimum_decode_bytes)
+            .ok_or_else(|| CdfError::contract("source minimum working set overflowed u64"))?;
+        let maximum_working_set_bytes = source
+            .execution_capabilities
+            .maximum_poll_bytes
+            .checked_add(source.execution_capabilities.maximum_decode_bytes)
+            .ok_or_else(|| CdfError::contract("source maximum working set overflowed u64"))?;
+        let partitions = scan
+            .partitions
+            .iter()
+            .enumerate()
+            .map(|(ordinal, partition)| {
+                if !partition_ids.insert(partition.partition_id.as_str()) {
+                    return Err(CdfError::contract(format!(
+                        "scan plan contains duplicate partition id `{}`",
+                        partition.partition_id
+                    )));
+                }
+                let ordinal = u32::try_from(ordinal).map_err(|_| {
+                    CdfError::contract("scan plan partition count exceeds u32 ordinals")
+                })?;
+                let immutable_identity_hash = artifact_hash(&serde_json::json!({
+                    "driver": source.driver,
+                    "physical_plan_hash": source.physical_plan_hash,
+                    "partition": partition,
+                }))?;
+                Ok(ScheduledPartition {
+                    ordinal: CanonicalPartitionOrdinal::new(ordinal),
+                    partition: partition.clone(),
+                    immutable_identity_hash,
+                    minimum_working_set_bytes,
+                    maximum_working_set_bytes,
+                    executor_class: source.execution_capabilities.executor_class,
+                    retry_granularity: source.execution_capabilities.retry_granularity,
+                    independently_retryable: source.execution_capabilities.idempotent_reads
+                        && source.execution_capabilities.reopenable
+                        && source.execution_capabilities.retry_granularity
+                            != SourceRetryGranularity::None,
+                    speculative_safe: source.execution_capabilities.speculative_safe,
+                    canonical_order: source.execution_capabilities.canonical_order,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            plan_id: scan.plan_id.to_string(),
+            partitions,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdmissionCeilings {
+    pub configured_jobs: Option<u16>,
+    pub container_cpu_slots: u16,
+    pub managed_memory_bytes: u64,
+    pub transport_connections: Option<u16>,
+    pub destination_writers: Option<u16>,
+    pub lane_concurrency: Option<u16>,
+    pub scope_concurrency: Option<u16>,
+}
+
+impl AdmissionCeilings {
+    pub fn validate(&self) -> Result<()> {
+        if self.container_cpu_slots == 0
+            || self.managed_memory_bytes == 0
+            || self.configured_jobs == Some(0)
+            || self.transport_connections == Some(0)
+            || self.destination_writers == Some(0)
+            || self.lane_concurrency == Some(0)
+            || self.scope_concurrency == Some(0)
+        {
+            return Err(CdfError::contract(
+                "scheduler ceilings must be nonzero when declared",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveJobsResolution {
+    pub jobs: u16,
+    pub memory_jobs: u16,
+    pub cpu_jobs: u16,
+    pub limiting_factors: Vec<String>,
+}
+
+pub fn effective_container_cpu_slots(
+    available_parallelism: u16,
+    cgroup_cpu_max: Option<&str>,
+) -> Result<u16> {
+    if available_parallelism == 0 {
+        return Err(CdfError::contract("available parallelism must be nonzero"));
+    }
+    let Some(cpu_max) = cgroup_cpu_max
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(available_parallelism);
+    };
+    let mut parts = cpu_max.split_whitespace();
+    let quota = parts
+        .next()
+        .ok_or_else(|| CdfError::contract("cgroup cpu.max omitted quota"))?;
+    let period = parts
+        .next()
+        .ok_or_else(|| CdfError::contract("cgroup cpu.max omitted period"))?;
+    if parts.next().is_some() {
+        return Err(CdfError::contract(
+            "cgroup cpu.max must contain quota and period",
+        ));
+    }
+    if quota == "max" {
+        return Ok(available_parallelism);
+    }
+    let quota = quota
+        .parse::<u64>()
+        .map_err(|error| CdfError::contract(format!("invalid cgroup CPU quota: {error}")))?;
+    let period = period
+        .parse::<u64>()
+        .map_err(|error| CdfError::contract(format!("invalid cgroup CPU period: {error}")))?;
+    if quota == 0 || period == 0 {
+        return Err(CdfError::contract(
+            "cgroup CPU quota and period must be nonzero",
+        ));
+    }
+    let quota_slots = quota.div_ceil(period).min(u64::from(u16::MAX)) as u16;
+    Ok(available_parallelism.min(quota_slots.max(1)))
+}
+
+pub fn resolve_effective_jobs(
+    partition_count: usize,
+    source: &SourceExecutionCapabilities,
+    ceilings: &AdmissionCeilings,
+) -> Result<EffectiveJobsResolution> {
+    source.validate()?;
+    ceilings.validate()?;
+    if partition_count == 0 {
+        return Ok(EffectiveJobsResolution {
+            jobs: 0,
+            memory_jobs: 0,
+            cpu_jobs: 0,
+            limiting_factors: vec!["no_partitions".to_owned()],
+        });
+    }
+    let working_set = source
+        .minimum_poll_bytes
+        .checked_add(source.minimum_decode_bytes)
+        .ok_or_else(|| CdfError::contract("source minimum working set overflowed u64"))?;
+    let memory_jobs =
+        u16::try_from((ceilings.managed_memory_bytes / working_set).min(u64::from(u16::MAX)))
+            .unwrap_or(u16::MAX);
+    if memory_jobs == 0 {
+        return Err(CdfError::data(format!(
+            "one source partition requires {working_set} bytes but the managed scheduler budget is {} bytes; raise the memory budget or reduce the source working set",
+            ceilings.managed_memory_bytes
+        )));
+    }
+    let cpu_cost = source
+        .blocking_lane
+        .as_ref()
+        .map(|lane| {
+            lane.cpu_slot_cost
+                .saturating_mul(lane.native_internal_parallelism)
+        })
+        .unwrap_or(1);
+    let cpu_jobs = ceilings.container_cpu_slots / cpu_cost;
+    if cpu_jobs == 0 {
+        return Err(CdfError::data(
+            "one source partition requires more CPU slots than the effective container provides",
+        ));
+    }
+    let partition_jobs = u16::try_from(partition_count).unwrap_or(u16::MAX);
+    let candidates = [
+        ("partition_count", partition_jobs),
+        (
+            "configured_jobs",
+            ceilings.configured_jobs.unwrap_or(u16::MAX),
+        ),
+        ("source_maximum", source.maximum_concurrency),
+        ("source_useful", source.useful_concurrency),
+        ("container_cpu", cpu_jobs),
+        ("managed_memory", memory_jobs),
+        (
+            "transport_connections",
+            ceilings.transport_connections.unwrap_or(u16::MAX),
+        ),
+        (
+            "destination_writers",
+            ceilings.destination_writers.unwrap_or(u16::MAX),
+        ),
+        (
+            "blocking_lane",
+            ceilings.lane_concurrency.unwrap_or(u16::MAX),
+        ),
+        (
+            "checkpoint_scope",
+            ceilings.scope_concurrency.unwrap_or(u16::MAX),
+        ),
+    ];
+    let jobs = candidates
+        .iter()
+        .map(|(_, value)| *value)
+        .min()
+        .unwrap_or(1);
+    let limiting_factors = candidates
+        .iter()
+        .filter(|(_, value)| *value == jobs)
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
+    Ok(EffectiveJobsResolution {
+        jobs,
+        memory_jobs,
+        cpu_jobs,
+        limiting_factors,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmissionRequest {
+    pub resource: String,
+    pub ordinal: CanonicalPartitionOrdinal,
+    pub memory_bytes: u64,
+    pub cpu_slots: u16,
+    pub io_permits: u16,
+    pub connection_permits: u16,
+    pub quota_authority: Option<String>,
+    pub scope_lease: Option<String>,
+}
+
+impl AdmissionRequest {
+    pub fn validate(&self) -> Result<()> {
+        if self.resource.is_empty()
+            || self.memory_bytes == 0
+            || self.cpu_slots == 0
+            || self.io_permits == 0
+            || self.connection_permits == 0
+        {
+            return Err(CdfError::contract(
+                "admission requests require resource identity and nonzero resource costs",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmissionLimits {
+    pub jobs: u16,
+    pub memory_bytes: u64,
+    pub cpu_slots: u16,
+    pub io_permits: u16,
+    pub connection_permits: u16,
+    pub quota_limits: BTreeMap<String, u16>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AdmissionPermit {
+    id: u64,
+    pub request: AdmissionRequest,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AdmissionSnapshot {
+    pub queued: usize,
+    pub active: usize,
+    pub memory_bytes: u64,
+    pub cpu_slots: u16,
+    pub io_permits: u16,
+    pub connection_permits: u16,
+}
+
+pub struct FairAdmissionController {
+    limits: AdmissionLimits,
+    queues: BTreeMap<String, VecDeque<AdmissionRequest>>,
+    rotation: VecDeque<String>,
+    active: BTreeMap<u64, AdmissionRequest>,
+    active_scopes: BTreeSet<String>,
+    active_quotas: BTreeMap<String, u16>,
+    snapshot: AdmissionSnapshot,
+    next_id: u64,
+}
+
+impl FairAdmissionController {
+    pub fn new(limits: AdmissionLimits) -> Result<Self> {
+        if limits.jobs == 0
+            || limits.memory_bytes == 0
+            || limits.cpu_slots == 0
+            || limits.io_permits == 0
+            || limits.connection_permits == 0
+            || limits.quota_limits.values().any(|value| *value == 0)
+        {
+            return Err(CdfError::contract("admission limits must be nonzero"));
+        }
+        Ok(Self {
+            limits,
+            queues: BTreeMap::new(),
+            rotation: VecDeque::new(),
+            active: BTreeMap::new(),
+            active_scopes: BTreeSet::new(),
+            active_quotas: BTreeMap::new(),
+            snapshot: AdmissionSnapshot::default(),
+            next_id: 1,
+        })
+    }
+
+    pub fn enqueue(&mut self, request: AdmissionRequest) -> Result<()> {
+        request.validate()?;
+        if request.memory_bytes > self.limits.memory_bytes
+            || request.cpu_slots > self.limits.cpu_slots
+            || request.io_permits > self.limits.io_permits
+            || request.connection_permits > self.limits.connection_permits
+        {
+            return Err(CdfError::data(format!(
+                "partition {} for resource `{}` exceeds a scheduler capacity ceiling",
+                request.ordinal.get(),
+                request.resource
+            )));
+        }
+        let resource = request.resource.clone();
+        let queue = self.queues.entry(resource.clone()).or_default();
+        if queue.is_empty() && !self.rotation.contains(&resource) {
+            self.rotation.push_back(resource);
+        }
+        queue.push_back(request);
+        self.snapshot.queued += 1;
+        Ok(())
+    }
+
+    pub fn try_admit_next(&mut self) -> Option<AdmissionPermit> {
+        if self.snapshot.active >= usize::from(self.limits.jobs) {
+            return None;
+        }
+        let candidates = self.rotation.len();
+        for _ in 0..candidates {
+            let resource = self.rotation.pop_front()?;
+            let eligible = self
+                .queues
+                .get(&resource)
+                .and_then(VecDeque::front)
+                .is_some_and(|request| self.eligible(request));
+            if !eligible {
+                self.rotation.push_back(resource);
+                continue;
+            }
+            let request = self.queues.get_mut(&resource)?.pop_front()?;
+            if self
+                .queues
+                .get(&resource)
+                .is_some_and(|queue| queue.is_empty())
+            {
+                self.queues.remove(&resource);
+            } else {
+                self.rotation.push_back(resource);
+            }
+            self.snapshot.queued -= 1;
+            self.snapshot.active += 1;
+            self.snapshot.memory_bytes += request.memory_bytes;
+            self.snapshot.cpu_slots += request.cpu_slots;
+            self.snapshot.io_permits += request.io_permits;
+            self.snapshot.connection_permits += request.connection_permits;
+            if let Some(scope) = &request.scope_lease {
+                self.active_scopes.insert(scope.clone());
+            }
+            if let Some(quota) = &request.quota_authority {
+                *self.active_quotas.entry(quota.clone()).or_default() += 1;
+            }
+            let id = self.next_id;
+            self.next_id = self.next_id.saturating_add(1);
+            self.active.insert(id, request.clone());
+            return Some(AdmissionPermit { id, request });
+        }
+        None
+    }
+
+    pub fn release(&mut self, permit: AdmissionPermit) -> Result<()> {
+        let request = self.active.remove(&permit.id).ok_or_else(|| {
+            CdfError::internal("scheduler admission permit was released more than once")
+        })?;
+        if request != permit.request {
+            return Err(CdfError::internal(
+                "scheduler admission permit payload did not match active authority",
+            ));
+        }
+        self.snapshot.active -= 1;
+        self.snapshot.memory_bytes -= request.memory_bytes;
+        self.snapshot.cpu_slots -= request.cpu_slots;
+        self.snapshot.io_permits -= request.io_permits;
+        self.snapshot.connection_permits -= request.connection_permits;
+        if let Some(scope) = request.scope_lease {
+            self.active_scopes.remove(&scope);
+        }
+        if let Some(quota) = request.quota_authority {
+            let count = self.active_quotas.get_mut(&quota).ok_or_else(|| {
+                CdfError::internal("scheduler quota usage was missing during release")
+            })?;
+            *count -= 1;
+            if *count == 0 {
+                self.active_quotas.remove(&quota);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn snapshot(&self) -> AdmissionSnapshot {
+        self.snapshot.clone()
+    }
+
+    fn eligible(&self, request: &AdmissionRequest) -> bool {
+        self.snapshot.active < usize::from(self.limits.jobs)
+            && self
+                .snapshot
+                .memory_bytes
+                .saturating_add(request.memory_bytes)
+                <= self.limits.memory_bytes
+            && self.snapshot.cpu_slots.saturating_add(request.cpu_slots) <= self.limits.cpu_slots
+            && self.snapshot.io_permits.saturating_add(request.io_permits) <= self.limits.io_permits
+            && self
+                .snapshot
+                .connection_permits
+                .saturating_add(request.connection_permits)
+                <= self.limits.connection_permits
+            && request
+                .scope_lease
+                .as_ref()
+                .is_none_or(|scope| !self.active_scopes.contains(scope))
+            && request.quota_authority.as_ref().is_none_or(|quota| {
+                self.active_quotas.get(quota).copied().unwrap_or(0)
+                    < self
+                        .limits
+                        .quota_limits
+                        .get(quota)
+                        .copied()
+                        .unwrap_or(u16::MAX)
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request(resource: &str, ordinal: u32, scope: Option<&str>) -> AdmissionRequest {
+        AdmissionRequest {
+            resource: resource.to_owned(),
+            ordinal: CanonicalPartitionOrdinal::new(ordinal),
+            memory_bytes: 10,
+            cpu_slots: 1,
+            io_permits: 1,
+            connection_permits: 1,
+            quota_authority: Some("shared-origin".to_owned()),
+            scope_lease: scope.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn effective_jobs_joins_every_ceiling_and_fails_small_memory() {
+        let source = SourceExecutionCapabilities {
+            minimum_poll_bytes: 10,
+            maximum_poll_bytes: 100,
+            minimum_decode_bytes: 10,
+            maximum_decode_bytes: 100,
+            maximum_concurrency: 12,
+            useful_concurrency: 8,
+            executor_class: SourceExecutorClass::Cpu,
+            blocking_lane: None,
+            pausable: true,
+            spillable: true,
+            idempotent_reads: true,
+            reopenable: true,
+            resumable: true,
+            speculative_safe: true,
+            retry_granularity: SourceRetryGranularity::Partition,
+            retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
+            attestation: crate::SourceAttestationStrength::ImmutableContent,
+            rate_limit_per_second: None,
+            quota_authority: None,
+            canonical_order: true,
+            bounded: true,
+            telemetry_version: "v1".to_owned(),
+        };
+        let ceilings = AdmissionCeilings {
+            configured_jobs: Some(7),
+            container_cpu_slots: 16,
+            managed_memory_bytes: 120,
+            transport_connections: Some(5),
+            destination_writers: Some(4),
+            lane_concurrency: None,
+            scope_concurrency: Some(3),
+        };
+        let resolution = resolve_effective_jobs(100, &source, &ceilings).unwrap();
+        assert_eq!(resolution.jobs, 3);
+        assert_eq!(resolution.limiting_factors, vec!["checkpoint_scope"]);
+
+        let mut too_small = ceilings;
+        too_small.managed_memory_bytes = 19;
+        assert!(resolve_effective_jobs(1, &source, &too_small).is_err());
+    }
+
+    #[test]
+    fn container_cpu_authority_honors_fractional_and_unlimited_cgroups() {
+        assert_eq!(effective_container_cpu_slots(16, None).unwrap(), 16);
+        assert_eq!(
+            effective_container_cpu_slots(16, Some("max 100000")).unwrap(),
+            16
+        );
+        assert_eq!(
+            effective_container_cpu_slots(16, Some("150000 100000")).unwrap(),
+            2
+        );
+        assert_eq!(
+            effective_container_cpu_slots(16, Some("50000 100000")).unwrap(),
+            1
+        );
+        assert!(effective_container_cpu_slots(16, Some("0 100000")).is_err());
+    }
+
+    #[test]
+    fn fair_admission_enforces_all_resources_quotas_and_scope_leases() {
+        let mut controller = FairAdmissionController::new(AdmissionLimits {
+            jobs: 3,
+            memory_bytes: 30,
+            cpu_slots: 3,
+            io_permits: 3,
+            connection_permits: 3,
+            quota_limits: BTreeMap::from([("shared-origin".to_owned(), 2)]),
+        })
+        .unwrap();
+        controller
+            .enqueue(request("large", 0, Some("scope-a")))
+            .unwrap();
+        controller
+            .enqueue(request("large", 1, Some("scope-b")))
+            .unwrap();
+        controller
+            .enqueue(request("small", 0, Some("scope-c")))
+            .unwrap();
+        controller
+            .enqueue(request("small", 1, Some("scope-a")))
+            .unwrap();
+
+        let first = controller.try_admit_next().unwrap();
+        let second = controller.try_admit_next().unwrap();
+        assert_eq!(first.request.resource, "large");
+        assert_eq!(second.request.resource, "small");
+        assert_ne!(first.request.scope_lease, second.request.scope_lease);
+        assert!(controller.try_admit_next().is_none());
+        let snapshot = controller.snapshot();
+        assert_eq!(snapshot.active, 2);
+        assert_eq!(snapshot.memory_bytes, 20);
+
+        controller.release(first).unwrap();
+        let third = controller.try_admit_next().unwrap();
+        assert_eq!(third.request.resource, "large");
+        controller.release(second).unwrap();
+        controller.release(third).unwrap();
+        assert_eq!(controller.snapshot().active, 0);
+    }
+
+    #[test]
+    fn blocked_head_does_not_starve_an_independent_resource() {
+        let mut controller = FairAdmissionController::new(AdmissionLimits {
+            jobs: 2,
+            memory_bytes: 20,
+            cpu_slots: 2,
+            io_permits: 2,
+            connection_permits: 2,
+            quota_limits: BTreeMap::new(),
+        })
+        .unwrap();
+        controller.enqueue(request("a", 0, Some("same"))).unwrap();
+        let active = controller.try_admit_next().unwrap();
+        controller.enqueue(request("a", 1, Some("same"))).unwrap();
+        controller.enqueue(request("b", 0, Some("other"))).unwrap();
+        let independent = controller.try_admit_next().unwrap();
+        assert_eq!(independent.request.resource, "b");
+        controller.release(active).unwrap();
+        controller.release(independent).unwrap();
+    }
+}

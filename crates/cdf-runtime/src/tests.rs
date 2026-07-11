@@ -603,6 +603,7 @@ impl SourceDriver for MockSourceDriver {
                 idempotent_reads: true,
                 reopenable: true,
                 resumable: false,
+                speculative_safe: false,
                 retry_granularity: SourceRetryGranularity::Partition,
                 retryable_errors: vec![ErrorKind::Transient],
                 attestation: SourceAttestationStrength::ImmutableContent,
