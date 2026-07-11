@@ -1,7 +1,4 @@
-use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, FileRuntimeDependencies, FileTransportFacade,
-    RestRuntimeDependencies, SqlRuntimeDependencies,
-};
+use cdf_declarative::{CompiledResource, FileRuntimeDependencies, FileTransportFacade};
 use cdf_kernel::QueryableResource;
 use cdf_project::{ProjectRunSource, ResourceSourceKind, TrustPreset};
 use std::sync::Arc;
@@ -106,7 +103,9 @@ pub(crate) fn build_project_resource_for_inspection(
 ) -> Result<CliProjectRunSource, CliError> {
     match build_python_project_run_resource(context, resource_id, None)? {
         Some(resource) => Ok(resource),
-        None => build_project_run_resource(context, context.resource(resource_id)?, None),
+        None => Ok(CliProjectRunSource::new(
+            context.resource(resource_id)?.clone(),
+        )),
     }
 }
 
@@ -155,34 +154,22 @@ pub(crate) fn build_project_run_resource(
     resource: &CompiledResource,
     execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<CliProjectRunSource, CliError> {
-    if let (Some(plan), Some(execution)) = (resource.source_plan(), execution) {
-        let registry = crate::source_registry::builtin_source_registry()?;
-        let secrets = context.secret_provider();
-        let resolution =
-            cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution);
-        return Ok(CliProjectRunSource::from_shared(
-            registry.resolve(plan, &resolution)?,
-        ));
-    }
-    match resource.plan() {
-        CompiledResourcePlan::Files(_) => Ok(CliProjectRunSource::new(
-            resource.to_file_resource(file_runtime_dependencies(context, execution)?)?,
-        )),
-        CompiledResourcePlan::Rest(_) => {
-            let dependencies = RestRuntimeDependencies::new(ReqwestHttpTransport::new()?)
-                .with_secret_provider(context.secret_provider());
-            Ok(CliProjectRunSource::new(
-                resource.to_rest_resource(dependencies)?,
-            ))
-        }
-        CompiledResourcePlan::Sql(_) => {
-            let dependencies =
-                SqlRuntimeDependencies::new().with_secret_provider(context.secret_provider());
-            Ok(CliProjectRunSource::new(
-                resource.to_sql_resource(dependencies)?,
-            ))
-        }
-    }
+    let execution = execution.ok_or_else(|| {
+        cdf_kernel::CdfError::internal("runtime source resolution requires execution services")
+    })?;
+    let plan = resource.source_plan().ok_or_else(|| {
+        cdf_kernel::CdfError::contract(format!(
+            "resource `{}` has no executable source driver plan",
+            resource.descriptor().resource_id
+        ))
+    })?;
+    let registry = crate::source_registry::builtin_source_registry()?;
+    let secrets = context.secret_provider();
+    let resolution =
+        cdf_runtime::SourceResolutionContext::new(&context.root, Arc::new(secrets), execution);
+    Ok(CliProjectRunSource::from_shared(
+        registry.resolve(plan, &resolution)?,
+    ))
 }
 
 pub(crate) fn file_runtime_dependencies(
