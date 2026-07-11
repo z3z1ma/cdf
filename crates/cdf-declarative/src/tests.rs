@@ -2262,13 +2262,14 @@ trust = "governed"
     assert_eq!(partitions[0].metadata["format_declared"], "false");
     assert_eq!(partitions[0].metadata["format_magic"], "parquet");
     let ranges = transport.ranges();
-    assert_eq!(ranges.len(), 2);
-    assert_eq!(ranges[0], ByteRange::new(0, 6).unwrap());
+    assert_eq!(ranges.len(), 3);
+    assert_eq!(ranges[0], ByteRange::new(0, 4).unwrap());
+    assert_eq!(ranges[1], ByteRange::new(0, 6).unwrap());
     assert_eq!(
-        ranges[1],
+        ranges[2],
         ByteRange::new(bytes.len() as u64 - 6, 6).unwrap()
     );
-    assert_eq!(ranges.iter().map(|range| range.length).sum::<u64>(), 12);
+    assert_eq!(ranges.iter().map(|range| range.length).sum::<u64>(), 16);
 }
 
 #[test]

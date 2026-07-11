@@ -34,6 +34,7 @@ use cdf_kernel::{
     TypeMappingFidelity, WriteDisposition, source_name,
 };
 use cdf_state_sqlite::InMemoryScopeLeaseStore;
+use flate2::{Compression, write::GzEncoder};
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
 const BOOK_PROJECT: &str = r#"
@@ -1436,6 +1437,79 @@ fn object_store_multi_file_parquet_discovery_pins_one_reconciled_snapshot() {
 }
 
 #[test]
+fn object_store_gzip_ndjson_discovers_pins_and_executes_through_one_transport() {
+    let temp = tempfile::tempdir().unwrap();
+    write_object_store_ndjson_discover_project(temp.path());
+    let mut source = Vec::new();
+    for id in 0..10_000_u64 {
+        source.extend_from_slice(format!("{{\"id\":{id},\"kind\":\"k{id}\"}}\n").as_bytes());
+    }
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    std::io::Write::write_all(&mut encoder, &source).unwrap();
+    let encoded = encoder.finish().unwrap();
+    let store = Arc::new(InMemory::new());
+    futures_executor::block_on(store.put(
+        &ObjectPath::from("prod/2026/07/events.ndjson.gz"),
+        PutPayload::from(encoded.clone()),
+    ))
+    .unwrap();
+    let dependencies = FileRuntimeDependencies::new(
+        FileTransportFacade::new().with_object_store("s3://acme-events", store),
+    );
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_resource_schema_with_file_dependencies_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        dependencies.clone(),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        artifacts
+            .discovery
+            .normalized_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["id", "kind"]
+    );
+    let manifest = artifacts.discovery_manifest.as_ref().unwrap();
+    assert_eq!(manifest.candidates.len(), 1);
+    assert_eq!(
+        manifest.candidates[0].participation,
+        DiscoveryParticipation::Probed
+    );
+    assert!(manifest.candidates[0].probe_bytes.unwrap() <= 8 * 1024 * 1024);
+
+    let prepared = apply_discovered_schema(&resource, artifacts.discovery.clone());
+    let runtime = prepared.resource.to_file_resource(dependencies).unwrap();
+    let plan = live_plan_for_stream(&runtime, "pkg-cloud-ndjson");
+    assert_eq!(plan.scan.partitions.len(), 1);
+    let stream = futures_executor::block_on(runtime.open(plan.scan.partitions[0].clone())).unwrap();
+    let batches = futures_executor::block_on_stream(stream)
+        .collect::<Result<Vec<_>>>()
+        .unwrap();
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.header.row_count)
+            .sum::<u64>(),
+        10_000
+    );
+    let SourcePosition::FileManifest(position) =
+        batches[0].header.source_position.as_ref().unwrap()
+    else {
+        panic!("expected cloud file manifest position")
+    };
+    assert_eq!(
+        position.files[0].path,
+        "s3://acme-events/prod/2026/07/events.ndjson.gz"
+    );
+}
+
+#[test]
 fn http_numeric_template_discovers_and_plans_every_file() {
     let temp = tempfile::tempdir().unwrap();
     write_http_discover_project(temp.path(), "");
@@ -1665,17 +1739,103 @@ schema = { fields = [
 }
 
 #[test]
-fn local_parquet_discover_autopin_rejects_non_parquet_without_snapshot_write() {
+fn local_ndjson_discovery_is_bounded_and_writes_nothing_until_pin() {
     let temp = tempfile::tempdir().unwrap();
     write_discover_project(temp.path(), "ndjson", "*.ndjson");
+    fs::write(
+        temp.path().join("data/events.ndjson"),
+        b"{\"VendorID\":1}\n{\"VendorID\":2}\n",
+    )
+    .unwrap();
     let resource = compile_single_project_resource(temp.path());
 
-    let error = prepare_local_parquet_discover_resource(temp.path(), &resource).unwrap_err();
+    let artifacts = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
 
-    let message = error.to_string();
-    assert!(message.contains("unsupported schema discovery slice"));
-    assert!(message.contains("local exhaustive binary discovery does not support Ndjson"));
+    assert_eq!(
+        artifacts.discovery.normalized_schema.field(0).name(),
+        "vendor_id"
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.source_identity["coverage"],
+        "exhaustive"
+    );
+    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
     assert!(!temp.path().join(".cdf/schemas").exists());
+}
+
+#[test]
+fn local_csv_discovery_uses_the_shared_sample_manifest_path() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "csv", "*.csv");
+    fs::write(
+        temp.path().join("data/events.csv"),
+        b"VendorID,fare_amount\n1,10.5\n2,20.25\n",
+    )
+    .unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        artifacts
+            .discovery
+            .normalized_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["vendor_id", "fare_amount"]
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.artifact.metadata["probe"],
+        "bounded-csv-sample"
+    );
+    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
+}
+
+#[test]
+fn local_json_document_discovery_is_byte_bounded_and_manifest_backed() {
+    let temp = tempfile::tempdir().unwrap();
+    write_discover_project(temp.path(), "json", "*.json");
+    fs::write(
+        temp.path().join("data/events.json"),
+        br#"[{"VendorID":1,"active":true},{"VendorID":2,"active":false}]"#,
+    )
+    .unwrap();
+    let resource = compile_single_project_resource(temp.path());
+
+    let artifacts = discover_resource_schema_artifacts(
+        &resource,
+        &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
+        SchemaDiscoveryExecutionOptions::default(),
+    )
+    .unwrap();
+
+    assert_eq!(
+        artifacts
+            .discovery
+            .normalized_schema
+            .fields()
+            .iter()
+            .map(|field| field.name().as_str())
+            .collect::<Vec<_>>(),
+        vec!["vendor_id", "active"]
+    );
+    assert_eq!(
+        artifacts.discovery.snapshot.artifact.metadata["probe"],
+        "bounded-json-sample"
+    );
+    assert_eq!(artifacts.discovery_manifest.unwrap().candidates.len(), 1);
 }
 
 #[test]
@@ -2505,9 +2665,9 @@ trust = "governed"
 }
 
 #[test]
-fn pinned_runtime_schema_preparation_leaves_non_observable_formats_source_free() {
+fn pinned_json_runtime_preparation_requires_verified_snapshot_before_source_contact() {
     let temp = tempfile::tempdir().unwrap();
-    write_discover_project(temp.path(), "ndjson", "*.missing");
+    write_discover_project(temp.path(), "json", "*.missing");
     let resource = compile_single_project_resource(temp.path());
     let snapshot = cdf_kernel::SchemaSnapshotReference {
         schema_hash: SchemaHash::new(
@@ -2524,16 +2684,17 @@ fn pinned_runtime_schema_preparation_leaves_non_observable_formats_source_free()
         resource.schema(),
     );
 
-    let prepared = prepare_pinned_resource_effective_schema(
+    let error = prepare_pinned_resource_effective_schema(
         temp.path(),
         &pinned,
         &EnvSecretProvider::from_map(std::iter::empty::<(&str, &str)>()),
     )
-    .unwrap();
+    .unwrap_err();
 
-    assert_eq!(
-        prepared.descriptor().schema_source.pinned_snapshot(),
-        Some(&snapshot)
+    assert!(
+        error.message.contains(".cdf/schemas/missing.json"),
+        "{}",
+        error.message
     );
     assert!(!temp.path().join(".cdf").exists());
 }
@@ -2786,6 +2947,43 @@ root = "s3://tlc/trip-data"
 [resource.events]
 glob = "2024/**/*.parquet"
 format = "parquet"
+write_disposition = "append"
+trust = "governed"
+"#,
+    )
+    .unwrap();
+}
+
+fn write_object_store_ndjson_discover_project(root: &Path) {
+    fs::create_dir_all(root.join("resources")).unwrap();
+    fs::write(
+        root.join("cdf.toml"),
+        r#"
+[project]
+name = "cloud_events"
+default_environment = "dev"
+normalizer = "namecase-v1"
+
+[environments.dev]
+state = "sqlite://.cdf/state.db"
+packages = ".cdf/packages"
+destination = "duckdb://.cdf/dev.duckdb"
+
+[resources."events.*"]
+source = "resources/files.toml"
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("resources/files.toml"),
+        r#"
+[source.events]
+kind = "files"
+root = "s3://acme-events/prod"
+
+[resource.raw]
+glob = "2026/**/*.ndjson.gz"
+format = "ndjson"
 write_disposition = "append"
 trust = "governed"
 "#,

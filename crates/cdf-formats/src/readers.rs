@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
-    io::{Cursor, Read, Seek},
+    io::{BufReader, Cursor, Read, Seek},
     path::Path,
     sync::Arc,
 };
@@ -378,6 +378,63 @@ pub fn infer_ndjson_observed_schema(
     let (schema, _) = infer_json_schema(Cursor::new(bytes), json_options.max_read_records)
         .map_err(CdfError::from)?;
     Ok(ObservedSchema::from_arrow(&schema))
+}
+
+pub fn discover_ndjson_schema_from_reader(
+    reader: Box<dyn Read + Send>,
+    compression: FileCompression,
+    max_read_records: Option<usize>,
+) -> Result<SchemaRef> {
+    let reader = decoded_discovery_reader(reader, compression)?;
+    let (schema, _) =
+        infer_json_schema(BufReader::new(reader), max_read_records).map_err(CdfError::from)?;
+    Ok(Arc::new(schema))
+}
+
+pub fn discover_csv_schema_from_reader(
+    reader: Box<dyn Read + Send>,
+    compression: FileCompression,
+    csv_options: &CsvOptions,
+    max_read_records: usize,
+) -> Result<SchemaRef> {
+    let reader = decoded_discovery_reader(reader, compression)?;
+    let format = ArrowCsvFormat::default()
+        .with_header(csv_options.has_header)
+        .with_delimiter(csv_options.delimiter);
+    let (schema, _) = format
+        .infer_schema(BufReader::new(reader), Some(max_read_records))
+        .map_err(CdfError::from)?;
+    Ok(Arc::new(schema))
+}
+
+pub fn discover_json_schema_from_reader(
+    reader: Box<dyn Read + Send>,
+    compression: FileCompression,
+    max_read_records: usize,
+) -> Result<SchemaRef> {
+    let mut reader = decoded_discovery_reader(reader, compression)?;
+    let mut document = Vec::new();
+    reader
+        .read_to_end(&mut document)
+        .map_err(|error| io_data_error("read bounded JSON discovery sample", error))?;
+    let ndjson = json_document_to_ndjson(&document)?;
+    let (schema, _) =
+        infer_json_schema(Cursor::new(ndjson), Some(max_read_records)).map_err(CdfError::from)?;
+    Ok(Arc::new(schema))
+}
+
+fn decoded_discovery_reader(
+    reader: Box<dyn Read + Send>,
+    compression: FileCompression,
+) -> Result<Box<dyn Read + Send>> {
+    match compression {
+        FileCompression::None => Ok(reader),
+        FileCompression::Gzip => Ok(Box::new(GzDecoder::new(reader))),
+        FileCompression::Zstd => Ok(Box::new(
+            zstd::stream::read::Decoder::new(reader)
+                .map_err(|error| io_data_error("open zstd discovery stream", error))?,
+        )),
+    }
 }
 
 fn read_csv_bytes_with_scope(

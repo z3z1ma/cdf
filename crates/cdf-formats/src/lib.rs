@@ -19,9 +19,10 @@ pub use parquet_discovery::{
     discover_parquet_schema_from_chunk_reader,
 };
 pub use readers::{
-    infer_ndjson_observed_schema, read_arrow_ipc_file, read_arrow_ipc_file_path,
-    read_arrow_ipc_file_path_with_declared_schema, read_arrow_ipc_stream, read_csv_bytes,
-    read_file_source, read_file_source_with_declared_schema,
+    discover_csv_schema_from_reader, discover_json_schema_from_reader,
+    discover_ndjson_schema_from_reader, infer_ndjson_observed_schema, read_arrow_ipc_file,
+    read_arrow_ipc_file_path, read_arrow_ipc_file_path_with_declared_schema, read_arrow_ipc_stream,
+    read_csv_bytes, read_file_source, read_file_source_with_declared_schema,
     read_file_source_with_declared_schema_and_type_policy, read_json_bytes, read_ndjson_bytes,
     read_ndjson_bytes_with_declared_schema, read_ndjson_bytes_with_declared_schema_and_type_policy,
     read_parquet_range_source, read_parquet_range_source_with_declared_schema,

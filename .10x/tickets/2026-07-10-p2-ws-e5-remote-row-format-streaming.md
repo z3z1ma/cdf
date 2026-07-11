@@ -29,3 +29,10 @@ Large compressed fixture RSS/budget test, preview/run parity, source-position ev
 ## Blockers
 
 None.
+
+## Progress and notes
+
+- 2026-07-10: Added transport-level gzip/zstd confirmation, range-streamed bounded spooling for remote CSV/JSON/NDJSON, exact remote `FileManifest` position restoration, and an explicit configurable 64 GiB default disk ceiling.
+- 2026-07-10: Added bounded row-format discovery shared across local and remote CSV/JSON/NDJSON: 4,096 records and at most 8 MiB of source bytes, with gzip/zstd decoded incrementally during discovery and complete manifest evidence.
+- 2026-07-10: Replaced nested `futures_executor` use around `object_store` with a dedicated transport-owned Tokio I/O runtime, proving object-store reads from within the existing async resource-open path.
+- 2026-07-10: S3-compatible `.ndjson.gz` fixture now discovers, pins, executes 10,000 records, and preserves its remote position. Remaining acceptance work is eliminating the downstream `FormatRead` whole-input/materialized-batch behavior; that must land through P3's channel runtime rather than a second decoder API.

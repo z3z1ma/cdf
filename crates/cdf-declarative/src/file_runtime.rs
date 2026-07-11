@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
-    io::{Read, Seek, SeekFrom},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     sync::{
         Arc, Mutex,
@@ -37,12 +37,17 @@ use crate::{
 #[derive(Clone)]
 pub struct FileRuntimeDependencies {
     transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    max_spool_bytes: u64,
 }
+
+const DEFAULT_MAX_REMOTE_SPOOL_BYTES: u64 = 64 * 1024 * 1024 * 1024;
+const REMOTE_SPOOL_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
 impl FileRuntimeDependencies {
     pub fn new(transport: impl FileTransport + Send + 'static) -> Self {
         Self {
             transport: Arc::new(Mutex::new(Box::new(transport))),
+            max_spool_bytes: DEFAULT_MAX_REMOTE_SPOOL_BYTES,
         }
     }
 
@@ -55,6 +60,20 @@ impl FileRuntimeDependencies {
         _provider: impl SecretProvider + Send + Sync + 'static,
     ) -> Self {
         self
+    }
+
+    pub fn with_max_spool_bytes(mut self, max_spool_bytes: u64) -> Result<Self> {
+        if max_spool_bytes == 0 {
+            return Err(CdfError::contract(
+                "remote file spool budget must be greater than zero",
+            ));
+        }
+        self.max_spool_bytes = max_spool_bytes;
+        Ok(self)
+    }
+
+    pub fn max_spool_bytes(&self) -> u64 {
+        self.max_spool_bytes
     }
 
     fn transport(&self) -> Arc<Mutex<Box<dyn FileTransport + Send>>> {
@@ -114,6 +133,66 @@ impl FileRuntimeDependencies {
             }
         });
         (reader, bytes_read)
+    }
+
+    pub fn bounded_sequential_reader(
+        &self,
+        resource: FileTransportResource,
+        size_bytes: u64,
+        max_bytes: u64,
+    ) -> (Box<dyn Read + Send>, Arc<AtomicU64>) {
+        let bytes_read = Arc::new(AtomicU64::new(0));
+        let reader = TransportSequentialReader {
+            transport: self.transport(),
+            resource,
+            size_bytes,
+            max_bytes,
+            offset: 0,
+            bytes_read: Arc::clone(&bytes_read),
+        };
+        (Box::new(reader), bytes_read)
+    }
+}
+
+struct TransportSequentialReader {
+    transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    resource: FileTransportResource,
+    size_bytes: u64,
+    max_bytes: u64,
+    offset: u64,
+    bytes_read: Arc<AtomicU64>,
+}
+
+impl Read for TransportSequentialReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() || self.offset == self.size_bytes {
+            return Ok(0);
+        }
+        let remaining_file = self.size_bytes - self.offset;
+        let remaining_budget = self.max_bytes.saturating_sub(self.offset);
+        if remaining_budget == 0 {
+            return Err(std::io::Error::other(format!(
+                "remote sequential read exceeded its {}-byte budget",
+                self.max_bytes
+            )));
+        }
+        let length = remaining_file
+            .min(remaining_budget)
+            .min(buffer.len() as u64);
+        let bytes = self
+            .transport
+            .lock()
+            .map_err(|_| std::io::Error::other("file transport mutex was poisoned"))?
+            .read_range(
+                &self.resource,
+                ByteRange::new(self.offset, length).map_err(std::io::Error::other)?,
+            )
+            .map_err(std::io::Error::other)?;
+        buffer[..bytes.len()].copy_from_slice(&bytes);
+        self.offset += bytes.len() as u64;
+        self.bytes_read
+            .fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        Ok(bytes.len())
     }
 }
 
@@ -403,16 +482,6 @@ struct CompressionEvidence {
     magic_signal: CompressionSignal,
 }
 
-impl CompressionEvidence {
-    fn none() -> Self {
-        Self {
-            mode: FileCompression::None,
-            extension_signal: CompressionSignal::None,
-            magic_signal: CompressionSignal::None,
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CompressionSignal {
     None,
@@ -539,6 +608,7 @@ fn open_file_resource_with_dependencies(
             options,
             declared_schema,
             dependencies.transport(),
+            dependencies.max_spool_bytes(),
         )?;
         Ok(Box::pin(stream::iter(read.batches.into_iter().map(Ok))) as BatchStream)
     })
@@ -558,6 +628,7 @@ fn read_file_match(
     options: ReadOptions,
     declared_schema: SchemaRef,
     transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    max_spool_bytes: u64,
 ) -> Result<cdf_formats::FormatRead> {
     match &resolved.open {
         ResolvedFileOpen::LocalPath(path) => read_file_path(
@@ -574,6 +645,7 @@ fn read_file_match(
             options,
             declared_schema,
             transport,
+            max_spool_bytes,
         ),
     }
 }
@@ -629,14 +701,8 @@ fn read_transport_file(
     options: ReadOptions,
     declared_schema: SchemaRef,
     transport: Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    max_spool_bytes: u64,
 ) -> Result<cdf_formats::FormatRead> {
-    if declaration != &FileFormatDeclaration::Parquet {
-        return Err(CdfError::contract(format!(
-            "HTTP(S) file runtime currently supports only single-file Parquet resources; resource path `{}` uses format = {:?}",
-            resolved.path_text, declaration
-        )));
-    }
-    let range_reader = transport_range_reader(transport, resource, resolved.size_bytes);
     let scope = ScopeKey::File {
         path: resolved.path_text.clone(),
     };
@@ -649,17 +715,73 @@ fn read_transport_file(
             sha256: resolved.sha256.clone(),
         }],
     }));
-    if uses_declared_file_schema(&FileFormat::Parquet, &declared_schema) {
-        read_parquet_range_source_with_declared_schema(
-            range_reader,
-            &options,
-            declared_schema,
-            scope,
-            position,
-        )
-    } else {
-        read_parquet_range_source(range_reader, &options, scope, position)
+    if declaration == &FileFormatDeclaration::Parquet {
+        let range_reader = transport_range_reader(transport, resource, resolved.size_bytes);
+        return if uses_declared_file_schema(&FileFormat::Parquet, &declared_schema) {
+            read_parquet_range_source_with_declared_schema(
+                range_reader,
+                &options,
+                declared_schema,
+                scope,
+                position,
+            )
+        } else {
+            read_parquet_range_source(range_reader, &options, scope, position)
+        };
     }
+    if declaration == &FileFormatDeclaration::ArrowIpc {
+        return Err(CdfError::contract(
+            "remote Arrow IPC file framing is not supported",
+        ));
+    }
+    // 10x: this bounded compatibility spool preserves the transport/evidence boundary until
+    // P3's channel-based format runtime consumes the sequential reader directly.
+    let spool = spool_transport_file(&transport, &resource, resolved.size_bytes, max_spool_bytes)?;
+    let mut read = read_file_path(
+        spool.path(),
+        resolved.compression.mode,
+        declaration,
+        options,
+        declared_schema,
+    )?;
+    read.descriptor.state_scope = scope;
+    for batch in &mut read.batches {
+        batch.header.source_position = position.clone();
+    }
+    Ok(read)
+}
+
+fn spool_transport_file(
+    transport: &Arc<Mutex<Box<dyn FileTransport + Send>>>,
+    resource: &FileTransportResource,
+    size_bytes: u64,
+    max_spool_bytes: u64,
+) -> Result<tempfile::NamedTempFile> {
+    if size_bytes > max_spool_bytes {
+        return Err(CdfError::data(format!(
+            "remote file requires {size_bytes} spool bytes, exceeding the configured {max_spool_bytes}-byte disk budget; increase the spool budget or use a streaming format runtime"
+        )));
+    }
+    let mut spool = tempfile::NamedTempFile::new()
+        .map_err(|error| CdfError::data(format!("create remote file spool: {error}")))?;
+    let mut start = 0_u64;
+    while start < size_bytes {
+        let length = (size_bytes - start).min(REMOTE_SPOOL_CHUNK_BYTES);
+        let bytes = {
+            let mut transport = transport.lock().map_err(|_| {
+                CdfError::internal("file runtime transport dependency mutex was poisoned")
+            })?;
+            transport.read_range(resource, ByteRange::new(start, length)?)?
+        };
+        spool
+            .write_all(&bytes)
+            .map_err(|error| CdfError::data(format!("write remote file spool: {error}")))?;
+        start += length;
+    }
+    spool
+        .flush()
+        .map_err(|error| CdfError::data(format!("flush remote file spool: {error}")))?;
+    Ok(spool)
 }
 
 fn compile_format(format: &FileFormatDeclaration) -> Result<FileFormat> {
@@ -991,7 +1113,6 @@ fn resolve_object_store_matches(
     plan: &FileResourcePlan,
     transport: &mut dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
-    reject_remote_compression(resource_id, plan)?;
     validate_http_format_support(resource_id, plan)?;
     let root_resource = FileTransportResource::object_store_url(plan.root.clone())
         .with_egress_allowlist(plan.allowlist.clone());
@@ -1012,8 +1133,21 @@ fn resolve_object_store_matches(
             Some(credentials) => resource.with_credentials(credentials.clone()),
             None => resource,
         };
-        let format = resolve_transport_format(resource_id, plan, transport, &resource, &metadata)?;
-        matches.push(resolved_transport_file_match(resource, metadata, format)?);
+        let compression = resolve_transport_compression(plan, transport, &resource, &metadata)?;
+        let format = resolve_transport_format(
+            resource_id,
+            plan,
+            transport,
+            &resource,
+            &metadata,
+            &compression,
+        )?;
+        matches.push(resolved_transport_file_match(
+            resource,
+            metadata,
+            compression,
+            format,
+        )?);
     }
     matches.sort_by(|left, right| left.path_text.cmp(&right.path_text));
     Ok(matches)
@@ -1032,7 +1166,6 @@ fn resolve_http_file_match(
     plan: &FileResourcePlan,
     transport: &mut dyn FileTransport,
 ) -> Result<Vec<ResolvedFileMatch>> {
-    reject_remote_compression(resource_id, plan)?;
     validate_http_format_support(resource_id, plan)?;
     let globs = expand_http_glob(resource_id, &plan.glob)?;
     let mut matches = Vec::with_capacity(globs.len());
@@ -1045,8 +1178,21 @@ fn resolve_http_file_match(
             credentials: plan.credentials.clone(),
         };
         let metadata = transport.metadata(&resource)?;
-        let format = resolve_transport_format(resource_id, plan, transport, &resource, &metadata)?;
-        matches.push(resolved_transport_file_match(resource, metadata, format)?);
+        let compression = resolve_transport_compression(plan, transport, &resource, &metadata)?;
+        let format = resolve_transport_format(
+            resource_id,
+            plan,
+            transport,
+            &resource,
+            &metadata,
+            &compression,
+        )?;
+        matches.push(resolved_transport_file_match(
+            resource,
+            metadata,
+            compression,
+            format,
+        )?);
     }
     matches.sort_by(|left, right| left.path_text.cmp(&right.path_text));
     Ok(matches)
@@ -1350,6 +1496,7 @@ fn local_file_discovery_candidate(
 fn resolved_transport_file_match(
     resource: FileTransportResource,
     metadata: FileIdentityMetadata,
+    compression: CompressionEvidence,
     format: FormatEvidence,
 ) -> Result<ResolvedFileMatch> {
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
@@ -1377,7 +1524,7 @@ fn resolved_transport_file_match(
             .and_then(|modified| modified.strip_prefix("unix_ms:"))
             .map(str::to_owned),
         bytes_loaded: Some(size_bytes),
-        compression: CompressionEvidence::none(),
+        compression,
         format,
     })
 }
@@ -1417,6 +1564,7 @@ fn resolve_transport_format(
     transport: &mut dyn FileTransport,
     resource: &FileTransportResource,
     metadata: &FileIdentityMetadata,
+    compression: &CompressionEvidence,
 ) -> Result<FormatEvidence> {
     let extension_signal = format_extension_signal(&metadata.location);
     if !requires_binary_format_confirmation(plan, extension_signal) {
@@ -1425,6 +1573,12 @@ fn resolve_transport_format(
             magic_signal: FormatSignal::Unknown,
         });
     }
+    reject_compressed_binary_format(
+        resource_id,
+        plan,
+        &diagnostic_location(&metadata.location),
+        compression,
+    )?;
     let size_bytes = metadata.size_bytes.ok_or_else(|| {
         CdfError::data(format!(
             "HTTP(S) file metadata for `{}` did not include Content-Length for format confirmation",
@@ -1651,6 +1805,43 @@ fn resolve_local_compression(
 ) -> Result<CompressionEvidence> {
     let extension_signal = compression_extension_signal(path_text);
     let magic_signal = compression_magic_signal(path)?;
+    resolve_compression_signals(path_text, declared, extension_signal, magic_signal)
+}
+
+fn resolve_transport_compression(
+    plan: &FileResourcePlan,
+    transport: &mut dyn FileTransport,
+    resource: &FileTransportResource,
+    metadata: &FileIdentityMetadata,
+) -> Result<CompressionEvidence> {
+    let extension_signal = compression_extension_signal(&metadata.location);
+    let size_bytes = metadata.size_bytes.ok_or_else(|| {
+        CdfError::data(format!(
+            "remote file metadata for `{}` omitted byte size for compression confirmation",
+            diagnostic_location(&metadata.location)
+        ))
+    })?;
+    let length = size_bytes.min(4);
+    let magic_signal = if length == 0 {
+        CompressionSignal::None
+    } else {
+        let magic = transport.read_range(resource, ByteRange::new(0, length)?)?;
+        compression_magic_signal_from_bytes(&magic)
+    };
+    resolve_compression_signals(
+        &diagnostic_location(&metadata.location),
+        &plan.compression,
+        extension_signal,
+        magic_signal,
+    )
+}
+
+fn resolve_compression_signals(
+    path_text: &str,
+    declared: &FileCompressionDeclaration,
+    extension_signal: CompressionSignal,
+    magic_signal: CompressionSignal,
+) -> Result<CompressionEvidence> {
     let mode = match declared {
         FileCompressionDeclaration::Auto => {
             match (extension_signal.compression(), magic_signal.compression()) {
@@ -1717,7 +1908,12 @@ fn resolve_local_compression(
 }
 
 fn compression_extension_signal(path_text: &str) -> CompressionSignal {
-    let lower = path_text.to_ascii_lowercase();
+    let path_without_fragment = path_text.split('#').next().unwrap_or(path_text);
+    let lower = path_without_fragment
+        .split('?')
+        .next()
+        .unwrap_or(path_without_fragment)
+        .to_ascii_lowercase();
     if lower.ends_with(".gz") || lower.ends_with(".gzip") {
         CompressionSignal::Gzip
     } else if lower.ends_with(".zst") || lower.ends_with(".zstd") {
@@ -1741,13 +1937,17 @@ fn compression_magic_signal(path: &Path) -> Result<CompressionSignal> {
             path.display()
         ))
     })?;
-    if bytes_read >= 2 && magic[..2] == [0x1f, 0x8b] {
-        return Ok(CompressionSignal::Gzip);
+    Ok(compression_magic_signal_from_bytes(&magic[..bytes_read]))
+}
+
+fn compression_magic_signal_from_bytes(magic: &[u8]) -> CompressionSignal {
+    if magic.len() >= 2 && magic[..2] == [0x1f, 0x8b] {
+        return CompressionSignal::Gzip;
     }
-    if bytes_read >= 4 && magic == [0x28, 0xb5, 0x2f, 0xfd] {
-        return Ok(CompressionSignal::Zstd);
+    if magic.len() >= 4 && magic[..4] == [0x28, 0xb5, 0x2f, 0xfd] {
+        return CompressionSignal::Zstd;
     }
-    Ok(CompressionSignal::None)
+    CompressionSignal::None
 }
 
 fn compression_signal_error(
@@ -1772,19 +1972,6 @@ fn records_compression_metadata(
         || !matches!(declared, FileCompressionDeclaration::Auto)
         || file.compression.extension_signal != CompressionSignal::None
         || file.compression.magic_signal != CompressionSignal::None
-}
-
-fn reject_remote_compression(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
-    if matches!(
-        plan.compression,
-        FileCompressionDeclaration::Auto | FileCompressionDeclaration::None
-    ) {
-        return Ok(());
-    }
-    Err(CdfError::contract(format!(
-        "remote file resource `{resource_id}` does not support explicit compression = `{}` in this local compression foundation",
-        plan.compression.as_str()
-    )))
 }
 
 impl FileCompressionDeclaration {
@@ -1901,11 +2088,11 @@ fn expand_http_glob(resource_id: &ResourceId, glob: &str) -> Result<Vec<String>>
 }
 
 fn validate_http_format_support(resource_id: &ResourceId, plan: &FileResourcePlan) -> Result<()> {
-    if plan.format == FileFormatDeclaration::Parquet {
+    if plan.format != FileFormatDeclaration::ArrowIpc {
         return Ok(());
     }
     Err(CdfError::contract(format!(
-        "HTTP(S) file resource `{resource_id}` supports only single-file Parquet at the plan/deep-validate front end; resolved format `{}` is unsupported and remote Arrow IPC remains excluded",
+        "remote file resource `{resource_id}` does not support Arrow IPC file framing; resolved format `{}` is unsupported",
         file_format_name(&plan.format)
     )))
 }
@@ -2005,6 +2192,7 @@ mod tests {
     use std::sync::Arc;
 
     use arrow_schema::{DataType, Field, Schema};
+    use flate2::{Compression, write::GzEncoder};
     use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
     use super::*;
@@ -2093,5 +2281,71 @@ mod tests {
         let error = expand_http_glob(&resource_id, "yellow_tripdata_2024-*.parquet").unwrap_err();
         assert!(error.message.contains("HTTP has no LIST operation"));
         assert!(error.message.contains("{01..12}"));
+    }
+
+    #[test]
+    fn object_store_gzip_ndjson_spools_under_budget_and_preserves_remote_position() {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"{\"id\":1}\n{\"id\":2}\n").unwrap();
+        let encoded = encoder.finish().unwrap();
+        let store = Arc::new(InMemory::new());
+        futures_executor::block_on(store.put(
+            &ObjectPath::from("prod/2026/events.ndjson.gz"),
+            PutPayload::from(encoded.clone()),
+        ))
+        .unwrap();
+        let facade = FileTransportFacade::new().with_object_store("s3://acme-events", store);
+        let transport: Arc<Mutex<Box<dyn FileTransport + Send>>> =
+            Arc::new(Mutex::new(Box::new(facade)));
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: "s3://acme-events/prod".to_owned(),
+            glob: "2026/**/*.ndjson.gz".to_owned(),
+            format: FileFormatDeclaration::Ndjson,
+            format_declared: true,
+            compression: FileCompressionDeclaration::Auto,
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.raw").unwrap();
+        let resolved = {
+            let mut locked = transport.lock().unwrap();
+            resolve_object_store_matches(&resource_id, &plan, locked.as_mut()).unwrap()
+        };
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].compression.mode, FileCompression::Gzip);
+        let declared = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let options = ReadOptions::new(resource_id, PartitionId::new("file-events").unwrap());
+        let read = read_file_match(
+            &resolved[0],
+            &plan.format,
+            options.clone(),
+            declared.clone(),
+            Arc::clone(&transport),
+            encoded.len() as u64,
+        )
+        .unwrap();
+        assert_eq!(
+            read.batches
+                .iter()
+                .map(|batch| batch.header.row_count)
+                .sum::<u64>(),
+            2
+        );
+        let SourcePosition::FileManifest(position) =
+            read.batches[0].header.source_position.as_ref().unwrap()
+        else {
+            panic!("expected remote file manifest position")
+        };
+        assert_eq!(
+            position.files[0].path,
+            "s3://acme-events/prod/2026/events.ndjson.gz"
+        );
+
+        let error = read_file_match(&resolved[0], &plan.format, options, declared, transport, 1)
+            .unwrap_err();
+        assert!(error.message.contains("disk budget"));
+        assert!(error.message.contains(&encoded.len().to_string()));
     }
 }

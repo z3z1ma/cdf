@@ -2,9 +2,10 @@ use std::{
     collections::BTreeMap,
     fmt,
     fs::{self, File},
+    future::Future,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, OnceLock, mpsc},
     time::UNIX_EPOCH,
 };
 
@@ -301,6 +302,38 @@ pub struct FileTransportFacade {
     http: Option<Box<dyn HttpFileTransport + Send>>,
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
     object_stores: BTreeMap<String, Arc<dyn ObjectStore>>,
+    object_store_io: ObjectStoreIoRuntime,
+}
+
+#[derive(Default)]
+struct ObjectStoreIoRuntime {
+    runtime: OnceLock<std::result::Result<tokio::runtime::Runtime, String>>,
+}
+
+impl ObjectStoreIoRuntime {
+    fn run<F, T>(&self, future: F) -> Result<T>
+    where
+        F: Future<Output = T> + Send + 'static,
+        T: Send + 'static,
+    {
+        let runtime = self.runtime.get_or_init(|| {
+            tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .thread_name("cdf-object-store-io")
+                .build()
+                .map_err(|error| error.to_string())
+        });
+        let runtime = runtime.as_ref().map_err(|error| {
+            CdfError::internal(format!("build object-store I/O runtime: {error}"))
+        })?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        runtime.spawn(async move {
+            let _ = sender.send(future.await);
+        });
+        receiver.recv().map_err(|_| {
+            CdfError::internal("object-store I/O runtime ended before returning its result")
+        })
+    }
 }
 
 impl FileTransportFacade {
@@ -392,7 +425,9 @@ impl FileTransportFacade {
         url: &str,
     ) -> Result<FileIdentityMetadata> {
         let (store, path, _) = self.resolve_object_store(resource, url)?;
-        let metadata = futures_executor::block_on(store.head(&path))
+        let metadata = self
+            .object_store_io
+            .run(async move { store.head(&path).await })?
             .map_err(|error| object_store_error("read object metadata", error))?;
         Ok(object_identity(url.to_owned(), metadata))
     }
@@ -408,7 +443,9 @@ impl FileTransportFacade {
             .start
             .checked_add(range.length)
             .ok_or_else(|| CdfError::contract("object-store byte range overflows u64"))?;
-        let bytes = futures_executor::block_on(store.get_range(&path, range.start..end))
+        let bytes = self
+            .object_store_io
+            .run(async move { store.get_range(&path, range.start..end).await })?
             .map_err(|error| object_store_error("read object byte range", error))?;
         if bytes.len() as u64 != range.length {
             return Err(CdfError::data(format!(
@@ -426,7 +463,9 @@ impl FileTransportFacade {
         url: &str,
     ) -> Result<Vec<FileIdentityMetadata>> {
         let (store, prefix, origin) = self.resolve_object_store(resource, url)?;
-        let objects = futures_executor::block_on(store.list(Some(&prefix)).try_collect::<Vec<_>>())
+        let objects = self
+            .object_store_io
+            .run(async move { store.list(Some(&prefix)).try_collect::<Vec<_>>().await })?
             .map_err(|error| object_store_error("list object prefix", error))?;
         let mut identities = objects
             .into_iter()

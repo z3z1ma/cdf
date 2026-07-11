@@ -1,6 +1,8 @@
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::File,
+    io::Read,
     path::{Component, Path, PathBuf},
     sync::Arc,
 };
@@ -46,6 +48,13 @@ pub struct LocalParquetSchemaProbe {
 
 #[derive(Clone, Debug)]
 pub struct BoundedLocalParquetSchemaProbe {
+    pub schema: SchemaRef,
+    pub source_identity: BTreeMap<String, String>,
+    pub probe_bytes_read: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct BoundedTransportJsonSchemaProbe {
     pub schema: SchemaRef,
     pub source_identity: BTreeMap<String, String>,
     pub probe_bytes_read: u64,
@@ -321,6 +330,138 @@ pub fn discover_transport_parquet_schema_bounded(
         source_identity,
         probe_bytes_read: bytes_read.load(Ordering::Relaxed),
     })
+}
+
+pub fn discover_transport_row_schema_bounded(
+    resource: FileTransportResource,
+    dependencies: &FileRuntimeDependencies,
+    format: &FileFormatDeclaration,
+    compression: cdf_formats::FileCompression,
+    max_read_records: usize,
+    max_source_bytes: u64,
+) -> Result<BoundedTransportJsonSchemaProbe> {
+    if max_read_records == 0 || max_source_bytes == 0 {
+        return Err(CdfError::contract(
+            "NDJSON discovery requires positive record and source-byte bounds",
+        ));
+    }
+    let metadata = dependencies.with_transport(|transport| transport.metadata(&resource))?;
+    let size_bytes = metadata.size_bytes.ok_or_else(|| {
+        CdfError::data(format!(
+            "remote NDJSON discovery for `{}` did not receive byte-size metadata",
+            metadata.location
+        ))
+    })?;
+    let (reader, bytes_read) = dependencies.bounded_sequential_reader(
+        resource,
+        size_bytes,
+        max_source_bytes.min(size_bytes),
+    );
+    let schema = match format {
+        FileFormatDeclaration::Ndjson => cdf_formats::discover_ndjson_schema_from_reader(
+            reader,
+            compression,
+            Some(max_read_records),
+        )?,
+        FileFormatDeclaration::Csv => cdf_formats::discover_csv_schema_from_reader(
+            reader,
+            compression,
+            &cdf_formats::CsvOptions::default(),
+            max_read_records,
+        )?,
+        FileFormatDeclaration::Json => {
+            cdf_formats::discover_json_schema_from_reader(reader, compression, max_read_records)?
+        }
+        _ => {
+            return Err(CdfError::contract(
+                "bounded remote row discovery supports CSV, JSON, and NDJSON",
+            ));
+        }
+    };
+    let mut source_identity = BTreeMap::new();
+    append_transport_source_identity(&mut source_identity, metadata);
+    source_identity.insert("sample_records".to_owned(), max_read_records.to_string());
+    Ok(BoundedTransportJsonSchemaProbe {
+        schema,
+        source_identity,
+        probe_bytes_read: bytes_read.load(Ordering::Relaxed),
+    })
+}
+
+pub fn discover_local_row_schema_bounded(
+    path: impl AsRef<Path>,
+    format: &FileFormatDeclaration,
+    compression: cdf_formats::FileCompression,
+    max_read_records: usize,
+    max_source_bytes: u64,
+) -> Result<BoundedTransportJsonSchemaProbe> {
+    if max_read_records == 0 || max_source_bytes == 0 {
+        return Err(CdfError::contract(
+            "row-format discovery requires positive record and source-byte bounds",
+        ));
+    }
+    let path = path.as_ref();
+    let file = File::open(path).map_err(|error| {
+        CdfError::data(format!("open {} for discovery: {error}", path.display()))
+    })?;
+    let bytes_read = Arc::new(AtomicU64::new(0));
+    let reader = CountingLimitedReader {
+        inner: file,
+        remaining: max_source_bytes,
+        bytes_read: Arc::clone(&bytes_read),
+    };
+    let schema = match format {
+        FileFormatDeclaration::Ndjson => cdf_formats::discover_ndjson_schema_from_reader(
+            Box::new(reader),
+            compression,
+            Some(max_read_records),
+        )?,
+        FileFormatDeclaration::Csv => cdf_formats::discover_csv_schema_from_reader(
+            Box::new(reader),
+            compression,
+            &cdf_formats::CsvOptions::default(),
+            max_read_records,
+        )?,
+        FileFormatDeclaration::Json => cdf_formats::discover_json_schema_from_reader(
+            Box::new(reader),
+            compression,
+            max_read_records,
+        )?,
+        _ => {
+            return Err(CdfError::contract(
+                "bounded local row discovery supports CSV, JSON, and NDJSON",
+            ));
+        }
+    };
+    Ok(BoundedTransportJsonSchemaProbe {
+        schema,
+        source_identity: BTreeMap::from([
+            ("path".to_owned(), path.to_string_lossy().into_owned()),
+            ("sample_records".to_owned(), max_read_records.to_string()),
+        ]),
+        probe_bytes_read: bytes_read.load(Ordering::Relaxed),
+    })
+}
+
+struct CountingLimitedReader<R> {
+    inner: R,
+    remaining: u64,
+    bytes_read: Arc<AtomicU64>,
+}
+
+impl<R: Read> Read for CountingLimitedReader<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if self.remaining == 0 {
+            return Err(std::io::Error::other(
+                "row-format discovery exceeded its source-byte budget",
+            ));
+        }
+        let limit = buffer.len().min(self.remaining as usize);
+        let read = self.inner.read(&mut buffer[..limit])?;
+        self.remaining -= read as u64;
+        self.bytes_read.fetch_add(read as u64, Ordering::Relaxed);
+        Ok(read)
+    }
 }
 
 fn append_transport_source_identity(

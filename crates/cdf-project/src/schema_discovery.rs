@@ -10,11 +10,13 @@ use cdf_contract::{
     normalize_arrow_schema, plan_aggregate_arrow_schema_join, reconcile_schema,
 };
 use cdf_declarative::{
-    CompiledResource, CompiledResourcePlan, FileFormatDeclaration, FileRuntimeDependencies,
-    FileTransportLocation, FileTransportResource, discover_local_arrow_ipc_schema_bounded,
-    discover_local_parquet_schema_bounded, discover_rest_sample_schema,
-    discover_transport_parquet_schema_bounded, local_file_discovery_candidates,
-    physical_arrow_schema_hash, postgres_table_target_for_sql_plan,
+    CompiledResource, CompiledResourcePlan, FileCompression, FileFormatDeclaration,
+    FileRuntimeDependencies, FileTransportLocation, FileTransportResource,
+    discover_local_arrow_ipc_schema_bounded, discover_local_parquet_schema_bounded,
+    discover_local_row_schema_bounded, discover_rest_sample_schema,
+    discover_transport_parquet_schema_bounded, discover_transport_row_schema_bounded,
+    local_file_discovery_candidates, physical_arrow_schema_hash,
+    postgres_table_target_for_sql_plan,
 };
 use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
@@ -36,6 +38,9 @@ use crate::{
     SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA, SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER,
     SchemaSnapshotArtifact, SchemaSnapshotStore, plan_discovery_selection,
 };
+
+const NDJSON_DISCOVERY_MAX_RECORDS: usize = 4_096;
+const NDJSON_DISCOVERY_MAX_SOURCE_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct PreparedDiscoveredResource {
@@ -336,7 +341,11 @@ fn prepare_pinned_resource_effective_schema_artifacts_inner(
         CompiledResourcePlan::Files(plan)
             if matches!(
                     plan.format,
-                    FileFormatDeclaration::Parquet | FileFormatDeclaration::ArrowIpc
+                    FileFormatDeclaration::Parquet
+                        | FileFormatDeclaration::ArrowIpc
+                        | FileFormatDeclaration::Ndjson
+                        | FileFormatDeclaration::Csv
+                        | FileFormatDeclaration::Json
                 )
     );
     if !should_observe {
@@ -395,12 +404,27 @@ fn discover_resource_schema_artifacts_inner(
             FileFormatDeclaration::Parquet => {
                 discover_remote_binary_resource_schema(resource, plan, file_dependencies, options)
             }
-            ref format => Err(unsupported_discover_slice(
-                resource.descriptor(),
-                format!(
-                    "schema discovery for local file format {format:?} is not implemented in this slice; supported local binary formats are Parquet and Arrow IPC"
-                ),
-            )),
+            FileFormatDeclaration::Ndjson => discover_remote_file_resource_schema(
+                resource,
+                plan,
+                file_dependencies,
+                options,
+                LocalBinaryDiscoveryAdapter::Ndjson,
+            ),
+            FileFormatDeclaration::Csv => discover_remote_file_resource_schema(
+                resource,
+                plan,
+                file_dependencies,
+                options,
+                LocalBinaryDiscoveryAdapter::Csv,
+            ),
+            FileFormatDeclaration::Json => discover_remote_file_resource_schema(
+                resource,
+                plan,
+                file_dependencies,
+                options,
+                LocalBinaryDiscoveryAdapter::Json,
+            ),
         },
         CompiledResourcePlan::Sql(plan) => Ok(ResourceSchemaDiscoveryArtifacts {
             discovery: discover_postgres_resource_schema(resource, plan, secret_provider)?,
@@ -426,6 +450,22 @@ fn discover_remote_binary_resource_schema(
     plan: &cdf_declarative::FileResourcePlan,
     file_dependencies: Option<FileRuntimeDependencies>,
     options: SchemaDiscoveryExecutionOptions,
+) -> Result<ResourceSchemaDiscoveryArtifacts> {
+    discover_remote_file_resource_schema(
+        resource,
+        plan,
+        file_dependencies,
+        options,
+        LocalBinaryDiscoveryAdapter::Parquet,
+    )
+}
+
+fn discover_remote_file_resource_schema(
+    resource: &CompiledResource,
+    plan: &cdf_declarative::FileResourcePlan,
+    file_dependencies: Option<FileRuntimeDependencies>,
+    options: SchemaDiscoveryExecutionOptions,
+    adapter: LocalBinaryDiscoveryAdapter,
 ) -> Result<ResourceSchemaDiscoveryArtifacts> {
     let dependencies = file_dependencies.ok_or_else(|| {
         unsupported_discover_slice(
@@ -487,7 +527,7 @@ fn discover_remote_binary_resource_schema(
     discover_binary_resource_schema(
         resource,
         options,
-        LocalBinaryDiscoveryAdapter::Parquet,
+        adapter,
         candidates,
         Some(&dependencies),
         "remote",
@@ -544,18 +584,20 @@ impl BinaryDiscoveryCandidate {
 enum LocalBinaryDiscoveryAdapter {
     Parquet,
     ArrowIpc,
+    Ndjson,
+    Csv,
+    Json,
 }
 
 impl LocalBinaryDiscoveryAdapter {
-    fn for_format(resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
-        match format {
-            FileFormatDeclaration::Parquet => Ok(Self::Parquet),
-            FileFormatDeclaration::ArrowIpc => Ok(Self::ArrowIpc),
-            _ => Err(unsupported_discover_slice(
-                resource.descriptor(),
-                format!("local exhaustive binary discovery does not support {format:?}"),
-            )),
-        }
+    fn for_format(_resource: &CompiledResource, format: &FileFormatDeclaration) -> Result<Self> {
+        Ok(match format {
+            FileFormatDeclaration::Parquet => Self::Parquet,
+            FileFormatDeclaration::ArrowIpc => Self::ArrowIpc,
+            FileFormatDeclaration::Ndjson => Self::Ndjson,
+            FileFormatDeclaration::Csv => Self::Csv,
+            FileFormatDeclaration::Json => Self::Json,
+        })
     }
 
     fn probe(
@@ -609,6 +651,74 @@ impl LocalBinaryDiscoveryAdapter {
             (Self::ArrowIpc, BinaryDiscoveryCandidateSource::Transport(_)) => Err(
                 CdfError::contract("remote Arrow IPC discovery is not implemented"),
             ),
+            (
+                adapter @ (Self::Ndjson | Self::Csv | Self::Json),
+                BinaryDiscoveryCandidateSource::Transport(resource),
+            ) => {
+                let dependencies = file_dependencies.ok_or_else(|| {
+                    CdfError::contract(
+                        "remote NDJSON discovery requires file transport dependencies",
+                    )
+                })?;
+                let compression = match candidate.compression.as_str() {
+                    "none" => FileCompression::None,
+                    "gzip" => FileCompression::Gzip,
+                    "zstd" => FileCompression::Zstd,
+                    value => {
+                        return Err(CdfError::contract(format!(
+                            "unsupported resolved NDJSON compression `{value}`"
+                        )));
+                    }
+                };
+                let format = match adapter {
+                    Self::Ndjson => FileFormatDeclaration::Ndjson,
+                    Self::Csv => FileFormatDeclaration::Csv,
+                    Self::Json => FileFormatDeclaration::Json,
+                    _ => unreachable!(),
+                };
+                let probe = discover_transport_row_schema_bounded(
+                    resource.clone(),
+                    dependencies,
+                    &format,
+                    compression,
+                    NDJSON_DISCOVERY_MAX_RECORDS,
+                    budget
+                        .max_metadata_bytes_per_file()
+                        .min(NDJSON_DISCOVERY_MAX_SOURCE_BYTES),
+                )?;
+                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
+            }
+            (
+                adapter @ (Self::Ndjson | Self::Csv | Self::Json),
+                BinaryDiscoveryCandidateSource::Local { path, .. },
+            ) => {
+                let compression = match candidate.compression.as_str() {
+                    "none" => FileCompression::None,
+                    "gzip" => FileCompression::Gzip,
+                    "zstd" => FileCompression::Zstd,
+                    value => {
+                        return Err(CdfError::contract(format!(
+                            "unsupported resolved row compression `{value}`"
+                        )));
+                    }
+                };
+                let format = match adapter {
+                    Self::Ndjson => FileFormatDeclaration::Ndjson,
+                    Self::Csv => FileFormatDeclaration::Csv,
+                    Self::Json => FileFormatDeclaration::Json,
+                    _ => unreachable!(),
+                };
+                let probe = discover_local_row_schema_bounded(
+                    path,
+                    &format,
+                    compression,
+                    NDJSON_DISCOVERY_MAX_RECORDS,
+                    budget
+                        .max_metadata_bytes_per_file()
+                        .min(NDJSON_DISCOVERY_MAX_SOURCE_BYTES),
+                )?;
+                Ok((probe.schema, probe.source_identity, probe.probe_bytes_read))
+            }
         }
     }
 
@@ -622,6 +732,9 @@ impl LocalBinaryDiscoveryAdapter {
                 SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA,
                 SCHEMA_DISCOVERY_FORMAT_ARROW_IPC,
             ),
+            Self::Ndjson => ("bounded-ndjson-sample", "ndjson"),
+            Self::Csv => ("bounded-csv-sample", "csv"),
+            Self::Json => ("bounded-json-sample", "json"),
         };
         BTreeMap::from([
             ("probe".to_owned(), probe.to_owned()),
@@ -974,7 +1087,14 @@ fn probe_binary_candidate(
     budget: &DiscoveryExecutorBudget,
     file_dependencies: Option<&FileRuntimeDependencies>,
 ) -> Result<LocalBinaryProbe> {
-    if candidate.compression != "none" {
+    if candidate.compression != "none"
+        && !matches!(
+            adapter,
+            LocalBinaryDiscoveryAdapter::Ndjson
+                | LocalBinaryDiscoveryAdapter::Csv
+                | LocalBinaryDiscoveryAdapter::Json
+        )
+    {
         return Err(unsupported_discover_slice(
             resource.descriptor(),
             format!(
