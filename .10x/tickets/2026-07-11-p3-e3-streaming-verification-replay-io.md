@@ -1,0 +1,34 @@
+Status: open
+Created: 2026-07-11
+Updated: 2026-07-11
+Parent: .10x/tickets/2026-07-10-p3-ws-e-hashing-package-io.md
+Depends-On: .10x/tickets/2026-07-11-p3-e2-streaming-manifest-durability.md, .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
+
+# P3 E3: bounded verification and replay I/O
+
+## Scope
+
+Stream manifest/segment verification, hash during consumer reads, bound/parallelize explicit verification, eliminate package-sized maps/vectors, and evaluate buffered/pread/mmap local replay with the unsafe gate closed by default.
+
+## Acceptance criteria
+
+- Run/replay destination reads verify exact segment bytes without a separate redundant pass.
+- Explicit verify is bounded, parallel where beneficial, canonically reported, and detects all current tamper cases.
+- Read-byte/syscall/copy/page-fault evidence selects the local strategy; mmap is absent unless separately ratified.
+- High-cardinality and 1 TB replay remain within the memory budget.
+
+## Evidence expectations
+
+Tamper/golden parity, million-entry/RSS, buffered/pread/mmap evaluation, cold/warm profiles, cancellation/error cleanup, and destination-reader integration.
+
+## Explicit exclusions
+
+No unsafe/mmap without a new decision/fuzz target.
+
+## Blockers
+
+Depends on E2 and A5 bounded readers.
+
+## References
+
+- `.10x/specs/package-io-hashing-durability.md`

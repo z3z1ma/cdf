@@ -26,6 +26,8 @@ The package layout MUST preserve the book's directories and semantics: `manifest
 
 `manifest.json` MUST list file path, byte count, and SHA-256 for every package file that participates in identity. It MUST carry lifecycle status and a reserved signature slot with defined signing input.
 
+Writer receipts, hash-while-write, draft indexes, durability barriers, and streaming manifest construction/verification MUST follow `.10x/specs/package-io-hashing-durability.md`. These mechanics preserve this specification's package identity and crash semantics.
+
 `destination/receipts.json` MUST remain outside identity because receipts are destination responses appended after destination interaction. State and commit-plan preimages are not receipt-like append-only responses; they are planned evidence and MUST participate in identity.
 
 ## Archive metadata and sidecar layout
