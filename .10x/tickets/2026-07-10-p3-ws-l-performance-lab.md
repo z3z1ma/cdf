@@ -12,6 +12,14 @@ Turn `cdf-benchmarks` into the authoritative macro/micro performance lab, add ph
 
 This workstream is a plan. Split dataset/report schema, macro/reference runners, telemetry, profiling/CI, and first-baseline execution into bounded executable children before implementation.
 
+## Child tickets
+
+- `.10x/tickets/2026-07-10-p3-ws-l1-catalog-report-schema.md`
+- `.10x/tickets/2026-07-10-p3-ws-l2-phase-telemetry.md`
+- `.10x/tickets/2026-07-10-p3-ws-l3-macro-roofline-runners.md`
+- `.10x/tickets/2026-07-10-p3-ws-l4-ci-envelope-generation.md`
+- `.10x/tickets/2026-07-10-p3-ws-l5-preoptimization-baseline.md`
+
 ## Acceptance criteria
 
 - Every dataset and metric required by `.10x/specs/performance-lab-and-envelope.md` is represented or explicitly recorded unavailable.
@@ -31,6 +39,7 @@ No runtime, decoder, destination, hashing, parallelism, or memory optimization. 
 ## Progress and notes
 
 - 2026-07-10: Opened from P3. Existing P0 benchmark coverage is retained as foundation, not treated as the required P3 baseline.
+- 2026-07-10: Decomposed into L1 catalog/report authority, L2 shared phase telemetry, L3 macro/reference/profile runners, L4 CI/envelope generation, and L5 baseline execution. L1 and L2 are independent; L3-L5 form the integration sequence.
 
 ## Blockers
 
