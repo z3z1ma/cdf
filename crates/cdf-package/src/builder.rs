@@ -6,7 +6,10 @@ use std::{
     time::Instant,
 };
 
-use arrow_array::RecordBatch;
+use std::sync::Arc;
+
+use arrow_array::{ArrayRef, RecordBatch, UInt64Array};
+use arrow_schema::{DataType, Field, Schema};
 use cdf_kernel::{CdfError, Checkpoint, Result, SegmentId};
 use serde::Serialize;
 
@@ -162,6 +165,37 @@ impl PackageBuilder {
 
     pub fn write_dedup_summary<T: Serialize>(&self, summary: &T) -> Result<FileEntry> {
         self.write_json_artifact(DEDUP_SUMMARY_FILE, summary)
+    }
+
+    pub fn write_dedup_provenance_shard(
+        &self,
+        file_name: &str,
+        rows: &[(u64, u64)],
+    ) -> Result<FileEntry> {
+        if rows.is_empty() {
+            return Err(CdfError::contract(
+                "dedup provenance shard requires at least one row",
+            ));
+        }
+        if rows.windows(2).any(|pair| pair[0].0 >= pair[1].0) {
+            return Err(CdfError::contract(
+                "dedup provenance rows must be strictly ordered by dropped ordinal",
+            ));
+        }
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("package_row_ordinal", DataType::UInt64, false),
+            Field::new("kept_package_row_ordinal", DataType::UInt64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(UInt64Array::from_iter_values(rows.iter().map(|row| row.0))) as ArrayRef,
+                Arc::new(UInt64Array::from_iter_values(rows.iter().map(|row| row.1))) as ArrayRef,
+            ],
+        )
+        .map_err(CdfError::from)?;
+        let bytes = crate::transcode_record_batches_to_parquet_bytes(&[batch])?;
+        self.write_identity_artifact(format!("stats/dedup-dropped/{file_name}"), &bytes)
     }
 
     pub fn write_lineage_artifact(

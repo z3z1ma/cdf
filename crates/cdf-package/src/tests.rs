@@ -464,6 +464,10 @@ fn dedup_summary_round_trips_as_json_identity_evidence() {
     let reader = PackageReader::open(temp.path()).unwrap();
 
     assert_eq!(reader.read_dedup_summary_json().unwrap(), Some(summary));
+    assert_eq!(
+        reader.read_dedup_dropped_provenance().unwrap(),
+        vec![(0, 2)]
+    );
     assert!(
         manifest
             .identity
