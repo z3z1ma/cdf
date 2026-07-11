@@ -51,9 +51,13 @@ fn init_output(report: ProjectScaffoldReport) -> Result<CommandOutput, CliError>
     CommandOutput::rendered("init", init_document(&report), report)
 }
 
-pub(crate) fn validate(cli: &Cli, args: ValidateArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn validate(
+    cli: &Cli,
+    args: ValidateArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     if args.deep {
-        return deep_validate::run(cli);
+        return deep_validate::run(cli, execution);
     }
     let context =
         ProjectContext::load_for_command("validate", cli.project.as_ref(), cli.env.as_deref())?;

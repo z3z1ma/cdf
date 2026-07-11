@@ -58,6 +58,18 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LIVE_POSTGRES_SCHEMA_COUNTER: AtomicU64 = AtomicU64::new(0);
 static LOCAL_POSTGRES_START: Mutex<()> = Mutex::new(());
 
+fn test_execution_services() -> cdf_runtime::ExecutionServices {
+    static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
+        std::sync::OnceLock::new();
+    SERVICES
+        .get_or_init(|| {
+            cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)
+                .unwrap()
+                .1
+        })
+        .clone()
+}
+
 const PROJECT: &str = r#"
 [project]
 name = "cli_test"
@@ -8381,6 +8393,7 @@ fn resume_human_rich_render_uses_recovery_and_artifact_panels() {
         crate::args::ResumeArgs {
             run_id: Some(run_id.to_string()),
         },
+        &test_execution_services(),
     )
     .unwrap();
     let result = render_rich(output);
@@ -10647,6 +10660,7 @@ fn replay_package_human_rich_render_uses_duplicate_receipt_checkpoint_panels() {
             target: None,
             merge_dedup: None,
         },
+        &test_execution_services(),
     )
     .unwrap();
     let result = render_rich(output);
@@ -13172,6 +13186,7 @@ fn state_show_human_rich_render_uses_scope_and_head_panels() {
             scope_json: None,
             scope: vec!["kind=resource".to_owned()],
         }),
+        &test_execution_services(),
     )
     .unwrap();
     let result = render_rich(output);

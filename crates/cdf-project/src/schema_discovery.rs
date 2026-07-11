@@ -33,7 +33,7 @@ use cdf_kernel::{
 };
 use cdf_memory::{
     BudgetTag, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
-    ReservationRequest, reserve,
+    ReservationRequest,
 };
 
 use crate::{
@@ -1170,8 +1170,7 @@ where
                     )?
                     .with_subcap(tag.clone())
                     .as_minimum_working_set();
-                    let lease =
-                        futures_executor::block_on(reserve(Arc::clone(&coordinator), request))?;
+                    let lease = cdf_memory::reserve_blocking(Arc::clone(&coordinator), &request)?;
                     let result = operation(index);
                     drop(lease);
                     results

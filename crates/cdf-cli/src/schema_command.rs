@@ -19,7 +19,7 @@ use serde::Serialize;
 use crate::{
     args::{Cli, SchemaCommand, SchemaDiscoverArgs, SchemaPromoteArgs, SchemaResourceArgs},
     context::ProjectContext,
-    destination_uri::{redact_error_value, resolve_environment_destination},
+    destination_uri::{redact_error_value, resolve_selected_destination_with_services},
     http_transport::ReqwestHttpTransport,
     output::{CliError, CommandOutput},
     project_run_resource::file_runtime_dependencies,
@@ -30,21 +30,29 @@ use crate::{
     reports::{DiscoveryCoverageReport, discovery_coverage_panel},
 };
 
-pub(crate) fn schema(cli: &Cli, command: SchemaCommand) -> Result<CommandOutput, CliError> {
+pub(crate) fn schema(
+    cli: &Cli,
+    command: SchemaCommand,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     match command {
-        SchemaCommand::Discover(args) => discover(cli, args),
-        SchemaCommand::Pin(args) => pin(cli, args),
+        SchemaCommand::Discover(args) => discover(cli, args, execution),
+        SchemaCommand::Pin(args) => pin(cli, args, execution),
         SchemaCommand::Show(args) => show(cli, args),
-        SchemaCommand::Diff(args) => diff(cli, args),
-        SchemaCommand::Promote(args) => promote(cli, args),
+        SchemaCommand::Diff(args) => diff(cli, args, execution),
+        SchemaCommand::Promote(args) => promote(cli, args, execution),
     }
 }
 
-fn promote(cli: &Cli, args: SchemaPromoteArgs) -> Result<CommandOutput, CliError> {
+fn promote(
+    cli: &Cli,
+    args: SchemaPromoteArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema promote")?;
     let resource = context.resource(&args.resource_id)?;
     if args.execute {
-        return execute_promotion(&context, resource, &args);
+        return execute_promotion(&context, resource, &args, execution);
     }
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
@@ -55,7 +63,7 @@ fn promote(cli: &Cli, args: SchemaPromoteArgs) -> Result<CommandOutput, CliError
     let authority = context.lock_authority.as_ref().ok_or_else(|| {
         CdfError::contract("schema promote requires an exact cdf.lock precondition")
     })?;
-    let fresh_discovery = match discover_artifacts_for_cli(&context, resource) {
+    let fresh_discovery = match discover_artifacts_for_cli(&context, resource, execution) {
         Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
             content_identity: artifacts.discovery.snapshot.source_identity,
             snapshot: Box::new(artifacts.discovery.snapshot.artifact),
@@ -83,6 +91,7 @@ fn execute_promotion(
     context: &ProjectContext,
     resource: &CompiledResource,
     args: &SchemaPromoteArgs,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<CommandOutput, CliError> {
     let current_authority = context.lock_authority.as_ref().ok_or_else(|| {
         CdfError::contract("schema promote --execute requires an exact cdf.lock precondition")
@@ -124,7 +133,7 @@ fn execute_promotion(
         let lock = context.lock.as_ref().ok_or_else(|| {
             CdfError::contract("schema promote requires cdf.lock; run `cdf schema pin` first")
         })?;
-        let fresh_discovery = match discover_artifacts_for_cli(context, resource) {
+        let fresh_discovery = match discover_artifacts_for_cli(context, resource, execution) {
             Ok(artifacts) => cdf_project::SchemaPromotionFreshDiscovery::Available {
                 content_identity: artifacts.discovery.snapshot.source_identity,
                 snapshot: Box::new(artifacts.discovery.snapshot.artifact),
@@ -152,8 +161,13 @@ fn execute_promotion(
     let mut redactions = Vec::new();
     for target in &report.targets {
         let target_name = TargetName::new(target.target.clone())?;
-        let resolved = resolve_environment_destination(context, &target_name)
-            .map_err(|error| CliError::from(redact_error_value(error, None)))?;
+        let resolved = resolve_selected_destination_with_services(
+            context,
+            &target_name,
+            None,
+            Some(execution),
+        )
+        .map_err(|error| CliError::from(redact_error_value(error, None)))?;
         if resolved.destination.describe().destination_id.as_str() != target.destination {
             return Err(CdfError::contract(format!(
                 "resolved destination {} does not match staged promotion target {} for {}",
@@ -204,10 +218,14 @@ fn execute_promotion(
     )
 }
 
-fn discover(cli: &Cli, args: SchemaDiscoverArgs) -> Result<CommandOutput, CliError> {
+fn discover(
+    cli: &Cli,
+    args: SchemaDiscoverArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema discover")?;
     let resource = context.resource(&args.resource_id)?;
-    let artifacts = discover_artifacts_for_cli(&context, resource)?;
+    let artifacts = discover_artifacts_for_cli(&context, resource, execution)?;
     let discovery = &artifacts.discovery;
     let report = SchemaDiscoverReport::from_discovery(
         &context,
@@ -219,7 +237,11 @@ fn discover(cli: &Cli, args: SchemaDiscoverArgs) -> Result<CommandOutput, CliErr
     CommandOutput::rendered("schema discover", schema_discover_document(&report), report)
 }
 
-fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
+fn pin(
+    cli: &Cli,
+    args: SchemaResourceArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema pin")?;
     let resource = context.resource(&args.resource_id)?;
     let previous = pinned_snapshot_reference(&context, resource).cloned();
@@ -227,7 +249,7 @@ fn pin(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
         .as_ref()
         .map(|reference| SchemaSnapshotStore::new(&context.root).read(reference))
         .transpose()?;
-    let artifacts = discover_artifacts_for_cli(&context, resource)?;
+    let artifacts = discover_artifacts_for_cli(&context, resource, execution)?;
     let unchanged = previous_artifact
         .as_ref()
         .zip(artifacts.discovery_manifest.as_ref())
@@ -292,13 +314,17 @@ fn show(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> 
     CommandOutput::rendered("schema show", schema_show_document(&report), report)
 }
 
-fn diff(cli: &Cli, args: SchemaResourceArgs) -> Result<CommandOutput, CliError> {
+fn diff(
+    cli: &Cli,
+    args: SchemaResourceArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context = load_context(cli, "schema diff")?;
     let resource = context.resource(&args.resource_id)?;
     let reference = pinned_snapshot_reference(&context, resource)
         .ok_or_else(|| no_pinned_snapshot_error(&args.resource_id))?;
     let pinned = SchemaSnapshotStore::new(&context.root).read(reference)?;
-    let artifacts = discover_artifacts_for_cli(&context, resource)?;
+    let artifacts = discover_artifacts_for_cli(&context, resource, execution)?;
     let unchanged = artifacts
         .discovery_manifest
         .as_ref()
@@ -341,6 +367,7 @@ fn load_context(cli: &Cli, command: &str) -> Result<ProjectContext, CliError> {
 fn discover_artifacts_for_cli(
     context: &ProjectContext,
     resource: &CompiledResource,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let pinned = pinned_snapshot_reference(context, resource).cloned();
     if let Some(snapshot) = pinned {
@@ -354,28 +381,35 @@ fn discover_artifacts_for_cli(
             context,
             &probe_resource,
             SchemaDiscoveryExecutionOptions::new().with_verified_baseline(verified_baseline),
+            execution,
         );
     }
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
-        return discover_artifacts_for_cli_resource(context, resource, Default::default());
+        return discover_artifacts_for_cli_resource(
+            context,
+            resource,
+            Default::default(),
+            execution,
+        );
     }
-    discover_artifacts_for_cli_resource(context, resource, Default::default())
+    discover_artifacts_for_cli_resource(context, resource, Default::default(), execution)
 }
 
 fn discover_artifacts_for_cli_resource(
     context: &ProjectContext,
     resource: &CompiledResource,
     options: SchemaDiscoveryExecutionOptions,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     let secret_provider = context.secret_provider();
     if matches!(resource.descriptor().schema_source, SchemaSource::Discover)
-        && matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_http_file_plan(plan))
+        && matches!(resource.plan(), CompiledResourcePlan::Files(plan) if is_remote_file_plan(plan))
     {
         return Ok(
             cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                 resource,
                 &secret_provider,
-                file_runtime_dependencies(context, None)?,
+                file_runtime_dependencies(context, Some(execution))?,
                 options,
             )?,
         );
@@ -401,8 +435,10 @@ fn discover_artifacts_for_cli_resource(
     }
 }
 
-fn is_http_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
-    plan.root.starts_with("http://") || plan.root.starts_with("https://")
+fn is_remote_file_plan(plan: &cdf_declarative::FileResourcePlan) -> bool {
+    ["http://", "https://", "s3://", "gs://", "az://"]
+        .iter()
+        .any(|scheme| plan.root.starts_with(scheme))
 }
 
 fn update_lockfile(

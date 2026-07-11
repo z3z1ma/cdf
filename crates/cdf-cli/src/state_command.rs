@@ -18,13 +18,17 @@ use crate::{
 
 use self::{migrate::migrate, recover::recover};
 
-pub(crate) fn state(cli: &Cli, command: StateCommand) -> Result<CommandOutput, CliError> {
+pub(crate) fn state(
+    cli: &Cli,
+    command: StateCommand,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     match command {
         StateCommand::Show(args) => show(cli, args),
         StateCommand::History(args) => history(cli, args),
         StateCommand::Rewind(args) => rewind(cli, args),
         StateCommand::Migrate => migrate(cli),
-        StateCommand::Recover(args) => recover(cli, args),
+        StateCommand::Recover(args) => recover(cli, args, execution),
     }
 }
 

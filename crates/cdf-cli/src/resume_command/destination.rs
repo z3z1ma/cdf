@@ -4,7 +4,8 @@ use cdf_project::ResolvedProjectDestination;
 use crate::{
     context::ProjectContext,
     destination_uri::{
-        destination_error_suggestions, redact_error_value, resolve_environment_destination,
+        destination_error_suggestions, redact_error_value,
+        resolve_selected_destination_with_services,
     },
     error_catalog,
     output::CliError,
@@ -20,9 +21,11 @@ impl SelectedDestination {
         context: &ProjectContext,
         command: &'static str,
         target: &TargetName,
+        execution: &cdf_runtime::ExecutionServices,
     ) -> Result<Self, CliError> {
-        let resolved = resolve_environment_destination(context, target)
-            .map_err(|error| resume_destination_resolution_error(context, error, command))?;
+        let resolved =
+            resolve_selected_destination_with_services(context, target, None, Some(execution))
+                .map_err(|error| resume_destination_resolution_error(context, error, command))?;
         Ok(Self {
             destination: Some(resolved.destination),
             secret_redaction: resolved.secret_redaction,

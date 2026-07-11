@@ -23,7 +23,11 @@ use crate::{
 
 use self::{attempt::ResumeAttempt, report::finish_resume_report};
 
-pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn resume(
+    cli: &Cli,
+    args: ResumeArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let state_path = context.state_store_path()?;
     if !state_path.exists() {
@@ -54,7 +58,14 @@ pub(crate) fn resume(cli: &Cli, args: ResumeArgs) -> Result<CommandOutput, CliEr
             }
         },
     };
-    resume_run(&context, &state_path, run_id, cli.json, cli.no_color)
+    resume_run(
+        &context,
+        &state_path,
+        run_id,
+        cli.json,
+        cli.no_color,
+        execution,
+    )
 }
 
 fn resume_run(
@@ -63,6 +74,7 @@ fn resume_run(
     run_id: RunId,
     json_mode: bool,
     no_color: bool,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<CommandOutput, CliError> {
     let run_ledger = SqliteRunLedger::open(state_path)?;
     let snapshot = run_ledger.snapshot(&run_id)?.ok_or_else(|| {
@@ -78,7 +90,7 @@ fn resume_run(
             let _ = sink.try_emit(event);
         }
     }
-    let attempt = ResumeAttempt::new(context, &run_ledger, &snapshot, event_sink)?;
+    let attempt = ResumeAttempt::new(context, &run_ledger, &snapshot, event_sink, execution)?;
     let outcome = attempt.execute();
     match outcome {
         Ok(report) => finish_resume_report(report, progress.map(|progress| progress.snapshot())),

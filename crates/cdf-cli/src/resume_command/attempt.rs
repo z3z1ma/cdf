@@ -39,6 +39,7 @@ pub(super) struct ResumeAttempt<'a> {
     package: Option<ResumePackageFacts>,
     package_error: Option<String>,
     store: SqliteCheckpointStore,
+    execution: &'a cdf_runtime::ExecutionServices,
 }
 
 impl<'a> ResumeAttempt<'a> {
@@ -47,6 +48,7 @@ impl<'a> ResumeAttempt<'a> {
         run_ledger: &'a SqliteRunLedger,
         snapshot: &'a RunLedgerSnapshot,
         event_sink: Option<&'a dyn RunEventSink>,
+        execution: &'a cdf_runtime::ExecutionServices,
     ) -> Result<Self, CliError> {
         let package_path = package_path_from_events(&snapshot.events)
             .map(|path| resolve_project_path(&context.root, Path::new(&path)));
@@ -68,6 +70,7 @@ impl<'a> ResumeAttempt<'a> {
             package,
             package_error,
             store,
+            execution,
         })
     }
 
@@ -251,7 +254,7 @@ impl<'a> ResumeAttempt<'a> {
         &self,
         target: &cdf_kernel::TargetName,
     ) -> Result<Result<SelectedDestination, ResumeReport>, CliError> {
-        match SelectedDestination::from_context(self.context, "resume", target) {
+        match SelectedDestination::from_context(self.context, "resume", target, self.execution) {
             Ok(destination) => Ok(Ok(destination)),
             Err(error) if error.not_supported => {
                 let report = self.fail_closed(

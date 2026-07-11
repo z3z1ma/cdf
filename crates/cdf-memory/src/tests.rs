@@ -237,3 +237,27 @@ fn panic_unwind_and_pending_reservation_cancellation_reconcile() {
     drop(held);
     assert_eq!(coordinator.snapshot().current_bytes, 0);
 }
+
+#[test]
+fn blocking_reservation_parks_until_release_without_async_runtime() {
+    let coordinator = Arc::new(DeterministicMemoryCoordinator::new(64, BTreeMap::new()).unwrap());
+    let held = coordinator
+        .try_reserve(&ReservationRequest::new(consumer("held", MemoryClass::Queue), 64).unwrap())
+        .unwrap()
+        .unwrap();
+    let waiter: Arc<dyn MemoryCoordinator> = coordinator.clone();
+    let worker = std::thread::spawn(move || {
+        reserve_blocking(
+            waiter,
+            &ReservationRequest::new(consumer("worker", MemoryClass::Discovery), 64).unwrap(),
+        )
+        .unwrap()
+    });
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    assert!(!worker.is_finished());
+    drop(held);
+    let lease = worker.join().unwrap();
+    assert_eq!(lease.bytes(), 64);
+    drop(lease);
+    assert_eq!(coordinator.snapshot().current_bytes, 0);
+}

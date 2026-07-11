@@ -373,6 +373,7 @@ pub(crate) fn build_replay_destination(
     context: &ProjectContext,
     args: PackageReplayDestinationArgs<'_>,
     inputs: &PackageReplayInputs,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ReplayDestination, CliError> {
     let uri = args
         .destination_uri
@@ -449,7 +450,8 @@ pub(crate) fn build_replay_destination(
     let destination_context = ProjectResolutionContext::for_project_run(&context.root, &target)
         .with_environment_name(&context.environment.name)
         .with_destination_policy(destination_policy)
-        .with_secret_provider(&secret_provider);
+        .with_secret_provider(&secret_provider)
+        .with_execution_services(execution);
     let destination = resolve_project_run_destination(&registry, uri, &destination_context)
         .map_err(|error| {
             replay_destination_resolution_error(context, args.destination_uri, error, uri)
@@ -583,6 +585,7 @@ fn replay_destination_resolution_error(
 pub(crate) fn replay_package(
     cli: &Cli,
     args: ReplayPackageArgs,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &args.package_dir)?;
     let mut replay_destination = build_replay_destination(
@@ -593,6 +596,7 @@ pub(crate) fn replay_package(
             merge_dedup: args.merge_dedup.as_deref(),
         },
         &package.inputs,
+        execution,
     )?;
     let package_hash = package.inputs.state_delta.package_hash.clone();
     let state_store_path = package.project.state_store_path()?;

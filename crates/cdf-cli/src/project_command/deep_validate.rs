@@ -25,7 +25,10 @@ use crate::{
     scan_command::default_target_for_resource,
 };
 
-pub(super) fn run(cli: &Cli) -> Result<CommandOutput, CliError> {
+pub(super) fn run(
+    cli: &Cli,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load_for_command(
         "validate --deep",
         cli.project.as_ref(),
@@ -41,7 +44,9 @@ pub(super) fn run(cli: &Cli) -> Result<CommandOutput, CliError> {
     )?;
     let mut resources = Vec::with_capacity(context.resources.len());
     for (resource, origin) in context.resources.iter().zip(&context.resource_origins) {
-        resources.push(deep_validate_resource(&context, resource, origin));
+        resources.push(deep_validate_resource(
+            &context, resource, origin, execution,
+        ));
     }
     let summary = DeepValidateSummary::from_resources(&resources);
     let exit_code = if summary.failed == 0 { 0 } else { 3 };
@@ -63,11 +68,12 @@ fn deep_validate_resource(
     context: &ProjectContext,
     resource: &CompiledResource,
     origin: &ProjectResourceOrigin,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> DeepValidateResourceReport {
     let mut diagnostics = Vec::new();
     let mut working_resource = resource.clone();
-    let partition_report = partition_check(context, resource, &mut diagnostics);
-    let discovery = discovery_check(context, resource, &mut diagnostics);
+    let partition_report = partition_check(context, resource, execution, &mut diagnostics);
+    let discovery = discovery_check(context, resource, execution, &mut diagnostics);
     if let Some(discovery) = &discovery.discovery {
         working_resource = resource.with_schema_source_and_schema(
             SchemaSource::Discovered {
@@ -76,7 +82,7 @@ fn deep_validate_resource(
             Arc::clone(&discovery.normalized_schema),
         );
     }
-    physical_schema_reconciliation_check(context, resource, &mut diagnostics);
+    physical_schema_reconciliation_check(context, resource, execution, &mut diagnostics);
     let validation_program = validation_program_check(&working_resource, &mut diagnostics);
     let normalization = normalization_check(&working_resource, &mut diagnostics);
     let destination = destination_check(context, &working_resource, &mut diagnostics);
@@ -112,13 +118,15 @@ fn deep_validate_resource(
 fn partition_check(
     context: &ProjectContext,
     resource: &CompiledResource,
+    execution: &cdf_runtime::ExecutionServices,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) -> DeepValidatePartitionReport {
     let request = deep_scan_request(resource.descriptor());
     let partitions = request.and_then(|request| match resource.plan() {
         CompiledResourcePlan::Files(_) => resource
             .to_file_resource(crate::project_run_resource::file_runtime_dependencies(
-                context, None,
+                context,
+                Some(execution),
             )?)?
             .plan_partitions(&request),
         CompiledResourcePlan::Rest(_) | CompiledResourcePlan::Sql(_) => {
@@ -155,6 +163,7 @@ fn partition_check(
 fn discovery_check(
     context: &ProjectContext,
     resource: &CompiledResource,
+    execution: &cdf_runtime::ExecutionServices,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) -> DeepValidateDiscoveryReport {
     if !matches!(resource.descriptor().schema_source, SchemaSource::Discover) {
@@ -168,7 +177,7 @@ fn discovery_check(
         };
     }
 
-    match discover_for_deep_validate(context, resource) {
+    match discover_for_deep_validate(context, resource, execution) {
         Ok(discovery) => DeepValidateDiscoveryReport {
             status: "ok".to_owned(),
             schema_hash: Some(discovery.snapshot.artifact.schema_hash.to_string()),
@@ -199,6 +208,7 @@ fn discovery_check(
 fn discover_for_deep_validate(
     context: &ProjectContext,
     resource: &CompiledResource,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> cdf_kernel::Result<ResourceSchemaDiscovery> {
     let secret_provider = context.secret_provider();
     if matches!(resource.plan(), CompiledResourcePlan::Rest(_)) {
@@ -214,7 +224,7 @@ fn discover_for_deep_validate(
             cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                 resource,
                 &secret_provider,
-                crate::project_run_resource::file_runtime_dependencies(context, None)?,
+                crate::project_run_resource::file_runtime_dependencies(context, Some(execution))?,
                 cdf_project::SchemaDiscoveryExecutionOptions::default(),
             )?
             .discovery,
@@ -226,6 +236,7 @@ fn discover_for_deep_validate(
 fn physical_schema_reconciliation_check(
     context: &ProjectContext,
     resource: &CompiledResource,
+    execution: &cdf_runtime::ExecutionServices,
     diagnostics: &mut Vec<DeepValidateDiagnostic>,
 ) {
     let CompiledResourcePlan::Files(plan) = resource.plan() else {
@@ -235,7 +246,7 @@ fn physical_schema_reconciliation_check(
         return;
     }
     let probe = resource.with_schema_source_and_schema(SchemaSource::Discover, resource.schema());
-    let discovery = discover_for_deep_validate(context, &probe);
+    let discovery = discover_for_deep_validate(context, &probe, execution);
     let observed = match discovery {
         Ok(discovery) => discovery.normalized_schema,
         Err(error) => {

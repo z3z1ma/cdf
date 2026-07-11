@@ -19,7 +19,11 @@ use crate::{
     run_command::ensure_parent_directory,
 };
 
-pub(super) fn recover(cli: &Cli, args: StateRecoverArgs) -> Result<CommandOutput, CliError> {
+pub(super) fn recover(
+    cli: &Cli,
+    args: StateRecoverArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let package = load_package_replay_context(cli, &args.package_dir)?;
     let selected_receipt = select_recovery_receipt(&package.reader, args.receipt_id.as_deref())?;
     let selection = selected_receipt.selection;
@@ -32,6 +36,7 @@ pub(super) fn recover(cli: &Cli, args: StateRecoverArgs) -> Result<CommandOutput
             merge_dedup: args.merge_dedup.as_deref(),
         },
         &package.inputs,
+        execution,
     )?;
     let destination_report = destination.report().clone();
     let state_store_path = package.project.state_store_path()?;

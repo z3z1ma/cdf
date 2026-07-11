@@ -49,7 +49,10 @@ sys.stdout.write(json.dumps({
 }, sort_keys=True))
 "#;
 
-pub(crate) fn doctor(cli: &crate::args::Cli) -> Result<CommandOutput, CliError> {
+pub(crate) fn doctor(
+    cli: &crate::args::Cli,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let mut checks = vec![
         DoctorCheck::passed("project_file", "cdf.toml parsed and environment resolved")
@@ -82,7 +85,7 @@ pub(crate) fn doctor(cli: &crate::args::Cli) -> Result<CommandOutput, CliError> 
     }
 
     checks.push(python_check(&context));
-    checks.extend(file_transport_checks(&context));
+    checks.extend(file_transport_checks(&context, execution));
     checks.extend(destination_checks(context.destination_runtime()));
     checks.push(ledger_destination_drift_check(&context));
 
@@ -103,7 +106,10 @@ pub(crate) fn doctor(cli: &crate::args::Cli) -> Result<CommandOutput, CliError> 
     CommandOutput::rendered_with_exit_code("doctor", report.render_document(), report, exit_code)
 }
 
-fn file_transport_checks(context: &ProjectContext) -> Vec<DoctorCheck> {
+fn file_transport_checks(
+    context: &ProjectContext,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Vec<DoctorCheck> {
     let remote_resources = context
         .resources
         .iter()
@@ -114,18 +120,19 @@ fn file_transport_checks(context: &ProjectContext) -> Vec<DoctorCheck> {
     if remote_resources.is_empty() {
         return Vec::new();
     }
-    let dependencies = match crate::project_run_resource::file_runtime_dependencies(context, None) {
-        Ok(dependencies) => dependencies,
-        Err(error) => {
-            return vec![DoctorCheck::failed(
-                "file_transport",
-                format!(
-                    "remote file transport initialization failed: {}",
-                    error.message
-                ),
-            )];
-        }
-    };
+    let dependencies =
+        match crate::project_run_resource::file_runtime_dependencies(context, Some(execution)) {
+            Ok(dependencies) => dependencies,
+            Err(error) => {
+                return vec![DoctorCheck::failed(
+                    "file_transport",
+                    format!(
+                        "remote file transport initialization failed: {}",
+                        error.message
+                    ),
+                )];
+            }
+        };
     remote_resources
         .into_iter()
         .map(|resource| {

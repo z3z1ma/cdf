@@ -427,6 +427,7 @@ impl ExecutionTaskScope for StandaloneTaskScope {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use cdf_memory::{DeterministicMemoryCoordinator, MemoryClass, ReservationRequest};
@@ -550,5 +551,58 @@ mod tests {
                 .unwrap();
             assert_eq!(value, "host-io");
         });
+    }
+
+    #[test]
+    fn production_runtime_ownership_is_centralized() {
+        fn visit(directory: &Path, violations: &mut Vec<String>) {
+            for entry in std::fs::read_dir(directory).unwrap() {
+                let entry = entry.unwrap();
+                let path = entry.path();
+                if path.is_dir() {
+                    if !matches!(
+                        path.file_name().and_then(|name| name.to_str()),
+                        Some("cdf-benchmarks" | "cdf-conformance")
+                    ) {
+                        visit(&path, violations);
+                    }
+                    continue;
+                }
+                let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+                    continue;
+                };
+                if path.extension().and_then(|value| value.to_str()) != Some("rs")
+                    || name.contains("test")
+                    || path.ends_with("cdf-engine/src/standalone_host.rs")
+                {
+                    continue;
+                }
+                let source = std::fs::read_to_string(&path).unwrap();
+                let production = source.split("#[cfg(test)]").next().unwrap_or(&source);
+                for forbidden in [
+                    "tokio::runtime::Builder",
+                    "RuntimeBuilder::new_",
+                    "futures_executor::block_on",
+                    ".block_on(",
+                    "OnceLock<tokio::runtime::Runtime",
+                ] {
+                    if production.contains(forbidden) {
+                        violations.push(format!("{} contains {forbidden}", path.display()));
+                    }
+                }
+            }
+        }
+
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .unwrap();
+        let mut violations = Vec::new();
+        visit(&workspace.join("crates"), &mut violations);
+        assert!(
+            violations.is_empty(),
+            "production runtimes/blocking executors must be owned by the standalone host:\n{}",
+            violations.join("\n")
+        );
     }
 }

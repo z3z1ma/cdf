@@ -418,6 +418,35 @@ pub fn reserve(
     }
 }
 
+pub fn reserve_blocking(
+    coordinator: Arc<dyn MemoryCoordinator>,
+    request: &ReservationRequest,
+) -> Result<MemoryLease> {
+    struct ThreadWake(std::thread::Thread);
+
+    impl std::task::Wake for ThreadWake {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+
+    let waker = Waker::from(Arc::new(ThreadWake(std::thread::current())));
+    loop {
+        if let Some(lease) = coordinator.try_reserve(request)? {
+            return Ok(lease);
+        }
+        coordinator.register_waiter(&waker);
+        if let Some(lease) = coordinator.try_reserve(request)? {
+            return Ok(lease);
+        }
+        std::thread::park();
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct DeterministicMemoryCoordinator {
     inner: Arc<CoordinatorInner>,

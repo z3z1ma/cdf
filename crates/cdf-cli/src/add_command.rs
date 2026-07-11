@@ -32,7 +32,11 @@ use crate::{
     },
 };
 
-pub(crate) fn add(cli: &Cli, args: AddArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn add(
+    cli: &Cli,
+    args: AddArgs,
+    execution: &cdf_runtime::ExecutionServices,
+) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("add", cli.project.as_ref(), cli.env.as_deref())?;
     let request = AddResourceRequest::from_args(&context, &args)?;
@@ -49,7 +53,7 @@ pub(crate) fn add(cli: &Cli, args: AddArgs) -> Result<CommandOutput, CliError> {
         fallback: context.secret_provider(),
         direct: direct_secret,
     };
-    let artifacts = discover_for_add(&context, &proposed.resource, &add_secrets)?;
+    let artifacts = discover_for_add(&context, &proposed.resource, &add_secrets, execution)?;
     let discovery = &artifacts.discovery;
     let pinned_resource = proposed.resource.with_schema_source_and_schema(
         SchemaSource::Discovered {
@@ -155,16 +159,19 @@ fn discover_for_add(
     context: &ProjectContext,
     resource: &CompiledResource,
     secret_provider: &dyn SecretProvider,
+    execution: &cdf_runtime::ExecutionServices,
 ) -> Result<ResourceSchemaDiscoveryArtifacts, CliError> {
     match resource.plan() {
         CompiledResourcePlan::Files(plan)
-            if plan.root.starts_with("http://") || plan.root.starts_with("https://") =>
+            if ["http://", "https://", "s3://", "gs://", "az://"]
+                .iter()
+                .any(|scheme| plan.root.starts_with(scheme)) =>
         {
             Ok(
                 cdf_project::discover_resource_schema_with_file_dependencies_artifacts(
                     resource,
                     secret_provider,
-                    file_runtime_dependencies(context, None)?,
+                    file_runtime_dependencies(context, Some(execution))?,
                     Default::default(),
                 )?,
             )
