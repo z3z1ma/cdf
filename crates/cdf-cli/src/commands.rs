@@ -43,7 +43,11 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
             let (host, services) = cdf_engine::StandaloneExecutionHost::default_services(managed)?;
             crate::run_command::run(&cli, args, host.as_ref(), &services)
         }
-        Command::Preview(args) => crate::scan_command::preview(&cli, args),
+        Command::Preview(args) => {
+            let (host, _) =
+                cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
+            crate::scan_command::preview(&cli, args, host.as_ref())
+        }
         Command::Sql(args) => crate::sql_command::sql(&cli, args),
         Command::Inspect(args) => crate::inspect_command::inspect(&cli, args),
         Command::DiffSchema => crate::project_command::diff_schema(&cli),
@@ -52,7 +56,12 @@ fn dispatch(cli: Cli) -> Result<CommandOutput, CliError> {
         Command::State(command) => crate::state_command::state(&cli, command),
         Command::Resume(args) => crate::resume_command::resume(&cli, args),
         Command::ReplayPackage(args) => crate::replay_command::replay_package(&cli, args),
-        Command::Backfill(args) => crate::backfill_command::backfill(&cli, args),
+        Command::Backfill(args) if args.execute => {
+            let (host, services) =
+                cdf_engine::StandaloneExecutionHost::default_services(cdf_memory_budget()?)?;
+            crate::backfill_command::backfill(&cli, args, Some((host.as_ref(), &services)))
+        }
+        Command::Backfill(args) => crate::backfill_command::backfill(&cli, args, None),
         Command::Package(command) => crate::package_command::package(&cli, command),
         Command::Doctor => crate::doctor_command::doctor(&cli),
         Command::Status => crate::status_command::status(&cli),

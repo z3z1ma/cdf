@@ -2083,6 +2083,7 @@ fn backfill_human_rich_render_uses_plan_panels_and_slice_table() {
             execute: false,
             slice_size: Some(10),
         },
+        None,
     )
     .unwrap();
     let result = render_rich(output);

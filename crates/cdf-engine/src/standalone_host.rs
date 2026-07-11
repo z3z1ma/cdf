@@ -208,7 +208,12 @@ impl StandaloneExecutionHost {
     }
 
     pub fn block_on_root<F: std::future::Future>(&self, future: F) -> F::Output {
-        self.runtime.block_on(future)
+        // The orchestration future is deliberately polled outside Tokio. Some
+        // compatibility drivers are synchronous and still own private runtimes;
+        // entering the host I/O runtime here would make those drivers panic on a
+        // nested runtime. Async operators use the host scope/handle explicitly,
+        // so runtime ownership remains centralized while drivers migrate.
+        futures_executor::block_on(future)
     }
 
     pub fn new(

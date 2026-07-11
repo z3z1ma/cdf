@@ -2,7 +2,7 @@ use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_p
 use cdf_kernel::{CdfError, PipelineId, RunEventSink, TargetName};
 use cdf_project::{
     BackfillPlan, BackfillPlanRequest, BackfillSlice, ProjectRunRequest, ProjectRunSource,
-    WindowScopedResource, backfill_pipeline_id, plan_backfill, run_project,
+    WindowScopedResource, backfill_pipeline_id, plan_backfill, run_project_with_services,
 };
 use serde::Serialize;
 
@@ -26,7 +26,14 @@ use crate::{
     scan_command::default_target_for_resource,
 };
 
-pub(crate) fn backfill(cli: &Cli, args: BackfillArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn backfill(
+    cli: &Cli,
+    args: BackfillArgs,
+    execution: Option<(
+        &cdf_engine::StandaloneExecutionHost,
+        &cdf_runtime::ExecutionServices,
+    )>,
+) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
     let resource = context.resource(&args.resource_id)?;
     let target = TargetName::new(
@@ -56,15 +63,28 @@ pub(crate) fn backfill(cli: &Cli, args: BackfillArgs) -> Result<CommandOutput, C
     let progress = human_progress_sink(cli.json, cli.no_color);
     let event_sink = progress.as_ref().map(|sink| sink as &dyn RunEventSink);
     let mut reports = Vec::with_capacity(plan.slices.len());
+    let (host, services) = execution.ok_or_else(|| {
+        CliError::from(CdfError::internal(
+            "backfill execution host was not provided",
+        ))
+    })?;
     for slice in &plan.slices {
-        let report = execute_slice(&context, &target, source, &pipeline_id, slice, event_sink)
-            .map_err(|error| {
-                annotate_backfill_slice_error(
-                    error,
-                    slice,
-                    progress.as_ref().map(|progress| progress.snapshot()),
-                )
-            })?;
+        let report = execute_slice(
+            &context,
+            &target,
+            source,
+            &pipeline_id,
+            slice,
+            event_sink,
+            (host, services),
+        )
+        .map_err(|error| {
+            annotate_backfill_slice_error(
+                error,
+                slice,
+                progress.as_ref().map(|progress| progress.snapshot()),
+            )
+        })?;
         reports.push(report);
     }
     let report = BackfillCliReport::executed(&plan, args.slice_size, reports);
@@ -86,7 +106,12 @@ fn execute_slice(
     pipeline_id: &PipelineId,
     slice: &BackfillSlice,
     event_sink: Option<&dyn RunEventSink>,
+    execution: (
+        &cdf_engine::StandaloneExecutionHost,
+        &cdf_runtime::ExecutionServices,
+    ),
 ) -> Result<BackfillSliceExecutionReport, CliError> {
+    let (host, services) = execution;
     let resolved = resolve_environment_destination(context, target)
         .map_err(|error| backfill_destination_resolution_error(context, error))?;
     let destination = resolved.destination;
@@ -104,20 +129,24 @@ fn execute_slice(
             source.descriptor(),
         )?;
     }
-    let run = futures_executor::block_on(run_project(ProjectRunRequest {
-        resource: ProjectRunSource::new(&scoped),
-        plan: engine_plan,
-        package_root: context.package_root(),
-        state_store_path: context.state_store_path()?,
-        pipeline_id: pipeline_id.clone(),
-        package_id: slice.package_id.clone(),
-        checkpoint_id: slice.checkpoint_id()?,
-        destination,
-        run_id: None,
-        event_sink,
-        after_receipt_verified: None,
-    }))
-    .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
+    let run = host
+        .block_on_root(run_project_with_services(
+            ProjectRunRequest {
+                resource: ProjectRunSource::new(&scoped),
+                plan: engine_plan,
+                package_root: context.package_root(),
+                state_store_path: context.state_store_path()?,
+                pipeline_id: pipeline_id.clone(),
+                package_id: slice.package_id.clone(),
+                checkpoint_id: slice.checkpoint_id()?,
+                destination,
+                run_id: None,
+                event_sink,
+                after_receipt_verified: None,
+            },
+            services,
+        ))
+        .map_err(|error| redact_error_value(error, resolved.secret_redaction.as_deref()))?;
     Ok(BackfillSliceExecutionReport {
         run_id: run.run_id.to_string(),
         package_id: run.package_id,

@@ -78,7 +78,11 @@ pub(crate) fn plan_or_explain(
     )
 }
 
-pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliError> {
+pub(crate) fn preview(
+    cli: &Cli,
+    args: ScanArgs,
+    host: &cdf_engine::StandaloneExecutionHost,
+) -> Result<CommandOutput, CliError> {
     let context =
         ProjectContext::load_for_command("preview", cli.project.as_ref(), cli.env.as_deref())?;
     let prepared = prepare_runtime_resource_for_cli(&context, &args.resource_id, false)?;
@@ -95,7 +99,7 @@ pub(crate) fn preview(cli: &Cli, args: ScanArgs) -> Result<CommandOutput, CliErr
         &args,
         identifier_policy.as_ref(),
     )?;
-    match preview_resource_report(&prepared.resource, &plan, prepared.schema_snapshot) {
+    match preview_resource_report(&prepared.resource, &plan, prepared.schema_snapshot, host) {
         Ok(report) => CommandOutput::rendered("preview", preview_document(&report), report),
         Err(error) if lower_runtime_missing(&error) => Err(CliError::not_supported_with(
             "preview",
@@ -503,12 +507,13 @@ fn preview_resource_report(
     resource: &CliProjectRunSource,
     plan: &EnginePlan,
     schema_snapshot: Option<SchemaSnapshotActionReport>,
+    host: &cdf_engine::StandaloneExecutionHost,
 ) -> cdf_kernel::Result<PreviewReport> {
     let limits = match plan.scan.request.limit {
         Some(limit) => EnginePreviewLimits::default().with_max_rows(limit)?,
         None => EnginePreviewLimits::default(),
     };
-    let preview = futures_executor::block_on(cdf_engine::preview_resource(
+    let preview = host.block_on_root(cdf_engine::preview_resource(
         plan,
         resource.as_project_resource().stream(),
         limits,
