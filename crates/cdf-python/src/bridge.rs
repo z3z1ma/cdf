@@ -361,6 +361,12 @@ impl PythonResourceBridge {
         let iterator = source_output.try_iter().map_err(py_error)?;
         for item in iterator {
             let item = item.map_err(py_error)?;
+            if let Some(metadata) = extract_dlt_metadata(&item)?
+                && metadata.kind == DltShimObjectKind::Resource
+                && !metadata.selected_for_source_expansion()
+            {
+                continue;
+            }
             let mut read = self.batches_from_dlt_resource(&item)?;
             if read.metadata.source_name.is_none() {
                 read.metadata.source_name.clone_from(&source_name);

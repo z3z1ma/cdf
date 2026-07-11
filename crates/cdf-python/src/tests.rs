@@ -2,7 +2,9 @@ use super::*;
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    ffi::CString,
     io::Cursor,
+    path::PathBuf,
 };
 
 use arrow_array::{ArrayRef, Int64Array, StringArray};
@@ -192,10 +194,11 @@ fn concurrency_semantics_are_identical_for_fixture_hashes() {
     let free_threaded_semantics = execution_semantics(&free_threaded_report, true, 4);
     assert_eq!(gil_semantics.effective_parallelism, 1);
     assert_eq!(free_threaded_semantics.effective_parallelism, 4);
-    assert_eq!(
-        deterministic_fixture_hash(&read).unwrap(),
-        deterministic_fixture_hash(&read).unwrap()
-    );
+    let hash = deterministic_fixture_hash(&read).unwrap();
+    assert_eq!(hash, deterministic_fixture_hash(&read).unwrap());
+    if let Ok(path) = std::env::var("CDF_PYTHON_FIXTURE_HASH_OUTPUT") {
+        std::fs::write(path, format!("{hash}\n")).unwrap();
+    }
 }
 
 #[test]
@@ -474,6 +477,90 @@ crm.__cdf_dlt_metadata__ = {
             vec!["id"]
         );
         assert_eq!(reads[0].read.row_count(), 1);
+    });
+}
+
+#[test]
+fn imported_dlt_decorators_map_selected_resources_and_skip_the_rest() {
+    Python::attach(|py| {
+        let sdk_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("python");
+        let source = format!(
+            r#"
+import sys
+sys.path.insert(0, {sdk_root:?})
+from cdf_sdk import dlt
+
+@dlt.resource(
+    name="orders",
+    primary_key="id",
+    merge_key=("id", "region"),
+    write_disposition={{"disposition": "merge", "strategy": "scd2"}},
+    schema_contract={{"tables": "freeze", "columns": "evolve"}},
+    incremental=dlt.incremental(
+        "updated_at",
+        initial_value="2026-01-01T00:00:00Z",
+        ordering="exact",
+        lag_tolerance_ms=250,
+    ),
+)
+def orders():
+    yield {{"id": 1, "region": "us", "updated_at": "2026-07-01T00:00:00Z"}}
+
+@dlt.resource(name="unselected", selected=False)
+def unselected():
+    raise RuntimeError("unselected resource executed")
+
+@dlt.resource(name="skipped", write_disposition="skip")
+def skipped():
+    raise RuntimeError("skipped resource executed")
+
+@dlt.source(name="crm")
+def crm():
+    return [orders, unselected, skipped]
+"#,
+            sdk_root = sdk_root.display()
+        );
+        let source = CString::new(source).unwrap();
+        let module = PyModule::from_code(
+            py,
+            &source,
+            c"imported_dlt_fixture.py",
+            c"imported_dlt_fixture",
+        )
+        .unwrap();
+
+        let reads = bridge()
+            .batches_from_dlt_source(&module.getattr("crm").unwrap())
+            .unwrap();
+
+        assert_eq!(reads.len(), 1);
+        let read = &reads[0];
+        let descriptor = read.read.descriptor.as_ref().unwrap();
+        assert_eq!(descriptor.resource_id.as_str(), "orders");
+        assert_eq!(descriptor.primary_key, vec!["id"]);
+        assert_eq!(descriptor.merge_key, vec!["id", "region"]);
+        assert_eq!(descriptor.cursor.as_ref().unwrap().field, "updated_at");
+        assert_eq!(
+            descriptor.cursor.as_ref().unwrap().ordering,
+            CursorOrderingClaim::Exact
+        );
+        assert_eq!(descriptor.cursor.as_ref().unwrap().lag_tolerance_ms, 250);
+        assert_eq!(descriptor.write_disposition, WriteDisposition::Merge);
+        assert_eq!(
+            descriptor.contract.as_ref().unwrap().as_str(),
+            "dlt-orders-freeze"
+        );
+        assert_eq!(read.metadata.source_name.as_deref(), Some("crm"));
+        assert_eq!(read.read.row_count(), 1);
+        assert!(read.migration_table.entries.iter().any(|entry| {
+            entry.dlt_feature == "dlt destination delegation"
+                && entry.status == DltShimMappingStatus::Unsupported
+        }));
     });
 }
 

@@ -149,6 +149,16 @@ pub struct DltShimMetadata {
 }
 
 impl DltShimMetadata {
+    pub fn selected_for_source_expansion(&self) -> bool {
+        self.selected
+            && !matches!(
+                self.write_disposition
+                    .as_ref()
+                    .map(|hint| &hint.disposition),
+                Some(DltWriteDisposition::Skip)
+            )
+    }
+
     pub fn resource_id_hint(&self) -> Option<&str> {
         self.table_name
             .as_deref()

@@ -1,0 +1,107 @@
+name: Python Interpreters
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/python-interpreters.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/cdf-cli/**"
+      - "crates/cdf-python/**"
+      - "python/**"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/python-interpreters.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/cdf-cli/**"
+      - "crates/cdf-python/**"
+      - "python/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bridge:
+    name: Python ${{ matrix.python }} (${{ matrix.kind }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.14"
+            kind: gil
+            expect_free_threaded: "0"
+          - python: "3.14t"
+            kind: free-threaded
+            expect_free_threaded: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Verify interpreter mode
+        env:
+          EXPECT_FREE_THREADED: ${{ matrix.expect_free_threaded }}
+        run: |
+          python - <<'PY'
+          import os
+          import sysconfig
+
+          actual = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+          expected = os.environ["EXPECT_FREE_THREADED"] == "1"
+          if actual != expected:
+              raise SystemExit(f"expected free_threaded={expected}, got {actual}")
+          PY
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: python-${{ matrix.kind }}
+
+      - name: Exercise bridge and product spine
+        env:
+          PYO3_PYTHON: python
+          CDF_PYTHON_FIXTURE_HASH_OUTPUT: target/python-fixture-hash-${{ matrix.kind }}.txt
+        run: |
+          cargo test -p cdf-python --locked concurrency_semantics_are_identical_for_fixture_hashes
+          cargo test -p cdf-python --locked imported_dlt_decorators_map_selected_resources_and_skip_the_rest
+          cargo test -p cdf-cli --locked python_resource_plan_preview_run_and_replay_use_the_product_spine
+          cargo test -p cdf-cli --locked doctor_passes_when_free_threaded_required_and_gil_disabled
+          cargo test -p cdf-cli --locked doctor_fails_when_free_threaded_required
+
+      - name: Upload deterministic fixture hash
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-fixture-hash-${{ matrix.kind }}
+          path: target/python-fixture-hash-${{ matrix.kind }}.txt
+          if-no-files-found: error
+
+  compare:
+    name: Compare Python fixture hashes
+    needs: bridge
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download fixture hashes
+        uses: actions/download-artifact@v4
+        with:
+          pattern: python-fixture-hash-*
+          path: hashes
+          merge-multiple: true
+
+      - name: Require GIL/free-threaded identity
+        run: cmp hashes/python-fixture-hash-gil.txt hashes/python-fixture-hash-free-threaded.txt
