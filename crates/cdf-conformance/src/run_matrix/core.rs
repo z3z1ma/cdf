@@ -2,7 +2,9 @@ use std::cell::Cell;
 
 use cdf_declarative::{CompiledResource, RestResource, SqlResource};
 use cdf_dest_parquet::ParquetDestination;
-use cdf_kernel::{CdfError, DestinationProtocol, PipelineId, Result, RunId, SourcePosition};
+use cdf_kernel::{
+    CdfError, DestinationProtocol, PipelineId, QueryableResource, Result, RunId, SourcePosition,
+};
 use cdf_package::PackageReader;
 use cdf_project::{ProjectRunReport, ProjectRunRequest, ProjectRunSource, run_project};
 
@@ -15,7 +17,7 @@ use super::{
         assert_plan_honesty, assert_replay_inputs_match_run, assert_run_report, receipt_gate,
     },
     destinations::{MatrixDestinationHandle, target_for_cell},
-    file_fixture, plan_json, rest_fixture, sql_fixture,
+    file_fixture, plan_json, python_fixture, rest_fixture, sql_fixture,
     test_support::RecordingTransport,
 };
 
@@ -47,11 +49,11 @@ pub(crate) fn execute_cell(
     let resolved_destination = destination.resolved()?;
     let identifier_policy = resolved_destination.column_identifier_policy()?;
     let plan = source.engine_plan(&package_id, cell.disposition, identifier_policy.as_ref())?;
-    assert_plan_honesty(&plan, source.compiled(), &package_id);
+    assert_plan_honesty(&plan, source.queryable(), &package_id);
 
     let gate_observed = Cell::new(false);
-    let resource_id = source.compiled().descriptor().resource_id.clone();
-    let scope = source.compiled().descriptor().state_scope.clone();
+    let resource_id = source.queryable().descriptor().resource_id.clone();
+    let scope = source.queryable().descriptor().state_scope.clone();
     let hook = receipt_gate(
         &state_store_path,
         &pipeline_id,
@@ -144,6 +146,7 @@ pub(crate) fn excluded_for_source<'a>(
 
 enum MatrixSource {
     File(CompiledResource),
+    Python(cdf_python::PythonResource),
     Rest {
         resource: RestResource,
         transport: RecordingTransport,
@@ -162,6 +165,10 @@ impl MatrixSource {
                 project_root,
                 cell.disposition,
             )?)),
+            SourceArchetype::Python => Ok(Self::Python(python_fixture::resource(
+                project_root,
+                cell.disposition,
+            )?)),
             SourceArchetype::Rest => {
                 let (resource, transport) = rest_fixture::resource(cell.disposition)?;
                 Ok(Self::Rest {
@@ -173,9 +180,10 @@ impl MatrixSource {
         }
     }
 
-    fn compiled(&self) -> &CompiledResource {
+    fn queryable(&self) -> &dyn QueryableResource {
         match self {
             Self::File(resource) => resource,
+            Self::Python(resource) => resource,
             Self::Rest { resource, .. } => resource.compiled(),
             Self::Sql(resource) => resource.compiled(),
         }
@@ -191,6 +199,9 @@ impl MatrixSource {
             Self::File(resource) => {
                 plan_json::file_engine_plan(resource, package_id, disposition, identifier_policy)
             }
+            Self::Python(resource) => {
+                plan_json::planned_engine_plan(resource, package_id, identifier_policy)
+            }
             Self::Rest { resource, .. } => {
                 plan_json::planned_engine_plan(resource, package_id, identifier_policy)
             }
@@ -203,6 +214,7 @@ impl MatrixSource {
     fn project_run_source(&self) -> ProjectRunSource<'_> {
         match self {
             Self::File(resource) => ProjectRunSource::local_file(resource),
+            Self::Python(resource) => ProjectRunSource::new(resource),
             Self::Rest { resource, .. } => ProjectRunSource::rest(resource),
             Self::Sql(resource) => ProjectRunSource::sql(resource),
         }
@@ -213,6 +225,7 @@ impl MatrixSource {
         assert_checkpoint_head_contains_source_position(report);
         match self {
             Self::File(_) => file_fixture::assert_source_position(report),
+            Self::Python(_) => python_fixture::assert_source_position(report),
             Self::Rest { transport, .. } => {
                 rest_fixture::assert_runtime_observed(transport);
                 rest_fixture::assert_source_position(report);

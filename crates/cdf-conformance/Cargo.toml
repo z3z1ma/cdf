@@ -28,6 +28,7 @@ cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-formats = { path = "../cdf-formats" }
 cdf-http = { path = "../cdf-http" }
+cdf-python = { path = "../cdf-python" }
 cdf-subprocess = { path = "../cdf-subprocess" }
 duckdb = { version = "1.10504.0", features = ["bundled"] }
 futures-executor = "0.3.32"

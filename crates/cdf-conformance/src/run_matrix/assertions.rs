@@ -1,13 +1,12 @@
 use std::{cell::Cell, path::Path};
 
-use cdf_declarative::CompiledResource;
 use cdf_dest_duckdb::DuckDbDestination;
 use cdf_dest_parquet::ParquetDestination;
 use cdf_dest_postgres::PostgresDestination;
 use cdf_engine::EnginePlan;
 use cdf_kernel::{
     CdfError, CheckpointStatus, CheckpointStore, DestinationProtocol, IdempotencySupport,
-    PipelineId, Receipt, ResourceId, Result, ScopeKey,
+    PipelineId, QueryableResource, Receipt, ResourceId, Result, ScopeKey,
 };
 use cdf_package::{PackageReader, PackageStatus};
 use cdf_project::{
@@ -25,7 +24,7 @@ use super::{
 
 pub(crate) fn assert_plan_honesty(
     plan: &EnginePlan,
-    resource: &CompiledResource,
+    resource: &dyn QueryableResource,
     package_id: &str,
 ) {
     let descriptor = resource.descriptor();

@@ -223,6 +223,7 @@ pub(crate) fn target_for_cell(
 fn target_table_for_cell(cell: RunMatrixCell) -> String {
     let prefix = match cell.source_archetype {
         super::SourceArchetype::File => "events",
+        super::SourceArchetype::Python => "python_events",
         super::SourceArchetype::Rest => "rest_events",
         super::SourceArchetype::Sql => "sql_events",
     };

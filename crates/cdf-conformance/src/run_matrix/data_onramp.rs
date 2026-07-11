@@ -23,7 +23,7 @@ use std::{
 
 use super::{
     MatrixDestination, MatrixDisposition, RunMatrixCell, SourceArchetype, core, file_fixture,
-    local_postgres::LivePostgres, plan_json, rest_fixture, sql_fixture,
+    local_postgres::LivePostgres, plan_json, python_fixture, rest_fixture, sql_fixture,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -712,6 +712,7 @@ fn p2_preview_run_parity_law_covers_supported_archetypes() {
     );
     let cases = [
         RunMatrixCell::file(MatrixDestination::DuckDb, MatrixDisposition::Append),
+        RunMatrixCell::python(MatrixDestination::DuckDb, MatrixDisposition::Append),
         RunMatrixCell::rest(MatrixDestination::DuckDb, MatrixDisposition::Append),
         RunMatrixCell::sql(MatrixDestination::DuckDb, MatrixDisposition::Append),
     ];
@@ -879,6 +880,18 @@ fn preview_fingerprint(cell: RunMatrixCell, postgres: &LivePostgres) -> Result<P
             let plan = plan_json::file_engine_plan(&resource, &package_id, cell.disposition, None)?;
             let partitions = resource.plan_partitions(&plan.scan.request)?;
             assert_file_partitions_match_plan_identity(&partitions, &plan.scan.partitions);
+            let preview = futures_executor::block_on(cdf_engine::preview_resource(
+                &plan,
+                &resource,
+                cdf_engine::EnginePreviewLimits::default(),
+            ))?;
+            (preview, partitions.len())
+        }
+        SourceArchetype::Python => {
+            let resource = python_fixture::resource(temp.path(), cell.disposition)?;
+            let plan = plan_json::planned_engine_plan(&resource, &package_id, None)?;
+            let partitions = resource.plan_partitions(&plan.scan.request)?;
+            assert_eq!(partitions, plan.scan.partitions);
             let preview = futures_executor::block_on(cdf_engine::preview_resource(
                 &plan,
                 &resource,

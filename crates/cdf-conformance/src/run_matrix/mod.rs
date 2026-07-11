@@ -8,6 +8,7 @@ mod examples;
 #[serde(rename_all = "snake_case")]
 pub enum SourceArchetype {
     File,
+    Python,
     Rest,
     Sql,
 }
@@ -16,6 +17,7 @@ impl SourceArchetype {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::File => "file",
+            Self::Python => "python",
             Self::Rest => "rest",
             Self::Sql => "sql",
         }
@@ -95,6 +97,10 @@ impl RunMatrixCell {
         Self::new(SourceArchetype::Rest, destination, disposition)
     }
 
+    pub const fn python(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
+        Self::new(SourceArchetype::Python, destination, disposition)
+    }
+
     pub const fn sql(destination: MatrixDestination, disposition: MatrixDisposition) -> Self {
         Self::new(SourceArchetype::Sql, destination, disposition)
     }
@@ -134,6 +140,7 @@ pub fn file_source_matrix_cells() -> Vec<RunMatrixCell> {
 pub fn run_spine_matrix_cells() -> Vec<RunMatrixCell> {
     [
         SourceArchetype::File,
+        SourceArchetype::Python,
         SourceArchetype::Rest,
         SourceArchetype::Sql,
     ]
@@ -178,6 +185,8 @@ mod file_fixture;
 pub(crate) mod local_postgres;
 #[cfg(test)]
 mod plan_json;
+#[cfg(test)]
+mod python_fixture;
 #[cfg(test)]
 mod rest_fixture;
 #[cfg(test)]

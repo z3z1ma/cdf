@@ -4,7 +4,7 @@ use super::{
 };
 
 #[test]
-fn run_matrix_file_rest_sql_source_cells_persist_output() {
+fn run_matrix_file_python_rest_sql_source_cells_persist_output() {
     let postgres = LivePostgres::start().expect(
         "C2 run matrix requires Postgres coverage; set TEST_DATABASE_URL or install initdb/pg_ctl",
     );
@@ -24,9 +24,11 @@ fn run_matrix_file_rest_sql_source_cells_persist_output() {
     }
 
     assert_source_counts(&output, SourceArchetype::File);
+    assert_source_counts(&output, SourceArchetype::Python);
     assert_source_counts(&output, SourceArchetype::Rest);
     assert_source_counts(&output, SourceArchetype::Sql);
     assert_required_cells(&output, SourceArchetype::File);
+    assert_required_cells(&output, SourceArchetype::Python);
     assert_required_cells(&output, SourceArchetype::Rest);
     assert_required_cells(&output, SourceArchetype::Sql);
 
