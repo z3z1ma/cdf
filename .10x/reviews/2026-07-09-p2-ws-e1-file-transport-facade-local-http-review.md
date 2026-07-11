@@ -40,4 +40,4 @@ Pass. The acceptance criteria for WS-E1 are supported by focused tests, the full
 
 No WS-E1 blocker remains. Production HTTP client wiring, remote/cloud transports, credential resolution, doctor probes, HTTP template enumeration, compression, and full file-run integration are intentionally excluded here and remain owned by the parent WS-E workstream or later children.
 
-Current-tree scanner residuals remain outside this slice: CodeQL reports three existing P1 backfill test fixture findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; OSV reports the already-ratified `paste` advisory `RUSTSEC-2024-0436`.
+Current-tree scanner residuals remain outside this slice: CodeQL reports three existing P1 backfill test fixture findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; OSV reports the already-ratified `paste` advisory `RUSTSEC-2024-0436`.

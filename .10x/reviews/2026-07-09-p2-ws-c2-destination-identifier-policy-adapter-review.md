@@ -28,7 +28,7 @@ No blocking findings.
 
 The adapter is intentionally exact about current sheet patterns. Future destination sheet strings or a broader Postgres quoted-identifier live-column normalizer should be added through a new ticket/spec update rather than being accepted by this adapter by default.
 
-CodeQL reports three pre-existing hard-coded cryptographic value findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. OSV reports only the already-ratified `RUSTSEC-2024-0436` `paste` advisory exception. Neither is introduced by C2.
+CodeQL reports three pre-existing hard-coded cryptographic value findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. OSV reports only the already-ratified `RUSTSEC-2024-0436` `paste` advisory exception. Neither is introduced by C2.
 
 ## Verdict
 

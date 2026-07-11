@@ -54,7 +54,7 @@ Parent integration rerun after replacing repeated C1 test TOML shells with a foc
 - `cargo deny check`: passed with existing duplicate Arrow-major warnings; final status reported advisories, bans, licenses, and sources ok.
 - `cargo vet`: passed with 455 existing exemptions and the existing pruneable-exemptions warning.
 - `cargo audit`: passed with one allowed warning for `RUSTSEC-2024-0436` on `paste`, matching the already-ratified advisory posture.
-- `tools/codeql-rust-quality.sh`: passed. The reusable CodeQL database under `target/quality/codeql-db-rust` was refreshed because Rust source/manifest/lockfile content changed; extraction errors were 0. The SARIF contained 3 findings, all the pre-existing unrelated `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` already owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. No CodeQL finding pointed at the C1 files.
+- `tools/codeql-rust-quality.sh`: passed. The reusable CodeQL database under `target/quality/codeql-db-rust` was refreshed because Rust source/manifest/lockfile content changed; extraction errors were 0. The SARIF contained 3 findings, all the pre-existing unrelated `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` already owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. No CodeQL finding pointed at the C1 files.
 
 ## What this supports or challenges
 

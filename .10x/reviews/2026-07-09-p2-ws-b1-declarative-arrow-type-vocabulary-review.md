@@ -36,7 +36,7 @@ Parent review addendum:
 - Pass: the parser handles the B1 mandatory ergonomic forms, including nested top-level comma splitting for `struct<amount: decimal(38,9), tags: list<utf8>>`, `map<utf8,int64>`, decimal bounds, timestamp units/timezones, Arrow map entries, and legacy `timestamp_millis`/`timestamp_micros` spellings.
 - Pass: invalid nested type strings fail during compilation with the offending original field type string named.
 - Pass: the JSON Schema now resolves field `type` to a string schema rather than the old enum.
-- Out-of-scope finding: the parent CodeQL rerun completed through the reusable DB and reported three `rust/hard-coded-cryptographic-value` results in unrelated `crates/cdf-cli/src/tests.rs` backfill secret fixtures from P1 WS5C. Those are not introduced by B1 and are owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- Out-of-scope finding: the parent CodeQL rerun completed through the reusable DB and reported three `rust/hard-coded-cryptographic-value` results in unrelated `crates/cdf-cli/src/tests.rs` backfill secret fixtures from P1 WS5C. Those are not introduced by B1 and are owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 ## Verdict
 

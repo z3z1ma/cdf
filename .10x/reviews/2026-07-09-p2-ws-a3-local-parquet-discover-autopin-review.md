@@ -19,7 +19,7 @@ The A3 implementation adds a local Parquet discovery helper in `cdf-project`, ex
 - Pass: the CLI grammar adds only `schema discover` in this child. `schema pin/show/diff`, lockfile updates, remote discovery, and source-archetype expansion remain excluded, which keeps this slice small and consistent with the P2 sequencing.
 - Pass: A3 tests avoid the P2 WS-F anti-pattern of adding keys to append resources. Parent review removed an unnecessary test-only `primary_key` from the Parquet discover resource helper.
 - Minor residual, accepted: broad touched-file `jscpd` still reports pre-existing duplication in the large `crates/cdf-cli/src/tests.rs` preview/resume scaffold area. The A3-introduced duplicate Parquet fixture blocks were removed, and the implementation-only scan is clean with 0 clones. Existing reviews already record the no-action rationale for the older CLI-test duplication surface.
-- Minor residual, owned elsewhere: CodeQL reports three existing hard-coded cryptographic value findings in `crates/cdf-cli/src/tests.rs` backfill fixtures. They are outside A3 discovery code and are already owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- Minor residual, owned elsewhere: CodeQL reports three existing hard-coded cryptographic value findings in `crates/cdf-cli/src/tests.rs` backfill fixtures. They are outside A3 discovery code and are already owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 - Minor residual, owned elsewhere: OSV reports the already-ratified `RUSTSEC-2024-0436` `paste` maintenance advisory. No dependency metadata changed in this slice.
 
 ## Verdict

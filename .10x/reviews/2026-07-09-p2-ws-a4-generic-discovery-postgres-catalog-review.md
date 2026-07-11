@@ -25,7 +25,7 @@ Review of the A4 implementation that changes `cdf schema discover` from a local-
 - SQL `plan`/`run` auto-pin remains excluded and correctly open under WS-A. Closing it safely requires pinned-discovered-schema handling in package-producing SQL execution and source-name-aware SQL materialization, not merely calling the catalog probe.
 - REST, Python, WASM, Avro-like file discovery, CSV/JSON/NDJSON sampling, and remote ranged Parquet discovery remain future source-archetype children. The dispatcher shape reduces future risk but does not implement those probes.
 - Broad touched-test `jscpd` still reports duplication in existing test harness scaffolds. The implementation-file clone scan is clean; broad harness cleanup is not part of A4 and should not block this slice.
-- CodeQL still reports the three pre-existing CLI test-fixture hard-coded crypto values owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- CodeQL still reports the three pre-existing CLI test-fixture hard-coded crypto values owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 ## Verdict
 

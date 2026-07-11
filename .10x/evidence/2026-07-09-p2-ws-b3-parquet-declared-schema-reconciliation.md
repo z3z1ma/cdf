@@ -66,7 +66,7 @@ Focused tests cover `int32 -> int64`, `float32 -> float64`, source-name projecti
 - `tools/codeql-rust-quality.sh`
   - Result: exited 0.
   - Database behavior: refreshed `target/quality/codeql-db-rust` because Rust sources/manifests/lockfile changed, preserving the reusable database location.
-  - Current SARIF results: 3 `rust/hard-coded-cryptographic-value` findings, all in unrelated dirty `crates/cdf-cli/src/tests.rs` lines 1313, 1403, and 1459. These are owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md` and are not introduced by B3.
+  - Current SARIF results: 3 `rust/hard-coded-cryptographic-value` findings, all in unrelated dirty `crates/cdf-cli/src/tests.rs` lines 1313, 1403, and 1459. These are owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md` and are not introduced by B3.
 
 ## What This Supports Or Challenges
 

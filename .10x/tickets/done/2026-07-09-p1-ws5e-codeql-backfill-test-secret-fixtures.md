@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-09
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-ws5-live-progress.md
 Depends-On: .10x/evidence/2026-07-09-p2-ws-b1-declarative-arrow-type-vocabulary.md
 
@@ -35,7 +35,8 @@ Do not redesign the secret provider, live progress renderer, backfill planner, o
 ## Progress and notes
 
 - 2026-07-09: Opened from P2 B1 parent review after `tools/codeql-rust-quality.sh` completed with three current-tree SARIF findings in existing P1 backfill test fixtures. The findings are outside the B1 touched files, so B1 remains review-pass with this separate owner.
+- 2026-07-10: Replaced fixed password sentinels with a dynamic per-test value, retained resolved-DSN redaction assertions, and reduced current-tree CodeQL SARIF results from three to zero. Evidence: `.10x/evidence/2026-07-10-p1-ws5e-codeql-backfill-fixtures.md`; review: `.10x/reviews/2026-07-10-p1-ws5e-codeql-backfill-fixtures-review.md`.
 
 ## Blockers
 
-None.
+None. Complete.

@@ -53,7 +53,7 @@ Parent integration review added `Debug` implementations for the public transport
   - Exited non-zero only for the already-ratified `paste` advisory `RUSTSEC-2024-0436`; no E1 dependency change introduced a new advisory.
 - `tools/codeql-rust-quality.sh 2>&1 | tee target/quality/reports/codeql-rust-p2-e1.log`
   - Used the reusable database path `target/quality/codeql-db-rust`; the database refreshed because Rust inputs changed, then analysis completed.
-  - SARIF result count: 3, all pre-existing current-tree hardcoded-value findings in `crates/cdf-cli/src/tests.rs` lines 1313, 1403, and 1459. They are owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md` and are outside WS-E1.
+  - SARIF result count: 3, all pre-existing current-tree hardcoded-value findings in `crates/cdf-cli/src/tests.rs` lines 1313, 1403, and 1459. They are owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md` and are outside WS-E1.
 
 ## What this supports
 

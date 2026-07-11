@@ -2172,8 +2172,7 @@ fn backfill_execute_sql_cursor_window_commits_window_scope() {
         "(1, 5), (2, 15), (3, 25)",
     );
     let project = TestProject::new();
-    let source_dsn =
-        write_sql_project_with_secret(&project, &postgres, &table, "source-backfill-secret");
+    let source_dsn = write_sql_project_with_secret(&project, &postgres, &table);
 
     let result = run([
         "cdf",
@@ -2193,7 +2192,6 @@ fn backfill_execute_sql_cursor_window_commits_window_scope() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
-    assert_secret_absent(&result, "source-backfill-secret");
     assert!(!result.stdout.contains("Run progress"));
     assert!(!result.stderr.contains("[plan]"));
     let json = stderr_or_stdout_json(&result.stdout);
@@ -2259,12 +2257,7 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
         "(1, 5), (2, 15), (3, 25)",
     );
     let project = TestProject::new();
-    let source_dsn = write_sql_project_with_secret(
-        &project,
-        &postgres,
-        &table,
-        "source-backfill-progress-secret",
-    );
+    let source_dsn = write_sql_project_with_secret(&project, &postgres, &table);
 
     let result = run([
         "cdf",
@@ -2285,7 +2278,6 @@ fn backfill_execute_human_progress_reports_each_slice_and_summary() {
 
     assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
     assert_secret_absent(&result, &source_dsn);
-    assert_secret_absent(&result, "source-backfill-progress-secret");
     assert!(result.stderr.is_empty());
     assert!(!result.stdout.contains("\u{1b}["));
     for expected in [
@@ -2315,12 +2307,7 @@ fn backfill_execute_human_failure_reports_failed_slice_and_recovery_guidance() {
     };
     let table = seed_ordered_cursor_table(&postgres, "backfill_progress_failure_orders", "(1, 5)");
     let project = TestProject::new();
-    write_sql_project_with_secret(
-        &project,
-        &postgres,
-        &table,
-        "source-backfill-failure-secret",
-    );
+    let source_dsn = write_sql_project_with_secret(&project, &postgres, &table);
 
     let args = || {
         vec![
@@ -2340,8 +2327,10 @@ fn backfill_execute_human_failure_reports_failed_slice_and_recovery_guidance() {
     };
     let first = run_dynamic(args());
     assert_eq!(first.exit_code, 0, "stderr: {}", first.stderr);
+    assert_secret_absent(&first, &source_dsn);
 
     let second = run_dynamic(args());
+    assert_secret_absent(&second, &source_dsn);
 
     assert_ne!(second.exit_code, 0);
     assert!(second.stdout.is_empty());
@@ -15400,8 +15389,12 @@ fn write_sql_project_with_secret(
     project: &TestProject,
     postgres: &LivePostgres,
     table: &str,
-    password: &str,
 ) -> String {
+    let password = format!(
+        "cdf-test-{}-{}",
+        std::process::id(),
+        LIVE_POSTGRES_SCHEMA_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
     let source_dsn = postgres.url.replacen(
         "postgresql://cdf@",
         &format!("postgresql://cdf:{password}@"),

@@ -43,7 +43,7 @@ Compatibility edits landed outside the ticket's nominal write-scope list in `cdf
 
 `jscpd` reports residual duplication across the integrated touched file set with `newClones = 0`. This is a tracked quality signal, not a blocking finding for A1.
 
-CodeQL reports three pre-existing hard-coded cryptographic value findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. OSV reports only the already-ratified `RUSTSEC-2024-0436` `paste` advisory exception.
+CodeQL reports three pre-existing hard-coded cryptographic value findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. OSV reports only the already-ratified `RUSTSEC-2024-0436` `paste` advisory exception.
 
 ## Verdict
 

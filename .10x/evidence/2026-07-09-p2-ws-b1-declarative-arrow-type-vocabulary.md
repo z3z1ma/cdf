@@ -9,7 +9,7 @@ Relates-To: .10x/tickets/done/2026-07-08-p2-ws-b1-declarative-arrow-type-vocabul
 
 The B1 declarative Arrow type vocabulary implementation was verified against focused parser/schema tests, the full `cdf-declarative` crate test suite, clippy with warnings denied, formatting, duplicate detection scoped to touched Rust files, and diff whitespace checks.
 
-Parent review reran the focused and scoped checks in this workspace. The B1-owned `cdf-declarative` files passed tests, clippy, formatting, Semgrep, Gitleaks, supply-chain gates, complexity metrics, and duplication checks with `newClones = 0`. A reusable CodeQL run completed through `tools/codeql-rust-quality.sh`, refreshing `target/quality/codeql-db-rust` only because the Rust input fingerprint changed; CodeQL reported three current-tree findings, all in unrelated `crates/cdf-cli/src/tests.rs` backfill secret fixtures from the earlier P1 WS5C slice, not in the B1 touched files. That residual is owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+Parent review reran the focused and scoped checks in this workspace. The B1-owned `cdf-declarative` files passed tests, clippy, formatting, Semgrep, Gitleaks, supply-chain gates, complexity metrics, and duplication checks with `newClones = 0`. A reusable CodeQL run completed through `tools/codeql-rust-quality.sh`, refreshing `target/quality/codeql-db-rust` only because the Rust input fingerprint changed; CodeQL reported three current-tree findings, all in unrelated `crates/cdf-cli/src/tests.rs` backfill secret fixtures from the earlier P1 WS5C slice, not in the B1 touched files. That residual is owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 ## Procedure
 
@@ -62,7 +62,7 @@ Parent rerun after worker completion:
 - `cargo vet --locked > target/quality/reports/cargo-vet-p2-b1-parent.txt 2>&1`
   - Result: passed, `Vetting Succeeded`.
 - `tools/codeql-rust-quality.sh`
-  - Result: exited 0 after refreshing the reusable database at `target/quality/codeql-db-rust`. Extraction errors: 0; extraction warnings and unresolved macros match the known local Rust extractor limit. `jq '[.runs[].results[]?] | length' target/quality/reports/codeql-rust-current.sarif` returned `3`; all three results were `rust/hard-coded-cryptographic-value` in unrelated `crates/cdf-cli/src/tests.rs` lines 1252, 1342, and 1398. Follow-up owner: `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+  - Result: exited 0 after refreshing the reusable database at `target/quality/codeql-db-rust`. Extraction errors: 0; extraction warnings and unresolved macros match the known local Rust extractor limit. `jq '[.runs[].results[]?] | length' target/quality/reports/codeql-rust-current.sarif` returned `3`; all three results were `rust/hard-coded-cryptographic-value` in unrelated `crates/cdf-cli/src/tests.rs` lines 1252, 1342, and 1398. Follow-up owner: `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 - Direct first-party unsafe scan over the touched B1 Rust files:
   - Result: no unsafe/FFI/raw-pointer matches in B1 files; one unrelated `PredicateId::new("unsafe")` fixture string appeared in `crates/cdf-declarative/src/tests.rs`.
 

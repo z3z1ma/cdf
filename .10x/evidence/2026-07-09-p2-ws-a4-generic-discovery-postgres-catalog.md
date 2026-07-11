@@ -67,7 +67,7 @@ QUALITY results:
 - Gitleaks completed with no leaks in the touched crate source trees.
 - `cargo deny`, `cargo audit`, `cargo vet`, and `cargo machete` passed. `cargo audit` used the already-ratified temporary ignore for `RUSTSEC-2024-0436`.
 - `osv-scanner` reported only `RUSTSEC-2024-0436`, matching the active ratified exception.
-- CodeQL reused the project wrapper and reusable database path `target/quality/codeql-db-rust`. The run completed successfully. Its SARIF findings were the three pre-existing test-fixture `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs`, already owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- CodeQL reused the project wrapper and reusable database path `target/quality/codeql-db-rust`. The run completed successfully. Its SARIF findings were the three pre-existing test-fixture `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs`, already owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 A broader touched-file `jscpd` run that included tests reported duplication in existing test harness scaffolds and assertion blocks. Sampled ranges were large local Postgres/test-project fixtures in `crates/cdf-cli/src/tests.rs`, repeated error-project TOML scaffolds in `crates/cdf-project/src/tests.rs`, and small assertion/setup repetitions in Postgres catalog tests. This was classified as residual test-harness duplication, not an implementation blocker for A4; the implementation-file scan was clean.
 

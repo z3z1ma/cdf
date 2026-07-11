@@ -61,7 +61,7 @@ Parent integration verification run before commit:
 - `cargo audit --deny warnings --ignore RUSTSEC-2024-0436`: passed.
 - `cargo vet --locked --no-minimize-exemptions`: passed, 455 exempted.
 - `osv-scanner scan source --lockfile Cargo.lock --format json > target/quality/reports/osv-p2-h1.json`: exited nonzero only for the already-ratified `paste` advisory `RUSTSEC-2024-0436`.
-- `tools/codeql-rust-quality.sh 2>&1 | tee target/quality/reports/codeql-rust-p2-h1.log`: completed through reusable database path `target/quality/codeql-db-rust`. The database refreshed because Rust source content changed. The SARIF contains three `rust/hard-coded-cryptographic-value` findings in pre-existing `crates/cdf-cli/src/tests.rs` backfill fixture literals, already owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; no H1-owned implementation path is implicated.
+- `tools/codeql-rust-quality.sh 2>&1 | tee target/quality/reports/codeql-rust-p2-h1.log`: completed through reusable database path `target/quality/codeql-db-rust`. The database refreshed because Rust source content changed. The SARIF contains three `rust/hard-coded-cryptographic-value` findings in pre-existing `crates/cdf-cli/src/tests.rs` backfill fixture literals, already owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; no H1-owned implementation path is implicated.
 - Implementation-only `jscpd --format rust --reporters console --no-colors --no-tips` over touched implementation files completed with one small existing clone in `crates/cdf-cli/src/context.rs`, 11 duplicated lines / 0.25%.
 - Broader touched-file `jscpd` including tests completed and reported existing large-test duplication, 1,522 duplicated lines / 9.33%.
 - `rust-code-analysis-cli -m -O json -p <file>` over touched implementation files wrote `target/quality/reports/rust-code-analysis-p2-h1.jsonl`.
@@ -85,4 +85,4 @@ The checks were local and did not exercise live TLC public data, `cdf add`, ad-h
 
 The `jscpd` broad touched-file scan reports existing duplication in large test files. No code change was made for that output because it is unrelated to the resource-id validation and inspection behavior.
 
-The CodeQL SARIF currently contains three pre-existing P1 backfill-test fake-secret fixture findings. They remain outside this P2 H1 ticket and are already owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; this evidence therefore does not claim current-tree CodeQL has zero findings.
+The CodeQL SARIF currently contains three pre-existing P1 backfill-test fake-secret fixture findings. They remain outside this P2 H1 ticket and are already owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; this evidence therefore does not claim current-tree CodeQL has zero findings.

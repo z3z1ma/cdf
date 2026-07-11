@@ -17,7 +17,7 @@ The review covers the A7 schema pin/show/diff CLI slice, the D3 local append `Fi
 - Pass: I2 is honest scaffolding. It names S1-S8 and the eighteen frictions without pretending the final P2 golden paths are complete, and it makes unsupported or pending cells explicit.
 - Concern accepted: `validate_partition` now requires file identity metadata for planned file partitions. Current planner/conformance paths populate it, but legacy hand-authored pre-D3 plan JSON without `sha256` or `etag` will fail closed rather than being treated as incremental evidence. This is consistent with the file-manifest decision because replay/incrementality must not guess identity.
 - Residual: public HTTPS file ingestion, cloud stores, compression, `cdf add`, deep validation diagnostics, final golden-path conformance, and the S1+S2 recording remain open under P2. This batch must not be described as P2 completion.
-- Residual: CodeQL still reports the pre-existing P1 backfill fake-secret fixture findings in `crates/cdf-cli/src/tests.rs`; the owner is `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- Residual: CodeQL still reports the pre-existing P1 backfill fake-secret fixture findings in `crates/cdf-cli/src/tests.rs`; the owner is `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 - Residual: OSV still reports the already-ratified `paste` advisory. The advisory is not introduced by this batch.
 
 ## Verdict

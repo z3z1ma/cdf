@@ -48,4 +48,4 @@ Pass. The acceptance criteria are supported by focused tests and full crate test
 
 No closure-blocking risk remains for this ticket. Future migration away from explicit id overrides remains a separate product decision because current tests still prove compatibility is required.
 
-Parent integration CodeQL produced three pre-existing fake-secret fixture findings in `crates/cdf-cli/src/tests.rs` backfill tests. They do not implicate the H1 implementation and are already owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+Parent integration CodeQL produced three pre-existing fake-secret fixture findings in `crates/cdf-cli/src/tests.rs` backfill tests. They do not implicate the H1 implementation and are already owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.

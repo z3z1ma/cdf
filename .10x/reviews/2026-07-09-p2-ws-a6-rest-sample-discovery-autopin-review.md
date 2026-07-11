@@ -23,4 +23,4 @@ Pass. The bounded A6 behavior is implemented and verified: REST sample discovery
 
 ## Residual risk
 
-The main residual risk is intentionally out of scope: one-page sampling is not a complete S5 implementation. Pagination-wide sampling, drift/quarantine conformance, cursor inference, and `cdf add` remain owned by later P2 child work. CodeQL still has three pre-existing CLI test fixture findings owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; A6 did not introduce new CodeQL findings.
+The main residual risk is intentionally out of scope: one-page sampling is not a complete S5 implementation. Pagination-wide sampling, drift/quarantine conformance, cursor inference, and `cdf add` remain owned by later P2 child work. CodeQL still has three pre-existing CLI test fixture findings owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; A6 did not introduce new CodeQL findings.

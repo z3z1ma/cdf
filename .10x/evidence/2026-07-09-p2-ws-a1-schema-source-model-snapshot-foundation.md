@@ -115,7 +115,7 @@ Final integrated quality artifacts:
   - Exited 0 with 0 findings.
 - `tools/codeql-rust-quality.sh`
   - Exited 0 and reused/refreshed only the repository-standard reusable database path `target/quality/codeql-db-rust`.
-  - SARIF contains the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` at lines 1252, 1342, and 1398, owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; no new CodeQL findings were introduced by this slice.
+  - SARIF contains the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` at lines 1252, 1342, and 1398, owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`; no new CodeQL findings were introduced by this slice.
 - `cargo deny check`: exited 0.
 - `cargo audit --json`: exited 0.
 - `cargo vet --locked`: exited 0.

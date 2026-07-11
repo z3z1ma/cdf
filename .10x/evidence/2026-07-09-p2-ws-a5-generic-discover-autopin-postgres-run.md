@@ -87,7 +87,7 @@ QUALITY results:
 - Gitleaks completed without leaks in touched source trees.
 - `cargo deny`, `cargo audit`, `cargo vet`, and `cargo machete` passed. `cargo audit` used the already-ratified temporary ignore for `RUSTSEC-2024-0436`.
 - `osv-scanner` reported only `RUSTSEC-2024-0436`, matching the active ratified exception.
-- CodeQL completed through `tools/codeql-rust-quality.sh`, using the reusable `target/quality/codeql-db-rust` path. SARIF findings were the same three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` lines 1319, 1409, and 1465, already owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- CodeQL completed through `tools/codeql-rust-quality.sh`, using the reusable `target/quality/codeql-db-rust` path. SARIF findings were the same three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` lines 1319, 1409, and 1465, already owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 An initial focused `cargo test` invocation attempted multiple test-name filters in one command and Cargo rejected the command shape. The individual focused test filters were rerun correctly and passed.
 

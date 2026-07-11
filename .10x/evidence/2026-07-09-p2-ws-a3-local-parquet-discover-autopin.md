@@ -57,7 +57,7 @@ Quality gates:
 - Gitleaks source scans over `cdf-project`, `cdf-cli`, and `cdf-declarative` source trees reported no leaks.
 - `cargo deny check`, `cargo audit`, `cargo vet --locked`, and `cargo machete` passed. `cargo vet` reported `Vetting Succeeded (455 exempted)`.
 - OSV returned the already-ratified `RUSTSEC-2024-0436` `paste` maintenance advisory. This is the same scoped residual owned by the existing supply-chain records; no Cargo metadata changed in this slice.
-- CodeQL ran through reusable `target/quality/codeql-db-rust`. It refreshed because Rust source content changed, then completed analysis with extraction errors 0. SARIF contains 3 `rust/hard-coded-cryptographic-value` findings in existing `crates/cdf-cli/src/tests.rs` backfill fixtures, now at lines 1319, 1409, and 1465 after nearby edits. The existing owner is `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- CodeQL ran through reusable `target/quality/codeql-db-rust`. It refreshed because Rust source content changed, then completed analysis with extraction errors 0. SARIF contains 3 `rust/hard-coded-cryptographic-value` findings in existing `crates/cdf-cli/src/tests.rs` backfill fixtures, now at lines 1319, 1409, and 1465 after nearby edits. The existing owner is `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 ## What this supports
 

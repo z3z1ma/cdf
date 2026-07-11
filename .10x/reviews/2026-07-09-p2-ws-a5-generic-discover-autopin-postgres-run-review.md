@@ -24,7 +24,7 @@ Review of A5: generic first-use discovery auto-pin for CLI plan/preview/run and 
 
 - Discovery as a whole is still not complete. REST sample-page discovery, Python generator discovery, WASM boundary discovery, future Avro-like file discovery, CSV/JSON/NDJSON sampling, remote Parquet ranged discovery, multi-file schema union/variance, `cdf schema pin|show|diff`, `cdf add`, ad-hoc mode, and S4/S5 conformance remain open under WS-A/P2.
 - Broad touched-file `jscpd` continues to report duplication in existing test harnesses. Implementation-only `jscpd` is clean; large test-harness consolidation should be handled by a separate owner if it becomes worth the churn.
-- CodeQL still reports the three pre-existing CLI test-fixture hard-coded cryptographic values owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- CodeQL still reports the three pre-existing CLI test-fixture hard-coded cryptographic values owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 - OSV still reports only `RUSTSEC-2024-0436`, covered by the active ratified exception.
 
 ## Verdict

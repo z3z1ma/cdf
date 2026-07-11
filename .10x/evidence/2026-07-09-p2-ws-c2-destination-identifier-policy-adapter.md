@@ -61,7 +61,7 @@ Parent integration verification after the serde-default hardening:
 - `rust-code-analysis-cli -m -O json -o target/quality/reports/p2-a1-c2/rust-code-analysis <touched crate src dirs>`: exited 0. Final C2-adjacent metrics remained bounded: `destination_allowed_pattern` cyclomatic 9, `lower_snake_case` cyclomatic 10.
 - `semgrep scan --config p/rust --error --json --output target/quality/reports/p2-a1-c2/semgrep-rust.json <touched Rust files>`: exited 0 with 0 findings and 0 errors.
 - `gitleaks dir --no-banner --redact=100 --report-format json --report-path target/quality/reports/p2-a1-c2/gitleaks-source-mirror.json <temp mirror of tracked source plus untracked P2 files>`: exited 0 with 0 findings.
-- `tools/codeql-rust-quality.sh`: exited 0 using the reusable `target/quality/codeql-db-rust` database path. The SARIF still contains only the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- `tools/codeql-rust-quality.sh`: exited 0 using the reusable `target/quality/codeql-db-rust` database path. The SARIF still contains only the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 - `cargo deny check`: exited 0.
 - `cargo audit --json`: exited 0.
 - `cargo vet --locked`: exited 0.

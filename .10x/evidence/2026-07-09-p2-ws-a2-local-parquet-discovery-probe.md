@@ -82,7 +82,7 @@ Security and supply-chain checks:
 - `tools/codeql-rust-quality.sh 2>&1 | tee target/quality/reports/codeql-rust-p2-a2.log`
   - Used the repository-standard reusable database path `target/quality/codeql-db-rust`; the database refreshed because Rust inputs changed, then analysis completed.
   - CodeQL scanned 252 Rust files in this invocation.
-  - SARIF result count: 3, all pre-existing current-tree hardcoded-value findings in `crates/cdf-cli/src/tests.rs` lines 1313, 1403, and 1459. They are owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md` and are outside WS-A2.
+  - SARIF result count: 3, all pre-existing current-tree hardcoded-value findings in `crates/cdf-cli/src/tests.rs` lines 1313, 1403, and 1459. They are owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md` and are outside WS-A2.
 
 Acceptance-specific inspection:
 
@@ -103,5 +103,5 @@ Acceptance-specific inspection:
 ## Limits
 
 - This evidence does not cover HTTP ranged discovery, object-store discovery, CLI schema commands, first-use auto-pin, lockfile writes, run/plan integration, conformance S1/S2 closure, or remote file transport wiring; those are explicit exclusions in A2.
-- CodeQL's current-tree residuals are outside WS-A2 and remain owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- CodeQL's current-tree residuals are outside WS-A2 and remain owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 - OSV's advisory residual is the already-ratified `paste` advisory `RUSTSEC-2024-0436`.

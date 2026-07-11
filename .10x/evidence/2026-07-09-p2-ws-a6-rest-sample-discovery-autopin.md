@@ -49,7 +49,7 @@ Quality and security checks:
 - `cargo vet --locked` reported `Vetting Succeeded (455 exempted)`.
 - `cargo machete` found no unused dependencies.
 - `osv-scanner scan --lockfile Cargo.lock --format json` reported only the already-ratified `RUSTSEC-2024-0436` `paste` advisory.
-- `tools/codeql-rust-quality.sh` used `target/quality/codeql-db-rust` and completed analysis. SARIF results were limited to the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. No A6 implementation finding was reported.
+- `tools/codeql-rust-quality.sh` used `target/quality/codeql-db-rust` and completed analysis. SARIF results were limited to the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs`, owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`. No A6 implementation finding was reported.
 
 An unsafe keyword scan over touched Rust files found no unsafe Rust block. The only match was the test predicate string `PredicateId::new("unsafe")` in `crates/cdf-declarative/src/tests.rs`.
 

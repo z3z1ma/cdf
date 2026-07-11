@@ -70,7 +70,7 @@ Observed scanner results:
 - cargo vet: passed, 455 exempted.
 - cargo machete: passed with no unused dependencies.
 - OSV: exited nonzero only for the already-ratified `RUSTSEC-2024-0436` advisory on `paste 1.0.15`.
-- CodeQL: reused/refreshed the persistent database at `target/quality/codeql-db-rust` because Rust inputs changed. Extraction errors were 0; warnings matched the documented Rust macro-warning profile. SARIF findings are the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` lines 1319, 1409, and 1465, owned by `.10x/tickets/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
+- CodeQL: reused/refreshed the persistent database at `target/quality/codeql-db-rust` because Rust inputs changed. Extraction errors were 0; warnings matched the documented Rust macro-warning profile. SARIF findings are the three pre-existing `rust/hard-coded-cryptographic-value` findings in `crates/cdf-cli/src/tests.rs` lines 1319, 1409, and 1465, owned by `.10x/tickets/done/2026-07-09-p1-ws5e-codeql-backfill-test-secret-fixtures.md`.
 
 ## What this supports
 
