@@ -315,6 +315,69 @@ pub enum MemoryEvent {
     Spill { bytes: u64 },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PressureStrategy {
+    Backpressure,
+    Flush,
+    Spill,
+    Fixed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OperatorMemoryProfile {
+    pub minimum_working_set_bytes: u64,
+    pub maximum_operation_bytes: u64,
+    pub pressure_strategy: PressureStrategy,
+    pub pausable: bool,
+}
+
+impl OperatorMemoryProfile {
+    pub fn new(
+        minimum_working_set_bytes: u64,
+        maximum_operation_bytes: u64,
+        pressure_strategy: PressureStrategy,
+        pausable: bool,
+    ) -> Result<Self> {
+        if minimum_working_set_bytes == 0
+            || maximum_operation_bytes == 0
+            || minimum_working_set_bytes > maximum_operation_bytes
+        {
+            return Err(CdfError::contract(
+                "operator memory profile requires 0 < minimum working set <= maximum operation bytes",
+            ));
+        }
+        if !pausable && !matches!(pressure_strategy, PressureStrategy::Spill) {
+            return Err(CdfError::contract(
+                "a non-pausable operator must declare spill as its pressure strategy",
+            ));
+        }
+        Ok(Self {
+            minimum_working_set_bytes,
+            maximum_operation_bytes,
+            pressure_strategy,
+            pausable,
+        })
+    }
+
+    pub fn poll_request(&self, consumer: ConsumerKey) -> Result<ReservationRequest> {
+        Ok(
+            ReservationRequest::new(consumer, self.maximum_operation_bytes)?
+                .as_minimum_working_set(),
+        )
+    }
+
+    pub fn verify_observed_operation(&self, observed_bytes: u64) -> Result<()> {
+        if observed_bytes > self.maximum_operation_bytes {
+            return Err(CdfError::contract(format!(
+                "operator retained {observed_bytes} bytes but declared a maximum operation working set of {} bytes",
+                self.maximum_operation_bytes
+            )));
+        }
+        Ok(())
+    }
+}
+
 pub trait MemoryCoordinator: Send + Sync {
     fn try_reserve(&self, request: &ReservationRequest) -> Result<Option<MemoryLease>>;
     fn register_waiter(&self, waker: &Waker);

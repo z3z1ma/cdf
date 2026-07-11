@@ -161,3 +161,51 @@ fn telemetry_snapshot_is_json_reportable_with_typed_consumer_keys() {
     assert_eq!(decoded, snapshot);
     drop(lease);
 }
+
+#[test]
+fn external_operator_profiles_admit_before_poll_and_falsify_understatement() {
+    struct ExternalSource {
+        profile: OperatorMemoryProfile,
+    }
+    struct ExternalDestination {
+        profile: OperatorMemoryProfile,
+    }
+    let source = ExternalSource {
+        profile: OperatorMemoryProfile::new(32, 64, PressureStrategy::Backpressure, true).unwrap(),
+    };
+    let destination = ExternalDestination {
+        profile: OperatorMemoryProfile::new(64, 128, PressureStrategy::Spill, false).unwrap(),
+    };
+    let coordinator = Arc::new(DeterministicMemoryCoordinator::new(128, BTreeMap::new()).unwrap());
+    let source_request = source
+        .profile
+        .poll_request(consumer("external-source", MemoryClass::Source))
+        .unwrap();
+    let source_lease = coordinator.try_reserve(&source_request).unwrap().unwrap();
+    assert_eq!(source_lease.bytes(), 64);
+    assert!(source.profile.verify_observed_operation(65).is_err());
+    assert!(
+        coordinator
+            .try_reserve(
+                &destination
+                    .profile
+                    .poll_request(consumer("external-destination", MemoryClass::Destination))
+                    .unwrap()
+            )
+            .unwrap()
+            .is_none()
+    );
+    drop(source_lease);
+    assert!(
+        coordinator
+            .try_reserve(
+                &destination
+                    .profile
+                    .poll_request(consumer("external-destination", MemoryClass::Destination))
+                    .unwrap()
+            )
+            .unwrap()
+            .is_some()
+    );
+    assert!(OperatorMemoryProfile::new(1, 2, PressureStrategy::Backpressure, false).is_err());
+}
