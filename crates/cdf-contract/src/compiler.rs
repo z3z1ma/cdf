@@ -121,6 +121,13 @@ pub fn bind_validation_program_to_resource(
                 .column_programs
                 .iter()
                 .map(|column| column.output_name.clone())
+                .chain(
+                    program
+                        .residual
+                        .as_ref()
+                        .and_then(|residual| residual.capture.as_ref())
+                        .map(|capture| capture.variant_column.clone()),
+                )
                 .collect::<Vec<_>>();
             if keys.is_empty() {
                 return Err(CdfError::contract(

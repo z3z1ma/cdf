@@ -199,7 +199,12 @@ pub fn evaluate_package_order_dedup(
         )));
     }
     for key in keys {
-        if column_program_for_rule(program, key).is_none() {
+        let is_variant_output = program
+            .residual
+            .as_ref()
+            .and_then(|residual| residual.capture.as_ref())
+            .is_some_and(|capture| capture.variant_column == *key);
+        if column_program_for_rule(program, key).is_none() && !is_variant_output {
             return Err(CdfError::contract(format!(
                 "dedup row rule {:?} references unknown key {key:?}",
                 rule.rule_id
@@ -216,12 +221,7 @@ pub fn evaluate_package_order_dedup(
     let mut row_converter = None;
 
     for (batch_index, batch) in batches.iter().enumerate() {
-        validate_covered_batch_schema(program, batch)?;
-        let columns = dedup_columns(program, batch, rule, keys)?;
-        let arrays = columns
-            .iter()
-            .map(|column| arrow_array::make_array(column.array.to_data()))
-            .collect::<Vec<_>>();
+        let arrays = dedup_arrays(program, batch, rule, keys)?;
         if row_converter.is_none() {
             row_converter = Some(RowConverter::new(
                 arrays
@@ -352,20 +352,24 @@ fn dedup_rule_parts(rule: &RowRuleProgram) -> Result<(&[String], &DedupKeepProgr
     }
 }
 
-fn dedup_columns<'a>(
-    program: &'a ValidationProgram,
-    batch: &'a RecordBatch,
+fn dedup_arrays(
+    program: &ValidationProgram,
+    batch: &RecordBatch,
     rule: &RowRuleProgram,
     keys: &[String],
-) -> Result<Vec<EvaluatedColumn<'a>>> {
+) -> Result<Vec<arrow_array::ArrayRef>> {
     keys.iter()
         .map(|key| {
-            resolve_column(program, batch, key)?.ok_or_else(|| {
+            if let Some(column) = resolve_column(program, batch, key)? {
+                return Ok(arrow_array::make_array(column.array.to_data()));
+            }
+            let index = batch.schema().index_of(key).map_err(|_| {
                 CdfError::contract(format!(
-                    "dedup row rule {:?} references missing field {key:?}",
+                    "dedup row rule {:?} references missing final output field {key:?}",
                     rule.rule_id
                 ))
-            })
+            })?;
+            Ok(batch.column(index).clone())
         })
         .collect()
 }

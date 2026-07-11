@@ -1,4 +1,4 @@
-Status: open
+Status: active
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md
@@ -40,3 +40,8 @@ Depends on L5, unified accounting, and canonical order/segmentation. The v2 writ
 - `.10x/specs/spillable-package-dedup.md`
 - `.10x/decisions/keyless-exact-row-deduplication.md`
 - `.10x/decisions/contract-live-verdict-execution-semantics.md`
+
+## Progress and notes
+
+- 2026-07-11: Began with the correctness gate: move package dedup after residual/variant materialization, identifier normalization, effective-schema canonicalization, and compiled-output conformance so exact-row identity observes the actual package row rather than a pre-output intermediate.
+- 2026-07-11: Landed the final-output placement gate. Exact-row compilation includes `_cdf_variant` when emitted; the evaluator resolves final-only fields; engine pending rows are normalized/conformed once before the barrier and no longer carry a detached variant vector. Focused contract and package tests prove rows differing only in captured residual values remain distinct.

@@ -269,6 +269,43 @@ fn package_order_dedup_treats_null_as_a_typed_identity_value() {
 }
 
 #[test]
+fn exact_row_dedup_compares_the_final_residual_variant_field() {
+    let schema = Schema::new(vec![Field::new("id", DataType::Int64, false)]);
+    let mut policy = ContractPolicy::for_trust(TrustLevel::Governed);
+    policy.schema.mode = SchemaEvolutionMode::Evolve;
+    let mut program =
+        compile_validation_program(&policy, &ObservedSchema::from_arrow(&schema)).unwrap();
+    program.row_rules.push(RowRuleProgram {
+        rule_id: "exact-final-output".to_owned(),
+        predicate: RowRulePredicate::ExactRowDedup {
+            keys: vec!["id".to_owned(), VARIANT_COLUMN_NAME.to_owned()],
+            keep: DedupKeepProgram::First,
+        },
+        missing_column: MissingColumnBehavior::Error,
+    });
+    let final_schema = Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new(VARIANT_COLUMN_NAME, DataType::Utf8, true),
+    ]);
+    let batch = RecordBatch::try_new(
+        Arc::new(final_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1, 1])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["different-a", "different-b"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+
+    let evaluation = evaluate_package_order_dedup(&program, &[batch])
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(evaluation.summary.input_rows, 2);
+    assert_eq!(evaluation.summary.output_rows, 2);
+    assert_eq!(evaluation.summary.dropped_row_count, 0);
+}
+
+#[test]
 fn freshness_uses_observed_at_context_and_fails_closed_without_it() {
     let schema = Schema::new(vec![Field::new(
         "updated_at",

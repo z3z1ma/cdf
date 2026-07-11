@@ -728,8 +728,7 @@ struct ExecutedBatch {
 
 struct PendingDedupBatch {
     partition_ordinal: u32,
-    accepted: RecordBatch,
-    variant_values: Vec<Option<String>>,
+    output: RecordBatch,
     output_position: Option<SourcePosition>,
 }
 
@@ -1184,6 +1183,18 @@ where
                     u64::try_from(output.get_array_memory_size())
                         .map_err(|error| CdfError::internal(error.to_string()))?;
                 if apply_package_dedup {
+                    let output = prepare_output_batch(
+                        &validation_program,
+                        effective_schema_evidence.is_some(),
+                        PreparedOutputBatch {
+                            output,
+                            variant_values,
+                            output_position: batch_source_position.clone(),
+                        },
+                        &mut output_schema,
+                        runtime_output_schema.as_ref(),
+                        &mut phase_measurements,
+                    )?;
                     phase_measurements.add(
                         RunPhase::ValidationNormalization,
                         elapsed_ns(validation_started, "validation/normalization")?,
@@ -1192,8 +1203,7 @@ where
                     );
                     pending_dedup_batches.push(PendingDedupBatch {
                         partition_ordinal,
-                        accepted: output,
-                        variant_values,
+                        output,
                         output_position: batch_source_position,
                     });
                     continue;
@@ -1282,7 +1292,6 @@ where
         apply_dedup_and_write_pending_batches(
             &mut builder,
             &validation_program,
-            effective_schema_evidence.is_some(),
             pending_dedup_batches,
             &segmentation_policy,
             &mut OutputWriteState {
@@ -1427,7 +1436,6 @@ where
 fn apply_dedup_and_write_pending_batches(
     builder: &mut PackageBuilder,
     program: &ValidationProgram,
-    canonicalize_observed_schema: bool,
     pending: Vec<PendingDedupBatch>,
     segmentation_policy: &crate::CanonicalSegmentationPolicy,
     state: &mut OutputWriteState<'_>,
@@ -1435,11 +1443,11 @@ fn apply_dedup_and_write_pending_batches(
     let validation_started = state.phase_measurements.start();
     let validation_input_bytes = pending
         .iter()
-        .map(|batch| batch.accepted.get_array_memory_size() as u64)
+        .map(|batch| batch.output.get_array_memory_size() as u64)
         .sum();
     let accepted = pending
         .iter()
-        .map(|batch| batch.accepted.clone())
+        .map(|batch| batch.output.clone())
         .collect::<Vec<_>>();
     let Some(dedup) = evaluate_package_order_dedup(program, &accepted)? else {
         return Ok(());
@@ -1455,8 +1463,7 @@ fn apply_dedup_and_write_pending_batches(
     let mut assembler = None::<(u32, crate::CanonicalSegmentAssembler)>;
     for (pending, retained_rows) in pending.into_iter().zip(dedup.retained_rows) {
         let output =
-            filter_record_batch(&pending.accepted, &retained_rows).map_err(CdfError::from)?;
-        let variant_values = filter_optional_strings(&pending.variant_values, &retained_rows);
+            filter_record_batch(&pending.output, &retained_rows).map_err(CdfError::from)?;
         if output.num_rows() == 0 {
             continue;
         }
@@ -1472,15 +1479,10 @@ fn apply_dedup_and_write_pending_batches(
                 )?,
             ));
         }
-        write_output_batch(
+        write_normalized_output_batch(
             builder,
-            program,
-            canonicalize_observed_schema,
-            PreparedOutputBatch {
-                output,
-                variant_values,
-                output_position: pending.output_position,
-            },
+            output,
+            pending.output_position,
             &mut assembler.as_mut().expect("assembler initialized").1,
             state,
         )?;
@@ -1636,12 +1638,32 @@ fn write_output_batch(
     assembler: &mut crate::CanonicalSegmentAssembler,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
+    let output_position = prepared.output_position.clone();
+    let output = prepare_output_batch(
+        program,
+        canonicalize_observed_schema,
+        prepared,
+        state.output_schema,
+        state.expected_schema,
+        state.phase_measurements,
+    )?;
+    write_normalized_output_batch(builder, output, output_position, assembler, state)
+}
+
+fn prepare_output_batch(
+    program: &ValidationProgram,
+    canonicalize_observed_schema: bool,
+    prepared: PreparedOutputBatch,
+    output_schema: &mut Option<SchemaArtifact>,
+    expected_schema: &Schema,
+    phase_measurements: &mut PhaseMeasurements,
+) -> Result<RecordBatch> {
     let PreparedOutputBatch {
         output,
         variant_values,
-        output_position,
+        output_position: _,
     } = prepared;
-    let normalization_started = state.phase_measurements.start();
+    let normalization_started = phase_measurements.start();
     let normalization_input_bytes = output.get_array_memory_size() as u64;
     let output = append_residual_variant(output, program, variant_values)?;
     let output = normalize_record_batch(output, program)?;
@@ -1650,23 +1672,33 @@ fn write_output_batch(
     } else {
         output
     };
-    let output = conform_to_compiled_output_schema(output, state.expected_schema)?;
+    let output = conform_to_compiled_output_schema(output, expected_schema)?;
     let normalization_output_bytes = output.get_array_memory_size() as u64;
-    state.phase_measurements.add(
+    phase_measurements.add(
         RunPhase::ValidationNormalization,
         elapsed_ns(normalization_started, "output normalization")?,
         normalization_input_bytes,
         normalization_output_bytes,
     );
     let actual_schema = schema_artifact(output.schema().as_ref());
-    if let Some(expected_schema) = state.output_schema.as_ref()
+    if let Some(expected_schema) = output_schema.as_ref()
         && expected_schema != &actual_schema
     {
         return Err(CdfError::data(format!(
             "emitted batch schema does not match the compiled output schema authority: expected {expected_schema:?}, observed {actual_schema:?}"
         )));
     }
-    *state.output_schema = Some(actual_schema);
+    *output_schema = Some(actual_schema);
+    Ok(output)
+}
+
+fn write_normalized_output_batch(
+    builder: &mut PackageBuilder,
+    output: RecordBatch,
+    output_position: Option<SourcePosition>,
+    assembler: &mut crate::CanonicalSegmentAssembler,
+    state: &mut OutputWriteState<'_>,
+) -> Result<()> {
     let canonical_segments = assembler.push(output, output_position)?;
     persist_canonical_segments(builder, canonical_segments, state)
 }
