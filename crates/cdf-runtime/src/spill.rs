@@ -42,6 +42,14 @@ impl SpillReservation {
             .ok_or_else(|| CdfError::data("spill reservation overflowed u64"))?;
         Ok(true)
     }
+
+    pub fn shrink(&mut self, bytes: u64) {
+        let released = bytes.min(self.bytes);
+        if released > 0 {
+            self.bytes -= released;
+            self.account.current.fetch_sub(released, Ordering::AcqRel);
+        }
+    }
 }
 
 impl Drop for SpillReservation {

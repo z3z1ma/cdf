@@ -1,5 +1,6 @@
 #![doc = "Planning and execution boundary for cdf."]
 
+mod dedup_spill;
 mod execution;
 mod memory;
 mod output_schema;

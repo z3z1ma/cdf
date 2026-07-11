@@ -2339,6 +2339,30 @@ fn append_exact_row_dedup_compiles_and_drops_only_complete_duplicates() {
     assert_eq!(summary["input_rows"], 3);
     assert_eq!(summary["output_rows"], 2);
     assert_eq!(summary["dropped_row_count"], 1);
+
+    let spill_temp = TempDir::new().unwrap();
+    let (_, services) =
+        StandaloneExecutionHost::default_services_with_spill(64 * 1024 * 1024, 64 * 1024 * 1024)
+            .unwrap();
+    let pre_finalize =
+        |_builder: &cdf_package::PackageBuilder, _draft: EnginePackageDraft<'_>| Ok(());
+    let spilled = block_on(execute_to_package_with_segment_positions_and_pre_finalize(
+        &plan,
+        &resource,
+        spill_temp.path(),
+        &pre_finalize,
+        EngineExecutionOptions::default().with_execution_services(services.clone()),
+    ))
+    .unwrap();
+
+    assert_eq!(spilled.output.manifest.identity, output.manifest.identity);
+    assert_eq!(
+        spilled.output.manifest.package_hash,
+        output.manifest.package_hash
+    );
+    let spill = services.spill().snapshot();
+    assert!(spill.peak_bytes > 0);
+    assert_eq!(spill.current_bytes, 0);
 }
 
 #[test]

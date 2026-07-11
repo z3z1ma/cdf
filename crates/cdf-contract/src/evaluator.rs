@@ -257,8 +257,7 @@ pub fn evaluate_package_order_dedup(
 
     for (batch_index, batch) in batches.iter().enumerate() {
         let keys = encode_package_dedup_keys(program, &rule, batch)?;
-        for row_index in 0..batch.num_rows() {
-            let key = keys[row_index].clone();
+        for (row_index, key) in keys.into_iter().enumerate() {
             if matches!(rule.keep, DedupKeepProgram::Fail) && groups.contains_key(&key) {
                 return Err(CdfError::contract(format!(
                     "dedup row rule {:?} found duplicate key at package row {}; keep=fail aborts before destination mutation",
