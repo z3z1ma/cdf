@@ -9,6 +9,8 @@ members = [
     "crates/cdf-state-sqlite",
     "crates/cdf-http",
     "crates/cdf-formats",
+    "crates/cdf-postgres",
+    "crates/cdf-source-postgres",
     "crates/cdf-declarative",
     "crates/cdf-python",
     "crates/cdf-wasm",

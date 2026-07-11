@@ -4,7 +4,7 @@ use arrow_schema::{DataType, Field, Schema, TimeUnit};
 use cdf_kernel::{CdfError, ResourceId, Result, with_physical_type};
 use postgres::{Client, NoTls, Row};
 
-use crate::PostgresTarget;
+use cdf_postgres::PostgresTarget;
 
 pub const POSTGRES_CATALOG_DISCOVERY_PROBE: &str = "postgres-catalog";
 
@@ -141,4 +141,91 @@ fn unsupported_catalog_type(
     CdfError::data(format!(
         "Postgres catalog discovery for resource `{resource_id}` does not support column `{column_name}` with catalog type `{observed_type}`; this source type is not yet supported by the Postgres discovery/execution slice"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_supported_catalog_types_to_arrow() {
+        let schema = schema_from_catalog_columns(
+            &ResourceId::new("warehouse.orders").unwrap(),
+            vec![
+                PostgresCatalogColumn {
+                    name: "VendorID".to_owned(),
+                    observed_type: "integer".to_owned(),
+                    nullable: false,
+                },
+                PostgresCatalogColumn {
+                    name: "is_active".to_owned(),
+                    observed_type: "boolean".to_owned(),
+                    nullable: true,
+                },
+                PostgresCatalogColumn {
+                    name: "ratio".to_owned(),
+                    observed_type: "double precision".to_owned(),
+                    nullable: false,
+                },
+                PostgresCatalogColumn {
+                    name: "customer_uuid".to_owned(),
+                    observed_type: "uuid".to_owned(),
+                    nullable: true,
+                },
+                PostgresCatalogColumn {
+                    name: "service_date".to_owned(),
+                    observed_type: "date".to_owned(),
+                    nullable: false,
+                },
+                PostgresCatalogColumn {
+                    name: "created_at".to_owned(),
+                    observed_type: "timestamp without time zone".to_owned(),
+                    nullable: true,
+                },
+                PostgresCatalogColumn {
+                    name: "updated_at".to_owned(),
+                    observed_type: "timestamp with time zone".to_owned(),
+                    nullable: false,
+                },
+            ],
+        )
+        .unwrap();
+
+        let fields = schema.fields();
+        assert_eq!(fields[0].data_type(), &DataType::Int64);
+        assert!(!fields[0].is_nullable());
+        assert_eq!(fields[0].metadata()["cdf:physical_type"], "integer");
+        assert_eq!(fields[1].data_type(), &DataType::Boolean);
+        assert!(fields[1].is_nullable());
+        assert_eq!(fields[2].data_type(), &DataType::Float64);
+        assert_eq!(fields[3].data_type(), &DataType::Utf8);
+        assert_eq!(fields[4].data_type(), &DataType::Date32);
+        assert_eq!(
+            fields[5].data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, None)
+        );
+        assert_eq!(
+            fields[6].data_type(),
+            &DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into()))
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_type_with_resource_and_column() {
+        let error = schema_from_catalog_columns(
+            &ResourceId::new("warehouse.orders").unwrap(),
+            vec![PostgresCatalogColumn {
+                name: "amount".to_owned(),
+                observed_type: "numeric".to_owned(),
+                nullable: true,
+            }],
+        )
+        .unwrap_err();
+
+        let message = error.to_string();
+        assert!(message.contains("warehouse.orders"));
+        assert!(message.contains("amount"));
+        assert!(message.contains("numeric"));
+        assert!(message.contains("not yet supported by the Postgres discovery/execution slice"));
+    }
 }

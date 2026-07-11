@@ -13,6 +13,7 @@ arrow-schema = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
+cdf-source-postgres = { path = "../cdf-source-postgres" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }

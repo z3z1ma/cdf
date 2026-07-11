@@ -20,6 +20,8 @@ use cdf_kernel::{
 };
 use serde::{Deserialize, Serialize};
 
+pub use cdf_postgres::{PostgresIdentifier, PostgresTarget, quote_identifier};
+
 pub const POSTGRES_DESTINATION_ID: &str = "postgres";
 pub const CDF_LOADS_TABLE: &str = "_cdf_loads";
 pub const CDF_STATE_TABLE: &str = "_cdf_state";
@@ -31,7 +33,6 @@ pub const CDF_LOADED_AT_COLUMN: &str = "_cdf_loaded_at_ms";
 pub const POSTGRES_XID_SQL: &str = "SELECT txid_current()::text AS xid";
 
 mod api;
-mod catalog;
 mod commit;
 mod correction;
 mod ddl;
@@ -45,20 +46,14 @@ mod plan;
 mod rows;
 mod runtime;
 mod sheet;
-mod source;
 #[cfg(test)]
 mod tests;
 mod validate;
 
 pub use api::*;
-pub use catalog::{
-    POSTGRES_CATALOG_DISCOVERY_PROBE, PostgresCatalogDiscovery,
-    discover_postgres_table_catalog_schema,
-};
 pub use correction::*;
 pub use identifiers::*;
 pub use plan::*;
 pub use rows::{postgres_columns_for_schema, postgres_type_for_arrow};
 pub use runtime::{PostgresRuntime, PostgresRuntimeDriver, validate_replay_target};
 pub use sheet::*;
-pub use source::*;

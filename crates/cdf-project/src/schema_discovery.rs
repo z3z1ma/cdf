@@ -21,7 +21,6 @@ use cdf_declarative::{
     local_file_discovery_candidates, physical_arrow_schema_hash,
     postgres_table_target_for_sql_plan,
 };
-use cdf_dest_postgres::{POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema};
 use cdf_http::{HttpTransport, SecretProvider};
 use cdf_kernel::{
     CdfError, DISCOVERY_MANIFEST_HASH_METADATA_KEY, DISCOVERY_MANIFEST_PATH_METADATA_KEY,
@@ -34,6 +33,9 @@ use cdf_kernel::{
 use cdf_memory::{
     BudgetTag, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
     ReservationRequest,
+};
+use cdf_source_postgres::{
+    POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema,
 };
 
 use crate::{

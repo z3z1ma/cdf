@@ -817,13 +817,13 @@ dependencies = [
  "arrow-schema 59.1.0",
  "cdf-conformance",
  "cdf-contract",
- "cdf-dest-postgres",
  "cdf-engine",
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
  "cdf-package",
  "cdf-runtime",
+ "cdf-source-postgres",
  "flate2",
  "futures-executor",
  "futures-util",
@@ -889,7 +889,9 @@ dependencies = [
  "cdf-http",
  "cdf-kernel",
  "cdf-package",
+ "cdf-postgres",
  "cdf-runtime",
+ "cdf-source-postgres",
  "futures-executor",
  "futures-util",
  "hex",
@@ -998,6 +1000,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-postgres"
+version = "0.1.0"
+dependencies = [
+ "cdf-kernel",
+ "serde",
+]
+
+[[package]]
 name = "cdf-project"
 version = "0.1.0"
 dependencies = [
@@ -1016,6 +1026,7 @@ dependencies = [
  "cdf-memory",
  "cdf-package",
  "cdf-runtime",
+ "cdf-source-postgres",
  "cdf-state-sqlite",
  "flate2",
  "futures-executor",
@@ -1068,6 +1079,20 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+]
+
+[[package]]
+name = "cdf-source-postgres"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.1.0",
+ "arrow-schema 59.1.0",
+ "cdf-kernel",
+ "cdf-postgres",
+ "futures-util",
+ "postgres",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

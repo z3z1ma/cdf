@@ -1,0 +1,11 @@
+[package]
+name = "cdf-postgres"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Shared Postgres protocol identifiers for cdf source and destination adapters."
+
+[dependencies]
+cdf-kernel = { path = "../cdf-kernel" }
+serde = { version = "1.0.228", features = ["derive"] }

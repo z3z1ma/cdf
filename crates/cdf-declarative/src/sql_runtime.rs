@@ -1,17 +1,17 @@
 use std::{fmt, sync::Arc};
 
 use arrow_schema::SchemaRef;
-use cdf_dest_postgres::{
-    PostgresTableResource, PostgresTarget, plan_postgres_table_partition,
-    postgres_table_capabilities, postgres_table_predicate_fidelity,
-    validate_postgres_table_resource_shape,
-};
 use cdf_http::SecretProvider;
 use cdf_kernel::{
     BackpressureSupport, BatchStream, BoxFuture, CapabilitySupport, CdfError, EstimateSupport,
     FilterCapabilities, IncrementalShape, PartitionId, PartitionPlan, PartitioningCapabilities,
     PushdownFidelity, QueryableResource, ReplaySupport, ResourceCapabilities, ResourceDescriptor,
     ResourceStream, Result, ScanPlan, ScanRequest,
+};
+use cdf_source_postgres::{
+    PostgresTableResource, PostgresTarget, plan_postgres_table_partition,
+    postgres_table_capabilities, postgres_table_predicate_fidelity,
+    validate_postgres_table_resource_shape,
 };
 
 use crate::{CompiledResource, CompiledResourcePlan, SqlResourcePlan};

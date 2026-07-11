@@ -13,6 +13,7 @@ cdf-contract = { path = "../cdf-contract" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
+cdf-postgres = { path = "../cdf-postgres" }
 cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"
 hex = "0.4.3"
@@ -23,5 +24,6 @@ sha2 = "0.10.9"
 
 [dev-dependencies]
 cdf-conformance = { path = "../cdf-conformance" }
+cdf-source-postgres = { path = "../cdf-source-postgres" }
 futures-executor = "0.3.32"
 tempfile = "3.27.0"

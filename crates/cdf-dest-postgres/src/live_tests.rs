@@ -30,6 +30,7 @@ use cdf_kernel::{
 use cdf_package::{
     PackageBuilder, PackageManifest, PackageReader, QuarantineObservedValue, QuarantineRecord,
 };
+use cdf_source_postgres::{PostgresTableResource, discover_postgres_table_catalog_schema};
 use futures_util::StreamExt;
 use postgres::{Client, NoTls};
 use tempfile::TempDir;

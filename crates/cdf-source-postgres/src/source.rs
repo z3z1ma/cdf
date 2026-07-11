@@ -21,7 +21,7 @@ use futures_util::stream;
 use postgres::{Client, NoTls, Row, types::ToSql};
 use serde::{Deserialize, Serialize};
 
-use crate::{PostgresIdentifier, PostgresTarget};
+use cdf_postgres::{PostgresIdentifier, PostgresTarget};
 
 pub const POSTGRES_SQL_SCAN_METADATA: &str = "postgres_sql_scan";
 
