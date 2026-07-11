@@ -1,9 +1,11 @@
 use crate::prelude::*;
 use cdf_kernel::{
-    CommitCounts, CommitSession, ConcurrencyLimit, DeliveryGuarantee, DestinationId,
-    IdempotencySupport, IdempotencyToken, IdentifierRules, MigrationRecord, PackageHash, PlanId,
-    ReceiptId, SchemaHash, SegmentAck, SegmentId, TargetName, TransactionMetadata,
-    TransactionSupport, TypeMapping, VerifyClause,
+    BatchStream, BoxFuture, CommitCounts, CommitSession, ConcurrencyLimit, DeliveryGuarantee,
+    DestinationId, ErrorKind, IdempotencySupport, IdempotencyToken, IdentifierRules,
+    MigrationRecord, PackageHash, PartitionId, PartitionPlan, PlanId, QueryableResource, ReceiptId,
+    ResourceCapabilities, ResourceDescriptor, ResourceId, ResourceStream, ScanPlan, ScanRequest,
+    SchemaHash, SchemaSource, ScopeKey, SegmentAck, SegmentId, TargetName, TransactionMetadata,
+    TransactionSupport, TrustLevel, TypeMapping, VerifyClause,
 };
 use std::{
     collections::BTreeMap,
@@ -570,6 +572,232 @@ fn runtime_capabilities_are_serializable_plan_evidence() {
     assert_eq!(
         serde_json::from_str::<DestinationRuntimeCapabilities>(&json).unwrap(),
         capabilities
+    );
+}
+
+struct MockSourceDriver {
+    descriptor: SourceDriverDescriptor,
+}
+
+impl SourceDriver for MockSourceDriver {
+    fn descriptor(&self) -> &SourceDriverDescriptor {
+        &self.descriptor
+    }
+
+    fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        CompiledSourcePlan::new(
+            self.descriptor.clone(),
+            request.descriptor,
+            ResourceCapabilities::default(),
+            SourceExecutionCapabilities {
+                minimum_poll_bytes: 1,
+                maximum_poll_bytes: 1024,
+                minimum_decode_bytes: 1,
+                maximum_decode_bytes: 4096,
+                maximum_concurrency: 2,
+                useful_concurrency: 2,
+                executor_class: SourceExecutorClass::Io,
+                blocking_lane: None,
+                pausable: true,
+                spillable: false,
+                idempotent_reads: true,
+                reopenable: true,
+                resumable: false,
+                retry_granularity: SourceRetryGranularity::Partition,
+                retryable_errors: vec![ErrorKind::Transient],
+                attestation: SourceAttestationStrength::ImmutableContent,
+                rate_limit_per_second: Some(100),
+                quota_authority: Some("mock-account".to_owned()),
+                canonical_order: true,
+                bounded: true,
+                telemetry_version: "v1".to_owned(),
+            },
+            request.schema,
+            serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
+            serde_json::json!({"partitions": 2}),
+        )
+    }
+
+    fn resolve(
+        &self,
+        plan: &CompiledSourcePlan,
+        _context: &SourceResolutionContext<'_>,
+    ) -> Result<Arc<dyn QueryableResource>> {
+        Ok(Arc::new(MockSourceResource {
+            descriptor: plan.descriptor.clone(),
+            schema: Arc::new(plan.schema.clone()),
+            capabilities: plan.resource_capabilities.clone(),
+        }))
+    }
+}
+
+struct MockSourceResource {
+    descriptor: ResourceDescriptor,
+    schema: Arc<Schema>,
+    capabilities: ResourceCapabilities,
+}
+
+impl ResourceStream for MockSourceResource {
+    fn descriptor(&self) -> &ResourceDescriptor {
+        &self.descriptor
+    }
+
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn plan_partitions(&self, request: &ScanRequest) -> Result<Vec<PartitionPlan>> {
+        Ok(vec![PartitionPlan {
+            partition_id: PartitionId::new("mock-000001")?,
+            scope: request.scope.clone(),
+            start_position: None,
+            metadata: BTreeMap::new(),
+        }])
+    }
+
+    fn open(&self, _partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
+        Box::pin(async {
+            let stream: BatchStream = Box::pin(futures_util::stream::empty());
+            Ok(stream)
+        })
+    }
+}
+
+impl QueryableResource for MockSourceResource {
+    fn capabilities(&self) -> &ResourceCapabilities {
+        &self.capabilities
+    }
+
+    fn negotiate(&self, request: &ScanRequest) -> Result<ScanPlan> {
+        Ok(ScanPlan {
+            plan_id: PlanId::new("mock-source-plan")?,
+            request: request.clone(),
+            partitions: self.plan_partitions(request)?,
+            pushed_predicates: Vec::new(),
+            unsupported_predicates: request.filters.clone(),
+            estimated_rows: Some(0),
+            estimated_bytes: Some(0),
+            delivery_guarantee: DeliveryGuarantee::AtLeastOnceDuplicateRisk,
+        })
+    }
+}
+
+struct NoopSourceHost {
+    memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+}
+
+impl ExecutionHost for NoopSourceHost {
+    fn capabilities(&self) -> ExecutionHostCapabilities {
+        ExecutionHostCapabilities {
+            logical_cpu_slots: 1,
+            io_workers: 1,
+            blocking_lanes: Vec::new(),
+        }
+    }
+
+    fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
+        Arc::clone(&self.memory)
+    }
+
+    fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
+        Err(CdfError::internal(
+            "mock source host does not execute scopes",
+        ))
+    }
+
+    fn run_io_blocking(&self, _task: IoValueTask) -> Result<IoValue> {
+        Err(CdfError::internal("mock source host does not execute I/O"))
+    }
+
+    fn ensure_blocking_lanes(&self, _lanes: &[BlockingLaneSpec]) -> Result<()> {
+        Ok(())
+    }
+
+    fn run_blocking_value(&self, _lane: &str, _task: BlockingValueTask) -> Result<IoValue> {
+        Err(CdfError::internal(
+            "mock source host does not execute blocking work",
+        ))
+    }
+}
+
+struct NoopSecretProvider;
+
+impl cdf_http::SecretProvider for NoopSecretProvider {
+    fn resolve(&self, _uri: &cdf_http::SecretUri) -> Result<cdf_http::SecretValue> {
+        Err(CdfError::auth("mock secret resolution is not used"))
+    }
+}
+
+#[test]
+fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
+    let descriptor = SourceDriverDescriptor {
+        driver_id: SourceDriverId::new("mock_source").unwrap(),
+        driver_version: "1.0.0".to_owned(),
+        option_schema_hash: format!("sha256:{}", "a".repeat(64)),
+        kinds: vec!["mock".to_owned()],
+        schemes: vec!["mock".to_owned()],
+    };
+    let mut registry = SourceRegistry::new();
+    registry
+        .register(MockSourceDriver {
+            descriptor: descriptor.clone(),
+        })
+        .unwrap();
+    let resource_descriptor = ResourceDescriptor {
+        resource_id: ResourceId::new("mock.events").unwrap(),
+        schema_source: SchemaSource::Declared {
+            schema_hash: SchemaHash::new("schema-mock").unwrap(),
+            source: "mock://events".to_owned(),
+        },
+        primary_key: Vec::new(),
+        merge_key: Vec::new(),
+        cursor: None,
+        write_disposition: WriteDisposition::Append,
+        deduplication: None,
+        contract: None,
+        state_scope: ScopeKey::Resource,
+        freshness: None,
+        trust_level: TrustLevel::Experimental,
+    };
+    let plan = registry
+        .compile(SourceCompileRequest {
+            source_kind: "mock".to_owned(),
+            source_options: BTreeMap::new(),
+            resource_options: BTreeMap::new(),
+            descriptor: resource_descriptor,
+            schema: Schema::empty(),
+        })
+        .unwrap();
+    assert_eq!(
+        registry
+            .driver_for_uri("mock://events")
+            .unwrap()
+            .descriptor(),
+        &descriptor
+    );
+    let encoded = serde_json::to_vec(&plan).unwrap();
+    assert_eq!(
+        serde_json::from_slice::<CompiledSourcePlan>(&encoded).unwrap(),
+        plan
+    );
+    let memory: Arc<dyn cdf_memory::MemoryCoordinator> =
+        Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
+    let services = ExecutionServices::new(Arc::new(NoopSourceHost { memory })).unwrap();
+    let secrets = NoopSecretProvider;
+    let root = tempfile::tempdir().unwrap();
+    let context = SourceResolutionContext::new(root.path(), &secrets, &services);
+    let resource = registry.resolve(&plan, &context).unwrap();
+    assert_eq!(resource.descriptor().resource_id.as_str(), "mock.events");
+
+    let mut reordered = SourceRegistry::new();
+    reordered.register(MockSourceDriver { descriptor }).unwrap();
+    assert_eq!(reordered.descriptors(), registry.descriptors());
+    assert!(
+        reordered
+            .register(MockSourceDriver {
+                descriptor: reordered.descriptors()[0].clone()
+            })
+            .is_err()
     );
 }
 

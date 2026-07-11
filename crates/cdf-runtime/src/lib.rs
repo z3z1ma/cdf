@@ -5,6 +5,8 @@ mod context;
 mod destination;
 mod execution_host;
 mod registry;
+mod source;
+mod source_registry;
 mod staging;
 mod utilities;
 
@@ -13,6 +15,8 @@ pub use context::*;
 pub use destination::*;
 pub use execution_host::*;
 pub use registry::*;
+pub use source::*;
+pub use source_registry::*;
 pub use staging::*;
 pub use utilities::*;
 

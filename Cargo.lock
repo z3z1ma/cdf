@@ -421,6 +421,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d9e4969dc350d571766247143ab36a5187d095d3d3690970408bc630d47c69e5"
 dependencies = [
  "bitflags",
+ "serde",
  "serde_core",
  "serde_json",
 ]
@@ -1061,10 +1062,12 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "futures-util",
  "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
 ]
 
 [[package]]

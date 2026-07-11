@@ -38,3 +38,7 @@ Depends on neutral runtime, memory, and execution-host contracts. P3 source sche
 - `.10x/research/2026-07-11-source-extension-boundary-audit.md`
 - `.10x/specs/source-extension-runtime-contract.md`
 - `.10x/knowledge/source-destination-extension-invariant.md`
+
+## Progress and notes
+
+- 2026-07-11: Added the engine-neutral `SourceDriver`, `SourceRegistry`, compiled source plan, resolution context, and scheduler-facing execution capability contracts to `cdf-runtime`. Compiled plans bind driver/version/option-schema authority and canonical redacted-option/physical-plan hashes; registry resolution rejects authority drift. A mock driver proves deterministic registration, compilation, serialization, and resolution without source-id scheduling branches. First-party source migration and dependency isolation remain open.
