@@ -15,11 +15,13 @@ cdf-contract = { path = "../cdf-contract" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-memory = { path = "../cdf-memory" }
 cdf-package = { path = "../cdf-package" }
+cdf-runtime = { path = "../cdf-runtime" }
 futures-util = "0.3.32"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"
 tracing = "0.1.44"
+tokio = { version = "=1.52.3", features = ["rt-multi-thread", "sync"] }
 
 [dev-dependencies]
 futures-executor = "0.3.32"

@@ -375,22 +375,36 @@ fn run_package_replay(
     let fixture = build_package_fixture(spec, root, &package_id)?;
     let target = TargetName::new("orders")?;
     let destination = match destination {
-        ReplayDestination::DuckDb => {
-            ResolvedProjectDestination::duckdb(root.join("replay.duckdb"), target)?
-        }
-        ReplayDestination::Parquet => {
-            ResolvedProjectDestination::parquet_filesystem(root.join("parquet"), target)?
-        }
-        ReplayDestination::Postgres => ResolvedProjectDestination::postgres(
-            std::env::var(POSTGRES_URL_ENV).map_err(|_| {
+        ReplayDestination::DuckDb => ResolvedProjectDestination::new(
+            Box::new(cdf_dest_duckdb::DuckDbDestination::new(
+                root.join("replay.duckdb"),
+            )?),
+            target,
+        ),
+        ReplayDestination::Parquet => ResolvedProjectDestination::new(
+            Box::new(cdf_dest_parquet::FilesystemParquetRuntime::new(
+                root.join("parquet"),
+            )),
+            target,
+        ),
+        ReplayDestination::Postgres => {
+            let database_url = std::env::var(POSTGRES_URL_ENV).map_err(|_| {
                 bench_error(format!(
                     "{POSTGRES_URL_ENV} must be set to run the opt-in postgres benchmark suite"
                 ))
-            })?,
-            PostgresTarget::new(None, "orders")?,
-            MergeDedupPolicy::Last,
-            None,
-        )?,
+            })?;
+            let postgres_target = PostgresTarget::new(None, "orders")?;
+            let destination = cdf_dest_postgres::PostgresDestination::connect(database_url)?;
+            ResolvedProjectDestination::new(
+                Box::new(cdf_dest_postgres::PostgresRuntime::for_replay(
+                    &destination,
+                    postgres_target,
+                    MergeDedupPolicy::Last,
+                    None,
+                )),
+                target,
+            )
+        }
     };
     let checkpoint_store = InMemoryCheckpointStore::new();
     let report = replay_package_from_artifacts(PackageArtifactReplayRequest {
@@ -452,10 +466,12 @@ schema = { fields = [
     )?;
     let resource = compile_document_with_project_root(&document, &project_root)?.remove(0);
     let package_id = "pkg-startup-benchmark";
-    let destination = ResolvedProjectDestination::duckdb(
-        project_root.join(".cdf/dev.duckdb"),
+    let destination = ResolvedProjectDestination::new(
+        Box::new(cdf_dest_duckdb::DuckDbDestination::new(
+            project_root.join(".cdf/dev.duckdb"),
+        )?),
         TargetName::new("events")?,
-    )?;
+    );
     let mut policy = ContractPolicy::for_trust(resource.descriptor().trust_level.clone());
     if let Some(identifier) = destination.column_identifier_policy()? {
         policy.normalization.identifier = identifier;

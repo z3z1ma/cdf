@@ -17,12 +17,16 @@ clap = { version = "4.6.1", default-features = false, features = ["std", "help",
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
+cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
+cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-formats = { path = "../cdf-formats" }
 cdf-http = { path = "../cdf-http" }
 cdf-kernel = { path = "../cdf-kernel" }
 cdf-package = { path = "../cdf-package" }
 cdf-project = { path = "../cdf-project" }
+cdf-runtime = { path = "../cdf-runtime" }
+cdf-memory = { path = "../cdf-memory" }
 cdf-state-sqlite = { path = "../cdf-state-sqlite" }
 datafusion = { git = "https://github.com/apache/datafusion.git", rev = "7ff7278edc1bf7446303bff51e5883a38414bbdf", default-features = false }
 duckdb = { version = "1.10504.0", features = ["bundled"] }
@@ -34,6 +38,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 sha2 = "0.10.9"
 tempfile = "3.27.0"
+tokio = { version = "=1.52.3", features = ["rt-multi-thread"] }
 
 [dev-dependencies]
 criterion = "0.5.1"

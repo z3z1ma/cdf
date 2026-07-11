@@ -6,6 +6,7 @@ mod output_schema;
 mod planning;
 mod predicates;
 mod segmentation;
+mod standalone_host;
 mod table_provider;
 #[cfg(test)]
 mod tests;
@@ -27,5 +28,6 @@ pub use segmentation::{
     AdaptiveMicrobatchController, CanonicalSegment, CanonicalSegmentAssembler,
     CanonicalSegmentationPolicy, PositionJoin, join_positions,
 };
+pub use standalone_host::StandaloneExecutionHost;
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
 pub use types::*;

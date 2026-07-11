@@ -691,13 +691,17 @@ dependencies = [
  "arrow-select 59.1.0",
  "cdf-contract",
  "cdf-declarative",
+ "cdf-dest-duckdb",
+ "cdf-dest-parquet",
  "cdf-dest-postgres",
  "cdf-engine",
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-memory",
  "cdf-package",
  "cdf-project",
+ "cdf-runtime",
  "cdf-state-sqlite",
  "clap",
  "criterion",
@@ -711,6 +715,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -902,6 +907,7 @@ dependencies = [
  "cdf-kernel",
  "cdf-memory",
  "cdf-package",
+ "cdf-runtime",
  "datafusion",
  "futures-executor",
  "futures-util",
@@ -909,6 +915,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
+ "tokio",
  "tracing",
 ]
 
