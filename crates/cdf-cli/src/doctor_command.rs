@@ -4,6 +4,8 @@ use std::{
     process::Command as ProcessCommand,
 };
 
+use cdf_declarative::CompiledResourcePlan;
+use cdf_kernel::{ResourceStream, ScanRequest};
 use cdf_project::{FileResourceSourceResolver, ResourceSourceKind, validate_project};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -80,6 +82,7 @@ pub(crate) fn doctor(cli: &crate::args::Cli) -> Result<CommandOutput, CliError> 
     }
 
     checks.push(python_check(&context));
+    checks.extend(file_transport_checks(&context));
     checks.extend(destination_checks(context.destination_runtime()));
     checks.push(ledger_destination_drift_check(&context));
 
@@ -98,6 +101,90 @@ pub(crate) fn doctor(cli: &crate::args::Cli) -> Result<CommandOutput, CliError> 
     };
     let exit_code = if failed == 0 { 0 } else { 1 };
     CommandOutput::rendered_with_exit_code("doctor", report.render_document(), report, exit_code)
+}
+
+fn file_transport_checks(context: &ProjectContext) -> Vec<DoctorCheck> {
+    let remote_resources = context
+        .resources
+        .iter()
+        .filter(|resource| {
+            matches!(resource.plan(), CompiledResourcePlan::Files(plan) if remote_transport_kind(&plan.root).is_some())
+        })
+        .collect::<Vec<_>>();
+    if remote_resources.is_empty() {
+        return Vec::new();
+    }
+    let dependencies = match crate::project_run_resource::file_runtime_dependencies(context) {
+        Ok(dependencies) => dependencies,
+        Err(error) => {
+            return vec![DoctorCheck::failed(
+                "file_transport",
+                format!(
+                    "remote file transport initialization failed: {}",
+                    error.message
+                ),
+            )];
+        }
+    };
+    remote_resources
+        .into_iter()
+        .map(|resource| {
+            let resource_id = resource.descriptor().resource_id.to_string();
+            let CompiledResourcePlan::Files(plan) = resource.plan() else {
+                unreachable!("remote_resources contains only file plans")
+            };
+            let transport = remote_transport_kind(&plan.root).unwrap_or("remote");
+            let probe = resource
+                .to_file_resource(dependencies.clone())
+                .and_then(|runtime| {
+                    runtime.plan_partitions(&ScanRequest {
+                        resource_id: resource.descriptor().resource_id.clone(),
+                        projection: None,
+                        filters: Vec::new(),
+                        limit: None,
+                        order_by: Vec::new(),
+                        scope: resource.descriptor().state_scope.clone(),
+                    })
+                });
+            match probe {
+                Ok(partitions) => DoctorCheck::passed(
+                    format!("file_transport:{resource_id}"),
+                    format!(
+                        "{transport} transport resolved {} matched file(s)",
+                        partitions.len()
+                    ),
+                )
+                .with_details(json!({
+                    "resource_id": resource_id,
+                    "transport": transport,
+                    "matched_files": partitions.len(),
+                })),
+                Err(error) => DoctorCheck::failed(
+                    format!("file_transport:{resource_id}"),
+                    format!("{transport} transport probe failed: {}", error.message),
+                )
+                .with_details(json!({
+                    "resource_id": resource_id,
+                    "transport": transport,
+                    "matched_files": 0,
+                })),
+            }
+        })
+        .collect()
+}
+
+fn remote_transport_kind(root: &str) -> Option<&'static str> {
+    if root.starts_with("http://") || root.starts_with("https://") {
+        Some("https")
+    } else if root.starts_with("s3://") {
+        Some("s3")
+    } else if root.starts_with("gs://") {
+        Some("gcs")
+    } else if root.starts_with("az://") {
+        Some("azure")
+    } else {
+        None
+    }
 }
 
 fn project_health_details(context: &ProjectContext) -> serde_json::Value {

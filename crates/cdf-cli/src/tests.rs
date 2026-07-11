@@ -6918,9 +6918,13 @@ fn run_adhoc_http_parquet_uses_bounded_discovery_and_ordinary_run() {
             .starts_with("adhoc.parquet_")
     );
     assert!(report["adhoc"]["source_artifact_path"].is_null());
-    assert_eq!(
+    assert_ne!(
         report["schema_hash"],
         report["schema_snapshot"]["schema_hash"]
+    );
+    assert_eq!(
+        report["schema_snapshot"]["discovery"]["coverage"],
+        "exhaustive"
     );
     assert_eq!(report["checkpoint"]["status"], "committed");
     assert_eq!(report["ledger_events"]["terminal_kind"], "run_succeeded");
@@ -11035,6 +11039,44 @@ fn doctor_reports_lockfile_presence_when_lock_exists() {
     let json = stderr_or_stdout_json(&result.stdout);
     let project_file = named_check(&json, "project_file");
     assert_eq!(project_file["details"]["lockfile_present"], true);
+}
+
+#[test]
+fn doctor_remote_transport_probe_fails_independently_before_network_or_writes() {
+    let project = TestProject::new();
+    fs::write(
+        project.root.join("resources/files.toml"),
+        r#"
+[source.local]
+kind = "files"
+root = "https://private.example.test/data"
+egress_allowlist = ["allowed.example.test"]
+
+[resource.events]
+glob = "events.parquet"
+format = "parquet"
+write_disposition = "append"
+trust = "governed"
+schema = { fields = [
+  { name = "id", type = "int64", nullable = false },
+] }
+"#,
+    )
+    .unwrap();
+
+    let result = run(["cdf", "--json", "--project", project.root_str(), "doctor"]);
+
+    assert_eq!(result.exit_code, 1, "stdout: {}", result.stdout);
+    let json = stderr_or_stdout_json(&result.stdout);
+    let transport = named_check(&json, "file_transport:local.events");
+    assert_eq!(transport["status"], "failed");
+    assert_eq!(transport["details"]["resource_id"], "local.events");
+    assert_eq!(transport["details"]["transport"], "https");
+    assert_eq!(transport["details"]["matched_files"], 0);
+    assert!(transport["message"].as_str().unwrap().contains("egress"));
+    assert!(!project.root.join(".cdf/state.db").exists());
+    assert!(!project.root.join(".cdf/packages").exists());
+    assert!(!project.root.join(".cdf/dev.duckdb").exists());
 }
 
 #[test]

@@ -770,7 +770,12 @@ fn discover_binary_resource_schema(
                 "runtime effective-schema discovery requires a verified baseline snapshot",
             )
         })?;
-        classify_runtime_schema_observations(&probes, baseline, &contract)?
+        classify_runtime_schema_observations(
+            &probes,
+            baseline,
+            &contract,
+            selection.coverage == DiscoveryCoverageMode::Exhaustive,
+        )?
     } else {
         (
             normalize_arrow_schema(&file_aggregate.schema, &IdentifierPolicy::default())?,
@@ -1012,11 +1017,12 @@ fn classify_runtime_schema_observations(
     probes: &[LocalBinaryProbe],
     baseline: &VerifiedSchemaBaseline,
     contract: &ContractPolicy,
+    admit_compatible_evolution: bool,
 ) -> Result<(
     arrow_schema::Schema,
     Vec<TerminalSchemaObservationQuarantine>,
 )> {
-    let effective = baseline.schema().as_ref().clone();
+    let mut effective = baseline.schema().as_ref().clone();
     let mut physical_type_policy = contract.types.clone();
     physical_type_policy.coerce_types = false;
     let mut quarantines = Vec::new();
@@ -1041,7 +1047,15 @@ fn classify_runtime_schema_observations(
             baseline.schema().as_ref(),
             &physical_type_policy,
         );
-        if constrained.is_ok() && !freeze_deviation {
+        if report.is_compatible()
+            && !freeze_deviation
+            && admit_compatible_evolution
+            && matches!(&contract.schema.mode, SchemaEvolutionMode::Evolve)
+        {
+            effective = normalize_arrow_schema(&report.schema, &IdentifierPolicy::default())?;
+            continue;
+        }
+        if constrained.is_ok() && report.is_compatible() && !freeze_deviation {
             continue;
         }
 
@@ -1104,7 +1118,6 @@ fn classify_runtime_schema_observations(
             fields,
         )?);
     }
-    let effective = baseline.schema().as_ref().clone();
     Ok((effective, quarantines))
 }
 
