@@ -143,6 +143,25 @@ impl PromotionSettlementStore for SqlitePromotionSettlementStore {
                 "promotion checkpoint scope does not match settlement lease",
             ));
         }
+        let head = CheckpointSql::head_tx(
+            &tx,
+            &checkpoint.delta.pipeline_id,
+            &checkpoint.delta.resource_id,
+            &checkpoint.delta.scope,
+        )?;
+        let expected_parent = head
+            .as_ref()
+            .map(|checkpoint| checkpoint.delta.checkpoint_id.clone());
+        let expected_input = head
+            .as_ref()
+            .map(|checkpoint| checkpoint.delta.output_position.clone());
+        if checkpoint.delta.parent_checkpoint_id != expected_parent
+            || checkpoint.delta.input_position != expected_input
+        {
+            return Err(cdf_kernel::CdfError::contract(
+                "promotion checkpoint parent/input does not match the exact committed head",
+            ));
+        }
         assert_current_lease_tx(&tx, lease, self.clock.now_ms()?)?;
         let committed = commit_checkpoint_tx(&tx, checkpoint_id, &receipt)?;
         tx.commit().map_err(sqlite_error)?;

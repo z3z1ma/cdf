@@ -497,7 +497,7 @@ where
     let validation_program =
         promotion_validation_program(request.project_root, request.resource, staged)?;
     let scope = promotion_scope(request.resource);
-    let head = request
+    let mut chain_parent = request
         .settlement_store
         .head(&request.pipeline_id, &staged.resource_id, &scope)?;
     let correction_directories = staged
@@ -568,7 +568,7 @@ where
                 artifact,
                 &request.pipeline_id,
                 checkpoint_id.clone(),
-                head.clone(),
+                chain_parent.clone(),
                 scope.clone(),
                 package_index,
             )?;
@@ -577,7 +577,7 @@ where
                 target,
                 &prepared,
                 checkpoint_id,
-                head.clone(),
+                chain_parent.clone(),
             )?;
             write_create_or_verify(&authority_path, &canonical_json_bytes(&authority)?)?;
             let hydrated: SchemaPromotionCorrectionTargetAuthority =
@@ -590,9 +590,40 @@ where
             validate_prepared_correction_package_authority(&prepared, staged, target, &hydrated)?;
             prepared
         };
+        let checkpoint = ensure_promotion_checkpoint(
+            request.settlement_store,
+            &prepared.state_delta,
+        )?;
+        chain_parent = Some(checkpoint_input_authority(&checkpoint));
         packages.push(prepared);
     }
     Ok(packages)
+}
+
+fn checkpoint_input_authority(checkpoint: &Checkpoint) -> Checkpoint {
+    let mut authority = checkpoint.clone();
+    authority.status = CheckpointStatus::Committed;
+    authority.receipt = None;
+    authority.is_head = true;
+    authority.committed_at_ms = Some(authority.created_at_ms);
+    authority
+}
+
+fn ensure_promotion_checkpoint<Store: CheckpointStore>(
+    store: &Store,
+    expected: &StateDelta,
+) -> cdf_kernel::Result<Checkpoint> {
+    let existing = store
+        .history(&expected.pipeline_id, &expected.resource_id, &expected.scope)?
+        .into_iter()
+        .find(|checkpoint| checkpoint.delta.checkpoint_id == expected.checkpoint_id);
+    match existing {
+        Some(checkpoint) if checkpoint.delta == *expected => Ok(checkpoint),
+        Some(_) => Err(cdf_kernel::CdfError::contract(
+            "promotion checkpoint conflicts with deterministic package authority",
+        )),
+        None => store.propose(expected.clone()),
+    }
 }
 
 fn promotion_validation_program(

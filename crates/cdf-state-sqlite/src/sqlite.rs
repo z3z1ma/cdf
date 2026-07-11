@@ -77,7 +77,7 @@ impl SqliteCheckpointStore {
             .map_err(sqlite_error)
     }
 
-    fn head_tx(
+    pub(crate) fn head_tx(
         tx: &Transaction<'_>,
         pipeline_id: &PipelineId,
         resource_id: &ResourceId,

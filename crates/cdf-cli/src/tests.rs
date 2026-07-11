@@ -27,9 +27,9 @@ use cdf_kernel::{
     CHECKPOINT_STATE_VERSION, CdfError, CheckpointId, CheckpointStatus, CheckpointStore,
     CommitCounts, CursorPosition, CursorValue, DestinationCommitRequest, DestinationId,
     FileManifest, FilePosition, IdempotencyToken, LeaseOwnerId, PackageHash, PartitionId,
-    PipelineId, Receipt, ReceiptId, ResourceId, RunId, SchemaHash, ScopeKey, SegmentAck, SegmentId,
-    SourcePosition, StateDelta, StateSegment, TargetName, VerifyClause, WriteDisposition,
-    with_semantic,
+    PipelineId, PromotionSettlementStore, Receipt, ReceiptId, ResourceId, RunId, SchemaHash,
+    ScopeKey, SegmentAck, SegmentId, SourcePosition, StateDelta, StateSegment, TargetName,
+    VerifyClause, WriteDisposition, with_semantic,
 };
 use cdf_package::{
     DestinationCommitPlanPreimage, PackageBuilder, PackageReader, PackageStatus, StateDeltaPreimage,
@@ -3366,6 +3366,96 @@ fn schema_promote_execute_commits_correction_checkpoint_lock_and_idempotent_publ
         report["promotion_id"]
     );
     assert_eq!(replay_json["result"]["resumed"], true);
+}
+
+#[test]
+fn schema_promote_multi_target_uses_canonical_checkpoint_chain_and_exact_publication() {
+    let project = TestProject::new();
+    write_parquet_discover_resource(&project, "*.parquet");
+    let source_path = project.root.join("data/events.parquet");
+    write_vendor_parquet(&source_path);
+    let pin = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "pin",
+        "local.events",
+    ]);
+    assert_eq!(pin.exit_code, 0, "{}", pin.stderr);
+    let old_hash = stderr_or_stdout_json(&pin.stdout)["result"]["schema_hash"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    write_vendor_score_parquet(&source_path);
+    write_schema_promote_package_fixture_for_target(
+        &project,
+        "pkg-promote-z",
+        "z_events",
+        &old_hash,
+    );
+    write_schema_promote_package_fixture_for_target(
+        &project,
+        "pkg-promote-a",
+        "a_events",
+        &old_hash,
+    );
+
+    let executed = run([
+        "cdf",
+        "--json",
+        "--project",
+        project.root_str(),
+        "schema",
+        "promote",
+        "local.events",
+        "--execute",
+    ]);
+    assert_eq!(executed.exit_code, 0, "{}", executed.stderr);
+    let report = stderr_or_stdout_json(&executed.stdout)["result"].clone();
+    let targets = report["targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 2);
+    assert_eq!(targets[0]["target"], "a_events");
+    assert_eq!(targets[1]["target"], "z_events");
+
+    let store = SqlitePromotionSettlementStore::open(project.root.join(".cdf/state.db")).unwrap();
+    let scope = ScopeKey::SchemaContract {
+        contract: cdf_kernel::ContractRef::new("local.events").unwrap(),
+    };
+    let history = store
+        .history(
+            &PipelineId::new("cdf-schema-promotion").unwrap(),
+            &ResourceId::new("local.events").unwrap(),
+            &scope,
+        )
+        .unwrap();
+    let committed = history
+        .iter()
+        .filter(|checkpoint| checkpoint.status == CheckpointStatus::Committed)
+        .collect::<Vec<_>>();
+    assert_eq!(committed.len(), 2);
+    assert_eq!(
+        committed[1].delta.parent_checkpoint_id.as_ref(),
+        Some(&committed[0].delta.checkpoint_id)
+    );
+    assert_eq!(
+        committed[1].delta.input_position.as_ref(),
+        Some(&committed[0].delta.output_position)
+    );
+    let publication = store
+        .promotion_publication(
+            &cdf_kernel::PromotionId::new(report["promotion_id"].as_str().unwrap()).unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(publication.targets.len(), 2);
+    assert_eq!(publication.targets[0].target.as_str(), "a_events");
+    assert_eq!(publication.targets[1].target.as_str(), "z_events");
+    assert_eq!(
+        publication.targets[1].checkpoint_id,
+        committed[1].delta.checkpoint_id
+    );
 }
 
 #[test]
@@ -13181,7 +13271,21 @@ fn write_vendor_score_parquet(path: &Path) {
 }
 
 fn write_schema_promote_package_fixture(project: &TestProject, schema_hash: &str) {
-    let package_dir = project.root.join(".cdf/packages/pkg-promote-source");
+    write_schema_promote_package_fixture_for_target(
+        project,
+        "pkg-promote-source",
+        "events",
+        schema_hash,
+    );
+}
+
+fn write_schema_promote_package_fixture_for_target(
+    project: &TestProject,
+    package_id: &str,
+    target_name: &str,
+    schema_hash: &str,
+) {
+    let package_dir = project.root.join(".cdf/packages").join(package_id);
     fs::create_dir_all(project.root.join(".cdf/packages")).unwrap();
     let scores = Int64Array::from_iter_values([10_i64, 20_i64]);
     let residuals = (0..scores.len())
@@ -13220,7 +13324,7 @@ fn write_schema_promote_package_fixture(project: &TestProject, schema_hash: &str
         ],
     )
     .unwrap();
-    let mut builder = PackageBuilder::create(&package_dir, "pkg-promote-source").unwrap();
+    let mut builder = PackageBuilder::create(&package_dir, package_id).unwrap();
     let segment = builder
         .write_segment(SegmentId::new("seg-000001").unwrap(), &[batch])
         .unwrap();
@@ -13241,7 +13345,7 @@ fn write_schema_promote_package_fixture(project: &TestProject, schema_hash: &str
         byte_count: segment.byte_count,
     };
     let state_delta = StateDeltaPreimage {
-        checkpoint_id: CheckpointId::new("checkpoint-promote-source").unwrap(),
+        checkpoint_id: CheckpointId::new(format!("checkpoint-{package_id}")).unwrap(),
         pipeline_id: PipelineId::new("pipeline-run").unwrap(),
         resource_id: ResourceId::new("local.events").unwrap(),
         scope: ScopeKey::Resource,
@@ -13258,7 +13362,7 @@ fn write_schema_promote_package_fixture(project: &TestProject, schema_hash: &str
         .unwrap();
     builder
         .write_commit_plan_preimage_artifact(&DestinationCommitPlanPreimage::package_hash_token(
-            TargetName::new("events").unwrap(),
+            TargetName::new(target_name).unwrap(),
             WriteDisposition::Append,
             Vec::new(),
             SchemaHash::new(schema_hash).unwrap(),
@@ -13275,7 +13379,7 @@ fn write_schema_promote_package_fixture(project: &TestProject, schema_hash: &str
             package_dir: package_dir.clone(),
             commit: DestinationCommitRequest {
                 package_hash: package_hash.clone(),
-                target: TargetName::new("events").unwrap(),
+                target: TargetName::new(target_name).unwrap(),
                 disposition: WriteDisposition::Append,
                 segments: vec![StateSegment {
                     segment_id: segment.segment_id,
