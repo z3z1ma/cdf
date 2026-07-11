@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-c-deterministic-parallelism.md
@@ -42,3 +42,6 @@ L5, A2, and A4 are complete. The scheduler-facing subset of SX1 is evidenced and
 - 2026-07-11: Added container CPU authority parsing and auto-jobs resolution joining partition count, user ceiling, source maximum/useful concurrency, CPU/native slot cost, managed memory, transport connections, destination writers, blocking lane, and checkpoint scope. A single working set larger than managed memory fails cleanly with remediation.
 - 2026-07-11: Added deterministic fair hierarchical admission for jobs, memory, CPU, I/O, connections, shared quota authority, and exclusive scope leases. Round-robin resource queues remain work-conserving around blocked heads; typed permits prevent double release. Production fan-out remains explicitly outside C1.
 - 2026-07-11: Bound neutral source plans into CLI-built engine plans. Executable file/REST/Postgres plans now serialize the canonical partition schedule into both plan authority and explain evidence before run; Python/foreign producers remain an explicit capability migration item rather than receiving guessed declarations.
+- 2026-07-11: Bound effective jobs to injected host CPU authority and current managed-memory availability, while rendering single-writer destination capacity as a separate lane so it cannot serialize upstream work. JSON/human plan reports expose the nonidentity resolution and limiting factors.
+- 2026-07-11: Added deterministic cancellation/drain and transactional permit release. Seven focused state-machine tests cover every ceiling, quota/scope exclusion, blocked-head fairness, container CPU quotas, cancellation with active work, and malformed release recovery.
+- 2026-07-11: Release benchmark measured 3.42M complete admission transitions/second (292 ns each) across 64 resources with zero voluntary context switches. Adversarial review found and fixed the malformed-release capacity leak, then passed. Retrospective: stage-specific constraints must remain stage-specific; especially, a destination's single writer is not a license to idle upstream CPU. Runtime hardware resolution belongs in truthful nonidentity evidence, never the portable plan hash.

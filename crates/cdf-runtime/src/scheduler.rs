@@ -516,14 +516,18 @@ impl FairAdmissionController {
     }
 
     pub fn release(&mut self, permit: AdmissionPermit) -> Result<()> {
-        let request = self.active.remove(&permit.id).ok_or_else(|| {
+        let request = self.active.get(&permit.id).ok_or_else(|| {
             CdfError::internal("scheduler admission permit was released more than once")
         })?;
-        if request != permit.request {
+        if *request != permit.request {
             return Err(CdfError::internal(
                 "scheduler admission permit payload did not match active authority",
             ));
         }
+        let request = self
+            .active
+            .remove(&permit.id)
+            .expect("permit authority was checked immediately before removal");
         self.snapshot.active -= 1;
         self.snapshot.memory_bytes -= request.memory_bytes;
         self.snapshot.cpu_slots -= request.cpu_slots;
@@ -788,5 +792,27 @@ mod tests {
         controller.release(active).unwrap();
         assert_eq!(controller.snapshot().active, 0);
         assert!(controller.snapshot().cancelled);
+    }
+
+    #[test]
+    fn invalid_release_cannot_leak_active_capacity() {
+        let mut controller = FairAdmissionController::new(AdmissionLimits {
+            jobs: 1,
+            memory_bytes: 10,
+            cpu_slots: 1,
+            io_permits: 1,
+            connection_permits: 1,
+            quota_limits: BTreeMap::new(),
+        })
+        .unwrap();
+        controller.enqueue(request("a", 0, None)).unwrap();
+        let permit = controller.try_admit_next().unwrap();
+        let mut corrupted = permit.clone();
+        corrupted.request.memory_bytes = 9;
+
+        assert!(controller.release(corrupted).is_err());
+        assert_eq!(controller.snapshot().active, 1);
+        controller.release(permit).unwrap();
+        assert_eq!(controller.snapshot(), AdmissionSnapshot::default());
     }
 }

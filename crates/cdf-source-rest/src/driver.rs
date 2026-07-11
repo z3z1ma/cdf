@@ -71,14 +71,16 @@ impl SourceDriver for RestSourceDriver {
         physical.to_runtime_plan()?;
         CompiledSourcePlan::new(
             self.descriptor.clone(),
-            request.descriptor.clone(),
             rest_capabilities(&request.descriptor),
             execution_capabilities(),
-            request.schema,
-            request.type_policy_allowances,
-            request.effective_schema_runtime,
-            serde_json::to_value(&physical).map_err(serialize_error)?,
-            serde_json::to_value(&physical).map_err(serialize_error)?,
+            cdf_runtime::CompiledSourcePlanInput {
+                descriptor: request.descriptor,
+                schema: request.schema,
+                type_policy_allowances: request.type_policy_allowances,
+                effective_schema_runtime: request.effective_schema_runtime,
+                redacted_options: serde_json::to_value(&physical).map_err(serialize_error)?,
+                physical_plan: serde_json::to_value(&physical).map_err(serialize_error)?,
+            },
         )
     }
 

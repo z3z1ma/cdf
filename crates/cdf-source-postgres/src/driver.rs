@@ -68,20 +68,22 @@ impl SourceDriver for PostgresSourceDriver {
         let capabilities = postgres_table_capabilities(&request.descriptor);
         CompiledSourcePlan::new(
             self.descriptor.clone(),
-            request.descriptor,
             capabilities,
             execution_capabilities(),
-            request.schema,
-            request.type_policy_allowances,
-            request.effective_schema_runtime,
-            serde_json::json!({
-                "connection": connection.as_str(),
-                "dialect": "postgres",
-                "table": target.display_name(),
-            }),
-            serde_json::to_value(physical_plan).map_err(|error| {
-                CdfError::internal(format!("serialize Postgres source plan: {error}"))
-            })?,
+            cdf_runtime::CompiledSourcePlanInput {
+                descriptor: request.descriptor,
+                schema: request.schema,
+                type_policy_allowances: request.type_policy_allowances,
+                effective_schema_runtime: request.effective_schema_runtime,
+                redacted_options: serde_json::json!({
+                    "connection": connection.as_str(),
+                    "dialect": "postgres",
+                    "table": target.display_name(),
+                }),
+                physical_plan: serde_json::to_value(physical_plan).map_err(|error| {
+                    CdfError::internal(format!("serialize Postgres source plan: {error}"))
+                })?,
+            },
         )
     }
 

@@ -12,7 +12,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 ## Activated children
 
-- `.10x/tickets/2026-07-11-p3-c1-scheduler-admission-contract.md`
+- `.10x/tickets/done/2026-07-11-p3-c1-scheduler-admission-contract.md`
 - `.10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md`
 - `.10x/tickets/2026-07-11-p3-c3-engine-ffi-parallel-integration.md`
 - `.10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md`
@@ -28,7 +28,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 
 ## Blockers
 
-Blocked on the source extension/capability boundary, injected execution host, canonical segmentation, memory ledger, and WS-L baseline.
+C1 admission, the injected execution host, memory ledger, and WS-L baseline are complete. C2 production frontier execution is next; SX1's compiler/discovery hooks and A3 closure evidence continue independently where their active tickets specify.
 
 ## References
 

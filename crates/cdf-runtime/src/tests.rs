@@ -587,7 +587,6 @@ impl SourceDriver for MockSourceDriver {
     fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
         CompiledSourcePlan::new(
             self.descriptor.clone(),
-            request.descriptor,
             ResourceCapabilities::default(),
             SourceExecutionCapabilities {
                 minimum_poll_bytes: 1,
@@ -613,11 +612,14 @@ impl SourceDriver for MockSourceDriver {
                 bounded: true,
                 telemetry_version: "v1".to_owned(),
             },
-            request.schema,
-            request.type_policy_allowances,
-            request.effective_schema_runtime,
-            serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
-            serde_json::json!({"partitions": 2}),
+            CompiledSourcePlanInput {
+                descriptor: request.descriptor,
+                schema: request.schema,
+                type_policy_allowances: request.type_policy_allowances,
+                effective_schema_runtime: request.effective_schema_runtime,
+                redacted_options: serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
+                physical_plan: serde_json::json!({"partitions": 2}),
+            },
         )
     }
 

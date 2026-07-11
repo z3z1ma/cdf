@@ -192,33 +192,38 @@ pub struct CompiledSourcePlan {
     pub physical_plan_hash: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CompiledSourcePlanInput {
+    pub descriptor: ResourceDescriptor,
+    pub schema: Schema,
+    pub type_policy_allowances: TypePolicyAllowances,
+    pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
+    pub redacted_options: serde_json::Value,
+    pub physical_plan: serde_json::Value,
+}
+
 impl CompiledSourcePlan {
     pub fn new(
         driver: SourceDriverDescriptor,
-        descriptor: ResourceDescriptor,
         resource_capabilities: ResourceCapabilities,
         execution_capabilities: SourceExecutionCapabilities,
-        schema: Schema,
-        type_policy_allowances: TypePolicyAllowances,
-        effective_schema_runtime: Option<EffectiveSchemaRuntime>,
-        redacted_options: serde_json::Value,
-        physical_plan: serde_json::Value,
+        input: CompiledSourcePlanInput,
     ) -> Result<Self> {
         driver.validate()?;
         execution_capabilities.validate()?;
-        let redacted_options_hash = artifact_hash(&redacted_options)?;
-        let physical_plan_hash = artifact_hash(&physical_plan)?;
+        let redacted_options_hash = artifact_hash(&input.redacted_options)?;
+        let physical_plan_hash = artifact_hash(&input.physical_plan)?;
         Ok(Self {
             driver,
-            descriptor,
+            descriptor: input.descriptor,
             resource_capabilities,
             execution_capabilities,
-            schema,
-            type_policy_allowances,
-            effective_schema_runtime,
-            redacted_options,
+            schema: input.schema,
+            type_policy_allowances: input.type_policy_allowances,
+            effective_schema_runtime: input.effective_schema_runtime,
+            redacted_options: input.redacted_options,
             redacted_options_hash,
-            physical_plan,
+            physical_plan: input.physical_plan,
             physical_plan_hash,
         })
     }
