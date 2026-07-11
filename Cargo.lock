@@ -912,6 +912,7 @@ name = "cdf-engine"
 version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
+ "arrow-ipc",
  "arrow-schema 59.1.0",
  "arrow-select 59.1.0",
  "cdf-contract",
