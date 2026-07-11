@@ -73,6 +73,12 @@ use crate::{
     runtime::state_delta_from_run,
 };
 
+fn test_execution_services() -> cdf_runtime::ExecutionServices {
+    cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+        .unwrap()
+        .1
+}
+
 const SCHEMA_HASH: &str = "schema-v1";
 const LIVE_FILE_RESOURCE: &str = r#"
 [source.local]
@@ -3607,7 +3613,8 @@ fn general_project_run_commits_file_resource_to_parquet_with_ledger_order() {
             package_receipt_recorded: true
         }
     );
-    let destination = ParquetDestination::new_filesystem(&parquet_root).unwrap();
+    let destination =
+        ParquetDestination::new_filesystem(&parquet_root, test_execution_services()).unwrap();
     assert!(
         destination
             .verify_receipt(&report.receipt)
@@ -4099,7 +4106,7 @@ fn parquet_artifact_replay_after_source_loss_without_receipt_commits_checkpoint(
     );
     assert_eq!(package_receipts(&package_dir), vec![report.receipt.clone()]);
     assert!(
-        ParquetDestination::new_filesystem(&replay_root)
+        ParquetDestination::new_filesystem(&replay_root, test_execution_services())
             .unwrap()
             .verify_receipt(&report.receipt)
             .unwrap()

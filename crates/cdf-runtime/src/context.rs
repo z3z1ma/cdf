@@ -1,3 +1,4 @@
+use crate::ExecutionServices;
 use crate::prelude::*;
 
 pub trait DestinationPolicyProvider: std::panic::RefUnwindSafe {
@@ -12,6 +13,7 @@ pub struct DestinationResolutionContext<'a> {
     environment_name: Option<&'a str>,
     destination_policy: Option<&'a dyn DestinationPolicyProvider>,
     secret_provider: Option<&'a RuntimeSecretProvider>,
+    execution_services: Option<&'a ExecutionServices>,
 }
 
 impl<'a> DestinationResolutionContext<'a> {
@@ -22,6 +24,7 @@ impl<'a> DestinationResolutionContext<'a> {
             environment_name: None,
             destination_policy: None,
             secret_provider: None,
+            execution_services: None,
         }
     }
 
@@ -32,6 +35,7 @@ impl<'a> DestinationResolutionContext<'a> {
             environment_name: None,
             destination_policy: None,
             secret_provider: None,
+            execution_services: None,
         }
     }
 
@@ -42,6 +46,7 @@ impl<'a> DestinationResolutionContext<'a> {
             environment_name: None,
             destination_policy: None,
             secret_provider: None,
+            execution_services: None,
         }
     }
 
@@ -57,6 +62,11 @@ impl<'a> DestinationResolutionContext<'a> {
 
     pub fn with_secret_provider(mut self, provider: &'a RuntimeSecretProvider) -> Self {
         self.secret_provider = Some(provider);
+        self
+    }
+
+    pub fn with_execution_services(mut self, services: &'a ExecutionServices) -> Self {
+        self.execution_services = Some(services);
         self
     }
 
@@ -91,6 +101,10 @@ impl<'a> DestinationResolutionContext<'a> {
     pub fn environment_name(&self) -> &str {
         self.environment_name.unwrap_or("<selected>")
     }
+
+    pub fn execution_services(&self) -> Option<&'a ExecutionServices> {
+        self.execution_services
+    }
 }
 
 impl std::fmt::Debug for DestinationResolutionContext<'_> {
@@ -101,6 +115,7 @@ impl std::fmt::Debug for DestinationResolutionContext<'_> {
             .field("environment_name", &self.environment_name)
             .field("destination_policy", &self.destination_policy.is_some())
             .field("secret_provider", &self.secret_provider.is_some())
+            .field("execution_services", &self.execution_services.is_some())
             .finish_non_exhaustive()
     }
 }

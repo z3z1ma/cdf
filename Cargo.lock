@@ -773,6 +773,7 @@ dependencies = [
  "cdf-package",
  "cdf-project",
  "cdf-python",
+ "cdf-runtime",
  "cdf-state-sqlite",
  "cdf-subprocess",
  "duckdb",
@@ -862,6 +863,7 @@ dependencies = [
  "arrow-schema 59.1.0",
  "cdf-conformance",
  "cdf-contract",
+ "cdf-engine",
  "cdf-kernel",
  "cdf-package",
  "cdf-runtime",
@@ -872,7 +874,6 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "tempfile",
- "tokio",
 ]
 
 [[package]]

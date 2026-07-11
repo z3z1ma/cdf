@@ -19,7 +19,7 @@ use crate::{
 
 pub struct ParquetDestination {
     store: StoreClient,
-    runtime: Runtime,
+    execution: cdf_runtime::ExecutionServices,
     sheet: DestinationSheet,
     object_key_encoder: ObjectKeyEncoder,
     pending_sessions: Mutex<BTreeMap<PlanId, ParquetSessionContext>>,
@@ -78,29 +78,32 @@ impl ParquetDestination {
         cdf_kernel::DestinationSheetArtifact::new(parquet_sheet()?, parquet_protocol_capabilities())
     }
 
-    pub fn new_filesystem(root: impl AsRef<Path>) -> Result<Self> {
-        Self::from_store(StoreClient::new_filesystem(root.as_ref())?)
+    pub fn new_filesystem(
+        root: impl AsRef<Path>,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Result<Self> {
+        Self::from_store(StoreClient::new_filesystem(root.as_ref())?, execution)
     }
 
     pub fn new_object_store(
         store: Arc<dyn ObjectStore>,
         root_prefix: impl Into<String>,
+        execution: cdf_runtime::ExecutionServices,
     ) -> Result<Self> {
-        Self::from_store(StoreClient::new_object_store(store, root_prefix)?)
+        Self::from_store(
+            StoreClient::new_object_store(store, root_prefix)?,
+            execution,
+        )
     }
 
-    fn from_store(store: StoreClient) -> Result<Self> {
-        let runtime = RuntimeBuilder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| CdfError::internal(format!("create Parquet runtime: {error}")))?;
+    fn from_store(store: StoreClient, execution: cdf_runtime::ExecutionServices) -> Result<Self> {
         let artifact = Self::destination_sheet_artifact()?;
         let sheet = artifact.sheet;
         let protocol_capabilities = artifact.protocol_capabilities;
         let object_key_encoder = ObjectKeyEncoder::from_capabilities(&protocol_capabilities)?;
         Ok(Self {
             store,
-            runtime,
+            execution,
             sheet,
             object_key_encoder,
             pending_sessions: Mutex::new(BTreeMap::new()),
@@ -187,7 +190,7 @@ impl ParquetDestination {
                 &request.commit.idempotency_token,
                 &segment.entry.segment_id,
             );
-            let put = self.store.put(&self.runtime, &key, bytes)?;
+            let put = self.store.put(&self.execution, &key, bytes)?;
             object_entries.push(ParquetObjectEntry {
                 segment_id: segment.entry.segment_id.as_str().to_owned(),
                 key,
@@ -217,7 +220,7 @@ impl ParquetDestination {
         let manifest_sha256 = sha256_hex(&manifest_bytes);
         let manifest_put = self
             .store
-            .put(&self.runtime, &plan.manifest_key, manifest_bytes)?;
+            .put(&self.execution, &plan.manifest_key, manifest_bytes)?;
         let mut replace_pointer = None;
 
         if let Some(pointer_key) = &plan.replace_pointer_key {
@@ -233,7 +236,9 @@ impl ParquetDestination {
             };
             let pointer_bytes = canonical_json_bytes(&pointer)?;
             let pointer_sha256 = sha256_hex(&pointer_bytes);
-            let pointer_put = self.store.put(&self.runtime, pointer_key, pointer_bytes)?;
+            let pointer_put = self
+                .store
+                .put(&self.execution, pointer_key, pointer_bytes)?;
             replace_pointer = Some(ParquetReplacePointerReceipt {
                 key: pointer_key.clone(),
                 sha256: pointer_sha256,
@@ -281,8 +286,8 @@ impl ParquetDestination {
         &self.store
     }
 
-    pub(crate) fn runtime(&self) -> &Runtime {
-        &self.runtime
+    pub(crate) fn execution(&self) -> &cdf_runtime::ExecutionServices {
+        &self.execution
     }
 
     pub(crate) fn object_key_encoder(&self) -> ObjectKeyEncoder {
@@ -337,7 +342,7 @@ impl ParquetDestination {
             .collect::<Vec<_>>();
         let duplicate = self
             .store
-            .exists(self.runtime(), &manifest_key)
+            .exists(self.execution(), &manifest_key)
             .unwrap_or(false);
 
         Ok(ParquetCommitPlan {
@@ -386,7 +391,7 @@ impl ParquetDestination {
         let Some(pointer_key) = &plan.replace_pointer_key else {
             return Ok(None);
         };
-        let bytes = self.store.get_required(self.runtime(), pointer_key)?;
+        let bytes = self.store.get_required(self.execution(), pointer_key)?;
         let sha256 = sha256_hex(&bytes);
         let pointer: ReplacePointer = serde_json::from_slice(&bytes).map_err(|error| {
             CdfError::data(format!("parse replace pointer {pointer_key}: {error}"))
@@ -404,7 +409,7 @@ impl ParquetDestination {
                 plan.manifest_key
             )));
         }
-        let etag = self.store.etag(self.runtime(), pointer_key)?;
+        let etag = self.store.etag(self.execution(), pointer_key)?;
         Ok(Some(ParquetReplacePointerReceipt {
             key: pointer_key.clone(),
             sha256,
@@ -418,13 +423,13 @@ impl ParquetDestination {
     }
 
     fn load_manifest_with_etag(&self, key: &str) -> Result<Option<LoadedManifest>> {
-        let Some(bytes) = self.store.get_optional(self.runtime(), key)? else {
+        let Some(bytes) = self.store.get_optional(self.execution(), key)? else {
             return Ok(None);
         };
         let manifest = serde_json::from_slice(&bytes).map_err(|error| {
             CdfError::data(format!("parse Parquet object manifest {key}: {error}"))
         })?;
-        let manifest_etag = self.store.etag(self.runtime(), key)?;
+        let manifest_etag = self.store.etag(self.execution(), key)?;
         Ok(Some(LoadedManifest {
             manifest,
             manifest_etag,

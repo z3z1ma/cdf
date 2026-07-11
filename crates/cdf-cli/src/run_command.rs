@@ -20,7 +20,8 @@ use crate::{
     args::{Cli, RunArgs, ScanArgs},
     context::ProjectContext,
     destination_uri::{
-        destination_error_suggestions, redact_error_value, resolve_selected_destination,
+        destination_error_suggestions, redact_error_value,
+        resolve_selected_destination_with_services,
     },
     error_catalog,
     output::{CliError, CommandOutput},
@@ -73,10 +74,11 @@ pub(crate) fn run(
     let explicit = resolved_run_args(args)?;
     let prepared = prepare_runtime_resource_for_cli(&context, &explicit.resource_id, false)?;
     let state_store_path = context.state_store_path()?;
-    let resolved = resolve_selected_destination(
+    let resolved = resolve_selected_destination_with_services(
         &context,
         &explicit.target,
         explicit.destination_uri.as_deref(),
+        Some(services),
     )
     .map_err(|error| {
         run_destination_resolution_error(&context, explicit.destination_uri.as_deref(), error)

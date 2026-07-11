@@ -107,7 +107,7 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
         .ok_or_else(|| CdfError::data("receipt is missing manifest_sha256 verify parameter"))?;
     let manifest_bytes = destination
         .store()
-        .get_required(destination.runtime(), manifest_key)?;
+        .get_required(destination.execution(), manifest_key)?;
     let actual_manifest_sha = sha256_hex(&manifest_bytes);
     if &actual_manifest_sha != expected_manifest_sha {
         return Err(CdfError::data(format!(
@@ -121,7 +121,7 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
     {
         let actual_etag = destination
             .store()
-            .etag(destination.runtime(), manifest_key)?;
+            .etag(destination.execution(), manifest_key)?;
         if actual_etag.as_ref() != Some(expected_etag) {
             return Err(CdfError::data(format!(
                 "manifest {manifest_key} etag mismatch: expected {:?}, got {:?}",
@@ -139,7 +139,7 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
     for object in &manifest.objects {
         let bytes = destination
             .store()
-            .get_required(destination.runtime(), &object.key)?;
+            .get_required(destination.execution(), &object.key)?;
         let actual = sha256_hex(&bytes);
         if actual != object.sha256 {
             return Err(CdfError::data(format!(
@@ -158,7 +158,7 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
         if let Some(expected_etag) = &object.etag {
             let actual_etag = destination
                 .store()
-                .etag(destination.runtime(), &object.key)?;
+                .etag(destination.execution(), &object.key)?;
             if actual_etag.as_ref() != Some(expected_etag) {
                 return Err(CdfError::data(format!(
                     "object {} etag mismatch: expected {:?}, got {:?}",
@@ -194,7 +194,7 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
             .ok_or_else(|| CdfError::data("replace receipt is missing replace_pointer_sha256"))?;
         let bytes = destination
             .store()
-            .get_required(destination.runtime(), pointer_key)?;
+            .get_required(destination.execution(), pointer_key)?;
         let actual = sha256_hex(&bytes);
         if actual != *pointer_sha256 {
             return Err(CdfError::data(format!(
@@ -220,7 +220,7 @@ pub(crate) fn verify_receipt(destination: &ParquetDestination, receipt: &Receipt
         if let Some(expected_etag) = transaction.values.get("replace_pointer_etag") {
             let actual_etag = destination
                 .store()
-                .etag(destination.runtime(), pointer_key)?;
+                .etag(destination.execution(), pointer_key)?;
             if actual_etag.as_ref() != Some(expected_etag) {
                 return Err(CdfError::data(format!(
                     "replace pointer {} etag mismatch: expected {:?}, got {:?}",

@@ -42,6 +42,29 @@ struct StoredJson {
     etag: Option<String>,
 }
 
+fn test_execution() -> cdf_runtime::ExecutionServices {
+    static SERVICES: std::sync::OnceLock<cdf_runtime::ExecutionServices> =
+        std::sync::OnceLock::new();
+    SERVICES
+        .get_or_init(|| {
+            cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+                .unwrap()
+                .1
+        })
+        .clone()
+}
+
+fn test_filesystem(root: impl AsRef<Path>) -> Result<ParquetDestination> {
+    ParquetDestination::new_filesystem(root, test_execution())
+}
+
+fn test_object_store(
+    store: Arc<dyn ObjectStore>,
+    root_prefix: impl Into<String>,
+) -> Result<ParquetDestination> {
+    ParquetDestination::new_object_store(store, root_prefix, test_execution())
+}
+
 fn sample_batch(ids: Vec<i64>, names: Vec<Option<&str>>) -> RecordBatch {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
@@ -250,12 +273,12 @@ fn replace_pointer_key_from_receipt(receipt: &Receipt) -> &str {
 }
 
 fn load_manifest(dest: &ParquetDestination, key: &str) -> ParquetObjectManifest {
-    let bytes = dest.store().get_required(dest.runtime(), key).unwrap();
+    let bytes = dest.store().get_required(dest.execution(), key).unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
 fn load_replace_pointer(dest: &ParquetDestination, key: &str) -> ReplacePointer {
-    let bytes = dest.store().get_required(dest.runtime(), key).unwrap();
+    let bytes = dest.store().get_required(dest.execution(), key).unwrap();
     serde_json::from_slice(&bytes).unwrap()
 }
 
@@ -266,7 +289,7 @@ fn store_manifest(
 ) -> StoredJson {
     let bytes = canonical_json_bytes(manifest).unwrap();
     let sha256 = sha256_hex(&bytes);
-    let put = dest.store().put(dest.runtime(), key, bytes).unwrap();
+    let put = dest.store().put(dest.execution(), key, bytes).unwrap();
     StoredJson {
         sha256,
         etag: put.e_tag,
@@ -280,7 +303,7 @@ fn store_replace_pointer(
 ) -> StoredJson {
     let bytes = canonical_json_bytes(pointer).unwrap();
     let sha256 = sha256_hex(&bytes);
-    let put = dest.store().put(dest.runtime(), key, bytes).unwrap();
+    let put = dest.store().put(dest.execution(), key, bytes).unwrap();
     StoredJson {
         sha256,
         etag: put.e_tag,
@@ -393,7 +416,7 @@ fn unsupported_arrow_types_fail_before_writing_objects() {
         vec![("seg-000001", vec![batch])],
     );
     let root = temp.path().join("lake");
-    let dest = ParquetDestination::new_filesystem(&root).unwrap();
+    let dest = test_filesystem(&root).unwrap();
 
     let error = dest
         .commit_package(request(&package_dir, &built, WriteDisposition::Append))
@@ -409,7 +432,7 @@ fn unsupported_arrow_types_fail_before_writing_objects() {
 #[test]
 fn sheet_declares_append_replace_and_unsupported_semantics_honestly() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = ParquetDestination::new_filesystem(temp.path()).unwrap();
+    let dest = test_filesystem(temp.path()).unwrap();
     let sheet = dest.sheet();
 
     assert_eq!(sheet.destination.as_str(), "parquet_object_store");
@@ -462,7 +485,7 @@ fn sheet_declares_append_replace_and_unsupported_semantics_honestly() {
 #[test]
 fn reusable_destination_conformance_suite_accepts_parquet_sheet_and_plans() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = ParquetDestination::new_filesystem(temp.path()).unwrap();
+    let dest = test_filesystem(temp.path()).unwrap();
 
     assert_destination_conformance(
         &dest,
@@ -498,18 +521,18 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
             vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
         )],
     );
-    let dest = ParquetDestination::new_filesystem(temp.path().join("lake")).unwrap();
+    let dest = test_filesystem(temp.path().join("lake")).unwrap();
     let base = dest
         .commit_package(request(&package_dir, &built, WriteDisposition::Append))
         .unwrap();
     let base_manifest_before = dest
         .store()
-        .get_required(dest.runtime(), &base.plan.manifest_key)
+        .get_required(dest.execution(), &base.plan.manifest_key)
         .unwrap();
     let base_object_key = base.object_manifest.objects[0].key.clone();
     let base_object_before = dest
         .store()
-        .get_required(dest.runtime(), &base_object_key)
+        .get_required(dest.execution(), &base_object_key)
         .unwrap();
 
     let correction = correction_request(&built.hash);
@@ -564,7 +587,7 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
 
     let manifest_bytes = dest
         .store()
-        .get_required(dest.runtime(), &sidecar_evidence.manifest_key)
+        .get_required(dest.execution(), &sidecar_evidence.manifest_key)
         .unwrap();
     assert_eq!(
         format!("sha256:{}", sha256_hex(&manifest_bytes)),
@@ -582,7 +605,7 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
     assert!(manifest.base_target_unchanged);
     let sidecar_bytes = dest
         .store()
-        .get_required(dest.runtime(), &manifest.objects[0].key)
+        .get_required(dest.execution(), &manifest.objects[0].key)
         .unwrap();
     assert_eq!(
         format!("sha256:{}", sha256_hex(&sidecar_bytes)),
@@ -606,13 +629,13 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
     assert!(dest.verify_correction(&receipt).unwrap().verified);
     assert_eq!(
         dest.store()
-            .get_required(dest.runtime(), &base.plan.manifest_key)
+            .get_required(dest.execution(), &base.plan.manifest_key)
             .unwrap(),
         base_manifest_before
     );
     assert_eq!(
         dest.store()
-            .get_required(dest.runtime(), &base_object_key)
+            .get_required(dest.execution(), &base_object_key)
             .unwrap(),
         base_object_before
     );
@@ -634,7 +657,7 @@ fn correction_sidecar_is_content_addressed_verifiable_and_leaves_base_immutable(
 #[test]
 fn ordinary_objects_and_correction_sidecars_share_column_policy_without_changing_object_keys() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = ParquetDestination::new_filesystem(temp.path().join("lake")).unwrap();
+    let dest = test_filesystem(temp.path().join("lake")).unwrap();
     let policy =
         cdf_contract::identifier_policy_from_destination_rules(&dest.sheet().identifier_rules)
             .unwrap();
@@ -658,7 +681,7 @@ fn ordinary_objects_and_correction_sidecars_share_column_policy_without_changing
         .unwrap();
     let base_bytes = dest
         .store()
-        .get_required(dest.runtime(), &base.object_manifest.objects[0].key)
+        .get_required(dest.execution(), &base.object_manifest.objects[0].key)
         .unwrap();
     assert_eq!(
         parquet_field_names(&base_bytes),
@@ -688,14 +711,14 @@ fn ordinary_objects_and_correction_sidecars_share_column_policy_without_changing
     let manifest: ParquetCorrectionSidecarManifest = serde_json::from_slice(
         &dest
             .store()
-            .get_required(dest.runtime(), &evidence.manifest_key)
+            .get_required(dest.execution(), &evidence.manifest_key)
             .unwrap(),
     )
     .unwrap();
     let sidecar: ParquetCorrectionSidecar = serde_json::from_slice(
         &dest
             .store()
-            .get_required(dest.runtime(), &manifest.objects[0].key)
+            .get_required(dest.execution(), &manifest.objects[0].key)
             .unwrap(),
     )
     .unwrap();
@@ -746,36 +769,36 @@ fn object_key_construction_requires_declared_policy_and_preserves_component_v1_b
 #[test]
 fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_once() {
     let store = Arc::new(InMemory::default());
-    let dest = ParquetDestination::new_object_store(store, "").unwrap();
+    let dest = test_object_store(store, "").unwrap();
     let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
     let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let object = context.manifest.objects[0].clone();
     dest.store()
-        .put_create_or_verify(dest.runtime(), &object.key, context.sidecar_bytes.clone())
+        .put_create_or_verify(dest.execution(), &object.key, context.sidecar_bytes.clone())
         .unwrap();
-    assert!(dest.store().exists(dest.runtime(), &object.key).unwrap());
+    assert!(dest.store().exists(dest.execution(), &object.key).unwrap());
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &context.manifest_key)
+            .exists(dest.execution(), &context.manifest_key)
             .unwrap()
     );
     dest.store()
         .put_create_or_verify(
-            dest.runtime(),
+            dest.execution(),
             &context.manifest_key,
             context.manifest_bytes.clone(),
         )
         .unwrap();
     assert!(
         dest.store()
-            .exists(dest.runtime(), &context.manifest_key)
+            .exists(dest.execution(), &context.manifest_key)
             .unwrap()
     );
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &context.receipt_key)
+            .exists(dest.execution(), &context.receipt_key)
             .unwrap()
     );
     let unrecorded = build_correction_receipt(
@@ -797,26 +820,26 @@ fn interrupted_sidecar_publication_reuses_orphan_object_and_publishes_manifest_o
     assert!(dest.verify_correction(&receipt).unwrap().verified);
     assert_eq!(
         dest.store()
-            .get_required(dest.runtime(), &object.key)
+            .get_required(dest.execution(), &object.key)
             .unwrap(),
         context.sidecar_bytes
     );
     assert_eq!(
         dest.store()
-            .get_required(dest.runtime(), &context.manifest_key)
+            .get_required(dest.execution(), &context.manifest_key)
             .unwrap(),
         context.manifest_bytes
     );
     assert!(
         dest.store()
-            .exists(dest.runtime(), &context.receipt_key)
+            .exists(dest.execution(), &context.receipt_key)
             .unwrap()
     );
 }
 
 #[test]
 fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let correction = correction_request(&PackageHash::new("sha256:base-package").unwrap());
     let context = build_correction_context(dest.object_key_encoder(), &correction).unwrap();
     let plan = dest.plan_correction(&correction).unwrap();
@@ -827,26 +850,26 @@ fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &context.manifest.objects[0].key)
+            .exists(dest.execution(), &context.manifest.objects[0].key)
             .unwrap()
     );
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &context.manifest_key)
+            .exists(dest.execution(), &context.manifest_key)
             .unwrap()
     );
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &context.receipt_key)
+            .exists(dest.execution(), &context.receipt_key)
             .unwrap()
     );
 
     let receipt = finalize_correction(&dest, &correction);
     dest.store()
         .put(
-            dest.runtime(),
+            dest.execution(),
             &context.manifest.objects[0].key,
             b"tampered".to_vec(),
         )
@@ -859,7 +882,7 @@ fn correction_abort_writes_nothing_and_tampering_invalidates_receipt() {
 #[test]
 fn versioned_rematerialization_is_an_explicit_non_executable_plan_boundary() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = ParquetDestination::new_filesystem(temp.path()).unwrap();
+    let dest = test_filesystem(temp.path()).unwrap();
     let plan = dest
         .plan_versioned_rematerialization(ParquetVersionedRematerializationRequest {
             promotion_id: PromotionId::new("promotion-age").unwrap(),
@@ -907,7 +930,7 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
         )],
     );
     let root = temp.path().join("lake");
-    let dest = ParquetDestination::new_filesystem(&root).unwrap();
+    let dest = test_filesystem(&root).unwrap();
 
     let outcome = dest
         .commit_package(request(&package_dir, &built, WriteDisposition::Append))
@@ -928,7 +951,7 @@ fn filesystem_append_materializes_parquet_and_verifies_receipt() {
 
     let bytes = dest
         .store()
-        .get_required(dest.runtime(), &outcome.object_manifest.objects[0].key)
+        .get_required(dest.execution(), &outcome.object_manifest.objects[0].key)
         .unwrap();
     assert_eq!(parquet_rows(&bytes), 3);
 
@@ -952,7 +975,7 @@ fn begin_session_flow_materializes_verifiable_manifest_receipt() {
             vec![sample_batch(vec![1, 2], vec![Some("ada"), Some("grace")])],
         )],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
 
     let (plan, receipt) = commit_with_session(&dest, &commit);
@@ -1001,13 +1024,11 @@ fn segment_session_flow_matches_commit_package_receipt_shape() {
         ],
     );
     let commit = request(&package_dir, &built, WriteDisposition::Append);
-    let wrapper_dest =
-        ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let wrapper_dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let wrapper = wrapper_dest.commit_package(commit.clone()).unwrap();
     assert!(!wrapper.duplicate);
 
-    let session_dest =
-        ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let session_dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let (_session_plan, session_receipt) = commit_with_session(&session_dest, &commit);
     let session_manifest = load_manifest(&session_dest, manifest_key(&session_receipt));
 
@@ -1106,7 +1127,7 @@ fn session_finalize_rejects_missing_segments() {
             ),
         ],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
     let plan = dest.plan_package_commit(&commit).unwrap();
     let mut session = DestinationProtocol::begin(&dest, commit.commit.clone(), plan.kernel.clone())
@@ -1123,7 +1144,7 @@ fn session_finalize_rejects_missing_segments() {
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &plan.manifest_key)
+            .exists(dest.execution(), &plan.manifest_key)
             .unwrap()
     );
 }
@@ -1140,18 +1161,18 @@ fn begin_session_duplicate_replay_preserves_existing_manifest() {
             vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
         )],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
 
     let first = dest.commit_package(commit.clone()).unwrap();
     let manifest_before = dest
         .store()
-        .get_required(dest.runtime(), &first.plan.manifest_key)
+        .get_required(dest.execution(), &first.plan.manifest_key)
         .unwrap();
     let (duplicate_plan, duplicate_receipt) = commit_with_session(&dest, &commit);
     let manifest_after = dest
         .store()
-        .get_required(dest.runtime(), &first.plan.manifest_key)
+        .get_required(dest.execution(), &first.plan.manifest_key)
         .unwrap();
 
     assert!(duplicate_plan.duplicate);
@@ -1179,7 +1200,7 @@ fn begin_session_abort_before_write_leaves_manifest_unwritten() {
             vec![sample_batch(vec![1], vec![Some("abort")])],
         )],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
     let plan = dest.plan_package_commit(&commit).unwrap();
 
@@ -1190,7 +1211,7 @@ fn begin_session_abort_before_write_leaves_manifest_unwritten() {
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &plan.manifest_key)
+            .exists(dest.execution(), &plan.manifest_key)
             .unwrap()
     );
     assert!(
@@ -1215,21 +1236,21 @@ fn in_memory_object_store_duplicate_replay_is_noop() {
         )],
     );
     let store = Arc::new(InMemory::default());
-    let dest = ParquetDestination::new_object_store(store, "lake").unwrap();
+    let dest = test_object_store(store, "lake").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
 
     let first = dest.commit_package(commit.clone()).unwrap();
     assert!(first.object_manifest.committed_at_ms > 1_700_000_000_000);
     let manifest_before = dest
         .store()
-        .get_required(dest.runtime(), &first.plan.manifest_key)
+        .get_required(dest.execution(), &first.plan.manifest_key)
         .unwrap();
     let duplicate_plan = dest.plan_package_commit(&commit).unwrap();
     assert!(duplicate_plan.duplicate);
     let second = dest.commit_package(commit).unwrap();
     let manifest_after = dest
         .store()
-        .get_required(dest.runtime(), &first.plan.manifest_key)
+        .get_required(dest.execution(), &first.plan.manifest_key)
         .unwrap();
 
     assert!(!first.duplicate);
@@ -1244,7 +1265,7 @@ fn in_memory_object_store_duplicate_replay_is_noop() {
 fn replace_writes_current_pointer_to_latest_manifest() {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join("lake");
-    let dest = ParquetDestination::new_filesystem(&root).unwrap();
+    let dest = test_filesystem(&root).unwrap();
 
     let first_dir = temp.path().join("pkg-first");
     let first = build_package(
@@ -1272,7 +1293,7 @@ fn replace_writes_current_pointer_to_latest_manifest() {
     let pointer_key = second_outcome.plan.replace_pointer_key.as_ref().unwrap();
     let pointer_bytes = dest
         .store()
-        .get_required(dest.runtime(), pointer_key)
+        .get_required(dest.execution(), pointer_key)
         .unwrap();
     let pointer: ReplacePointer = serde_json::from_slice(&pointer_bytes).unwrap();
 
@@ -1291,7 +1312,7 @@ fn replace_writes_current_pointer_to_latest_manifest() {
 #[test]
 fn zero_data_append_and_replace_record_receipts_without_objects_or_pointer_mutation() {
     let temp = tempfile::tempdir().unwrap();
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
 
     let data_dir = temp.path().join("pkg-data");
     let data = build_package(
@@ -1308,7 +1329,7 @@ fn zero_data_append_and_replace_record_receipts_without_objects_or_pointer_mutat
     let pointer_key = seeded.plan.replace_pointer_key.clone().unwrap();
     let pointer_before = dest
         .store()
-        .get_required(dest.runtime(), &pointer_key)
+        .get_required(dest.execution(), &pointer_key)
         .unwrap();
 
     for (package_id, disposition) in [
@@ -1330,7 +1351,7 @@ fn zero_data_append_and_replace_record_receipts_without_objects_or_pointer_mutat
 
     let pointer_after = dest
         .store()
-        .get_required(dest.runtime(), &pointer_key)
+        .get_required(dest.execution(), &pointer_key)
         .unwrap();
     assert_eq!(pointer_after, pointer_before);
 }
@@ -1348,7 +1369,7 @@ fn dry_run_plan_reports_keys_without_writing() {
         )],
     );
     let root = temp.path().join("lake");
-    let dest = ParquetDestination::new_filesystem(&root).unwrap();
+    let dest = test_filesystem(&root).unwrap();
 
     let plan = dest
         .plan_package_commit(&request(&package_dir, &built, WriteDisposition::Replace))
@@ -1383,7 +1404,7 @@ fn dry_run_plan_reports_keys_without_writing() {
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &plan.manifest_key)
+            .exists(dest.execution(), &plan.manifest_key)
             .unwrap()
     );
     assert!(!root.join("targets").exists());
@@ -1410,7 +1431,7 @@ fn duplicate_column_names_fail_before_writing_objects() {
         "pkg-duplicate-columns",
         vec![("seg-000001", vec![batch])],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Append);
     let plan = dest.plan_package_commit(&commit).unwrap();
 
@@ -1424,13 +1445,13 @@ fn duplicate_column_names_fail_before_writing_objects() {
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &plan.manifest_key)
+            .exists(dest.execution(), &plan.manifest_key)
             .unwrap()
     );
     assert!(
         !dest
             .store()
-            .exists(dest.runtime(), &plan.object_keys[0])
+            .exists(dest.execution(), &plan.object_keys[0])
             .unwrap()
     );
 }
@@ -1453,7 +1474,7 @@ fn replace_duplicate_replay_requires_current_pointer_identity() {
             vec![sample_batch(vec![1, 2], vec![Some("left"), Some("right")])],
         )],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let commit = request(&package_dir, &built, WriteDisposition::Replace);
     let first = dest.commit_package(commit.clone()).unwrap();
     let pointer_key = first.plan.replace_pointer_key.as_ref().unwrap().clone();
@@ -1506,7 +1527,7 @@ fn verify_receipt_rejects_replace_pointer_identity_mismatch() {
             vec![sample_batch(vec![1], vec![Some("current")])],
         )],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let outcome = dest
         .commit_package(request(&package_dir, &built, WriteDisposition::Replace))
         .unwrap();
@@ -1558,7 +1579,7 @@ fn verify_receipt_rejects_manifest_identity_mismatch() {
             vec![sample_batch(vec![1], vec![Some("manifest")])],
         )],
     );
-    let dest = ParquetDestination::new_object_store(Arc::new(InMemory::default()), "").unwrap();
+    let dest = test_object_store(Arc::new(InMemory::default()), "").unwrap();
     let outcome = dest
         .commit_package(request(&package_dir, &built, WriteDisposition::Append))
         .unwrap();
@@ -1593,9 +1614,7 @@ fn verify_receipt_rejects_manifest_identity_mismatch() {
 
 #[test]
 fn object_store_root_prefix_normalizes_and_rejects_parent_traversal() {
-    assert!(
-        ParquetDestination::new_object_store(Arc::new(InMemory::default()), "lake/../bad").is_err()
-    );
+    assert!(test_object_store(Arc::new(InMemory::default()), "lake/../bad").is_err());
 
     let temp = tempfile::tempdir().unwrap();
     let package_dir = temp.path().join("pkg-prefixed");
@@ -1608,29 +1627,32 @@ fn object_store_root_prefix_normalizes_and_rejects_parent_traversal() {
         )],
     );
     let store = Arc::new(InMemory::default());
-    let dest = ParquetDestination::new_object_store(store.clone(), "//lake//").unwrap();
+    let dest = test_object_store(store.clone(), "//lake//").unwrap();
     let outcome = dest
         .commit_package(request(&package_dir, &built, WriteDisposition::Append))
         .unwrap();
     let object_key = &outcome.object_manifest.objects[0].key;
 
-    assert!(
-        dest.runtime()
-            .block_on(store.head(&ObjectPath::from(format!("lake/{object_key}"))))
-            .is_ok()
-    );
-    assert!(
-        dest.runtime()
-            .block_on(store.head(&ObjectPath::from(object_key.as_str())))
-            .is_err()
-    );
+    let prefixed = ObjectPath::from(format!("lake/{object_key}"));
+    let prefixed_store = store.clone();
+    let prefixed = dest
+        .execution()
+        .run_io(async move { Ok(prefixed_store.head(&prefixed).await) })
+        .unwrap();
+    assert!(prefixed.is_ok());
+    let unprefixed = ObjectPath::from(object_key.as_str());
+    let unprefixed = dest
+        .execution()
+        .run_io(async move { Ok(store.head(&unprefixed).await) })
+        .unwrap();
+    assert!(unprefixed.is_err());
 }
 
 #[test]
 fn verification_fails_for_tampered_and_missing_objects() {
     let temp = tempfile::tempdir().unwrap();
     let store = Arc::new(InMemory::default());
-    let dest = ParquetDestination::new_object_store(store, "").unwrap();
+    let dest = test_object_store(store, "").unwrap();
 
     let tamper_dir = temp.path().join("pkg-tamper");
     let tamper_pkg = build_package(
@@ -1646,7 +1668,7 @@ fn verification_fails_for_tampered_and_missing_objects() {
         .unwrap();
     dest.store()
         .put(
-            dest.runtime(),
+            dest.execution(),
             &tamper.object_manifest.objects[0].key,
             b"not parquet anymore".to_vec(),
         )
@@ -1676,7 +1698,7 @@ fn verification_fails_for_tampered_and_missing_objects() {
         ))
         .unwrap();
     dest.store()
-        .delete(dest.runtime(), &missing.object_manifest.objects[0].key)
+        .delete(dest.execution(), &missing.object_manifest.objects[0].key)
         .unwrap();
     let verification = dest.verify_receipt(&missing.receipt).unwrap();
     assert!(!verification.verified);
@@ -1695,7 +1717,7 @@ fn requested_segment_validation_rejects_mismatched_segments() {
             vec![sample_batch(vec![1, 2], vec![Some("a"), Some("b")])],
         )],
     );
-    let dest = ParquetDestination::new_filesystem(temp.path().join("lake")).unwrap();
+    let dest = test_filesystem(temp.path().join("lake")).unwrap();
     let mut bad = request(&package_dir, &built, WriteDisposition::Append);
     bad.commit.segments[0].row_count += 1;
 

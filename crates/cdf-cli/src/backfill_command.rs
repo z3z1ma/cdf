@@ -9,9 +9,7 @@ use serde::Serialize;
 use crate::{
     args::{BackfillArgs, Cli},
     context::ProjectContext,
-    destination_uri::{
-        destination_error_suggestions, redact_error_value, resolve_environment_destination,
-    },
+    destination_uri::{destination_error_suggestions, redact_error_value},
     error_catalog,
     output::{CliError, CommandOutput},
     progress::{ProgressSnapshot, human_progress_sink},
@@ -112,8 +110,13 @@ fn execute_slice(
     ),
 ) -> Result<BackfillSliceExecutionReport, CliError> {
     let (host, services) = execution;
-    let resolved = resolve_environment_destination(context, target)
-        .map_err(|error| backfill_destination_resolution_error(context, error))?;
+    let resolved = crate::destination_uri::resolve_selected_destination_with_services(
+        context,
+        target,
+        None,
+        Some(services),
+    )
+    .map_err(|error| backfill_destination_resolution_error(context, error))?;
     let destination = resolved.destination;
     let identifier_policy = destination.column_identifier_policy()?;
     let destination_report =

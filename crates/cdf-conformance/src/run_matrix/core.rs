@@ -113,7 +113,8 @@ pub(crate) fn sheet_exclusion_reason(cell: &RunMatrixCell) -> Option<String> {
         return None;
     }
     let temp = tempfile::tempdir().unwrap();
-    let destination = ParquetDestination::new_filesystem(temp.path()).unwrap();
+    let destination =
+        ParquetDestination::new_filesystem(temp.path(), crate::test_execution_services()).unwrap();
     assert!(
         !destination
             .sheet()

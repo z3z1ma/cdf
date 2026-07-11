@@ -30,7 +30,6 @@ use object_store::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tokio::runtime::{Builder as RuntimeBuilder, Runtime};
 
 const DESTINATION_ID: &str = "parquet_object_store";
 const MANIFEST_VERSION: u16 = 1;

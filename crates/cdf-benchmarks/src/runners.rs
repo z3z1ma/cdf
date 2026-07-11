@@ -382,9 +382,12 @@ fn run_package_replay(
             target,
         ),
         ReplayDestination::Parquet => ResolvedProjectDestination::new(
-            Box::new(cdf_dest_parquet::FilesystemParquetRuntime::new(
-                root.join("parquet"),
-            )),
+            Box::new(
+                cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
+                    root.join("parquet"),
+                    cdf_engine::StandaloneExecutionHost::default_services(512 * 1024 * 1024)?.1,
+                ),
+            ),
             target,
         ),
         ReplayDestination::Postgres => {

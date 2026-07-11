@@ -4681,7 +4681,9 @@ fn schema_promote_execute_routes_parquet_through_correction_sidecar() {
         .unwrap()
         .into_state_delta(package_hash.clone());
     fs::remove_file(source_package.join(cdf_package::RECEIPTS_FILE)).unwrap();
-    ParquetDestination::new_filesystem(project.root.join(".cdf/parquet"))
+    let (_, services) =
+        cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024).unwrap();
+    ParquetDestination::new_filesystem(project.root.join(".cdf/parquet"), services)
         .unwrap()
         .commit_package(ParquetCommitRequest {
             package_dir: source_package.clone(),

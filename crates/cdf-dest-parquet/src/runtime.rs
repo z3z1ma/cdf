@@ -2,8 +2,8 @@ use std::path::{Path, PathBuf};
 
 use arrow_schema::Schema;
 use cdf_kernel::{
-    CapabilitySupport, DestinationId, DestinationProtocol, DestinationSheet, ResourceStream,
-    Result, WriteDisposition,
+    CapabilitySupport, CdfError, DestinationId, DestinationProtocol, DestinationSheet,
+    ResourceStream, Result, WriteDisposition,
 };
 use cdf_package::{PackageReader, PackageReplayInputs};
 use cdf_runtime::{
@@ -30,13 +30,12 @@ impl DestinationDriver for ParquetRuntimeDriver {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<DestinationInspection> {
         let root = absolute_under_root(context.project_root()?, local_uri_path(uri, "parquet")?);
-        let runtime = FilesystemParquetRuntime::new(root.clone());
         let sheet_artifact = ParquetDestination::destination_sheet_artifact()?;
         Ok(DestinationInspection {
-            description: runtime.describe(),
+            description: filesystem_description(&root),
             sheet_artifact_hash: artifact_hash(&sheet_artifact)?,
             sheet_artifact,
-            runtime: runtime.runtime_capabilities(),
+            runtime: parquet_runtime_capabilities(),
             health_probes: vec![DestinationHealthProbe {
                 probe_id: "filesystem_root".to_owned(),
                 description: format!("inspect Parquet filesystem root {}", root.display()),
@@ -52,7 +51,11 @@ impl DestinationDriver for ParquetRuntimeDriver {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
         let root = absolute_under_root(context.project_root()?, local_uri_path(uri, "parquet")?);
-        Ok(Box::new(FilesystemParquetRuntime::new(root)))
+        Ok(Box::new(FilesystemParquetRuntime {
+            destination: None,
+            root,
+            execution: context.execution_services().cloned(),
+        }))
     }
 
     fn health(
@@ -110,6 +113,7 @@ impl DestinationRuntime for ParquetDestination {
 pub struct FilesystemParquetRuntime {
     destination: Option<ParquetDestination>,
     root: PathBuf,
+    execution: Option<cdf_runtime::ExecutionServices>,
 }
 
 impl FilesystemParquetRuntime {
@@ -117,12 +121,29 @@ impl FilesystemParquetRuntime {
         Self {
             destination: None,
             root,
+            execution: None,
+        }
+    }
+
+    pub fn with_execution_services(
+        root: PathBuf,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Self {
+        Self {
+            destination: None,
+            root,
+            execution: Some(execution),
         }
     }
 
     fn destination(&mut self) -> Result<&ParquetDestination> {
         if self.destination.is_none() {
-            self.destination = Some(ParquetDestination::new_filesystem(&self.root)?);
+            let execution = self.execution.clone().ok_or_else(|| {
+                CdfError::contract(
+                    "Parquet destination execution requires injected ExecutionServices",
+                )
+            })?;
+            self.destination = Some(ParquetDestination::new_filesystem(&self.root, execution)?);
         }
         Ok(self.destination.as_ref().expect("destination was just set"))
     }
@@ -136,11 +157,7 @@ impl DestinationRuntime for FilesystemParquetRuntime {
     }
 
     fn describe(&self) -> DestinationDescription {
-        DestinationDescription::new(
-            DestinationId::new("parquet_object_store").expect("static destination id"),
-            &["parquet"],
-            self.root.display().to_string(),
-        )
+        filesystem_description(&self.root)
     }
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
@@ -189,6 +206,14 @@ impl DestinationRuntime for FilesystemParquetRuntime {
     fn ensure_protocol_ready(&mut self) -> Result<()> {
         self.destination().map(|_| ())
     }
+}
+
+fn filesystem_description(root: &Path) -> DestinationDescription {
+    DestinationDescription::new(
+        DestinationId::new("parquet_object_store").expect("static destination id"),
+        &["parquet"],
+        root.display().to_string(),
+    )
 }
 
 fn prepare_parquet_commit(

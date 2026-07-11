@@ -233,7 +233,8 @@ pub(super) fn assert_supported_quarantine_mirror_artifact(
 
 pub(super) fn assert_parquet_quarantine_mirror_excluded_by_sheet() {
     let temp = tempfile::tempdir().unwrap();
-    let destination = ParquetDestination::new_filesystem(temp.path()).unwrap();
+    let destination =
+        ParquetDestination::new_filesystem(temp.path(), crate::test_execution_services()).unwrap();
     assert_eq!(
         destination.sheet().quarantine_tables,
         CapabilitySupport::Unsupported

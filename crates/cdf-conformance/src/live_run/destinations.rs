@@ -81,7 +81,8 @@ impl LiveRunDestinationHandle {
                 DestinationProtocol::verify(&destination, receipt)?
             }
             Self::Parquet { root } => {
-                let destination = ParquetDestination::new_filesystem(root)?;
+                let destination =
+                    ParquetDestination::new_filesystem(root, crate::test_execution_services())?;
                 DestinationProtocol::verify(&destination, receipt)?
             }
             Self::Postgres { database_url, .. } => {

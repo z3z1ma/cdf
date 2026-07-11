@@ -25,7 +25,7 @@ pub(crate) fn resolve_environment_destination(
     context: &ProjectContext,
     target: &TargetName,
 ) -> Result<EnvironmentDestination, CdfError> {
-    resolve_selected_destination(context, target, None)
+    resolve_selected_destination_with_services(context, target, None, None)
 }
 
 pub(crate) fn resolve_selected_destination(
@@ -33,11 +33,23 @@ pub(crate) fn resolve_selected_destination(
     target: &TargetName,
     destination_uri: Option<&str>,
 ) -> Result<EnvironmentDestination, CdfError> {
+    resolve_selected_destination_with_services(context, target, destination_uri, None)
+}
+
+pub(crate) fn resolve_selected_destination_with_services(
+    context: &ProjectContext,
+    target: &TargetName,
+    destination_uri: Option<&str>,
+    services: Option<&cdf_runtime::ExecutionServices>,
+) -> Result<EnvironmentDestination, CdfError> {
     let secret_provider = context.secret_provider();
-    let destination_context = ProjectResolutionContext::for_project_run(&context.root, target)
+    let mut destination_context = ProjectResolutionContext::for_project_run(&context.root, target)
         .with_environment_name(&context.environment.name)
         .with_destination_policy(&context.environment.destination_policy)
         .with_secret_provider(&secret_provider);
+    if let Some(services) = services {
+        destination_context = destination_context.with_execution_services(services);
+    }
     let uri = destination_uri.unwrap_or(context.environment.destination.as_str());
     let registry = builtin_destination_registry()?;
     let destination = resolve_project_run_destination(&registry, uri, &destination_context)?;

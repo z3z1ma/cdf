@@ -37,6 +37,12 @@ use cdf_state_sqlite::InMemoryScopeLeaseStore;
 use flate2::{Compression, write::GzEncoder};
 use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
+fn test_execution_services() -> cdf_runtime::ExecutionServices {
+    cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)
+        .unwrap()
+        .1
+}
+
 const BOOK_PROJECT: &str = r#"
 [project]
 name = "acme_data"
@@ -329,11 +335,13 @@ fn lockfile_generation_round_trips_and_diffs_semantic_changes() {
         .sheet_artifact()
         .unwrap();
     let parquet_temp = tempfile::tempdir().unwrap();
-    let parquet_artifact =
-        cdf_dest_parquet::ParquetDestination::new_filesystem(parquet_temp.path())
-            .unwrap()
-            .sheet_artifact()
-            .unwrap();
+    let parquet_artifact = cdf_dest_parquet::ParquetDestination::new_filesystem(
+        parquet_temp.path(),
+        test_execution_services(),
+    )
+    .unwrap()
+    .sheet_artifact()
+    .unwrap();
     let typed_lock = generate_lockfile_with_destination_artifacts(
         &config,
         &resources,

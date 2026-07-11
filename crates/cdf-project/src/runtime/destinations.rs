@@ -60,10 +60,15 @@ impl ResolvedProjectDestination {
 
     #[cfg(test)]
     pub fn parquet_filesystem(root: impl AsRef<Path>, target: TargetName) -> Result<Self> {
+        let (_, services) =
+            cdf_engine::StandaloneExecutionHost::default_services(64 * 1024 * 1024)?;
         Ok(Self::new(
-            Box::new(cdf_dest_parquet::FilesystemParquetRuntime::new(
-                root.as_ref().to_path_buf(),
-            )),
+            Box::new(
+                cdf_dest_parquet::FilesystemParquetRuntime::with_execution_services(
+                    root.as_ref().to_path_buf(),
+                    services,
+                ),
+            ),
             target,
         ))
     }

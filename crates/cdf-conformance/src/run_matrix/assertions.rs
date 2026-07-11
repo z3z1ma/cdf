@@ -275,7 +275,7 @@ fn assert_sheet_idempotency_is_package_token(destination: MatrixDestination) {
         }
         MatrixDestination::ParquetFilesystem => {
             let temp = tempfile::tempdir().unwrap();
-            ParquetDestination::new_filesystem(temp.path())
+            ParquetDestination::new_filesystem(temp.path(), crate::test_execution_services())
                 .unwrap()
                 .sheet()
                 .idempotency

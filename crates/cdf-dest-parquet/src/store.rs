@@ -62,12 +62,22 @@ impl StoreClient {
         Ok(Self { store, root_prefix })
     }
 
-    pub(crate) fn put(&self, runtime: &Runtime, key: &str, bytes: Vec<u8>) -> Result<StoredObject> {
+    pub(crate) fn put(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+        bytes: Vec<u8>,
+    ) -> Result<StoredObject> {
         let byte_count = bytes.len() as u64;
         let path = self.path(key)?;
-        let put: PutResult = runtime
-            .block_on(self.store.put(&path, PutPayload::from(bytes)))
-            .map_err(|error| store_error(format!("put {key}"), error))?;
+        let store = Arc::clone(&self.store);
+        let operation = format!("put {key}");
+        let put: PutResult = execution.run_io(async move {
+            store
+                .put(&path, PutPayload::from(bytes))
+                .await
+                .map_err(|error| store_error(operation, error))
+        })?;
         Ok(StoredObject {
             byte_count,
             e_tag: put.e_tag,
@@ -76,7 +86,7 @@ impl StoreClient {
 
     pub(crate) fn put_create(
         &self,
-        runtime: &Runtime,
+        execution: &cdf_runtime::ExecutionServices,
         key: &str,
         bytes: Vec<u8>,
     ) -> Result<CreateObjectOutcome> {
@@ -86,7 +96,13 @@ impl StoreClient {
             mode: PutMode::Create,
             ..PutOptions::default()
         };
-        match runtime.block_on(self.store.put_opts(&path, PutPayload::from(bytes), options)) {
+        let store = Arc::clone(&self.store);
+        let key = key.to_owned();
+        match execution.run_io(async move {
+            Ok(store
+                .put_opts(&path, PutPayload::from(bytes), options)
+                .await)
+        })? {
             Ok(put) => Ok(CreateObjectOutcome::Created(StoredObject {
                 byte_count,
                 e_tag: put.e_tag,
@@ -101,15 +117,15 @@ impl StoreClient {
 
     pub(crate) fn put_create_or_verify(
         &self,
-        runtime: &Runtime,
+        execution: &cdf_runtime::ExecutionServices,
         key: &str,
         bytes: Vec<u8>,
     ) -> Result<StoredObject> {
         let byte_count = bytes.len() as u64;
-        match self.put_create(runtime, key, bytes.clone())? {
+        match self.put_create(execution, key, bytes.clone())? {
             CreateObjectOutcome::Created(stored) => Ok(stored),
             CreateObjectOutcome::AlreadyExists => {
-                let existing = self.get_required(runtime, key)?;
+                let existing = self.get_required(execution, key)?;
                 if existing != bytes {
                     return Err(CdfError::destination(format!(
                         "immutable object {key} already exists with different bytes"
@@ -117,52 +133,89 @@ impl StoreClient {
                 }
                 Ok(StoredObject {
                     byte_count,
-                    e_tag: self.etag(runtime, key)?,
+                    e_tag: self.etag(execution, key)?,
                 })
             }
         }
     }
 
-    pub(crate) fn get_optional(&self, runtime: &Runtime, key: &str) -> Result<Option<Vec<u8>>> {
+    pub(crate) fn get_optional(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<Option<Vec<u8>>> {
         let path = self.path(key)?;
-        match runtime.block_on(self.store.get(&path)) {
-            Ok(result) => runtime
-                .block_on(result.bytes())
-                .map(|bytes| Some(bytes.to_vec()))
-                .map_err(|error| store_error(format!("read {key}"), error)),
-            Err(object_store::Error::NotFound { .. }) => Ok(None),
-            Err(error) => Err(store_error(format!("get {key}"), error)),
-        }
+        let store = Arc::clone(&self.store);
+        let key = key.to_owned();
+        execution.run_io(async move {
+            match store.get(&path).await {
+                Ok(result) => result
+                    .bytes()
+                    .await
+                    .map(|bytes| Some(bytes.to_vec()))
+                    .map_err(|error| store_error(format!("read {key}"), error)),
+                Err(object_store::Error::NotFound { .. }) => Ok(None),
+                Err(error) => Err(store_error(format!("get {key}"), error)),
+            }
+        })
     }
 
-    pub(crate) fn get_required(&self, runtime: &Runtime, key: &str) -> Result<Vec<u8>> {
-        self.get_optional(runtime, key)?
+    pub(crate) fn get_required(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<Vec<u8>> {
+        self.get_optional(execution, key)?
             .ok_or_else(|| CdfError::data(format!("object {key} is missing")))
     }
 
-    pub(crate) fn exists(&self, runtime: &Runtime, key: &str) -> Result<bool> {
+    pub(crate) fn exists(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<bool> {
         let path = self.path(key)?;
-        match runtime.block_on(self.store.head(&path)) {
+        let store = Arc::clone(&self.store);
+        match execution.run_io(async move { Ok(store.head(&path).await) })? {
             Ok(_) => Ok(true),
             Err(object_store::Error::NotFound { .. }) => Ok(false),
             Err(error) => Err(store_error(format!("head {key}"), error)),
         }
     }
 
-    pub(crate) fn etag(&self, runtime: &Runtime, key: &str) -> Result<Option<String>> {
+    pub(crate) fn etag(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<Option<String>> {
         let path = self.path(key)?;
-        runtime
-            .block_on(self.store.head(&path))
+        let store = Arc::clone(&self.store);
+        let operation = format!("head {key}");
+        execution
+            .run_io(async move {
+                store
+                    .head(&path)
+                    .await
+                    .map_err(|error| store_error(operation, error))
+            })
             .map(|meta| meta.e_tag)
-            .map_err(|error| store_error(format!("head {key}"), error))
     }
 
     #[cfg(test)]
-    pub(crate) fn delete(&self, runtime: &Runtime, key: &str) -> Result<()> {
+    pub(crate) fn delete(
+        &self,
+        execution: &cdf_runtime::ExecutionServices,
+        key: &str,
+    ) -> Result<()> {
         let path = self.path(key)?;
-        runtime
-            .block_on(self.store.delete(&path))
-            .map_err(|error| store_error(format!("delete {key}"), error))
+        let store = Arc::clone(&self.store);
+        let operation = format!("delete {key}");
+        execution.run_io(async move {
+            store
+                .delete(&path)
+                .await
+                .map_err(|error| store_error(operation, error))
+        })
     }
 
     fn path(&self, key: &str) -> Result<ObjectPath> {

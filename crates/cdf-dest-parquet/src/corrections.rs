@@ -343,12 +343,12 @@ fn commit_correction_sidecar(
     }
     let object = &context.manifest.objects[0];
     destination.store().put_create_or_verify(
-        destination.runtime(),
+        destination.execution(),
         &object.key,
         context.sidecar_bytes.clone(),
     )?;
     destination.store().put_create_or_verify(
-        destination.runtime(),
+        destination.execution(),
         &context.manifest_key,
         context.manifest_bytes.clone(),
     )?;
@@ -364,7 +364,7 @@ fn commit_correction_sidecar(
     )?;
     let receipt_bytes = canonical_json_bytes(&receipt)?;
     let receipt = match destination.store().put_create(
-        destination.runtime(),
+        destination.execution(),
         &context.receipt_key,
         receipt_bytes,
     )? {
@@ -568,7 +568,7 @@ fn verify_sidecar_receipt(destination: &ParquetDestination, receipt: &Receipt) -
 
     let manifest_bytes = destination
         .store()
-        .get_required(destination.runtime(), &evidence.manifest_key)?;
+        .get_required(destination.execution(), &evidence.manifest_key)?;
     if content_sha256(&manifest_bytes) != evidence.manifest_sha256 {
         return Err(CdfError::destination(format!(
             "Parquet correction manifest {} hash does not match receipt evidence",
@@ -598,7 +598,7 @@ fn verify_sidecar_receipt(destination: &ParquetDestination, receipt: &Receipt) -
         }
         let bytes = destination
             .store()
-            .get_required(destination.runtime(), &object.key)?;
+            .get_required(destination.execution(), &object.key)?;
         if bytes.len() as u64 != object.byte_count || content_sha256(&bytes) != object.sha256 {
             return Err(CdfError::destination(format!(
                 "Parquet correction sidecar object {} bytes or hash do not match its manifest",
@@ -692,7 +692,7 @@ fn load_correction_receipt(
 ) -> Result<Option<Receipt>> {
     destination
         .store()
-        .get_optional(destination.runtime(), receipt_key)?
+        .get_optional(destination.execution(), receipt_key)?
         .map(|bytes| {
             serde_json::from_slice(&bytes).map_err(|error| {
                 CdfError::destination(format!(

@@ -169,9 +169,10 @@ impl ChaosDestinationHandle {
             Self::DuckDb { database_path, .. } => {
                 DestinationProtocol::verify(&DuckDbDestination::new(database_path)?, receipt)?
             }
-            Self::Parquet { root, .. } => {
-                DestinationProtocol::verify(&ParquetDestination::new_filesystem(root)?, receipt)?
-            }
+            Self::Parquet { root, .. } => DestinationProtocol::verify(
+                &ParquetDestination::new_filesystem(root, crate::test_execution_services())?,
+                receipt,
+            )?,
             Self::Postgres { database_url, .. } => DestinationProtocol::verify(
                 &PostgresDestination::connect(database_url.clone())?,
                 receipt,
