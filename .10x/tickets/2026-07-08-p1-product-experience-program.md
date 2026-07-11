@@ -52,6 +52,8 @@ WS2 and WS3 may proceed in parallel after this program is opened. WS4 lands with
 
 Existing non-CLI program lanes may continue, but any CLI-adjacent ticket opened after WS2/WS3 merge MUST adopt the new grammar and rendering path.
 
+After WS8 and WS9 close, `.10x/tickets/2026-07-11-p1-z1-product-program-closeout.md` owns aggregate proof, final review, retrospective, and terminal graph reconciliation.
+
 ## Acceptance criteria
 
 - Every command renders through the design system in both TTY and headless modes with snapshots.
