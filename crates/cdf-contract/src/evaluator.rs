@@ -6,7 +6,7 @@ use arrow_array::{
     TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray, UInt8Array,
     UInt16Array, UInt32Array, UInt64Array,
 };
-use arrow_row::{OwnedRow, RowConverter, SortField};
+use arrow_row::{RowConverter, SortField};
 use arrow_schema::{DataType, TimeUnit};
 use cdf_kernel::{CdfError, Result, SourcePosition, source_name};
 use regex::Regex;
@@ -110,6 +110,62 @@ pub struct DedupDroppedRow {
     pub kept_package_row_ordinal: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PackageDedupRuleSpec {
+    pub rule_id: String,
+    pub keys: Vec<String>,
+    pub keep: DedupKeepProgram,
+}
+
+pub fn package_dedup_rule(program: &ValidationProgram) -> Result<Option<PackageDedupRuleSpec>> {
+    let Some(rule) = single_dedup_rule(program)? else {
+        return Ok(None);
+    };
+    let (keys, keep) = dedup_rule_parts(rule)?;
+    if keys.is_empty() {
+        return Err(CdfError::contract(format!(
+            "dedup row rule {:?} must declare at least one key",
+            rule.rule_id
+        )));
+    }
+    for key in keys {
+        let is_variant_output = program
+            .residual
+            .as_ref()
+            .and_then(|residual| residual.capture.as_ref())
+            .is_some_and(|capture| capture.variant_column == *key);
+        if column_program_for_rule(program, key).is_none() && !is_variant_output {
+            return Err(CdfError::contract(format!(
+                "dedup row rule {:?} references unknown key {key:?}",
+                rule.rule_id
+            )));
+        }
+    }
+    Ok(Some(PackageDedupRuleSpec {
+        rule_id: rule.rule_id.clone(),
+        keys: keys.to_vec(),
+        keep: keep.clone(),
+    }))
+}
+
+pub fn encode_package_dedup_keys(
+    program: &ValidationProgram,
+    rule: &PackageDedupRuleSpec,
+    batch: &RecordBatch,
+) -> Result<Vec<Vec<u8>>> {
+    let arrays = dedup_arrays(program, batch, &rule.rule_id, &rule.keys)?;
+    let converter = RowConverter::new(
+        arrays
+            .iter()
+            .map(|array| SortField::new(array.data_type().clone()))
+            .collect(),
+    )?;
+    let rows = converter.convert_columns(&arrays)?;
+    Ok((0..batch.num_rows())
+        .map(|row| rows.row(row).as_ref().to_vec())
+        .collect())
+}
+
 pub fn evaluate_record_batch(
     program: &ValidationProgram,
     context: &ContractEvaluationContext,
@@ -188,55 +244,22 @@ pub fn evaluate_package_order_dedup(
     program: &ValidationProgram,
     batches: &[RecordBatch],
 ) -> Result<Option<PackageDedupEvaluation>> {
-    let Some(rule) = single_dedup_rule(program)? else {
+    let Some(rule) = package_dedup_rule(program)? else {
         return Ok(None);
     };
-    let (keys, keep) = dedup_rule_parts(rule)?;
-    if keys.is_empty() {
-        return Err(CdfError::contract(format!(
-            "dedup row rule {:?} must declare at least one key",
-            rule.rule_id
-        )));
-    }
-    for key in keys {
-        let is_variant_output = program
-            .residual
-            .as_ref()
-            .and_then(|residual| residual.capture.as_ref())
-            .is_some_and(|capture| capture.variant_column == *key);
-        if column_program_for_rule(program, key).is_none() && !is_variant_output {
-            return Err(CdfError::contract(format!(
-                "dedup row rule {:?} references unknown key {key:?}",
-                rule.rule_id
-            )));
-        }
-    }
 
     let mut retained = batches
         .iter()
         .map(|batch| vec![false; batch.num_rows()])
         .collect::<Vec<_>>();
-    let mut groups = HashMap::<OwnedRow, Vec<PackageRowRef>>::new();
+    let mut groups = HashMap::<Vec<u8>, Vec<PackageRowRef>>::new();
     let mut package_row_ordinal = 0_u64;
-    let mut row_converter = None;
 
     for (batch_index, batch) in batches.iter().enumerate() {
-        let arrays = dedup_arrays(program, batch, rule, keys)?;
-        if row_converter.is_none() {
-            row_converter = Some(RowConverter::new(
-                arrays
-                    .iter()
-                    .map(|array| SortField::new(array.data_type().clone()))
-                    .collect(),
-            )?);
-        }
-        let converter = row_converter
-            .as_ref()
-            .ok_or_else(|| CdfError::internal("dedup row converter was not initialized"))?;
-        let rows = converter.convert_columns(&arrays)?;
+        let keys = encode_package_dedup_keys(program, &rule, batch)?;
         for row_index in 0..batch.num_rows() {
-            let key = rows.row(row_index).owned();
-            if matches!(keep, DedupKeepProgram::Fail) && groups.contains_key(&key) {
+            let key = keys[row_index].clone();
+            if matches!(rule.keep, DedupKeepProgram::Fail) && groups.contains_key(&key) {
                 return Err(CdfError::contract(format!(
                     "dedup row rule {:?} found duplicate key at package row {}; keep=fail aborts before destination mutation",
                     rule.rule_id, package_row_ordinal
@@ -254,7 +277,7 @@ pub fn evaluate_package_order_dedup(
     let mut duplicate_key_count = 0_u64;
     let mut dropped_rows = Vec::new();
     for rows in groups.values() {
-        let kept = match keep {
+        let kept = match rule.keep {
             DedupKeepProgram::First | DedupKeepProgram::Fail => rows[0],
             DedupKeepProgram::Last => rows[rows.len() - 1],
         };
@@ -282,9 +305,9 @@ pub fn evaluate_package_order_dedup(
     Ok(Some(PackageDedupEvaluation {
         retained_rows: retained.into_iter().map(BooleanArray::from).collect(),
         summary: DedupSummary {
-            rule_id: rule.rule_id.clone(),
-            keys: keys.to_vec(),
-            keep: keep.clone(),
+            rule_id: rule.rule_id,
+            keys: rule.keys,
+            keep: rule.keep,
             input_rows: package_row_ordinal,
             output_rows,
             duplicate_key_count,
@@ -355,7 +378,7 @@ fn dedup_rule_parts(rule: &RowRuleProgram) -> Result<(&[String], &DedupKeepProgr
 fn dedup_arrays(
     program: &ValidationProgram,
     batch: &RecordBatch,
-    rule: &RowRuleProgram,
+    rule_id: &str,
     keys: &[String],
 ) -> Result<Vec<arrow_array::ArrayRef>> {
     keys.iter()
@@ -366,7 +389,7 @@ fn dedup_arrays(
             let index = batch.schema().index_of(key).map_err(|_| {
                 CdfError::contract(format!(
                     "dedup row rule {:?} references missing final output field {key:?}",
-                    rule.rule_id
+                    rule_id
                 ))
             })?;
             Ok(batch.column(index).clone())

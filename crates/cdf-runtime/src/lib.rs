@@ -8,6 +8,7 @@ mod registry;
 mod scheduler;
 mod source;
 mod source_registry;
+mod spill;
 mod staging;
 mod utilities;
 
@@ -19,6 +20,7 @@ pub use registry::*;
 pub use scheduler::*;
 pub use source::*;
 pub use source_registry::*;
+pub use spill::*;
 pub use staging::*;
 pub use utilities::*;
 

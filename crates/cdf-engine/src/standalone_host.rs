@@ -241,6 +241,7 @@ pub struct StandaloneExecutionHost {
     capabilities: Mutex<ExecutionHostCapabilities>,
     runtime: Runtime,
     memory: Arc<dyn MemoryCoordinator>,
+    spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
     slots: Arc<CpuSlots>,
     cpu: Arc<FixedTaskPool>,
     lanes: Mutex<BTreeMap<String, (BlockingLaneSpec, Arc<FixedTaskPool>)>>,
@@ -249,6 +250,16 @@ pub struct StandaloneExecutionHost {
 impl StandaloneExecutionHost {
     pub fn default_services(
         managed_budget_bytes: u64,
+    ) -> Result<(Arc<Self>, cdf_runtime::ExecutionServices)> {
+        Self::default_services_with_spill(
+            managed_budget_bytes,
+            cdf_memory::DEFAULT_SPILL_BUDGET_BYTES,
+        )
+    }
+
+    pub fn default_services_with_spill(
+        managed_budget_bytes: u64,
+        spill_budget_bytes: u64,
     ) -> Result<(Arc<Self>, cdf_runtime::ExecutionServices)> {
         let limit = usize::try_from(managed_budget_bytes)
             .map_err(|_| CdfError::contract("managed memory budget exceeds platform usize"))?;
@@ -264,13 +275,14 @@ impl StandaloneExecutionHost {
             .map(|value| value.get())
             .unwrap_or(1)
             .min(usize::from(u16::MAX));
-        let host = Arc::new(Self::new(
+        let host = Arc::new(Self::new_with_spill(
             ExecutionHostCapabilities {
                 logical_cpu_slots: u16::try_from(logical).unwrap_or(u16::MAX),
                 io_workers: u16::try_from(logical.min(4)).unwrap_or(1),
                 blocking_lanes: Vec::new(),
             },
             memory,
+            Arc::new(cdf_runtime::FixedSpillBudget::new(spill_budget_bytes)?),
         )?);
         let host_contract: Arc<dyn ExecutionHost> = host.clone();
         let services = cdf_runtime::ExecutionServices::new(host_contract)?;
@@ -289,6 +301,20 @@ impl StandaloneExecutionHost {
     pub fn new(
         capabilities: ExecutionHostCapabilities,
         memory: Arc<dyn MemoryCoordinator>,
+    ) -> Result<Self> {
+        Self::new_with_spill(
+            capabilities,
+            memory,
+            Arc::new(cdf_runtime::FixedSpillBudget::new(
+                cdf_memory::DEFAULT_SPILL_BUDGET_BYTES,
+            )?),
+        )
+    }
+
+    pub fn new_with_spill(
+        capabilities: ExecutionHostCapabilities,
+        memory: Arc<dyn MemoryCoordinator>,
+        spill: Arc<dyn cdf_runtime::SpillBudgetCoordinator>,
     ) -> Result<Self> {
         capabilities.validate()?;
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -332,6 +358,7 @@ impl StandaloneExecutionHost {
             capabilities: Mutex::new(capabilities),
             runtime,
             memory,
+            spill,
             slots,
             cpu,
             lanes: Mutex::new(lanes),
@@ -346,6 +373,10 @@ impl ExecutionHost for StandaloneExecutionHost {
 
     fn memory(&self) -> Arc<dyn MemoryCoordinator> {
         Arc::clone(&self.memory)
+    }
+
+    fn spill(&self) -> Arc<dyn cdf_runtime::SpillBudgetCoordinator> {
+        Arc::clone(&self.spill)
     }
 
     fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {

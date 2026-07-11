@@ -115,7 +115,7 @@ fn cdf_memory_budget() -> Result<u64, CliError> {
         None,
         effective_authority,
         64 * 1024 * 1024,
-        8 * 1024 * 1024 * 1024,
+        cdf_memory::DEFAULT_SPILL_BUDGET_BYTES,
     )?;
     Ok(resolution.managed_pool_bytes)
 }

@@ -689,6 +689,7 @@ impl QueryableResource for MockSourceResource {
 
 struct NoopSourceHost {
     memory: Arc<dyn cdf_memory::MemoryCoordinator>,
+    spill: Arc<dyn SpillBudgetCoordinator>,
 }
 
 impl ExecutionHost for NoopSourceHost {
@@ -702,6 +703,10 @@ impl ExecutionHost for NoopSourceHost {
 
     fn memory(&self) -> Arc<dyn cdf_memory::MemoryCoordinator> {
         Arc::clone(&self.memory)
+    }
+
+    fn spill(&self) -> Arc<dyn SpillBudgetCoordinator> {
+        Arc::clone(&self.spill)
     }
 
     fn open_scope(&self, _run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
@@ -789,7 +794,11 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
     );
     let memory: Arc<dyn cdf_memory::MemoryCoordinator> =
         Arc::new(cdf_memory::DeterministicMemoryCoordinator::new(1024, BTreeMap::new()).unwrap());
-    let services = ExecutionServices::new(Arc::new(NoopSourceHost { memory })).unwrap();
+    let services = ExecutionServices::new(Arc::new(NoopSourceHost {
+        memory,
+        spill: Arc::new(FixedSpillBudget::new(1024).unwrap()),
+    }))
+    .unwrap();
     let secrets: Arc<dyn cdf_http::SecretProvider + Send + Sync> = Arc::new(NoopSecretProvider);
     let root = tempfile::tempdir().unwrap();
     let context = SourceResolutionContext::new(root.path(), secrets, &services);

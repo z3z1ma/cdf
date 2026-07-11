@@ -159,6 +159,7 @@ pub trait ExecutionTaskScope: Send {
 pub trait ExecutionHost: Send + Sync {
     fn capabilities(&self) -> ExecutionHostCapabilities;
     fn memory(&self) -> Arc<dyn MemoryCoordinator>;
+    fn spill(&self) -> Arc<dyn crate::SpillBudgetCoordinator>;
     fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>>;
     fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue>;
     fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()>;
@@ -191,6 +192,10 @@ impl ExecutionServices {
 
     pub fn memory(&self) -> Arc<dyn MemoryCoordinator> {
         self.host.memory()
+    }
+
+    pub fn spill(&self) -> Arc<dyn crate::SpillBudgetCoordinator> {
+        self.host.spill()
     }
 
     pub fn capabilities(&self) -> ExecutionHostCapabilities {

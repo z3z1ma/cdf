@@ -13,6 +13,7 @@ use cdf_kernel::{CdfError, Result};
 use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_PROCESS_BUDGET_BYTES: u64 = 4 * 1024 * 1024 * 1024;
+pub const DEFAULT_SPILL_BUDGET_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 pub const MINIMUM_NATIVE_HEADROOM_BYTES: u64 = 512 * 1024 * 1024;
 pub const NATIVE_HEADROOM_PERCENT: u64 = 15;
 pub const HEADROOM_POLICY_VERSION: &str = "native-headroom-v1";
