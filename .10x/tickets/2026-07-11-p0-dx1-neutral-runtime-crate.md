@@ -13,6 +13,7 @@ Create `cdf-runtime`, move destination-neutral registry/resolution/inspection/pr
 ## Acceptance criteria
 
 - `cdf-runtime` depends on no concrete source/destination/product crate.
+- `cdf-runtime` depends on no engine or DataFusion implementation; engine/product composition depends on the neutral runtime contract, never the reverse.
 - Existing project runtime compiles through the extracted types without semantic artifact changes.
 - Registry duplicate/scheme/order tests and mock driver inspection/resolution tests pass.
 - The interface includes typed inspection and streaming/staging capability vocabulary needed by P3 without implementing scheduling.

@@ -10,7 +10,7 @@ This specification governs the compile-time/runtime boundary for adding destinat
 
 ## Dependency and ownership rules
 
-`cdf-runtime` MUST depend on no concrete destination crate and MUST expose no concrete driver type. `cdf-project` MUST depend on `cdf-runtime` and MUST NOT depend on `cdf-dest-*`. Destination crates MAY depend on `cdf-runtime` to implement its driver/runtime traits.
+`cdf-runtime` MUST depend on no DataFusion implementation, concrete destination, engine, or product crate and MUST expose no concrete driver type. `cdf-project` MUST depend on `cdf-runtime` and MUST NOT depend on `cdf-dest-*`. Destination crates MAY depend on `cdf-runtime` and lightweight `cdf-memory` to implement driver/runtime and accounted-ingress traits without inheriting the DataFusion build graph.
 
 The CLI MUST construct the first-party registry in one composition module. Generic CLI commands MUST resolve, inspect, plan, run, replay, resume, and doctor destinations through that registry. A concrete destination reference outside composition or an adapter-specific diagnostic module is a stop-line finding.
 

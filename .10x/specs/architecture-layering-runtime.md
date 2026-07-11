@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-05
+Updated: 2026-07-11
 
 # Architecture, layering, and runtime
 
@@ -22,7 +22,7 @@ Layer 4, project and product, MUST contain `cdf.toml`, environments, lockfile ha
 
 ## Crate map
 
-The workspace SHOULD include crates corresponding to these responsibilities: `cdf-kernel`, `cdf-engine`, `cdf-contract`, `cdf-package`, `cdf-state-sqlite`, `cdf-http`, `cdf-formats`, `cdf-declarative`, `cdf-python`, `cdf-wasm`, `cdf-subprocess`, `cdf-dest-duckdb`, `cdf-dest-parquet`, `cdf-dest-postgres`, `cdf-project`, `cdf-cli`, and `cdf-conformance`.
+The workspace SHOULD include crates corresponding to these responsibilities: `cdf-kernel`, lightweight neutral `cdf-memory` and `cdf-runtime` contracts, `cdf-engine`, `cdf-contract`, `cdf-package`, `cdf-state-sqlite`, `cdf-http`, `cdf-formats`, `cdf-declarative`, `cdf-python`, `cdf-wasm`, `cdf-subprocess`, `cdf-dest-duckdb`, `cdf-dest-parquet`, `cdf-dest-postgres`, `cdf-project`, `cdf-cli`, and `cdf-conformance`.
 
 MVP implementation MAY stub or feature-gate post-MVP crates when a ticket explicitly scopes them, but public boundaries MUST leave the designed seam.
 
@@ -33,6 +33,8 @@ cdf MUST use Tokio multi-threaded execution with distinct resource classes for I
 Every channel carrying batch data MUST be byte-bounded using batch byte accounting, not merely message-count-bounded. Backpressure MUST propagate from slow destinations toward resources. Resources that cannot pause MUST declare that fact; plans for those resources MUST require spill policy.
 
 cdf MUST maintain one memory accounting story by extending DataFusion's `MemoryPool` accounting to package builders, adapter decode buffers, destination staging, and other cdf buffers. Budget exhaustion MUST attempt, in order: early segment flush, backpressure, spill, clean failure. Surprise OOM is not an accepted behavior.
+
+The concrete ledger, accounted-payload, admission, deadlock-prevention, and spill contract is `.10x/specs/runtime-memory-backpressure.md`. Stage-local counters or message-count channel bounds MUST NOT compete with that authority.
 
 Batch size MUST be adaptive between configured floors and ceilings. Live extraction MAY adjust batch sizes based on downstream pressure and spill, but replay MUST use recorded batch boundaries and MUST NOT rederive adaptive decisions.
 
@@ -48,4 +50,3 @@ Every plan node MUST carry boundedness. Bounded plans run to completion. Unbound
 ## Explicit exclusions
 
 This spec does not define resource descriptors, package layout, checkpoint schema, CLI UX, or conformance suites except where they enforce layer/runtime constraints.
-

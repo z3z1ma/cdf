@@ -18,7 +18,7 @@ This is not a generic-orchestration correctness failure, but it makes “add one
 
 ## Decision
 
-Create a lower `cdf-runtime` crate that depends on kernel, contract, engine, package, and HTTP abstractions but on no concrete source or destination crate. It owns the object-safe project/runtime destination boundary currently in `cdf-project`: resolution context, driver registry, destination inspection, resolved runtime, package-aware preparation, correction hooks, and streaming-commit capability vocabulary.
+Create a lower `cdf-runtime` crate that depends on kernel, contract, package, HTTP, and lightweight neutral runtime contracts but on no DataFusion implementation, concrete source/destination, or product crate. It owns the object-safe project/runtime destination boundary currently in `cdf-project`: resolution context, driver registry, destination inspection, resolved runtime, package-aware preparation, correction hooks, and streaming-commit capability vocabulary. Engine/product composition may depend on both `cdf-runtime` and `cdf-engine`; `cdf-runtime` itself does not depend upward on the engine.
 
 Each destination crate implements and exports its own runtime driver adapter. `cdf-project` consumes an injected `cdf_runtime::DestinationRegistry` and MUST NOT depend on any `cdf-dest-*` crate. Generic project run, plan, replay, resume, promotion, lock generation, and package settlement consume only runtime/kernel traits and sheet data.
 
