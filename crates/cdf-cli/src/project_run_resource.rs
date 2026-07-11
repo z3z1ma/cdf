@@ -35,6 +35,7 @@ impl CliProjectRunSource {
 fn build_python_project_run_resource(
     context: &ProjectContext,
     resource_id: &str,
+    execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<Option<CliProjectRunSource>, CliError> {
     let Some(mapping) = context.python_resource_mapping(resource_id) else {
         return Ok(None);
@@ -79,13 +80,18 @@ fn build_python_project_run_resource(
         .or(context.config.defaults.trust.as_ref())
         .map(trust_level)
         .unwrap_or(cdf_kernel::TrustLevel::Experimental);
-    let resource = cdf_python::PythonResource::load(
+    let mut resource = cdf_python::PythonResource::load(
         &context.root,
         &uri,
         cdf_kernel::ResourceId::new(resource_id)?,
         trust,
     )
     .map_err(python_resource_error)?;
+    if let Some(execution) = execution {
+        resource = resource
+            .with_execution_services(execution.clone())
+            .map_err(python_resource_error)?;
+    }
     Ok(Some(CliProjectRunSource::new(resource)))
 }
 
@@ -93,7 +99,7 @@ pub(crate) fn build_project_resource_for_inspection(
     context: &ProjectContext,
     resource_id: &str,
 ) -> Result<CliProjectRunSource, CliError> {
-    match build_python_project_run_resource(context, resource_id)? {
+    match build_python_project_run_resource(context, resource_id, None)? {
         Some(resource) => Ok(resource),
         None => build_project_run_resource(context, context.resource(resource_id)?, None),
     }
@@ -105,7 +111,7 @@ pub(crate) fn prepare_runtime_resource_for_cli(
     no_pin: bool,
     execution: Option<&cdf_runtime::ExecutionServices>,
 ) -> Result<PreparedRuntimeResourceForCli, CliError> {
-    if let Some(resource) = build_python_project_run_resource(context, resource_id)? {
+    if let Some(resource) = build_python_project_run_resource(context, resource_id, execution)? {
         return Ok(PreparedRuntimeResourceForCli {
             resource,
             schema_snapshot: None,

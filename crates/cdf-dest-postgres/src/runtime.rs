@@ -80,7 +80,8 @@ impl DestinationDriver for PostgresRuntimeDriver {
             (uri.to_owned(), None)
         };
         let target = PostgresTarget::parse(context.target()?.as_str())?;
-        let destination = PostgresDestination::connect(database_url)?;
+        let destination = PostgresDestination::connect(database_url)?
+            .with_execution_services(context.execution_services().cloned());
         Ok(Box::new(
             PostgresRuntime::for_replay(&destination, target, dedup, None)
                 .with_secret_redaction(secret_redaction),

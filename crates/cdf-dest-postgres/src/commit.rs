@@ -19,6 +19,7 @@ impl PostgresDestination {
             database_url: Some(database_url),
             pending_commit: None,
             pending_correction: None,
+            execution: None,
         })
     }
 
@@ -95,6 +96,40 @@ pub(crate) struct PostgresCommitSession {
     expected_order: Vec<SegmentId>,
     accepted_segments: BTreeSet<SegmentId>,
     staged_segments: Vec<CommitSegment>,
+}
+
+pub(crate) struct ManagedPostgresCommitSession {
+    inner: Option<PostgresCommitSession>,
+    execution: cdf_runtime::ExecutionServices,
+}
+
+impl ManagedPostgresCommitSession {
+    pub(crate) fn new(
+        inner: PostgresCommitSession,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Self {
+        Self {
+            inner: Some(inner),
+            execution,
+        }
+    }
+
+    fn with_inner<T, F>(&mut self, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce(&mut PostgresCommitSession) -> Result<T> + Send + 'static,
+    {
+        let mut inner = self
+            .inner
+            .take()
+            .ok_or_else(|| CdfError::internal("managed Postgres session lost its inner state"))?;
+        let (inner, result) = self.execution.run_blocking("postgres.sync", move || {
+            let result = operation(&mut inner);
+            Ok((inner, result))
+        })?;
+        self.inner = Some(inner);
+        result
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -291,6 +326,35 @@ impl CommitSession for PostgresCommitSession {
 
     fn abort(mut self: Box<Self>) -> Result<()> {
         self.rollback_open_transaction()
+    }
+}
+
+impl CommitSession for ManagedPostgresCommitSession {
+    fn apply_migrations(&mut self) -> Result<()> {
+        self.with_inner(CommitSession::apply_migrations)
+    }
+
+    fn write_segment(&mut self, segment: CommitSegment) -> Result<SegmentAck> {
+        self.with_inner(move |inner| CommitSession::write_segment(inner, segment))
+    }
+
+    fn finalize(mut self: Box<Self>) -> Result<Receipt> {
+        let inner = self
+            .inner
+            .take()
+            .ok_or_else(|| CdfError::internal("managed Postgres session lost its inner state"))?;
+        self.execution.run_blocking("postgres.sync", move || {
+            inner.finalize_outcome().map(|outcome| outcome.receipt)
+        })
+    }
+
+    fn abort(mut self: Box<Self>) -> Result<()> {
+        let mut inner = self
+            .inner
+            .take()
+            .ok_or_else(|| CdfError::internal("managed Postgres session lost its inner state"))?;
+        self.execution
+            .run_blocking("postgres.sync", move || inner.rollback_open_transaction())
     }
 }
 

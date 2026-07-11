@@ -1040,6 +1040,7 @@ dependencies = [
  "cdf-formats",
  "cdf-http",
  "cdf-kernel",
+ "cdf-runtime",
  "futures-util",
  "hex",
  "pyo3",

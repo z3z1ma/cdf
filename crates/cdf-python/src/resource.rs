@@ -37,6 +37,8 @@ pub struct PythonResource {
     module_relative: String,
     callable: String,
     content_hash: String,
+    execution: Option<cdf_runtime::ExecutionServices>,
+    blocking_lane: Option<String>,
 }
 
 impl PythonResource {
@@ -132,7 +134,41 @@ impl PythonResource {
             module_relative,
             callable,
             content_hash,
+            execution: None,
+            blocking_lane: None,
         })
+    }
+
+    pub fn with_execution_services(
+        mut self,
+        execution: cdf_runtime::ExecutionServices,
+    ) -> Result<Self> {
+        let host = execution.capabilities();
+        let interpreter = crate::attached_interpreter_report()?;
+        let semantics = crate::execution_semantics(
+            &interpreter,
+            self.capabilities.partitioning.parallel_partitions,
+            usize::from(host.logical_cpu_slots),
+        );
+        let (lane_id, maximum_concurrency) = match semantics.mode {
+            crate::PythonConcurrencyMode::FreeThreadedParallel => {
+                ("python.free_threaded", host.logical_cpu_slots)
+            }
+            crate::PythonConcurrencyMode::GilSerialized
+            | crate::PythonConcurrencyMode::ParallelDisabled => ("python.gil", 1),
+        };
+        let lane = cdf_runtime::BlockingLaneSpec {
+            lane_id: lane_id.to_owned(),
+            maximum_concurrency,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: cdf_runtime::LaneAffinity::Shared,
+            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+        };
+        execution.ensure_blocking_lanes(std::slice::from_ref(&lane))?;
+        self.execution = Some(execution);
+        self.blocking_lane = Some(lane.lane_id);
+        Ok(self)
     }
 
     fn partition(&self) -> Result<PartitionPlan> {
@@ -149,7 +185,7 @@ impl PythonResource {
         })
     }
 
-    fn execute(&self, partition: PartitionPlan) -> Result<BatchStream> {
+    fn execute_inline(&self, partition: PartitionPlan) -> Result<BatchStream> {
         if partition.partition_id.as_str() != PARTITION_ID {
             return Err(cdf_kernel::CdfError::contract(format!(
                 "Python resource planned partition `{PARTITION_ID}` but received `{}`",
@@ -301,7 +337,14 @@ impl ResourceStream for PythonResource {
     }
 
     fn open(&self, partition: PartitionPlan) -> BoxFuture<'_, Result<BatchStream>> {
-        let result = self.execute(partition);
+        let result = match (&self.execution, &self.blocking_lane) {
+            (Some(execution), Some(lane)) => {
+                let resource = self.clone();
+                let lane = lane.clone();
+                execution.run_blocking(&lane, move || resource.execute_inline(partition))
+            }
+            _ => self.execute_inline(partition),
+        };
         Box::pin(async move { result })
     }
 }

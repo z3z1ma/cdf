@@ -193,6 +193,10 @@ impl ExecutionServices {
         self.host.memory()
     }
 
+    pub fn capabilities(&self) -> ExecutionHostCapabilities {
+        self.host.capabilities()
+    }
+
     pub fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>> {
         if run_id.is_empty() || run_id.len() > 256 || run_id.chars().any(char::is_control) {
             return Err(CdfError::contract(

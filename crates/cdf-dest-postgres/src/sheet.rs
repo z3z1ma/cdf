@@ -1,8 +1,9 @@
+use crate::commit::ManagedPostgresCommitSession;
 use crate::commit::validate_session_begin_inputs;
 use crate::*;
 use crate::{api::*, ddl::*, validate::*};
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PostgresDestination {
     pub(crate) sheet: PostgresDestinationSheet,
     #[serde(skip)]
@@ -11,7 +12,20 @@ pub struct PostgresDestination {
     pub(crate) pending_commit: Option<PostgresCommitRequest>,
     #[serde(skip)]
     pub(crate) pending_correction: Option<PostgresCorrectionCommitRequest>,
+    #[serde(skip)]
+    pub(crate) execution: Option<cdf_runtime::ExecutionServices>,
 }
+
+impl PartialEq for PostgresDestination {
+    fn eq(&self, other: &Self) -> bool {
+        self.sheet == other.sheet
+            && self.database_url == other.database_url
+            && self.pending_commit == other.pending_commit
+            && self.pending_correction == other.pending_correction
+    }
+}
+
+impl Eq for PostgresDestination {}
 
 impl Default for PostgresDestination {
     fn default() -> Self {
@@ -20,6 +34,7 @@ impl Default for PostgresDestination {
             database_url: None,
             pending_commit: None,
             pending_correction: None,
+            execution: None,
         }
     }
 }
@@ -27,6 +42,14 @@ impl Default for PostgresDestination {
 impl PostgresDestination {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn with_execution_services(
+        mut self,
+        execution: Option<cdf_runtime::ExecutionServices>,
+    ) -> Self {
+        self.execution = execution;
+        self
     }
 
     pub fn postgres_sheet(&self) -> &PostgresDestinationSheet {
@@ -85,9 +108,13 @@ impl DestinationProtocol for PostgresDestination {
             )
         })?;
         validate_session_begin_inputs(&request, &plan, &pending.plan)?;
-        Ok(Box::new(
-            self.begin_commit_session(pending.clone(), Some(request))?,
-        ))
+        let session = self.begin_commit_session(pending.clone(), Some(request))?;
+        match self.execution.clone() {
+            Some(execution) => Ok(Box::new(ManagedPostgresCommitSession::new(
+                session, execution,
+            ))),
+            None => Ok(Box::new(session)),
+        }
     }
 
     fn verify(&self, receipt: &Receipt) -> Result<ReceiptVerification> {
