@@ -805,6 +805,67 @@ fn sqlite_state_migration_upgrades_committed_run_ledger_v1_fixture() {
 }
 
 #[test]
+fn sqlite_state_migration_upgrades_v3_without_losing_events_and_enables_publication() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("state.db");
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let run_id = RunId::new("run-v3-fixture").unwrap();
+    ledger.create_run(Some(run_id.clone())).unwrap();
+    ledger
+        .append_event(&run_id, RunEventAppend::new(RunEventKind::RunStarted))
+        .unwrap();
+    drop(ledger);
+
+    let conn = rusqlite::Connection::open(&db_path).unwrap();
+    conn.execute_batch(
+        "
+        DROP TRIGGER cdf_promotion_publications_no_update;
+        DROP TRIGGER cdf_promotion_publications_no_delete;
+        DROP TABLE cdf_promotion_publications;
+        UPDATE cdf_sqlite_schema_migrations
+        SET version = 3
+        WHERE component = 'run_ledger';
+        ",
+    )
+    .unwrap();
+    drop(conn);
+
+    let report = migrate_sqlite_state(&db_path).unwrap();
+    let run_component = report
+        .components
+        .iter()
+        .find(|component| component.component == "run_ledger")
+        .unwrap();
+    assert_eq!(run_component.before_version, Some(3));
+    assert_eq!(run_component.after_version, 4);
+    assert_eq!(run_component.action, SqliteStateMigrationAction::Migrated);
+
+    let ledger = SqliteRunLedger::open(&db_path).unwrap();
+    let snapshot = ledger.snapshot(&run_id).unwrap().unwrap();
+    assert_eq!(snapshot.events.len(), 1);
+    assert_eq!(snapshot.events[0].kind, RunEventKind::RunStarted);
+    let promotion_id = PromotionId::new("promotion-v3-migration").unwrap();
+    let event = PromotionPublicationEvent {
+        version: PROMOTION_PUBLICATION_EVENT_VERSION,
+        promotion_id: promotion_id.clone(),
+        resource_id: resource_id(),
+        old_schema_hash: SchemaHash::new("sha256:old").unwrap(),
+        new_schema_hash: SchemaHash::new("sha256:new").unwrap(),
+        installed_lock_sha256: "sha256:lock".to_owned(),
+        targets: vec![PromotionPublicationTarget {
+            destination_id: DestinationId::new("duckdb").unwrap(),
+            target: TargetName::new("orders").unwrap(),
+            correction_package_hash: PackageHash::new("sha256:correction-v3").unwrap(),
+            receipt_id: ReceiptId::new("receipt-v3").unwrap(),
+            checkpoint_id: CheckpointId::new("checkpoint-v3").unwrap(),
+        }],
+        published_at_ms: 10,
+    };
+    assert_eq!(ledger.publish_promotion(event.clone()).unwrap(), event);
+    assert_eq!(ledger.promotion_publication(&promotion_id).unwrap(), Some(event));
+}
+
+#[test]
 fn scope_lease_stores_pass_shared_conformance() {
     assert_scope_lease_store_send_sync::<InMemoryScopeLeaseStore>();
     assert_scope_lease_store_send_sync::<SqliteScopeLeaseStore>();
