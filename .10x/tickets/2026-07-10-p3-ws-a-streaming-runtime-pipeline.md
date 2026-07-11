@@ -12,11 +12,16 @@ Implement the Chapter 6 runtime spine: Tokio I/O runtime, CPU and bounded blocki
 
 This workstream is a plan and requires bounded executable children for runtime ownership, channels, ledger/spill, adaptive batching, streaming commit integration, and chaos/conformance.
 
+## Activated children
+
+- `.10x/tickets/2026-07-11-p3-a1-staged-ingress-final-binding.md`
+
 ## Acceptance criteria
 
 - Decode, validate/normalize, segment encode, persist/hash, and destination write can overlap without unbounded queues.
 - Every buffered byte is ledger-owned; exhaustion follows flush, backpressure, spill, clean failure.
 - Replay uses recorded batches; streaming commit issues no receipt before final manifest verification.
+- Pre-finalization destination work is staged ingress under non-identity attempt authority; only final verified package binding may publish target state and return a receipt.
 - Peak commit memory is bounded by segments and configured queues, not package size.
 - P1 progress and all crash-matrix rows remain green.
 

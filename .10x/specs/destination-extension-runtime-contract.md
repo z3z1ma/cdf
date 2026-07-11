@@ -31,6 +31,7 @@ The sheet/runtime description MUST distinguish:
 
 - durable segments can be streamed as soon as their identity is known;
 - finalized package metadata is required before destination mutation;
+- pre-finalization payloads are finalized-package-only or staged under `.10x/specs/streaming-destination-ingress.md`, never treated as committed package writes;
 - single-writer versus concurrent segment ingestion;
 - maximum useful in-flight segment/byte concurrency;
 - bounded staging owned by the P3 memory ledger;

@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-10
+Updated: 2026-07-11
 
 # Packages, lifecycle, and determinism
 
@@ -60,6 +60,8 @@ Recovery MUST follow the normative crash matrix:
 - After checkpoint commit, the next run reads committed state.
 
 Replay from a packaged artifact MUST derive concrete replay/checkpoint inputs from verified package identity evidence. The finalized package hash supplies the concrete `StateDelta.package_hash` and package-token idempotency value; those concrete values MUST be verified against receipts before crossing the commit gate.
+
+Pre-finalization destination staging is non-package operational state governed by `.10x/specs/streaming-destination-ingress.md`. A `LoadAttemptId` and staged acknowledgements MUST NOT enter `manifest.identity`, package-hash derivation, state-delta preimages, or commit-plan preimages. The commit-plan preimage MAY record the selected ingress capability/mode because that is deterministic plan evidence, but not the run-specific attempt id.
 
 Manifest status updates MUST be atomic rename-over or equivalently crash-safe.
 

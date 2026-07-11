@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-05
-Updated: 2026-07-10
+Updated: 2026-07-11
 
 # Destinations, receipts, and delivery guarantees
 
@@ -23,6 +23,8 @@ Package-embedded commit-plan evidence MUST follow `.10x/decisions/package-state-
 `CommitSession` MUST accept package segments incrementally, either as a segment stream or as per-segment writes returning `SegmentAck`. Fully materialized package replay MUST feed recorded package segments through the same API shape as future streaming package-to-destination commits. A session MAY be synchronous for MVP, but the API shape MUST NOT require callers to preload a whole package into the destination session.
 
 `finalize` MUST return a durable receipt over every segment accepted by the session or an error. There is no accepted ambiguous third state.
+
+Pre-finalization staged ingress follows `.10x/specs/streaming-destination-ingress.md`. A staged acknowledgement is explicitly not a committed `SegmentAck` or receipt. Every final destination commit still carries the verified package hash as its idempotency token; only final package binding may convert matching staged identities into committed acknowledgements.
 
 A commit session MUST NOT synthesize checkpoint commits. It returns receipts; only the checkpoint store opens the commit gate. Destination-specific verification remains owned by the destination driver, even when called by a generic runtime.
 
