@@ -82,9 +82,9 @@ Machine-output compatibility changes, artifact-version changes, dependency tuple
 
 ## CI phases
 
-Fast CI runs on pull requests and pushes. It MUST cover formatting, linting, focused tests, dependency metadata sanity, source-only secret scanning, and the fastest supply-chain gates needed for the touched dependency or security vectors.
+Fast CI runs on pull requests and pushes under `.10x/decisions/fast-ci-budget-and-deep-gate-separation.md`. It MUST cover formatting, a single nonredundant core lint/compile path, focused core library tests, locked dependency metadata parsing, and tracked-source secret scanning. It MUST NOT recreate deep integration, external-service, generated-reference, duplication, supply-chain, coverage, benchmark, or CodeQL gates on every push.
 
-Slow CI runs on schedule and manual dispatch. It MUST cover the scheduled/release/integration Deep Loop from `QUALITY.md`, plus configured conformance, golden, chaos, property, fuzz, and benchmark smoke gates that are relevant to the release or integration change set.
+Slow CI runs on schedule and manual dispatch. It MUST cover the scheduled/release/integration Deep Loop from `QUALITY.md`, generated-reference freshness, supply-chain and duplication checks, plus configured conformance, golden, chaos, property, fuzz, and benchmark smoke gates that are relevant to the release or integration change set.
 
 Local and CI CodeQL Rust checks MUST use a reusable database policy equivalent to `.10x/knowledge/quality-gate-execution.md`; CI MAY cache the database by source, lockfile, CodeQL version, extractor version, and Rust toolchain fingerprint.
 

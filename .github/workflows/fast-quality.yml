@@ -15,26 +15,10 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  fast-quality:
-    name: Fast quality gates
+  rust-smoke:
+    name: Core Rust smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 35
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_DB: postgres
-          POSTGRES_HOST_AUTH_METHOD: trust
-          POSTGRES_USER: cdf
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U cdf -d postgres"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
-    env:
-      TEST_DATABASE_URL: postgresql://cdf@127.0.0.1:5432/postgres
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -47,85 +31,65 @@ jobs:
 
       - name: Cache Cargo builds
         uses: Swatinem/rust-cache@v2
-
-      - name: Install Node.js
-        uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          shared-key: fast-core
 
-      - name: Install Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: stable
-
-      - name: Install fast quality tools
-        run: |
-          cargo install --locked cargo-audit
-          cargo install --locked cargo-deny
-          go install github.com/zricethezav/gitleaks/v8@v8.18.4
-
-      - name: Prepare quality report directory
-        run: mkdir -p target/quality/reports
-
-      - name: Dependency metadata sanity
-        run: |
-          cargo metadata --format-version 1 --locked > target/quality/reports/cargo-metadata-fast.json
-          cargo tree --workspace --locked > target/quality/reports/cargo-tree-fast.txt
+      - name: Locked metadata
+        run: cargo metadata --format-version 1 --locked --no-deps >/dev/null
 
       - name: Formatting
         run: cargo fmt --all -- --check
 
-      - name: Compile check
-        run: cargo check --workspace --all-targets --locked
+      - name: Core Clippy
+        run: >-
+          cargo clippy
+          -p cdf-kernel
+          -p cdf-contract
+          -p cdf-package
+          -p cdf-formats
+          -p cdf-engine
+          --lib
+          --locked
+          -- -D warnings
 
-      - name: Clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Core library tests
+        run: >-
+          cargo test
+          -p cdf-kernel
+          -p cdf-contract
+          -p cdf-package
+          -p cdf-formats
+          --lib
+          --locked
+          --no-fail-fast
 
-      - name: Focused tests
+  source-secrets:
+    name: Tracked-source secrets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install pinned Gitleaks
+        env:
+          GITLEAKS_VERSION: 8.18.4
+          GITLEAKS_SHA256: ba6dbb656933921c775ee5a2d1c13a91046e7952e9d919f9bac4cec61d628e7d
         run: |
-          cargo test -p cdf-kernel --locked --no-fail-fast
-          cargo test -p cdf-package --locked --no-fail-fast
-          cargo test -p cdf-conformance --locked --no-fail-fast
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          bin_dir="$RUNNER_TEMP/gitleaks-bin"
+          curl --fail --silent --show-error --location \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            --output "$archive"
+          echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check --status
+          mkdir -p "$bin_dir"
+          tar -xzf "$archive" -C "$bin_dir" gitleaks
+          echo "$bin_dir" >> "$GITHUB_PATH"
 
-      - name: Generated CLI artifact freshness
-        run: cargo test -p cdf-cli --locked --features cli-artifacts cli_generated_artifacts_match_committed_snapshots
-
-      - name: Generated command and error reference freshness
-        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
-
-      - name: Source-only secret scan
+      - name: Scan tracked source
         run: |
           source_tree="$(mktemp -d)"
           trap 'rm -rf "$source_tree"' EXIT
           git archive --format=tar HEAD | tar -xf - -C "$source_tree"
-          gitleaks detect \
-            --no-git \
-            --source "$source_tree" \
-            --no-banner \
-            --redact \
-            --report-format json \
-            --report-path target/quality/reports/gitleaks-dir-fast.json
-
-      - name: Duplication check
-        run: |
-          npx --yes jscpd@5 . \
-            --reporters json,console \
-            --output target/quality/reports/jscpd-fast \
-            --ignore "**/target/**,**/.git/**,**/reports/**,**/generated/**" \
-            --min-lines 12 \
-            --min-tokens 80 \
-            --threshold 10 \
-            --no-colors
-
-      - name: Fast supply-chain gates
-        run: |
-          cargo deny --locked check advisories licenses sources
-          cargo audit --deny warnings --ignore RUSTSEC-2024-0436
-
-      - name: Upload quality reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fast-quality-reports
-          path: target/quality/reports
-          if-no-files-found: ignore
+          gitleaks detect --no-git --source "$source_tree" --no-banner --redact
