@@ -56,6 +56,9 @@ complete -c cdf -n "__fish_cdf_using_subcommand init" -l name -r
 complete -c cdf -n "__fish_cdf_using_subcommand init" -l force
 complete -c cdf -n "__fish_cdf_using_subcommand init" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand init" -s h -l help -d 'Print help'
+complete -c cdf -n "__fish_cdf_using_subcommand add" -l records -r
+complete -c cdf -n "__fish_cdf_using_subcommand add" -l cursor -r
+complete -c cdf -n "__fish_cdf_using_subcommand add" -l cursor-param -r
 complete -c cdf -n "__fish_cdf_using_subcommand add" -l dry-run
 complete -c cdf -n "__fish_cdf_using_subcommand add" -l no-color
 complete -c cdf -n "__fish_cdf_using_subcommand add" -s h -l help -d 'Print help'

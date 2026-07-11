@@ -1,0 +1,18 @@
+# `cdf add`
+
+Generated from the CLI's clap definitions.
+
+```text
+Usage: cdf add [OPTIONS] [RESOURCE_ID] [URL_OR_PATH]...
+
+Arguments:
+  [RESOURCE_ID] [URL_OR_PATH]...
+
+Options:
+      --dry-run
+      --no-color
+      --records <SELECTOR>
+      --cursor <FIELD>
+      --cursor-param <PARAM>
+  -h, --help                  Print help
+```

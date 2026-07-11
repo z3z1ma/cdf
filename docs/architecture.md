@@ -57,4 +57,4 @@ and
 This page does not define new behavior, generated command syntax, error codes,
 artifact schemas, or release promises. Generated command reference and error
 catalog pages are owned by
-[WS6B](../.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md).
+[WS6B](../.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md).

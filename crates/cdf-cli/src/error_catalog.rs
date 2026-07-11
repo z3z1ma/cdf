@@ -302,6 +302,74 @@ pub(crate) const DOCTOR_DRIFT: ErrorMapping = ErrorMapping {
     }),
 };
 
+#[cfg(feature = "cli-artifacts")]
+pub(crate) fn reference_entries() -> Vec<(&'static str, ErrorMapping)> {
+    let mut entries = vec![
+        ("USAGE", USAGE),
+        ("NOT_SUPPORTED", NOT_SUPPORTED),
+        ("CLI_JSON", CLI_JSON),
+        ("CLI_ARTIFACTS", CLI_ARTIFACTS),
+        ("CLI_ARTIFACTS_USAGE", CLI_ARTIFACTS_USAGE),
+        ("PROJECT_INIT_ARGUMENT", PROJECT_INIT_ARGUMENT),
+        ("PROJECT_IO", PROJECT_IO),
+        ("PROJECT_RESOURCE_MAPPING", PROJECT_RESOURCE_MAPPING),
+        ("PROJECT_MERGE_KEY", PROJECT_MERGE_KEY),
+        ("RESOURCE_NOT_COMPILED", RESOURCE_NOT_COMPILED),
+        ("CONTRACT_ARGUMENT", CONTRACT_ARGUMENT),
+        ("CONTRACT_LOCKFILE", CONTRACT_LOCKFILE),
+        ("SCAN_ARGUMENT", SCAN_ARGUMENT),
+        (
+            "PREVIEW_RUNTIME_NOT_SUPPORTED",
+            PREVIEW_RUNTIME_NOT_SUPPORTED,
+        ),
+        ("DESTINATION_NOT_SUPPORTED", DESTINATION_NOT_SUPPORTED),
+        ("RUN_ARGUMENT", RUN_ARGUMENT),
+        ("RUN_LOOP_NOT_SUPPORTED", RUN_LOOP_NOT_SUPPORTED),
+        ("RUN_ARTIFACT_PATH", RUN_ARTIFACT_PATH),
+        ("RUN_ARTIFACT_INTERNAL", RUN_ARTIFACT_INTERNAL),
+        ("REPLAY_ARGUMENT", REPLAY_ARGUMENT),
+        ("REPLAY_PACKAGE_CONTRACT", REPLAY_PACKAGE_CONTRACT),
+        ("RESUME_LEDGER", RESUME_LEDGER),
+        (
+            "RESUME_MULTI_RUN_NOT_SUPPORTED",
+            RESUME_MULTI_RUN_NOT_SUPPORTED,
+        ),
+        ("STATE_SCOPE_ARGUMENT", STATE_SCOPE_ARGUMENT),
+        ("PACKAGE_ARGUMENT", PACKAGE_ARGUMENT),
+        ("PACKAGE_ARTIFACT", PACKAGE_ARTIFACT),
+        ("SQL_QUERY", SQL_QUERY),
+        ("SQL_RESULT", SQL_RESULT),
+        ("SQL_INTERNAL", SQL_INTERNAL),
+        ("STATUS_FRESHNESS", STATUS_FRESHNESS),
+        ("DOCTOR_DRIFT", DOCTOR_DRIFT),
+    ];
+    entries.extend([
+        (
+            "LOWER_TRANSIENT",
+            generic_lower_layer_mapping(&ErrorKind::Transient),
+        ),
+        (
+            "LOWER_RATE_LIMITED",
+            generic_lower_layer_mapping(&ErrorKind::RateLimited),
+        ),
+        ("LOWER_AUTH", generic_lower_layer_mapping(&ErrorKind::Auth)),
+        (
+            "LOWER_CONTRACT",
+            generic_lower_layer_mapping(&ErrorKind::Contract),
+        ),
+        ("LOWER_DATA", generic_lower_layer_mapping(&ErrorKind::Data)),
+        (
+            "LOWER_DESTINATION",
+            generic_lower_layer_mapping(&ErrorKind::Destination),
+        ),
+        (
+            "LOWER_INTERNAL",
+            generic_lower_layer_mapping(&ErrorKind::Internal),
+        ),
+    ]);
+    entries
+}
+
 /// Generic lower-layer mappings for `CdfError` values whose owning crate, not
 /// the CLI call site, carries the domain semantics. These preserve the existing
 /// exit-code taxonomy and intentionally name broad product areas.

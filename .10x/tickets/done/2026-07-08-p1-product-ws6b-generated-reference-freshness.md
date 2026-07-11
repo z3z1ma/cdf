@@ -1,6 +1,6 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-ws6-docs-onboarding.md
 Depends-On: .10x/specs/docs-onboarding-surface.md, .10x/tickets/done/2026-07-08-p1-product-ws2d-completions-manpages-help.md, .10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md, .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md
 
@@ -28,7 +28,8 @@ No new parser grammar. No new error-code semantics. No release packaging; WS8 ow
 ## Progress and notes
 
 - 2026-07-08: Unblocked after WS2D generated CLI artifacts and WS4B/WS4C established the CLI error catalog and suggestions source. WS4D depends on this generated reference slice, so this ticket must not depend on the WS4 parent as a whole.
+- 2026-07-10: Generated the complete command and error references, wired deterministic freshness into fast CI and `QUALITY.md`, proved stale-file detection, and recorded evidence and review in `.10x/evidence/2026-07-10-p1-generated-command-error-reference.md` and `.10x/reviews/2026-07-10-p1-generated-command-error-reference-review.md`.
 
 ## Blockers
 
-None. WS2D, WS4B, and WS4C are complete.
+None. Complete.

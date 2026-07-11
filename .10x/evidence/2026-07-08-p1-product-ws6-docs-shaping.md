@@ -28,7 +28,7 @@ Created:
 
 - `.10x/specs/docs-onboarding-surface.md`.
 - `.10x/tickets/done/2026-07-08-p1-product-ws6a-docs-topology-quickstart.md`.
-- `.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md`.
+- `.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md`.
 - `.10x/tickets/2026-07-08-p1-product-ws6c-runnable-examples-conformance.md`.
 - `.10x/tickets/2026-07-08-p1-product-ws6d-init-readme-scaffold.md`.
 

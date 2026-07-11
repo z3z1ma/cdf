@@ -1,0 +1,23 @@
+# `cdf explain`
+
+Generated from the CLI's clap definitions.
+
+```text
+Usage: cdf explain [OPTIONS] [RESOURCE]...
+
+Arguments:
+  [RESOURCE]...
+
+Options:
+      --no-color
+      --resource <RESOURCE>
+      --select <FIELDS>
+      --filter <EXPR>
+      --limit <N>
+      --order-by <FIELD[:asc|desc]>
+      --package-id <ID>
+      --to <DEST>
+      --target <TARGET>
+      --no-pin
+  -h, --help                         Print help
+```

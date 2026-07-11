@@ -70,6 +70,9 @@ Register-ArgumentCompleter -Native -CommandName 'cdf' -ScriptBlock {
             break
         }
         'cdf;add' {
+            [CompletionResult]::new('--records', '--records', [CompletionResultType]::ParameterName, 'records')
+            [CompletionResult]::new('--cursor', '--cursor', [CompletionResultType]::ParameterName, 'cursor')
+            [CompletionResult]::new('--cursor-param', '--cursor-param', [CompletionResultType]::ParameterName, 'cursor-param')
             [CompletionResult]::new('--dry-run', '--dry-run', [CompletionResultType]::ParameterName, 'dry-run')
             [CompletionResult]::new('--no-color', '--no-color', [CompletionResultType]::ParameterName, 'no-color')
             [CompletionResult]::new('-h', '-h', [CompletionResultType]::ParameterName, 'Print help')

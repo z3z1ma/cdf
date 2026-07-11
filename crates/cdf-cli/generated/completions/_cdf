@@ -57,6 +57,9 @@ _arguments "${_arguments_options[@]}" : \
 ;;
 (add)
 _arguments "${_arguments_options[@]}" : \
+'--records=[]:SELECTOR:_default' \
+'--cursor=[]:FIELD:_default' \
+'--cursor-param=[]:PARAM:_default' \
 '--dry-run[]' \
 '--no-color[]' \
 '-h[Print help]' \

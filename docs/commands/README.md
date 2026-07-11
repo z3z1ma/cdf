@@ -1,17 +1,53 @@
-# Generated command reference
+# Command reference
 
-Command reference pages are intentionally not hand-written in WS6A.
+Generated from the CLI's clap definitions. Do not edit these pages by hand.
 
-WS6B owns generating `docs/commands/` from the clap command definitions and
-adding freshness checks:
-[`2026-07-08-p1-product-ws6b-generated-reference-freshness.md`](../../.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md).
-
-Until that lands, use the binary help output for exact syntax:
-
-```bash
-cdf help
-cdf help run
-cdf help replay package
-```
-
-The quickstart contains only the command snippets verified for that path.
+- [`cdf`](cdf.md)
+- [`cdf help`](cdf-help.md)
+- [`cdf version`](cdf-version.md)
+- [`cdf init`](cdf-init.md)
+- [`cdf add`](cdf-add.md)
+- [`cdf validate`](cdf-validate.md)
+- [`cdf plan`](cdf-plan.md)
+- [`cdf explain`](cdf-explain.md)
+- [`cdf run`](cdf-run.md)
+- [`cdf preview`](cdf-preview.md)
+- [`cdf sql`](cdf-sql.md)
+- [`cdf inspect`](cdf-inspect.md)
+- [`cdf inspect project`](cdf-inspect-project.md)
+- [`cdf inspect resources`](cdf-inspect-resources.md)
+- [`cdf inspect resource`](cdf-inspect-resource.md)
+- [`cdf inspect lock`](cdf-inspect-lock.md)
+- [`cdf inspect destinations`](cdf-inspect-destinations.md)
+- [`cdf inspect destination`](cdf-inspect-destination.md)
+- [`cdf inspect package`](cdf-inspect-package.md)
+- [`cdf inspect run`](cdf-inspect-run.md)
+- [`cdf diff`](cdf-diff.md)
+- [`cdf diff schema`](cdf-diff-schema.md)
+- [`cdf schema`](cdf-schema.md)
+- [`cdf schema discover`](cdf-schema-discover.md)
+- [`cdf schema pin`](cdf-schema-pin.md)
+- [`cdf schema show`](cdf-schema-show.md)
+- [`cdf schema diff`](cdf-schema-diff.md)
+- [`cdf schema promote`](cdf-schema-promote.md)
+- [`cdf contract`](cdf-contract.md)
+- [`cdf contract freeze`](cdf-contract-freeze.md)
+- [`cdf contract show`](cdf-contract-show.md)
+- [`cdf contract test`](cdf-contract-test.md)
+- [`cdf state`](cdf-state.md)
+- [`cdf state show`](cdf-state-show.md)
+- [`cdf state history`](cdf-state-history.md)
+- [`cdf state rewind`](cdf-state-rewind.md)
+- [`cdf state migrate`](cdf-state-migrate.md)
+- [`cdf state recover`](cdf-state-recover.md)
+- [`cdf resume`](cdf-resume.md)
+- [`cdf replay`](cdf-replay.md)
+- [`cdf replay package`](cdf-replay-package.md)
+- [`cdf backfill`](cdf-backfill.md)
+- [`cdf package`](cdf-package.md)
+- [`cdf package ls`](cdf-package-ls.md)
+- [`cdf package gc`](cdf-package-gc.md)
+- [`cdf package verify`](cdf-package-verify.md)
+- [`cdf package archive`](cdf-package-archive.md)
+- [`cdf doctor`](cdf-doctor.md)
+- [`cdf status`](cdf-status.md)

@@ -95,7 +95,7 @@ Quality, security, and supply-chain gates:
 Record graph hygiene after closure:
 
 - `rg -n "\.10x/tickets/2026-07-08-p1-product-ws4c-error-suggestions\.md" .10x`: no matches; `rg` exited 1 because the former active ticket path no longer appears.
-- `git diff --check -- .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md .10x/tickets/2026-07-08-p1-product-ws4d-error-rendering-docs.md .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md .10x/evidence/2026-07-08-p1-product-ws4c-error-suggestions.md .10x/reviews/2026-07-08-p1-product-ws4c-error-suggestions-review.md .10x/evidence/2026-07-08-p1-product-ws4-error-catalog-shaping.md .10x/reviews/2026-07-08-p1-product-ws4-error-catalog-shaping-review.md`: passed.
+- `git diff --check -- .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md .10x/tickets/done/2026-07-08-p1-product-ws4d-error-rendering-docs.md .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md .10x/evidence/2026-07-08-p1-product-ws4c-error-suggestions.md .10x/reviews/2026-07-08-p1-product-ws4c-error-suggestions-review.md .10x/evidence/2026-07-08-p1-product-ws4-error-catalog-shaping.md .10x/reviews/2026-07-08-p1-product-ws4-error-catalog-shaping-review.md`: passed.
 - `gitleaks dir --no-banner --redact <each repaired WS4 record path>` for the parent, WS4D, WS4C ticket, WS4C evidence, WS4C review, shaping evidence, and shaping review: passed; no leaks found.
 
 Parent integration rerun after worker completion:

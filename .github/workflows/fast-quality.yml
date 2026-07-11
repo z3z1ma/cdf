@@ -90,6 +90,9 @@ jobs:
       - name: Generated CLI artifact freshness
         run: cargo test -p cdf-cli --locked --features cli-artifacts cli_generated_artifacts_match_committed_snapshots
 
+      - name: Generated command and error reference freshness
+        run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
+
       - name: Source-only secret scan
         run: |
           gitleaks detect \

@@ -6,4 +6,7 @@ Arguments:
 Options:
       --dry-run
       --no-color
-  -h, --help      Print help
+      --records <SELECTOR>
+      --cursor <FIELD>
+      --cursor-param <PARAM>
+  -h, --help                  Print help

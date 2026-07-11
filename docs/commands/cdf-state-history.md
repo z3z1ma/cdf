@@ -1,0 +1,18 @@
+# `cdf state history`
+
+Generated from the CLI's clap definitions.
+
+```text
+Usage: cdf state history [OPTIONS] [RESOURCE]...
+
+Arguments:
+  [RESOURCE]...
+
+Options:
+      --no-color
+      --pipeline <ID>
+      --resource <RESOURCE>
+      --scope <KEY=VALUE>
+      --scope-json <JSON>
+  -h, --help                 Print help
+```

@@ -50,5 +50,5 @@ cdf --project /tmp/cdf-replay replay package /path/to/package --to duckdb://.cdf
 ## Missing Generated References
 
 The generated command reference and error catalog are pending under
-[WS6B](../../.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md).
+[WS6B](../../.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md).
 Use `cdf help <command>` for current parser syntax.

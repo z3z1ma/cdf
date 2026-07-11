@@ -1,8 +1,8 @@
-Status: open
+Status: done
 Created: 2026-07-08
-Updated: 2026-07-09
+Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-08-p1-product-ws4-error-experience-catalog.md
-Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md, .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md, .10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md
+Depends-On: .10x/specs/cli-error-experience-catalog.md, .10x/tickets/done/2026-07-08-p1-product-ws4b-error-construction-site-migration.md, .10x/tickets/done/2026-07-08-p1-product-ws4c-error-suggestions.md, .10x/tickets/done/2026-07-08-p1-product-ws3b-renderer-foundation.md, .10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md
 
 # P1 product WS4D: Error rendering and generated docs
 
@@ -31,7 +31,8 @@ Do not change code assignments unless WS4B/WS4C left an explicit blocker. Do not
 ## Progress and notes
 
 - 2026-07-08: Split from WS4. Final closure depends on the renderer foundation and WS6 generated-reference freshness lane.
+- 2026-07-10: Confirmed existing renderer/JSON coverage for remediation, suggestions, not-supported behavior, every lower-layer kind mapping, and redaction. Generated the full catalog fields and freshness gate with WS6B. Evidence and review: `.10x/evidence/2026-07-10-p1-generated-command-error-reference.md` and `.10x/reviews/2026-07-10-p1-generated-command-error-reference-review.md`.
 
 ## Blockers
 
-Blocked until WS6B lands.
+None. Complete.

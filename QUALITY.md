@@ -114,6 +114,12 @@ cargo nextest run -p <package> <test_name> --locked
 cargo test -p <package> <test_name> --locked
 ```
 
+When CLI definitions or error mappings change, verify the committed generated references:
+
+```bash
+cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
+```
+
 ---
 
 ## Standard Change-Set Loop

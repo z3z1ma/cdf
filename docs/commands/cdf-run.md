@@ -1,0 +1,21 @@
+# `cdf run`
+
+Generated from the CLI's clap definitions.
+
+```text
+Usage: cdf run [OPTIONS] [RESOURCE]...
+
+Arguments:
+  [RESOURCE]...
+
+Options:
+      --no-color
+      --resource <RESOURCE>
+      --pipeline <ID>
+      --to <DEST>
+      --target <TARGET>
+      --package-id <ID>
+      --checkpoint-id <ID>
+      --loop
+  -h, --help                 Print help
+```

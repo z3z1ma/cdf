@@ -11,5 +11,5 @@ current conformance proof.
 - [Troubleshooting](troubleshooting.md)
 
 Generated command reference and error catalog pages are pending under
-[WS6B](../../.10x/tickets/2026-07-08-p1-product-ws6b-generated-reference-freshness.md),
+[WS6B](../../.10x/tickets/done/2026-07-08-p1-product-ws6b-generated-reference-freshness.md),
 so these guides avoid exhaustive flag catalogs.

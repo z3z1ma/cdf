@@ -18,9 +18,18 @@ use crate::{args, error_catalog, output::CliError};
 const COMPLETIONS_DIR: &str = "completions";
 const HELP_DIR: &str = "help";
 const MAN_DIR: &str = "man";
+const COMMAND_DOCS_DIR: &str = "commands";
+const ERROR_DOCS_DIR: &str = "errors";
 
 pub fn default_artifact_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("generated")
+}
+
+pub fn default_docs_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("docs")
 }
 
 pub fn generate_cli_artifacts(out_dir: &Path) -> Result<(), CliError> {
@@ -44,6 +53,121 @@ pub fn check_cli_artifacts(out_dir: &Path) -> Result<(), CliError> {
     })();
     let _ = fs::remove_dir_all(&temp_dir);
     result
+}
+
+pub fn generate_reference_docs(docs_dir: &Path) -> Result<(), CliError> {
+    reset_child_dir(docs_dir, COMMAND_DOCS_DIR)?;
+    reset_child_dir(docs_dir, ERROR_DOCS_DIR)?;
+    generate_command_docs(&docs_dir.join(COMMAND_DOCS_DIR))?;
+    generate_error_docs(&docs_dir.join(ERROR_DOCS_DIR))
+}
+
+pub fn check_reference_docs(docs_dir: &Path) -> Result<(), CliError> {
+    let temp_dir = unique_temp_dir()?;
+    let result = (|| {
+        generate_reference_docs(&temp_dir)?;
+        let expected = read_tree(&temp_dir)?;
+        let actual = read_reference_tree(docs_dir)?;
+        compare_reference_trees(&expected, &actual, docs_dir)
+    })();
+    let _ = fs::remove_dir_all(&temp_dir);
+    result
+}
+
+fn generate_command_docs(out_dir: &Path) -> Result<(), CliError> {
+    fs::create_dir_all(out_dir).map_err(io_error("create command docs directory"))?;
+    let paths = command_paths(&args::cli_command());
+    let mut index = String::from(
+        "# Command reference\n\nGenerated from the CLI's clap definitions. Do not edit these pages by hand.\n\n",
+    );
+    for path in &paths {
+        let file_name = artifact_file_name(path, "md");
+        let title = bin_name(path);
+        index.push_str(&format!("- [`{title}`]({file_name})\n"));
+        let help = normalize_generated_text(&args::render_help(path)?);
+        let page = format!(
+            "# `{title}`\n\nGenerated from the CLI's clap definitions.\n\n```text\n{help}```\n"
+        );
+        fs::write(out_dir.join(file_name), page).map_err(io_error("write command doc"))?;
+    }
+    fs::write(out_dir.join("README.md"), index).map_err(io_error("write command docs index"))
+}
+
+fn generate_error_docs(out_dir: &Path) -> Result<(), CliError> {
+    fs::create_dir_all(out_dir).map_err(io_error("create error docs directory"))?;
+    let mut entries = error_catalog::reference_entries();
+    entries.sort_by_key(|(_, mapping)| mapping.code);
+    let mut page = String::from(
+        "# Error reference\n\nGenerated from the CLI error catalog. Do not edit this page by hand.\n\n| Code | Area | Kind | Exit | Meaning | Remediation | Representative command |\n|---|---|---|---:|---|---|---|\n",
+    );
+    for (_, mapping) in entries {
+        let remediation = mapping.remediation.map_or_else(
+            || "No remediation is registered.".to_owned(),
+            |remediation| {
+                let mut text = remediation.summary.to_owned();
+                for step in remediation.steps {
+                    text.push(' ');
+                    text.push_str(step);
+                }
+                text
+            },
+        );
+        page.push_str(&format!(
+            "| `{}` | {} | {} | {} | {} | {} | `{}` |\n",
+            mapping.code,
+            error_area(mapping.code),
+            error_kind(mapping.exit_code),
+            mapping.exit_code,
+            error_meaning(mapping.code),
+            markdown_cell(&remediation),
+            representative_command(mapping.code),
+        ));
+    }
+    fs::write(out_dir.join("README.md"), page).map_err(io_error("write error reference"))
+}
+
+fn error_area(code: &str) -> &str {
+    code.split('-').nth(1).unwrap_or("INTERNAL")
+}
+
+fn error_kind(exit_code: i32) -> &'static str {
+    match exit_code {
+        4 => "auth",
+        5 => "data",
+        6 => "destination",
+        70 => "internal",
+        75 => "transient",
+        2 | 3 | 78 => "contract",
+        _ => "internal",
+    }
+}
+
+fn error_meaning(code: &str) -> String {
+    code.split('-')
+        .skip(2)
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
+
+fn representative_command(code: &str) -> &'static str {
+    match error_area(code) {
+        "CONTRACT" => "cdf contract show",
+        "DEST" => "cdf plan",
+        "DOCTOR" => "cdf doctor",
+        "PACKAGE" => "cdf package verify",
+        "PROJECT" => "cdf validate",
+        "RESOURCE" => "cdf inspect resources",
+        "RUN" => "cdf run",
+        "SQL" => "cdf sql",
+        "STATE" => "cdf state show",
+        "STATUS" => "cdf status",
+        _ => "cdf help",
+    }
+}
+
+fn markdown_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', " ")
 }
 
 fn generate_completions(out_dir: &Path) -> Result<(), CliError> {
@@ -184,6 +308,14 @@ fn read_tree(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, CliError> {
     Ok(files)
 }
 
+fn read_reference_tree(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, CliError> {
+    let mut files = BTreeMap::new();
+    for child in [COMMAND_DOCS_DIR, ERROR_DOCS_DIR] {
+        read_tree_inner(root, &root.join(child), &mut files)?;
+    }
+    Ok(files)
+}
+
 fn read_tree_inner(
     root: &Path,
     path: &Path,
@@ -240,6 +372,38 @@ fn compare_trees(
             format!(
                 "generated CLI artifacts are stale; run `cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --out-dir {}`:\n{}",
                 default_artifact_dir().display(),
+                drift.join("\n")
+            ),
+            error_catalog::CLI_ARTIFACTS_USAGE,
+        ))
+    }
+}
+
+fn compare_reference_trees(
+    expected: &BTreeMap<PathBuf, Vec<u8>>,
+    actual: &BTreeMap<PathBuf, Vec<u8>>,
+    docs_dir: &Path,
+) -> Result<(), CliError> {
+    let mut drift = Vec::new();
+    for path in expected.keys() {
+        match actual.get(path) {
+            Some(bytes) if bytes == &expected[path] => {}
+            Some(_) => drift.push(format!("stale {}", path.display())),
+            None => drift.push(format!("missing {}", path.display())),
+        }
+    }
+    for path in actual.keys() {
+        if !expected.contains_key(path) {
+            drift.push(format!("extra {}", path.display()));
+        }
+    }
+    if drift.is_empty() {
+        Ok(())
+    } else {
+        Err(CliError::usage_with(
+            format!(
+                "generated command and error reference is stale; run `cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir {} --docs-only`:\n{}",
+                docs_dir.display(),
                 drift.join("\n")
             ),
             error_catalog::CLI_ARTIFACTS_USAGE,
