@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
 Depends-On: .10x/tickets/2026-07-10-p3-ws-l1-catalog-report-schema.md, .10x/tickets/2026-07-10-p3-ws-l2-phase-telemetry.md
 
@@ -18,6 +18,8 @@ Build the repeatable macro runner with warm/cold modes and median-of-N sampling;
 - Timeouts, unavailable tools, changed host fingerprints, and failed cells are reported, never omitted.
 - Median and dispersion are derived from raw samples retained in the report.
 - Profiling wrappers record exact command/tool versions and place artifacts under ignored output paths.
+- Macro cases run with process isolation where required for RSS/CPU/timeout observation; Criterion remains limited to microkernels.
+- Every workload records setup inclusion/exclusion and non-ambiguous logical/physical byte counters.
 
 ## Evidence expectations
 

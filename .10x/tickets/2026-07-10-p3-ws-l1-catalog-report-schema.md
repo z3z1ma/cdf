@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
 Depends-On: .10x/specs/performance-lab-and-envelope.md
 
@@ -17,6 +17,7 @@ Extend `cdf-benchmarks` with regeneration-grade dataset specifications for TLC, 
 - Result schema represents wall time, CPU time where available, rows, logical/physical bytes, throughput, peak RSS, spill, phase metrics, sample distribution, median/dispersion, roofline/reference identity, and bias labels.
 - Schema versioning and deterministic serialization tests fail closed on malformed or incomparable records.
 - Existing smoke/full/postgres benchmark cases remain loadable or migrate through an explicit compatibility test.
+- Dataset recipes, workload timed-region policies, and observations are separate typed records; large generators are bounded and streaming.
 
 ## Evidence expectations
 
@@ -28,4 +29,4 @@ No new runtime telemetry, benchmark execution, reference runners, CI thresholds,
 
 ## Blockers
 
-None after P1 closure.
+None.

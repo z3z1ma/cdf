@@ -1,6 +1,6 @@
 Status: active
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 
 # Performance lab and terabyte-scale envelope
 
@@ -22,6 +22,8 @@ The catalog MUST include:
 
 Every catalog entry MUST record logical rows, encoded bytes where known, schema, generator/source version, seed or immutable content identity, and licensing/provenance.
 
+Dataset recipes and workloads MUST be distinct. A workload MUST name which setup is outside the timed region, which setup is intentionally included, and the exact logical/physical byte counters used for throughput. Large generators MUST stream bounded chunks to a sink/resource and MUST NOT materialize the requested dataset in one collection or byte vector.
+
 ## Measurement protocol
 
 The macro runner MUST record wall time, CPU time where available, rows, logical bytes, physical bytes, peak RSS, spill bytes, and phase durations/bytes. Warm and cold I/O modes MUST be distinct and MUST NOT be averaged together.
@@ -30,13 +32,17 @@ Reference runners MUST include raw arrow-rs readers for applicable formats, raw 
 
 The event spine MUST expose duration and byte facts sufficient to break down decode, validation/normalization, segment encode, persistence/hash, destination write, finalize/receipt, and checkpoint gate. Timing and rendering MUST remain outside deterministic artifact identity.
 
-Criterion microbenchmarks SHOULD isolate validation kernels, hashing, Arrow/foreign interop, encoding, and other repeatable CPU kernels. Macro results MUST NOT be inferred from microbenchmarks alone.
+Criterion microbenchmarks SHOULD isolate validation kernels, hashing, Arrow/foreign interop, encoding, and other repeatable CPU kernels. Macro workloads MUST run in isolated child processes where wall/CPU/RSS/timeout observation requires it; setup and timed regions MUST be explicit. Macro results MUST NOT be inferred from microbenchmarks alone.
+
+Every machine report MUST be schema-versioned and carry a comparability key containing dataset/workload identity, timed-region policy, CDF revision, dependency/reference versions, host class, OS/toolchain, and warm/cold mode. Cell status MUST be one of observed, failed, timed out, unavailable, or inconclusive; non-observed cells MUST remain visible. Host fingerprints MUST omit usernames, hostnames, paths, and stable machine identifiers not required for comparison.
 
 ## Baselines and regressions
 
 Before any P3 runtime or decoder optimization lands, WS-L MUST record the current full baseline on a named host class. Missing scenarios MUST be recorded as failed/unavailable cells, not omitted.
 
 Comparable CI results use median-of-N. A regression greater than 10% against the current baseline for the same host class and mode MUST fail. High variance, changed hardware, changed reference version, or missing cache-state control MUST make the comparison inconclusive rather than green.
+
+Raw samples MUST be retained. Derived reports MUST state the dispersion statistic and sample count. One-shot append-only trend points are not baseline evidence.
 
 Baseline changes require evidence naming the code/dependency/environment change, old and new distributions, and whether the movement is expected. A baseline MUST NOT be reset merely to clear a failure.
 

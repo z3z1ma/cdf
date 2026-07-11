@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md
 Depends-On: .10x/specs/performance-lab-and-envelope.md, .10x/specs/runtime-event-spine.md
 
@@ -28,4 +28,4 @@ No Tokio migration, stage concurrency, memory ledger, or optimization.
 
 ## Blockers
 
-None after P1 closure. Coordinate changes with the existing event-spine schema rather than creating a benchmark-only channel.
+None. Coordinate changes with the existing event-spine schema rather than creating a benchmark-only channel.

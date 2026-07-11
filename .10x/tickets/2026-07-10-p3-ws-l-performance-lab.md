@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
 Depends-On: .10x/specs/performance-lab-and-envelope.md, .10x/tickets/done/2026-07-07-p0-workstream-f-benchmark-gate.md
 
@@ -40,7 +40,8 @@ No runtime, decoder, destination, hashing, parallelism, or memory optimization. 
 
 - 2026-07-10: Opened from P3. Existing P0 benchmark coverage is retained as foundation, not treated as the required P3 baseline.
 - 2026-07-10: Decomposed into L1 catalog/report authority, L2 shared phase telemetry, L3 macro/reference/profile runners, L4 CI/envelope generation, and L5 baseline execution. L1 and L2 are independent; L3-L5 form the integration sequence.
+- 2026-07-11: Current-state audit recorded at `.10x/research/2026-07-11-performance-lab-current-state-audit.md`. Existing tiny Criterion/trend coverage is retained as a compatibility seed but is not P3 baseline evidence. User reprioritization removed the P1-closure blocker; L1/L2 may execute immediately without optimizing the data plane.
 
 ## Blockers
 
-None for shaping. Implementation begins only after P1 closes and bounded WS-L children exist.
+None. L1 and L2 are bounded and eligible to execute immediately.

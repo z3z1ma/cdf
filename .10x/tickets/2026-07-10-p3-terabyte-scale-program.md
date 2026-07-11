@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md, .10x/tickets/done/2026-07-08-p1-product-experience-program.md
+Depends-On: .10x/tickets/done/2026-07-08-p2-data-onramp-program.md
 
 # P3 terabyte scale: the performance architecture
 
@@ -75,7 +75,8 @@ P3 does not implement a distributed scheduler, remote worker leases, resident st
 ## Progress and notes
 
 - 2026-07-10: Opened from the user-ratified P3 directive. The performance target and measurement doctrine are active in `.10x/decisions/terabyte-scale-performance-envelope.md`; the lab contract is active in `.10x/specs/performance-lab-and-envelope.md`. This activation starts no optimization. WS-L remains the only workstream eligible to execute until its baseline evidence exists.
+- 2026-07-11: The user explicitly reprioritized enterprise performance ahead of CI/release stabilization while keeping CLI excellence active. Removed the stale whole-P1 closure dependency. WS-L is eligible immediately; P1 tails may proceed independently but may not optimize or otherwise mutate the pre-baseline P3 data plane.
 
 ## Blockers
 
-P3 implementation is sequenced behind P1 closure and the WS-L baseline. Later workstreams are intentionally blocked until WS-L records the before picture.
+WS-L is unblocked. Later P3 workstreams are intentionally blocked until WS-L records the before picture.
