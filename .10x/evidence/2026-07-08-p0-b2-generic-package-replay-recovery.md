@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-08
 Updated: 2026-07-08
-Relates-To: .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/decisions/project-destination-driver-registry.md
+Relates-To: .10x/tickets/done/2026-07-07-p0-b2-generic-package-replay-recovery.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/decisions/superseded/project-destination-driver-registry.md
 
 # P0 B2 Generic Package Replay and Recovery
 

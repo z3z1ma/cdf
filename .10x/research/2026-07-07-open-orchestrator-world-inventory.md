@@ -76,7 +76,7 @@ Resource constraints:
 
 ## Conclusions
 
-The smallest safe Workstream B shape is a `cdf-project` destination driver registry plus object-safe project destination runtime adapters. The decision is recorded in `.10x/decisions/project-destination-driver-registry.md`.
+The smallest safe Workstream B shape is a `cdf-project` destination driver registry plus object-safe project destination runtime adapters. The historical decision is recorded in `.10x/decisions/superseded/project-destination-driver-registry.md`.
 
 The implementation should split into four child tickets:
 

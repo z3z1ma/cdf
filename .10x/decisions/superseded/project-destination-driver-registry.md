@@ -1,8 +1,10 @@
-Status: active
+Status: superseded
 Created: 2026-07-07
-Updated: 2026-07-07
+Updated: 2026-07-11
 
 # Project Destination Driver Registry
+
+Superseded by `.10x/decisions/destination-runtime-composition-boundary.md`. This record remains the historical authority for the first open-orchestrator migration, but its permission for built-in concrete drivers inside `cdf-project` is no longer active.
 
 ## Context
 

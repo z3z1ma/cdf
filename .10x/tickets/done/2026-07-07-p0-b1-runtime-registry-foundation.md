@@ -2,7 +2,7 @@ Status: done
 Created: 2026-07-07
 Updated: 2026-07-07
 Parent: .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md
-Depends-On: .10x/decisions/project-destination-driver-registry.md
+Depends-On: .10x/decisions/superseded/project-destination-driver-registry.md
 
 # P0 B1: Runtime registry foundation and module split
 
@@ -13,7 +13,7 @@ Create the `cdf-project` runtime foundation required by Workstream B without cha
 Owns:
 
 - splitting `crates/cdf-project/src/runtime.rs` into focused runtime modules;
-- adding the project-level destination driver/runtime adapter traits ratified in `.10x/decisions/project-destination-driver-registry.md`;
+- adding the project-level destination driver/runtime adapter traits ratified historically in `.10x/decisions/superseded/project-destination-driver-registry.md`;
 - adding shared runtime stage/failpoint hook types;
 - preserving the current public API temporarily while downstream children migrate callers.
 

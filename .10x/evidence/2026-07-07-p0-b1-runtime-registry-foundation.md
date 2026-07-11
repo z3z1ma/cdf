@@ -1,13 +1,13 @@
 Status: recorded
 Created: 2026-07-07
 Updated: 2026-07-07
-Relates-To: .10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/decisions/project-destination-driver-registry.md
+Relates-To: .10x/tickets/done/2026-07-07-p0-b1-runtime-registry-foundation.md, .10x/tickets/done/2026-07-07-p0-workstream-b-open-orchestrator-world.md, .10x/decisions/superseded/project-destination-driver-registry.md
 
 # P0 B1 Runtime Registry Foundation
 
 ## What was observed
 
-`crates/cdf-project/src/runtime.rs` was split from a monolithic implementation file into a facade over focused runtime modules. Existing public run/replay/recover APIs remain re-exported for downstream B2-B4 migration, while the project destination registry foundation types required by `.10x/decisions/project-destination-driver-registry.md` now exist.
+`crates/cdf-project/src/runtime.rs` was split from a monolithic implementation file into a facade over focused runtime modules. Existing public run/replay/recover APIs remain re-exported for downstream B2-B4 migration, while the project destination registry foundation types required by `.10x/decisions/superseded/project-destination-driver-registry.md` now exist.
 
 Before B1, `crates/cdf-project/src/runtime.rs` had 2,931 lines and owned public runtime DTOs, run orchestration, validation, state-delta/artifact construction, ledger event recording, replay/recovery, failpoints, receipt validation, and destination-specific helper code in one module.
 

@@ -1,8 +1,8 @@
 Status: open
 Created: 2026-07-10
-Updated: 2026-07-10
+Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-terabyte-scale-program.md
-Depends-On: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/2026-07-07-native-parquet-streaming-write-triage.md
+Depends-On: .10x/tickets/2026-07-10-p3-ws-l-performance-lab.md, .10x/tickets/2026-07-11-p0-destination-extension-boundary.md, .10x/tickets/2026-07-07-duckdb-arrow-bulk-load-triage.md, .10x/tickets/2026-07-07-native-parquet-streaming-write-triage.md
 
 # P3 WS-D: destination bulk paths
 
