@@ -7,6 +7,16 @@ use std::{
     },
 };
 
+use crate::{
+    DiscoveredParquetSchemaSnapshot, DiscoveryBoundedIdentity, DiscoveryCandidateEvidence,
+    DiscoveryCoverageMode, DiscoveryExecutorBudget, DiscoveryIdentityStrength,
+    DiscoveryManifestArtifact, DiscoveryManifestInput, DiscoveryManifestStore,
+    DiscoveryMetadataScope, DiscoveryMetadataVariance, DiscoveryParticipation,
+    DiscoverySchemaVerdict, DiscoverySchemaVerdictKind, DiscoverySelectorCandidate,
+    SCHEMA_DISCOVERY_FORMAT_ARROW_IPC, SCHEMA_DISCOVERY_FORMAT_PARQUET,
+    SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA, SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER,
+    SchemaSnapshotArtifact, SchemaSnapshotStore, plan_discovery_selection,
+};
 use cdf_contract::{
     AggregateFileSchemaVerdict, AggregateMetadataVariance, AggregateSchemaCandidate,
     ContractPolicy, IdentifierPolicy, NORMALIZER_NAMECASE_V1, RuleOutcome, SchemaEvolutionMode,
@@ -15,8 +25,9 @@ use cdf_contract::{
 use cdf_declarative::{
     CompiledResource, CompiledResourcePlan, FileCompression, FileFormatDeclaration,
     FileRuntimeDependencies, FileTransportLocation, FileTransportResource,
-    discover_local_arrow_ipc_schema_bounded, discover_local_parquet_schema_bounded,
-    discover_local_row_schema_bounded, discover_rest_sample_schema,
+    POSTGRES_CATALOG_DISCOVERY_PROBE, discover_local_arrow_ipc_schema_bounded,
+    discover_local_parquet_schema_bounded, discover_local_row_schema_bounded,
+    discover_postgres_table_catalog_schema, discover_rest_sample_schema,
     discover_transport_parquet_schema_bounded, discover_transport_row_schema_bounded,
     local_file_discovery_candidates, physical_arrow_schema_hash,
     postgres_table_target_for_sql_plan,
@@ -33,20 +44,6 @@ use cdf_kernel::{
 use cdf_memory::{
     BudgetTag, ConsumerKey, DeterministicMemoryCoordinator, MemoryClass, MemoryCoordinator,
     ReservationRequest,
-};
-use cdf_source_postgres::{
-    POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema,
-};
-
-use crate::{
-    DiscoveredParquetSchemaSnapshot, DiscoveryBoundedIdentity, DiscoveryCandidateEvidence,
-    DiscoveryCoverageMode, DiscoveryExecutorBudget, DiscoveryIdentityStrength,
-    DiscoveryManifestArtifact, DiscoveryManifestInput, DiscoveryManifestStore,
-    DiscoveryMetadataScope, DiscoveryMetadataVariance, DiscoveryParticipation,
-    DiscoverySchemaVerdict, DiscoverySchemaVerdictKind, DiscoverySelectorCandidate,
-    SCHEMA_DISCOVERY_FORMAT_ARROW_IPC, SCHEMA_DISCOVERY_FORMAT_PARQUET,
-    SCHEMA_DISCOVERY_PROBE_ARROW_IPC_FILE_SCHEMA, SCHEMA_DISCOVERY_PROBE_PARQUET_FOOTER,
-    SchemaSnapshotArtifact, SchemaSnapshotStore, plan_discovery_selection,
 };
 
 const NDJSON_DISCOVERY_MAX_RECORDS: usize = 4_096;

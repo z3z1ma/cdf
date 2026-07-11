@@ -15,6 +15,9 @@ pub use cdf_source_files::{
     FileRuntimeDependencies, FileTransportFacade, LocalFileDiscoveryCandidate,
     local_file_discovery_candidates,
 };
+pub use cdf_source_postgres::{
+    POSTGRES_CATALOG_DISCOVERY_PROBE, discover_postgres_table_catalog_schema,
+};
 pub use cdf_source_rest::{RestResource, RestResourcePlan, RestRuntimeDependencies};
 pub use compiled::{
     BoundedLocalParquetSchemaProbe, BoundedTransportJsonSchemaProbe, CompiledResource,

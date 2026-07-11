@@ -1031,7 +1031,6 @@ dependencies = [
  "cdf-memory",
  "cdf-package",
  "cdf-runtime",
- "cdf-source-postgres",
  "cdf-state-sqlite",
  "flate2",
  "futures-executor",
