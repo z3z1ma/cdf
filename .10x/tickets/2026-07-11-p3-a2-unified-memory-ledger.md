@@ -30,7 +30,13 @@ No full Tokio operator pipeline, production dedup spill, adaptive batch controll
 
 ## Blockers
 
-Depends on L5 headroom measurements and DX1 neutral runtime.
+None. L5 baseline/headroom evidence and DX1 are complete.
+
+## Progress and notes
+
+- 2026-07-11: Created the implementation-neutral `cdf-memory` crate with typed consumers/classes/sub-caps, shared RAII leases, accounted Arrow/byte envelopes, weighted async admission, deterministic coordinator, JSON-reportable current/peak/wait/flush/spill telemetry, and process/headroom/managed budget resolution.
+- 2026-07-11: Focused conformance covers clone/drop/error reconciliation, weighted sub-cap wakeup, oversized minimum-working-set rejection, budget safety, report serialization, and a static no-DataFusion/Tokio/project/engine/destination/runtime dependency law.
+- 2026-07-11: Ratified calibrated `native-headroom-v1` in `.10x/decisions/runtime-native-headroom-policy-v1.md`. The ticket remains active for the DataFusion adapter, source working-set bridge, discovery migration, and external extension conformance.
 
 ## References
 

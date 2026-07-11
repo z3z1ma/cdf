@@ -959,6 +959,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cdf-memory"
+version = "0.1.0"
+dependencies = [
+ "arrow-array 59.1.0",
+ "cdf-kernel",
+ "futures-executor",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cdf-package"
 version = "0.1.0"
 dependencies = [
