@@ -41,6 +41,8 @@ The sheet/runtime description MUST distinguish:
 
 These declarations are plan evidence. Generic runtime scheduling MUST join them with source/executor/memory capabilities without matching destination names.
 
+Bulk path schema eligibility, bounded batch input, fallback/restart, tuning, and physical evidence MUST follow `.10x/specs/destination-bulk-path-runtime.md`. A sheet's bulk declaration is executable conformance authority, not an informational string.
+
 ## Conformance law
 
 The conformance catalog entry supplies only fixture/environment construction and declared exclusions. Shared conformance discovers the runtime description and runs every applicable law. A new destination MUST NOT require edits to generic assertion, replay, crash, correction, or jobs-invariance logic.

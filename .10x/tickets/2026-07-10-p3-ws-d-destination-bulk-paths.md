@@ -12,6 +12,14 @@ Implement Arrow-native DuckDB append with truthful type fallback, Arrow-to-binar
 
 Split by destination; no shared generic branch may name a concrete destination.
 
+## Activated children
+
+- `.10x/tickets/2026-07-11-p3-d1-bulk-path-contract.md`
+- `.10x/tickets/2026-07-11-p3-d2-duckdb-arrow-bulk.md`
+- `.10x/tickets/2026-07-11-p3-d3-postgres-binary-copy.md`
+- `.10x/tickets/2026-07-11-p3-d4-parquet-streaming-writer.md`
+- `.10x/tickets/2026-07-11-p3-d5-bulk-path-matrix.md`
+
 ## Acceptance criteria
 
 - DuckDB, Postgres, and Parquet meet their ratified envelope rows with before/after evidence.
@@ -20,4 +28,9 @@ Split by destination; no shared generic branch may name a concrete destination.
 
 ## Blockers
 
-Blocked until WS-L baseline evidence exists; streaming Parquet integration also depends on the WS-A session shape.
+Blocked until WS-L baseline evidence exists. D1 also depends on the neutral destination runtime, staged ingress, and A5 bounded segment reader; driver implementations follow D1.
+
+## References
+
+- `.10x/decisions/schema-planned-destination-bulk-paths.md`
+- `.10x/specs/destination-bulk-path-runtime.md`
