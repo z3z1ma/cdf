@@ -48,11 +48,15 @@ pub(crate) fn contract(cli: &Cli, command: ContractCommand) -> Result<CommandOut
 
 fn freeze(cli: &Cli, selector: Option<String>) -> Result<CommandOutput, CliError> {
     let context = ProjectContext::load(cli.project.as_ref(), cli.env.as_deref())?;
+    let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+        &context,
+        &context.environment.destination,
+    )?;
     let (lock, report) = freeze_contract_snapshots(
         &context.config,
         &context.resources,
         context.lock.as_ref(),
-        &context.environment.destination,
+        &destination_artifacts,
         selector.as_deref(),
     )?;
     let encoded = lock_to_toml(&lock)?;

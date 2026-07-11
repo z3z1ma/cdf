@@ -35,6 +35,16 @@ impl<'a> DestinationResolutionContext<'a> {
         }
     }
 
+    pub fn for_project_inspection(project_root: &'a Path) -> Self {
+        Self {
+            project_root: Some(project_root),
+            target: None,
+            environment_name: None,
+            destination_policy: None,
+            secret_provider: None,
+        }
+    }
+
     pub fn with_environment_name(mut self, environment_name: &'a str) -> Self {
         self.environment_name = Some(environment_name);
         self

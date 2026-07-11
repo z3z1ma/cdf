@@ -2,7 +2,7 @@ use crate::internal::*;
 use crate::*;
 use cdf_contract::{ContractPolicy, ObservedSchema, compile_resource_validation_program};
 use cdf_kernel::{
-    DestinationProtocol, DestinationProtocolCapabilities, DestinationSheetArtifact, ResourceStream,
+    DestinationProtocolCapabilities, DestinationSheetArtifact, ResourceStream,
     SchemaSnapshotReference,
 };
 
@@ -491,7 +491,7 @@ pub fn freeze_contract_snapshots(
     config: &ProjectConfig,
     resources: &[CompiledResource],
     existing_lock: Option<&CdfLock>,
-    destination_uri: &str,
+    destination_artifacts: &[DestinationSheetArtifact],
     selector: Option<&str>,
 ) -> Result<(CdfLock, ContractFreezeReport)> {
     let snapshots = contract_snapshots_for_resources(resources, selector)?;
@@ -501,7 +501,7 @@ pub fn freeze_contract_snapshots(
             config,
             resources,
             current_dependency_tuple(),
-            &destination_sheet_artifacts_for_uri(destination_uri)?,
+            destination_artifacts,
             snapshots.clone(),
         )?,
     };
@@ -553,7 +553,7 @@ pub fn pin_schema_snapshot_in_project_lockfile(
     config: &ProjectConfig,
     resources: &[CompiledResource],
     existing_lock: Option<&CdfLock>,
-    destination_uri: &str,
+    destination_artifacts: &[DestinationSheetArtifact],
     pinned_resource: &CompiledResource,
 ) -> Result<CdfLock> {
     if let Some(lock) = existing_lock {
@@ -582,7 +582,7 @@ pub fn pin_schema_snapshot_in_project_lockfile(
         config,
         &resources,
         current_dependency_tuple(),
-        &destination_sheet_artifacts_for_uri(destination_uri)?,
+        destination_artifacts,
         BTreeMap::new(),
     )
 }
@@ -704,32 +704,6 @@ fn locked_resource_from_current(
         capability_sheet_hash: semantic_hash(resource.capabilities())?,
         contract: Some(contract),
     })
-}
-
-fn destination_sheet_artifacts_for_uri(uri: &str) -> Result<Vec<DestinationSheetArtifact>> {
-    if let Some(path) = uri.strip_prefix("duckdb://") {
-        if path.trim().is_empty() {
-            return Err(CdfError::contract(
-                "duckdb:// destination path cannot be empty",
-            ));
-        }
-        return Ok(vec![
-            cdf_dest_duckdb::DuckDbDestination::new(path)?.sheet_artifact()?,
-        ]);
-    }
-    if uri.strip_prefix("parquet://").is_some() {
-        return Ok(vec![
-            cdf_dest_parquet::ParquetDestination::destination_sheet_artifact()?,
-        ]);
-    }
-    if uri.starts_with("postgres://") {
-        return Ok(vec![
-            cdf_dest_postgres::PostgresDestination::new().sheet_artifact()?,
-        ]);
-    }
-    Err(CdfError::contract(
-        "destination URI is unsupported for lockfile generation; expected duckdb://, parquet://, or postgres://",
-    ))
 }
 
 fn contract_snapshot_drift(

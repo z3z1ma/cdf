@@ -3281,7 +3281,7 @@ fn contract_freeze_preserves_existing_dependency_and_destination_data() {
         &config,
         &resources,
         Some(&existing),
-        "duckdb://ignored-by-existing-lock",
+        &[],
         Some("github.issues"),
     )
     .unwrap();
@@ -3312,9 +3312,13 @@ fn contract_test_reports_field_level_snapshot_drift() {
     let resolver =
         InMemoryResourceSourceResolver::new().with_toml("resources/github.toml", GITHUB_RESOURCE);
     let resources = compile_project_declarative_resources(&config, &resolver).unwrap();
+    let artifact = cdf_kernel::DestinationSheetArtifact::new(
+        destination_sheet("duckdb", TypeMappingFidelity::Lossless),
+        cdf_kernel::DestinationProtocolCapabilities::default(),
+    )
+    .unwrap();
     let (lock, _) =
-        freeze_contract_snapshots(&config, &resources, None, "duckdb://.cdf/dev.duckdb", None)
-            .unwrap();
+        freeze_contract_snapshots(&config, &resources, None, &[artifact], None).unwrap();
     let changed_resource = GITHUB_RESOURCE.replace(
         "  { name = \"updated_at\", type = \"timestamp_micros\", nullable = false, timezone = \"UTC\" },",
         concat!(

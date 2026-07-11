@@ -219,11 +219,15 @@ fn write_add_artifacts(
     let mut resources = context.resources.clone();
     resources.push(pinned_resource.clone());
     let updated_config = parse_cdf_toml(&proposed.project_toml)?;
+    let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+        context,
+        &context.environment.destination,
+    )?;
     let (lock, _) = freeze_contract_snapshots(
         &updated_config,
         &resources,
         context.lock.as_ref(),
-        &context.environment.destination,
+        &destination_artifacts,
         Some(request.resource_id.as_str()),
     )?;
     let lock_toml = lock_to_toml(&lock)?;

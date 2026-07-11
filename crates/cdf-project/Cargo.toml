@@ -12,8 +12,6 @@ arrow-cast = "59.1.0"
 arrow-schema = "59.1.0"
 cdf-contract = { path = "../cdf-contract" }
 cdf-declarative = { path = "../cdf-declarative" }
-cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
-cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 cdf-dest-postgres = { path = "../cdf-dest-postgres" }
 cdf-engine = { path = "../cdf-engine" }
 cdf-http = { path = "../cdf-http" }
@@ -31,6 +29,8 @@ tracing = "0.1.44"
 [dev-dependencies]
 arrow-array = "59.1.0"
 arrow-ipc = "59.1.0"
+cdf-dest-duckdb = { path = "../cdf-dest-duckdb" }
+cdf-dest-parquet = { path = "../cdf-dest-parquet" }
 futures-executor = "0.3.32"
 flate2 = "1.1.9"
 object_store = "0.13.2"

@@ -211,11 +211,15 @@ pub(crate) fn prepare_discover_resource_for_cli(
     let (snapshot_written, lockfile_written) = if no_pin {
         (false, false)
     } else {
+        let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+            context,
+            &context.environment.destination,
+        )?;
         let updated_lock = cdf_project::pin_schema_snapshot_in_project_lockfile(
             &context.config,
             &context.resources,
             context.lock.as_ref(),
-            &context.environment.destination,
+            &destination_artifacts,
             &prepared_resource,
         )?;
         let encoded = cdf_project::lock_to_toml(&updated_lock)?;

@@ -409,11 +409,15 @@ fn update_lockfile(
     context: &ProjectContext,
     pinned_resource: &CompiledResource,
 ) -> Result<SchemaLockfileWrite, CliError> {
+    let destination_artifacts = crate::destination_registry::inspect_destination_artifacts(
+        context,
+        &context.environment.destination,
+    )?;
     let updated = pin_schema_snapshot_in_project_lockfile(
         &context.config,
         &context.resources,
         context.lock.as_ref(),
-        &context.environment.destination,
+        &destination_artifacts,
         pinned_resource,
     )?;
     let encoded = lock_to_toml(&updated)?;
