@@ -75,6 +75,17 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     let project = DemoProject::new(temp.path()).unwrap();
     project.write_files().unwrap();
 
+    let plan_human = invoke_human(
+        project.root(),
+        [
+            "plan",
+            RESOURCE_ID,
+            "--target",
+            TARGET,
+            "--package-id",
+            PACKAGE_ID,
+        ],
+    );
     let plan_json = invoke_json(
         project.root(),
         [
@@ -102,6 +113,7 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert_eq!(freeze_json["result"]["counts"]["frozen"], 1);
     let contract_test_json = invoke_json(project.root(), ["contract", "test", RESOURCE_ID]);
     assert_eq!(contract_test_json["result"]["counts"]["passed"], 1);
+    let contract_human = invoke_human(project.root(), ["contract", "test", RESOURCE_ID]);
 
     let (resource, transport) = github_issues_resource().unwrap();
     let destination = ResolvedProjectDestination::duckdb(
@@ -199,6 +211,13 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     );
     assert_eq!(sql_json["command"], "sql");
     assert_eq!(sql_json["result"]["rows"].as_array().unwrap().len(), 1);
+    let sql_human = invoke_human(
+        project.root(),
+        [
+            "sql",
+            "select package_id, status from packages order by package_id",
+        ],
+    );
 
     let history_json = invoke_json(
         project.root(),
@@ -215,6 +234,17 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert_eq!(history.len(), 1);
     assert_eq!(history[0]["status"], "committed");
     assert_eq!(history[0]["delta"]["checkpoint_id"], CHECKPOINT_ID);
+    let history_human = invoke_human(
+        project.root(),
+        [
+            "state",
+            "history",
+            "--pipeline",
+            PIPELINE_ID,
+            "--resource",
+            RESOURCE_ID,
+        ],
+    );
 
     let head = SqliteCheckpointStore::open(project.state_store_path())
         .unwrap()
@@ -272,6 +302,25 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert_eq!(replay_json["result"]["checkpoint"]["status"], "committed");
     let replay_rows = duckdb_row_count(&replay_project.destination_path(), TARGET).unwrap();
     assert_eq!(replay_rows, 2);
+
+    let human_replay_project = DemoProject::new(temp.path().join("human-replay-project"))
+        .unwrap()
+        .with_destination(temp.path().join("human-replay.duckdb"));
+    human_replay_project.write_files().unwrap();
+    let human_replay_to = format!(
+        "duckdb://{}",
+        human_replay_project.destination_path().display()
+    );
+    let replay_human = invoke_human(
+        human_replay_project.root(),
+        [
+            "replay",
+            "package",
+            &package_dir.display().to_string(),
+            "--to",
+            &human_replay_to,
+        ],
+    );
 
     let duplicate_store =
         SqliteCheckpointStore::open(temp.path().join("duplicate-state.sqlite")).unwrap();
@@ -374,6 +423,25 @@ fn mvp_acceptance_demo_fixture_proves_rest_duckdb_recovery_replay_and_drift() {
     assert!(!rendered.contains(SECRET_VALUE));
     assert!(!rendered.contains(temp.path().to_str().unwrap()));
     assert!(rendered.contains("Bearer <redacted>"));
+
+    let transcript = format!(
+        "$ cdf plan {RESOURCE_ID} --target {TARGET} --package-id {PACKAGE_ID}\n{plan_human}\n\
+         $ cdf contract test {RESOURCE_ID}\n{contract_human}\n\
+         # simulated kill after destination receipt verification and before checkpoint commit\n\
+         $ cdf resume {RUN_ID}\n{}\n\
+         $ cdf sql 'select package_id, status from packages order by package_id'\n{sql_human}\n\
+         $ cdf state history --pipeline {PIPELINE_ID} --resource {RESOURCE_ID}\n{history_human}\n\
+         $ cdf replay package <package> --to duckdb://<replay>\n{replay_human}\n\
+         # duplicate replay: true; destination footprint unchanged\n\
+         # drift verdict: accepted_rows=1 quarantined_rows=1 receipt_verified=true checkpoint_gated=true\n",
+        serde_json::to_string_pretty(&resume_json).unwrap()
+    )
+    .replace(temp.path().to_str().unwrap(), "<project>");
+    assert!(!transcript.contains(SECRET_VALUE));
+    assert!(!transcript.contains(temp.path().to_str().unwrap()));
+    if let Ok(path) = std::env::var("CDF_DEMO_TRANSCRIPT_OUTPUT") {
+        std::fs::write(path, transcript).unwrap();
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -583,6 +651,30 @@ where
         result.stdout, result.stderr
     );
     serde_json::from_str(&result.stdout).unwrap()
+}
+
+fn invoke_human<'a, I>(project_root: &Path, args: I) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut argv = vec![
+        OsString::from("cdf"),
+        OsString::from("--project"),
+        project_root.as_os_str().to_os_string(),
+    ];
+    argv.extend(args.into_iter().map(OsString::from));
+    let result = cdf_cli::invoke(argv);
+    assert_eq!(
+        result.exit_code, 0,
+        "stdout:\n{}\nstderr:\n{}",
+        result.stdout, result.stderr
+    );
+    assert!(
+        result.stderr.is_empty(),
+        "unexpected stderr: {}",
+        result.stderr
+    );
+    result.stdout
 }
 
 const GITHUB_ISSUES_TOML: &str = r#"

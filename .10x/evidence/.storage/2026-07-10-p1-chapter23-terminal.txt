@@ -1,0 +1,220 @@
+$ cdf plan github.issues --target github_issues --package-id mvp-acceptance-demo-github-issues
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ plan github.issues -> github_issues
+
+Fetch
+  project      mvp_acceptance_demo
+  environment  dev
+  package      mvp-acceptance-demo-github-issues
+  partitions   1
+  projection   all fields
+  filters      none
+  limit        none
+
+Pushdown
+  pushed       0
+  inexact      0
+  unsupported  0
+  projection   no
+  limit        no
+
+Destination
+  destination  duckdb
+  target       github_issues
+  label        <project>/.cdf/demo.duckdb
+  schemes      duckdb
+  disposition  append
+  idempotency  package_token
+
+Guarantee
+  guarantee  effectively_once_per_package
+  qualifier  per_package
+  basis      at-least-once extraction plus append with package-token idempotency gives effectively-once per package
+
+Contract
+  schema           sha256:f56aab5620fa7b030754213b7cb2d90311a158631d75fca3c20be0d2e995d3e2
+  normalizer       namecase-v1
+  schema source    declared
+  schema snapshot  none
+  fields           7
+  state scope      {"kind":"resource"}
+  cursor           updated_at
+  advances after   destination receipt is recorded and CheckpointStore::commit verifies coverage
+
+Migration
+  supported  yes
+  support    supported
+  items      1
+  target     github_issues
+
+┌────────────────┬─────────────────────────────────────────────────────────────┐
+│ migration      │ description                                                 │
+├────────────────┼─────────────────────────────────────────────────────────────┤
+│ duckdb-ddl-001 │ CREATE TABLE "github_issues" ("id" BIGINT NOT NULL, "numbe… │
+└────────────────┴─────────────────────────────────────────────────────────────┘
+
+→ cdf run github.issues --target github_issues
+
+$ cdf contract test github.issues
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ contract test: 1 passed, 0 drifted
+
+Contract registry
+  registry   cdf.lock
+  resources  1
+  passed     1
+  drifted    0
+  missing    0
+
+┌───────────────┬─────────┬──────────────┐
+│ resource      │ verdict │ drift fields │
+├───────────────┼─────────┼──────────────┤
+│ github.issues │ pass    │ none         │
+└───────────────┴─────────┴──────────────┘
+
+→ cdf plan
+
+# simulated kill after destination receipt verification and before checkpoint commit
+$ cdf resume run-mvp-acceptance-demo-crash
+{
+  "ok": true,
+  "command": "resume",
+  "result": {
+    "command": "resume",
+    "run_id": "run-mvp-acceptance-demo-crash",
+    "state": "receipt_recorded_without_checkpoint_commit",
+    "action": "verify_receipt_then_commit_checkpoint",
+    "source_contact": false,
+    "mutation_required": true,
+    "mutated": true,
+    "package": {
+      "path": "<project>/.cdf/packages/mvp-acceptance-demo-github-issues",
+      "package_id": "mvp-acceptance-demo-github-issues",
+      "package_hash": "sha256:93725e1ebd13c4bac4ece9c558577223da8b15405b5b0fa37d5cad6dc126b2c7",
+      "status": "checkpointed",
+      "receipt_count": 1
+    },
+    "checkpoint": {
+      "checkpoint_id": "checkpoint-mvp-acceptance-demo-github-issues",
+      "status": "committed",
+      "committed": true,
+      "is_head": true
+    },
+    "receipt": {
+      "receipt_id": "duckdb:github_issues:sha256:93725e1ebd13c4bac4ece9c558577223da8b15405b5b0fa37d5cad6dc126b2c7",
+      "destination_id": "duckdb",
+      "target": "github_issues",
+      "package_hash": "sha256:93725e1ebd13c4bac4ece9c558577223da8b15405b5b0fa37d5cad6dc126b2c7",
+      "source": "supplied_durable_receipt"
+    },
+    "destination": {
+      "kind": "duckdb",
+      "uri": "duckdb://<project>/.cdf/demo.duckdb"
+    },
+    "recovery": {
+      "result": "success",
+      "guidance": "verified durable receipt and committed checkpoint without contacting the source"
+    },
+    "ledger_event_count_before": 10,
+    "ledger_event_count_after": 13
+  }
+}
+$ cdf sql 'select package_id, status from packages order by package_id'
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ sql returned 1 row(s) from local system history
+
+System SQL
+  tables   6
+  columns  2
+  rows     1
+
+┌───────────────────────────────────┬──────────────┐
+│ package_id                        │ status       │
+├───────────────────────────────────┼──────────────┤
+│ mvp-acceptance-demo-github-issues │ checkpointed │
+└───────────────────────────────────┴──────────────┘
+
+→ cdf sql "select * from packages limit 5"
+
+$ cdf state history --pipeline pipeline-mvp-acceptance-demo --resource github.issues
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ 1 checkpoint(s)
+
+Scope
+  pipeline  pipeline-mvp-acceptance-demo
+  resource  github.issues
+  scope     {"kind":"resource"}
+
+History
+  checkpoints  1
+  oldest       checkpoint-mvp-acceptance-demo-github-issues
+  newest       checkpoint-mvp-acceptance-demo-github-issues
+  head         checkpoint-mvp-acceptance-demo-github-issues
+
+┌───────────────────┬───────────┬──────┬───────────────────┬───────────────────┐
+│ checkpoint        │ status    │ head │ package           │ receipt           │
+├───────────────────┼───────────┼──────┼───────────────────┼───────────────────┤
+│ checkpoint-mvp-a… │ committed │ yes  │ sha256:93725e1eb… │ duckdb:github_is… │
+└───────────────────┴───────────┴──────┴───────────────────┴───────────────────┘
+
+→ cdf state show github.issues --pipeline pipeline-mvp-acceptance-demo
+
+$ cdf replay package <package> --to duckdb://<replay>
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ commit progress
+
+Run progress
+  phase    commit
+  events   8
+  dropped  0
+
+┌─────┬─────────┬───────────┬─────────────────────────┬────────────────────────┐
+│ seq │ phase   │ status    │ event                   │ details                │
+├─────┼─────────┼───────────┼─────────────────────────┼────────────────────────┤
+│ 1   │ package │ running   │ package finalized       │ run=run-309cddf8cb8f5… │
+│ 2   │ gate    │ running   │ checkpoint proposed     │ run=run-309cddf8cb8f5… │
+│ 3   │ commit  │ running   │ destination commit sta… │ run=run-309cddf8cb8f5… │
+│ 4   │ commit  │ running   │ destination segment ac… │ run=run-309cddf8cb8f5… │
+│ 5   │ verify  │ running   │ destination receipt re… │ run=run-309cddf8cb8f5… │
+│ 6   │ gate    │ running   │ checkpoint committed    │ run=run-309cddf8cb8f5… │
+│ 7   │ gate    │ running   │ package status updated  │ run=run-309cddf8cb8f5… │
+│ 8   │ commit  │ succeeded │ replay recorded         │ run=run-309cddf8cb8f5… │
+└─────┴─────────┴───────────┴─────────────────────────┴────────────────────────┘
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+✓ replay package mvp-acceptance-demo-github-issues completed
+
+Replay
+  run      run-309cddf8cb8f5628232ad35d085676e9
+  package  mvp-acceptance-demo-github-issues
+  status   checkpointed
+  hash     sha256:93725e1ebd13c4bac4ece9c558577223da8b15405b5b0fa37d5cad6dc126b2c7
+  dir      <project>/.cdf/packages/mvp-acceptance-demo-github-issues
+
+Destination
+  destination  duckdb <project>/human-replay.duckdb target github_issues
+  target       github_issues
+
+Duplicate
+  source     duck_db_commit duplicate=false no_op=false
+  duplicate  no
+  no-op      no
+
+Receipt
+  receipt      duckdb:github_issues:sha256:93725e1ebd13c4bac4ece9c558577223da8b15405b5b0fa37d5cad6dc126b2c7
+  destination  duckdb
+  target       github_issues
+  rows         2
+  segments     1
+
+Checkpoint
+  checkpoint       checkpoint-mvp-acceptance-demo-github-issues
+  status           committed
+  committed        yes
+  head             yes
+  ledger terminal  replay_recorded
+
+→ cdf inspect run run-309cddf8cb8f5628232ad35d085676e9
+
+# duplicate replay: true; destination footprint unchanged
+# drift verdict: accepted_rows=1 quarantined_rows=1 receipt_verified=true checkpoint_gated=true
