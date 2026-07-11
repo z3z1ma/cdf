@@ -1,6 +1,6 @@
 Status: open
 Created: 2026-07-08
-Updated: 2026-07-08
+Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
 Depends-On: .10x/tickets/done/2026-07-07-p0-structural-debt-program.md
 
@@ -42,12 +42,13 @@ This parent is a plan and orchestration record. Workstream tickets own the major
 - `.10x/tickets/done/2026-07-08-p1-product-ws6-docs-onboarding.md`
 - `.10x/tickets/done/2026-07-08-p1-product-ws7-python-front-door.md`
 - `.10x/tickets/2026-07-08-p1-product-ws8-release-engineering.md`
+- `.10x/tickets/2026-07-11-p1-ws9-cli-experience-excellence.md`
 
 ## Sequencing
 
 WS1 runs first because live progress and the observability bridge depend on the run event spine.
 
-WS2 and WS3 may proceed in parallel after this program is opened. WS4 lands with WS3's rollout. WS5 depends on WS1 and WS3. WS6, WS7, and WS8 may start immediately, with their generated-reference and CI-artifact closure criteria depending on the grammar, error catalog, and release pipeline slices they consume.
+WS2 and WS3 may proceed in parallel after this program is opened. WS4 lands with WS3's rollout. WS5 depends on WS1 and WS3. WS6, WS7, and WS8 may start immediately, with their generated-reference and CI-artifact closure criteria depending on the grammar, error catalog, and release pipeline slices they consume. WS9 refines the completed renderer/progress foundation after comparative CLI research; its performance closure joins P3 lab telemetry.
 
 Existing non-CLI program lanes may continue, but any CLI-adjacent ticket opened after WS2/WS3 merge MUST adopt the new grammar and rendering path.
 
@@ -84,6 +85,7 @@ No dashboard or GUI. No breaking changes to JSON output. No scheduler semantics.
 - 2026-07-08: WS1B, WS1C, and WS1E closed, giving the runtime event spine durable fanout, lifecycle/payload breadth, and tracing bridge coverage. WS2B, WS2C, and WS2D closed, giving the clap parser foundation, product grammar semantics, and generated completion/man/help artifacts. WS3B, WS3C, WS3D, and WS3E closed, migrating command output to the renderer and adding the raw-output migration gate. WS8B closed, adding the reproducible release artifact workflow.
 - 2026-07-10: The user elevated source/destination extension architecture to a P0 closure invariant. Remaining P1 integration and parent closure reviews use `.10x/knowledge/source-destination-extension-invariant.md`; product convenience cannot bypass the generic registry/trait/capability/conformance boundaries.
 - 2026-07-10: WS7 Python front door closed with aggregate evidence and adversarial review. The initial closed source enum was removed before closure; Python now enters the generic resource trait and the permanent destination matrix.
+- 2026-07-11: Opened WS9 after the user's comparative-quality challenge and source/record audit showed the P1 renderer is centralized but defaults to report-like repetition, heavy framing, incomplete terminal policy, and unbudgeted progress rendering. Governing research, decision, and spec are `.10x/research/2026-07-11-rust-cli-experience-study.md`, `.10x/decisions/cli-progressive-disclosure-terminal-contract.md`, and `.10x/specs/cli-interaction-excellence.md`.
 
 ## Blockers
 
