@@ -9,6 +9,8 @@ Relates-To: .10x/tickets/2026-07-11-p3-a6-spillable-package-dedup.md
 
 Production execution with injected services now routes package dedup key state through a collision-safe external merge index. It spools exact Arrow row-encoding bytes plus canonical ordinals, creates fixed-memory sorted runs, merges with fan-in capped at 32 files, certifies one first/last/fail winner per exact key without retaining skewed groups, externally re-sorts decisions by package row ordinal, and joins those decisions back to canonical batches.
 
+Normalized final-output payloads and per-batch partition/source-position authority now spool alongside the key index through Arrow IPC plus a bounded sequential metadata stream. After uniqueness certification, payload batches stream back one at a time and join the ordinal decision stream before canonical segment assembly. The injected path no longer populates the engine's package-wide `pending_dedup_batches` vector.
+
 Every scratch write grows the shared spill reservation before issuing the write. Owner-only scratch directories contain no source values in path names and are removed by idempotent drop cleanup on success or error. `keep=fail` returns before any decision reaches segment persistence.
 
 ## Procedure
@@ -19,8 +21,8 @@ Every scratch write grows the shared spill reservation before issuing the write.
 
 ## What this supports
 
-Dedup winner/key/decision state no longer requires a package-cardinality hash map on the ordinary injected production path. Uniform, all-identical/skew, all-unique, and collision cases share exact byte equality and bounded group state.
+Dedup payload, winner/key/decision state no longer requires package-sized resident batches or a package-cardinality hash map on the ordinary injected production path. Uniform, all-identical/skew, all-unique, and collision cases share exact byte equality and bounded group state.
 
 ## Limits
 
-Normalized payload batches and inline dropped-row provenance are still retained in resident vectors. A6 remains active until payload spooling, v2 sharded provenance, memory-accounted sort buffers, crossover measurement, and stress evidence land.
+Inline dropped-row provenance is still retained in a resident vector. A6 remains active until v2 sharded provenance, memory-accounted sort buffers, crossover measurement, and stress evidence land.

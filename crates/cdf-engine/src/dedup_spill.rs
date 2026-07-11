@@ -2,18 +2,197 @@ use std::{
     cmp::Ordering,
     collections::BinaryHeap,
     fs::{self, File, OpenOptions},
-    io::{BufReader, BufWriter, ErrorKind, Read, Write},
+    io::{BufRead, BufReader, BufWriter, ErrorKind, Read, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
 
 use cdf_contract::DedupKeepProgram;
-use cdf_kernel::{CdfError, Result};
+use cdf_kernel::{CdfError, Result, SourcePosition};
 use cdf_runtime::{SpillBudgetCoordinator, SpillReservation};
 
 const DEFAULT_SORT_MEMORY_BYTES: usize = 8 * 1024 * 1024;
 const MERGE_FAN_IN: u64 = 32;
 const MAX_KEY_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct PayloadMetadata {
+    partition_ordinal: u32,
+    output_position: Option<SourcePosition>,
+}
+
+pub(crate) struct DedupPayload {
+    pub partition_ordinal: u32,
+    pub output_position: Option<SourcePosition>,
+    pub batch: arrow_array::RecordBatch,
+}
+
+pub(crate) struct DedupPayloadSpool {
+    owner: Arc<ScratchOwner>,
+    reservation: Arc<Mutex<SpillReservation>>,
+    writer: Option<arrow_ipc::writer::StreamWriter<BudgetedFile>>,
+    metadata: BufWriter<BudgetedFile>,
+    schema: Option<arrow_schema::SchemaRef>,
+    pub input_bytes: u64,
+}
+
+pub(crate) struct DedupPayloadReader {
+    _owner: Arc<ScratchOwner>,
+    _reservation: Arc<Mutex<SpillReservation>>,
+    reader: arrow_ipc::reader::StreamReader<BufReader<File>>,
+    metadata: BufReader<File>,
+}
+
+impl DedupPayloadSpool {
+    pub fn create(root: impl AsRef<Path>, budget: Arc<dyn SpillBudgetCoordinator>) -> Result<Self> {
+        let root = root.as_ref().to_path_buf();
+        fs::create_dir(&root).map_err(|error| io_error("create payload scratch", &root, error))?;
+        set_owner_only(&root)?;
+        let owner = Arc::new(ScratchOwner { root: root.clone() });
+        let reservation = Arc::new(Mutex::new(
+            budget.try_reserve(1)?.ok_or_else(|| {
+                CdfError::data(format!(
+                    "dedup payload spill requires scratch bytes but the shared {}-byte spill budget is exhausted",
+                    budget.snapshot().budget_bytes
+                ))
+            })?,
+        ));
+        let metadata = BufWriter::new(BudgetedFile::create(
+            root.join("payload-metadata.jsonl"),
+            Arc::clone(&reservation),
+        )?);
+        Ok(Self {
+            owner,
+            reservation,
+            writer: None,
+            metadata,
+            schema: None,
+            input_bytes: 0,
+        })
+    }
+
+    pub fn push(
+        &mut self,
+        partition_ordinal: u32,
+        output_position: Option<SourcePosition>,
+        batch: &arrow_array::RecordBatch,
+    ) -> Result<()> {
+        if let Some(schema) = &self.schema {
+            if schema.as_ref() != batch.schema().as_ref() {
+                return Err(CdfError::data(
+                    "dedup payload batches must share the compiled output schema",
+                ));
+            }
+        } else {
+            self.schema = Some(batch.schema());
+            self.writer = Some(
+                arrow_ipc::writer::StreamWriter::try_new(
+                    BudgetedFile::create(
+                        self.owner.root.join("payload.arrow"),
+                        Arc::clone(&self.reservation),
+                    )?,
+                    batch.schema().as_ref(),
+                )
+                .map_err(CdfError::from)?,
+            );
+        }
+        self.writer
+            .as_mut()
+            .ok_or_else(|| CdfError::internal("dedup payload writer was not initialized"))?
+            .write(batch)
+            .map_err(CdfError::from)?;
+        let mut metadata = serde_json::to_vec(&PayloadMetadata {
+            partition_ordinal,
+            output_position,
+        })
+        .map_err(|error| {
+            CdfError::internal(format!("serialize dedup payload metadata: {error}"))
+        })?;
+        metadata.push(b'\n');
+        self.metadata
+            .write_all(&metadata)
+            .map_err(|error| CdfError::data(format!("write dedup payload metadata: {error}")))?;
+        self.input_bytes = self
+            .input_bytes
+            .saturating_add(batch.get_array_memory_size() as u64);
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<Option<DedupPayloadReader>> {
+        let Some(mut writer) = self.writer.take() else {
+            return Ok(None);
+        };
+        writer.finish().map_err(CdfError::from)?;
+        drop(writer);
+        self.metadata
+            .flush()
+            .map_err(|error| CdfError::data(format!("flush dedup payload metadata: {error}")))?;
+        Ok(Some(DedupPayloadReader {
+            _owner: Arc::clone(&self.owner),
+            _reservation: Arc::clone(&self.reservation),
+            reader: arrow_ipc::reader::StreamReader::try_new(
+                BufReader::new(
+                    File::open(self.owner.root.join("payload.arrow"))
+                        .map_err(|error| io_error("open dedup payload", &self.owner.root, error))?,
+                ),
+                None,
+            )
+            .map_err(CdfError::from)?,
+            metadata: BufReader::new(
+                File::open(self.owner.root.join("payload-metadata.jsonl")).map_err(|error| {
+                    io_error("open dedup payload metadata", &self.owner.root, error)
+                })?,
+            ),
+        }))
+    }
+}
+
+impl DedupPayloadReader {
+    pub fn next(&mut self) -> Result<Option<DedupPayload>> {
+        let Some(batch) = self.reader.next().transpose().map_err(CdfError::from)? else {
+            let mut trailing = String::new();
+            if self
+                .metadata
+                .read_line(&mut trailing)
+                .map_err(|error| CdfError::data(format!("read dedup metadata tail: {error}")))?
+                != 0
+            {
+                return Err(CdfError::data(
+                    "dedup payload metadata contains more records than the Arrow spool",
+                ));
+            }
+            return Ok(None);
+        };
+        let mut line = String::new();
+        if self
+            .metadata
+            .read_line(&mut line)
+            .map_err(|error| CdfError::data(format!("read dedup payload metadata: {error}")))?
+            == 0
+        {
+            return Err(CdfError::data(
+                "dedup Arrow payload contains more batches than its metadata spool",
+            ));
+        }
+        let metadata: PayloadMetadata = serde_json::from_str(&line)
+            .map_err(|error| CdfError::data(format!("decode dedup payload metadata: {error}")))?;
+        Ok(Some(DedupPayload {
+            partition_ordinal: metadata.partition_ordinal,
+            output_position: metadata.output_position,
+            batch,
+        }))
+    }
+}
+
+struct ScratchOwner {
+    root: PathBuf,
+}
+
+impl Drop for ScratchOwner {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DedupDecision {
@@ -566,13 +745,13 @@ fn read_u64(reader: &mut impl Read) -> Result<u64> {
     read_u64_or_eof(reader)?.ok_or_else(|| CdfError::data("dedup record is truncated"))
 }
 
-struct BudgetedFile {
+pub(crate) struct BudgetedFile {
     file: File,
     reservation: Arc<Mutex<SpillReservation>>,
 }
 
 impl BudgetedFile {
-    fn create(path: PathBuf, reservation: Arc<Mutex<SpillReservation>>) -> Result<Self> {
+    pub(crate) fn create(path: PathBuf, reservation: Arc<Mutex<SpillReservation>>) -> Result<Self> {
         let file = OpenOptions::new()
             .create_new(true)
             .write(true)

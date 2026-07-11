@@ -953,7 +953,11 @@ where
                     builder.package_dir().join(".dedup-spill"),
                     services.spill(),
                 )?;
-                Ok((rule, index))
+                let payload = crate::dedup_spill::DedupPayloadSpool::create(
+                    builder.package_dir().join(".dedup-payload"),
+                    services.spill(),
+                )?;
+                Ok((rule, index, payload))
             })
             .transpose()?
     } else {
@@ -1220,20 +1224,19 @@ where
                         validation_input_bytes,
                         validation_output_bytes,
                     );
-                    pending_dedup_batches.push(PendingDedupBatch {
-                        partition_ordinal,
-                        output,
-                        output_position: batch_source_position,
-                    });
-                    if let Some((rule, index)) = &mut external_dedup {
-                        let pending = pending_dedup_batches
-                            .last()
-                            .expect("dedup batch was pushed immediately before key encoding");
+                    if let Some((rule, index, payload)) = &mut external_dedup {
                         index.push_keys(&encode_package_dedup_keys(
                             &validation_program,
                             rule,
-                            &pending.output,
+                            &output,
                         )?)?;
+                        payload.push(partition_ordinal, batch_source_position, &output)?;
+                    } else {
+                        pending_dedup_batches.push(PendingDedupBatch {
+                            partition_ordinal,
+                            output,
+                            output_position: batch_source_position,
+                        });
                     }
                     continue;
                 }
@@ -1470,78 +1473,112 @@ fn apply_dedup_and_write_pending_batches(
     external: Option<(
         cdf_contract::PackageDedupRuleSpec,
         crate::dedup_spill::ExternalDedupIndex,
+        crate::dedup_spill::DedupPayloadSpool,
     )>,
     segmentation_policy: &crate::CanonicalSegmentationPolicy,
     state: &mut OutputWriteState<'_>,
 ) -> Result<()> {
     let validation_started = state.phase_measurements.start();
-    let validation_input_bytes = pending
+    let pending_input_bytes = pending
         .iter()
         .map(|batch| batch.output.get_array_memory_size() as u64)
         .sum();
-    let dedup = match external {
-        Some((rule, index)) => {
-            let mut decisions = index.finish(rule.keep.clone())?;
-            if let Some(memory) = state.memory {
-                memory.record_event(cdf_memory::MemoryEvent::Spill {
-                    bytes: decisions.summary.spill_bytes,
-                });
-            }
-            let mut retained_rows = Vec::with_capacity(pending.len());
-            let mut dropped_rows = Vec::new();
-            let mut expected_ordinal = 0_u64;
-            for batch in &pending {
-                let mut retained = Vec::with_capacity(batch.output.num_rows());
-                for _ in 0..batch.output.num_rows() {
-                    let decision = decisions.next()?.ok_or_else(|| {
-                        CdfError::internal("external dedup decision stream ended early")
-                    })?;
-                    if decision.ordinal != expected_ordinal {
-                        return Err(CdfError::internal(
-                            "external dedup decision stream is not canonically ordered",
-                        ));
-                    }
-                    let keep = decision.ordinal == decision.kept_ordinal;
-                    retained.push(keep);
-                    if !keep {
-                        dropped_rows.push(cdf_contract::DedupDroppedRow {
-                            package_row_ordinal: decision.ordinal,
-                            kept_package_row_ordinal: decision.kept_ordinal,
-                        });
-                    }
-                    expected_ordinal += 1;
+    if let Some((rule, index, payload)) = external {
+        let validation_input_bytes = payload.input_bytes;
+        let mut decisions = index.finish(rule.keep.clone())?;
+        if let Some(memory) = state.memory {
+            memory.record_event(cdf_memory::MemoryEvent::Spill {
+                bytes: decisions.summary.spill_bytes,
+            });
+        }
+        let mut payload = payload.finish()?;
+        let mut assembler = None::<(u32, crate::CanonicalSegmentAssembler)>;
+        let mut dropped_rows = Vec::new();
+        let mut expected_ordinal = 0_u64;
+        while let Some(payload_batch) = match payload.as_mut() {
+            Some(payload) => payload.next()?,
+            None => None,
+        } {
+            let mut retained = Vec::with_capacity(payload_batch.batch.num_rows());
+            for _ in 0..payload_batch.batch.num_rows() {
+                let decision = decisions.next()?.ok_or_else(|| {
+                    CdfError::internal("external dedup decision stream ended early")
+                })?;
+                if decision.ordinal != expected_ordinal {
+                    return Err(CdfError::internal(
+                        "external dedup decision stream is not canonically ordered",
+                    ));
                 }
-                retained_rows.push(BooleanArray::from(retained));
+                let keep = decision.ordinal == decision.kept_ordinal;
+                retained.push(keep);
+                if !keep {
+                    dropped_rows.push(cdf_contract::DedupDroppedRow {
+                        package_row_ordinal: decision.ordinal,
+                        kept_package_row_ordinal: decision.kept_ordinal,
+                    });
+                }
+                expected_ordinal += 1;
             }
-            if decisions.next()?.is_some() {
-                return Err(CdfError::internal(
-                    "external dedup decision stream contains excess rows",
+            let output = filter_record_batch(&payload_batch.batch, &BooleanArray::from(retained))
+                .map_err(CdfError::from)?;
+            if output.num_rows() == 0 {
+                continue;
+            }
+            if assembler.as_ref().map(|(ordinal, _)| *ordinal)
+                != Some(payload_batch.partition_ordinal)
+            {
+                if let Some((_, mut previous)) = assembler.take() {
+                    persist_canonical_segments(builder, previous.finish()?, state)?;
+                }
+                assembler = Some((
+                    payload_batch.partition_ordinal,
+                    crate::CanonicalSegmentAssembler::new(
+                        segmentation_policy.clone(),
+                        payload_batch.partition_ordinal,
+                    )?,
                 ));
             }
-            cdf_contract::PackageDedupEvaluation {
-                retained_rows,
-                summary: cdf_contract::DedupSummary {
-                    rule_id: rule.rule_id,
-                    keys: rule.keys,
-                    keep: rule.keep,
-                    input_rows: decisions.summary.input_rows,
-                    output_rows: decisions.summary.output_rows,
-                    duplicate_key_count: decisions.summary.duplicate_key_count,
-                    dropped_row_count: decisions.summary.dropped_row_count,
-                    dropped_rows,
-                },
-            }
+            write_normalized_output_batch(
+                builder,
+                output,
+                payload_batch.output_position,
+                &mut assembler.as_mut().expect("assembler initialized").1,
+                state,
+            )?;
         }
-        None => {
-            let accepted = pending
-                .iter()
-                .map(|batch| batch.output.clone())
-                .collect::<Vec<_>>();
-            evaluate_package_order_dedup(program, &accepted)?.ok_or_else(|| {
-                CdfError::internal("package dedup was selected without an evaluation")
-            })?
+        if decisions.next()?.is_some() {
+            return Err(CdfError::internal(
+                "external dedup decision stream contains excess rows",
+            ));
         }
-    };
+        if let Some((_, mut assembler)) = assembler {
+            persist_canonical_segments(builder, assembler.finish()?, state)?;
+        }
+        builder.write_dedup_summary(&cdf_contract::DedupSummary {
+            rule_id: rule.rule_id,
+            keys: rule.keys,
+            keep: rule.keep,
+            input_rows: decisions.summary.input_rows,
+            output_rows: decisions.summary.output_rows,
+            duplicate_key_count: decisions.summary.duplicate_key_count,
+            dropped_row_count: decisions.summary.dropped_row_count,
+            dropped_rows,
+        })?;
+        state.phase_measurements.add(
+            RunPhase::ValidationNormalization,
+            elapsed_ns(validation_started, "package dedup")?,
+            validation_input_bytes,
+            validation_input_bytes,
+        );
+        return Ok(());
+    }
+    let validation_input_bytes = pending_input_bytes;
+    let accepted = pending
+        .iter()
+        .map(|batch| batch.output.clone())
+        .collect::<Vec<_>>();
+    let dedup = evaluate_package_order_dedup(program, &accepted)?
+        .ok_or_else(|| CdfError::internal("package dedup was selected without an evaluation"))?;
     builder.write_dedup_summary(&dedup.summary)?;
     state.phase_measurements.add(
         RunPhase::ValidationNormalization,
