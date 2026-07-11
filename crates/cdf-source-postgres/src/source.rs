@@ -22,6 +22,7 @@ use postgres::{Client, NoTls, Row, types::ToSql};
 use serde::{Deserialize, Serialize};
 
 use cdf_postgres::{PostgresIdentifier, PostgresTarget};
+use cdf_runtime::ExecutionServices;
 
 pub const POSTGRES_SQL_SCAN_METADATA: &str = "postgres_sql_scan";
 
@@ -35,6 +36,7 @@ pub struct PostgresTableResource {
     target: PostgresTarget,
     database_url: String,
     capabilities: ResourceCapabilities,
+    execution: Option<ExecutionServices>,
 }
 
 impl PostgresTableResource {
@@ -58,7 +60,13 @@ impl PostgresTableResource {
             target,
             database_url,
             capabilities,
+            execution: None,
         })
+    }
+
+    pub fn with_execution(mut self, execution: ExecutionServices) -> Self {
+        self.execution = Some(execution);
+        self
     }
 }
 
@@ -71,6 +79,7 @@ impl fmt::Debug for PostgresTableResource {
             .field("target", &self.target)
             .field("database_url", &"<redacted>")
             .field("capabilities", &self.capabilities)
+            .field("managed_execution", &self.execution.is_some())
             .finish()
     }
 }
@@ -98,10 +107,17 @@ impl ResourceStream for PostgresTableResource {
         let schema = Arc::clone(&self.schema);
         let target = self.target.clone();
         let database_url = self.database_url.clone();
+        let execution = self.execution.clone();
 
         Box::pin(async move {
-            let batches =
-                execute_postgres_table(&database_url, &descriptor, schema, &target, partition)?;
+            let batches = match execution {
+                Some(execution) => execution.run_blocking("postgres-source.sync", move || {
+                    execute_postgres_table(&database_url, &descriptor, schema, &target, partition)
+                })?,
+                None => {
+                    execute_postgres_table(&database_url, &descriptor, schema, &target, partition)?
+                }
+            };
             Ok(Box::pin(stream::iter(batches.into_iter().map(Ok))) as BatchStream)
         })
     }

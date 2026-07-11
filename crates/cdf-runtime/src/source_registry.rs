@@ -82,6 +82,11 @@ impl SourceRegistry {
             ))
         })?;
         self.verify_plan_driver(plan, driver.descriptor())?;
+        if let Some(lane) = &plan.execution_capabilities.blocking_lane {
+            context
+                .execution()
+                .ensure_blocking_lanes(std::slice::from_ref(lane))?;
+        }
         driver.resolve(plan, context)
     }
 

@@ -1087,12 +1087,16 @@ version = "0.1.0"
 dependencies = [
  "arrow-array 59.1.0",
  "arrow-schema 59.1.0",
+ "cdf-http",
  "cdf-kernel",
  "cdf-postgres",
+ "cdf-runtime",
+ "futures-executor",
  "futures-util",
  "postgres",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
 ]
 
 [[package]]

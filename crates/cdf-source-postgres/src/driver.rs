@@ -1,0 +1,262 @@
+use std::sync::Arc;
+
+use cdf_http::SecretUri;
+use cdf_kernel::{CdfError, QueryableResource, Result};
+use cdf_runtime::{
+    BlockingLaneSpec, CompiledSourcePlan, InterruptionSafety, LaneAffinity,
+    SourceAttestationStrength, SourceCompileRequest, SourceDriver, SourceDriverDescriptor,
+    SourceDriverId, SourceExecutionCapabilities, SourceExecutorClass, SourceResolutionContext,
+    SourceRetryGranularity, artifact_hash,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::{PostgresTableResource, PostgresTarget, postgres_table_capabilities};
+
+#[derive(Clone, Debug)]
+pub struct PostgresSourceDriver {
+    descriptor: SourceDriverDescriptor,
+}
+
+impl PostgresSourceDriver {
+    pub fn new() -> Result<Self> {
+        let option_schema = serde_json::json!({
+            "source": {
+                "connection": "secret_uri",
+                "dialect": {"type": "string", "default": "postgres"}
+            },
+            "resource": {
+                "table": "schema.table"
+            }
+        });
+        Ok(Self {
+            descriptor: SourceDriverDescriptor {
+                driver_id: SourceDriverId::new("postgres")?,
+                driver_version: "1.0.0".to_owned(),
+                option_schema_hash: artifact_hash(&option_schema)?,
+                kinds: vec!["sql".to_owned()],
+                schemes: vec!["postgres".to_owned(), "postgresql".to_owned()],
+            },
+        })
+    }
+}
+
+impl SourceDriver for PostgresSourceDriver {
+    fn descriptor(&self) -> &SourceDriverDescriptor {
+        &self.descriptor
+    }
+
+    fn compile(&self, request: SourceCompileRequest) -> Result<CompiledSourcePlan> {
+        let source: PostgresSourceOptions =
+            decode_options("Postgres source", request.source_options)?;
+        let resource: PostgresResourceOptions =
+            decode_options("Postgres resource", request.resource_options)?;
+        if !source
+            .dialect
+            .as_deref()
+            .is_none_or(|dialect| dialect.eq_ignore_ascii_case("postgres"))
+        {
+            return Err(CdfError::contract(
+                "Postgres source dialect must be `postgres` when declared",
+            ));
+        }
+        let connection = SecretUri::new(source.connection.clone())?;
+        let target = PostgresTarget::parse(&resource.table)?;
+        let physical_plan = PostgresPhysicalPlan {
+            connection: connection.as_str().to_owned(),
+            target: target.display_name(),
+        };
+        let capabilities = postgres_table_capabilities(&request.descriptor);
+        CompiledSourcePlan::new(
+            self.descriptor.clone(),
+            request.descriptor,
+            capabilities,
+            execution_capabilities(),
+            request.schema,
+            serde_json::json!({
+                "connection": connection.as_str(),
+                "dialect": "postgres",
+                "table": target.display_name(),
+            }),
+            serde_json::to_value(physical_plan).map_err(|error| {
+                CdfError::internal(format!("serialize Postgres source plan: {error}"))
+            })?,
+        )
+    }
+
+    fn resolve(
+        &self,
+        plan: &CompiledSourcePlan,
+        context: &SourceResolutionContext<'_>,
+    ) -> Result<Arc<dyn QueryableResource>> {
+        let physical: PostgresPhysicalPlan = serde_json::from_value(plan.physical_plan.clone())
+            .map_err(|error| {
+                CdfError::contract(format!("invalid Postgres source plan: {error}"))
+            })?;
+        let connection = SecretUri::new(physical.connection)?;
+        let database_url = context.secret_provider().resolve(&connection)?;
+        let target = PostgresTarget::parse(&physical.target)?;
+        let resource = PostgresTableResource::new(
+            database_url.as_str()?.to_owned(),
+            plan.descriptor.clone(),
+            Arc::new(plan.schema.clone()),
+            target,
+        )?
+        .with_execution(context.execution().clone());
+        Ok(Arc::new(resource))
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PostgresSourceOptions {
+    connection: String,
+    #[serde(default)]
+    dialect: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PostgresResourceOptions {
+    table: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PostgresPhysicalPlan {
+    connection: String,
+    target: String,
+}
+
+fn decode_options<T: for<'de> Deserialize<'de>>(
+    label: &str,
+    options: std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<T> {
+    serde_json::from_value(serde_json::Value::Object(options.into_iter().collect()))
+        .map_err(|error| CdfError::contract(format!("{label} options are invalid: {error}")))
+}
+
+fn execution_capabilities() -> SourceExecutionCapabilities {
+    SourceExecutionCapabilities {
+        minimum_poll_bytes: 8 * 1024,
+        maximum_poll_bytes: 32 * 1024 * 1024,
+        minimum_decode_bytes: 8 * 1024,
+        maximum_decode_bytes: 32 * 1024 * 1024,
+        maximum_concurrency: 4,
+        useful_concurrency: 4,
+        executor_class: SourceExecutorClass::BlockingLane,
+        blocking_lane: Some(BlockingLaneSpec {
+            lane_id: "postgres-source.sync".to_owned(),
+            maximum_concurrency: 4,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: LaneAffinity::Shared,
+            interruption: InterruptionSafety::CooperativeOnly,
+        }),
+        pausable: false,
+        spillable: false,
+        idempotent_reads: true,
+        reopenable: true,
+        resumable: false,
+        retry_granularity: SourceRetryGranularity::Partition,
+        retryable_errors: vec![cdf_kernel::ErrorKind::Transient],
+        attestation: SourceAttestationStrength::Metadata,
+        rate_limit_per_second: None,
+        quota_authority: None,
+        canonical_order: false,
+        bounded: true,
+        telemetry_version: "v1".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use arrow_schema::{DataType, Field, Schema};
+    use cdf_kernel::{
+        ResourceDescriptor, ResourceId, SchemaHash, SchemaSource, ScopeKey, TrustLevel,
+        WriteDisposition,
+    };
+    use cdf_runtime::{SourceDriver, SourceExecutorClass};
+
+    use super::*;
+
+    fn descriptor() -> ResourceDescriptor {
+        ResourceDescriptor {
+            resource_id: ResourceId::new("warehouse.orders").unwrap(),
+            schema_source: SchemaSource::Declared {
+                schema_hash: SchemaHash::new("schema-postgres-driver").unwrap(),
+                source: "postgres://warehouse/orders".to_owned(),
+            },
+            primary_key: vec!["id".to_owned()],
+            merge_key: Vec::new(),
+            cursor: None,
+            write_disposition: WriteDisposition::Append,
+            deduplication: None,
+            contract: None,
+            state_scope: ScopeKey::Resource,
+            freshness: None,
+            trust_level: TrustLevel::Governed,
+        }
+    }
+
+    #[test]
+    fn compiles_strict_redacted_plan_and_declares_managed_lane() {
+        let driver = PostgresSourceDriver::new().unwrap();
+        let plan = driver
+            .compile(SourceCompileRequest {
+                source_kind: "sql".to_owned(),
+                source_options: BTreeMap::from([
+                    (
+                        "connection".to_owned(),
+                        serde_json::json!("secret://env/WAREHOUSE_URL"),
+                    ),
+                    ("dialect".to_owned(), serde_json::json!("postgres")),
+                ]),
+                resource_options: BTreeMap::from([(
+                    "table".to_owned(),
+                    serde_json::json!("public.orders"),
+                )]),
+                descriptor: descriptor(),
+                schema: Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+            })
+            .unwrap();
+
+        assert_eq!(plan.driver.driver_id.as_str(), "postgres");
+        assert_eq!(
+            plan.execution_capabilities.executor_class,
+            SourceExecutorClass::BlockingLane
+        );
+        assert_eq!(
+            plan.execution_capabilities
+                .blocking_lane
+                .as_ref()
+                .unwrap()
+                .lane_id,
+            "postgres-source.sync"
+        );
+        let encoded = serde_json::to_string(&plan).unwrap();
+        assert!(encoded.contains("secret://env/WAREHOUSE_URL"));
+        assert!(!encoded.contains("postgres://user:password"));
+
+        let error = driver
+            .compile(SourceCompileRequest {
+                source_kind: "sql".to_owned(),
+                source_options: BTreeMap::from([
+                    (
+                        "connection".to_owned(),
+                        serde_json::json!("postgres://inline"),
+                    ),
+                    ("unexpected".to_owned(), serde_json::json!(true)),
+                ]),
+                resource_options: BTreeMap::from([(
+                    "table".to_owned(),
+                    serde_json::json!("orders"),
+                )]),
+                descriptor: descriptor(),
+                schema: Schema::new(vec![Field::new("id", DataType::Int64, false)]),
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("unknown field `unexpected`"));
+    }
+}

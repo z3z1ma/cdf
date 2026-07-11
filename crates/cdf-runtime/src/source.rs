@@ -7,7 +7,7 @@ use cdf_kernel::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{ExecutionServices, artifact_hash};
+use crate::{BlockingLaneSpec, ExecutionServices, artifact_hash};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct SourceDriverId(String);
@@ -90,7 +90,7 @@ pub struct SourceExecutionCapabilities {
     pub maximum_concurrency: u16,
     pub useful_concurrency: u16,
     pub executor_class: SourceExecutorClass,
-    pub blocking_lane: Option<String>,
+    pub blocking_lane: Option<BlockingLaneSpec>,
     pub pausable: bool,
     pub spillable: bool,
     pub idempotent_reads: bool,
@@ -121,7 +121,7 @@ impl SourceExecutionCapabilities {
             ));
         }
         match (&self.executor_class, &self.blocking_lane) {
-            (SourceExecutorClass::BlockingLane, Some(lane)) if !lane.is_empty() => {}
+            (SourceExecutorClass::BlockingLane, Some(lane)) => lane.validate()?,
             (SourceExecutorClass::BlockingLane, _) => {
                 return Err(CdfError::contract(
                     "blocking source execution requires a declared lane",

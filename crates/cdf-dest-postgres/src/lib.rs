@@ -1,9 +1,6 @@
 #![doc = "Postgres destination boundary for cdf."]
 
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 use cdf_kernel::{
     CapabilitySupport, CdfError, CommitCounts, CommitPlan, CommitSegment, CommitSession,
