@@ -17,7 +17,7 @@ This workstream is a plan and requires bounded executable children for runtime o
 - `.10x/tickets/done/2026-07-11-p3-a1-staged-ingress-final-binding.md` — complete
 - `.10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md` — complete
 - `.10x/tickets/2026-07-11-p3-a3-canonical-segmentation-adaptive-batching.md`
-- `.10x/tickets/2026-07-11-p3-a4-injected-execution-host.md`
+- `.10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md`
 - `.10x/tickets/2026-07-11-p3-a5-streaming-operator-graph.md`
 - `.10x/tickets/2026-07-11-p3-a6-spillable-package-dedup.md` (child of A5)
 - `.10x/tickets/2026-07-11-p3-a7-stream-policy-compilation.md`

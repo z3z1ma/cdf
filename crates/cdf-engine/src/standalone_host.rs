@@ -1,7 +1,11 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{Arc, Condvar, Mutex, mpsc},
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicU16, Ordering},
+        mpsc,
+    },
     thread::JoinHandle,
     time::Instant,
 };
@@ -19,7 +23,6 @@ use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle as TokioJoinHandle
 struct WorkCompletion {
     result: Result<()>,
     queue_wait_ns: u64,
-    slot_cost: u16,
 }
 
 struct WorkItem {
@@ -29,6 +32,7 @@ struct WorkItem {
     task: BlockingTask,
     completion: oneshot::Sender<WorkCompletion>,
     released: Option<mpsc::SyncSender<()>>,
+    usage: Option<Arc<CpuUsageTracker>>,
 }
 
 struct PoolState {
@@ -40,6 +44,23 @@ struct CpuSlots {
     capacity: u16,
     available: Mutex<u16>,
     changed: Condvar,
+}
+
+#[derive(Default)]
+struct CpuUsageTracker {
+    current: AtomicU16,
+    peak: AtomicU16,
+}
+
+impl CpuUsageTracker {
+    fn admit(&self, slots: u16) {
+        let current = self.current.fetch_add(slots, Ordering::AcqRel) + slots;
+        self.peak.fetch_max(current, Ordering::AcqRel);
+    }
+
+    fn release(&self, slots: u16) {
+        self.current.fetch_sub(slots, Ordering::AcqRel);
+    }
 }
 
 struct FixedTaskPool {
@@ -89,6 +110,7 @@ impl FixedTaskPool {
         slot_cost: u16,
         cancellation: RunCancellation,
         task: BlockingTask,
+        usage: Arc<CpuUsageTracker>,
     ) -> Result<oneshot::Receiver<WorkCompletion>> {
         if slot_cost == 0 || slot_cost > self.capacity {
             return Err(CdfError::contract(format!(
@@ -110,6 +132,7 @@ impl FixedTaskPool {
             task,
             completion: sender,
             released: None,
+            usage: Some(usage),
         });
         available.notify_all();
         Ok(receiver)
@@ -142,6 +165,7 @@ impl FixedTaskPool {
             task,
             completion,
             released: Some(released),
+            usage: None,
         });
         available.notify_all();
         Ok(release_receiver)
@@ -185,6 +209,9 @@ fn worker_loop(state: Arc<(Mutex<PoolState>, Condvar)>, slots: Arc<CpuSlots>) {
             }
             *available -= item.slot_cost;
         }
+        if let Some(usage) = &item.usage {
+            usage.admit(item.slot_cost);
+        }
         let queue_wait_ns = u64::try_from(item.enqueued.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let result = if item.cancellation.is_cancelled() {
             Err(CdfError::internal("task cancelled before admission"))
@@ -193,14 +220,17 @@ fn worker_loop(state: Arc<(Mutex<PoolState>, Condvar)>, slots: Arc<CpuSlots>) {
                 .unwrap_or_else(|_| Err(CdfError::internal("execution worker panicked")))
         };
         let slot_cost = item.slot_cost;
-        let _ = item.completion.send(WorkCompletion {
-            result,
-            queue_wait_ns,
-            slot_cost,
-        });
         let mut available = slots.available.lock().unwrap();
         *available = available.saturating_add(slot_cost);
         slots.changed.notify_all();
+        drop(available);
+        if let Some(usage) = &item.usage {
+            usage.release(slot_cost);
+        }
+        let _ = item.completion.send(WorkCompletion {
+            result,
+            queue_wait_ns,
+        });
         if let Some(released) = item.released {
             let _ = released.send(());
         }
@@ -328,6 +358,7 @@ impl ExecutionHost for StandaloneExecutionHost {
             cpu_tasks: Vec::new(),
             blocking_tasks: Vec::new(),
             report: TaskScopeReport::default(),
+            usage: Arc::new(CpuUsageTracker::default()),
         }))
     }
 
@@ -405,11 +436,11 @@ impl ExecutionHost for StandaloneExecutionHost {
         )?;
         let value = receiver
             .recv()
-            .map_err(|_| CdfError::internal("blocking lane stopped before returning its result"))?;
+            .map_err(|_| CdfError::internal("blocking lane stopped before returning its result"));
         released.recv().map_err(|_| {
             CdfError::internal("blocking lane stopped before releasing its CPU slots")
         })?;
-        value
+        value?
     }
 }
 
@@ -422,6 +453,7 @@ struct StandaloneTaskScope {
     cpu_tasks: Vec<oneshot::Receiver<WorkCompletion>>,
     blocking_tasks: Vec<oneshot::Receiver<WorkCompletion>>,
     report: TaskScopeReport,
+    usage: Arc<CpuUsageTracker>,
 }
 
 impl Drop for StandaloneTaskScope {
@@ -448,8 +480,12 @@ impl ExecutionTaskScope for StandaloneTaskScope {
     fn spawn_cpu(&mut self, spec: CpuTaskSpec, task: BlockingTask) -> Result<()> {
         spec.validate()?;
         let cost = spec.cpu_slot_cost.max(spec.native_internal_parallelism);
-        self.cpu_tasks
-            .push(self.cpu.submit(cost, self.cancellation.clone(), task)?);
+        self.cpu_tasks.push(self.cpu.submit(
+            cost,
+            self.cancellation.clone(),
+            task,
+            Arc::clone(&self.usage),
+        )?);
         self.report.submitted_cpu += 1;
         Ok(())
     }
@@ -463,6 +499,7 @@ impl ExecutionTaskScope for StandaloneTaskScope {
             spec.cpu_slot_cost.max(spec.native_internal_parallelism),
             self.cancellation.clone(),
             task,
+            Arc::clone(&self.usage),
         )?);
         self.report.submitted_blocking += 1;
         Ok(())
@@ -505,8 +542,6 @@ impl ExecutionTaskScope for StandaloneTaskScope {
                             .report
                             .queue_wait_ns
                             .saturating_add(completion.queue_wait_ns);
-                        self.report.peak_cpu_slots =
-                            self.report.peak_cpu_slots.max(completion.slot_cost);
                         match completion.result {
                             Ok(()) => self.report.completed += 1,
                             Err(error) => {
@@ -526,7 +561,10 @@ impl ExecutionTaskScope for StandaloneTaskScope {
             }
             match first_error {
                 Some(error) => Err(error),
-                None => Ok(std::mem::take(&mut self.report)),
+                None => {
+                    self.report.peak_cpu_slots = self.usage.peak.load(Ordering::Acquire);
+                    Ok(std::mem::take(&mut self.report))
+                }
             }
         })
     }
@@ -743,5 +781,47 @@ mod tests {
         let mut conflict = lane;
         conflict.maximum_concurrency = 2;
         assert!(services.ensure_blocking_lanes(&[conflict]).is_err());
+    }
+
+    #[test]
+    fn synchronous_lane_panic_releases_slots_before_returning() {
+        let host = Arc::new(host());
+        let services = cdf_runtime::ExecutionServices::new(host).unwrap();
+        let error = services
+            .run_blocking::<(), _>("native", || panic!("intentional lane panic"))
+            .unwrap_err();
+        assert!(error.message.contains("stopped before returning"));
+        assert_eq!(
+            services
+                .run_blocking("native", || Ok::<_, CdfError>(42_u8))
+                .unwrap(),
+            42
+        );
+    }
+
+    #[test]
+    fn scope_reports_aggregate_concurrent_cpu_slots() {
+        let host = host();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut scope = host.open_scope("aggregate-peak").unwrap();
+        for _ in 0..2 {
+            let barrier = Arc::clone(&barrier);
+            scope
+                .spawn_cpu(
+                    CpuTaskSpec {
+                        task_kind: "parallel".to_owned(),
+                        cpu_slot_cost: 1,
+                        native_internal_parallelism: 1,
+                    },
+                    Box::new(move || {
+                        barrier.wait();
+                        Ok(())
+                    }),
+                )
+                .unwrap();
+        }
+        barrier.wait();
+        let report = host.block_on_root(scope.join()).unwrap();
+        assert_eq!(report.peak_cpu_slots, 2);
     }
 }

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-10-p3-ws-a-streaming-runtime-pipeline.md
@@ -46,6 +46,7 @@ None. L5, DX1, and A2 are complete.
 - 2026-07-11: Added adapter-declared blocking lanes to destination runtime capabilities and generic registry admission. The standalone host installs pools dynamically, rejects conflicting declarations, provides typed synchronous lane execution, preserves pinned affinity, and charges native parallelism to shared CPU slots. DuckDB/Postgres declare their needs and Parquet correctly declares none. Mock adapter, runtime suite, destination/CLI checks, and strict Clippy pass; evidence is `.10x/evidence/2026-07-11-p3-a4-adapter-declared-lanes.md`. Existing DuckDB/Postgres hot bodies still need migration onto the declared lanes with their bulk-path work before A4 closes.
 - 2026-07-11: Moved production DuckDB data and empty-package commit bodies onto the adapter-declared pinned lane. The typed synchronous bridge now joins slot release without nesting an executor, and the full CLI DuckDB commit/mirror/checkpoint path passes under managed execution. Evidence is `.10x/evidence/2026-07-11-p3-a4-duckdb-lane-execution.md`. Postgres session lane confinement remains paired with its binary COPY rewrite.
 - 2026-07-11: Confined ordinary Postgres commit-session migration/write/finalize/abort operations to `postgres.sync` while preserving owned transaction state between joined calls. Managed Python resources now select and register GIL-serialized or free-threaded host-bounded lanes from interpreter/resource evidence, then execute Python production and Arrow conversion there. Live Postgres, Python product-spine, checks, and strict Clippy pass; evidence is `.10x/evidence/2026-07-11-p3-a4-postgres-python-lanes.md`. CSV COPY and Python incremental streaming remain D3/H2 performance work rather than runtime-ownership gaps.
+- 2026-07-11: Closure review found and fixed panic-path slot-release ordering and inaccurate per-scope aggregate CPU peak telemetry. Seven standalone-host conformance tests now cover static ownership, embedding, I/O, CPU/lane separation, dynamic adapter lanes, panic recovery, and aggregate admission. Implementation review `.10x/reviews/2026-07-11-p3-a4-execution-host-implementation-review.md` passes. Retrospective: runtime ownership belongs in a neutral injected service; synchronous adapters must move owned state across joined typed lanes rather than borrow executor handles; async object stores need host-mediated typed I/O; memory waiting on worker threads should park via coordinator wakers instead of entering an executor.
 
 ## References
 

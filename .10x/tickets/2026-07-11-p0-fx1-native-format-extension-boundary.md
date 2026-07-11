@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-11
 Updated: 2026-07-11
 Parent: .10x/tickets/2026-07-05-implement-cdf-system.md
-Depends-On: .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/native-format-codec-runtime.md
+Depends-On: .10x/tickets/done/2026-07-11-p0-dx1-neutral-runtime-crate.md, .10x/tickets/done/2026-07-11-p3-a2-unified-memory-ledger.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/specs/native-format-codec-runtime.md
 
 # P0 FX1: native format extension and byte-source boundary
 

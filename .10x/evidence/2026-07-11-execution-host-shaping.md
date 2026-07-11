@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/decisions/injected-execution-host-runtime-ownership.md, .10x/specs/execution-host-structured-runtime.md, .10x/tickets/2026-07-11-p3-a4-injected-execution-host.md
+Relates-To: .10x/decisions/injected-execution-host-runtime-ownership.md, .10x/specs/execution-host-structured-runtime.md, .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md
 
 # Execution host shaping evidence
 

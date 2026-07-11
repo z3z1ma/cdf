@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-11
 Updated: 2026-07-11
-Relates-To: .10x/tickets/2026-07-11-p3-a4-injected-execution-host.md, .10x/decisions/standalone-cpu-executor-v1.md
+Relates-To: .10x/tickets/done/2026-07-11-p3-a4-injected-execution-host.md, .10x/decisions/standalone-cpu-executor-v1.md
 
 # P3 A4 CPU executor comparison
 
