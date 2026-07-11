@@ -36,7 +36,7 @@ cdf MUST maintain one memory accounting story by extending DataFusion's `MemoryP
 
 The concrete ledger, accounted-payload, admission, deadlock-prevention, and spill contract is `.10x/specs/runtime-memory-backpressure.md`. Stage-local counters or message-count channel bounds MUST NOT compete with that authority.
 
-Batch size MUST be adaptive between configured floors and ceilings. Live extraction MAY adjust batch sizes based on downstream pressure and spill, but replay MUST use recorded batch boundaries and MUST NOT rederive adaptive decisions.
+Batch size MUST be adaptive between configured floors and ceilings under `.10x/specs/canonical-segmentation-adaptive-batching.md`. Live execution microbatches MAY adjust based on downstream pressure and spill only when canonical package segmentation remains plan-deterministic. Replay uses recorded canonical segments and MUST NOT rederive pressure decisions.
 
 Every plan node MUST carry boundedness. Bounded plans run to completion. Unbounded plans MUST be illegal unless they declare checkpoint cadence, package rotation, and watermark strategy. MVP supports unbounded plans only in drain mode.
 

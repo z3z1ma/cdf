@@ -18,6 +18,8 @@ State and destination commit evidence MUST follow `.10x/decisions/package-state-
 
 Canonical package data MUST be Arrow IPC file format with LZ4 framing. Stats, quarantine, and lineage SHOULD be Parquet. Manifests and receipts MUST be canonical JSON.
 
+Canonical segment boundaries and ids follow `.10x/specs/canonical-segmentation-adaptive-batching.md`. Adapter/source page or batch boundaries and live pressure MUST NOT directly determine manifest segments. Any migration from the original one-batch-one-segment artifact shape requires an explicit manifest/package artifact-version and golden update gate.
+
 ## Required layout
 
 The package layout MUST preserve the book's directories and semantics: `manifest.json`, `plan/`, `schema/`, `data/`, `quarantine/`, `stats/`, `lineage/`, `state/`, `destination/`, and `trace.jsonl`.
