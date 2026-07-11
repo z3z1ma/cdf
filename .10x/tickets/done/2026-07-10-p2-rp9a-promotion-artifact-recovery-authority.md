@@ -1,7 +1,7 @@
 Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
-Parent: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
+Parent: .10x/tickets/done/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
 Depends-On: .10x/tickets/done/2026-07-10-p2-rp5-schema-promote-dry-planner-cli.md, .10x/tickets/done/2026-07-10-p2-rp6-postgres-in-place-corrections.md, .10x/tickets/done/2026-07-10-p2-rp7-duckdb-in-place-corrections.md, .10x/tickets/done/2026-07-10-p2-rp8-parquet-correction-sidecars.md
 
 # RP9A self-authenticating promotion artifacts and package-only recovery

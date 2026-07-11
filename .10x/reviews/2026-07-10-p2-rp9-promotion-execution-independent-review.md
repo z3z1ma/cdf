@@ -1,7 +1,7 @@
 Status: recorded
 Created: 2026-07-10
 Updated: 2026-07-10
-Target: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
+Target: .10x/tickets/done/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
 Verdict: fail
 
 # RP9 promotion execution, recovery, and GC independent review

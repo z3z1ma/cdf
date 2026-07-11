@@ -1,4 +1,4 @@
-Status: active
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
@@ -37,6 +37,7 @@ No distributed scheduler, remote lease store, automatic promotion, arbitrary upd
 - 2026-07-10: Adversarial cross-destination probing found that Parquet sidecar settlement is implemented but promotion planning correctly rejects the sheet's `object-key-component-v1` as a column identifier policy. C3 explicitly deferred that semantic choice, so no adapter was invented. Owner: `.10x/tickets/done/2026-07-10-parquet-promotion-identifier-policy.md`. Review: `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-recovery-gc-review.md`.
 - 2026-07-10: Independent review failed the implementation candidate at `.10x/reviews/2026-07-10-p2-rp9-promotion-execution-independent-review.md`. The exact lock-CAS skeleton, capability dispatch, append-only publication store, and destination-readback restraint remain useful, but package-only recovery, staged identity, source receipt authority, custom-contract checkpoint scope, atomic checkpoint/publication fencing, structured recovery output, cross-destination/concurrency proof, and GC promotability require repair.
 - 2026-07-10: RP9D closed as `.10x/tickets/done/2026-07-10-p2-rp9d-gc-promotion-availability.md` after independent pass review. GC now delegates to shared authenticated promotion-read availability without changing retention or inferring destination readback. The Parquet namespace/capability ticket also closed; RP9A repair, RP9B fencing, and RP9C integration remain.
+- 2026-07-10: RP9A, RP9B, and RP9C are closed. Final integrated evidence is `.10x/evidence/2026-07-10-p2-rp9c-promotion-command-conformance.md` and the severity-focused final review passes at `.10x/reviews/2026-07-10-p2-rp9c-promotion-command-review.md`. The repair closes authenticated package-only recovery, exact fenced settlement, canonical multi-target chaining, DuckDB/Postgres/Parquet command dispatch, structured crash recovery, secret redaction, legacy migration, stale-run commit fencing, and truthful GC availability. RP9 is complete; RP10 owns only conformance aggregation and residual-program closure.
 
 ## Child repair sequence
 
@@ -48,4 +49,4 @@ No distributed scheduler, remote lease store, automatic promotion, arbitrary upd
 
 ## Blockers
 
-RP9 remains active until RP9A-RP9C close with integrated evidence and a new independent pass review.
+None.

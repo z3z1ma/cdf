@@ -2,7 +2,7 @@ Status: open
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-residual-schema-promotion-program.md
-Depends-On: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md, .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
+Depends-On: .10x/tickets/done/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md, .10x/tickets/2026-07-08-p2-ws-i-conformance-parity-friction-suite.md
 
 # P2 RP10 residual capture and promotion conformance
 
