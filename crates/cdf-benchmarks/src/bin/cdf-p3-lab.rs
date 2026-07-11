@@ -39,6 +39,22 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Some(u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX));
             write_stdout(&canonical_json_bytes(&measurement)?)
         }
+        [command, request, iterations] if command == "profile-repeat-cdf" => {
+            let workload: PreparedFilePackageWorkload =
+                serde_json::from_slice(&fs::read(request)?)?;
+            fs::create_dir_all(&workload.package_dir)?;
+            let iterations = iterations.parse::<u32>()?;
+            if !(1..=10_000).contains(&iterations) {
+                return Err("profile repeat iterations must be between 1 and 10000".into());
+            }
+            for _ in 0..iterations {
+                let package_root = tempfile::tempdir_in(&workload.package_dir)?;
+                let mut iteration = workload.clone();
+                iteration.package_dir = package_root.path().join("package");
+                std::hint::black_box(run_prepared_file_to_package(&iteration)?);
+            }
+            Ok(())
+        }
         [command, request] if command == "legacy-case-worker" => {
             let mut workload: LegacyCaseWorkload = serde_json::from_slice(&fs::read(request)?)?;
             fs::create_dir_all(&workload.output_root)?;
