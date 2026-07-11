@@ -1146,7 +1146,7 @@ fn declared_parquet_float32_declared_float64_materializes_lossless_widening() {
 }
 
 #[test]
-fn declared_parquet_projection_renames_by_source_name_and_drops_extra_fields() {
+fn declared_parquet_projection_preserves_extra_fields_as_residual_candidates() {
     let temp = tempfile::tempdir().unwrap();
     let parquet_path = temp.path().join("vendors.parquet");
     let physical_schema = Arc::new(Schema::new(vec![
@@ -1196,6 +1196,53 @@ fn declared_parquet_projection_renames_by_source_name_and_drops_extra_fields() {
         .downcast_ref::<Int32Array>()
         .unwrap();
     assert_eq!([ids.value(0), ids.value(1)], [10, 20]);
+    let candidates = read.batches[0].header.residual_candidates();
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| { candidate.source_path() == ["ignored_physical_column".to_owned()] })
+    );
+}
+
+#[test]
+fn declared_arrow_ipc_projection_preserves_extra_fields_as_residual_candidates() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("events.arrow");
+    let physical_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("nested_extra", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&physical_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2_i64])),
+            Arc::new(StringArray::from(vec![Some("one"), Some("two")])),
+        ],
+    )
+    .unwrap();
+    let mut file = fs::File::create(&path).unwrap();
+    let mut writer = FileWriter::try_new(&mut file, physical_schema.as_ref()).unwrap();
+    writer.write(&batch).unwrap();
+    writer.finish().unwrap();
+    drop(writer);
+    drop(file);
+
+    let read = read_arrow_ipc_file_path_with_declared_schema(
+        &path,
+        &options("events", "file"),
+        Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)])),
+    )
+    .unwrap();
+    let output = read.batches[0].record_batch().unwrap();
+    assert_eq!(output.num_columns(), 1);
+    let candidates = read.batches[0].header.residual_candidates();
+    assert_eq!(candidates.len(), 2);
+    assert!(
+        candidates
+            .iter()
+            .all(|candidate| candidate.source_path() == ["nested_extra".to_owned()])
+    );
 }
 
 #[test]
