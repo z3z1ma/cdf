@@ -54,6 +54,12 @@ This parent is an aggregate plan. Workstream records own sequencing and integrat
 
 WS-L runs first and alone until a full pre-optimization baseline evidence record exists. WS-A then owns the exclusive runtime-spine migration window. WS-B, WS-D, and WS-E may proceed in crate-bounded lanes against the baseline where they do not touch the frozen runtime surface. WS-C follows WS-A channels. WS-F is integrated with WS-A's ledger. WS-G builds on P2 transports. WS-H is independent after baseline. Existing performance triage tickets close only by absorption into a P3 child with evidence or by a measured no-action rationale.
 
+After all workstreams close, program proof/closure proceeds through:
+
+- `.10x/tickets/2026-07-11-p3-z1-envelope-evidence-reconciliation.md`
+- `.10x/tickets/2026-07-11-p3-z2-scale-demo-adversarial-review.md`
+- `.10x/tickets/2026-07-11-p3-z3-program-closure-retrospective.md`
+
 ## Acceptance criteria
 
 - Every target in `.10x/decisions/terabyte-scale-performance-envelope.md` is green on recorded host classes.
