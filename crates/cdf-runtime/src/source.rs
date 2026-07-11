@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, path::Path, sync::Arc};
 use arrow_schema::Schema;
 use cdf_http::SecretProvider;
 use cdf_kernel::{
-    CdfError, ErrorKind, QueryableResource, ResourceCapabilities, ResourceDescriptor, Result,
-    TypePolicyAllowances,
+    CdfError, EffectiveSchemaRuntime, ErrorKind, QueryableResource, ResourceCapabilities,
+    ResourceDescriptor, Result, TypePolicyAllowances,
 };
 use serde::{Deserialize, Serialize};
 
@@ -159,6 +159,7 @@ pub struct SourceCompileRequest {
     pub descriptor: ResourceDescriptor,
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
+    pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -169,6 +170,7 @@ pub struct CompiledSourcePlan {
     pub execution_capabilities: SourceExecutionCapabilities,
     pub schema: Schema,
     pub type_policy_allowances: TypePolicyAllowances,
+    pub effective_schema_runtime: Option<EffectiveSchemaRuntime>,
     pub redacted_options: serde_json::Value,
     pub redacted_options_hash: String,
     pub physical_plan: serde_json::Value,
@@ -183,6 +185,7 @@ impl CompiledSourcePlan {
         execution_capabilities: SourceExecutionCapabilities,
         schema: Schema,
         type_policy_allowances: TypePolicyAllowances,
+        effective_schema_runtime: Option<EffectiveSchemaRuntime>,
         redacted_options: serde_json::Value,
         physical_plan: serde_json::Value,
     ) -> Result<Self> {
@@ -197,6 +200,7 @@ impl CompiledSourcePlan {
             execution_capabilities,
             schema,
             type_policy_allowances,
+            effective_schema_runtime,
             redacted_options,
             redacted_options_hash,
             physical_plan,

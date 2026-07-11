@@ -4,6 +4,7 @@ use cdf_http::{AuthScheme, EgressAllowlist, SecretUri};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod driver;
 mod runtime;
 mod transport;
 
@@ -39,6 +40,7 @@ pub struct FileResourcePlan {
     pub allowlist: EgressAllowlist,
 }
 
+pub use driver::FileSourceDriver;
 pub use runtime::*;
 pub use transport::*;
 

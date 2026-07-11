@@ -47,8 +47,12 @@ const REMOTE_SPOOL_CHUNK_BYTES: u64 = 8 * 1024 * 1024;
 
 impl FileRuntimeDependencies {
     pub fn new(transport: impl FileTransport + Send + 'static) -> Self {
+        Self::from_boxed_transport(Box::new(transport))
+    }
+
+    pub fn from_boxed_transport(transport: Box<dyn FileTransport + Send>) -> Self {
         Self {
-            transport: Arc::new(Mutex::new(Box::new(transport))),
+            transport: Arc::new(Mutex::new(transport)),
             max_spool_bytes: DEFAULT_MAX_REMOTE_SPOOL_BYTES,
         }
     }

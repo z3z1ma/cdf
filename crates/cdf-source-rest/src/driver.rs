@@ -76,6 +76,7 @@ impl SourceDriver for RestSourceDriver {
             execution_capabilities(),
             request.schema,
             request.type_policy_allowances,
+            request.effective_schema_runtime,
             serde_json::to_value(&physical).map_err(serialize_error)?,
             serde_json::to_value(&physical).map_err(serialize_error)?,
         )

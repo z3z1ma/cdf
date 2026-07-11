@@ -614,6 +614,7 @@ impl SourceDriver for MockSourceDriver {
             },
             request.schema,
             request.type_policy_allowances,
+            request.effective_schema_runtime,
             serde_json::json!({"token": "secret://env/MOCK_TOKEN"}),
             serde_json::json!({"partitions": 2}),
         )
@@ -768,6 +769,7 @@ fn source_registry_compiles_hashes_and_resolves_mock_without_order_authority() {
             descriptor: resource_descriptor,
             schema: Schema::empty(),
             type_policy_allowances: Default::default(),
+            effective_schema_runtime: None,
         })
         .unwrap();
     assert_eq!(

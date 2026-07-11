@@ -73,6 +73,7 @@ impl SourceDriver for PostgresSourceDriver {
             execution_capabilities(),
             request.schema,
             request.type_policy_allowances,
+            request.effective_schema_runtime,
             serde_json::json!({
                 "connection": connection.as_str(),
                 "dialect": "postgres",
@@ -222,6 +223,7 @@ mod tests {
                 descriptor: descriptor(),
                 schema: Schema::new(vec![Field::new("id", DataType::Int64, false)]),
                 type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
             })
             .unwrap();
 
@@ -259,6 +261,7 @@ mod tests {
                 descriptor: descriptor(),
                 schema: Schema::new(vec![Field::new("id", DataType::Int64, false)]),
                 type_policy_allowances: Default::default(),
+                effective_schema_runtime: None,
             })
             .unwrap_err();
         assert!(error.to_string().contains("unknown field `unexpected`"));

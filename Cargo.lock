@@ -739,6 +739,7 @@ dependencies = [
  "cdf-project",
  "cdf-python",
  "cdf-runtime",
+ "cdf-source-files",
  "cdf-source-postgres",
  "cdf-source-rest",
  "cdf-state-sqlite",

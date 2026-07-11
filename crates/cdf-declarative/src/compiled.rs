@@ -28,8 +28,8 @@ use cdf_kernel::{
 use cdf_runtime::{CompiledSourcePlan, SourceCompileRequest, SourceRegistry};
 use cdf_source_files::{
     FileCompressionDeclaration, FileFormatDeclaration, FileIdentityMetadata, FileResourcePlan,
-    FileRuntimeDependencies, FileTransportResource, file_partitions_for_plan, open_file_resource,
-    open_file_resource_preview,
+    FileRuntimeDependencies, FileSourceDriver, FileTransportResource, file_partitions_for_plan,
+    open_file_resource, open_file_resource_preview,
 };
 use cdf_source_postgres::PostgresSourceDriver;
 use cdf_source_rest::{RestResourcePlan, RestSourceDriver, cursor_pushdown_value};
@@ -150,6 +150,7 @@ impl CompiledResource {
         resource.schema = Arc::clone(&schema);
         if let Some(plan) = &mut resource.source_plan {
             plan.schema = schema.as_ref().clone();
+            plan.effective_schema_runtime = Some(runtime.clone());
         }
         resource.effective_schema_runtime = Some(runtime);
         Ok(resource)
@@ -683,6 +684,7 @@ fn compile_resource(
     let source_plan = compile_neutral_source_plan(
         source,
         resource,
+        &plan,
         &descriptor,
         &schema,
         type_policy_allowances,
@@ -705,6 +707,7 @@ fn compile_resource(
 fn compile_neutral_source_plan(
     source: &SourceDeclaration,
     resource: &ResourceDeclaration,
+    compatibility_plan: &CompiledResourcePlan,
     descriptor: &ResourceDescriptor,
     schema: &Schema,
     type_policy_allowances: TypePolicyAllowances,
@@ -737,6 +740,7 @@ fn compile_neutral_source_plan(
                 descriptor: descriptor.clone(),
                 schema: schema.clone(),
                 type_policy_allowances,
+                effective_schema_runtime: None,
             }
         }
         SourceDeclaration::Rest(rest) => {
@@ -824,9 +828,67 @@ fn compile_neutral_source_plan(
                 descriptor: descriptor.clone(),
                 schema: schema.clone(),
                 type_policy_allowances,
+                effective_schema_runtime: None,
             }
         }
-        SourceDeclaration::Files(_) => return Ok(None),
+        SourceDeclaration::Files(files) => {
+            let CompiledResourcePlan::Files(file_plan) = compatibility_plan else {
+                return Err(CdfError::internal(
+                    "file declaration compiled to a non-file compatibility plan",
+                ));
+            };
+            registry.register(FileSourceDriver::new(|_, _| {
+                Err(CdfError::internal(
+                    "compile-only file driver transport factory was invoked",
+                ))
+            })?)?;
+            let mut source_options = BTreeMap::from([
+                (
+                    "source_name".to_owned(),
+                    serde_json::Value::String(file_plan.source.clone()),
+                ),
+                (
+                    "root".to_owned(),
+                    serde_json::Value::String(file_plan.root.clone()),
+                ),
+                (
+                    "egress_allowlist".to_owned(),
+                    json_value(&files.egress_allowlist)?,
+                ),
+            ]);
+            if let Some(auth) = &files.auth {
+                source_options.insert("auth".to_owned(), json_value(auth)?);
+            }
+            if let Some(credentials) = &files.credentials {
+                source_options.insert(
+                    "credentials".to_owned(),
+                    serde_json::Value::String(credentials.clone()),
+                );
+            }
+            SourceCompileRequest {
+                source_kind: "files".to_owned(),
+                source_options,
+                resource_options: BTreeMap::from([
+                    (
+                        "glob".to_owned(),
+                        serde_json::Value::String(file_plan.glob.clone()),
+                    ),
+                    ("format".to_owned(), json_value(&file_plan.format)?),
+                    (
+                        "format_declared".to_owned(),
+                        serde_json::Value::Bool(file_plan.format_declared),
+                    ),
+                    (
+                        "compression".to_owned(),
+                        json_value(&file_plan.compression)?,
+                    ),
+                ]),
+                descriptor: descriptor.clone(),
+                schema: schema.clone(),
+                type_policy_allowances,
+                effective_schema_runtime: None,
+            }
+        }
     };
     registry.compile(request).map(Some)
 }

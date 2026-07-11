@@ -331,6 +331,14 @@ impl FileTransportFacade {
         self
     }
 
+    pub fn with_shared_secret_provider(
+        mut self,
+        provider: Arc<dyn SecretProvider + Send + Sync>,
+    ) -> Self {
+        self.secret_provider = Some(provider);
+        self
+    }
+
     pub fn with_object_store(
         mut self,
         origin: impl Into<String>,

@@ -2278,6 +2278,12 @@ trust = "governed"
         };
         assert_eq!(plan.format, expected);
         assert!(!plan.format_declared);
+        let source_plan = resource.source_plan().expect("neutral file source plan");
+        assert_eq!(source_plan.driver.driver_id.as_str(), "files");
+        assert_eq!(
+            source_plan.execution_capabilities.executor_class,
+            cdf_runtime::SourceExecutorClass::Cpu
+        );
     }
 
     for glob in ["events", "*.*", "*.ipc", "*.feather", "*.ndjson"] {

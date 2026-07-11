@@ -629,7 +629,7 @@ impl EffectiveSchemaObservationEvidence {
 }
 
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectiveSchemaCatalogEntry {
     pub physical_schema_hash: SchemaHash,
     pub schema: SchemaRef,
@@ -784,7 +784,7 @@ impl DiscoveryCoverageEvidence {
 }
 
 #[non_exhaustive]
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EffectiveSchemaRuntime {
     pub evidence: EffectiveSchemaEvidence,
     pub schema_catalog: Vec<EffectiveSchemaCatalogEntry>,
