@@ -16,6 +16,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 - `.10x/tickets/2026-07-11-p3-c2-parallel-frontier-execution.md`
 - `.10x/tickets/2026-07-11-p3-c3-engine-ffi-parallel-integration.md`
 - `.10x/tickets/2026-07-11-p3-c4-jobs-invariance-scaling-matrix.md`
+- `.10x/tickets/2026-07-11-p3-c5-isolated-worker-equivalence.md`
 
 ## Acceptance criteria
 
@@ -23,6 +24,7 @@ Execute logical file, row-group, window, and other safe partitions concurrently 
 - Cancellation, first-error propagation, retry units, source positions, and checkpoint scopes remain deterministic.
 - Scaling is measured until the relevant device/destination saturates.
 - Python behavior is equivalent on GIL and free-threaded interpreters, with only concurrency differing.
+- Direct-local and canonical serialized isolated-worker execution are byte/semantics equivalent for fixed partition plans, preserving the future distribution seam without shipping a remote scheduler.
 
 ## Blockers
 
