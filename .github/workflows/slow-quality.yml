@@ -107,7 +107,7 @@ jobs:
 
       - name: Full tests
         run: |
-          cargo nextest run --workspace --locked
+          cargo nextest run --workspace --exclude cdf-benchmarks --locked
           cargo test --workspace --doc --all-features --locked --no-fail-fast
 
       - name: Conformance, golden, property, and chaos gates
@@ -122,9 +122,6 @@ jobs:
 
       - name: Generated command and error reference freshness
         run: cargo run -p cdf-cli --locked --features cli-artifacts --bin cdf-generate-cli-artifacts -- --docs-dir docs --docs-only --check
-
-      - name: Benchmark smoke gate
-        run: CDF_BENCH_SUITE=smoke cargo bench -p cdf-benchmarks --bench baseline --locked
 
       - name: Coverage summary
         run: cargo llvm-cov --workspace --all-features --locked --summary-only

@@ -1,0 +1,60 @@
+name: Performance Lab
+
+on:
+  schedule:
+    - cron: "41 9 * * 1"
+  workflow_dispatch:
+    inputs:
+      suite:
+        description: Benchmark suite
+        required: true
+        default: smoke
+        type: choice
+        options:
+          - smoke
+          - full
+
+concurrency:
+  group: performance-lab-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CDF_BENCH_SUITE: ${{ github.event_name == 'workflow_dispatch' && inputs.suite || 'smoke' }}
+
+jobs:
+  performance-lab:
+    name: Isolated performance lab
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+
+      - name: Cache Cargo builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: performance-lab
+
+      - name: Lab schema, comparison, and generated-envelope freshness
+        run: cargo test -p cdf-benchmarks --tests --locked
+
+      - name: Legacy smoke or full trend compatibility
+        run: cargo bench -p cdf-benchmarks --bench baseline --locked
+
+      - name: Upload lab artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-lab-${{ github.run_id }}
+          path: target/cdf-benchmarks
+          if-no-files-found: ignore

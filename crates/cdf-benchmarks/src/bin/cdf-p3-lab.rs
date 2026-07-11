@@ -1,9 +1,10 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
 use cdf_benchmarks::{
-    ChildCommand, HostCapabilityProvider, HostProbeConfig, MacroRunSpec, ProfileTool,
-    ReferenceWorkload, SystemHostProvider, canonical_json_bytes, host_class, plan_profile,
-    run_reference,
+    BenchmarkReport, ChildCommand, EnvelopeSpec, HostCapabilityProvider, HostProbeConfig,
+    MacroRunSpec, ProfileTool, ReferenceWorkload, SystemHostProvider, canonical_json_bytes,
+    compare_reports, comparison_fails, generate_envelope, host_class, install_baseline,
+    plan_profile, run_reference,
 };
 
 fn main() {
@@ -34,6 +35,33 @@ fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         [command, request] if command == "run-cell" => {
             let spec: MacroRunSpec = serde_json::from_slice(&fs::read(request)?)?;
             write_stdout(&canonical_json_bytes(&spec.execute(&provider())?)?)
+        }
+        [command, baseline, current] if command == "compare" => {
+            let baseline: BenchmarkReport = serde_json::from_slice(&fs::read(baseline)?)?;
+            let current: BenchmarkReport = serde_json::from_slice(&fs::read(current)?)?;
+            let comparison = compare_reports(&baseline, &current)?;
+            write_stdout(&canonical_json_bytes(&comparison)?)?;
+            if comparison_fails(&comparison) {
+                std::process::exit(3);
+            }
+            Ok(())
+        }
+        [command, report, spec] if command == "envelope" => {
+            let report: BenchmarkReport = serde_json::from_slice(&fs::read(report)?)?;
+            let spec: EnvelopeSpec = serde_json::from_slice(&fs::read(spec)?)?;
+            write_stdout(generate_envelope(&report, &spec)?.as_bytes())
+        }
+        [command, report, baseline_root, repository_root, evidence]
+            if command == "baseline-install" =>
+        {
+            let report: BenchmarkReport = serde_json::from_slice(&fs::read(report)?)?;
+            let index = install_baseline(
+                Path::new(baseline_root),
+                Path::new(repository_root),
+                &report,
+                evidence,
+            )?;
+            write_stdout(&canonical_json_bytes(&index)?)
         }
         [command, tool, artifact, program, rest @ ..] if command == "profile-dry-run" => {
             let tool = match tool.as_str() {

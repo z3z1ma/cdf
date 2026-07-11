@@ -202,6 +202,9 @@ Useful entry points:
 
 - [`VISION.md`](VISION.md): the full system vision
 - [`QUALITY.md`](QUALITY.md): the Rust quality and verification procedure
+- [`docs/performance-envelope.md`](docs/performance-envelope.md): generated P3
+  performance evidence; it is explicitly pre-baseline and authorizes no
+  throughput claim until recorded measurements replace the fixture
 - [`.10x/`](.10x/): durable project memory, decisions, specs, tickets, evidence,
   and reviews
 
@@ -210,15 +213,15 @@ Useful entry points:
 This is a Cargo workspace.
 
 ```bash
+cargo metadata --format-version 1 --locked --no-deps >/dev/null
 cargo fmt --all -- --check
-cargo check --workspace --all-targets --locked
-cargo test --workspace --all-targets --locked --no-fail-fast
-cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo clippy -p cdf-kernel -p cdf-contract -p cdf-package -p cdf-formats -p cdf-engine --lib --locked -- -D warnings
+cargo test -p cdf-kernel -p cdf-contract -p cdf-package -p cdf-formats --lib --locked --no-fail-fast
 ```
 
-Significant changes should follow `QUALITY.md`. Start with fast checks, run the
-deeper gates before closing important work, and record durable evidence in
-`.10x/` when the result needs to outlive terminal scrollback.
+These are the deliberately lean fast checks. Significant changes should follow
+`QUALITY.md` and add only the focused profile required by the changed risk
+vector. Scheduled/manual tiers own broad integration and performance runs.
 
 Local CodeQL runs should use the reusable database workflow described in the
 quality notes. Rebuilding that database every time is a waste of a good morning.

@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "title": "CDF Terabyte-Scale Performance Envelope",
+  "evidence_status": "PRE-BASELINE TEST FIXTURE — no performance claim is authorized until P3 L5 replaces this document from recorded evidence.",
+  "evidence_record": null,
+  "targets": [
+    {"workload_id": "tlc_parquet_to_package", "label": "Parquet file/glob → package", "target": "≥0.7× raw Arrow; ≥1.5 GB/s", "reference_workload_id": "raw_arrow_parquet"},
+    {"workload_id": "tpch_csv_to_package", "label": "CSV → package", "target": "≥0.6× raw Arrow; ≥400 MB/s", "reference_workload_id": "raw_arrow_csv"},
+    {"workload_id": "json_ndjson_to_package", "label": "NDJSON/JSON → package", "target": "≥300–500 MB/s; ≥3× DOM path/core", "reference_workload_id": "raw_arrow_ndjson"},
+    {"workload_id": "validation_kernel", "label": "Contract validation", "target": "≥1 GB/s/core at 64k rows", "reference_workload_id": null},
+    {"workload_id": "package_build", "label": "Package build", "target": "≥70% device write; hash ≤5% wall", "reference_workload_id": "sequential_write"},
+    {"workload_id": "duckdb_commit", "label": "Package → DuckDB", "target": "≥1M rows/s; ≥5× scalar appender", "reference_workload_id": "duckdb_native_ingest"},
+    {"workload_id": "postgres_commit", "label": "Package → Postgres", "target": "binary COPY; ≥2× CSV COPY", "reference_workload_id": "postgres_csv_copy"},
+    {"workload_id": "parquet_destination", "label": "Package → Parquet", "target": "≥60% device write roofline", "reference_workload_id": "sequential_write"},
+    {"workload_id": "tlc_e2e_duckdb", "label": "Full-year TLC HTTPS → DuckDB", "target": "≤1.5× download + native ingest", "reference_workload_id": "tlc_download_duckdb_native"},
+    {"workload_id": "constant_memory_stress", "label": "1 TB synthetic → Parquet", "target": "default budget; stable RSS; linear scaling", "reference_workload_id": null}
+  ],
+  "profile_links": {}
+}

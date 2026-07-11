@@ -504,6 +504,15 @@ pub fn validate_report(report: &BenchmarkReport) -> BenchResult<()> {
                         "observed benchmark samples require positive wall_time_ns",
                     ));
                 }
+                if observation.samples.windows(2).any(|samples| {
+                    samples[0].rows != samples[1].rows
+                        || samples[0].logical_bytes != samples[1].logical_bytes
+                        || samples[0].physical_bytes != samples[1].physical_bytes
+                }) {
+                    return Err(bench_error(
+                        "observed benchmark samples must repeat identical rows and byte authorities",
+                    ));
+                }
                 if summary != &summarize_samples(&observation.samples)? {
                     return Err(bench_error(
                         "observed benchmark summary must be derived exactly from retained samples",

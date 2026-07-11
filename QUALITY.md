@@ -317,9 +317,20 @@ Coverage and mutation testing are test-quality signals. They guide attention tow
 
 Use when the change set touches hot paths, allocation behavior, binary size, build footprint, benchmarked code, CLIs, WASM, embedded targets, serverless artifacts, or performance-sensitive runtime behavior.
 
+Keep ordinary change verification focused on the benchmark authority and policy tests:
+
 ```bash
-cargo bench --workspace --locked
+cargo test -p cdf-benchmarks --tests --locked
 ```
+
+Run timing only in the dedicated scheduled/manual performance tier, never as a pull-request fast check:
+
+```bash
+CDF_BENCH_SUITE=smoke cargo bench -p cdf-benchmarks --bench baseline --locked
+CDF_BENCH_SUITE=full cargo bench -p cdf-benchmarks --bench baseline --locked
+```
+
+P3 macro reports use `cdf-p3-lab run-cell`; cold-cache control is explicit opt-in. Baseline replacement uses `baseline-install` with a `.10x/evidence/` record, and comparisons use `compare` without rewriting baseline history.
 
 For binary size:
 

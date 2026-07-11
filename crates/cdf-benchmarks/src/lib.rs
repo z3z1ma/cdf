@@ -1,6 +1,8 @@
 use std::error::Error;
 
 mod catalog;
+mod comparison;
+mod envelope;
 mod fixtures;
 mod host;
 mod lab;
@@ -13,6 +15,8 @@ mod runners;
 
 pub use catalog::{FixtureCatalog, FixtureSpec, fixture_catalog, fixture_spec};
 pub use cdf_package::canonical_json_bytes;
+pub use comparison::*;
+pub use envelope::*;
 pub use fixtures::write_all_local_fixture_formats;
 pub use host::{HostProbeConfig, SystemHostProvider};
 pub use lab::*;
