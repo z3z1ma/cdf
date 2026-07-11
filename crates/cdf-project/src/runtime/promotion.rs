@@ -232,7 +232,7 @@ where
     write_recovery_status(
         request.project_root,
         &staged,
-        100,
+        1,
         SchemaPromotionExecutionPhase::Packaged,
         packaged_targets,
         "settle remaining destination targets",
@@ -266,7 +266,7 @@ where
         write_recovery_status(
             request.project_root,
             &staged,
-            900,
+            u64::MAX,
             SchemaPromotionExecutionPhase::Complete,
             verified_targets,
             "none",
@@ -311,7 +311,7 @@ where
             write_recovery_status(
                 request.project_root,
                 &staged,
-                200 + (target_index as u64 * 2),
+                target_recovery_status_sequence(target_index, false)?,
                 SchemaPromotionExecutionPhase::DestinationSettled,
                 destination_settled,
                 "commit the settled target checkpoint",
@@ -342,7 +342,7 @@ where
             write_recovery_status(
                 request.project_root,
                 &staged,
-                201 + (target_index as u64 * 2),
+                target_recovery_status_sequence(target_index, true)?,
                 SchemaPromotionExecutionPhase::Checkpointed,
                 targets.clone(),
                 remaining_action,
@@ -363,7 +363,7 @@ where
     write_recovery_status(
         request.project_root,
         &staged,
-        800,
+        u64::MAX - 1,
         SchemaPromotionExecutionPhase::LockPublished,
         targets.clone(),
         "record the exact promotion publication event",
@@ -376,7 +376,7 @@ where
     write_recovery_status(
         request.project_root,
         &staged,
-        900,
+        u64::MAX,
         SchemaPromotionExecutionPhase::Complete,
         targets.clone(),
         "none",
@@ -1867,6 +1867,26 @@ fn pending_target_report(
     }
 }
 
+fn target_recovery_status_sequence(
+    target_index: usize,
+    checkpointed: bool,
+) -> cdf_kernel::Result<u64> {
+    let index = u64::try_from(target_index)
+        .map_err(|_| cdf_kernel::CdfError::internal("promotion target index exceeds u64"))?;
+    let sequence = index
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(if checkpointed { 3 } else { 2 }))
+        .ok_or_else(|| {
+            cdf_kernel::CdfError::internal("promotion recovery journal sequence overflow")
+        })?;
+    if sequence >= u64::MAX - 1 {
+        return Err(cdf_kernel::CdfError::internal(
+            "promotion recovery journal exhausted target sequence space",
+        ));
+    }
+    Ok(sequence)
+}
+
 fn write_recovery_status(
     project_root: &Path,
     staged: &SchemaPromotionExecutionPlanArtifact,
@@ -2082,7 +2102,7 @@ fn promotion_recovery_status_directory(promotion_id: &PromotionId) -> String {
 
 fn promotion_recovery_status_relative_path(promotion_id: &PromotionId, sequence: u64) -> String {
     format!(
-        "{}/{sequence:06}.json",
+        "{}/{sequence:020}.json",
         promotion_recovery_status_directory(promotion_id)
     )
 }

@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Created: 2026-07-10
 Updated: 2026-07-10
 Parent: .10x/tickets/2026-07-10-p2-rp9-promotion-execution-recovery-gc.md
@@ -36,7 +36,8 @@ No new destination strategy, arbitrary update SQL, distributed scheduler, or GC 
 - 2026-07-10: Added an explicit run-ledger v3-to-v4 migration fixture. It preserves and reads the pre-existing run event, reports the component migration, creates publication authority, and successfully writes/reads a new promotion publication after migration.
 - 2026-07-10: Added a deterministic append-only recovery journal under each staged promotion. Every persisted crash boundary records a create-or-verify, secret-free phase event with committed/pending targets, remaining action, and exact recovery command; the journal is evidence only and does not replace checkpoint/publication authority. CLI JSON errors expose the structured status and human errors render the same fields. The full crash-boundary matrix asserts `staged`, `packaged`, `destination_settled`, `checkpointed`, `lock_published`, and `complete`; a secret-backed Postgres connection failure proves the resolved credential is absent from errors and all generated artifacts. Full affected suites pass: `cdf-project` 163, `cdf-state-sqlite` 37, and `cdf-cli` 257 tests.
 - 2026-07-10: Added a live Postgres command scenario that reads exact residual evidence, adds the promoted column, updates addressed rows, clears residuals, commits the promotion checkpoint, and publishes through the same CLI path as DuckDB/Parquet. The scenario exposed and fixed a destination-boundary leak: promotion no longer calls raw protocol planning directly. `ProjectDestinationRuntime::prepare_correction_commit` now owns destination-specific preparation; Postgres performs live catalog inspection and binds its private correction request behind the generic trait. The promotion engine contains no destination-name branch. Postgres's full 40-test suite and the focused project/runtime tests pass.
+- 2026-07-10: Closed run-vs-promotion authority at the shared SQLite checkpoint gate: after publication, a non-schema-contract checkpoint must carry the latest published schema hash for its resource in the same transaction that advances the head. Promotion-vs-promotion is covered by exclusive fenced scope leases; pin-vs-promotion is covered by the guarded lock CAS/stale-authority suite. Removed the recovery journal's provisional small sequence ranges in favor of checked `u64` target sequences with terminal values reserved for lock/publication. Final evidence is `.10x/evidence/2026-07-10-p2-rp9c-promotion-command-conformance.md`; the severity-focused adversarial review passes at `.10x/reviews/2026-07-10-p2-rp9c-promotion-command-review.md`.
 
 ## Blockers
 
-Depends on RP9A, RP9B, and the ratified Parquet namespace implementation.
+None.

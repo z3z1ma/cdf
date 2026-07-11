@@ -6,7 +6,8 @@ use std::{
 
 use cdf_kernel::{
     CdfError, Checkpoint, CheckpointId, CheckpointStatus, CheckpointStore, PackageHash, PipelineId,
-    Receipt, ResourceId, Result, RewindReport, RewindRequest, ScopeKey, SourcePosition, StateDelta,
+    PromotionPublicationEvent, Receipt, ResourceId, Result, RewindReport, RewindRequest, ScopeKey,
+    SourcePosition, StateDelta,
 };
 use rusqlite::{Connection, OpenFlags, OptionalExtension, Row, Transaction, params};
 
@@ -320,6 +321,7 @@ pub(crate) fn commit_checkpoint_tx(
         )));
     }
     verify_receipt(receipt, &checkpoint.delta)?;
+    verify_current_published_schema_tx(tx, &checkpoint.delta)?;
 
     let scope_json = encode_json(&checkpoint.delta.scope)?;
     tx.execute(
@@ -343,6 +345,50 @@ pub(crate) fn commit_checkpoint_tx(
     .map_err(sqlite_error)?;
     SqliteCheckpointStore::fetch_by_id_tx(tx, checkpoint_id)?
         .ok_or_else(|| missing_checkpoint(checkpoint_id))
+}
+
+fn verify_current_published_schema_tx(tx: &Transaction<'_>, delta: &StateDelta) -> Result<()> {
+    if matches!(delta.scope, ScopeKey::SchemaContract { .. }) {
+        return Ok(());
+    }
+    let publication_table_exists = tx
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cdf_promotion_publications'",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(sqlite_error)?
+        .is_some();
+    if !publication_table_exists {
+        return Ok(());
+    }
+    let mut statement = tx
+        .prepare(
+            "SELECT event_json FROM cdf_promotion_publications ORDER BY published_at_ms DESC, promotion_id DESC",
+        )
+        .map_err(sqlite_error)?;
+    let mut rows = statement.query([]).map_err(sqlite_error)?;
+    let mut publication = None;
+    while let Some(row) = rows.next().map_err(sqlite_error)? {
+        let event: PromotionPublicationEvent =
+            serde_json::from_str(&row.get::<_, String>(0).map_err(sqlite_error)?)
+                .map_err(|error| CdfError::data(error.to_string()))?;
+        if event.resource_id == delta.resource_id {
+            publication = Some(event);
+            break;
+        }
+    }
+    let Some(event) = publication else {
+        return Ok(());
+    };
+    if event.new_schema_hash != delta.schema_hash {
+        return Err(CdfError::contract(format!(
+            "checkpoint {} carries schema {} but promotion {} published current schema {}; rebuild the run plan from current schema authority",
+            delta.checkpoint_id, delta.schema_hash, event.promotion_id, event.new_schema_hash
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn initialize_schema(conn: &Connection) -> Result<()> {

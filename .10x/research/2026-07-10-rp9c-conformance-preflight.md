@@ -12,7 +12,7 @@ What destination-neutral deterministic ordering, recovery, command-output, migra
 
 This was a read-only implementation/conformance preflight. It inspected:
 
-- `.10x/tickets/2026-07-10-p2-rp9c-promotion-command-concurrency-conformance.md` and its RP9A/RP9B dependencies;
+- `.10x/tickets/done/2026-07-10-p2-rp9c-promotion-command-concurrency-conformance.md` and its RP9A/RP9B dependencies;
 - `.10x/specs/schema-promotion-corrections.md`, `.10x/specs/checkpoint-state-commit-gate.md`, `.10x/specs/package-lifecycle-determinism.md`, `.10x/specs/cli-error-experience-catalog.md`, and `.10x/specs/project-cli-observability-security.md`;
 - the correction-receipt, run-ledger/commit-session, Parquet identifier, and RP9B settlement decisions/research;
 - the initial RP9 fail review, implementer review, and current RP9A independent review;

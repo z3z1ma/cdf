@@ -1472,6 +1472,84 @@ fn sqlite_promotion_publication_is_append_only_idempotent_authority() {
 }
 
 #[test]
+fn sqlite_checkpoint_commit_rejects_schema_stale_after_promotion_publication() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("state.db");
+    let ledger = SqliteRunLedger::open(&path).unwrap();
+    let store = SqliteCheckpointStore::open(&path).unwrap();
+    let publication = PromotionPublicationEvent {
+        version: PROMOTION_PUBLICATION_EVENT_VERSION,
+        promotion_id: PromotionId::new("promotion-current-schema").unwrap(),
+        resource_id: resource_id(),
+        old_schema_hash: SchemaHash::new("schema-sha256").unwrap(),
+        new_schema_hash: SchemaHash::new("schema-promoted").unwrap(),
+        installed_lock_sha256: "sha256:lock-current".to_owned(),
+        targets: vec![PromotionPublicationTarget {
+            destination_id: DestinationId::new("duckdb").unwrap(),
+            target: TargetName::new("orders").unwrap(),
+            correction_package_hash: PackageHash::new("sha256:correction-current").unwrap(),
+            receipt_id: ReceiptId::new("receipt-correction-current").unwrap(),
+            checkpoint_id: CheckpointId::new("checkpoint-correction-current").unwrap(),
+        }],
+        published_at_ms: 10,
+    };
+    ledger.publish_promotion(publication).unwrap();
+    let unrelated = PromotionPublicationEvent {
+        version: PROMOTION_PUBLICATION_EVENT_VERSION,
+        promotion_id: PromotionId::new("promotion-unrelated-newer").unwrap(),
+        resource_id: ResourceId::new("other.resource").unwrap(),
+        old_schema_hash: SchemaHash::new("schema-a").unwrap(),
+        new_schema_hash: SchemaHash::new("schema-b").unwrap(),
+        installed_lock_sha256: "sha256:lock-other".to_owned(),
+        targets: vec![PromotionPublicationTarget {
+            destination_id: DestinationId::new("duckdb").unwrap(),
+            target: TargetName::new("other").unwrap(),
+            correction_package_hash: PackageHash::new("sha256:correction-other").unwrap(),
+            receipt_id: ReceiptId::new("receipt-correction-other").unwrap(),
+            checkpoint_id: CheckpointId::new("checkpoint-correction-other").unwrap(),
+        }],
+        published_at_ms: 20,
+    };
+    ledger.publish_promotion(unrelated.clone()).unwrap();
+
+    let stale = delta(
+        "checkpoint-stale-schema",
+        None,
+        ScopeKey::Resource,
+        cursor_position(1),
+        "package-stale-schema",
+    );
+    store.propose(stale.clone()).unwrap();
+    let error = store
+        .commit(&stale.checkpoint_id, receipt(&stale))
+        .unwrap_err();
+    assert!(error.message.contains("published current schema"));
+    assert!(
+        store
+            .head(&stale.pipeline_id, &stale.resource_id, &stale.scope)
+            .unwrap()
+            .is_none()
+    );
+
+    let mut current = delta(
+        "checkpoint-current-schema",
+        None,
+        ScopeKey::Resource,
+        cursor_position(2),
+        "package-current-schema",
+    );
+    current.schema_hash = SchemaHash::new("schema-promoted").unwrap();
+    store.propose(current.clone()).unwrap();
+    assert_eq!(
+        store
+            .commit(&current.checkpoint_id, receipt(&current))
+            .unwrap()
+            .status,
+        CheckpointStatus::Committed
+    );
+}
+
+#[test]
 fn sqlite_promotion_settlement_fences_checkpoint_and_publication_inside_transactions() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("settlement.db");
