@@ -1,3 +1,4 @@
+use crate::BlockingLaneSpec;
 use crate::prelude::*;
 
 use std::collections::BTreeMap;
@@ -40,6 +41,7 @@ pub enum DestinationWriterModel {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DestinationRuntimeCapabilities {
+    pub blocking_lanes: Vec<BlockingLaneSpec>,
     pub ingress_mode: DestinationIngressMode,
     pub staged_ingress: Option<StagedIngressCapabilities>,
     pub writer_model: DestinationWriterModel,
@@ -55,6 +57,7 @@ pub struct DestinationRuntimeCapabilities {
 impl Default for DestinationRuntimeCapabilities {
     fn default() -> Self {
         Self {
+            blocking_lanes: Vec::new(),
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
             staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,
@@ -71,6 +74,15 @@ impl Default for DestinationRuntimeCapabilities {
 
 impl DestinationRuntimeCapabilities {
     pub fn validate(&self) -> Result<()> {
+        let mut lane_ids = BTreeMap::new();
+        for lane in &self.blocking_lanes {
+            lane.validate()?;
+            if lane_ids.insert(&lane.lane_id, ()).is_some() {
+                return Err(CdfError::contract(
+                    "destination blocking lane ids must be unique",
+                ));
+            }
+        }
         match (&self.ingress_mode, &self.staged_ingress) {
             (DestinationIngressMode::FinalizedPackageOnly, None) => {}
             (DestinationIngressMode::StagedDurableSegments, Some(staging)) => {

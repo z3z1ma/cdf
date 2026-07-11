@@ -302,6 +302,14 @@ fn destination_description(destination: &PostgresDestination) -> DestinationDesc
 
 fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
     DestinationRuntimeCapabilities {
+        blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
+            lane_id: "postgres.sync".to_owned(),
+            maximum_concurrency: 4,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: cdf_runtime::LaneAffinity::Shared,
+            interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+        }],
         ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
         staged_ingress: None,
         writer_model: DestinationWriterModel::SingleWriter,

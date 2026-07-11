@@ -120,6 +120,7 @@ impl DestinationRuntime for MockStagedRuntime {
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
         DestinationRuntimeCapabilities {
+            blocking_lanes: Vec::new(),
             ingress_mode: DestinationIngressMode::StagedDurableSegments,
             staged_ingress: Some(StagedIngressCapabilities {
                 recovery: StagingRecoveryMode::Resumable,
@@ -385,6 +386,7 @@ impl DestinationDriver for MockDriver {
             sheet_artifact_hash: artifact_hash(&sheet_artifact)?,
             sheet_artifact,
             runtime: DestinationRuntimeCapabilities {
+                blocking_lanes: Vec::new(),
                 ingress_mode: DestinationIngressMode::StagedDurableSegments,
                 staged_ingress: Some(StagedIngressCapabilities {
                     recovery: StagingRecoveryMode::Resumable,
@@ -544,6 +546,7 @@ fn registry_rejects_empty_malformed_and_duplicate_schemes() {
 #[test]
 fn runtime_capabilities_are_serializable_plan_evidence() {
     let capabilities = DestinationRuntimeCapabilities {
+        blocking_lanes: Vec::new(),
         ingress_mode: DestinationIngressMode::StagedDurableSegments,
         staged_ingress: Some(StagedIngressCapabilities {
             recovery: StagingRecoveryMode::RollbackRedrive,
@@ -787,6 +790,7 @@ fn staged_abort_is_repeatable_and_finalized_only_runtime_fails_closed() {
 #[test]
 fn staged_capability_requires_cleanup_abort_and_byte_bounds() {
     let mut capabilities = DestinationRuntimeCapabilities {
+        blocking_lanes: Vec::new(),
         ingress_mode: DestinationIngressMode::StagedDurableSegments,
         staged_ingress: Some(StagedIngressCapabilities {
             recovery: StagingRecoveryMode::Resumable,

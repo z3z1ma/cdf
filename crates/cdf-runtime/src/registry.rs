@@ -93,7 +93,13 @@ impl DestinationRegistry {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
-        self.driver_for_uri(uri)?.resolve(uri, context)
+        let runtime = self.driver_for_uri(uri)?.resolve(uri, context)?;
+        let capabilities = runtime.runtime_capabilities();
+        capabilities.validate()?;
+        if let Some(execution) = context.execution_services() {
+            execution.ensure_blocking_lanes(&capabilities.blocking_lanes)?;
+        }
+        Ok(runtime)
     }
 
     pub fn health(

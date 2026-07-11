@@ -9,8 +9,9 @@ use std::{
 use cdf_kernel::{CdfError, Result};
 use cdf_memory::MemoryCoordinator;
 use cdf_runtime::{
-    BlockingLaneSpec, BlockingTask, CpuTaskSpec, ExecutionHost, ExecutionHostCapabilities,
-    ExecutionTaskScope, IoTask, IoValue, IoValueTask, RunCancellation, TaskScopeReport,
+    BlockingLaneSpec, BlockingTask, BlockingValueTask, CpuTaskSpec, ExecutionHost,
+    ExecutionHostCapabilities, ExecutionTaskScope, IoTask, IoValue, IoValueTask, RunCancellation,
+    TaskScopeReport,
 };
 use futures_util::FutureExt;
 use tokio::{runtime::Runtime, sync::oneshot, task::JoinHandle as TokioJoinHandle};
@@ -170,11 +171,12 @@ fn worker_loop(state: Arc<(Mutex<PoolState>, Condvar)>, slots: Arc<CpuSlots>) {
 }
 
 pub struct StandaloneExecutionHost {
-    capabilities: ExecutionHostCapabilities,
+    capabilities: Mutex<ExecutionHostCapabilities>,
     runtime: Runtime,
     memory: Arc<dyn MemoryCoordinator>,
+    slots: Arc<CpuSlots>,
     cpu: Arc<FixedTaskPool>,
-    lanes: BTreeMap<String, (BlockingLaneSpec, Arc<FixedTaskPool>)>,
+    lanes: Mutex<BTreeMap<String, (BlockingLaneSpec, Arc<FixedTaskPool>)>>,
 }
 
 impl StandaloneExecutionHost {
@@ -260,18 +262,19 @@ impl StandaloneExecutionHost {
             })
             .collect::<Result<BTreeMap<_, _>>>()?;
         Ok(Self {
-            capabilities,
+            capabilities: Mutex::new(capabilities),
             runtime,
             memory,
+            slots,
             cpu,
-            lanes,
+            lanes: Mutex::new(lanes),
         })
     }
 }
 
 impl ExecutionHost for StandaloneExecutionHost {
-    fn capabilities(&self) -> &ExecutionHostCapabilities {
-        &self.capabilities
+    fn capabilities(&self) -> ExecutionHostCapabilities {
+        self.capabilities.lock().unwrap().clone()
     }
 
     fn memory(&self) -> Arc<dyn MemoryCoordinator> {
@@ -283,7 +286,7 @@ impl ExecutionHost for StandaloneExecutionHost {
             handle: self.runtime.handle().clone(),
             cancellation: RunCancellation::default(),
             cpu: Arc::clone(&self.cpu),
-            lanes: self.lanes.clone(),
+            lanes: self.lanes.lock().unwrap().clone(),
             io: Vec::new(),
             cpu_tasks: Vec::new(),
             blocking_tasks: Vec::new(),
@@ -303,6 +306,79 @@ impl ExecutionHost for StandaloneExecutionHost {
         receiver
             .recv()
             .map_err(|_| CdfError::internal("I/O runtime stopped before the operation completed"))?
+    }
+
+    fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()> {
+        let mut registered = self.lanes.lock().unwrap();
+        let mut capabilities = self.capabilities.lock().unwrap();
+        for lane in lanes {
+            lane.validate()?;
+            if lane.cpu_slot_cost.max(lane.native_internal_parallelism)
+                > capabilities.logical_cpu_slots
+            {
+                return Err(CdfError::contract(format!(
+                    "blocking lane `{}` requires more CPU slots than the host provides",
+                    lane.lane_id
+                )));
+            }
+            if let Some((existing, _)) = registered.get(&lane.lane_id) {
+                if existing != lane {
+                    return Err(CdfError::contract(format!(
+                        "blocking lane `{}` conflicts with an existing host declaration",
+                        lane.lane_id
+                    )));
+                }
+                continue;
+            }
+            let pool = FixedTaskPool::new(
+                &lane.lane_id,
+                lane.maximum_concurrency,
+                Arc::clone(&self.slots),
+            )?;
+            registered.insert(lane.lane_id.clone(), (lane.clone(), pool));
+            capabilities.blocking_lanes.push(lane.clone());
+        }
+        capabilities.validate()
+    }
+
+    fn run_blocking_value(&self, lane: &str, task: BlockingValueTask) -> Result<IoValue> {
+        let pool = self
+            .lanes
+            .lock()
+            .unwrap()
+            .get(lane)
+            .map(|(spec, pool)| (spec.clone(), Arc::clone(pool)))
+            .ok_or_else(|| CdfError::contract(format!("unknown blocking lane `{lane}`")))?;
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let completion = pool.1.submit(
+            pool.0.cpu_slot_cost.max(pool.0.native_internal_parallelism),
+            RunCancellation::default(),
+            Box::new(move || {
+                let result = task();
+                let failed = result.is_err();
+                sender.send(result).map_err(|_| {
+                    CdfError::internal("blocking result receiver stopped before completion")
+                })?;
+                if failed {
+                    Err(CdfError::internal("blocking value operation failed"))
+                } else {
+                    Ok(())
+                }
+            }),
+        )?;
+        let value = receiver
+            .recv()
+            .map_err(|_| CdfError::internal("blocking lane stopped before returning its result"))?;
+        let completion = futures_executor::block_on(completion).map_err(|_| {
+            CdfError::internal("blocking lane completion channel closed unexpectedly")
+        })?;
+        match value {
+            Err(error) => Err(error),
+            Ok(value) => {
+                completion.result?;
+                Ok(value)
+            }
+        }
     }
 }
 
@@ -604,5 +680,37 @@ mod tests {
             "production runtimes/blocking executors must be owned by the standalone host:\n{}",
             violations.join("\n")
         );
+    }
+
+    #[test]
+    fn adapter_declared_lane_registers_and_executes_without_scheduler_wiring() {
+        let host = Arc::new(host());
+        let services = cdf_runtime::ExecutionServices::new(host.clone()).unwrap();
+        let lane = BlockingLaneSpec {
+            lane_id: "mock.adapter".to_owned(),
+            maximum_concurrency: 1,
+            cpu_slot_cost: 1,
+            native_internal_parallelism: 1,
+            affinity: LaneAffinity::Pinned,
+            interruption: InterruptionSafety::CooperativeOnly,
+        };
+        services
+            .ensure_blocking_lanes(std::slice::from_ref(&lane))
+            .unwrap();
+        let first = services
+            .run_blocking("mock.adapter", || {
+                Ok::<_, CdfError>(std::thread::current().id())
+            })
+            .unwrap();
+        let second = services
+            .run_blocking("mock.adapter", || {
+                Ok::<_, CdfError>(std::thread::current().id())
+            })
+            .unwrap();
+        assert_eq!(first, second);
+        assert!(host.capabilities().blocking_lanes.contains(&lane));
+        let mut conflict = lane;
+        conflict.maximum_concurrency = 2;
+        assert!(services.ensure_blocking_lanes(&[conflict]).is_err());
     }
 }

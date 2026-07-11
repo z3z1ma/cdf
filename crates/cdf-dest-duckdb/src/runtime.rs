@@ -143,6 +143,14 @@ impl DestinationRuntime for DuckDbDestination {
 
     fn runtime_capabilities(&self) -> DestinationRuntimeCapabilities {
         DestinationRuntimeCapabilities {
+            blocking_lanes: vec![cdf_runtime::BlockingLaneSpec {
+                lane_id: "duckdb.connection".to_owned(),
+                maximum_concurrency: 1,
+                cpu_slot_cost: 1,
+                native_internal_parallelism: 1,
+                affinity: cdf_runtime::LaneAffinity::Pinned,
+                interruption: cdf_runtime::InterruptionSafety::CooperativeOnly,
+            }],
             ingress_mode: DestinationIngressMode::FinalizedPackageOnly,
             staged_ingress: None,
             writer_model: DestinationWriterModel::SingleWriter,

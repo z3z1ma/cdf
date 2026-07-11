@@ -15,6 +15,7 @@ pub type IoTask = BoxFuture<'static, Result<()>>;
 pub type IoValue = Box<dyn Any + Send + 'static>;
 pub type IoValueTask = BoxFuture<'static, Result<IoValue>>;
 pub type BlockingTask = Box<dyn FnOnce() -> Result<()> + Send + 'static>;
+pub type BlockingValueTask = Box<dyn FnOnce() -> Result<IoValue> + Send + 'static>;
 
 #[derive(Clone, Debug, Default)]
 pub struct RunCancellation(Arc<AtomicBool>);
@@ -156,10 +157,12 @@ pub trait ExecutionTaskScope: Send {
 }
 
 pub trait ExecutionHost: Send + Sync {
-    fn capabilities(&self) -> &ExecutionHostCapabilities;
+    fn capabilities(&self) -> ExecutionHostCapabilities;
     fn memory(&self) -> Arc<dyn MemoryCoordinator>;
     fn open_scope(&self, run_id: &str) -> Result<Box<dyn ExecutionTaskScope>>;
     fn run_io_blocking(&self, task: IoValueTask) -> Result<IoValue>;
+    fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()>;
+    fn run_blocking_value(&self, lane: &str, task: BlockingValueTask) -> Result<IoValue>;
 }
 
 #[derive(Clone)]
@@ -200,6 +203,24 @@ impl ExecutionServices {
         }))?;
         value.downcast::<T>().map(|value| *value).map_err(|_| {
             CdfError::internal("execution host returned an unexpected I/O result type")
+        })
+    }
+
+    pub fn ensure_blocking_lanes(&self, lanes: &[BlockingLaneSpec]) -> Result<()> {
+        self.host.ensure_blocking_lanes(lanes)
+    }
+
+    pub fn run_blocking<T, F>(&self, lane: &str, operation: F) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T> + Send + 'static,
+    {
+        let value = self.host.run_blocking_value(
+            lane,
+            Box::new(move || operation().map(|value| Box::new(value) as IoValue)),
+        )?;
+        value.downcast::<T>().map(|value| *value).map_err(|_| {
+            CdfError::internal("execution host returned an unexpected blocking result type")
         })
     }
 }
