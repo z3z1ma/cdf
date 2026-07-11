@@ -29,7 +29,12 @@ No full multi-stage Tokio pipeline, row-group parallel reader, production dedup 
 
 ## Blockers
 
-Depends on L5 targets and A2 accounted payloads.
+None. L5 baseline evidence and A2 accounted payloads are complete.
+
+## Progress and notes
+
+- 2026-07-11: Ratified exact `canonical-segmentation-v1` targets in `.10x/decisions/p3-initial-batch-segment-targets.md`: 64k rows/8 MiB canonical target, 64k/32 MiB hard ceiling, and 8k–64k/1–32 MiB adaptive execution bounds.
+- 2026-07-11: Added validated policy and deterministic `p{partition}-s{segment}` identifier namespace, an adaptive controller driven only by observed width and non-identity memory telemetry, and conservative typed position joins. File manifests union by exact identity, numeric/timestamp cursors advance only within identical authority, compatible logs/composites join recursively, and opaque/page/foreign mismatches force a boundary.
 
 ## References
 

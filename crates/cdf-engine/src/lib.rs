@@ -5,6 +5,7 @@ mod memory;
 mod output_schema;
 mod planning;
 mod predicates;
+mod segmentation;
 mod table_provider;
 #[cfg(test)]
 mod tests;
@@ -21,6 +22,9 @@ pub use memory::DataFusionMemoryCoordinator;
 pub use planning::{
     CDF_NATIVE_RESOURCE_ADAPTER_KIND, Planner, datafusion_filter_pushdown, negotiate_scan_plan,
     validate_plan_schema_authority,
+};
+pub use segmentation::{
+    AdaptiveMicrobatchController, CanonicalSegmentationPolicy, PositionJoin, join_positions,
 };
 pub use table_provider::{QueryableResourceTableProvider, queryable_resource_table_provider};
 pub use types::*;
