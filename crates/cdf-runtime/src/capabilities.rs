@@ -1,5 +1,7 @@
 use crate::prelude::*;
 
+use std::collections::BTreeMap;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DestinationDescription {
@@ -44,6 +46,9 @@ pub struct DestinationRuntimeCapabilities {
     pub max_in_flight_bytes: Option<u64>,
     pub bulk_path: Option<String>,
     pub bulk_evidence_version: Option<String>,
+    pub replay_requires_explicit_target: bool,
+    pub replay_target_hint: Option<String>,
+    pub replay_policy_values: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for DestinationRuntimeCapabilities {
@@ -55,6 +60,9 @@ impl Default for DestinationRuntimeCapabilities {
             max_in_flight_bytes: None,
             bulk_path: None,
             bulk_evidence_version: None,
+            replay_requires_explicit_target: false,
+            replay_target_hint: None,
+            replay_policy_values: BTreeMap::new(),
         }
     }
 }
@@ -65,6 +73,23 @@ pub struct DestinationHealthProbe {
     pub description: String,
     pub requires_credentials: bool,
     pub mutates_destination: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DestinationHealthStatus {
+    Passed,
+    Failed,
+    Skipped,
+    Unsupported,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DestinationHealthResult {
+    pub probe_id: String,
+    pub status: DestinationHealthStatus,
+    pub message: String,
+    pub details: BTreeMap<String, serde_json::Value>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

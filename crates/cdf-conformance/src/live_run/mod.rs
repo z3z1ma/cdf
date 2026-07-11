@@ -244,8 +244,10 @@ pub async fn run_live_local_file_fixture_with_hook(
     spec: LiveLocalFileFixtureSpec,
     after_receipt_verified: Option<cdf_project::ReceiptVerifiedHook<'_>>,
 ) -> Result<ProjectRunReport> {
-    let destination =
-        ResolvedProjectDestination::duckdb(&spec.destination_path, spec.target.clone())?;
+    let destination = ResolvedProjectDestination::new(
+        Box::new(DuckDbDestination::new(&spec.destination_path)?),
+        spec.target.clone(),
+    );
     run_live_local_file_fixture_with_destination(spec, destination, after_receipt_verified).await
 }
 

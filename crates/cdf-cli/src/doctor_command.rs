@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::{
-    context::{DestinationRuntime, DoctorProbe, ProjectContext},
+    context::{DestinationRuntime, ProjectContext},
     doctor_drift::{self, DriftStatus},
     output::{CliError, CommandOutput},
     render::{
@@ -387,59 +387,30 @@ fn python_can_parallelize(report: &PythonProbeReport) -> bool {
 }
 
 fn destination_checks(runtime: DestinationRuntime) -> Vec<DoctorCheck> {
-    match runtime {
-        DestinationRuntime::DuckDb {
-            database_path,
-            icu_probe,
-            ..
-        } => {
-            let mut checks = vec![
-                DoctorCheck::passed("destination", "DuckDB destination capabilities loaded")
-                    .with_details(json!({
-                        "kind": "duck_db",
-                        "database_path": database_path,
-                    })),
-            ];
-            checks.push(match icu_probe {
-                DoctorProbe::Passed => DoctorCheck::passed("duckdb_icu", "ICU probe passed")
-                    .with_details(duckdb_icu_details(&database_path, true, None)),
-                DoctorProbe::Failed { message } => {
-                    DoctorCheck::failed("duckdb_icu", message.clone())
-                        .with_details(duckdb_icu_details(&database_path, false, Some(message)))
-                }
-                DoctorProbe::Skipped { reason } => {
-                    DoctorCheck::skipped("duckdb_icu", reason.clone()).with_details(json!({
-                        "database_path": database_path,
-                        "database_exists": false,
-                        "probe": "icu_sort_key",
-                        "reason": reason,
-                    }))
-                }
-            });
-            checks
-        }
-        DestinationRuntime::Postgres { .. } => vec![DoctorCheck::passed(
-            "destination",
-            "Postgres destination capabilities loaded",
-        )],
-        DestinationRuntime::Unsupported { reason, .. } => {
-            vec![DoctorCheck::unsupported("destination", reason)]
-        }
+    if let Some(error) = runtime.error {
+        return vec![DoctorCheck::unsupported("destination", error)];
     }
-}
-
-fn duckdb_icu_details(
-    database_path: &str,
-    available: bool,
-    diagnostic: Option<String>,
-) -> serde_json::Value {
-    json!({
-        "database_path": database_path,
-        "database_exists": true,
-        "probe": "icu_sort_key",
-        "available": available,
-        "diagnostic": diagnostic,
-    })
+    runtime
+        .health
+        .into_iter()
+        .map(|result| {
+            let check = match result.status {
+                cdf_runtime::DestinationHealthStatus::Passed => {
+                    DoctorCheck::passed(result.probe_id, result.message)
+                }
+                cdf_runtime::DestinationHealthStatus::Failed => {
+                    DoctorCheck::failed(result.probe_id, result.message)
+                }
+                cdf_runtime::DestinationHealthStatus::Skipped => {
+                    DoctorCheck::skipped(result.probe_id, result.message)
+                }
+                cdf_runtime::DestinationHealthStatus::Unsupported => {
+                    DoctorCheck::unsupported(result.probe_id, result.message)
+                }
+            };
+            check.with_details(json!(result.details))
+        })
+        .collect()
 }
 
 fn ledger_destination_drift_check(context: &ProjectContext) -> DoctorCheck {

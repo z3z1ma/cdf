@@ -8,11 +8,11 @@ use cdf_kernel::{
 use cdf_package::{PackageReader, PackageReplayInputs};
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
-    DestinationDriver, DestinationHealthProbe, DestinationIngressMode, DestinationInspection,
-    DestinationPlanningContext, DestinationReceiptReportingPolicy, DestinationResolutionContext,
-    DestinationRuntime, DestinationRuntimeCapabilities, DestinationWriterModel,
-    PreparedDestinationCommit, absolute_under_root, artifact_hash, local_uri_path,
-    reject_unexpected_pending_context,
+    DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
+    DestinationIngressMode, DestinationInspection, DestinationPlanningContext,
+    DestinationReceiptReportingPolicy, DestinationResolutionContext, DestinationRuntime,
+    DestinationRuntimeCapabilities, DestinationWriterModel, PreparedDestinationCommit,
+    absolute_under_root, artifact_hash, local_uri_path, reject_unexpected_pending_context,
 };
 
 use crate::{ParquetCommitRequest, ParquetDestination};
@@ -53,6 +53,25 @@ impl DestinationDriver for ParquetRuntimeDriver {
     ) -> Result<Box<dyn DestinationRuntime>> {
         let root = absolute_under_root(context.project_root()?, local_uri_path(uri, "parquet")?);
         Ok(Box::new(FilesystemParquetRuntime::new(root)))
+    }
+
+    fn health(
+        &self,
+        uri: &str,
+        context: &DestinationResolutionContext<'_>,
+    ) -> Result<Vec<DestinationHealthResult>> {
+        let root = absolute_under_root(context.project_root()?, local_uri_path(uri, "parquet")?);
+        Ok(vec![DestinationHealthResult {
+            probe_id: "destination".to_owned(),
+            status: DestinationHealthStatus::Passed,
+            message: "Parquet destination capabilities loaded".to_owned(),
+            details: [(
+                "filesystem_root".to_owned(),
+                serde_json::json!(root.display().to_string()),
+            )]
+            .into_iter()
+            .collect(),
+        }])
     }
 }
 
@@ -200,5 +219,8 @@ fn parquet_runtime_capabilities() -> DestinationRuntimeCapabilities {
         max_in_flight_bytes: None,
         bulk_path: Some("arrow_ipc_package_rows_to_parquet".to_owned()),
         bulk_evidence_version: None,
+        replay_requires_explicit_target: false,
+        replay_target_hint: None,
+        replay_policy_values: Default::default(),
     }
 }

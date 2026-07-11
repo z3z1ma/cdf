@@ -1,13 +1,15 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use cdf_kernel::{
     CdfError, Checkpoint, PackageHash, Receipt, RunEvent, RunEventAppend, RunEventDetails,
-    RunEventKind, RunEventSink, RunEventValue, RunId, ScopeKey, SegmentAck, StateDelta, TargetName,
+    RunEventKind, RunEventSink, RunEventValue, RunId, ScopeKey, SegmentAck, StateDelta,
 };
 use cdf_package::{PackageReader, PackageReplayInputs};
 use cdf_project::{
-    DestinationPolicy, PackageArtifactRecoveryRequest, PackageArtifactReplayRequest,
-    PackageReplayReport, PostgresDestinationPolicy, PostgresMergeDedupPolicy,
+    PackageArtifactRecoveryRequest, PackageArtifactReplayRequest, PackageReplayReport,
     ProjectResolutionContext, ResolvedProjectDestination, RuntimeStage,
     recover_package_from_artifacts, replay_package_from_artifacts_with_stage_hook,
     resolve_project_run_destination,
@@ -37,7 +39,7 @@ pub(crate) struct PackageReplayDestinationArgs<'a> {
 pub(crate) struct ReplayDestination {
     destination: Option<ResolvedProjectDestination>,
     report: RunDestinationReport,
-    kind: &'static str,
+    kind: String,
     secret_redaction: Option<String>,
 }
 
@@ -247,8 +249,8 @@ impl ReplayDestination {
         &self.report
     }
 
-    pub(crate) fn kind(&self) -> &'static str {
-        self.kind
+    pub(crate) fn kind(&self) -> &str {
+        &self.kind
     }
 }
 
@@ -376,46 +378,91 @@ pub(crate) fn build_replay_destination(
         .destination_uri
         .unwrap_or(context.environment.destination.as_str());
     let secret_provider = context.secret_provider();
-    let replay_policy;
-    let destination_policy = if uri.starts_with("postgres://") {
-        if args.target.is_none() {
-            return Err(CliError::usage_with(
-                "replay package to Postgres requires --target schema.table",
-                error_catalog::REPLAY_ARGUMENT,
-            ));
-        }
-        replay_policy = replay_postgres_policy(args)?;
-        &replay_policy
-    } else {
-        &context.environment.destination_policy
-    };
-    let target = replay_target(args, inputs, uri)?;
-    let destination_context = ProjectResolutionContext::for_project_run(&context.root, &target)
-        .with_environment_name(&context.environment.name)
-        .with_destination_policy(destination_policy)
-        .with_secret_provider(&secret_provider);
     let registry =
         crate::destination_registry::builtin_destination_registry().map_err(|error| {
             replay_destination_resolution_error(context, args.destination_uri, error, uri)
         })?;
+    let inspection_context =
+        cdf_runtime::DestinationResolutionContext::for_project_inspection(&context.root)
+            .with_environment_name(&context.environment.name)
+            .with_destination_policy(&context.environment.destination_policy);
+    let inspection = registry
+        .inspect(uri, &inspection_context)
+        .map_err(|error| {
+            replay_destination_resolution_error(context, args.destination_uri, error, uri)
+        })?;
+    let display_name = destination_display_name(&inspection.description.label);
+    if inspection.runtime.replay_requires_explicit_target && args.target.is_none() {
+        let target_hint = inspection
+            .runtime
+            .replay_target_hint
+            .as_deref()
+            .unwrap_or("TARGET");
+        return Err(CliError::usage_with(
+            format!("replay package to {display_name} requires --target {target_hint}"),
+            error_catalog::REPLAY_ARGUMENT,
+        ));
+    }
+    let replay_policy = ReplayPolicy::from_requirements(
+        inspection.description.destination_id.as_str(),
+        &display_name,
+        &inspection.runtime.replay_policy_values,
+        args,
+    )?;
+    let target = if inspection.runtime.replay_requires_explicit_target {
+        let target_hint = inspection
+            .runtime
+            .replay_target_hint
+            .as_deref()
+            .unwrap_or("TARGET");
+        let explicit = args.target.ok_or_else(|| {
+            CliError::usage_with(
+                format!("replay package to {display_name} requires --target {target_hint}"),
+                error_catalog::REPLAY_ARGUMENT,
+            )
+        })?;
+        let target = registry.replay_target(uri, explicit).map_err(|_| {
+            CliError::usage_with(
+                format!("replay package to {display_name} requires --target {target_hint}"),
+                error_catalog::REPLAY_ARGUMENT,
+            )
+        })?;
+        if target != inputs.destination_commit.target {
+            return Err(CliError::mapped(
+                CdfError::contract(format!(
+                    "explicit {display_name} replay target {target} does not match package destination commit target {}",
+                    inputs.destination_commit.target
+                )),
+                error_catalog::REPLAY_PACKAGE_CONTRACT,
+            ));
+        }
+        target
+    } else {
+        inputs.destination_commit.target.clone()
+    };
+    let destination_policy: &dyn cdf_runtime::DestinationPolicyProvider =
+        if replay_policy.is_empty() {
+            &context.environment.destination_policy
+        } else {
+            &replay_policy
+        };
+    let destination_context = ProjectResolutionContext::for_project_run(&context.root, &target)
+        .with_environment_name(&context.environment.name)
+        .with_destination_policy(destination_policy)
+        .with_secret_provider(&secret_provider);
     let destination = resolve_project_run_destination(&registry, uri, &destination_context)
         .map_err(|error| {
             replay_destination_resolution_error(context, args.destination_uri, error, uri)
         })?;
     let report = RunDestinationReport::from_project(&destination.describe(), destination.target());
     let secret_redaction = destination.secret_redaction().map(str::to_owned);
-    let kind = match destination
+    let kind = destination
         .describe()
         .schemes
         .first()
         .copied()
         .unwrap_or("destination")
-    {
-        "duckdb" => "duckdb",
-        "parquet" => "parquet",
-        "postgres" => "postgres",
-        _ => "destination",
-    };
+        .to_owned();
     Ok(ReplayDestination {
         destination: Some(destination),
         report,
@@ -424,67 +471,71 @@ pub(crate) fn build_replay_destination(
     })
 }
 
-fn replay_target(
-    args: PackageReplayDestinationArgs<'_>,
-    inputs: &PackageReplayInputs,
-    uri: &str,
-) -> Result<TargetName, CliError> {
-    if uri.starts_with("postgres://") {
-        let explicit = args.target.ok_or_else(|| {
-            CliError::usage_with(
-                "replay package to Postgres requires --target schema.table",
-                error_catalog::REPLAY_ARGUMENT,
-            )
-        })?;
-        let target = replay_postgres_target(explicit)?;
-        if target.display_name() != inputs.destination_commit.target.as_str() {
-            return Err(CliError::mapped(
-                CdfError::contract(format!(
-                    "explicit Postgres replay target {} does not match package destination commit target {}",
-                    target.display_name(),
-                    inputs.destination_commit.target
-                )),
-                error_catalog::REPLAY_PACKAGE_CONTRACT,
-            ));
-        }
-        return TargetName::new(target.display_name()).map_err(CliError::from);
-    }
-    Ok(inputs.destination_commit.target.clone())
+struct ReplayPolicy {
+    destination_id: String,
+    values: BTreeMap<String, String>,
 }
 
-fn replay_postgres_target(target: &str) -> Result<cdf_dest_postgres::PostgresTarget, CliError> {
-    if target.split('.').count() != 2 {
-        return Err(CliError::usage_with(
-            "replay package to Postgres requires --target schema.table",
-            error_catalog::REPLAY_ARGUMENT,
-        ));
+impl ReplayPolicy {
+    fn from_requirements(
+        destination_id: &str,
+        display_name: &str,
+        requirements: &BTreeMap<String, Vec<String>>,
+        args: PackageReplayDestinationArgs<'_>,
+    ) -> Result<Self, CliError> {
+        let mut values = BTreeMap::new();
+        for (key, allowed) in requirements {
+            let supplied = match key.as_str() {
+                "merge_dedup" => args.merge_dedup,
+                _ => None,
+            };
+            let value = supplied.ok_or_else(|| {
+                CliError::usage_with(
+                    format!(
+                        "replay package to {display_name} requires --{} {}",
+                        key.replace('_', "-"),
+                        allowed.join("|")
+                    ),
+                    error_catalog::REPLAY_ARGUMENT,
+                )
+            })?;
+            if !allowed.iter().any(|allowed| allowed == value) {
+                return Err(CliError::usage_with(
+                    format!(
+                        "unsupported {display_name} replay --{} `{value}`; supported value is `{}`",
+                        key.replace('_', "-"),
+                        allowed.join("|"),
+                    ),
+                    error_catalog::REPLAY_ARGUMENT,
+                ));
+            }
+            values.insert(key.clone(), value.to_owned());
+        }
+        Ok(Self {
+            destination_id: destination_id.to_owned(),
+            values,
+        })
     }
-    cdf_dest_postgres::PostgresTarget::parse(target).map_err(CliError::from)
+
+    fn is_empty(&self) -> bool {
+        self.values.is_empty()
+    }
 }
 
-fn replay_postgres_policy(
-    args: PackageReplayDestinationArgs<'_>,
-) -> Result<DestinationPolicy, CliError> {
-    let merge_dedup = match args.merge_dedup {
-        Some("fail") => PostgresMergeDedupPolicy::Fail,
-        Some(value) => {
-            return Err(CliError::usage_with(
-                format!(
-                    "unsupported Postgres replay --merge-dedup `{value}`; supported value is `fail`"
-                ),
-                error_catalog::REPLAY_ARGUMENT,
-            ));
-        }
-        None => {
-            return Err(CliError::usage_with(
-                "replay package to Postgres requires --merge-dedup fail",
-                error_catalog::REPLAY_ARGUMENT,
-            ));
-        }
-    };
-    Ok(DestinationPolicy {
-        postgres: Some(PostgresDestinationPolicy { merge_dedup }),
-    })
+impl cdf_runtime::DestinationPolicyProvider for ReplayPolicy {
+    fn value(&self, destination: &str, key: &str) -> Option<&str> {
+        (destination == self.destination_id)
+            .then(|| self.values.get(key).map(String::as_str))
+            .flatten()
+    }
+}
+
+fn destination_display_name(label: &str) -> String {
+    let mut chars = label.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => "destination".to_owned(),
+    }
 }
 
 fn replay_destination_resolution_error(

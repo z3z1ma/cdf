@@ -11,10 +11,11 @@ use cdf_kernel::{
 use cdf_package::{PackageReader, PackageReplayInputs};
 use cdf_runtime::{
     DestinationCommitPlanningInputs, DestinationCommitPlanningOutcome, DestinationDescription,
-    DestinationDriver, DestinationHealthProbe, DestinationIngressMode, DestinationInspection,
-    DestinationPlanningContext, DestinationReceiptReportingPolicy, DestinationResolutionContext,
-    DestinationRuntime, DestinationRuntimeCapabilities, DestinationWriterModel,
-    PreparedDestinationCommit, artifact_hash, commit_request,
+    DestinationDriver, DestinationHealthProbe, DestinationHealthResult, DestinationHealthStatus,
+    DestinationIngressMode, DestinationInspection, DestinationPlanningContext,
+    DestinationReceiptReportingPolicy, DestinationResolutionContext, DestinationRuntime,
+    DestinationRuntimeCapabilities, DestinationWriterModel, PreparedDestinationCommit,
+    artifact_hash, commit_request,
 };
 
 use crate::{
@@ -84,6 +85,24 @@ impl DestinationDriver for PostgresRuntimeDriver {
             PostgresRuntime::for_replay(&destination, target, dedup, None)
                 .with_secret_redaction(secret_redaction),
         ))
+    }
+
+    fn health(
+        &self,
+        uri: &str,
+        _context: &DestinationResolutionContext<'_>,
+    ) -> Result<Vec<DestinationHealthResult>> {
+        validate_postgres_uri(uri)?;
+        Ok(vec![DestinationHealthResult {
+            probe_id: "destination".to_owned(),
+            status: DestinationHealthStatus::Passed,
+            message: "Postgres destination capabilities loaded".to_owned(),
+            details: Default::default(),
+        }])
+    }
+
+    fn replay_target(&self, target: &str) -> Result<TargetName> {
+        TargetName::new(PostgresTarget::parse(target)?.display_name())
     }
 }
 
@@ -289,6 +308,11 @@ fn postgres_runtime_capabilities() -> DestinationRuntimeCapabilities {
         max_in_flight_bytes: None,
         bulk_path: Some("copy_csv".to_owned()),
         bulk_evidence_version: None,
+        replay_requires_explicit_target: true,
+        replay_target_hint: Some("schema.table".to_owned()),
+        replay_policy_values: [("merge_dedup".to_owned(), vec!["fail".to_owned()])]
+            .into_iter()
+            .collect(),
     }
 }
 

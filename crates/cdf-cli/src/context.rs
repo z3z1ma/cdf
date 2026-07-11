@@ -30,31 +30,15 @@ pub struct ProjectContext {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum DestinationRuntime {
-    DuckDb {
-        database_path: String,
-        sheet: cdf_kernel::DestinationSheet,
-        bulk_paths: Vec<String>,
-        single_writer_lock: String,
-        parquet_replay: cdf_kernel::CapabilitySupport,
-        icu_probe: DoctorProbe,
-    },
-    Postgres {
-        sheet: cdf_dest_postgres::PostgresDestinationSheet,
-    },
-    Unsupported {
-        uri: String,
-        reason: String,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DoctorProbe {
-    Passed,
-    Failed { message: String },
-    Skipped { reason: String },
+pub struct DestinationRuntime {
+    pub kind: String,
+    pub destination_id: Option<String>,
+    pub label: Option<String>,
+    pub schemes: Vec<String>,
+    pub sheet: Option<cdf_kernel::DestinationSheetArtifact>,
+    pub capabilities: Option<cdf_runtime::DestinationRuntimeCapabilities>,
+    pub health: Vec<cdf_runtime::DestinationHealthResult>,
+    pub error: Option<String>,
 }
 
 impl ProjectContext {
@@ -203,7 +187,7 @@ impl ProjectContext {
     }
 
     pub fn destination_runtime(&self) -> DestinationRuntime {
-        destination_runtime(&self.root, &self.environment.destination)
+        crate::destination_registry::inspect_destination_runtime(self)
     }
 
     pub fn duckdb_destination_path(&self) -> Option<PathBuf> {
@@ -371,63 +355,6 @@ fn load_lock(root: &Path) -> CdfResult<(Option<CdfLock>, Option<LockFileAuthorit
         CdfError::contract(format!("read {} as UTF-8: {error}", path.display()))
     })?;
     Ok((Some(parse_lock(text)?), Some(authority)))
-}
-
-fn destination_runtime(root: &Path, uri: &str) -> DestinationRuntime {
-    if let Some(path) = uri.strip_prefix("duckdb://") {
-        let database_path = absolute_under_root(root, path);
-        let destination = match cdf_dest_duckdb::DuckDbDestination::new(&database_path) {
-            Ok(destination) => destination,
-            Err(error) => {
-                return DestinationRuntime::Unsupported {
-                    uri: uri.to_owned(),
-                    reason: error.to_string(),
-                };
-            }
-        };
-        let capabilities = destination.capabilities();
-        let icu_probe = if database_path.exists() {
-            match destination.probe_icu() {
-                Ok(probe) if probe.available => DoctorProbe::Passed,
-                Ok(probe) => DoctorProbe::Failed {
-                    message: probe
-                        .error
-                        .unwrap_or_else(|| "DuckDB ICU probe returned unavailable".to_owned()),
-                },
-                Err(error) => DoctorProbe::Failed {
-                    message: error.to_string(),
-                },
-            }
-        } else {
-            DoctorProbe::Skipped {
-                reason: "DuckDB database does not exist; probe would create it".to_owned(),
-            }
-        };
-        DestinationRuntime::DuckDb {
-            database_path: database_path.display().to_string(),
-            sheet: capabilities.sheet,
-            bulk_paths: capabilities
-                .bulk_paths
-                .into_iter()
-                .map(|path| format!("{path:?}"))
-                .collect(),
-            single_writer_lock: capabilities.single_writer_lock,
-            parquet_replay: capabilities.parquet_replay,
-            icu_probe,
-        }
-    } else if uri.starts_with("postgres://") {
-        DestinationRuntime::Postgres {
-            sheet: cdf_dest_postgres::PostgresDestination::new()
-                .postgres_sheet()
-                .clone(),
-        }
-    } else {
-        DestinationRuntime::Unsupported {
-            uri: uri.to_owned(),
-            reason: "destination URI scheme is not handled by current destination crates"
-                .to_owned(),
-        }
-    }
 }
 
 fn sqlite_uri_path(root: &Path, uri: &str) -> CdfResult<PathBuf> {

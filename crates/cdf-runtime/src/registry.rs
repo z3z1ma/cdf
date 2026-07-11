@@ -18,6 +18,28 @@ pub trait DestinationDriver: Send + Sync {
         uri: &str,
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>>;
+
+    fn health(
+        &self,
+        uri: &str,
+        context: &DestinationResolutionContext<'_>,
+    ) -> Result<Vec<DestinationHealthResult>> {
+        Ok(self
+            .inspect(uri, context)?
+            .health_probes
+            .into_iter()
+            .map(|probe| DestinationHealthResult {
+                probe_id: probe.probe_id,
+                status: DestinationHealthStatus::Unsupported,
+                message: format!("{} is not implemented by this driver", probe.description),
+                details: Default::default(),
+            })
+            .collect())
+    }
+
+    fn replay_target(&self, target: &str) -> Result<TargetName> {
+        TargetName::new(target)
+    }
 }
 
 #[derive(Default)]
@@ -70,6 +92,18 @@ impl DestinationRegistry {
         context: &DestinationResolutionContext<'_>,
     ) -> Result<Box<dyn DestinationRuntime>> {
         self.driver_for_uri(uri)?.resolve(uri, context)
+    }
+
+    pub fn health(
+        &self,
+        uri: &str,
+        context: &DestinationResolutionContext<'_>,
+    ) -> Result<Vec<DestinationHealthResult>> {
+        self.driver_for_uri(uri)?.health(uri, context)
+    }
+
+    pub fn replay_target(&self, uri: &str, target: &str) -> Result<TargetName> {
+        self.driver_for_uri(uri)?.replay_target(target)
     }
 
     pub fn registered_schemes(&self) -> Vec<&'static str> {
