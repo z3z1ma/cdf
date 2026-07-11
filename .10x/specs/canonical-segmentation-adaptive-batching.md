@@ -26,7 +26,7 @@ Every emitted segment MUST carry its partition ordinal/id, canonical segment ord
 
 File-manifest positions join by deterministic file identity union within the same logical partition. Cursor/page/composite/foreign positions join only through their typed ordering/composition contract; unsupported joins force a boundary or plan failure. No generic JSON/string comparison is permitted.
 
-Package-scoped dedup MUST resolve first occurrence in canonical partition/row order before final segment assembly. Spill/parallel implementation MUST be jobs-invariant.
+Package-scoped dedup MUST follow `.10x/specs/spillable-package-dedup.md`, resolve canonical partition/row order before final segment assembly, and remain jobs/spill invariant.
 
 ## Identity and conformance
 
