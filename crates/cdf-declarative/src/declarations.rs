@@ -42,6 +42,7 @@ pub struct SqlSourceDeclaration {
 pub struct FileSourceDeclaration {
     pub root: String,
     pub auth: Option<AuthDeclaration>,
+    pub credentials: Option<String>,
     #[serde(default)]
     pub egress_allowlist: Vec<String>,
 }

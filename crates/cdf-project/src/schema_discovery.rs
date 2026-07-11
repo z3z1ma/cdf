@@ -1256,6 +1256,7 @@ fn discover_http_parquet_resource_schema(
         location: FileTransportLocation::HttpUrl { url },
         egress_allowlist: plan.allowlist.clone(),
         auth: plan.auth.clone(),
+        credentials: plan.credentials.clone(),
     };
     let mut probe = discover_transport_parquet_schema(resource_request, &dependencies)?;
     let normalized = normalize_arrow_schema(probe.schema.as_ref(), &IdentifierPolicy::default())?;

@@ -15,13 +15,16 @@ cdf-http = { path = "../cdf-http" }
 cdf-formats = { path = "../cdf-formats" }
 cdf-kernel = { path = "../cdf-kernel" }
 futures-util = "0.3.32"
+futures-executor = "0.3.32"
 hex = "0.4.3"
+object_store = { version = "0.13.2", features = ["aws", "azure", "gcp"] }
 schemars = { version = "1.2.1", features = ["derive"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.150"
 serde_yaml = "0.9.34"
 sha2 = "0.10.9"
 toml = "1.1.2"
+url = "2.5.8"
 
 [dev-dependencies]
 arrow-ipc = "59.1.0"

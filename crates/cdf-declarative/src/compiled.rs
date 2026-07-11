@@ -169,6 +169,7 @@ pub struct FileResourcePlan {
     pub format_declared: bool,
     pub compression: FileCompressionDeclaration,
     pub auth: Option<AuthScheme>,
+    pub credentials: Option<SecretUri>,
     pub allowlist: EgressAllowlist,
 }
 
@@ -710,6 +711,11 @@ fn compile_file_plan(
             .clone()
             .unwrap_or(FileCompressionDeclaration::Auto),
         auth: source.auth.as_ref().map(compile_auth).transpose()?,
+        credentials: source
+            .credentials
+            .as_ref()
+            .map(|value| SecretUri::new(value.clone()))
+            .transpose()?,
         allowlist,
     })
 }
@@ -755,7 +761,11 @@ fn compile_file_root(root: &str, project_root: Option<&Path>) -> Result<String> 
 }
 
 fn is_remote_file_root(root: &str) -> bool {
-    root.starts_with("http://") || root.starts_with("https://")
+    root.starts_with("http://")
+        || root.starts_with("https://")
+        || root.starts_with("s3://")
+        || root.starts_with("gs://")
+        || root.starts_with("az://")
 }
 
 fn absolute_project_root(project_root: &Path) -> Result<PathBuf> {

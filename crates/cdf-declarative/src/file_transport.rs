@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fmt,
     fs::{self, File},
     io::{Read, Seek, SeekFrom},
@@ -9,16 +10,21 @@ use std::{
 
 use cdf_http::{
     AuthScheme, EgressAllowlist, HeaderMap, HttpMethod, HttpRequest, Redactor, SecretProvider,
+    SecretUri,
 };
 use cdf_kernel::{CdfError, ErrorKind, FilePosition, Result};
+use futures_util::TryStreamExt;
+use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectPath};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use url::Url;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct FileTransportResource {
     pub location: FileTransportLocation,
     pub egress_allowlist: EgressAllowlist,
     pub auth: Option<AuthScheme>,
+    pub credentials: Option<SecretUri>,
 }
 
 impl FileTransportResource {
@@ -29,6 +35,7 @@ impl FileTransportResource {
             },
             egress_allowlist: EgressAllowlist::allow_any(),
             auth: None,
+            credentials: None,
         }
     }
 
@@ -37,6 +44,7 @@ impl FileTransportResource {
             location: FileTransportLocation::FileUrl { url: url.into() },
             egress_allowlist: EgressAllowlist::allow_any(),
             auth: None,
+            credentials: None,
         }
     }
 
@@ -45,6 +53,16 @@ impl FileTransportResource {
             location: FileTransportLocation::HttpUrl { url: url.into() },
             egress_allowlist: EgressAllowlist::allow_any(),
             auth: None,
+            credentials: None,
+        }
+    }
+
+    pub fn object_store_url(url: impl Into<String>) -> Self {
+        Self {
+            location: FileTransportLocation::ObjectStoreUrl { url: url.into() },
+            egress_allowlist: EgressAllowlist::allow_any(),
+            auth: None,
+            credentials: None,
         }
     }
 
@@ -58,12 +76,20 @@ impl FileTransportResource {
         self
     }
 
+    pub fn with_credentials(mut self, credentials: SecretUri) -> Self {
+        self.credentials = Some(credentials);
+        self
+    }
+
     pub fn secret_references(&self) -> Vec<&cdf_http::SecretUri> {
         match &self.auth {
             Some(AuthScheme::Bearer { token_uri }) => vec![token_uri],
             Some(AuthScheme::Header { value_uri, .. }) => vec![value_uri],
             None => Vec::new(),
         }
+        .into_iter()
+        .chain(self.credentials.iter())
+        .collect()
     }
 }
 
@@ -84,6 +110,7 @@ pub enum FileTransportLocation {
     LocalPath { path: String },
     FileUrl { url: String },
     HttpUrl { url: String },
+    ObjectStoreUrl { url: String },
 }
 
 impl fmt::Debug for FileTransportLocation {
@@ -99,6 +126,10 @@ impl fmt::Debug for FileTransportLocation {
                 .finish(),
             Self::HttpUrl { url } => formatter
                 .debug_struct("HttpUrl")
+                .field("url", &redacted_location_for_debug(url))
+                .finish(),
+            Self::ObjectStoreUrl { url } => formatter
+                .debug_struct("ObjectStoreUrl")
                 .field("url", &redacted_location_for_debug(url))
                 .finish(),
         }
@@ -269,6 +300,7 @@ impl fmt::Debug for HttpFileResponse {
 pub struct FileTransportFacade {
     http: Option<Box<dyn HttpFileTransport + Send>>,
     secret_provider: Option<Arc<dyn SecretProvider + Send + Sync>>,
+    object_stores: BTreeMap<String, Arc<dyn ObjectStore>>,
 }
 
 impl FileTransportFacade {
@@ -291,6 +323,15 @@ impl FileTransportFacade {
         self.secret_provider = Some(Arc::new(provider));
         self
     }
+
+    pub fn with_object_store(
+        mut self,
+        origin: impl Into<String>,
+        store: Arc<dyn ObjectStore>,
+    ) -> Self {
+        self.object_stores.insert(origin.into(), store);
+        self
+    }
 }
 
 impl fmt::Debug for FileTransportFacade {
@@ -299,6 +340,7 @@ impl fmt::Debug for FileTransportFacade {
             .debug_struct("FileTransportFacade")
             .field("http", &self.http.is_some())
             .field("secret_provider", &self.secret_provider.is_some())
+            .field("object_store_count", &self.object_stores.len())
             .finish()
     }
 }
@@ -309,6 +351,9 @@ impl FileTransport for FileTransportFacade {
             FileTransportLocation::LocalPath { path } => local_metadata(Path::new(path)),
             FileTransportLocation::FileUrl { url } => local_metadata(&file_url_path(url)?),
             FileTransportLocation::HttpUrl { url } => self.http_metadata(resource, url),
+            FileTransportLocation::ObjectStoreUrl { url } => {
+                self.object_store_metadata(resource, url)
+            }
         }
     }
 
@@ -322,6 +367,9 @@ impl FileTransport for FileTransportFacade {
             FileTransportLocation::LocalPath { path } => read_local_range(Path::new(path), range),
             FileTransportLocation::FileUrl { url } => read_local_range(&file_url_path(url)?, range),
             FileTransportLocation::HttpUrl { url } => self.read_http_range(resource, url, range),
+            FileTransportLocation::ObjectStoreUrl { url } => {
+                self.read_object_store_range(resource, url, range)
+            }
         }
     }
 
@@ -332,11 +380,114 @@ impl FileTransport for FileTransportFacade {
             FileTransportLocation::HttpUrl { .. } => Err(CdfError::contract(
                 "HTTP(S) file transport does not support arbitrary directory listing; use an explicit URL or a ratified template/range enumerator",
             )),
+            FileTransportLocation::ObjectStoreUrl { url } => self.list_object_store(resource, url),
         }
     }
 }
 
 impl FileTransportFacade {
+    fn object_store_metadata(
+        &self,
+        resource: &FileTransportResource,
+        url: &str,
+    ) -> Result<FileIdentityMetadata> {
+        let (store, path, _) = self.resolve_object_store(resource, url)?;
+        let metadata = futures_executor::block_on(store.head(&path))
+            .map_err(|error| object_store_error("read object metadata", error))?;
+        Ok(object_identity(url.to_owned(), metadata))
+    }
+
+    fn read_object_store_range(
+        &self,
+        resource: &FileTransportResource,
+        url: &str,
+        range: ByteRange,
+    ) -> Result<Vec<u8>> {
+        let (store, path, _) = self.resolve_object_store(resource, url)?;
+        let end = range
+            .start
+            .checked_add(range.length)
+            .ok_or_else(|| CdfError::contract("object-store byte range overflows u64"))?;
+        let bytes = futures_executor::block_on(store.get_range(&path, range.start..end))
+            .map_err(|error| object_store_error("read object byte range", error))?;
+        if bytes.len() as u64 != range.length {
+            return Err(CdfError::data(format!(
+                "object-store ranged read returned {} bytes for an exact {} byte request",
+                bytes.len(),
+                range.length
+            )));
+        }
+        Ok(bytes.to_vec())
+    }
+
+    fn list_object_store(
+        &self,
+        resource: &FileTransportResource,
+        url: &str,
+    ) -> Result<Vec<FileIdentityMetadata>> {
+        let (store, prefix, origin) = self.resolve_object_store(resource, url)?;
+        let objects = futures_executor::block_on(store.list(Some(&prefix)).try_collect::<Vec<_>>())
+            .map_err(|error| object_store_error("list object prefix", error))?;
+        let mut identities = objects
+            .into_iter()
+            .map(|metadata| {
+                let location = format!(
+                    "{}/{}",
+                    origin.trim_end_matches('/'),
+                    metadata.location.as_ref()
+                );
+                object_identity(location, metadata)
+            })
+            .collect::<Vec<_>>();
+        identities.sort_by(|left, right| left.location.cmp(&right.location));
+        Ok(identities)
+    }
+
+    fn resolve_object_store(
+        &self,
+        resource: &FileTransportResource,
+        url: &str,
+    ) -> Result<(Arc<dyn ObjectStore>, ObjectPath, String)> {
+        let parsed = Url::parse(url)
+            .map_err(|error| CdfError::contract(format!("invalid object-store URL: {error}")))?;
+        if !matches!(parsed.scheme(), "s3" | "gs" | "az") {
+            return Err(CdfError::contract(
+                "object-store file URLs must use s3://, gs://, or az://",
+            ));
+        }
+        let host = parsed
+            .host_str()
+            .ok_or_else(|| CdfError::contract("object-store URL must name a bucket/account"))?;
+        let origin = format!("{}://{}", parsed.scheme(), host);
+        let policy = HttpRequest::new(HttpMethod::Get, format!("https://{host}/"));
+        resource.egress_allowlist.check(&policy)?;
+        if let Some(store) = self.object_stores.get(&origin) {
+            return Ok((
+                Arc::clone(store),
+                ObjectPath::parse(parsed.path().trim_start_matches('/'))
+                    .map_err(|error| CdfError::contract(format!("parse object path: {error}")))?,
+                origin,
+            ));
+        }
+        let options = match &resource.credentials {
+            Some(reference) => {
+                let provider = self.secret_provider.as_ref().ok_or_else(|| {
+                    CdfError::auth("object-store credentials require a secret provider")
+                })?;
+                let value = provider.resolve(reference)?.as_str()?.to_owned();
+                serde_json::from_str::<BTreeMap<String, String>>(&value).map_err(|_| {
+                    CdfError::auth(
+                        "object-store credential secret must be a JSON object of provider options",
+                    )
+                })?
+            }
+            None => BTreeMap::new(),
+        };
+        let (store, path) = object_store::parse_url_opts(&parsed, options)
+            .map_err(|error| object_store_error("configure object store", error))?;
+        Ok((Arc::from(store), path, origin))
+    }
+
     fn http_metadata(
         &mut self,
         resource: &FileTransportResource,
@@ -454,6 +605,23 @@ fn local_metadata(path: &Path) -> Result<FileIdentityMetadata> {
             .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
             .map(|duration| format!("unix_ms:{}", duration.as_millis())),
     })
+}
+
+fn object_identity(location: String, metadata: object_store::ObjectMeta) -> FileIdentityMetadata {
+    FileIdentityMetadata {
+        location,
+        size_bytes: Some(metadata.size),
+        checksum: None,
+        etag: metadata.e_tag.or(metadata.version),
+        modified: Some(format!(
+            "unix_ms:{}",
+            metadata.last_modified.timestamp_millis()
+        )),
+    }
+}
+
+fn object_store_error(action: &str, error: object_store::Error) -> CdfError {
+    CdfError::data(format!("{action}: {error}"))
 }
 
 fn read_local_range(path: &Path, range: ByteRange) -> Result<Vec<u8>> {
@@ -660,9 +828,51 @@ mod tests {
     };
 
     use cdf_http::{SecretUri, SecretValue};
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory};
     use tempfile::TempDir;
 
     use super::*;
+
+    #[test]
+    fn object_store_transport_lists_heads_and_ranges_through_one_facade() {
+        let store = Arc::new(InMemory::new());
+        futures_executor::block_on(store.put(
+            &ObjectPath::from("prod/2026/events.parquet"),
+            PutPayload::from_static(b"PAR1payloadPAR1"),
+        ))
+        .unwrap();
+        let mut transport = FileTransportFacade::new().with_object_store("s3://acme-events", store);
+        let root = FileTransportResource::object_store_url("s3://acme-events/prod/");
+        let listed = transport.list(&root).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].location,
+            "s3://acme-events/prod/2026/events.parquet"
+        );
+        assert_eq!(listed[0].size_bytes, Some(15));
+        let object = FileTransportResource::object_store_url(&listed[0].location);
+        let head = transport.metadata(&object).unwrap();
+        assert_eq!(head.size_bytes, Some(15));
+        assert_eq!(
+            transport
+                .read_range(&object, ByteRange::new(4, 7).unwrap())
+                .unwrap(),
+            b"payload"
+        );
+    }
+
+    #[test]
+    fn object_store_credentials_and_egress_fail_before_network_without_leaks() {
+        let credential = SecretUri::new("secret://file/cloud-options").unwrap();
+        let resource = FileTransportResource::object_store_url("s3://private-bucket/data.parquet")
+            .with_credentials(credential)
+            .with_egress_allowlist(EgressAllowlist::from_hosts(["allowed-bucket"]));
+        let mut transport = FileTransportFacade::new();
+        let error = transport.metadata(&resource).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Auth);
+        assert!(!error.message.contains("cloud-options"));
+        assert!(!format!("{resource:?}").contains("cloud-options"));
+    }
 
     #[test]
     fn file_transport_local_metadata_and_range_share_identity_model() {

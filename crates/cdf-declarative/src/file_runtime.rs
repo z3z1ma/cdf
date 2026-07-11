@@ -921,6 +921,9 @@ fn resolve_file_matches(
     if is_http_root(&plan.root) {
         return resolve_http_file_match(resource_id, plan, transport);
     }
+    if is_object_store_root(&plan.root) {
+        return resolve_object_store_matches(resource_id, plan, transport);
+    }
 
     let root = PathBuf::from(&plan.root);
     if !root.is_absolute() {
@@ -943,6 +946,47 @@ fn resolve_file_matches(
         .collect()
 }
 
+fn resolve_object_store_matches(
+    resource_id: &ResourceId,
+    plan: &FileResourcePlan,
+    transport: &mut dyn FileTransport,
+) -> Result<Vec<ResolvedFileMatch>> {
+    reject_remote_compression(resource_id, plan)?;
+    validate_http_format_support(resource_id, plan)?;
+    let root_resource = FileTransportResource::object_store_url(plan.root.clone())
+        .with_egress_allowlist(plan.allowlist.clone());
+    let root_resource = match &plan.credentials {
+        Some(credentials) => root_resource.with_credentials(credentials.clone()),
+        None => root_resource,
+    };
+    let components = pattern_components(&plan.glob)?;
+    let mut matches = Vec::new();
+    for metadata in transport.list(&root_resource)? {
+        let relative = object_store_relative_path(&plan.root, &metadata.location)?;
+        if !glob_path_matches(&components, &relative) {
+            continue;
+        }
+        let resource = FileTransportResource::object_store_url(metadata.location.clone())
+            .with_egress_allowlist(plan.allowlist.clone());
+        let resource = match &plan.credentials {
+            Some(credentials) => resource.with_credentials(credentials.clone()),
+            None => resource,
+        };
+        let format = resolve_transport_format(resource_id, plan, transport, &resource, &metadata)?;
+        matches.push(resolved_transport_file_match(resource, metadata, format)?);
+    }
+    matches.sort_by(|left, right| left.path_text.cmp(&right.path_text));
+    Ok(matches)
+}
+
+fn object_store_relative_path(root: &str, location: &str) -> Result<String> {
+    let prefix = format!("{}/", root.trim_end_matches('/'));
+    location
+        .strip_prefix(&prefix)
+        .map(str::to_owned)
+        .ok_or_else(|| CdfError::data("object-store listing escaped its configured root prefix"))
+}
+
 fn resolve_http_file_match(
     resource_id: &ResourceId,
     plan: &FileResourcePlan,
@@ -956,6 +1000,7 @@ fn resolve_http_file_match(
         location: FileTransportLocation::HttpUrl { url: url.clone() },
         egress_allowlist: plan.allowlist.clone(),
         auth: plan.auth.clone(),
+        credentials: plan.credentials.clone(),
     };
     let metadata = transport.metadata(&resource)?;
     let format = resolve_transport_format(resource_id, plan, transport, &resource, &metadata)?;
@@ -1763,6 +1808,10 @@ fn is_http_root(root: &str) -> bool {
     root.starts_with("http://") || root.starts_with("https://")
 }
 
+fn is_object_store_root(root: &str) -> bool {
+    root.starts_with("s3://") || root.starts_with("gs://") || root.starts_with("az://")
+}
+
 fn file_sha256(path: &Path) -> Result<String> {
     let mut file = File::open(path).map_err(|error| {
         CdfError::data(format!("open matched file {}: {error}", path.display()))
@@ -1810,11 +1859,39 @@ fn glob_component_matches(pattern: &str, candidate: &str) -> bool {
     table[pattern.len()][candidate.len()]
 }
 
+fn glob_path_matches(pattern: &[String], candidate: &str) -> bool {
+    let candidate = candidate
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .collect::<Vec<_>>();
+    let mut table = vec![vec![false; candidate.len() + 1]; pattern.len() + 1];
+    table[0][0] = true;
+    for pattern_index in 1..=pattern.len() {
+        if pattern[pattern_index - 1] == "**" {
+            table[pattern_index][0] = table[pattern_index - 1][0];
+        }
+        for candidate_index in 1..=candidate.len() {
+            table[pattern_index][candidate_index] = if pattern[pattern_index - 1] == "**" {
+                table[pattern_index - 1][candidate_index]
+                    || table[pattern_index][candidate_index - 1]
+            } else {
+                table[pattern_index - 1][candidate_index - 1]
+                    && glob_component_matches(
+                        &pattern[pattern_index - 1],
+                        candidate[candidate_index - 1],
+                    )
+            };
+        }
+    }
+    table[pattern.len()][candidate.len()]
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use arrow_schema::{DataType, Field, Schema};
+    use object_store::{ObjectStoreExt, PutPayload, memory::InMemory, path::Path as ObjectPath};
 
     use super::*;
 
@@ -1843,5 +1920,48 @@ mod tests {
             &FileFormat::Parquet,
             &empty_schema
         ));
+    }
+
+    #[test]
+    fn object_store_recursive_glob_resolves_stable_multi_file_partitions() {
+        let store = Arc::new(InMemory::new());
+        for path in [
+            "prod/2026/01/events.parquet",
+            "prod/2026/02/nested/events.parquet",
+            "prod/2025/events.parquet",
+        ] {
+            futures_executor::block_on(store.put(
+                &ObjectPath::from(path),
+                PutPayload::from_static(b"PAR1payloadPAR1"),
+            ))
+            .unwrap();
+        }
+        let mut transport = FileTransportFacade::new().with_object_store("s3://acme-events", store);
+        let plan = FileResourcePlan {
+            source: "events".to_owned(),
+            root: "s3://acme-events/prod".to_owned(),
+            glob: "2026/**/*.parquet".to_owned(),
+            format: FileFormatDeclaration::Parquet,
+            format_declared: true,
+            compression: FileCompressionDeclaration::None,
+            auth: None,
+            credentials: None,
+            allowlist: cdf_http::EgressAllowlist::allow_any(),
+        };
+        let resource_id = ResourceId::new("events.raw").unwrap();
+
+        let matches = resolve_object_store_matches(&resource_id, &plan, &mut transport).unwrap();
+        assert_eq!(matches.len(), 2);
+        assert_eq!(
+            matches
+                .iter()
+                .map(|file| file.path_text.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "s3://acme-events/prod/2026/01/events.parquet",
+                "s3://acme-events/prod/2026/02/nested/events.parquet",
+            ]
+        );
+        assert!(matches.iter().all(|file| file.etag.is_some()));
     }
 }
